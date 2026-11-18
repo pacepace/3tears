@@ -1,7 +1,8 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "367085c7c82a3603283ca6e9800fd424c8d3341e91c96846a273bf77cf880288",
+ "digest": "cf8fd6e1cba64adc5c0978a611a0924493e0d70ea91b0680727624aba8e11ea5",
  "entry_points": [
+  "packages/evals/tests/advice_nulls.py",
   "packages/evals/tests/null_newcomers.py",
   "packages/evals/tests/engine_take_up.py",
   "packages/evals/tests/stats_certificate.py",
@@ -45,7 +46,7 @@
   "packages/evals/src/threetears/evals/analysis/analyst_gaps.py": "e7b6002af39ae2681621063a2cbbd351642dbb3af8f484a60262ea46a3692fbe",
   "packages/evals/src/threetears/evals/analysis/answer.py": "770eefc0611b8c754b8bf0a8b6ca224f64916c6e541f89ec4d83945c7bc88261",
   "packages/evals/src/threetears/evals/analysis/arms.py": "34b54099fc04dc4dc18beed5ab4d41425bde76972189f331371b7603c2b9e364",
-  "packages/evals/src/threetears/evals/analysis/aspects.py": "4b154cddce1b4b90ae3976b6353867196291ea0ee6c70af7114396e123cc26a6",
+  "packages/evals/src/threetears/evals/analysis/aspects.py": "cd371bae31fe03bda40676cdca743a842ac7d962ae58d23f1a27b352fe434989",
   "packages/evals/src/threetears/evals/analysis/bar_proposals.py": "adea109532711fb15d9d423084d153d3df8e2b2f9d0142822cfd7dde85b55ce0",
   "packages/evals/src/threetears/evals/analysis/blind_read.py": "e55e8dc63aee43719dc2f4d42acafed12ffa175390cd6442dfd53d4d137cfa4b",
   "packages/evals/src/threetears/evals/analysis/bundle/__init__.py": "a68935e344893dcae5f5bcf28e12d09bf9a346f52b189ba24082df0017b3b0c7",
@@ -54,19 +55,19 @@
   "packages/evals/src/threetears/evals/analysis/bundle/caps.py": "1719271f20d9f0811233975a51f78c8442ccccdf6400fa5d79416153d75ee50f",
   "packages/evals/src/threetears/evals/analysis/bundle/cell_notes.py": "b3ac11bd24934adc4a8b997c3b3a57869943172012b8e0d37063e1bc3b8e98a6",
   "packages/evals/src/threetears/evals/analysis/bundle/cell_reads.py": "872578451d76dff79fa32b74c343fc7eecb51701b80c5d43ba95a8ab3962b38e",
-  "packages/evals/src/threetears/evals/analysis/bundle/comparisons.py": "560672ecb5e7b50c4ccce1a11988ff586f8fb8d59296255891f164dae8c9ee8f",
+  "packages/evals/src/threetears/evals/analysis/bundle/comparisons.py": "7fb1698da58ef0085a0732e758e8dc063faef90d9d15c46bde276eff807224ee",
   "packages/evals/src/threetears/evals/analysis/bundle/config.py": "bee096009c5d427c586911ea8a76800f5f7c7d25993a8c755ec73fdf8801fad1",
   "packages/evals/src/threetears/evals/analysis/bundle/confounds.py": "b31b68989265ac6847a8257343e040159b27127394c6d1dfc7f6737b382f951a",
   "packages/evals/src/threetears/evals/analysis/bundle/coverage.py": "48c5a6aab787b98b5c2590edacd0c431720189245d40bfa2744b2e3959c23acb",
   "packages/evals/src/threetears/evals/analysis/bundle/design.py": "f8aa073c87d7296f0451d0f22d3ee6b04ee68a308830009d4e2af875f5acbaba",
   "packages/evals/src/threetears/evals/analysis/bundle/divergence.py": "e6318ca89a4a2dc51f331c777a367cf9de07054269220c6e9f564ccbd809da7f",
-  "packages/evals/src/threetears/evals/analysis/bundle/evidence.py": "3beb3eecdea4a37b845922505ce242e378d86f4869901a76e2df66c03375f061",
+  "packages/evals/src/threetears/evals/analysis/bundle/evidence.py": "d0c746de3795d32a9e4f0643e5824406f04c9a3b5469227d1b01f0887e2bbe10",
   "packages/evals/src/threetears/evals/analysis/bundle/insights.py": "ba18a38c468a64f1d6caabc05f2c70e4103c6293107d684942522b4e1f60d0fe",
   "packages/evals/src/threetears/evals/analysis/bundle/judges.py": "46486854ecfa49a3ff38b39a8b7fe292c1700f2b423f3eda4a40c72fc6b153c5",
   "packages/evals/src/threetears/evals/analysis/bundle/measures.py": "0e07bf031a87ca310f0959dfad2955f0e6ef6fd8a7935faec306d033191cd16d",
   "packages/evals/src/threetears/evals/analysis/bundle/mechanisms.py": "00d71379acd45ba5b40d9974526724e0a060dacf91d1b57451286301fa2c0664",
   "packages/evals/src/threetears/evals/analysis/bundle/observations.py": "7ae9d98a828fe3e65fe1f3d7bf2ac686ecdc6ebcfbbf7bfe4b3fb8e92ecd1ba0",
-  "packages/evals/src/threetears/evals/analysis/bundle/schema.py": "a18507fb8e9d580c59d0dddd80bc5455474950c9d0b4e6b7e27f296d122a3d97",
+  "packages/evals/src/threetears/evals/analysis/bundle/schema.py": "3ac01089798f56ee6f0f721410a98063160ec4c85255b57d71f09cfdcec8f6d3",
   "packages/evals/src/threetears/evals/analysis/bundle/surface.py": "8c588742035171b60aa3b4b344fd82062e07246b1cd355d058caa71baf5aa4ee",
   "packages/evals/src/threetears/evals/analysis/bundle/telemetry.py": "211bf24283b2c37413da25babcd37f940e27fa02bc4670ce5386b1a6d14e2a05",
   "packages/evals/src/threetears/evals/analysis/bundle/time_axis.py": "8b2beee8cc997875ce5e8e1ade9dcdef60669eba6d59df2db2eb04cfd59f440d",
@@ -74,7 +75,7 @@
   "packages/evals/src/threetears/evals/analysis/campaign_bundle.py": "8986fba0b21769c29f5329e4e9e0806f9b9678c4f6840e10ad18a0b704aebfec",
   "packages/evals/src/threetears/evals/analysis/campaign_readings.py": "89a026bff4c0cb9032a63410a8c22006a488b7610f111da272b24123f9506274",
   "packages/evals/src/threetears/evals/analysis/campaign_title.py": "084bb37b357c2658d9c2b5d811862d157ae40f32f5c7f9da5037d3c38079c0c5",
-  "packages/evals/src/threetears/evals/analysis/campaigns.py": "46b01562c2dc4b94b562bfe3491e292faacac899a446dae1db18eaa1f05f2335",
+  "packages/evals/src/threetears/evals/analysis/campaigns.py": "881fcb4d49c7c13ae48d2508df53ed367ee829b40ad3dbdbc123cd51ef360252",
   "packages/evals/src/threetears/evals/analysis/cassette_mode.py": "5c69d2be89ecf5defc7c72d4cfc790fc39af9964828e81a2dd70585df99a09d8",
   "packages/evals/src/threetears/evals/analysis/caveats.py": "7f961914a0521778dce73378b34ab28f1d383f58b9630069820d345d4c07866e",
   "packages/evals/src/threetears/evals/analysis/cell_mean.py": "9c4a1f5be07995c7a98236aff9eda025a5f7b5c7ff37936f847f0a9c7d0623ef",
@@ -122,7 +123,7 @@
   "packages/evals/src/threetears/evals/analysis/report/__init__.py": "bb849ff5877e247b4d7ee9d018c415e2f4f1070f61037ca7eebcc812466f4d0e",
   "packages/evals/src/threetears/evals/analysis/report/aspect/__init__.py": "157a43efd7a233a20c8b0036e556282fd32d3d4c5727fdc3f991b02843f16595",
   "packages/evals/src/threetears/evals/analysis/report/aspect/common.py": "f3c5362c1cb92f3c50d655eb35866bc6d850883dcad9fb9a6b7c50a728c9c4d6",
-  "packages/evals/src/threetears/evals/analysis/report/aspect/contrasts.py": "0dfddce366a49e458bd331b6379ee46ed9d0e177cccf1e0f695091419aad0ebd",
+  "packages/evals/src/threetears/evals/analysis/report/aspect/contrasts.py": "0ec0c79889628bcce253818bbc1c1efc8f360e4d9a973ea7905956082c6bbe7a",
   "packages/evals/src/threetears/evals/analysis/report/aspect/guardrails.py": "5216abf9b178d707cc281ce216449995e921937109caa7aab05192c9790c0961",
   "packages/evals/src/threetears/evals/analysis/report/aspect/head.py": "b52e0a33047d39ad46be910657455f8301f6f268f94126e35cefac508fbcd801",
   "packages/evals/src/threetears/evals/analysis/report/aspect/method.py": "cba049abc1c961fd45e3df30382fd99d18edd68ee46b85c1d61b2f9f01e09c89",
@@ -133,7 +134,7 @@
   "packages/evals/src/threetears/evals/analysis/report/blind_rates.py": "ccbcfd2009ba1e72d50287688466fda494b26495913c987d6830e185f9c200d3",
   "packages/evals/src/threetears/evals/analysis/report/block_spec.py": "ef04df71a57b0de6eb935550644fd31d0305e756c650532b0e87048e3307466b",
   "packages/evals/src/threetears/evals/analysis/report/blocks.py": "1bc9faf6b062934846307c304931c26662b8bd5949854be45eaa0c26875b468f",
-  "packages/evals/src/threetears/evals/analysis/report/build.py": "e84c344f0228fb818d93006923e883660b91b378915ad2fc186a6c40799a1e3b",
+  "packages/evals/src/threetears/evals/analysis/report/build.py": "97e24c42745450abb9e0712db604a537202d639443899d84c04f448b1328008d",
   "packages/evals/src/threetears/evals/analysis/report/call.py": "f0b1f7a13c896086b2cf3634ca19be8ce0003e8e62b5fbf35691e70d82915320",
   "packages/evals/src/threetears/evals/analysis/report/campaign/__init__.py": "eb05e1371a5783a97f4c29fb08c878dc5e6e0b4a6ef7d9e7a0df7cb4ef310833",
   "packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py": "1abe9127f00fd9d99aca127774dc2905e2d030cf4608991c1211c65f2393ecc2",
@@ -142,7 +143,7 @@
   "packages/evals/src/threetears/evals/analysis/report/campaign/depth_blocks.py": "353e0c601be4ca8daf517a417d98983c4d448bffe07f4fddd44f90f18826cd63",
   "packages/evals/src/threetears/evals/analysis/report/campaign/measure_kinds.py": "1dbf906b42a92c2ce3e0eeed1e1d1d30ce67cf15cf84bec21ed364871a48b186",
   "packages/evals/src/threetears/evals/analysis/report/campaign/names.py": "99f8eae3989571cb1bf9b80cb32b26eaf016043c0315a72efd3d4777e6d3330a",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/page.py": "65d063cb96e11969539d904ffb33e17724ffbbdf54a24e2f8d9d53bf743d4d24",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/page.py": "9b6ca4345ab052aa06a39c9f1aea5f1e029bf09583d6f33a9ad65761fcbad7c4",
   "packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py": "b23ca61234a0529150b3afa652acf88409a49286c59d49b7c88656fa1fb2cde7",
   "packages/evals/src/threetears/evals/analysis/report/campaign/scorecard.py": "e7d14d638177dcf7866cd407720dc3b0341b41aa648cc1c2cb87fe80cdd538cb",
   "packages/evals/src/threetears/evals/analysis/report/campaign/warnings.py": "4a7b5ea8c676371e186f69228a09b33ffef8d08cbbbba0e21576ccc2fd969ffa",
@@ -215,8 +216,8 @@
   "packages/evals/src/threetears/evals/analysis/report/serialize_md.py": "5b8eb98eea5435033778f57b902d82b7f7d077d123adabaf4ea24bec2ce9b6bc",
   "packages/evals/src/threetears/evals/analysis/report/svg.py": "4ae57717380e08b214541b9ee531300c24a91ac7d4c117c53cb853ea09554add",
   "packages/evals/src/threetears/evals/analysis/report/unit_once.py": "b7fb4ac27fd2efa5ef5528076ed6897a95b27b8b9c12869c9ef8165ec0fafbe4",
-  "packages/evals/src/threetears/evals/analysis/report/verdict.py": "0e702340d349d06b7af24db39679224219b5b864ae5c1d937b7e8cb9ac3d7dff",
-  "packages/evals/src/threetears/evals/analysis/report/words.py": "f619139dc27f3dda8781e9815fb1a346b14c5efc07e1193da52ec024646bad38",
+  "packages/evals/src/threetears/evals/analysis/report/verdict.py": "4edb5ca6c050f702303cb194391e74329aca7595ad8343f4236a444e97221805",
+  "packages/evals/src/threetears/evals/analysis/report/words.py": "62addc830f3f411fb2d8491f95cdcc7dee1a004745c876e7df486b653a404a19",
   "packages/evals/src/threetears/evals/analysis/report_input.py": "39d31f11d57a0eb6fe59f40442c14f1db82ac4e173ed792786a79ebc3ec03159",
   "packages/evals/src/threetears/evals/analysis/report_input_build.py": "5f017684dfc25f4cc16f68a25418adb5dd7b2c0f5c395c7e717181f520f28fa1",
   "packages/evals/src/threetears/evals/analysis/report_margins.py": "30dcbd25121056dd52be6c12e98983d2cc2181f9fd9b5b69f88c3e7488dac529",
@@ -227,8 +228,8 @@
   "packages/evals/src/threetears/evals/analysis/separation.py": "b3c955a9baaa7bd3c1862e61c6f535330ce426d552b05b24f550b7071c32fd1b",
   "packages/evals/src/threetears/evals/analysis/service.py": "c55b1786e4be9ea9229f7497a5ebc37d6abdcdaed651a729b2d427bb60059f84",
   "packages/evals/src/threetears/evals/analysis/significance.py": "b2364503f42beb847517dadb0353cd9febb2a8eb13cd81f59bd15c9e46cabb5d",
-  "packages/evals/src/threetears/evals/analysis/stats.py": "ba78bc22c41e9d9c3084d15aeff3cf409deaf8331bdb4b37c840231e81679f31",
-  "packages/evals/src/threetears/evals/analysis/style.py": "831c3b50ce9ba76af32f5789324ace8058f7bbcdb4ee25acda7be12640d50bb2",
+  "packages/evals/src/threetears/evals/analysis/stats.py": "b37a709fe6787ef8c78028d3f72bf03fbb261f327aa6814b5d0c5edce8269cae",
+  "packages/evals/src/threetears/evals/analysis/style.py": "02fc23d92d617acf828f8febb8fcf48c304268eb498cbd6be049d1473c677048",
   "packages/evals/src/threetears/evals/analysis/summary.py": "f9902074a4b969bca03643340d4e599c9801dabb140d30fc706c1b95fe14407f",
   "packages/evals/src/threetears/evals/gen/__init__.py": "bd700c5dc64da6f155f1c6942f7c6e282441dbeca316add4e13a58e6ce901b03",
   "packages/evals/src/threetears/evals/gen/prompts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -258,7 +259,7 @@
   "packages/evals/src/threetears/evals/kernel/cassettes.py": "9696e58479299f0ec455e850b98df60b662cfa2cd9f038c8a0d8329e04e3ab22",
   "packages/evals/src/threetears/evals/kernel/chart_query.py": "44cb7b6e1ecfd3a9373622504ffba557f32058458ae63c6d176f9f7f96f7a7fa",
   "packages/evals/src/threetears/evals/kernel/covariates.py": "5e9fa7134c1667f498f6fc71362f46f007c675ea2fb6456891f42447f4f67697",
-  "packages/evals/src/threetears/evals/kernel/declaration.py": "b8870bb513aa9c2649dd4a97b1bd68df824aeba7eddaa869b9311c8dec1b6312",
+  "packages/evals/src/threetears/evals/kernel/declaration.py": "3dc04f1bd3f2f5516c8b0bdbfcc85e5a374b5fafdc77fe6d668bd93e3c6a7f57",
   "packages/evals/src/threetears/evals/kernel/dsl.py": "3d24bb1d9756feb099411caf900ec7d47f6ebfbd73666083e75714a7c337d401",
   "packages/evals/src/threetears/evals/kernel/errors.py": "e5faafef5795b0a6e666e3a84640dbb6596145ab78351a53b2627d4a39d8bf77",
   "packages/evals/src/threetears/evals/kernel/eval_file.py": "3e33b377184eaaed2a96a2a6dad390ea7bf8505dd16efcf7c8122accd84b05cb",
@@ -370,8 +371,8 @@
   "packages/evals/src/threetears/evals/quick/answer.py": "d3b73046c93fbbc56bee3f8556882cea934a44dc9cde127b59b44527a408182e",
   "packages/evals/src/threetears/evals/quick/blind.py": "ef2e7e12bbfe6b70ecb37d80b0da370082e0f4cf9d7c493f9508c9e4470acb2d",
   "packages/evals/src/threetears/evals/quick/cli.py": "f9f4de470ffd99f25ce9289c756ffe94c11710a8279ce3273a4b28e71f8a9f0b",
-  "packages/evals/src/threetears/evals/quick/continuation.py": "0cfeaddae7494ce0f99970f4d87f62d8031c5ac6a87855a2feb6ceaed846f0a6",
-  "packages/evals/src/threetears/evals/quick/contract.py": "982f0ce16f76ca541af7419c737a1016ac73dc47bebc0a0d5cd1879ba25b5294",
+  "packages/evals/src/threetears/evals/quick/continuation.py": "72d9eda20c52ad96b7fa65d00b6bdb181f98cbbfdec97a38c7785fd6b537156d",
+  "packages/evals/src/threetears/evals/quick/contract.py": "528c820a4e87820d483834cd87b1e08bbd13d891bf3c3613d9cfdce2ba9b0c47",
   "packages/evals/src/threetears/evals/quick/files.py": "32198812795eb3b75a8cd1c6520aa326f459aa84eaf8c011beb135fbd1e64895",
   "packages/evals/src/threetears/evals/quick/graders.py": "ea8fbbd39551489ab675e7231a5938de06d5fa87aee924b9f4a08a7b25d79ed8",
   "packages/evals/src/threetears/evals/quick/guardrails.py": "b470591c8eab5872a2f3bfde40803c3ce7e21aba310e34fb2baf7f6654a0bce3",
@@ -380,7 +381,7 @@
   "packages/evals/src/threetears/evals/quick/logged.py": "0bd0ad9477aed339d6d813bbe9f723f98ffcc2eaa4ac53013c3963a226fbf2ab",
   "packages/evals/src/threetears/evals/quick/measures.py": "bd2100a27ac5e22ec7801e3ba3a5affd1e53c2d0e82b02218005953aeaa561f0",
   "packages/evals/src/threetears/evals/quick/one_call.py": "8c8499502c6faa7ebe1fe3e4c17ed9a8f0471a5d358eb96f4898615746985ed2",
-  "packages/evals/src/threetears/evals/quick/result.py": "52a63dfe95490f31ce12810f40ef5ca00daf1376749b5836c4a3c53831ae8dd4",
+  "packages/evals/src/threetears/evals/quick/result.py": "6c15ef4097f9a8759dc8dfebb56d002f020af7cdc293f7952d7404e62de9253b",
   "packages/evals/src/threetears/evals/quick/toml_file.py": "bf53c8e2014c2a80e48a4c82b095ea1f61e9c40f59c5c7d84d8be76b1c371536",
   "packages/evals/src/threetears/evals/quick/tools.py": "fc7c2d9897caaaa5d60ee70c4f131fc1aa9d1533a7a9ca571408816dab7f54b1",
   "packages/evals/src/threetears/evals/quick/world.py": "adc80525acb6c20e139aa9dc10c7604f2cf05e65c7d3268d8cb76e8c513b95ec",
@@ -451,7 +452,7 @@
   "packages/evals/src/threetears/evals/schema/traces.py": "eb82b6a03e7b979217443da55203261607d161d310219fa641d6657ef69a4698",
   "packages/evals/src/threetears/evals/schema/turns.py": "5215ac91a4ffc4775c3e12d4f5dd8251ea090f39b1238fea75ee140f90bd2bb5",
   "packages/evals/src/threetears/evals/schema/values.py": "b759f85b532d5f4889d570710d1ff61454bcdeb7bf78fe542212f47f40f7ddc0",
-  "packages/evals/src/threetears/evals/schema/versioning.py": "acceddbdd4136a9612b801e513142a1597d03a7ee0b62fec400cd6e409a2a943",
+  "packages/evals/src/threetears/evals/schema/versioning.py": "4af0f96f2445e0ed54aebfc242ada1c8229b18fc7b69f72db203e5b74db0c644",
   "packages/evals/src/threetears/evals/schema/world_events.py": "2bab89c5732c3ee6da8568401ed7703fd7295a03512d3d2bcd912999ecbc47b9",
   "packages/evals/src/threetears/evals/storage/__init__.py": "5e2b189db62f9bdad00162aadaf91cbecb887cd3d187da1ad9ba94cc912d67b6",
   "packages/evals/src/threetears/evals/storage/async_bridge.py": "87d6e5e5217ae942a405f65c79a9cd498f85a775cf9105e66300848219fab132",
@@ -469,6 +470,7 @@
   "packages/evals/src/threetears/evals/testing/store_conformance.py": "25a1c3fa992892cfc773985b6dd7d7d8e3de9a8079196f5b89668f2261086159",
   "packages/evals/src/threetears/evals/transports/__init__.py": "c37f4ff40275c5cc6181133736bd814fa5b4a043430ced5da58044014c9377dc",
   "packages/evals/src/threetears/evals/transports/fastmcp/__init__.py": "314be38cca6408903c49ecb78b76e61917d6c7a0017eb7385da386b43b297f53",
+  "packages/evals/tests/advice_nulls.py": "b0ca9a77b8de3323b2e208e1496e2372d5fae67ab435d292e7edb0092a88729a",
   "packages/evals/tests/engine_take_up.py": "dbe288800bc617527577e07c143a7de71d34c28cc00e7533bdd17417b1a0fdf3",
   "packages/evals/tests/fixtures/toyhost/__init__.py": "a3741131d46126219d446654834a302fd0af6d6dc558f2d69c8ece6cc694a86c",
   "packages/evals/tests/fixtures/toyhost/contract.py": "0ddb092f4ba3705068a7002e71b06fe80104073c64a5d314e25a7fc3e53d482d",
@@ -483,11 +485,11 @@
   "packages/evals/tests/null_newcomers.py": "eaef15cfc961c8bbc514477712eaab9d62b9f394959c5e5ef6c6eccecd4d4950",
   "packages/evals/tests/off_loop.py": "f14aa1407cc8a8c4f1d0314b3c3ebe897ca2f78eaa50d463e3dfcc7999dfc20c",
   "packages/evals/tests/simulation_support.py": "5c0fd59556836300f75e044b2d33f54b7e81536f61cc0d2a6309e00c87449af4",
-  "packages/evals/tests/stats_certificate.py": "9296293f5ebed114640646125e41c1b9dda32320dc3ac652da708116be139206",
+  "packages/evals/tests/stats_certificate.py": "dbf42b31f71b4aa0a0c4db5470e0dd3dedace11b6da7361eb3be203b276484fc",
   "packages/evals/tests/test_certified_simulations.py": "0d60e95ede467df82a24819afdcd447131a2f522e2f1b92785156325d87060ca"
  },
- "pool_request": "c11d64a29d924229adb2a4cc3eb5552d",
- "wall_s": 707,
+ "pool_request": "3069df91abbb468a9f51494a35f9d307",
+ "wall_s": 788,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -820,6 +822,486 @@
    "seeds": "rerun-<shard>-<index>, shards 0-39 of 50, restated"
   },
   {
+   "id": "advice.no-better.passfail.easy.every-look",
+   "says": "For a candidate no better than the control (passfail), the switch easy to undo, read after every case from the second to 100, the advice ever says switch at most one time in 3 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 873,
+   "replicates": 4000,
+   "bounds": [
+    0.20553385276455938,
+    0.23137898983780242
+   ],
+   "figure": 0.23137898983780242,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.easy.once-8",
+   "says": "For a candidate no better than the control (passfail), the switch easy to undo, read once at 8 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 401,
+   "replicates": 4000,
+   "bounds": [
+    0.09111224653090799,
+    0.10997627358140433
+   ],
+   "figure": 0.10997627358140433,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.easy.once-24",
+   "says": "For a candidate no better than the control (passfail), the switch easy to undo, read once at 24 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 629,
+   "replicates": 4000,
+   "bounds": [
+    0.146097026659054,
+    0.16890605278492105
+   ],
+   "figure": 0.16890605278492105,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.easy.once-100",
+   "says": "For a candidate no better than the control (passfail), the switch easy to undo, read once at 100 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 654,
+   "replicates": 4000,
+   "bounds": [
+    0.1521632484158496,
+    0.17533054691434763
+   ],
+   "figure": 0.17533054691434763,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.hard.every-look",
+   "says": "For a candidate no better than the control (passfail), the switch hard to undo, read after every case from the second to 100, the advice ever says switch at most one time in 10 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 278,
+   "replicates": 4000,
+   "bounds": [
+    0.06181092542268021,
+    0.07782483938696177
+   ],
+   "figure": 0.07782483938696177,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.hard.once-8",
+   "says": "For a candidate no better than the control (passfail), the switch hard to undo, read once at 8 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 31,
+   "replicates": 4000,
+   "bounds": [
+    0.005271647796213606,
+    0.010982614201430818
+   ],
+   "figure": 0.010982614201430818,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.hard.once-24",
+   "says": "For a candidate no better than the control (passfail), the switch hard to undo, read once at 24 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 176,
+   "replicates": 4000,
+   "bounds": [
+    0.03785441670347381,
+    0.05082226588093569
+   ],
+   "figure": 0.05082226588093569,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.passfail.hard.once-100",
+   "says": "For a candidate no better than the control (passfail), the switch hard to undo, read once at 100 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 229,
+   "replicates": 4000,
+   "bounds": [
+    0.05025105365657011,
+    0.0649040520518614
+   ],
+   "figure": 0.0649040520518614,
+   "holds": true,
+   "seeds": "advice-passfail-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.easy.every-look",
+   "says": "For a candidate no better than the control (onramp), the switch easy to undo, read after every case from the second to 100, the advice ever says switch at most one time in 3 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 1003,
+   "replicates": 4000,
+   "bounds": [
+    0.23737858748616447,
+    0.26448641616956203
+   ],
+   "figure": 0.26448641616956203,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.easy.once-8",
+   "says": "For a candidate no better than the control (onramp), the switch easy to undo, read once at 8 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 178,
+   "replicates": 4000,
+   "bounds": [
+    0.03831971041390306,
+    0.05135614001290495
+   ],
+   "figure": 0.05135614001290495,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.easy.once-24",
+   "says": "For a candidate no better than the control (onramp), the switch easy to undo, read once at 24 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 582,
+   "replicates": 4000,
+   "bounds": [
+    0.1347097711070257,
+    0.15681079593964992
+   ],
+   "figure": 0.15681079593964992,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.easy.once-100",
+   "says": "For a candidate no better than the control (onramp), the switch easy to undo, read once at 100 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 813,
+   "replicates": 4000,
+   "bounds": [
+    0.1908744445222222,
+    0.2160605226949736
+   ],
+   "figure": 0.2160605226949736,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.hard.every-look",
+   "says": "For a candidate no better than the control (onramp), the switch hard to undo, read after every case from the second to 100, the advice ever says switch at most one time in 10 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 232,
+   "replicates": 4000,
+   "bounds": [
+    0.050956386265605946,
+    0.06569752187231154
+   ],
+   "figure": 0.06569752187231154,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.hard.once-8",
+   "says": "For a candidate no better than the control (onramp), the switch hard to undo, read once at 8 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.hard.once-24",
+   "says": "For a candidate no better than the control (onramp), the switch hard to undo, read once at 24 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 63,
+   "replicates": 4000,
+   "bounds": [
+    0.012123398280004662,
+    0.020106644561601883
+   ],
+   "figure": 0.020106644561601883,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.onramp.hard.once-100",
+   "says": "For a candidate no better than the control (onramp), the switch hard to undo, read once at 100 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 222,
+   "replicates": 4000,
+   "bounds": [
+    0.04860664136842564,
+    0.06305126687640744
+   ],
+   "figure": 0.06305126687640744,
+   "holds": true,
+   "seeds": "advice-onramp-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.easy.every-look",
+   "says": "For a candidate no better than the control (swing), the switch easy to undo, read after every case from the second to 100, the advice ever says switch at most one time in 3 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 916,
+   "replicates": 4000,
+   "bounds": [
+    0.2160550940894992,
+    0.24234191149942091
+   ],
+   "figure": 0.24234191149942091,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.easy.once-8",
+   "says": "For a candidate no better than the control (swing), the switch easy to undo, read once at 8 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 594,
+   "replicates": 4000,
+   "bounds": [
+    0.13761492885979631,
+    0.1599011687681397
+   ],
+   "figure": 0.1599011687681397,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.easy.once-24",
+   "says": "For a candidate no better than the control (swing), the switch easy to undo, read once at 24 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 622,
+   "replicates": 4000,
+   "bounds": [
+    0.14439959585880136,
+    0.16710608523456155
+   ],
+   "figure": 0.16710608523456155,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.easy.once-100",
+   "says": "For a candidate no better than the control (swing), the switch easy to undo, read once at 100 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 605,
+   "replicates": 4000,
+   "bounds": [
+    0.14027935337500613,
+    0.16273265008469312
+   ],
+   "figure": 0.16273265008469312,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.hard.every-look",
+   "says": "For a candidate no better than the control (swing), the switch hard to undo, read after every case from the second to 100, the advice ever says switch at most one time in 10 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 291,
+   "replicates": 4000,
+   "bounds": [
+    0.06489050926733864,
+    0.08124018940470396
+   ],
+   "figure": 0.08124018940470396,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.hard.once-8",
+   "says": "For a candidate no better than the control (swing), the switch hard to undo, read once at 8 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 136,
+   "replicates": 4000,
+   "bounds": [
+    0.028601416552734384,
+    0.040092362162047535
+   ],
+   "figure": 0.040092362162047535,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.hard.once-24",
+   "says": "For a candidate no better than the control (swing), the switch hard to undo, read once at 24 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 229,
+   "replicates": 4000,
+   "bounds": [
+    0.05025105365657011,
+    0.0649040520518614
+   ],
+   "figure": 0.0649040520518614,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.swing.hard.once-100",
+   "says": "For a candidate no better than the control (swing), the switch hard to undo, read once at 100 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 224,
+   "replicates": 4000,
+   "bounds": [
+    0.049076275370652844,
+    0.06358083094303985
+   ],
+   "figure": 0.06358083094303985,
+   "holds": true,
+   "seeds": "advice-swing-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.easy.every-look",
+   "says": "For a candidate no better than the control (skewed), the switch easy to undo, read after every case from the second to 100, the advice ever says switch at most one time in 3 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 999,
+   "replicates": 4000,
+   "bounds": [
+    0.2363971785855039,
+    0.2634692953690384
+   ],
+   "figure": 0.2634692953690384,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.easy.once-8",
+   "says": "For a candidate no better than the control (skewed), the switch easy to undo, read once at 8 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 626,
+   "replicates": 4000,
+   "bounds": [
+    0.14536949570770563,
+    0.16813469861234492
+   ],
+   "figure": 0.16813469861234492,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.easy.once-24",
+   "says": "For a candidate no better than the control (skewed), the switch easy to undo, read once at 24 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 668,
+   "replicates": 4000,
+   "bounds": [
+    0.15556296422645577,
+    0.17892563681902324
+   ],
+   "figure": 0.17892563681902324,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.easy.once-100",
+   "says": "For a candidate no better than the control (skewed), the switch easy to undo, read once at 100 cases, the advice says switch at most one time in 3.",
+   "test": "at_most",
+   "target": 0.3333333333333333,
+   "count": 692,
+   "replicates": 4000,
+   "bounds": [
+    0.1613952790666624,
+    0.18508442492703275
+   ],
+   "figure": 0.18508442492703275,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.hard.every-look",
+   "says": "For a candidate no better than the control (skewed), the switch hard to undo, read after every case from the second to 100, the advice ever says switch at most one time in 10 (Ville, on the running maximum of its evidence).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 282,
+   "replicates": 4000,
+   "bounds": [
+    0.06275797404128958,
+    0.07887622950037282
+   ],
+   "figure": 0.07887622950037282,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.hard.once-8",
+   "says": "For a candidate no better than the control (skewed), the switch hard to undo, read once at 8 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.hard.once-24",
+   "says": "For a candidate no better than the control (skewed), the switch hard to undo, read once at 24 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 168,
+   "replicates": 4000,
+   "bounds": [
+    0.03599552671791861,
+    0.04868450267779795
+   ],
+   "figure": 0.04868450267779795,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
+   "id": "advice.no-better.skewed.hard.once-100",
+   "says": "For a candidate no better than the control (skewed), the switch hard to undo, read once at 100 cases, the advice says switch at most one time in 10.",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 232,
+   "replicates": 4000,
+   "bounds": [
+    0.050956386265605946,
+    0.06569752187231154
+   ],
+   "figure": 0.06569752187231154,
+   "holds": true,
+   "seeds": "advice-skewed-<index>, 0-3999, on stats.advice_path"
+  },
+  {
    "id": "restated-as-product.small-once",
    "says": "Through Eval.run, a question's single read at twelve cases, under each null reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
    "test": "every",
@@ -1064,13 +1546,13 @@
    "says": "Watchers whose arms are b-slower-4x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 22,
+   "count": 23,
    "replicates": 1000,
    "bounds": [
-    0.013837414172072945,
-    0.03311966451498799
+    0.014634582325176736,
+    0.03431233761285396
    ],
-   "figure": 0.022,
+   "figure": 0.023,
    "holds": true,
    "seeds": "cut-b-slower-4x-<index>, 0-999, through the product"
   },
@@ -1079,13 +1561,13 @@
    "says": "Watchers whose arms are b-slower-20x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 34,
+   "count": 35,
    "replicates": 1000,
    "bounds": [
-    0.02365864810759795,
-    0.04718943861570718
+    0.024497527894758793,
+    0.04834238161422172
    ],
-   "figure": 0.034,
+   "figure": 0.035,
    "holds": true,
    "seeds": "cut-b-slower-20x-<index>, 0-999, through the product"
   },
@@ -1844,13 +2326,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 75,
+   "count": 84,
    "replicates": 2400,
    "bounds": [
-    0.024657751441259854,
-    0.03901620862903671
+    0.028011482603663686,
+    0.04315080516427
    ],
-   "figure": 0.03901620862903671,
+   "figure": 0.04315080516427,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-check-drain-<index>, through the engine"
   },
@@ -1874,13 +2356,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 69,
+   "count": 61,
    "replicates": 2400,
    "bounds": [
-    0.022436558885713408,
-    0.03624544767417909
+    0.01949622790678339,
+    0.03253026883273963
    ],
-   "figure": 0.03624544767417909,
+   "figure": 0.03253026883273963,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -1889,13 +2371,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 80,
+   "count": 84,
    "replicates": 2400,
    "bounds": [
-    0.026517905769419606,
-    0.04131618414423294
+    0.028011482603663686,
+    0.04315080516427
    ],
-   "figure": 0.04131618414423294,
+   "figure": 0.04315080516427,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine"
   },
@@ -1919,13 +2401,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 64,
+   "count": 84,
    "replicates": 2400,
    "bounds": [
-    0.020595772362233887,
-    0.0339264752285901
+    0.028011482603663686,
+    0.04315080516427
    ],
-   "figure": 0.0339264752285901,
+   "figure": 0.04315080516427,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -1949,13 +2431,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 84,
+   "count": 75,
    "replicates": 2400,
    "bounds": [
-    0.028011482603663686,
-    0.04315080516427
+    0.024657751441259854,
+    0.03901620862903671
    ],
-   "figure": 0.04315080516427,
+   "figure": 0.03901620862903671,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -1964,13 +2446,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 72,
+   "count": 79,
    "replicates": 2400,
    "bounds": [
-    0.023545576458215055,
-    0.03763237677678405
+    0.026145250474035375,
+    0.04085680248895224
    ],
-   "figure": 0.03763237677678405,
+   "figure": 0.04085680248895224,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -1994,13 +2476,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 72,
+   "count": 56,
    "replicates": 2400,
    "bounds": [
-    0.023545576458215055,
-    0.03763237677678405
+    0.01767274524699889,
+    0.03019437331685343
    ],
-   "figure": 0.03763237677678405,
+   "figure": 0.03019437331685343,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -2024,13 +2506,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 83,
+   "count": 73,
    "replicates": 2400,
    "bounds": [
-    0.02763765547231923,
-    0.04269257562114065
+    0.023915960012635976,
+    0.03809398911625944
    ],
-   "figure": 0.04269257562114065,
+   "figure": 0.03809398911625944,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -2039,13 +2521,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 65,
+   "count": 67,
    "replicates": 2400,
    "bounds": [
-    0.020963133106270057,
-    0.03439104973311519
+    0.021699066903240624,
+    0.03531901185759606
    ],
-   "figure": 0.03439104973311519,
+   "figure": 0.03531901185759606,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -2069,13 +2551,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 43,
+   "count": 41,
    "replicates": 1500,
    "bounds": [
-    0.020822205195246697,
-    0.03842107306836523
+    0.01968469398469551,
+    0.036899430541827705
    ],
-   "figure": 0.03842107306836523,
+   "figure": 0.036899430541827705,
    "holds": true,
    "seeds": "engine-looks-alike-20x-check-drain-<index>, through the engine"
   },
@@ -2099,13 +2581,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 31,
+   "count": 33,
    "replicates": 1500,
    "bounds": [
-    0.014084139620778282,
-    0.029207287267851323
+    0.015191023102596905,
+    0.030758435242559556
    ],
-   "figure": 0.029207287267851323,
+   "figure": 0.030758435242559556,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -2114,13 +2596,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 31,
+   "count": 37,
    "replicates": 1500,
    "bounds": [
-    0.014084139620778282,
-    0.029207287267851323
+    0.017425706563001242,
+    0.033840644173436074
    ],
-   "figure": 0.029207287267851323,
+   "figure": 0.033840644173436074,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine"
   },
@@ -2129,13 +2611,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 106,
+   "count": 125,
    "replicates": 1500,
    "bounds": [
-    0.05821546404952403,
-    0.08482869083716887
+    0.06983966975051922,
+    0.09848348177985672
    ],
-   "figure": 0.05821546404952403,
+   "figure": 0.06983966975051922,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine"
   },
@@ -2159,13 +2641,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 37,
+   "count": 47,
    "replicates": 1500,
    "bounds": [
-    0.017425706563001242,
-    0.033840644173436074
+    0.023111501734855544,
+    0.04145052352390416
    ],
-   "figure": 0.033840644173436074,
+   "figure": 0.04145052352390416,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -2174,13 +2656,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 119,
+   "count": 111,
    "replicates": 1500,
    "bounds": [
-    0.06615742097716845,
-    0.09418275997767617
+    0.06126385924816158,
+    0.088432540139109
    ],
-   "figure": 0.06615742097716845,
+   "figure": 0.06126385924816158,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine"
   },
@@ -2204,13 +2686,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 35,
+   "count": 38,
    "replicates": 1500,
    "bounds": [
-    0.016305077117125838,
-    0.03230270204903368
+    0.01798832320808308,
+    0.03460739720024958
    ],
-   "figure": 0.03230270204903368,
+   "figure": 0.03460739720024958,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -2219,13 +2701,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 45,
+   "count": 46,
    "replicates": 1500,
    "bounds": [
-    0.021964578541778565,
-    0.03993800527966501
+    0.022537489585146418,
+    0.04069479887306077
    ],
-   "figure": 0.03993800527966501,
+   "figure": 0.04069479887306077,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -2249,13 +2731,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 51,
+   "count": 35,
    "replicates": 1500,
    "bounds": [
-    0.02541790790415855,
-    0.044463354995397386
+    0.016305077117125838,
+    0.03230270204903368
    ],
-   "figure": 0.044463354995397386,
+   "figure": 0.03230270204903368,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -2279,13 +2761,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 37,
+   "count": 42,
    "replicates": 1500,
    "bounds": [
-    0.017425706563001242,
-    0.033840644173436074
+    0.020252820876316843,
+    0.03766086044374811
    ],
-   "figure": 0.033840644173436074,
+   "figure": 0.03766086044374811,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -2294,13 +2776,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 48,
+   "count": 32,
    "replicates": 1500,
    "bounds": [
-    0.023686581037514434,
-    0.04220521154185514
+    0.014636644287193499,
+    0.02998375942601822
    ],
-   "figure": 0.04220521154185514,
+   "figure": 0.02998375942601822,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine"
   }
