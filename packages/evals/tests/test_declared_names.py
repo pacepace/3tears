@@ -329,10 +329,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
+        "v2:319ac503d833f16a2196ba13883cbb04c3fa6319b7332d0f7f88c92ac9dd661c"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
+        "v2:319ac503d833f16a2196ba13883cbb04c3fa6319b7332d0f7f88c92ac9dd661c"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -343,17 +343,17 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
+        "v2:7960784ae2007af032eb33e7ebd9f98697c23e1e70224e3c3b7d42e5dfa0081a"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
+        "v2:7960784ae2007af032eb33e7ebd9f98697c23e1e70224e3c3b7d42e5dfa0081a"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
     "bundle schema_version": "66",
-    "campaign fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
-    "campaign document fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
+    "campaign fingerprint v3": "v3:1d00d81a89d41ecb201eddc67203a526c9ae9c3f8b6db6d53f904dc8b1c978ac",
+    "campaign document fingerprint v3": "v3:1d00d81a89d41ecb201eddc67203a526c9ae9c3f8b6db6d53f904dc8b1c978ac",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
@@ -399,8 +399,8 @@ PINNED: dict[str, str] = {
 #: The two bundles were re-pinned at cell model 15 (#1187): each bundle carries the model's version
 #: (``cell_model_version``), and stamped 14 this build writes them byte for byte as pinned before; nothing else moved.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "babb2d56c5c3cae693e753ed9e03a1c647b4f883ea23bccfb7f10bcde65552f0",
-    "Queue discipline under an empty queue bundle": "03f9bd1bbebd19f87ac4b5adfce0c76dd2af8d276da5f8ca1ffc2feee2f2a1e7",
+    "Queue discipline under a full queue bundle": "e54cac528cd7f48e8da9c5cc64b28954341f26e05b121766f8687e0aef94220f",
+    "Queue discipline under an empty queue bundle": "d779537be9f6edf840dbc66665989041cac16e45289589c5d2a8cc6afbd756ed",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }
