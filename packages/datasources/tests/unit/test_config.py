@@ -265,13 +265,15 @@ class TestRedshiftConnectionConfig:
         # redshift_connector supports only verify-ca / verify-full; an unsupported
         # libpq mode (e.g. 'require') is a config error, not a silent passthrough.
         with pytest.raises(ValidationError):
-            RedshiftConnectionConfig(
-                datasource_type=DataSourceType.REDSHIFT,
-                host="h",
-                database="d",
-                username="u",
-                password_ref="env://PW",
-                sslmode="require",
+            RedshiftConnectionConfig.model_validate(
+                {
+                    "datasource_type": DataSourceType.REDSHIFT,
+                    "host": "h",
+                    "database": "d",
+                    "username": "u",
+                    "password_ref": "env://PW",
+                    "sslmode": "require",
+                }
             )
 
 
@@ -304,11 +306,8 @@ class TestSnowflakeConnectionConfig:
     def test_password_ref_required(self) -> None:
         # unlike postgres, snowflake requires a credential reference
         with pytest.raises(ValidationError):
-            SnowflakeConnectionConfig(
-                datasource_type=DataSourceType.SNOWFLAKE,
-                account="acc",
-                warehouse="WH",
-                user="u",
+            SnowflakeConnectionConfig.model_validate(
+                {"datasource_type": DataSourceType.SNOWFLAKE, "account": "acc", "warehouse": "WH", "user": "u"}
             )
 
 

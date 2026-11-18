@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid7
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from threetears.datasources.geo_reload import (
     GEO_RELOAD_ERROR_CODES,
@@ -73,7 +73,9 @@ class TestRequest:
         assert body["generations"] == {_LAYER: 2}
 
     def test_the_token_is_redacted_off_the_wire(self) -> None:
-        request = GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={_LAYER: 1})
+        request = GeoLayersReloadedRequest(
+            identity_token=SecretStr(_TOKEN), correlation_id=uuid7(), generations={_LAYER: 1}
+        )
         assert _TOKEN not in repr(request)
         assert _TOKEN in request.model_dump_json()
 
@@ -89,17 +91,17 @@ class TestRequest:
 
     def test_a_generation_below_one_is_refused_by_the_model(self) -> None:
         with pytest.raises(ValidationError):
-            GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={_LAYER: 0})
+            GeoLayersReloadedRequest(identity_token=SecretStr(_TOKEN), correlation_id=uuid7(), generations={_LAYER: 0})
 
     @pytest.mark.parametrize("name", ["census.tracts", "tracts*", "a b"])
     def test_a_layer_name_no_layer_may_have_is_refused_by_the_model(self, name: str) -> None:
         with pytest.raises(ValidationError, match="layer_name_fits"):
-            GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={name: 1})
+            GeoLayersReloadedRequest(identity_token=SecretStr(_TOKEN), correlation_id=uuid7(), generations={name: 1})
 
     def test_too_many_layers_are_refused_by_the_model(self) -> None:
         many = {f"layer_{i}": 1 for i in range(MAX_RELOADED_LAYERS + 1)}
         with pytest.raises(ValidationError):
-            GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations=many)
+            GeoLayersReloadedRequest(identity_token=SecretStr(_TOKEN), correlation_id=uuid7(), generations=many)
 
     async def test_no_token_sends_nothing(self) -> None:
         nc = _ScriptedRequests()

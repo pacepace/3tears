@@ -18,7 +18,7 @@ import inspect
 import textwrap
 from unittest.mock import MagicMock
 
-import redshift_connector
+from redshift_connector.core import Connection
 
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 
@@ -29,7 +29,7 @@ def _attributes_assigned_in_init() -> set[str]:
     :return: the assigned attribute names
     :rtype: set[str]
     """
-    source = textwrap.dedent(inspect.getsource(redshift_connector.Connection.__init__))
+    source = textwrap.dedent(inspect.getsource(Connection.__init__))
     assigned: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         targets: list[ast.expr] = []

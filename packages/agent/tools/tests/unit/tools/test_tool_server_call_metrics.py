@@ -10,6 +10,8 @@ rate, and the concurrency as rate times duration, whatever the scrape interval.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import asyncio
 import json
 from typing import Any
@@ -34,7 +36,7 @@ _POD_ID = "metrics-pod"
 class _FakeTool(TearsTool):
     """a tool whose ``execute`` body is supplied per test."""
 
-    def __init__(self, body: Any) -> None:
+    def __init__(self, body: Callable[[], Awaitable[ToolResult]]) -> None:
         self._body = body
 
     async def execute(self, **kwargs: Any) -> ToolResult:
@@ -50,11 +52,11 @@ class _FakeTool(TearsTool):
         return "1.0.0"
 
 
-def _serving(body: Any) -> ToolServer:
+def _serving(body: Callable[[], Awaitable[ToolResult]]) -> ToolServer:
     """a tool server holding one fake tool, driven by hand.
 
     :param body: the coroutine function the fake tool's ``execute`` awaits
-    :ptype body: Any
+    :ptype body: Callable[[], Awaitable[ToolResult]]
     :return: the server
     :rtype: ToolServer
     """
@@ -194,7 +196,11 @@ async def test_a_call_cancelled_mid_tool_is_an_error_on_metrics_and_in_the_audit
 async def test_a_call_refused_before_any_tool_is_named_is_counted_under_no_tool() -> None:
     """Flips if a call the pod could not read goes uncounted: a refused call is load, and a refusal rate is
     worth seeing."""
-    server = _serving(lambda: None)
+
+    async def never_runs() -> ToolResult:
+        raise AssertionError("no tool runs for a call the pod could not read")
+
+    server = _serving(never_runs)
     await _call(server, data=b"not json")
     assert _sample(server, "threetears_tools_calls_total", tool="", outcome="failure") == 1.0
 

@@ -15,6 +15,8 @@ scope:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -218,8 +220,10 @@ class TestObservedDecoratorCompiles:
         def sync_method(self: object) -> int:
             return 1
 
+        # handed over as an untyped caller would: the refusal under test is the runtime one
+        untyped: Callable[..., Any] = sync_method
         with pytest.raises(TypeError, match="async"):
-            observed("fake")(sync_method)
+            observed("fake")(untyped)
 
     @pytest.mark.asyncio
     async def test_observed_decorator_wraps_async_method(self) -> None:

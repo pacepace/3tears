@@ -36,7 +36,8 @@ from uuid import UUID
 
 import asyncpg
 import pytest
-import redshift_connector
+from pydantic import BaseModel
+from redshift_connector.error import InterfaceError
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
@@ -91,7 +92,9 @@ def _password(monkeypatch: pytest.MonkeyPatch) -> None:
 class _Nats(FakeNatsClient):
     """the shared collections bucket every replica's registry reaches."""
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 
@@ -102,7 +105,9 @@ class _FailingNats(FakeNatsClient):
         del kwargs
         raise KvError("kv down")
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 
@@ -142,15 +147,13 @@ def _redshift_config() -> RedshiftConnectionConfig:
     )
 
 
-def _refused() -> redshift_connector.InterfaceError:
+def _refused() -> InterfaceError:
     """the shape ``redshift_connector`` raises for a server refusal with SQLSTATE 28000.
 
     :return: the backend exception
     :rtype: redshift_connector.InterfaceError
     """
-    return redshift_connector.InterfaceError(
-        {"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "ripple_build"'}
-    )
+    return InterfaceError({"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "ripple_build"'})
 
 
 class TestOneRefusalPausesTheFleet:
@@ -551,6 +554,7 @@ class TestAsyncpgGuardsEveryPooledLogin:
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
         await driver.test_connection()
         create_pool.assert_awaited_once()
+        assert create_pool.await_args is not None
         return create_pool.await_args.kwargs["connect"]
 
     async def test_the_pool_logs_in_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:

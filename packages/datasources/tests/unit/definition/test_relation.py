@@ -254,7 +254,6 @@ class TestDerivedTableBodies:
         )
         assert type(typed.relation) is TypedDerivedTable
         assert type(stringly.relation) is RawDerivedTable
-        assert TypedDerivedTable is not RawDerivedTable
         assert not issubclass(TypedDerivedTable, RawDerivedTable)
         assert not issubclass(RawDerivedTable, TypedDerivedTable)
 

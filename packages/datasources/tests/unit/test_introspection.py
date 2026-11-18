@@ -230,7 +230,7 @@ class TestComputeIntrospectionDiff:
 
     def test_unchanged_when_hashes_match(self) -> None:
         wh = {("s", "t"): "abc123"}
-        st = {("s", "t"): "abc123"}
+        st: dict[tuple[str, str], str | None] = {("s", "t"): "abc123"}
         diff = compute_introspection_diff(wh, st)
         assert diff.tables_unchanged == 1
         assert diff.tables_changed == 0
@@ -239,7 +239,7 @@ class TestComputeIntrospectionDiff:
 
     def test_changed_when_hashes_differ(self) -> None:
         wh = {("s", "t"): "warehouse-hash"}
-        st = {("s", "t"): "old-stored-hash"}
+        st: dict[tuple[str, str], str | None] = {("s", "t"): "old-stored-hash"}
         diff = compute_introspection_diff(wh, st)
         assert diff.tables_changed == 1
         assert diff.tables_to_introspect == (("s", "t"),)
@@ -254,21 +254,21 @@ class TestComputeIntrospectionDiff:
         hashes populate.
         """
         wh = {("s", "t"): "abc"}
-        st = {("s", "t"): None}
+        st: dict[tuple[str, str], str | None] = {("s", "t"): None}
         diff = compute_introspection_diff(wh, st)
         assert diff.tables_changed == 1
         assert diff.tables_to_introspect == (("s", "t"),)
 
     def test_table_added_when_in_warehouse_only(self) -> None:
         wh = {("s", "new"): "hash"}
-        st = {}
+        st: dict[tuple[str, str], str | None] = {}
         diff = compute_introspection_diff(wh, st)
         assert diff.tables_added == 1
         assert diff.tables_to_introspect == (("s", "new"),)
 
     def test_table_removed_when_in_storage_only(self) -> None:
-        wh = {}
-        st = {("s", "gone"): "hash"}
+        wh: dict[tuple[str, str], str] = {}
+        st: dict[tuple[str, str], str | None] = {("s", "gone"): "hash"}
         diff = compute_introspection_diff(wh, st)
         assert diff.tables_removed == 1
         assert diff.tables_to_delete == (("s", "gone"),)
@@ -281,7 +281,7 @@ class TestComputeIntrospectionDiff:
             ("s", "null-stored"): "h3",
             ("s", "added"): "h4",
         }
-        st = {
+        st: dict[tuple[str, str], str | None] = {
             ("s", "unchanged"): "h1",
             ("s", "changed"): "h2-old",
             ("s", "null-stored"): None,
@@ -320,7 +320,7 @@ class TestComputeIntrospectionDiff:
             ("s", "a"): "h",
             ("s", "c"): "h",
         }
-        st = {}  # everything is "added"
+        st: dict[tuple[str, str], str | None] = {}  # everything is "added"
         diff = compute_introspection_diff(wh, st)
         # sorted ascending by (schema, table)
         assert diff.tables_to_introspect == (("s", "a"), ("s", "b"), ("s", "c"))

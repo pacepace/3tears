@@ -20,7 +20,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.agent.workspace.tools import helpers as helpers_module
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     Sha256Mismatch,
@@ -36,10 +37,13 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    make_workspace,
 )
 
 
@@ -48,40 +52,25 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """minimal stand-in for :class:`Workspace` exposing id, name, delete flag."""
-
-    id: UUID
-    name: str
-    agent_id: UUID = field(default_factory=uuid4)
-    date_deleted: datetime | None = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """records lookups and serves entities by either name or id."""
 
     def __init__(
         self,
-        entities: list[_FakeWorkspaceEntity] | None = None,
+        entities: list[Workspace] | None = None,
     ) -> None:
         self._entities = entities or []
         self.by_name_calls: list[tuple[UUID, str]] = []
         self.by_id_calls: list[tuple[UUID, UUID]] = []
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         self.by_name_calls.append((agent_id, name))
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         self.by_id_calls.append((workspace_id, agent_id))
         for e in self._entities:
             if e.id == workspace_id:
@@ -109,7 +98,7 @@ class _FakePin:
 async def test_resolve_workspace_explicit_name_hits() -> None:
     """non-empty workspace_arg drives a by-name lookup."""
     agent_id = uuid4()
-    target = _FakeWorkspaceEntity(id=uuid4(), name="alpha")
+    target = make_workspace(id=uuid4(), name="alpha")
     workspaces = _FakeWorkspaceCollection([target])
 
     result = await resolve_workspace("alpha", _FakeContext(), workspaces, agent_id)
@@ -137,7 +126,7 @@ async def test_resolve_workspace_no_arg_no_pin_raises(
     async def _stub_get_pin(context: Any) -> Any:
         return None
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(NoWorkspacePinned):
         await resolve_workspace(None, _FakeContext(), workspaces, uuid4())
@@ -149,13 +138,13 @@ async def test_resolve_workspace_pin_fallback_hits(
 ) -> None:
     """empty workspace_arg + pin -> by-id lookup under agent."""
     agent_id = uuid4()
-    pinned = _FakeWorkspaceEntity(id=uuid4(), name="pinned")
+    pinned = make_workspace(id=uuid4(), name="pinned")
     workspaces = _FakeWorkspaceCollection([pinned])
 
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=pinned.id, workspace_name=pinned.name)
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
 
     result = await resolve_workspace(None, _FakeContext(), workspaces, agent_id)
 
@@ -174,7 +163,7 @@ async def test_resolve_workspace_pin_stale_raises(
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=uuid4(), workspace_name="gone")
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
         await resolve_workspace(None, _FakeContext(), workspaces, uuid4())
@@ -184,7 +173,7 @@ async def test_resolve_workspace_pin_stale_raises(
 @pytest.mark.asyncio
 async def test_resolve_workspace_soft_deleted_raises() -> None:
     """soft-deleted entity resolved by name raises WorkspaceNotFound."""
-    deleted = _FakeWorkspaceEntity(id=uuid4(), name="rip", date_deleted=datetime.now(UTC))
+    deleted = make_workspace(id=uuid4(), name="rip", date_deleted=datetime.now(UTC))
     workspaces = _FakeWorkspaceCollection([deleted])
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
@@ -272,8 +261,8 @@ class _FakePool(FakeAsyncpgPool):
         return _FakeAcquireCM(conn=self.conn)
 
 
-def _fake_workspace() -> _FakeWorkspaceEntity:
-    return _FakeWorkspaceEntity(id=uuid4(), name="ws")
+def _fake_workspace() -> Workspace:
+    return make_workspace(id=uuid4(), name="ws")
 
 
 @pytest.mark.asyncio
@@ -293,9 +282,9 @@ async def test_write_file_atomic_new_file_inserts_at_version_one() -> None:
         actor_id=actor,
         correlation_id=corr,
         expected_sha256=None,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
     )
 
     assert new_version == 1
@@ -340,9 +329,9 @@ async def test_write_file_atomic_existing_file_bumps_version() -> None:
         actor_id=uuid4(),
         correlation_id=uuid4(),
         expected_sha256=None,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
     )
     assert new_version == 4
     # journal row insert used action="update"
@@ -374,9 +363,9 @@ async def test_write_file_atomic_occ_success_passes_sha() -> None:
         actor_id=uuid4(),
         correlation_id=uuid4(),
         expected_sha256="b" * 64,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
     )
     assert new_version == 8
     assert len(pool.conn.executions) == 3
@@ -402,9 +391,9 @@ async def test_write_file_atomic_occ_mismatch_raises_and_aborts_tx() -> None:
             actor_id=uuid4(),
             correlation_id=uuid4(),
             expected_sha256="d" * 64,
-            workspace_file_collection=None,
-            workspace_file_version_collection=None,
-            workspace_collection=None,
+            workspace_file_collection=FakeWorkspaceFileCollection(),
+            workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+            workspace_collection=FakeWorkspaceCollection(),
         )
     assert excinfo.value.expected == "d" * 64
     assert excinfo.value.current == "c" * 64
@@ -432,9 +421,9 @@ async def test_write_file_atomic_occ_mismatch_absent_reports_none_current() -> N
             actor_id=uuid4(),
             correlation_id=uuid4(),
             expected_sha256="e" * 64,
-            workspace_file_collection=None,
-            workspace_file_version_collection=None,
-            workspace_collection=None,
+            workspace_file_collection=FakeWorkspaceFileCollection(),
+            workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+            workspace_collection=FakeWorkspaceCollection(),
         )
     assert excinfo.value.current is None
     assert excinfo.value.expected == "e" * 64
@@ -454,9 +443,9 @@ async def test_write_file_atomic_workspace_update_uses_greatest_semantics() -> N
         actor_id=uuid4(),
         correlation_id=uuid4(),
         expected_sha256=None,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
     )
     update_sql, update_args, _ = pool.conn.executions[2]
     assert update_sql.startswith('UPDATE "workspaces" SET "current_version" = GREATEST(current_version, $1)')

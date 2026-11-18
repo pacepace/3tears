@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_delete as workspace_delete_module
 from threetears.agent.workspace.tools.workspace_delete import WorkspaceDeleteTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -20,13 +22,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
+from threetears.agent.workspace.entities import Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
 )
 
 
@@ -35,26 +38,11 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """minimal stand-in for :class:`Workspace` for delete-target lookups."""
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-    id: UUID
-    name: str
-    agent_id: UUID = field(default_factory=uuid4)
-    date_deleted: Any = None
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
@@ -72,7 +60,7 @@ class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
 class _FakeSandbox(FakeWorkspaceSandbox):
     """unused by delete; satisfies factory contract."""
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Any:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         raise KeyError(root_name)
 
     def validate_syntax(self, target: str) -> None:
@@ -176,7 +164,7 @@ async def test_delete_soft_deletes_workspace_in_transaction(
 ) -> None:
     """delete sets date_deleted via UPDATE inside a single transaction."""
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="bye")
+    workspace = make_workspace(id=ws_id, name="bye")
 
     async def _get_pin(_ctx: Any) -> Any:
         return None
@@ -186,8 +174,8 @@ async def test_delete_soft_deletes_workspace_in_transaction(
     async def _clear_pin(_ctx: Any) -> None:
         cleared.append(_ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -231,7 +219,7 @@ async def test_delete_clears_pin_when_pinned_workspace_matches(
 ) -> None:
     """pinned workspace's pin is cleared by the same delete call."""
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed")
+    workspace = make_workspace(id=ws_id, name="seed")
     fake_ctx = _FakeContext()
 
     async def _get_pin(ctx: Any) -> _PinnedSnapshot:
@@ -243,8 +231,8 @@ async def test_delete_clears_pin_when_pinned_workspace_matches(
     async def _clear_pin(ctx: Any) -> None:
         cleared.append(ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -267,7 +255,7 @@ async def test_delete_does_not_clear_pin_for_different_workspace(
     """a different pinned workspace is left untouched when deleting another."""
     ws_id = uuid4()
     other_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="bye")
+    workspace = make_workspace(id=ws_id, name="bye")
 
     async def _get_pin(_ctx: Any) -> _PinnedSnapshot:
         return _PinnedSnapshot(workspace_id=other_id, workspace_name="other")
@@ -277,8 +265,8 @@ async def test_delete_does_not_clear_pin_for_different_workspace(
     async def _clear_pin(ctx: Any) -> None:
         cleared.append(ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -319,11 +307,7 @@ async def test_delete_already_deleted_returns_error_idempotently(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """deleting an already-soft-deleted workspace surfaces same not-found error."""
-    workspace = _FakeWorkspaceEntity(
-        id=uuid4(),
-        name="ghost",
-        date_deleted=datetime(2026, 4, 16, 9, 0, 0, tzinfo=UTC),
-    )
+    workspace = make_workspace(id=uuid4(), name="ghost", date_deleted=datetime(2026, 4, 16, 9, 0, 0, tzinfo=UTC))
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),

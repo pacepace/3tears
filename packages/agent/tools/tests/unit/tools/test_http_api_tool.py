@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -62,10 +63,14 @@ class _FakeTracedHttpClient(TracedHttpClient):
         method: str,
         path: str,
         *,
-        headers: Any = None,
-        params: Any = None,
-        content: Any = None,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, Any] | None = None,
+        content: bytes | None = None,
+        data: Mapping[str, Any] | None = None,
         json: Any = None,
+        timeout: float | None = None,
+        follow_redirects: bool | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """record the request and return the canned response / raise.
 
@@ -74,16 +79,25 @@ class _FakeTracedHttpClient(TracedHttpClient):
         :param path: filled request path
         :ptype path: str
         :param headers: outbound headers
-        :ptype headers: Any
+        :ptype headers: Mapping[str, str] | None
         :param params: query params
-        :ptype params: Any
+        :ptype params: Mapping[str, Any] | None
         :param content: raw body
-        :ptype content: Any
+        :ptype content: bytes | None
+        :param data: form body; the tool sends none, so it is not recorded
+        :ptype data: Mapping[str, Any] | None
         :param json: JSON body
         :ptype json: Any
+        :param timeout: per-request timeout; not recorded
+        :ptype timeout: float | None
+        :param follow_redirects: redirect policy; not recorded
+        :ptype follow_redirects: bool | None
+        :param idempotent: retry policy; not recorded
+        :ptype idempotent: bool
         :return: canned response
         :rtype: httpx.Response
         """
+        del data, timeout, follow_redirects, idempotent
         self.calls.append(
             {
                 "method": method,

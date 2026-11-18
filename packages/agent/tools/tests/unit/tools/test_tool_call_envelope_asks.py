@@ -18,6 +18,8 @@ they ship together and roll out apart:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import asyncio
 import json
 from typing import Any
@@ -48,7 +50,7 @@ _HARD_LIMIT = "tool exceeded the pod hard execution limit"
 class _FakeTool(TearsTool):  # parity-with: threetears.agent.tools.base_tool.TearsTool
     """a tool whose ``execute`` body is supplied per test."""
 
-    def __init__(self, body: Any) -> None:
+    def __init__(self, body: Callable[[], Awaitable[ToolResult]]) -> None:
         self._body = body
 
     async def execute(self, **kwargs: Any) -> ToolResult:
@@ -69,11 +71,11 @@ def _request(**overrides: Any) -> CallRequest:
     return CallRequest(tool_name="test.fake", tool_version="1.0.0", arguments={}, **overrides)
 
 
-def _serving(body: Any, **guards: Any) -> tuple[ToolServer, RecordingNatsClient]:
+def _serving(body: Callable[[], Awaitable[ToolResult]], **guards: Any) -> tuple[ToolServer, RecordingNatsClient]:
     """a tool server holding one fake tool, configured with the given guards and driven by hand.
 
     :param body: the coroutine function the fake tool's ``execute`` awaits
-    :ptype body: Any
+    :ptype body: Callable[[], Awaitable[ToolResult]]
     :param guards: ``max_call_seconds`` when the pod has a ceiling
     :ptype guards: Any
     :return: the server and the client it answers on

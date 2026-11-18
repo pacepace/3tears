@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -34,6 +36,7 @@ from threetears.agent.tools.server import CallAccepted, CallResponse, ToolServer
 from threetears.nats import IncomingMessage, PublishError, Subject, Subjects, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
+from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
 from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
 from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
 
@@ -46,29 +49,30 @@ def _bind_namespace() -> None:
     set_default_namespace(_NS)
 
 
-# parity-exempt: stands in for exactly the three NatsClient methods a dispatch can answer through (publish / jetstream_publish / publish_reply); a full declaration would drag in the whole connection lifecycle no branch of handle_call touches, and drift in any of those three fails these tests directly  # noqa: E501
-class _FakeNats:
+class _FakeNats(RecordingNatsClient):
     """records the two publish surfaces a dispatch can answer through.
 
-    Deliberately narrow: what these tests observe is WHICH of the two publish paths each branch of a
-    dispatch chose, so the double records both and nothing else.
+    What these tests observe is WHICH of the two publish paths each branch of a dispatch chose: a
+    durable publish lands in ``audits`` (the baseline audit) or ``delivered`` (the answer), after
+    ``jetstream_failures`` refusals; a reply in ``replies``.
     """
 
-    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
-    #: tool server's size guard off, as on a client that has not connected
-    max_payload: int | None = None
-
     def __init__(self, *, jetstream_failures: int = 0, failure: BaseException | None = None) -> None:
-        self.replies: list[tuple[str, Any]] = []
+        super().__init__()
         self.delivered: list[tuple[str, bytes]] = []
         self.audits: list[tuple[str, bytes]] = []
         self._jetstream_failures = jetstream_failures
         self._failure = failure if failure is not None else PublishError("broker unreachable")
 
-    async def publish(self, *, subject: Subject, message: Any, reply_to: Subject | None = None) -> None:
-        del reply_to, subject, message
-
-    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | float = timedelta(seconds=10),
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        del timeout, headers
         if ".audit." in subject.path:
             self.audits.append((subject.path, payload))
             return
@@ -76,9 +80,6 @@ class _FakeNats:
             self._jetstream_failures -= 1
             raise self._failure
         self.delivered.append((subject.path, payload))
-
-    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
-        self.replies.append((reply_subject, message))
 
 
 class _StubTool(TearsTool):
@@ -114,7 +115,7 @@ def _server(
 ) -> ToolServer:
     server = ToolServer(
         namespace=_NS,
-        nats_client=nats,  # type: ignore[arg-type]
+        nats_client=nats,
         pod_id=_POD,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=FakeReplayGuard(),
@@ -143,7 +144,8 @@ def _delivery_subject(call_id: str = "call-1") -> str:
 
 
 def _decoded(payload: bytes) -> dict[str, Any]:
-    return json.loads(payload.decode("utf-8"))
+    decoded: dict[str, Any] = json.loads(payload.decode("utf-8"))
+    return decoded
 
 
 class TestTheAnswerLeavesOnASubjectThePodOwns:

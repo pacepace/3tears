@@ -10,9 +10,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_reset as workspace_reset_module
 from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -20,13 +21,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -35,37 +37,11 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """minimal stand-in for :class:`Workspace` for reset-target lookups."""
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-    id: UUID
-    name: str
-    template_name: str | None
-    current_version: int = 0
-    agent_id: UUID = field(default_factory=uuid4)
-    date_deleted: Any = None
-
-
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    """minimal stand-in for :class:`WorkspaceFile`."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
@@ -73,11 +49,11 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 
 
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
         self.find_calls: list[UUID] = []
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         self.find_calls.append(workspace_id)
         return list(self._files)
 
@@ -212,10 +188,10 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
     (template_dir / "main.py").write_bytes(b"original = True\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=4)
+    workspace = make_workspace(id=ws_id, name="seed", template_name="starter", current_version=4)
     current_files = [
-        _FakeFileEntity(relative_path="README.md", content=b"# tampered\n", sha256="x" * 64),
-        _FakeFileEntity(relative_path="main.py", content=b"hacked = True\n", sha256="y" * 64),
+        make_workspace_file(relative_path="README.md", content=b"# tampered\n", sha256="x" * 64),
+        make_workspace_file(relative_path="main.py", content=b"hacked = True\n", sha256="y" * 64),
     ]
     pool = _FakePool()
     tool = _build_tool(
@@ -271,10 +247,10 @@ async def test_reset_drops_files_template_no_longer_has(
     (template_dir / "keep.md").write_bytes(b"keep me\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=1)
+    workspace = make_workspace(id=ws_id, name="seed", template_name="starter", current_version=1)
     current_files = [
-        _FakeFileEntity(relative_path="keep.md", content=b"old\n", sha256="a" * 64),
-        _FakeFileEntity(relative_path="dropped.md", content=b"orphan\n", sha256="b" * 64),
+        make_workspace_file(relative_path="keep.md", content=b"old\n", sha256="a" * 64),
+        make_workspace_file(relative_path="dropped.md", content=b"orphan\n", sha256="b" * 64),
     ]
     pool = _FakePool()
     tool = _build_tool(
@@ -309,9 +285,9 @@ async def test_reset_creates_files_template_added(
     (template_dir / "new.md").write_bytes(b"new\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=2)
+    workspace = make_workspace(id=ws_id, name="seed", template_name="starter", current_version=2)
     current_files = [
-        _FakeFileEntity(relative_path="old.md", content=b"old\n", sha256="o" * 64),
+        make_workspace_file(relative_path="old.md", content=b"old\n", sha256="o" * 64),
     ]
     pool = _FakePool()
     tool = _build_tool(
@@ -344,12 +320,12 @@ async def test_reset_uses_pin_when_name_omitted(
     (template_dir / "x.md").write_bytes(b"x\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(id=ws_id, name="pinned", template_name="starter", current_version=0)
+    workspace = make_workspace(id=ws_id, name="pinned", template_name="starter", current_version=0)
 
     async def _get_pin(_ctx: Any) -> _PinnedSnapshot:
         return _PinnedSnapshot(workspace_id=ws_id, workspace_name="pinned")
 
-    monkeypatch.setattr(workspace_reset_module.pin, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -380,7 +356,7 @@ async def test_reset_no_name_and_no_pin_returns_error(
     async def _get_pin(_ctx: Any) -> Any:
         return None
 
-    monkeypatch.setattr(workspace_reset_module.pin, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -421,7 +397,7 @@ async def test_reset_workspace_without_template_returns_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """workspace without template_name yields clean error and no writes."""
-    workspace = _FakeWorkspaceEntity(id=uuid4(), name="empty", template_name=None, current_version=0)
+    workspace = make_workspace(id=uuid4(), name="empty", template_name=None, current_version=0)
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),

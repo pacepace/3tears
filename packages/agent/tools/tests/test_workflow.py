@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
+from langchain_core.tools import BaseTool
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
@@ -17,9 +19,12 @@ from threetears.agent.tools.workflow import load_workflow_tools
 
 from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
 
+_CONVERSATION = uuid.UUID("00000000-0000-0000-0000-000000000001")
+_USER = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_wf_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
@@ -48,13 +53,20 @@ def collection(registry: CollectionRegistry) -> ContextItemCollection:
 
 @pytest.fixture()
 def ctx(collection: ContextItemCollection) -> ToolContextManager:
-    return ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1")
+    return ToolContextManager(collection, _CONVERSATION, _USER)
 
 
-def _make_tools(ctx: ToolContextManager):
+def _make_tools(ctx: ToolContextManager) -> dict[str, BaseTool]:
     tools = load_workflow_tools(ctx)
     tool_map = {t.name: t for t in tools}
     return tool_map
+
+
+async def _saved_value(ctx: ToolContextManager, key: str) -> object:
+    """The value saved under ``key``, which the test expects to be there."""
+    var = await ctx.get_variable(key)
+    assert var is not None, f"nothing is saved under {key!r}"
+    return var["value"]
 
 
 @pytest.mark.asyncio
@@ -94,7 +106,7 @@ async def test_variable_get_not_found_lists_the_names_that_are_saved(ctx: ToolCo
 
 @pytest.mark.asyncio
 async def test_variable_set_at_the_cap_changes_nothing_and_is_not_a_failure(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_limit=2)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_limit=2)
     tools = _make_tools(ctx)
     await tools["variable_set"].ainvoke({"key": "a", "value": "1"})
     await tools["variable_set"].ainvoke({"key": "b", "value": "2"})
@@ -247,7 +259,7 @@ async def test_an_overwrite_says_the_value_it_replaced(ctx: ToolContextManager) 
     assert result == (
         "Saved 'budget' (number, 3 chars). It replaced the earlier value, which is gone (number, 3 chars): '400'"
     )
-    assert (await ctx.get_variable("budget"))["value"] == "450"
+    assert await _saved_value(ctx, "budget") == "450"
 
 
 @pytest.mark.asyncio
@@ -268,19 +280,19 @@ async def test_a_long_replaced_value_is_shown_by_its_start_and_its_size(ctx: Too
 
 @pytest.mark.asyncio
 async def test_a_cut_value_says_how_much_was_kept_and_how_much_was_cut(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_max_chars=10)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_max_chars=10)
     result = await _make_tools(ctx)["variable_set"].ainvoke({"key": "long", "value": "0123456789ABCDE"})
     assert result == (
         "Saved 'long' (string, 10 chars). It was cut: only the first 10 of 15 chars were kept, "
         "and the last 5 are not saved. Nothing was saved under that name before."
     )
-    assert (await ctx.get_variable("long"))["value"] == "0123456789"
+    assert await _saved_value(ctx, "long") == "0123456789"
 
 
 @pytest.mark.asyncio
 async def test_a_value_that_fits_is_not_said_to_be_cut(collection: ContextItemCollection) -> None:
     """Good traffic past the cut report: a value exactly at the cap is whole."""
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_max_chars=10)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_max_chars=10)
     result = await _make_tools(ctx)["variable_set"].ainvoke({"key": "fits", "value": "0123456789"})
     assert result == "Saved 'fits' (string, 10 chars). Nothing was saved under that name before."
 
@@ -316,7 +328,7 @@ async def test_a_value_of_its_kind_is_saved(ctx: ToolContextManager, value: str,
     """Good traffic past the kind check."""
     result = await _make_tools(ctx)["variable_set"].ainvoke({"key": "k", "value": value, "value_type": value_type})
     assert result.startswith(f"Saved 'k' ({value_type}, ")
-    assert (await ctx.get_variable("k"))["value"] == value
+    assert await _saved_value(ctx, "k") == value
 
 
 @pytest.mark.asyncio
@@ -351,7 +363,7 @@ async def test_variable_delete_removes_it_and_says_what_it_held(ctx: ToolContext
         "1 of 50 variables are saved now."
     )
     assert await ctx.get_variable("city") is None
-    assert (await ctx.get_variable("budget"))["value"] == "400"
+    assert await _saved_value(ctx, "budget") == "400"
 
 
 @pytest.mark.asyncio
@@ -361,12 +373,12 @@ async def test_variable_delete_of_a_name_not_saved_changes_nothing(ctx: ToolCont
     result = await tools["variable_delete"].ainvoke({"key": "town"})
     assert result == "[NO CHANGE] variable_delete: no variable named 'town'. Saved names: city."
     assert tool_result_status(result) == "no_change"
-    assert (await ctx.get_variable("city"))["value"] == "Paris"
+    assert await _saved_value(ctx, "city") == "Paris"
 
 
 @pytest.mark.asyncio
 async def test_a_delete_frees_room_under_the_cap(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_limit=1)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_limit=1)
     tools = _make_tools(ctx)
     await tools["variable_set"].ainvoke({"key": "a", "value": "1"})
     await tools["variable_delete"].ainvoke({"key": "a"})

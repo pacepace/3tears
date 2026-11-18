@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
@@ -12,6 +14,7 @@ from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterT
 from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
 from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
 from threetears.agent.tools.document import ParseDocumentTool
+from threetears.interfaces.media import MediaInfo, MediaStorage
 
 
 def _converted(time_str: str, from_timezone: str, to_timezone: str) -> str:
@@ -35,20 +38,26 @@ def _converted(time_str: str, from_timezone: str, to_timezone: str) -> str:
 # -- Fake MediaStorage for AnalyzeMediaTool --
 
 
-# parity-exempt: MediaStorage subset for one utility tools test that needs only get_media; the analyze_media + protocols tests have markers for the full surface
-class _FakeMediaStorage:
-    """minimal MediaStorage stub for construction tests."""
+class _FakeMediaStorage(MediaStorage):
+    """minimal MediaStorage stub for construction tests: holds nothing."""
 
-    async def get_media(self, media_id):  # noqa: ANN001, ANN201
+    async def get_media(self, media_id: UUID) -> MediaInfo | None:
         return None
 
-    async def download_media(self, media_id, *, max_bytes=None):  # noqa: ANN001, ANN201
+    async def download_media(self, media_id: UUID, *, max_bytes: int | None = None) -> tuple[bytes, str] | None:
         return None
 
-    async def get_content(self, media_id, content_type, *, model_name=None):  # noqa: ANN001, ANN201
+    async def get_content(self, media_id: UUID, content_type: str, *, model_name: str | None = None) -> str | None:
         return None
 
-    async def store_content(self, media_id, user_id, content_type, content, metadata=None):  # noqa: ANN001, ANN201
+    async def store_content(
+        self,
+        media_id: UUID,
+        user_id: UUID,
+        content_type: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         return "fake-id"
 
 

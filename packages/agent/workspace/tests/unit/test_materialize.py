@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -24,30 +23,21 @@ import importlib
 
 materialize_module = importlib.import_module("threetears.agent.workspace.materialize")
 from threetears.agent.workspace.materialize import materialize  # noqa: E402
+from threetears.agent.workspace.entities import WorkspaceFile
 from packages.agent.workspace.tests.helpers.workspace_shims import (
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
+    make_workspace_file,
 )
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    """stand-in for :class:`WorkspaceFile` exposing just the fields materialize reads."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
 
 
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake :class:`WorkspaceFileCollection` exposing :meth:`find_by_workspace`."""
 
-    def __init__(self, files: list[_FakeFile]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
         self.calls: list[UUID] = []
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         """return the pre-seeded file list, recording the call for assertions."""
         self.calls.append(workspace_id)
         return list(self._files)
@@ -64,19 +54,16 @@ async def test_materialize_writes_three_files_across_nested_paths(
     """workspace with three files at nested paths -> all present with exact bytes."""
     ws_id = uuid4()
     files = [
-        _FakeFile("a.txt", b"alpha", _sha(b"alpha"), 1),
-        _FakeFile("sub/b.yaml", b"beta\n", _sha(b"beta\n"), 1),
-        _FakeFile(
-            "sub/deep/c.sql",
-            b"SELECT 1;\n",
-            _sha(b"SELECT 1;\n"),
-            1,
+        make_workspace_file(relative_path="a.txt", content=b"alpha", sha256=_sha(b"alpha"), version=1),
+        make_workspace_file(relative_path="sub/b.yaml", content=b"beta\n", sha256=_sha(b"beta\n"), version=1),
+        make_workspace_file(
+            relative_path="sub/deep/c.sql", content=b"SELECT 1;\n", sha256=_sha(b"SELECT 1;\n"), version=1
         ),
     ]
     coll = _FakeFileCollection(files)
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert result.exists()
@@ -96,7 +83,7 @@ async def test_materialize_empty_workspace_creates_empty_tempdir(
     coll = _FakeFileCollection([])
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert result.exists()
@@ -111,7 +98,7 @@ async def test_materialize_honors_parent_dir_kwarg(tmp_path: Path) -> None:
     coll = _FakeFileCollection([])
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert result.parent == tmp_path
@@ -126,7 +113,7 @@ async def test_materialize_default_parent_dir_uses_system_temp() -> None:
     coll = _FakeFileCollection([])
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
     )
     try:
         system_temp = Path(_tempfile.gettempdir()).resolve()
@@ -142,17 +129,12 @@ async def test_materialize_creates_parent_dirs_for_nested_paths(
     """nested paths -> intermediate directories created before write."""
     ws_id = uuid4()
     files = [
-        _FakeFile(
-            "a/b/c/d/e.txt",
-            b"deep",
-            _sha(b"deep"),
-            1,
-        ),
+        make_workspace_file(relative_path="a/b/c/d/e.txt", content=b"deep", sha256=_sha(b"deep"), version=1),
     ]
     coll = _FakeFileCollection(files)
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     target = result / "a" / "b" / "c" / "d" / "e.txt"
@@ -174,13 +156,13 @@ async def test_materialize_uses_atomic_write_primitive(tmp_path: Path, monkeypat
     monkeypatch.setattr(materialize_module, "atomic_write", _spy)
     ws_id = uuid4()
     files = [
-        _FakeFile("x.txt", b"X", _sha(b"X"), 1),
-        _FakeFile("y/z.txt", b"Z", _sha(b"Z"), 1),
+        make_workspace_file(relative_path="x.txt", content=b"X", sha256=_sha(b"X"), version=1),
+        make_workspace_file(relative_path="y/z.txt", content=b"Z", sha256=_sha(b"Z"), version=1),
     ]
     coll = _FakeFileCollection(files)
     await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert len(calls) == 2
@@ -197,7 +179,7 @@ async def test_materialize_tempdir_prefix_includes_workspace_hex(
     coll = _FakeFileCollection([])
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert result.name.startswith("workspace-019470a8b5c37def8123456789abcdef-")
@@ -211,12 +193,12 @@ async def test_materialize_byte_identical_roundtrip_for_binary_content(
     ws_id = uuid4()
     payload = bytes(range(256))
     files = [
-        _FakeFile("bin.dat", payload, _sha(payload), 1),
+        make_workspace_file(relative_path="bin.dat", content=payload, sha256=_sha(payload), version=1),
     ]
     coll = _FakeFileCollection(files)
     result = await materialize(
         workspace_id=ws_id,
-        workspace_file_collection=coll,  # type: ignore[arg-type]
+        workspace_file_collection=coll,
         parent_dir=tmp_path,
     )
     assert (result / "bin.dat").read_bytes() == payload

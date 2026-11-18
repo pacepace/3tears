@@ -16,20 +16,20 @@ until ``serve`` runs) which naturally suppresses baseline emission.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.server import CallRequest, ToolServer
 from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
-from threetears.nats import IncomingMessage, Subject, set_default_namespace
+from threetears.nats import IncomingMessage, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
+from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
 from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
 from packages.agent.tools.tests.unit.tools.pod_auth import mint_user_assertion as _mint_user_assertion
 from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
@@ -38,50 +38,6 @@ from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload a
 # ---------------------------------------------------------------------------
 # fakes
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-# parity-exempt: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
-class _FakeNats:
-    """records :meth:`publish` + :meth:`publish_reply` calls.
-
-    matches the canonical :class:`threetears.nats.NatsClient` wrapper
-    surface ToolServer touches: kw-only ``subject`` + ``message`` for
-    typed publishes, kw-only ``reply_subject`` + ``message`` for
-    request-reply responses. ``raise_on_publish`` lets tests simulate
-    a transient publish failure without breaking the publish_reply
-    path that the inbound dispatch needs.
-    """
-
-    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
-    #: tool server's size guard off, as on a client that has not connected
-    max_payload: int | None = None
-
-    published: list[tuple[Subject, BaseModel | bytes]] = field(default_factory=list)
-    replies: list[tuple[str, BaseModel]] = field(default_factory=list)
-    raise_on_publish: BaseException | None = None
-
-    async def publish(
-        self,
-        *,
-        subject: Subject,
-        message: BaseModel,
-        reply_to: Subject | None = None,
-    ) -> None:
-        del reply_to
-        self.published.append((subject, message))
-        if self.raise_on_publish is not None:
-            raise self.raise_on_publish
-
-    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
-        # publish_audit() rides jetstream_publish (durable) with already-serialized
-        # bytes; record (subject, payload_bytes). _audit_envelopes decodes either shape.
-        self.published.append((subject, payload))
-        if self.raise_on_publish is not None:
-            raise self.raise_on_publish
-
-    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
-        self.replies.append((reply_subject, message))
 
 
 class _StubTool(TearsTool):
@@ -140,7 +96,7 @@ def _make_msg(payload: dict[str, Any] | bytes) -> IncomingMessage:
     )
 
 
-def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any]]:
+def _audit_envelopes(nats: RecordingNatsClient, subject_suffix: str) -> list[dict[str, Any]]:
     """extract decoded envelopes whose subject path ends with ``subject_suffix``."""
     result: list[dict[str, Any]] = []
     for subject, message in nats.published:
@@ -169,7 +125,7 @@ def _bind_namespace() -> None:
 async def test_baseline_audit_emitted_on_success_path() -> None:
     """success dispatch publishes one ``tool.call`` envelope with outcome=success."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     owner_agent_id = uuid4()
     server = ToolServer(
         namespace="ns",
@@ -229,7 +185,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
 async def test_baseline_audit_subject_uses_namespace() -> None:
     """the published subject is ``{namespace}.audit.tool.call``."""
     set_default_namespace("proj")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="proj",
         nats_client=nats,
@@ -258,7 +214,7 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
 async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
     """tool returning success=False surfaces as outcome=failure."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -284,7 +240,7 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
 async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
     """tool raising an exception surfaces as outcome=error."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -308,7 +264,7 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
 async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
     """unknown tool key emits ``tool.call`` with outcome=failure."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -334,7 +290,7 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
 async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
     """malformed JSON emits a baseline envelope with minimal fields."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -365,7 +321,7 @@ async def test_a_bug_while_parsing_propagates_rather_than_reading_as_malformed(
     It used to be contained, answered "malformed call request" and audited as the caller's failure.
     """
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -418,7 +374,7 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
 async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
     """a raising NATS publish is swallowed; reply still carries success."""
     set_default_namespace("ns")
-    nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
+    nats = RecordingNatsClient(raise_on_publish=RuntimeError("nats offline"))
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -450,7 +406,7 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
 async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
     """when CallContext carries a correlation_id, the envelope reuses it."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -476,7 +432,7 @@ async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
 async def test_baseline_audit_correlation_id_synthesized_when_context_missing() -> None:
     """no-context dispatch still emits with a freshly minted correlation id."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -513,7 +469,7 @@ async def test_baseline_audit_correlation_id_synthesized_when_context_missing() 
 # ---------------------------------------------------------------------------
 
 
-def _recording_factory(calls: list[tuple[UUID, UUID]]):
+def _recording_factory(calls: list[tuple[UUID, UUID]]) -> Callable[[UUID, UUID], Awaitable[ToolContextManager]]:
     """an async context_factory that records its (conversation_id, user_id) args.
 
     returns a sentinel cast to :class:`ToolContextManager` -- the stub tool ignores the manager, so
@@ -531,7 +487,7 @@ def _recording_factory(calls: list[tuple[UUID, UUID]]):
 async def test_bound_user_assertion_restamps_actor_user_id() -> None:
     """a bound user-assertion supplies the audited actor_user_id; the handshake token is user-less."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id, real_user, conv_id = uuid4(), uuid4(), uuid4(), uuid4()
     server = ToolServer(
         namespace="ns",
@@ -566,7 +522,7 @@ async def test_bound_user_assertion_restamps_actor_user_id() -> None:
 async def test_bound_user_assertion_builds_per_user_context_manager() -> None:
     """a verified user_id + a conversation_id opens the per-user ToolContextManager factory gate."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id, real_user, conv_id = uuid4(), uuid4(), uuid4(), uuid4()
     factory_calls: list[tuple[UUID, UUID]] = []
     server = ToolServer(
@@ -601,7 +557,7 @@ async def test_bound_user_assertion_builds_per_user_context_manager() -> None:
 async def test_absent_user_assertion_leaves_actor_none_and_no_context_manager() -> None:
     """no user-assertion (agent on its own behalf): user_id stays None -> no actor, gate stays shut."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     conv_id = uuid4()
     factory_calls: list[tuple[UUID, UUID]] = []
     server = ToolServer(
@@ -641,7 +597,7 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
     reason rather than a successful tool.call.
     """
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id = uuid4(), uuid4()
     if flavor == "sub_mismatch":
         # minted for a DIFFERENT agent -> cross-agent replay
@@ -703,7 +659,7 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
 async def test_user_assertion_for_same_conversation_is_accepted() -> None:
     """a user-assertion minted for conversation C, on a call for conversation C -> ACCEPTED, re-stamped."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id, real_user, conv_id = uuid4(), uuid4(), uuid4(), uuid4()
     server = ToolServer(
         namespace="ns",
@@ -743,7 +699,7 @@ async def test_user_assertion_replayed_into_different_conversation_denies() -> N
     the conversation-binding gate denies it fail-closed, so U is never impersonated outside conv C.
     """
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id, real_user = uuid4(), uuid4(), uuid4()
     conv_minted_for, conv_of_call = uuid4(), uuid4()  # C != D
     # mint a fully-valid, BOUND assertion for conversation C (the captured token)...
@@ -792,7 +748,7 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
     denial -- the gate never lets "no conversation_id" skip the conversation-binding check.
     """
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     agent_id, customer_id = uuid4(), uuid4()
     # an otherwise-valid bound assertion, but minted with NO conversation binding.
     unbound = _mint_user_assertion(sub=agent_id, customer_id=customer_id, user_id=uuid4())
@@ -833,7 +789,7 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
 async def test_baseline_audit_outcome_failure_when_the_answer_is_too_large_for_the_bus() -> None:
     """a success refused on its size is audited as the failure its caller received."""
     set_default_namespace("ns")
-    nats = _FakeNats()
+    nats = RecordingNatsClient()
     nats.max_payload = 128 * 1024
     server = ToolServer(
         namespace="ns",

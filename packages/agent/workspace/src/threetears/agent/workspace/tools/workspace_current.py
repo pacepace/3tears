@@ -27,7 +27,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.call_scope import current_scope
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
@@ -64,7 +64,7 @@ class WorkspaceCurrentTool(TearsTool):
 
     def __init__(
         self,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         discovery_client: NamespaceDiscoveryClient,
         agent_id: UUID,
     ) -> None:
@@ -73,7 +73,7 @@ class WorkspaceCurrentTool(TearsTool):
 
         :param context_provider: zero-arg callable returning the current
             conversation's ToolContextManager
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         :param discovery_client: NATS client for ``namespace.discover``
         :ptype discovery_client: NamespaceDiscoveryClient
         :param agent_id: identifier of calling agent

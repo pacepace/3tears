@@ -19,12 +19,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.call_scope import tool_context_provider
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.namespace_discovery_client import NamespaceDiscoverySummary
 from threetears.agent.workspace.pin import PinnedWorkspace
-from threetears.agent.workspace.tools import workspace_current as workspace_current_module
 from threetears.agent.workspace.tools.workspace_current import WorkspaceCurrentTool
 
 
@@ -119,7 +120,7 @@ async def test_the_tool_resolves_its_conversation_and_tokens_from_the_call_conte
         assert (conversation, user) == (conversation_id, user_id)
         return conversation_context
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
     discovery = _Discovery(
         [
             NamespaceDiscoverySummary(

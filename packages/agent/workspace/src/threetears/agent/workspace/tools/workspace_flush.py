@@ -49,7 +49,7 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import contain, get_logger
 
@@ -104,7 +104,7 @@ class WorkspaceFlushTool(TearsTool):
         workspace_collection: WorkspaceCollection,
         workspace_file_collection: WorkspaceFileCollection,
         sandbox: WorkspaceSandbox,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         agent_id: UUID,
         acl_cache: AclCache,
         db_pool: Any = None,
@@ -120,7 +120,7 @@ class WorkspaceFlushTool(TearsTool):
         :ptype sandbox: WorkspaceSandbox
         :param context_provider: zero-arg callable returning
             conversation context, used for pin resolution
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         :param agent_id: identifier of agent owning the workspace
         :ptype agent_id: UUID
         :return: None

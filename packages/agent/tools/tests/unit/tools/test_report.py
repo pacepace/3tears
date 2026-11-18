@@ -161,6 +161,7 @@ async def test_requires_content_or_findings() -> None:
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(report_format="markdown", title="Empty")
     assert result.success is False
+    assert result.error is not None
     assert "content" in result.error and "findings" in result.error
     assert store.puts == []
 
@@ -172,6 +173,7 @@ async def test_malformed_findings_fail_closed() -> None:
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(findings=[{"title": "incomplete"}], report_format="markdown")
     assert result.success is False
+    assert result.error is not None
     assert "could not compile findings" in result.error
     assert store.puts == []
 
@@ -197,6 +199,7 @@ async def test_unknown_format_fails_closed() -> None:
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(content="# x", report_format="html")
     assert result.success is False
+    assert result.error is not None
     assert "report_format" in result.error
     assert store.puts == []
 
@@ -207,6 +210,7 @@ async def test_no_store_fails_closed() -> None:
     async with enter_call_scope(_scope(None)):
         result = await tool.execute(content="# x\n\ny", report_format="markdown")
     assert result.success is False
+    assert result.error is not None
     assert "cannot store the report" in result.error
 
 
@@ -218,6 +222,7 @@ async def test_pdf_without_pandoc_fails_closed() -> None:
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(findings=_FINDINGS, report_format="pdf")
     assert result.success is False
+    assert result.error is not None
     assert "pandoc" in result.error.lower()
     assert "markdown" in result.error.lower()
     assert store.puts == []
@@ -231,6 +236,7 @@ async def test_pdf_render_failure_fails_closed() -> None:
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(content="# x\n\ny", report_format="pdf")
     assert result.success is False
+    assert result.error is not None
     assert "PDF rendering failed" in result.error
     assert store.puts == []
 

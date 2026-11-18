@@ -27,6 +27,8 @@ closes that seam by injecting nothing and answering over a socket.
 
 from __future__ import annotations
 
+import importlib.util
+
 import json
 import subprocess
 import sys
@@ -370,6 +372,7 @@ class TestWebFetchCarriesStructure:
         assert "characters 0-60 of " in opening
         assert note.startswith("[characters "), "a part says it is a part before the page, not after it"
         assert "call web_fetch again with offset=60" in note
+        assert result.metadata is not None
         assert result.metadata["window"]["offset"] == 0
         assert result.metadata["window"]["next_offset"] == 60
 
@@ -381,12 +384,14 @@ class TestWebFetchCarriesStructure:
         while True:
             result = await tool.execute(url=_PAGE_URL, offset=offset)
             read += _page(result.content)
+            assert result.metadata is not None
             next_offset = result.metadata["window"]["next_offset"]
             if next_offset is None:
                 break
             offset = next_offset
 
         whole = await tool.execute(url=_PAGE_URL, offset=0)
+        assert whole.metadata is not None
         assert len(read) == whole.metadata["window"]["total_chars"]
 
     @pytest.mark.asyncio
@@ -396,6 +401,7 @@ class TestWebFetchCarriesStructure:
         result = await tool.execute(url=_PAGE_URL)
 
         assert "This is a part" not in result.content
+        assert result.metadata is not None
         assert result.metadata["window"]["next_offset"] is None
 
 
@@ -713,7 +719,8 @@ class TestRegistrationSkipsAToolItCannotServe:
         import threetears.agent.tools.builtin as builtin_pkg
         from threetears.agent.tools.registry import ToolRegistry
 
-        real_find_spec = builtin_pkg.find_spec
+        # the package probes with importlib's ``find_spec``; the real one answers every name but the one made absent
+        real_find_spec = importlib.util.find_spec
 
         def _absent(name: str, *args: Any, **kwargs: Any) -> Any:
             if name == "trafilatura":

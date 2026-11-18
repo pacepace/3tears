@@ -64,7 +64,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
     runner = MigrationRunner()
     register_conversations(runner)
     register_tools(runner)
-    await runner.apply_for_agent_schema(_Store(connection))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(_Store(connection))
     for (name,) in await connection.fetch(
         "SELECT conname FROM pg_constraint WHERE conrelid = 'context_items'::regclass AND contype = 'f'"
     ):

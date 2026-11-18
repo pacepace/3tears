@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-import redshift_connector
+from redshift_connector.error import InterfaceError
 
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.entities import DataSourceType
@@ -40,13 +40,13 @@ def _unreachable_config() -> RedshiftConnectionConfig:
     )
 
 
-def _refused() -> redshift_connector.InterfaceError:
+def _refused() -> InterfaceError:
     """what ``redshift_connector`` raises when the server refuses a login (SQLSTATE 28000).
 
     :return: the backend exception
     :rtype: redshift_connector.InterfaceError
     """
-    return redshift_connector.InterfaceError(
+    return InterfaceError(
         {"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "not_a_real_user"'}
     )
 

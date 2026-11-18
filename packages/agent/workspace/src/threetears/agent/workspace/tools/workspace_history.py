@@ -27,7 +27,7 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.core.security import SandboxDenied
 from threetears.observe import contain, get_logger
 
@@ -100,7 +100,7 @@ class WorkspaceHistoryTool(TearsTool):
         workspace_file_collection: WorkspaceFileCollection,
         workspace_file_version_collection: WorkspaceFileVersionCollection,
         sandbox: WorkspaceSandbox,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         agent_id: UUID,
         acl_cache: AclCache,
         db_pool: Any = None,
@@ -120,7 +120,7 @@ class WorkspaceHistoryTool(TearsTool):
             result-filtering
         :ptype sandbox: WorkspaceSandbox
         :param context_provider: zero-arg callable returning conversation context
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         :param agent_id: identifier of agent owning workspace
         :ptype agent_id: UUID
         """

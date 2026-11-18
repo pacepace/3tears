@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,12 +14,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.fs_list import FsListTool
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -29,44 +29,28 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: datetime | None = None
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes = b""
-    sha256: str = "a" * 64
-    version: int = 1
-    date_updated: datetime = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         return list(self._files)
 
 
@@ -95,14 +79,14 @@ class _FakeContext(FakeWorkspaceContext):
 
 def _build_tool(
     *,
-    files: list[_FakeFileEntity],
+    files: list[WorkspaceFile],
     acl_cache: Any,
     deny_reads: list[str] | None = None,
 ) -> FsListTool:
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     return FsListTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(files),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection(files),
         sandbox=_FilteringSandbox(deny_reads=deny_reads),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -122,9 +106,15 @@ async def test_fs_list_no_glob_returns_all_files(
     """without glob, every allowed file shows up."""
     tool = _build_tool(
         files=[
-            _FakeFileEntity(relative_path="a.md"),
-            _FakeFileEntity(relative_path="b.yaml"),
-            _FakeFileEntity(relative_path="src/main.py"),
+            make_workspace_file(
+                relative_path="a.md", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
+            make_workspace_file(
+                relative_path="b.yaml", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
+            make_workspace_file(
+                relative_path="src/main.py", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
         ],
         acl_cache=permissive_acl_cache,
     )
@@ -143,10 +133,20 @@ async def test_fs_list_glob_filters_recursively_with_double_star(
     """``**/*.yaml`` matches single- and multi-segment paths."""
     tool = _build_tool(
         files=[
-            _FakeFileEntity(relative_path="top.yaml"),
-            _FakeFileEntity(relative_path="docs/a.yaml"),
-            _FakeFileEntity(relative_path="docs/nested/b.yaml"),
-            _FakeFileEntity(relative_path="readme.md"),
+            make_workspace_file(
+                relative_path="top.yaml", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
+            make_workspace_file(
+                relative_path="docs/a.yaml", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
+            make_workspace_file(
+                relative_path="docs/nested/b.yaml",
+                sha256="a" * 64,
+                date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC),
+            ),
+            make_workspace_file(
+                relative_path="readme.md", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
         ],
         acl_cache=permissive_acl_cache,
     )
@@ -163,8 +163,12 @@ async def test_fs_list_sandbox_read_filters_out_denied(
     """files denied by sandbox read are silently dropped (not errors)."""
     tool = _build_tool(
         files=[
-            _FakeFileEntity(relative_path="public.md"),
-            _FakeFileEntity(relative_path="secret.env"),
+            make_workspace_file(
+                relative_path="public.md", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
+            make_workspace_file(
+                relative_path="secret.env", sha256="a" * 64, date_updated=datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
+            ),
         ],
         deny_reads=["secret.env"],
         acl_cache=permissive_acl_cache,
@@ -180,11 +184,8 @@ async def test_fs_list_entries_carry_sha_version_and_iso_date(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """each entry carries relative_path, sha256, version, date_updated (iso)."""
-    file_entity = _FakeFileEntity(
-        relative_path="x",
-        sha256="1" * 64,
-        version=3,
-        date_updated=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+    file_entity = make_workspace_file(
+        relative_path="x", sha256="1" * 64, version=3, date_updated=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     )
     tool = _build_tool(files=[file_entity], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ws")

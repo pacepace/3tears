@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+from uuid import UUID
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -123,7 +124,7 @@ async def _read(client: _Client, store: _Store, **kwargs: Any) -> list[tuple[str
 
 @pytest.mark.asyncio
 async def test_one_export_hands_back_every_part_whole_in_order_and_is_deleted() -> None:
-    groups = {"DE": _fp(2), "TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2), "TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=5)
     store = _Store(_export({"TX": [_rows("TX", 1), _rows("TX", 3)[1:]], "DE": [_rows("DE", 2)]}))
 
@@ -141,7 +142,7 @@ async def test_one_export_hands_back_every_part_whole_in_order_and_is_deleted() 
 
 @pytest.mark.asyncio
 async def test_parts_asked_for_are_exported_alone_and_one_now_empty_comes_back_empty() -> None:
-    groups = {"TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=3)
     store = _Store(_export({"TX": [_rows("TX", 3)]}))
 
@@ -164,7 +165,7 @@ async def test_a_part_that_moved_during_the_export_is_refused_before_any_part_is
 
 @pytest.mark.asyncio
 async def test_a_manifest_counting_other_than_a_parts_fingerprint_is_refused() -> None:
-    groups = {"DE": _fp(2), "TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2), "TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=5)
     store = _Store(_export({"TX": [_rows("TX", 2)], "DE": [_rows("DE", 3)]}))
 
@@ -174,7 +175,7 @@ async def test_a_manifest_counting_other_than_a_parts_fingerprint_is_refused() -
 
 @pytest.mark.asyncio
 async def test_a_manifest_naming_a_part_not_asked_for_or_a_file_outside_a_part_is_refused() -> None:
-    groups = {"TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"TX": _fp(3)}
     objects = _export({"TX": [_rows("TX", 3)]})
     manifest = json.loads(objects[f"{_PREFIX}manifest"])
     manifest["entries"].append({"url": f"s3://{_BUCKET}/{_PREFIX}0000_part_00.parquet", "meta": {"record_count": 0}})
@@ -185,7 +186,7 @@ async def test_a_manifest_naming_a_part_not_asked_for_or_a_file_outside_a_part_i
 
 @pytest.mark.asyncio
 async def test_a_reader_that_stops_early_still_has_the_export_deleted() -> None:
-    groups = {"DE": _fp(2), "TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2), "TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=5)
     store = _Store(_export({"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)]}))
     reading = export_partitions(
@@ -222,14 +223,14 @@ def test_a_set_filter_binds_every_value_and_an_empty_set_keeps_nothing() -> None
 def test_a_request_that_asks_neither_grouping_nor_partitions_is_what_an_older_hub_knows() -> None:
     """an older hub refuses unknown fields; a plain fingerprint or export must not carry them."""
     plain = DatasourceQueryRequest(
-        correlation_id="01a12133-45b2-741e-b410-8b29c0b367c5",
+        correlation_id=UUID("01a12133-45b2-741e-b410-8b29c0b367c5"),
         identity_token=SecretStr("t"),
         fingerprint=RelationFingerprintRequest(relation="r.t", key_columns=["a"]),
     )
     wire = json.loads(plain.model_dump_json())
     assert set(wire["fingerprint"]) == {"relation", "key_columns", "where"}
     export = DatasourceQueryRequest(
-        correlation_id="01a12133-45b2-741e-b410-8b29c0b367c5",
+        correlation_id=UUID("01a12133-45b2-741e-b410-8b29c0b367c5"),
         identity_token=SecretStr("t"),
         export=DatasourceExportRequest(select="SELECT 1", destination="d"),
     )
@@ -241,7 +242,7 @@ def test_a_request_that_asks_neither_grouping_nor_partitions_is_what_an_older_hu
 
 
 def _proof_case(**change: Any) -> tuple[_Client, _Store]:
-    groups = {"DE": _fp(2), "TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2), "TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=5)
     parts = change.pop("parts", {"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)]})
     client.result_fields = change
@@ -270,7 +271,7 @@ async def test_each_proof_refuses_the_export_and_it_is_deleted_all_the_same(
 
 
 async def test_files_holding_fewer_rows_than_their_part_are_refused_and_deleted() -> None:
-    groups = {"DE": _fp(2), "TX": _fp(3)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2), "TX": _fp(3)}
     client = _Client([groups, dict(groups)], row_count=5)
     objects = _export({"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)]})
     manifest = json.loads(objects[f"{_PREFIX}manifest"])
@@ -298,7 +299,7 @@ async def test_a_delete_that_fails_after_a_whole_read_is_its_own_failure() -> No
 
 
 async def test_a_failure_after_the_export_before_any_proof_still_deletes_it() -> None:
-    groups = {"DE": _fp(2)}
+    groups: dict[str | None, RelationFingerprintResult] = {"DE": _fp(2)}
     client = _Client([groups], row_count=2)  # the second grouped fingerprint finds nothing to answer
     with pytest.raises(IndexError):
         await _read(client, _Store(_export({"DE": [_rows("DE", 2)]})))

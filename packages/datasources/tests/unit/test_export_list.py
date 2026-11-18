@@ -18,7 +18,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from threetears.core.pagination import Keyset, decode_cursor
 from threetears.datasources.query_client import (
@@ -206,7 +206,7 @@ def _page(*destinations: str, next_cursor: str | None = None) -> DatasourceQuery
 class TestTheWire:
     def test_a_list_request_round_trips_and_names_no_pod(self) -> None:
         request = DatasourceQueryRequest(
-            correlation_id=uuid7(), identity_token="t", export_list=DatasourceExportListRequest(cursor="abc")
+            correlation_id=uuid7(), identity_token=SecretStr("t"), export_list=DatasourceExportListRequest(cursor="abc")
         )
         wire = json.loads(request.model_dump_json())
         assert wire["export_list"] == {"cursor": "abc"}
@@ -219,20 +219,20 @@ class TestTheWire:
 
     def test_every_other_ask_is_still_what_an_older_hub_reads(self) -> None:
         others = [
-            DatasourceQueryRequest(correlation_id=uuid7(), identity_token="t", query="SELECT 1"),
+            DatasourceQueryRequest(correlation_id=uuid7(), identity_token=SecretStr("t"), query="SELECT 1"),
             DatasourceQueryRequest(
                 correlation_id=uuid7(),
-                identity_token="t",
+                identity_token=SecretStr("t"),
                 fingerprint=RelationFingerprintRequest(relation="s.t", key_columns=["a"]),
             ),
             DatasourceQueryRequest(
                 correlation_id=uuid7(),
-                identity_token="t",
+                identity_token=SecretStr("t"),
                 export=DatasourceExportRequest(select="SELECT 1", destination="enr/x"),
             ),
             DatasourceQueryRequest(
                 correlation_id=uuid7(),
-                identity_token="t",
+                identity_token=SecretStr("t"),
                 export_delete=DatasourceExportDeleteRequest(destination="enr/x"),
             ),
         ]
@@ -243,11 +243,17 @@ class TestTheWire:
     def test_a_list_is_one_ask_and_binds_nothing(self) -> None:
         with pytest.raises(ValidationError, match="exactly one"):
             DatasourceQueryRequest(
-                correlation_id=uuid7(), identity_token="t", query="SELECT 1", export_list=DatasourceExportListRequest()
+                correlation_id=uuid7(),
+                identity_token=SecretStr("t"),
+                query="SELECT 1",
+                export_list=DatasourceExportListRequest(),
             )
         with pytest.raises(ValidationError, match="binds no parameters"):
             DatasourceQueryRequest(
-                correlation_id=uuid7(), identity_token="t", params=[1], export_list=DatasourceExportListRequest()
+                correlation_id=uuid7(),
+                identity_token=SecretStr("t"),
+                params=[1],
+                export_list=DatasourceExportListRequest(),
             )
 
     def test_an_older_client_reads_a_reply_that_carries_a_page(self) -> None:

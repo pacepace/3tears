@@ -195,7 +195,7 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
 
 
 if TYPE_CHECKING:
-    from threetears.agent.tools.context import ToolContextManager
+    from threetears.agent.workspace.pin import PinContext
     from threetears.agent.workspace.collections import (
         WorkspaceCollection,
         WorkspaceFileCollection,
@@ -483,7 +483,7 @@ async def enrich_workspace_identity(
 
 async def resolve_workspace(
     workspace_arg: str | None,
-    context: ToolContextManager,
+    context: PinContext,
     workspace_collection: WorkspaceCollection,
     agent_id: UUID,
 ) -> Workspace:
@@ -502,7 +502,7 @@ async def resolve_workspace(
     :param workspace_arg: explicit workspace name from tool kwargs, or None
     :ptype workspace_arg: str | None
     :param context: conversation-scoped context manager for pin lookup
-    :ptype context: ToolContextManager
+    :ptype context: PinContext
     :param workspace_collection: collection providing
         ``find_by_agent_and_name`` and ``find_by_id_and_agent``
     :ptype workspace_collection: WorkspaceCollection

@@ -12,6 +12,7 @@ empty-input guard, and the default registration surface.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -30,9 +31,12 @@ from threetears.agent.tools.context_envelope import CallContext
 
 from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
 
+_CONVERSATION = uuid.UUID("00000000-0000-0000-0000-000000000001")
+_USER = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_recall_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
@@ -65,7 +69,7 @@ def collection(registry: CollectionRegistry, config: DefaultCoreConfig) -> Conte
 
 @pytest.fixture()
 def manager(collection: ContextItemCollection) -> ToolContextManager:
-    return ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1")
+    return ToolContextManager(collection, _CONVERSATION, _USER)
 
 
 def _scope_for(manager: ToolContextManager) -> ToolCallScope:
@@ -291,7 +295,7 @@ async def test_offload_recall_round_trips_across_registries() -> None:
     from threetears.core.testing import drain_and_shutdown_bridge
 
     shared_l3 = FakePool()
-    conv = "00000000-0000-0000-0000-0000000000aa"
+    conv = uuid.UUID("00000000-0000-0000-0000-0000000000aa")
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
 
     backend_a = SQLiteBackend(db_name=f"rt_a_{uuid.uuid4().hex[:8]}")
@@ -309,8 +313,8 @@ async def test_offload_recall_round_trips_across_registries() -> None:
         coll_b = ContextItemCollection(reg_b, cfg, nats_client=make_nats_mock())
         coll_b.l3_pool = shared_l3
 
-        writer = ToolContextManager(coll_a, conv, "user1")
-        reader = ToolContextManager(coll_b, conv, "user1")
+        writer = ToolContextManager(coll_a, conv, _USER)
+        reader = ToolContextManager(coll_b, conv, _USER)
 
         full = "nmap scan output " * 2000
         cid = await writer.save_tool_result("nmap", full)

@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4, uuid7
@@ -36,13 +35,13 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
 )
 
 
@@ -58,52 +57,25 @@ def _sha(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    agent_id: UUID
-    current_version: int = 0
-    date_deleted: datetime | None = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-    @property
-    def owner_agent_id(self) -> UUID:
-        """alias of :attr:`agent_id` matching the production entity."""
-        return self.agent_id
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, ws: _FakeWorkspace) -> None:
+    def __init__(self, ws: Workspace) -> None:
         self._ws = ws
 
     async def find_by_id(
         self,
         agent_id: UUID,
         workspace_id: UUID,
-    ) -> _FakeWorkspace | None:
+    ) -> Workspace | None:
         if workspace_id != self._ws.id or agent_id != self._ws.agent_id:
             return None
         return self._ws
 
 
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFile]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         del workspace_id
         return list(self._files)
 
@@ -116,7 +88,7 @@ class _FakeSandbox(FakeWorkspaceSandbox):
     def __init__(self, roots: dict[str, Path]) -> None:
         self._roots = roots
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         root = self._roots[root_name]
         candidate = (root / path).resolve()
         candidate.relative_to(root)
@@ -201,7 +173,7 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
     workspace_name = "racer"
     (bind_root / workspace_name).mkdir(parents=True, exist_ok=True)
     agent_id = uuid4()
-    ws = _FakeWorkspace(id=ws_id, name=workspace_name, agent_id=agent_id)
+    ws = make_workspace(id=ws_id, name=workspace_name, agent_id=agent_id)
 
     # the hub declares the agent's own workspace-locks bucket; the leases only bind it
     fake_nats = FakeNatsClient(
@@ -226,9 +198,9 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease,
-            workspace_collection=workspace_coll,  # type: ignore[arg-type]
-            workspace_file_collection=file_coll,  # type: ignore[arg-type]
-            workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+            workspace_collection=workspace_coll,
+            workspace_file_collection=file_coll,
+            workspace_file_version_collection=_FakeVersionCollection(),
             db_pool=pool,
             actor_id=uuid4(),
             correlation_id=uuid7(),
@@ -279,7 +251,7 @@ async def test_second_pod_gets_lease_after_first_releases(
     ws_name = "waiter"
     (bind_root / ws_name).mkdir(parents=True, exist_ok=True)
     agent_id = uuid4()
-    ws = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
+    ws = make_workspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
     # the hub declares the agent's own workspace-locks bucket; the leases only bind it
     fake_nats = FakeNatsClient(
@@ -301,9 +273,9 @@ async def test_second_pod_gets_lease_after_first_releases(
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease_a,
-            workspace_collection=workspace_coll,  # type: ignore[arg-type]
-            workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-            workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+            workspace_collection=workspace_coll,
+            workspace_file_collection=_FakeFileCollection([]),
+            workspace_file_version_collection=_FakeVersionCollection(),
             db_pool=pool,
             actor_id=uuid4(),
             correlation_id=uuid7(),
@@ -324,9 +296,9 @@ async def test_second_pod_gets_lease_after_first_releases(
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease_b,
-            workspace_collection=workspace_coll,  # type: ignore[arg-type]
-            workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-            workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+            workspace_collection=workspace_coll,
+            workspace_file_collection=_FakeFileCollection([]),
+            workspace_file_version_collection=_FakeVersionCollection(),
             db_pool=pool,
             actor_id=uuid4(),
             correlation_id=uuid7(),

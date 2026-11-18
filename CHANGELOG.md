@@ -49,6 +49,28 @@ Both classes satisfy them. `TargetCircuit(probe_pacer=, blocked_attempts=)` and 
 by them instead of the concrete classes, so a test's pacer or counter type-checks with no cast or ignore. Nothing
 changes at run time.
 
+### datasources: `export_partitions` is typed as the generator it is; the column hash takes any column rows
+
+`threetears.datasources.partitioned_export.export_partitions` is annotated `AsyncGenerator` (was `AsyncIterator`), so a
+caller can `aclose()` it, which deletes the export, without a cast. `introspection.compute_column_hash` and
+`column_hash_payload` take `Sequence[Mapping[str, Any]]`, so a driver's `ColumnRow` list is accepted as it is. Nothing
+changes at run time.
+
+### core: `NatsProxyL3Backend` takes a `BoundedRequester`, the two things it uses of its client
+
+`threetears.nats.BoundedRequester` is a `RawRequester` (`request_raw`) with the client's `max_payload`: the two things
+`NatsProxyL3Backend` uses of the client it is given. Its
+`nats_client` parameter takes a `BoundedRequester` instead of the whole `NatsClient`, which satisfies it, so a test bus
+implementing those two type-checks as one. A caller passing a `NatsClient` is unchanged; nothing changes at run time.
+
+### agent/workspace: the workspace tools and the pin functions take a `PinContext`
+
+`threetears.agent.workspace.pin.PinContext` is the slice of a conversation's context manager a workspace pin is
+kept in: `get_item_by_type_and_key`, `save_item_by_type_and_key` and `delete_item_by_type_and_key`. `set_pin`,
+`get_pin`, `clear_pin`, `tools.helpers.resolve_workspace` and every workspace tool's `context_provider` take it
+instead of the whole `ToolContextManager`, which satisfies it; a caller passing a `ToolContextManager` is unchanged.
+Nothing changes at run time.
+
 ### core: a registry and a collection's `l3_pool` say what they accept: `L3PoolLike`
 
 `CollectionRegistry.configure`, `register` and `bind_table` and a collection's `l3_pool` take

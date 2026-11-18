@@ -26,7 +26,7 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace.authorize import (
@@ -94,7 +94,7 @@ class WorkspaceCheckpointTool(TearsTool):
         workspace_collection: WorkspaceCollection,
         workspace_file_collection: WorkspaceFileCollection,
         workspace_file_version_collection: WorkspaceFileVersionCollection,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         agent_id: UUID,
         db_pool: Any,
         acl_cache: AclCache,
@@ -112,7 +112,7 @@ class WorkspaceCheckpointTool(TearsTool):
             pool connection so they share the enclosing transaction
         :ptype workspace_file_version_collection: WorkspaceFileVersionCollection
         :param context_provider: zero-arg callable returning conversation context
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         :param agent_id: identifier of agent owning workspace; recorded as
             ``actor_id`` on every checkpoint journal row
         :ptype agent_id: UUID

@@ -21,7 +21,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-import redshift_connector
+from redshift_connector.error import InterfaceError, ProgrammingError
 
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers import (
@@ -31,6 +31,7 @@ from threetears.datasources.drivers import (
 )
 from threetears.datasources.drivers import redshift_driver as redshift_driver_module
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
+from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.entities import DataSourceType
 
 from .helpers.driver_shims import RedshiftConnectionWithSocket
@@ -315,7 +316,7 @@ class TestConstruction:
         with patch.object(
             redshift_driver_module,
             "AsyncSyncBridge",
-            wraps=redshift_driver_module.AsyncSyncBridge,
+            wraps=AsyncSyncBridge,
         ) as bridge_cls:
             RedshiftDriver(redshift_config)
         assert bridge_cls.call_args.kwargs["max_workers"] == 2
@@ -1088,7 +1089,7 @@ class TestQueryRouting:
             last["sql"] = sql
             if "has_table_privilege(" in sql and raised["n"] == 0:
                 raised["n"] += 1
-                raise redshift_connector.ProgrammingError(_UNDEFINED_RELATION)
+                raise ProgrammingError(_UNDEFINED_RELATION)
 
         conn.recorded_cursor.execute.side_effect = execute
         with patch(
@@ -1111,7 +1112,7 @@ class TestQueryRouting:
         def execute(sql: str, *args: Any) -> None:
             if "has_table_privilege(" in sql:
                 attempts["n"] += 1
-                raise redshift_connector.ProgrammingError(_UNDEFINED_RELATION)
+                raise ProgrammingError(_UNDEFINED_RELATION)
 
         conn.recorded_cursor.execute.side_effect = execute
         with patch(
@@ -1119,7 +1120,7 @@ class TestQueryRouting:
             return_value=conn,
         ):
             driver = RedshiftDriver(redshift_config)
-            with pytest.raises(redshift_connector.ProgrammingError):
+            with pytest.raises(ProgrammingError):
                 await driver.table_hashes(["s1"])
         assert attempts["n"] == redshift_driver_module.NAME_RACE_ATTEMPTS
 
@@ -1131,7 +1132,7 @@ class TestQueryRouting:
         def execute(sql: str, *args: Any) -> None:
             if "has_table_privilege(" in sql:
                 attempts["n"] += 1
-                raise redshift_connector.ProgrammingError({"S": "ERROR", "C": "42501", "M": "permission denied"})
+                raise ProgrammingError({"S": "ERROR", "C": "42501", "M": "permission denied"})
 
         conn.recorded_cursor.execute.side_effect = execute
         with patch(
@@ -1139,7 +1140,7 @@ class TestQueryRouting:
             return_value=conn,
         ):
             driver = RedshiftDriver(redshift_config)
-            with pytest.raises(redshift_connector.ProgrammingError):
+            with pytest.raises(ProgrammingError):
                 await driver.list_tables(["s1"])
         assert attempts["n"] == 1
 
@@ -1201,7 +1202,7 @@ class TestQueryRouting:
         def execute(sql: str, *args: Any) -> None:
             statements.append(sql)
             if failing["on"] and "AS digest" in sql:
-                raise redshift_connector.ProgrammingError("cannot cast type boolean to character varying")
+                raise ProgrammingError("cannot cast type boolean to character varying")
 
         conn.recorded_cursor.execute.side_effect = execute
         with patch(
@@ -1211,7 +1212,7 @@ class TestQueryRouting:
             driver = RedshiftDriver(redshift_config)
             await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
             failing["on"] = True
-            with pytest.raises(redshift_connector.ProgrammingError):
+            with pytest.raises(ProgrammingError):
                 await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
             failing["on"] = False
             await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
@@ -1231,7 +1232,7 @@ class TestQueryRouting:
             if "AS digest" in sql:
                 calls["n"] += 1
                 if calls["n"] == 1:
-                    raise redshift_connector.ProgrammingError("relation is being rebuilt")
+                    raise ProgrammingError("relation is being rebuilt")
 
         conn.recorded_cursor.execute.side_effect = execute
         with patch(
@@ -1239,7 +1240,7 @@ class TestQueryRouting:
             return_value=conn,
         ):
             driver = RedshiftDriver(redshift_config)
-            with pytest.raises(redshift_connector.ProgrammingError):
+            with pytest.raises(ProgrammingError):
                 await driver.relation_fingerprint("s1.results", ["race"])
             await driver.relation_fingerprint("s1.results", ["race"])
         assert len([sql for sql in statements if "FROM SVV_COLUMNS" in sql]) == 2
@@ -1383,7 +1384,7 @@ class _ScriptedFingerprintCursor:
         self.statements.append((sql, args[0] if args else None))
         self._last = sql
         if self.fail_digest and "AS digest" in sql:
-            raise redshift_connector.ProgrammingError("cannot cast type boolean to character varying")
+            raise ProgrammingError("cannot cast type boolean to character varying")
 
     def _fetchall(self) -> list[tuple[Any, ...]]:
         return self._booleans if "FROM SVV_COLUMNS" in self._last else self._groups
@@ -1464,7 +1465,7 @@ class TestGroupedFingerprint:
             await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
             assert len(script.lookups()) == 1, "an answer that carried a fingerprint through was not kept"
             script.fail_digest = True
-            with pytest.raises(redshift_connector.ProgrammingError):
+            with pytest.raises(ProgrammingError):
                 await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
             script.fail_digest = False
             await driver.relation_fingerprint_groups("s1.results", ["race", "incumbent"], "state")
@@ -1586,9 +1587,7 @@ class TestALoginIsNeverSpentBlind:
         redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """the shape ``redshift_connector`` raises for a server ErrorResponse with SQLSTATE 28000."""
-        refused = redshift_connector.InterfaceError(
-            {"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "rs_user"'}
-        )
+        refused = InterfaceError({"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "rs_user"'})
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             side_effect=refused,
@@ -1611,7 +1610,7 @@ class TestALoginIsNeverSpentBlind:
         redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """a query that opens the connection sees the same auth type the probe does."""
-        refused = redshift_connector.InterfaceError({"S": "FATAL", "C": "28000", "M": "user rs_user is locked"})
+        refused = InterfaceError({"S": "FATAL", "C": "28000", "M": "user rs_user is locked"})
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             side_effect=refused,

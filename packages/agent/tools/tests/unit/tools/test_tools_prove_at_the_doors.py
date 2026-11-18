@@ -24,6 +24,7 @@ from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL, 
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.interfaces.media import ObjectHandle
 
+from packages.agent.tools.tests.testing_utils import unchecked
 from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,
     deliver_call,
@@ -186,7 +187,8 @@ class TestTheConsumeHelper:
 
     async def test_a_resolver_written_before_proofs_still_resolves_a_bearer_call(self) -> None:
         context = CallContext(customer_id=_CUSTOMER, identity_token=_agent_token())
-        scope = await build_call_scope(
+        # a resolver from before proofs takes no ``credential``, so it no longer meets the protocol; it still resolves
+        scope = await unchecked(build_call_scope)(
             context, principal_is_tool_pod=False, object_resolver=_ResolverWrittenBeforeProofs()
         )
         async with enter_call_scope(scope):
@@ -364,6 +366,7 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
         assert scope.context.agent_id == UUID("06ac4016-baf3-7422-8000-31513802654e")
         assert scope.context.customer_id == _CUSTOMER
         assert scope.context.identity_token is None
+        assert scope.context.delegated_token is not None
         assert scope.door_credential() == DoorCredential(token=scope.context.delegated_token, holder_key=_POD)
         assert scope.principal_is_tool_pod is False
 

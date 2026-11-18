@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import uuid
 from datetime import UTC, datetime
 from uuid import UUID
@@ -31,7 +33,7 @@ from packages.agent.tools.tests.testing_utils import FakePool, make_context_meta
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     """per-test SQLite backend with context_items table registered."""
     backend = SQLiteBackend(db_name=f"test_pin_{uuid.uuid4().hex[:8]}")
     backend.initialize(make_context_metadata())

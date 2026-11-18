@@ -29,7 +29,7 @@ without requiring a database.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
@@ -48,12 +48,14 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
+    FakeWorkspaceContext,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -217,49 +219,14 @@ def _make_acl_cache() -> tuple[AclCache, _CountingMembershipLoader]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    """stand-in workspace entity with all WorkspaceLike attributes."""
-
-    id: UUID
-    name: str
-    agent_id: UUID
-    owner_agent_id: UUID
-    created_by: UUID
-    created_by_user_id: UUID
-    customer_id: UUID | None
-    template_name: str | None = None
-    current_version: int = 0
-    description: str | None = None
-    date_created: datetime = field(default_factory=lambda: datetime.now(UTC))
-    date_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
-    date_deleted: datetime | None = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical namespace name, matches Workspace entity."""
-        return f"workspace.{self.id}"
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    """stand-in head-state file entity."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-    date_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """minimal workspace collection servicing the common lookups."""
 
-    def __init__(self, entries: list[_FakeWorkspace]) -> None:
+    def __init__(self, entries: list[Workspace]) -> None:
         """capture fixture entries.
 
         :param entries: fake workspace rows to serve
-        :ptype entries: list[_FakeWorkspace]
+        :ptype entries: list[Workspace]
         """
         self._entries = entries
 
@@ -267,7 +234,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         self,
         agent_id: UUID,
         name: str,
-    ) -> _FakeWorkspace | None:
+    ) -> Workspace | None:
         """linear name-scan within the agent.
 
         :param agent_id: calling agent identifier
@@ -275,7 +242,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param name: workspace human name
         :ptype name: str
         :return: matching workspace or None
-        :rtype: _FakeWorkspace | None
+        :rtype: Workspace | None
         """
         for entry in self._entries:
             if entry.name == name:
@@ -286,7 +253,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         self,
         workspace_id: UUID,
         agent_id: UUID,
-    ) -> _FakeWorkspace | None:
+    ) -> Workspace | None:
         """id-scan within the agent.
 
         :param workspace_id: workspace identifier
@@ -294,7 +261,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param agent_id: calling agent identifier
         :ptype agent_id: UUID
         :return: matching workspace or None
-        :rtype: _FakeWorkspace | None
+        :rtype: Workspace | None
         """
         for entry in self._entries:
             if entry.id == workspace_id:
@@ -306,7 +273,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         agent_id: UUID,
         *,
         include_deleted: bool = False,
-    ) -> list[_FakeWorkspace]:
+    ) -> list[Workspace]:
         """return all entries for the agent.
 
         :param agent_id: calling agent identifier
@@ -314,7 +281,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param include_deleted: accepted for signature parity
         :ptype include_deleted: bool
         :return: all fixture entries
-        :rtype: list[_FakeWorkspace]
+        :rtype: list[Workspace]
         """
         del include_deleted
         return list(self._entries)
@@ -323,11 +290,11 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """minimal file collection servicing the head-state lookups."""
 
-    def __init__(self, files: list[_FakeFile] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         """capture files.
 
         :param files: head-state rows to serve
-        :ptype files: list[_FakeFile] | None
+        :ptype files: list[WorkspaceFile] | None
         """
         self._files = files or []
 
@@ -335,7 +302,7 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
         self,
         workspace_id: UUID,
         relative_path: str,
-    ) -> _FakeFile | None:
+    ) -> WorkspaceFile | None:
         """linear scan by relative_path.
 
         :param workspace_id: workspace identifier
@@ -343,7 +310,7 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
         :param relative_path: workspace-relative path
         :ptype relative_path: str
         :return: matching file or None
-        :rtype: _FakeFile | None
+        :rtype: WorkspaceFile | None
         """
         del workspace_id
         for entry in self._files:
@@ -354,13 +321,13 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
     async def find_by_workspace(
         self,
         workspace_id: UUID,
-    ) -> list[_FakeFile]:
+    ) -> list[WorkspaceFile]:
         """return all head-state files for the workspace.
 
         :param workspace_id: workspace identifier
         :ptype workspace_id: UUID
         :return: all fixture files
-        :rtype: list[_FakeFile]
+        :rtype: list[WorkspaceFile]
         """
         del workspace_id
         return list(self._files)
@@ -445,7 +412,7 @@ class _ToolCase:
     name: str
     operation: str
     builder: Callable[
-        [_FakeWorkspace, Any, UUID],
+        [Workspace, Any, UUID],
         tuple[Any, dict[str, Any]],
     ]
 
@@ -476,36 +443,36 @@ def _scope_for(
     return ToolCallScope(context=ctx)
 
 
-def _make_workspace(customer_id: UUID | None) -> _FakeWorkspace:
+def _make_workspace(customer_id: UUID | None) -> Workspace:
     """build a workspace owned by a random agent/user under customer.
 
     :param customer_id: owning customer UUID
     :ptype customer_id: UUID | None
     :return: workspace entity
-    :rtype: _FakeWorkspace
+    :rtype: Workspace
     """
     owner_agent = uuid4()
     owner_user = uuid4()
-    return _FakeWorkspace(
+    return make_workspace(
         id=uuid4(),
         name="ws",
         agent_id=owner_agent,
-        owner_agent_id=owner_agent,
         created_by=owner_user,
-        created_by_user_id=owner_user,
         customer_id=customer_id,
+        date_created=datetime.now(UTC),
+        date_updated=datetime.now(UTC),
     )
 
 
 def _build_fs_read(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
     """build FsReadTool + kwargs.
 
     :param ws: target workspace
-    :ptype ws: _FakeWorkspace
+    :ptype ws: Workspace
     :param cache: ACL cache stand-in
     :ptype cache: Any
     :param agent_id: calling agent
@@ -515,17 +482,14 @@ def _build_fs_read(
     """
     from threetears.agent.workspace.tools.fs_read import FsReadTool
 
-    file_entry = _FakeFile(
-        relative_path="a.txt",
-        content=b"x",
-        sha256="z" * 64,
-        version=1,
+    file_entry = make_workspace_file(
+        relative_path="a.txt", content=b"x", sha256="z" * 64, version=1, date_updated=datetime.now(UTC)
     )
     tool = FsReadTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([file_entry]),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -534,7 +498,7 @@ def _build_fs_read(
 
 
 def _build_fs_list(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -542,10 +506,10 @@ def _build_fs_list(
     from threetears.agent.workspace.tools.fs_list import FsListTool
 
     tool = FsListTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -554,24 +518,21 @@ def _build_fs_list(
 
 
 def _build_doc_get(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
     """build DocGetTool + kwargs."""
     from threetears.agent.workspace.tools.doc_get import DocGetTool
 
-    file_entry = _FakeFile(
-        relative_path="a.yaml",
-        content=b"k: v\n",
-        sha256="z" * 64,
-        version=1,
+    file_entry = make_workspace_file(
+        relative_path="a.yaml", content=b"k: v\n", sha256="z" * 64, version=1, date_updated=datetime.now(UTC)
     )
     tool = DocGetTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([file_entry]),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -580,7 +541,7 @@ def _build_doc_get(
 
 
 def _build_workspace_history(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -590,11 +551,11 @@ def _build_workspace_history(
     )
 
     tool = WorkspaceHistoryTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -603,7 +564,7 @@ def _build_workspace_history(
 
 
 def _build_workspace_diff(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -628,11 +589,11 @@ def _build_workspace_diff(
             raise RuntimeError("pool not wired for diff test")
 
     tool = WorkspaceDiffTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_DumbPool(),
         acl_cache=cache,
@@ -645,19 +606,8 @@ def _build_workspace_diff(
     }
 
 
-# parity-exempt: records only the save_item_by_type_and_key that pin.set_pin calls; no other context-manager surface is used here
-class _PinContext:
-    """the conversation context ``pin.set_pin`` writes the pin through."""
-
-    def __init__(self) -> None:
-        self.saved: list[dict[str, Any]] = []
-
-    async def save_item_by_type_and_key(self, **item: Any) -> None:
-        self.saved.append(item)
-
-
 def _build_workspace_use(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -669,9 +619,9 @@ def _build_workspace_use(
     from threetears.agent.workspace.tools.workspace_use import WorkspaceUseTool
 
     tool = WorkspaceUseTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
         agent_id=agent_id,
-        context_provider=lambda: _PinContext(),
+        context_provider=FakeWorkspaceContext,
         db_pool=None,
         acl_cache=cache,
     )
@@ -679,7 +629,7 @@ def _build_workspace_use(
 
 
 def _build_workspace_flush(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -696,10 +646,10 @@ def _build_workspace_flush(
             raise KeyError("no bind root")
 
     tool = WorkspaceFlushTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -708,7 +658,7 @@ def _build_workspace_flush(
 
 
 def _build_fs_write(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -739,11 +689,11 @@ def _build_fs_write(
             raise RuntimeError("pool not wired in authorize matrix test")
 
     tool = FsWriteTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -756,7 +706,7 @@ def _build_fs_write(
 
 
 def _build_fs_edit(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -785,18 +735,15 @@ def _build_fs_edit(
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
 
-    file_entry = _FakeFile(
-        relative_path="a.txt",
-        content=b"hello",
-        sha256="z" * 64,
-        version=1,
+    file_entry = make_workspace_file(
+        relative_path="a.txt", content=b"hello", sha256="z" * 64, version=1, date_updated=datetime.now(UTC)
     )
     tool = FsEditTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([file_entry]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -810,7 +757,7 @@ def _build_fs_edit(
 
 
 def _build_doc_set(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -834,18 +781,15 @@ def _build_doc_set(
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
 
-    file_entry = _FakeFile(
-        relative_path="a.yaml",
-        content=b"k: v\n",
-        sha256="z" * 64,
-        version=1,
+    file_entry = make_workspace_file(
+        relative_path="a.yaml", content=b"k: v\n", sha256="z" * 64, version=1, date_updated=datetime.now(UTC)
     )
     tool = DocSetTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([file_entry]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -859,7 +803,7 @@ def _build_doc_set(
 
 
 def _build_doc_merge(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -883,18 +827,15 @@ def _build_doc_merge(
             """acquire must never be reached in this test."""
             raise RuntimeError("pool not wired in authorize matrix test")
 
-    file_entry = _FakeFile(
-        relative_path="a.yaml",
-        content=b"k: v\n",
-        sha256="z" * 64,
-        version=1,
+    file_entry = make_workspace_file(
+        relative_path="a.yaml", content=b"k: v\n", sha256="z" * 64, version=1, date_updated=datetime.now(UTC)
     )
     tool = DocMergeTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([file_entry]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -907,7 +848,7 @@ def _build_doc_merge(
 
 
 def _build_workspace_checkpoint(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -934,10 +875,10 @@ def _build_workspace_checkpoint(
             raise RuntimeError("pool not wired in authorize matrix test")
 
     tool = WorkspaceCheckpointTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -946,7 +887,7 @@ def _build_workspace_checkpoint(
 
 
 def _build_workspace_rollback(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -973,11 +914,11 @@ def _build_workspace_rollback(
             raise RuntimeError("pool not wired in authorize matrix test")
 
     tool = WorkspaceRollbackTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -986,7 +927,7 @@ def _build_workspace_rollback(
 
 
 def _build_workspace_refresh(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -1018,11 +959,11 @@ def _build_workspace_refresh(
             raise RuntimeError("pool not wired in authorize matrix test")
 
     tool = WorkspaceRefreshTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -1031,7 +972,7 @@ def _build_workspace_refresh(
 
 
 def _build_workspace_reset(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -1066,11 +1007,11 @@ def _build_workspace_reset(
 
     ws.template_name = "tpl"
     tool = WorkspaceResetTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -1079,7 +1020,7 @@ def _build_workspace_reset(
 
 
 def _build_workspace_delete(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     cache: Any,
     agent_id: UUID,
 ) -> tuple[Any, dict[str, Any]]:
@@ -1104,11 +1045,11 @@ def _build_workspace_delete(
             raise RuntimeError("pool not wired in authorize matrix test")
 
     tool = WorkspaceDeleteTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,

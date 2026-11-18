@@ -12,6 +12,7 @@ takes.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -39,7 +40,7 @@ def _client(handler: Callable[[httpx.Request], httpx.Response]) -> McpClient:
     return McpClient(_BASE_URL, http_client=http)
 
 
-def _responding(payload: dict, status_code: int = 200) -> Callable[[httpx.Request], httpx.Response]:
+def _responding(payload: dict[str, Any], status_code: int = 200) -> Callable[[httpx.Request], httpx.Response]:
     """handler returning ``payload`` as JSON under ``status_code``.
 
     :param payload: JSON body to return

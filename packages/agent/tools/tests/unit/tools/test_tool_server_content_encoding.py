@@ -91,7 +91,8 @@ async def _reply(tool: TearsTool, *, accept_encoding: str | None, max_payload: i
     server.register(tool)
     await server.handle_call(_call(accept_encoding=accept_encoding))
     _, message = rec.last_reply
-    return json.loads(message.model_dump_json())
+    reply: dict[str, Any] = json.loads(message.model_dump_json())
+    return reply
 
 
 class TestTheHelpers:

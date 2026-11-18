@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from threetears.agent.tools.builtin import web_fetch as web_fetch_module
 from threetears.agent.tools.builtin.web_fetch import WebFetchTool, create_web_fetch_tool, pdf_reader
 from threetears.agent.tools.builtin.web_search import WebSearchTool, create_web_search_tool
 from threetears.search.bind import DISPLAY_ZONE_METADATA_KEY
 from threetears.search.contracts import SEARCH_RESULTS_METADATA_KEY, Spend, TimedOut
+from threetears.search.extract import CarrierUnreadable
 from threetears.search.testing import RecordedFetchTransport, RecordedPage, ScriptedTransport, TransportScript
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "web"
@@ -41,7 +41,9 @@ def _search(**kwargs: Any) -> tuple[WebSearchTool, ScriptedTransport]:
 
 
 def _params(transport: ScriptedTransport) -> dict[str, str]:
-    return dict(transport.calls[0]["params"])
+    params = transport.calls[0]["params"]
+    assert isinstance(params, dict), "the transport records a request's params as a dict"
+    return {str(name): str(value) for name, value in params.items()}
 
 
 # --- web_search -----------------------------------------------------------
@@ -80,6 +82,7 @@ class TestSearchTakesItsFilters:
 
         result = await tool.execute(query="otters river", site="example.org")
 
+        assert result.metadata is not None
         urls = [c["identity"] for c in result.metadata[SEARCH_RESULTS_METADATA_KEY]["candidates"]]
         assert urls == ["https://news.example.org/otters-return"]
 
@@ -139,6 +142,7 @@ class TestSearchResultsSayTheirDateAndEngine:
 
         assert "   published 2026-09-14 04:30 EDT; found by duckduckgo, bing news" in result.content
         assert "   no date given; found by wikipedia" in result.content
+        assert result.metadata is not None
         assert result.metadata[DISPLAY_ZONE_METADATA_KEY] == "America/New_York"
 
     def test_the_factory_takes_the_injected_zone(self) -> None:
@@ -170,6 +174,7 @@ class TestAFetchOpensWithWhatItRead:
         result = await tool.execute(url=f"{_SITE}/otters")
 
         opening = result.content.splitlines()[0]
+        assert result.metadata is not None
         total = result.metadata["window"]["total_chars"]
         assert opening == (
             f'Read "Otters return to the river" (published 2026-09-14) at {_SITE}/2026/otters: '
@@ -393,7 +398,7 @@ class TestPdfs:
         monkeypatch.setattr("threetears.agent.tools.builtin.web_fetch.parse_document", _slow)
         reader = pdf_reader(parse_timeout_seconds=0.05)
 
-        with pytest.raises(web_fetch_module.CarrierUnreadable, match=r"took longer than 0\.05 s"):
+        with pytest.raises(CarrierUnreadable, match=r"took longer than 0\.05 s"):
             await reader.read(b"%PDF-1.7 body")
 
     @pytest.mark.asyncio

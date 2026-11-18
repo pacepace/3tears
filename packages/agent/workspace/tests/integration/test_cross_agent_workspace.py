@@ -57,11 +57,10 @@ from threetears.agent.acl import (
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.workspace.authorize import (
-    WorkspaceAccessDenied,
-)
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.schemas import drop_schema
+
+from packages.agent.workspace.tests.helpers.workspace_shims import FakeWorkspaceContext
 
 
 # rbac-task-01 v016 seeds ``WorkspaceEditor`` with this deterministic UUID
@@ -585,27 +584,32 @@ class _SqlWorkspace:
     @property
     def id(self) -> UUID:
         """workspace uuid."""
-        return self._data["workspace_id"]
+        value: UUID = self._data["workspace_id"]
+        return value
 
     @property
     def name(self) -> str:
         """human name."""
-        return self._data["name"]
+        value: str = self._data["name"]
+        return value
 
     @property
     def agent_id(self) -> UUID:
         """owning-agent uuid."""
-        return self._data["agent_id"]
+        value: UUID = self._data["agent_id"]
+        return value
 
     @property
     def owner_agent_id(self) -> UUID:
         """owner alias."""
-        return self._data["agent_id"]
+        value: UUID = self._data["agent_id"]
+        return value
 
     @property
     def created_by_user_id(self) -> UUID:
         """creator user alias."""
-        return self._data["created_by"]
+        value: UUID = self._data["created_by"]
+        return value
 
     @property
     def namespace_name(self) -> str:
@@ -685,7 +689,8 @@ class _SqlWorkspaceFile:
     @property
     def relative_path(self) -> str:
         """workspace-relative path."""
-        return self._data["relative_path"]
+        value: str = self._data["relative_path"]
+        return value
 
     @property
     def content(self) -> bytes:
@@ -695,17 +700,20 @@ class _SqlWorkspaceFile:
     @property
     def sha256(self) -> str:
         """sha256 hex."""
-        return self._data["sha256"]
+        value: str = self._data["sha256"]
+        return value
 
     @property
     def version(self) -> int:
         """version."""
-        return self._data["version"]
+        value: int = self._data["version"]
+        return value
 
     @property
     def date_updated(self) -> datetime:
         """last update timestamp."""
-        return self._data["date_updated"]
+        value: datetime = self._data["date_updated"]
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -1402,14 +1410,11 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             def validate_syntax(self, key: str) -> None:
                 del key
 
-        class _NullContext:
-            pass
-
         read_tool = FsReadTool(
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_b,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1438,7 +1443,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             workspace_file_version_collection=None,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_b,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1481,7 +1486,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_c,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1510,7 +1515,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_a,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1531,9 +1536,3 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         async with pool.acquire() as conn:
             await drop_schema(conn, _PLATFORM)
         await pool.close()
-
-
-# kept live so imports don't get DCE-d on static checkers.
-_ = json
-_ = WorkspaceAccessDenied
-_ = AclCache

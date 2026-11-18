@@ -22,13 +22,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -37,49 +38,29 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: Any = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
         self.calls: list[UUID] = []
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         self.calls.append(workspace_id)
         return list(self._files)
 
@@ -167,8 +148,8 @@ class _FakeContext(FakeWorkspaceContext):
 
 def _build_tool(
     *,
-    workspace_entities: list[_FakeWorkspaceEntity],
-    files: list[_FakeFileEntity],
+    workspace_entities: list[Workspace],
+    files: list[WorkspaceFile],
     acl_cache: Any,
     agent_id: UUID | None = None,
 ) -> tuple[WorkspaceCheckpointTool, _FakePool, UUID]:
@@ -177,9 +158,9 @@ def _build_tool(
     pool = _FakePool()
     aid = agent_id or uuid4()
     tool = WorkspaceCheckpointTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=file_coll,  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=file_coll,
+        workspace_file_version_collection=_FakeVersionCollection(),
         context_provider=lambda: _FakeContext(),
         agent_id=aid,
         db_pool=pool,
@@ -198,20 +179,10 @@ async def test_checkpoint_inserts_one_journal_row_per_current_file(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """N head files -> N journal rows with action='checkpoint' and label."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     files = [
-        _FakeFileEntity(
-            relative_path="a.txt",
-            content=b"alpha",
-            sha256="a" * 64,
-            version=3,
-        ),
-        _FakeFileEntity(
-            relative_path="b.md",
-            content=b"# beta",
-            sha256="b" * 64,
-            version=1,
-        ),
+        make_workspace_file(relative_path="a.txt", content=b"alpha", sha256="a" * 64, version=3),
+        make_workspace_file(relative_path="b.md", content=b"# beta", sha256="b" * 64, version=1),
     ]
     tool, pool, aid = _build_tool(workspace_entities=[ws], files=files, acl_cache=permissive_acl_cache)
     result = await tool.execute(label="v1.0", workspace="ws")
@@ -246,7 +217,7 @@ async def test_checkpoint_empty_workspace_reports_zero_files(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """no head files -> zero journal rows, success=True with zero-count text."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, pool, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(label="empty", workspace="ws")
     assert result.success is True, result.error
@@ -267,7 +238,7 @@ async def test_checkpoint_rejects_empty_label(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """empty label returns clean error; no pool activity."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, pool, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(label="", workspace="ws")
     assert result.success is False
@@ -308,7 +279,7 @@ def test_checkpoint_mcp_name_is_exact_string(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         files=[],
         acl_cache=permissive_acl_cache,
     )
@@ -319,7 +290,7 @@ def test_checkpoint_mcp_schema_shape(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         files=[],
         acl_cache=permissive_acl_cache,
     )

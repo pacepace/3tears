@@ -180,7 +180,8 @@ class TestTheReplyNamesTheRefusals:
         )
         server = _server(nc)
         await server.publish_registration(await_reply=True)
-        assert len(server.refused_tools) == 1
+        first = server.refused_tools
+        assert len(first) == 1
         await server.publish_registration(await_reply=True)
         assert server.refused_tools == ()
 

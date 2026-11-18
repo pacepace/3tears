@@ -24,6 +24,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
@@ -33,7 +35,6 @@ from threetears.agent.tools.namespace_discovery_client import (
 )
 from threetears.agent.workspace.pin import PinnedWorkspace
 
-from threetears.agent.workspace.tools import workspace_current as workspace_current_module
 from threetears.agent.workspace.tools.workspace_current import WorkspaceCurrentTool
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceContext,
@@ -122,7 +123,7 @@ async def test_execute_returns_pin_snapshot_when_visible(
     async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
         return snapshot
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _fake_get_pin)
 
     client = _FakeDiscoveryClient(
         items=[_make_summary(workspace_id, agent_id, customer_id)],
@@ -162,7 +163,7 @@ async def test_execute_denies_when_pin_not_in_discovery(
     async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
         return snapshot
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _fake_get_pin)
 
     client = _FakeDiscoveryClient(items=[])  # empty -> not visible
     tool = WorkspaceCurrentTool(
@@ -188,7 +189,7 @@ async def test_execute_returns_null_pin_message_when_unset(
     async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
         return None
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _fake_get_pin)
 
     tool = WorkspaceCurrentTool(
         context_provider=lambda: _FakeContext(),
@@ -220,7 +221,7 @@ async def test_execute_traps_discovery_errors_as_data(
     async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
         return snapshot
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _fake_get_pin)
 
     client = _FakeDiscoveryClient(
         items=[],
@@ -254,7 +255,7 @@ async def test_an_unexpected_failure_reaches_the_agent_by_type_only(
     async def _fake_get_pin(context: Any) -> PinnedWorkspace | None:
         return snapshot
 
-    monkeypatch.setattr(workspace_current_module.pin, "get_pin", _fake_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _fake_get_pin)
 
     client = _FakeDiscoveryClient(
         items=[],

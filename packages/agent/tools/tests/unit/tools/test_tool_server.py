@@ -27,6 +27,7 @@ from threetears.core.security import (
     IDENTITY_REFUSED_MESSAGE,
     TOOL_PROXY_ASSERTION_UNVERIFIED,
     TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+    ProxyAssertionSigner,
 )
 from threetears.core.security.identity_token import (
     IdentityClaims,
@@ -492,7 +493,7 @@ class TestToolServerServe:
         server = ToolServer(
             nats_url="nats://localhost:9999",
             pod_id="test-pod-injected-guard-bind",
-            assertion_replay_guard=guard,  # type: ignore[arg-type]
+            assertion_replay_guard=guard,
         )
         server.register(StubTool())
 
@@ -535,7 +536,7 @@ class TestToolServerServe:
         server = ToolServer(
             nats_url="nats://localhost:9999",
             pod_id="test-pod-bind-fails",
-            assertion_replay_guard=guard,  # type: ignore[arg-type]
+            assertion_replay_guard=guard,
         )
         server.register(StubTool())
 
@@ -787,6 +788,7 @@ class TestToolServerCallGroupMembership:
             with patch.object(server, "await_sync_replies", AsyncMock(return_value=False)) as owed:
                 assert await server.leave_calls(timeout=3.0) is False, "a reply still owed past the bound is said"
             assert mock_nc.drain.await_args.kwargs["timeout"] == 3.0
+            assert owed.await_args is not None, "the replies still owed were awaited"
             assert 0.0 <= owed.await_args.kwargs["timeout"] <= 3.0, "one bound covers the drain and the replies"
             await self._stop(server, serve_task)
 
@@ -1874,8 +1876,6 @@ class TestToolServerIdentityVerification:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from pydantic import SecretStr
 
-        from threetears.core.security import ProxyAssertionSigner
-
         priv, pub = generate_signing_keypair()
         seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
         signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
@@ -1907,7 +1907,7 @@ class TestToolServerIdentityVerification:
         return server, rec
 
     @staticmethod
-    def _assertion(signer: Any, *, body_hash: str) -> str:
+    def _assertion(signer: ProxyAssertionSigner, *, body_hash: str) -> str:
         return signer.mint(
             pod_id="test-pod",
             agent_id=str(uuid4()),
@@ -2089,8 +2089,6 @@ class TestToolServerProxyAssertionVerification:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from pydantic import SecretStr
 
-        from threetears.core.security import ProxyAssertionSigner
-
         priv, pub = generate_signing_keypair()
         seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
         signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
@@ -2135,11 +2133,12 @@ class TestToolServerProxyAssertionVerification:
         return _make_nats_msg(envelope)
 
     @staticmethod
-    def _response(rec: Any) -> dict[str, Any]:
-        return json.loads(rec.last_reply[1].model_dump_json())
+    def _response(rec: RecordingNatsClient) -> dict[str, Any]:
+        response: dict[str, Any] = json.loads(rec.last_reply[1].model_dump_json())
+        return response
 
     @staticmethod
-    def _assertion_for(signer: Any, *, body_hash: str) -> str:
+    def _assertion_for(signer: ProxyAssertionSigner, *, body_hash: str) -> str:
         return signer.mint(
             pod_id="test-pod",
             agent_id=str(uuid4()),
@@ -2421,7 +2420,8 @@ class TestToolServerAuthToken:
             subj = call.kwargs.get("subject")
             if subj is not None and "tools.register" in subj.path:
                 payload = json.loads(call.kwargs["message"].model_dump_json())
-                return payload["bootstrap_token"]
+                token: str = payload["bootstrap_token"]
+                return token
         raise AssertionError("no registration manifest was published")
 
     @pytest.mark.asyncio

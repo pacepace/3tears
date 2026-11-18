@@ -48,7 +48,8 @@ def _gate() -> _Gate:
 async def test_a_started_operation_runs_in_the_background_and_keeps_its_result() -> None:
     body = _gate()
     operation = BackgroundOperation("load", body)
-    assert operation.state == "idle"
+    before = operation.state
+    assert before == "idle"
     assert operation.start()
     await asyncio.sleep(0)
     assert operation.running

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from typing import Any
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,7 +20,7 @@ from packages.agent.tools.tests.testing_utils import FakePool, make_context_meta
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_ctx_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
@@ -62,7 +64,7 @@ def _make_item(
     long_desc: str = "",
     content: str = "The answer is 42",
     date_accessed: datetime | None = None,
-) -> dict:
+) -> dict[str, Any]:
     now = datetime.now(UTC)
     return {
         "context_id": uuid.uuid4(),

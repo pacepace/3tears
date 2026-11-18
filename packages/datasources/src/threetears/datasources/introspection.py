@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 __all__ = [
@@ -40,7 +41,7 @@ __all__ = [
 ]
 
 
-def compute_column_hash(cols: list[dict[str, Any]]) -> str:
+def compute_column_hash(cols: Sequence[Mapping[str, Any]]) -> str:
     """MD5 over the canonical column-shape payload (Tier-2 change probe).
 
     the payload is :func:`column_hash_payload`'s, which describes the
@@ -57,14 +58,14 @@ def compute_column_hash(cols: list[dict[str, Any]]) -> str:
         ``column_name`` (str), ``data_type`` (str), ``is_nullable``
         (str | None), ``ordinal_position`` (int). extra keys are
         ignored. the function does NOT mutate ``cols``.
-    :ptype cols: list[dict[str, Any]]
+    :ptype cols: Sequence[Mapping[str, Any]]
     :return: 32-char lowercase MD5 hex digest
     :rtype: str
     """
     return hashlib.md5(column_hash_payload(cols).encode()).hexdigest()  # noqa: S324 -- change-detect signal, not a security boundary
 
 
-def column_hash_payload(cols: list[dict[str, Any]]) -> str:
+def column_hash_payload(cols: Sequence[Mapping[str, Any]]) -> str:
     """the string the column hash is taken over, on BOTH sides.
 
     Each column is hashed FIRST and the digests are joined, so the payload is
@@ -98,7 +99,7 @@ def column_hash_payload(cols: list[dict[str, Any]]) -> str:
 
     :param cols: column-row dicts carrying ``column_name``, ``data_type``,
         ``is_nullable`` and ``ordinal_position``; not mutated
-    :ptype cols: list[dict[str, Any]]
+    :ptype cols: Sequence[Mapping[str, Any]]
     :return: the canonical payload, ordered by ordinal position
     :rtype: str
     """

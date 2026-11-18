@@ -39,7 +39,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
-import redshift_connector
+from redshift_connector.core import Connection
+from redshift_connector.cursor import Cursor
 
 from threetears.datasources.config import PostgresConnectionConfig
 from threetears.datasources.drivers import asyncpg_driver as asyncpg_driver_module
@@ -272,8 +273,8 @@ class TestBackendCancellationSurface:
         cancels by terminating the server-side backend instead. this pin
         makes that documented claim testable rather than a comment.
         """
-        assert not hasattr(redshift_connector.Connection, "cancel")
-        assert not hasattr(redshift_connector.Cursor, "cancel")
+        assert not hasattr(Connection, "cancel")
+        assert not hasattr(Cursor, "cancel")
 
 
 class TestAsyncpgDriverMakesNoCancellationClaim:

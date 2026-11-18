@@ -65,9 +65,12 @@ class TestCapabilitySourceKindEnum:
 
     def test_str_equivalence(self) -> None:
         # StrEnum: members compare equal to their string values
-        assert CapabilitySourceKind.DATASOURCE == "datasource"
-        assert CapabilitySourceKind.API_IMPORT == "api_import"
-        assert CapabilitySourceKind.MCP_IMPORT == "mcp_import"
+        datasource: str = CapabilitySourceKind.DATASOURCE
+        assert datasource == "datasource"
+        api_import: str = CapabilitySourceKind.API_IMPORT
+        assert api_import == "api_import"
+        mcp_import: str = CapabilitySourceKind.MCP_IMPORT
+        assert mcp_import == "mcp_import"
 
 
 class TestCapabilitySourceEntity:

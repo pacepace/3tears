@@ -21,16 +21,18 @@ from __future__ import annotations
 import base64
 import json
 import time
+from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import ToolCallScope, current_scope
 from threetears.agent.tools.server import ToolServer
-from threetears.nats import IncomingMessage
+from threetears.nats import IncomingMessage, NatsClient, Subject
 from threetears.core.security import ProxyAssertionSigner, canonical_call_hash
 from threetears.core.security.identity_token import (
     IdentityClaims,
@@ -50,39 +52,75 @@ __all__ = [
 ]
 
 
-# parity-exempt: subset stand-in for NatsClient recording only what a ToolServer's handlers publish
-class RecordingNatsClient:
+class RecordingNatsClient(NatsClient):
     """records what a :class:`ToolServer` driven without :meth:`~ToolServer.serve` publishes.
 
     handed to the server through its public ``nats_client=`` argument, never installed on its
     private connection slot: the server then answers on it exactly as it answers on a caller-owned
     connection in production, and a rename of that slot cannot silently orphan the test.
 
+    a :class:`NatsClient` by subclass, so the server takes it as one with no cast. it wraps no broker
+    connection: its constructor sets only what it records, and the methods below are the ones a
+    handler answers through. a test that drives anything else (a request, a subscription) fails on
+    the connection this client does not hold, as it would have failed on a stand-in without the method.
+
     ``replies`` holds each ``(reply_subject, message)`` a handler answered with; ``published`` holds
     each ``(subject, payload)`` sent on a durable subject -- the baseline ``tool.call`` audit rides
     there -- and each ``(subject, message)`` sent by plain publish, such as a registration manifest.
+    ``raise_on_publish``, when set, is raised by every publish after it is recorded (a transient broker
+    failure), while replies still go through.
     """
 
-    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
-    #: tool server's size guard off, as on a client that has not connected
-    max_payload: int | None = None
-
-    def __init__(self) -> None:
+    def __init__(self, *, raise_on_publish: BaseException | None = None) -> None:
+        # no ``super().__init__``: there is no broker connection to wrap.
         self.replies: list[tuple[str, Any]] = []
         self.published: list[tuple[Any, Any]] = []
+        self.raise_on_publish = raise_on_publish
+        self._advertised_max_payload: int | None = None
 
-    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
+    @property
+    def max_payload(self) -> int | None:
+        """the broker's advertised limit; ``None`` (unknown, the default) leaves the server's size guard off.
+
+        :return: the limit a test set, or ``None``
+        :rtype: int | None
+        """
+        return self._advertised_max_payload
+
+    @max_payload.setter
+    def max_payload(self, limit: int | None) -> None:
+        self._advertised_max_payload = limit
+
+    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
         """record a handler's answer."""
         self.replies.append((reply_subject, message))
 
-    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None:
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | float = timedelta(seconds=10),
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         """record a durable publish, as the audit envelope makes."""
+        del timeout, headers
         self.published.append((subject, payload))
+        if self.raise_on_publish is not None:
+            raise self.raise_on_publish
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self,
+        *args: Any,
+        subject: Subject | str | None = None,
+        message: BaseModel | None = None,
+        reply_to: Subject | str | None = None,
+    ) -> None:
         """record a plain publish, as a registration manifest makes."""
-        del reply_to
+        del args, reply_to
         self.published.append((subject, message))
+        if self.raise_on_publish is not None:
+            raise self.raise_on_publish
 
     @property
     def last_reply(self) -> tuple[str, Any]:
@@ -99,7 +137,7 @@ def recording_tool_server(**kwargs: Any) -> tuple[ToolServer, RecordingNatsClien
     :rtype: tuple[ToolServer, RecordingNatsClient]
     """
     rec = RecordingNatsClient()
-    server = ToolServer(nats_client=rec, **kwargs)  # type: ignore[arg-type]
+    server = ToolServer(nats_client=rec, **kwargs)
     return server, rec
 
 
@@ -262,7 +300,7 @@ class ScopeRecordingTool(TearsTool):
         :rtype: None
         """
         super().__init__()
-        self.scopes: list[ToolCallScope | None] = []
+        self.scopes: list[ToolCallScope] = []
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """record the active call scope.
@@ -272,7 +310,9 @@ class ScopeRecordingTool(TearsTool):
         :return: a successful empty result
         :rtype: ToolResult
         """
-        self.scopes.append(current_scope())
+        scope = current_scope()
+        assert scope is not None, "a dispatched call runs inside its call scope"
+        self.scopes.append(scope)
         return ToolResult(success=True, content="")
 
     def mcp_schema(self) -> MCPToolDefinition:

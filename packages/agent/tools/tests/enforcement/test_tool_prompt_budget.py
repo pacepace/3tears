@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,7 @@ def _iter_tool_modules(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.py") if p.stem not in skip)
 
 
-def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:
+def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict[str, Any] | None:
     """find a ``_INPUT_SCHEMA`` assignment on the class body and literal-eval it."""
     for stmt in class_node.body:
         target_name: str | None = None
@@ -100,13 +101,14 @@ def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
-                return ast.literal_eval(value_node)
+                schema = ast.literal_eval(value_node)
             except ValueError, SyntaxError:
                 return None
+            return schema if isinstance(schema, dict) else None
     return None
 
 
-def _extract_module_level_input_schema(tree: ast.Module) -> dict | None:
+def _extract_module_level_input_schema(tree: ast.Module) -> dict[str, Any] | None:
     """find module-level ``_INPUT_SCHEMA`` (workspace-tool pattern) and literal-eval it."""
     for stmt in tree.body:
         target_name: str | None = None
@@ -119,9 +121,10 @@ def _extract_module_level_input_schema(tree: ast.Module) -> dict | None:
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
-                return ast.literal_eval(value_node)
+                schema = ast.literal_eval(value_node)
             except ValueError, SyntaxError:
                 return None
+            return schema if isinstance(schema, dict) else None
     return None
 
 
@@ -153,17 +156,17 @@ def _extract_mcp_schema_description(tree: ast.AST) -> str | None:
     return None
 
 
-def _collect_tools(directory: Path) -> list[tuple[str, str, dict]]:
+def _collect_tools(directory: Path) -> list[tuple[str, str, dict[str, Any]]]:
     """parse every tool module under ``directory`` and return (tool_id, description, input_schema).
 
     ``tool_id`` is the file stem (e.g. ``current_date``, ``fs_read``).
     ``input_schema`` is the literal dict; tools that don't define one
     are skipped.
     """
-    results: list[tuple[str, str, dict]] = []
+    results: list[tuple[str, str, dict[str, Any]]] = []
     for path in _iter_tool_modules(directory):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        input_schema: dict | None = _extract_module_level_input_schema(tree)
+        input_schema: dict[str, Any] | None = _extract_module_level_input_schema(tree)
         if input_schema is None:
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
@@ -210,9 +213,9 @@ class TestBuiltinToolPromptBudget:
         violations: list[str] = []
         for tool_id, desc, schema in _collect_tools(_BUILTIN_TOOLS_DIR):
             for pattern, label in _BLOAT_PATTERNS:
-                if pattern.search(desc):
+                if (found := pattern.search(desc)) is not None:
                     violations.append(
-                        f"  {tool_id}.description: {label!r} -- matched: {pattern.search(desc).group(0)!r}",
+                        f"  {tool_id}.description: {label!r} -- matched: {found.group(0)!r}",
                     )
             for field_name, field_def in (
                 (schema or {})
@@ -228,9 +231,9 @@ class TestBuiltinToolPromptBudget:
                 if not isinstance(field_desc, str):
                     continue
                 for pattern, label in _BLOAT_PATTERNS:
-                    if pattern.search(field_desc):
+                    if (found := pattern.search(field_desc)) is not None:
                         violations.append(
-                            f"  {tool_id}.{field_name}: {label!r} -- matched: {pattern.search(field_desc).group(0)!r}",
+                            f"  {tool_id}.{field_name}: {label!r} -- matched: {found.group(0)!r}",
                         )
         if violations:
             pytest.fail("Bloat patterns:\n" + "\n".join(violations))
@@ -268,9 +271,9 @@ class TestWorkspaceToolPromptBudget:
         violations: list[str] = []
         for tool_id, desc, schema in _collect_tools(_WORKSPACE_TOOLS_DIR):
             for pattern, label in _BLOAT_PATTERNS:
-                if pattern.search(desc):
+                if (found := pattern.search(desc)) is not None:
                     violations.append(
-                        f"  {tool_id}.description: {label!r} -- matched: {pattern.search(desc).group(0)!r}",
+                        f"  {tool_id}.description: {label!r} -- matched: {found.group(0)!r}",
                     )
             for field_name, field_def in (
                 (schema or {})
@@ -286,9 +289,9 @@ class TestWorkspaceToolPromptBudget:
                 if not isinstance(field_desc, str):
                     continue
                 for pattern, label in _BLOAT_PATTERNS:
-                    if pattern.search(field_desc):
+                    if (found := pattern.search(field_desc)) is not None:
                         violations.append(
-                            f"  {tool_id}.{field_name}: {label!r} -- matched: {pattern.search(field_desc).group(0)!r}",
+                            f"  {tool_id}.{field_name}: {label!r} -- matched: {found.group(0)!r}",
                         )
         if violations:
             pytest.fail("Bloat patterns:\n" + "\n".join(violations))

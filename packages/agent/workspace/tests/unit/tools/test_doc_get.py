@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,12 +13,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.doc_get import DocGetTool
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -37,47 +36,29 @@ _FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audien
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: datetime | None = None
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-    date_updated: datetime = datetime(2026, 1, 1, tzinfo=UTC)
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
         self.find_calls: list[tuple[UUID, str]] = []
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> _FakeFileEntity | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         self.find_calls.append((workspace_id, relative_path))
         for f in self._files:
             if f.relative_path == relative_path:
@@ -108,18 +89,18 @@ class _FakeContext(FakeWorkspaceContext):
 def _build_tool(
     *,
     acl_cache: Any,
-    workspace_entities: list[_FakeWorkspaceEntity] | None = None,
-    files: list[_FakeFileEntity] | None = None,
+    workspace_entities: list[Workspace] | None = None,
+    files: list[WorkspaceFile] | None = None,
     deny_reads: list[str] | None = None,
     agent_id: UUID | None = None,
 ) -> tuple[DocGetTool, _FakeFileCollection, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    workspaces = _FakeWorkspaceCollection(workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")])
+    workspaces = _FakeWorkspaceCollection(workspace_entities or [make_workspace(id=uuid4(), name="ws")])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = DocGetTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=file_coll,  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=file_coll,
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -142,13 +123,10 @@ async def test_doc_get_whole_document_returns_dumped_yaml_with_structure(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """no jsonpath -> whole document dumped; structural markers survive."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     yaml_bytes = _audience_yaml_bytes()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=yaml_bytes,
-        sha256="a" * 64,
-        version=3,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=yaml_bytes, sha256="a" * 64, version=3
     )
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
@@ -179,13 +157,10 @@ async def test_doc_get_jsonpath_scalar_returns_serialized_scalar(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """jsonpath to a scalar returns the JSON-serialized scalar."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     yaml_bytes = _audience_yaml_bytes()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=yaml_bytes,
-        sha256="b" * 64,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=yaml_bytes, sha256="b" * 64, version=1
     )
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
@@ -207,12 +182,9 @@ async def test_doc_get_jsonpath_not_found_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """jsonpath with no matches yields a clean error naming the expression."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=_audience_yaml_bytes(),
-        sha256="c" * 64,
-        version=1,
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=_audience_yaml_bytes(), sha256="c" * 64, version=1
     )
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
@@ -240,13 +212,8 @@ async def test_doc_get_unknown_format_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """file whose suffix has no registered handler -> clean error with suffix."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="notes.txt",
-        content=b"plain text",
-        sha256="d" * 64,
-        version=1,
-    )
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(relative_path="notes.txt", content=b"plain text", sha256="d" * 64, version=1)
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
     )
@@ -269,13 +236,10 @@ async def test_doc_get_binary_file_with_known_suffix_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """YAML-suffixed file with non-UTF-8 content reports binary cleanly."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     # .yaml suffix so handler dispatch succeeds; bytes are not valid UTF-8
-    file_entity = _FakeFileEntity(
-        relative_path="rogue.yaml",
-        content=b"\xff\xfe\x00\x01",
-        sha256="e" * 64,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="rogue.yaml", content=b"\xff\xfe\x00\x01", sha256="e" * 64, version=1
     )
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
@@ -298,12 +262,9 @@ async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """SandboxDenied -> clean error; no fetch attempted (gate-then-act)."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="secret.yaml",
-        content=b"secret: value\n",
-        sha256="f" * 64,
-        version=1,
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(
+        relative_path="secret.yaml", content=b"secret: value\n", sha256="f" * 64, version=1
     )
     tool, files, sandbox, _ = _build_tool(
         workspace_entities=[ws],
@@ -332,7 +293,7 @@ async def test_doc_get_missing_file_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """head row absent -> clean error naming file and workspace."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(relative_path="missing.yaml", workspace="ws")

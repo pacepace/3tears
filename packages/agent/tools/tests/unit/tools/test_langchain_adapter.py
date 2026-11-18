@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 import pytest
 from pydantic import BaseModel, Field
@@ -318,7 +319,7 @@ class TestAToolInAGraphRunsInTheCallsScope:
         conversation, user = uuid7(), uuid7()
         seen: list[tuple[UUID, UUID]] = []
         tool = to_langchain_tool(ContextRecallTool(), context_factory=self._factory(seen))
-        config = {"configurable": {"call_context": CallContext(conversation_id=conversation, user_id=user)}}
+        config: RunnableConfig = {"configurable": {"call_context": CallContext(conversation_id=conversation, user_id=user)}}
 
         message = await tool.ainvoke(
             {"type": "tool_call", "id": "r1", "name": tool.name, "args": {"context_id": "abc"}}, config
@@ -335,7 +336,7 @@ class TestAToolInAGraphRunsInTheCallsScope:
         :rtype: None
         """
         tool = to_langchain_tool(CurrentDateTool())
-        config = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
+        config: RunnableConfig = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
         message = await tool.ainvoke({"type": "tool_call", "id": "d1", "name": tool.name, "args": {}}, config)
         assert "Asia/Tokyo" in message.content
 
@@ -346,7 +347,7 @@ class TestAToolInAGraphRunsInTheCallsScope:
         :rtype: None
         """
         tool = to_langchain_tool(CurrentDateTool())
-        config = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
+        config: RunnableConfig = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
         message = tool.invoke({"type": "tool_call", "id": "d2", "name": tool.name, "args": {}}, config)
         assert "Asia/Tokyo" in message.content
 

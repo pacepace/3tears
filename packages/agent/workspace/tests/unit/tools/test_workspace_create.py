@@ -11,9 +11,10 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_create as workspace_create_module
 from threetears.agent.workspace.tools.workspace_create import WorkspaceCreateTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -21,13 +22,15 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -36,33 +39,14 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """minimal stand-in for :class:`Workspace` for source-fork lookups."""
-
-    id: UUID
-    name: str
-    template_name: str | None = None
-    date_deleted: Any = None
-
-
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    """minimal stand-in for :class:`WorkspaceFile`."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """records lookup calls and serves entities by (agent_id, name)."""
 
-    def __init__(self, entities: list[_FakeWorkspaceEntity] | None = None) -> None:
+    def __init__(self, entities: list[Workspace] | None = None) -> None:
         self._entities = entities or []
         self.find_by_agent_and_name_calls: list[tuple[UUID, str]] = []
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         self.find_by_agent_and_name_calls.append((agent_id, name))
         for e in self._entities:
             if e.name == name:
@@ -73,11 +57,11 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """records find_by_workspace calls and serves a fixed file list."""
 
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
         self.find_by_workspace_calls: list[UUID] = []
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         self.find_by_workspace_calls.append(workspace_id)
         return list(self._files)
 
@@ -86,7 +70,7 @@ class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder; tool wires INSERTs through db_pool, not this collection."""
 
 
-class _RecordingSandbox:
+class _RecordingSandbox(FakeWorkspaceSandbox):
     """captures resolve_fs_path and validate_syntax calls.
 
     serves a fixed *resolved* templates root for one template name; the
@@ -101,22 +85,23 @@ class _RecordingSandbox:
     """
 
     def __init__(self, templates_root: Path) -> None:
+        super().__init__()
         self._templates_root = templates_root
         self.resolve_calls: list[tuple[str, str]] = []
         self.syntax_calls: list[str] = []
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
-        self.resolve_calls.append((path, root_name))
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
+        self.resolve_calls.append((str(path), root_name))
         return self._templates_root
 
     def validate_syntax(self, target: str) -> None:
         self.syntax_calls.append(target)
 
 
-class _NoTemplateSandbox:
+class _NoTemplateSandbox(FakeWorkspaceSandbox):
     """sandbox that has no templates root; resolve raises KeyError."""
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         raise KeyError(root_name)
 
     def validate_syntax(self, target: str) -> None:
@@ -267,7 +252,7 @@ class _RecordingNatsClient:
 def patch_set_pin(monkeypatch: pytest.MonkeyPatch) -> _RecordingPin:
     """replace pin.set_pin with a recorder."""
     rec = _RecordingPin()
-    monkeypatch.setattr(workspace_create_module.pin, "set_pin", rec.set_pin)
+    monkeypatch.setattr(pin_module, "set_pin", rec.set_pin)
     return rec
 
 
@@ -431,10 +416,10 @@ async def test_create_from_workspace_copies_files_and_carries_template_name(
 ) -> None:
     """from_workspace queries source files and copies their bytes/sha into new rows."""
     source_id = uuid4()
-    source = _FakeWorkspaceEntity(id=source_id, name="orig", template_name="starter")
+    source = make_workspace(id=source_id, name="orig", template_name="starter")
     src_files = [
-        _FakeFileEntity(relative_path="a.md", content=b"AAA", sha256="a" * 64),
-        _FakeFileEntity(relative_path="b.md", content=b"BBB", sha256="b" * 64),
+        make_workspace_file(relative_path="a.md", content=b"AAA", sha256="a" * 64),
+        make_workspace_file(relative_path="b.md", content=b"BBB", sha256="b" * 64),
     ]
     workspaces = _FakeWorkspaceCollection([source])
     files_coll = _FakeFileCollection(src_files)

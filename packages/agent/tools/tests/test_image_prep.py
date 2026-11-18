@@ -186,7 +186,7 @@ class TestAFailedResizeIsReported:
     async def test_no_exception_message_reaches_the_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from PIL import Image
 
-        def _planted(*args, **kwargs) -> None:
+        def _planted(*args: object, **kwargs: object) -> None:
             raise OSError("PLANTED-1a9f cannot identify image file")
 
         monkeypatch.setattr(Image, "open", _planted)
@@ -232,11 +232,11 @@ class TestInputThatIsNotBase64:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """it used to be contained and answered as undecodable base64, blaming the model."""
-        from threetears.agent.tools.builtin import image_prep
 
         def _broken(data: object) -> bytes:
             raise AttributeError("a bug in the decode")
 
-        monkeypatch.setattr(image_prep.base64, "b64decode", _broken)
+        # the tool decodes through the ``base64`` module itself, the one patched here
+        monkeypatch.setattr(base64, "b64decode", _broken)
         with pytest.raises(AttributeError, match="a bug in the decode"):
             await ImagePrepTool().execute(image_data_base64="aGVsbG8=", mime_type="image/png")

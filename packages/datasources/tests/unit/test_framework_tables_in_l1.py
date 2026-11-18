@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import MetaData
 
+from threetears.core.backends.protocol import RawL3Pool
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -43,15 +44,22 @@ _READ_BY_ID = 'SELECT t.* FROM "datasource_columns" AS t WHERE t."id" = $1 LIMIT
 _NATURAL_KEY = ("datasource_id", "schema_name", "table_name", "column_name")
 
 
-class _ColumnTable:
+class _ColumnTable(RawL3Pool):
     """``datasource_columns`` in memory, upserting on its natural key as Postgres does.
 
-    An asyncpg-pool-shaped double: the raw pool has no production protocol (``l3_pool`` is
-    typed ``Any`` by design), so there is nothing to declare parity against.
+    A raw asyncpg-shaped pool (:class:`~threetears.core.backends.protocol.RawL3Pool`) whose
+    statements are answered here; it lends no connections.
     """
 
     def __init__(self) -> None:
         self.rows: dict[UUID, dict[str, Any]] = {}
+
+    def acquire(self) -> Any:
+        """no connection to lend: every statement this test sends goes to the pool itself.
+
+        :raises NotImplementedError: always
+        """
+        raise NotImplementedError("the in-memory column table lends no connections")
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         assert sql.startswith("INSERT"), f"only the upsert goes through fetchrow: {sql}"

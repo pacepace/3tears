@@ -91,7 +91,7 @@ from threetears.core.security.door_request import (
     l3_request_op,
 )
 
-# Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
+# Subject comes from its own module, and the client protocol only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
 # whole point of the `[client]` extra, and `test_l1_surface_imports_without_the_client`
 # holds it. A plain `from threetears.nats import NatsClient` triggers the package's
@@ -103,7 +103,7 @@ from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient
+    from threetears.nats import BoundedRequester
 
 __all__ = [
     "CONSTRAINT_VIOLATION_ERROR_CODE",
@@ -758,8 +758,8 @@ class NatsProxyL3Backend:
     :ivar timeout_ms: query-side timeout threaded into outgoing
         envelopes and used to compute the NATS-level response timeout
 
-    :param nats_client: connected NATS client wrapper
-    :ptype nats_client: NatsClient
+    :param nats_client: connected NATS client wrapper, or what it is of one here (``request_raw``, ``max_payload``)
+    :ptype nats_client: BoundedRequester
     :param namespace_prefix: NATS subject namespace prefix
     :ptype namespace_prefix: str
     :param agent_id: agent UUID string, or ``None`` for a principal that is not
@@ -791,7 +791,7 @@ class NatsProxyL3Backend:
 
     def __init__(
         self,
-        nats_client: NatsClient,
+        nats_client: BoundedRequester,
         namespace_prefix: str,
         agent_id: str | None = None,
         default_namespace: str | None = None,
@@ -831,8 +831,9 @@ class NatsProxyL3Backend:
             rest of the platform already handles, instead of raw nats-py
             exceptions. Passing a bare nats-py client now fails at the call site
             with ``AttributeError: request_raw``, which is the intended break --
-            there is no dual path.
-        :ptype nats_client: NatsClient
+            there is no dual path. Typed by :class:`~threetears.nats.BoundedRequester`, the two things this
+            backend uses of the client (``request_raw`` and ``max_payload``), which a ``NatsClient`` is.
+        :ptype nats_client: BoundedRequester
         :param namespace_prefix: NATS subject namespace prefix
         :ptype namespace_prefix: str
         :param agent_id: agent UUID string, or ``None`` when this principal is
