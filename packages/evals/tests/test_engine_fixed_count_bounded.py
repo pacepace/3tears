@@ -54,7 +54,12 @@ from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema import EvalResult
 from threetears.evals.schema.models import GoalStateOutcome
-from packages.evals.tests.engine_take_up import exact_small_rate, plug_in_separating
+from packages.evals.tests.engine_take_up import (
+    exact_small_rate,
+    exact_unpaired_rate,
+    plug_in_separating,
+    unpaired_bounds,
+)
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_aspect_campaign,
@@ -64,6 +69,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
+from packages.evals.tests.simulation_support import engine_separation
 
 #: A check declared pass/fail on a merit axis, and a grade on 0 to 1 that is no check: the two shapes a 0-1 reading takes.
 _CHECK = MetricDescriptor(
@@ -251,6 +257,69 @@ def test_no_engine_contrast_reads_not_separated_beside_an_interval_that_excludes
             for comparison in family.comparisons
         )
     assert excluded >= 10, "the seeds must reach intervals that exclude zero"
+
+
+# --- unpaired --------------------------------------------------------------------------------------------------------
+
+
+def _excludes_zero(interval: tuple[float, float] | None) -> bool:
+    return interval is not None and (interval[0] > 0.0 or interval[1] < 0.0)
+
+
+def test_the_unpaired_test_is_its_interval_s_own_inversion_through_the_product() -> None:
+    """An unpaired engine reading on 0 to 1 separates exactly where its interval excludes zero: its p, below the level
+    each interval is read at (α/m), wherever that interval's two arms' ends part, and nowhere else. One control passing
+    one case of ten against a contrast passing all ten is the case the midpoint cut missed (its p 0.050 at α/2 beside a
+    97.5% interval from +0.006); seeded arms of every size and gap reach both outcomes."""
+    rng = random.Random("unpaired-inversion")
+    sides = [([1.0] + [0.0] * 9, [1.0] * 10)]
+    for _ in range(24):
+        sizes = rng.choice(((6, 6), (10, 10), (12, 30), (40, 40)))
+        rates = rng.random(), rng.random()
+        sides.append(tuple([float(rng.random() < rate) for _ in range(size)] for size, rate in zip(sizes, rates)))  # type: ignore[arg-type]
+    outcomes = set()
+    for control, contrast in sides:
+        family = _family(_bundle((control, contrast), unpaired=True))
+        level = SIGNIFICANCE_ALPHA / family.family_size
+        for compared in family.comparisons:
+            if compared.p_raw is None or compared.name not in ("answered_in_full", "graded"):
+                continue
+            assert compared.test == "unpaired"
+            restated = engine_separation(control, contrast, paired=False, value_range=(0.0, 1.0), alpha=level).p
+            assert compared.p_raw == pytest.approx(restated, rel=1e-12)
+            excluded = _excludes_zero(compared.interval)
+            assert (compared.p_raw < level) == excluded, (
+                len(control),
+                len(contrast),
+                compared.p_raw,
+                compared.interval,
+            )
+            assert (compared.verdict in ("improved", "regressed")) == excluded
+            outcomes.add(excluded)
+    assert outcomes == {True, False}, "the seeds must reach both"
+
+
+def test_the_unpaired_enumeration_is_the_restated_test_pair_for_pair() -> None:
+    """Every pair of pass/fail sequences of four cases a side: the enumeration's rule (one arm's lower end above the
+    other's upper end, ``engine_take_up.unpaired_bounds``) separates exactly the pairs the restated unpaired p does."""
+    for level in (SIGNIFICANCE_ALPHA, SIGNIFICANCE_ALPHA / 3):
+        bounds = unpaired_bounds(4, level)
+        for a, (low_a, high_a) in bounds.items():
+            for b, (low_b, high_b) in bounds.items():
+                p = engine_separation(list(a), list(b), paired=False, value_range=(0.0, 1.0), alpha=level).p
+                separated = p is not None and p < level
+                assert separated == (low_b > high_a or low_a > high_b), (a, b, p)
+
+
+@pytest.mark.parametrize("rate", [Fraction(1, 10), Fraction(1, 2), Fraction(9, 10)], ids=["rare", "even", "common"])
+def test_the_unpaired_test_holds_alpha_exactly_on_every_pair_of_sequences_up_to_ten_a_side(rate: Fraction) -> None:
+    """Enumerated in full, every pair of pass/fail sequences of up to ten cases a side, both arms passing at ``rate``:
+    the chance the engine's unpaired reading separates is at most α at α, and at most α/3 at each look of a plan of
+    three. From 6 to 96 a side the certificate counts it by seeded simulation (``engine.null.unpaired.*``)."""
+    for level in (SIGNIFICANCE_ALPHA, SIGNIFICANCE_ALPHA / 3):
+        for cases in (2, 4, 6, 8, 10):
+            chance = exact_unpaired_rate(cases, level, rate)
+            assert chance <= level, f"{float(chance):.6f} at {cases} a side, level {level}"
 
 
 def test_an_engine_family_of_a_one_check_eval_holds_the_check_once() -> None:

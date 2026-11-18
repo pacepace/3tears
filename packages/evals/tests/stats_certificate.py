@@ -308,6 +308,25 @@ def _shards() -> list[Shard]:
                     {"cases": cases, "plus": plus, "looks": looks, "start": block.start, "count": len(block)},
                 )
             )
+    # The engine's unpaired bounded test on pass/fail arms under the null, at a fixed count and over three looks: 4,000 a
+    # cell.
+    for control, contrast, rate, looks in engine.NULL_UNPAIRED:
+        for block in _blocks(4_000, 1_000):
+            shards.append(
+                Shard(
+                    f"engine-unpaired-{looks}-{control}-{contrast}-{rate}-{block.start}",
+                    f"engine-unpaired-{looks}-{control}-{contrast}-{rate}",
+                    "local",
+                    "engine-unpaired",
+                    {
+                        "cases": (control, contrast),
+                        "rate": rate,
+                        "looks": looks,
+                        "start": block.start,
+                        "count": len(block),
+                    },
+                )
+            )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -527,6 +546,18 @@ def run_local(shard: Shard) -> dict[str, int]:
                 f"engine-null-{args['looks']}-{args['cases']}-{args['plus']}-{i}",
                 args["cases"],
                 args["plus"],
+                args["looks"],
+            )
+            for i in range(args["start"], args["start"] + args["count"])
+        ]
+        return _counts(len(separated), sum(separated))
+    if shard.job == "engine-unpaired":
+        control, contrast = args["cases"]
+        separated = [
+            engine.unpaired_null_separates(
+                f"engine-unpaired-{args['looks']}-{control}-{contrast}-{args['rate']}-{i}",
+                (control, contrast),
+                args["rate"],
                 args["looks"],
             )
             for i in range(args["start"], args["start"] + args["count"])
@@ -859,6 +890,23 @@ def _claims() -> list[Claim]:
                     f"engine-null-{looks}-{cases}-{plus}-<index>, 0-9999, restated over the product's p",
                 )
             )
+    for control, contrast, rate, looks in engine.NULL_UNPAIRED:
+        read = (
+            "at a fixed count, at α" if looks == 1 else f"over {looks} looks, each at α/{looks}, stopping at the first"
+        )
+        claims.append(
+            Claim(
+                f"engine.null.unpaired.{looks}.{control}-{contrast}.{rate}",
+                f"Under the null, two unpaired arms of {control} and {contrast} pass/fail cases, each passing "
+                f"{rate:.0%} of the time, read {read} by the engine's unpaired bounded test (the inversion of its "
+                "interval: each arm's mean bounded by the plug-in bet), separate at most α.",
+                f"engine-unpaired-{looks}-{control}-{contrast}-{rate}",
+                "hits",
+                "at_most",
+                alpha,
+                f"engine-unpaired-{looks}-{control}-{contrast}-{rate}-<index>, 0-3999, restated over the product's p",
+            )
+        )
     for reading, law, grader, stop in sorted(engine.SHOWN):
         read = "at a fixed count of 40 at α" if reading == "fixed" else "over a plan of three looks, each at α/3"
         group = (

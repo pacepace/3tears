@@ -687,7 +687,8 @@ def _fixed_count_test(
     the bet the engine's bounded interval is drawn by (:func:`~threetears.evals.analysis.stats.bounded_separation_p`
     with no mixture): paired, a bet on the differences in the order fixed by their count alone
     (:func:`~threetears.evals.analysis.stats.bet_order`), each stake tuned to that count and to ``alpha``; unpaired,
-    the bounded test at a cut between the two means. Its stakes are set from the values before each one, so under the
+    the inversion of the unpaired bounded interval, at the cut between the two arms' bounds
+    (:func:`_unpaired_bounded_p`). Its stakes are set from the values before each one, so under the
     null its capital is a nonnegative supermartingale, and by Ville's inequality its p holds α at every n for every
     distribution on the range, whatever level its stakes were tuned to. On pass/fail pairs it holds where the paired
     t-test erred above α (5.28% on fair coin pairs at 40 cases). A family re-reads it with its stakes tuned to the

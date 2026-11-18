@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import itertools
 import math
 import random
 from collections import Counter
@@ -750,6 +751,71 @@ NULL_READS: tuple[tuple[int, float, int], ...] = tuple(
     for cases in counts
     for plus in (0.05, 0.25, 0.5)
 )
+
+
+def unpaired_null_separates(tag: str, cases: tuple[int, int], rate: float, looks: int) -> bool:
+    """One seeded null comparison of two unpaired arms of pass/fail cases, each passing at ``rate``, read as the engine
+    reads an unpaired family of one: the control's ``cases[0]`` and the contrast's ``cases[1]`` at a fixed count at α
+    (``looks`` 1), or over ``looks`` looks at α/looks, look ``k`` reading the first ``k/looks`` of each arm's cases and
+    the watcher stopping at the first that separates. Read by the engine's unpaired bounded p, restated
+    (``simulation_support.engine_separation``, held to the product by ``test_engine_fixed_count_bounded.py``)."""
+    from packages.evals.tests.simulation_support import engine_separation
+
+    rng = random.Random(tag)
+    level = SIGNIFICANCE_ALPHA / looks
+    control = [float(rng.random() < rate) for _ in range(cases[0])]
+    contrast = [float(rng.random() < rate) for _ in range(cases[1])]
+    for look in range(1, looks + 1):
+        a = control[: round(cases[0] * look / looks)]
+        b = contrast[: round(cases[1] * look / looks)]
+        p = engine_separation(a, b, paired=False, value_range=(0.0, 1.0), alpha=level).p
+        if p is not None and p < level:
+            return True
+    return False
+
+
+#: The unpaired null comparisons the certificate reads, as (control's cases, contrast's cases, each arm's pass rate,
+#: looks): at a fixed count from 6 to 96 a side and over three looks at α/3, with arms equal in size and not, at rare,
+#: even and near-certain passing.
+NULL_UNPAIRED: tuple[tuple[int, int, float, int], ...] = tuple(
+    (*cases, rate, looks)
+    for looks, sizes in (
+        (1, ((6, 6), (12, 12), (24, 24), (48, 48), (96, 96), (10, 40))),
+        (3, ((30, 30), (60, 60))),
+    )
+    for cases in sizes
+    for rate in (0.1, 0.5, 0.9)
+)
+
+
+@functools.cache
+def unpaired_bounds(cases: int, level: float) -> dict[tuple[float, ...], tuple[float, float]]:
+    """Every pass/fail sequence of ``cases`` values, in case order, with the two ends its mean is bounded at by the
+    engine's unpaired reading at ``level``: each end the bet's one-sided bound at ``level``/4
+    (``stats.bounded_mean_interval`` at 1 − ``level``/2), as the unpaired bounded interval's ends are. The engine
+    separates two unpaired arms exactly where one arm's lower end lies above the other's upper end, its p being the
+    inversion of that interval (``test_engine_fixed_count_bounded.py`` holds it so)."""
+    from threetears.evals.analysis.stats import bounded_mean_interval
+
+    found = {}
+    for values in itertools.product((0.0, 1.0), repeat=cases):
+        bounds = bounded_mean_interval(values, (0.0, 1.0), confidence=1.0 - level / 2.0)
+        assert bounds is not None
+        found[values] = bounds
+    return found
+
+
+def exact_unpaired_rate(cases: int, level: float, rate: Fraction) -> Fraction:
+    """The exact chance the engine's unpaired reading separates two arms of ``cases`` pass/fail cases each, every case
+    passing at ``rate`` on both, at ``level``: a sum over every pair of sequences (:func:`unpaired_bounds`)."""
+    chance: dict[tuple[float, float], Fraction] = {}
+    for values, ends in unpaired_bounds(cases, level).items():
+        passed = int(sum(values))
+        chance[ends] = chance.get(ends, Fraction(0)) + rate**passed * (1 - rate) ** (cases - passed)
+    return sum(
+        (chance[a] * chance[b] for a in chance for b in chance if b[0] > a[1] or a[0] > b[1]),
+        Fraction(0),
+    )
 
 
 @functools.cache

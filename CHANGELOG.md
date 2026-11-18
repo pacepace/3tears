@@ -18,11 +18,17 @@ that excludes zero. `basis` reads `bounded`. Before, such a reading's p was the 
 pass/fail answers: computed exactly on two fair coins, 5.28% at 40 cases read at α, and 4.49% over three looks at α/3.
 **Why the bounded test holds α:** each stake is set from the values before it, so under no difference its capital is a
 nonnegative supermartingale started at 1, and by Ville's inequality it ever reaches 1/α at most α of the time, at
-every count and for every distribution on the range. **What is shown, and how:** every pass/fail sequence of up to
-twelve pairs is enumerated exactly (`tests/test_engine_fixed_count_bounded.py`), and from 10 to 100 pairs, at a fixed
-count and over three looks at α/3, the rate is certified by seeded simulation, each claim's Clopper-Pearson upper bound
-at most α (the statistics certificate's `engine.null.*`): it is not walked out exactly there, since the plug-in's stakes
-follow the running variance. A reading on any other range (a 1-5 judged scale) or on none (cost, latency, a count)
+every count and for every distribution on the range. Unpaired, the test is its interval's own inversion: a direction
+separates where some cut lies above one arm's upper bound and below the other's lower bound, each arm's mean bounded by
+the bet at α/4; under no difference one of each cut's two nulls is true, so the same inequality, applied to each arm,
+holds α. **What is shown, and how, on pass/fail values:** paired, every sequence of up to twelve pairs is enumerated
+exactly, and from 10 to 100 pairs, at a fixed count and over three looks at α/3, the rate is certified by seeded
+simulation (the statistics certificate's `engine.null.*` paired claims); unpaired, every pair of sequences of up to ten
+cases a side is enumerated exactly, and from 6 to 96 cases a side, arms equal in size and not, at a fixed count and over
+three looks at α/3, certified by seeded simulation (`engine.null.unpaired.*`). Each simulated claim asserts its
+Clopper-Pearson upper bound at most α; past the enumerated sizes the rate is not walked out exactly, since the
+plug-in's stakes follow the running variance. Other values on 0 to 1 rest on Ville's inequality alone. The
+enumerations are `tests/test_engine_fixed_count_bounded.py`. A reading on any other range (a 1-5 judged scale) or on none (cost, latency, a count)
 keeps the t test where its values have spread.
 
 **Changed:** where every trial of a contrast is graded on one check alone (a classifier's one label included, read as
