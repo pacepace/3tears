@@ -192,7 +192,7 @@ def _replica(
     l1 = SQLiteBackend(db_name=f"cas_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=NoL3(), kv_key_scope=scope)
     if generations is not None:
         registry.set_generation_source(generations)
     collection = cls(

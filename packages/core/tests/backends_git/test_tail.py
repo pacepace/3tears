@@ -95,7 +95,7 @@ def last_message(repo: GitRepo) -> str:
 
 async def seeded(make_repo: Any, git_cli: Any, **settings: Any) -> GitRepo:
     """a repository with two stories committed by hand."""
-    repo = await make_repo(**settings)
+    repo: GitRepo = await make_repo(**settings)
     root = repo.config.work_tree
     for story in ("one", "two"):
         (root / f"stories/{story}").mkdir(parents=True)
@@ -380,7 +380,8 @@ def outside_push(origin: Path, tmp_path: Path, git_cli: Any, files: dict[str, st
     git_cli(clone, "add", "-A")
     git_cli(clone, "commit", "-qm", "from outside")
     git_cli(clone, "push", "-q", "origin", "HEAD:main")
-    return git_cli(clone, "rev-parse", "HEAD").strip()
+    head: str = git_cli(clone, "rev-parse", "HEAD")
+    return head.strip()
 
 
 async def test_a_pull_takes_an_outside_push_and_reports_its_rows(
@@ -536,7 +537,8 @@ async def test_a_cancelled_commit_finishes_before_the_cancel_gets_out(make_repo:
 
     def slow(*args: Any, **kwargs: Any) -> str:
         time.sleep(0.4)
-        return real(*args, **kwargs)
+        made: str = real(*args, **kwargs)
+        return made
 
     repo.git.commit = slow
     task = asyncio.create_task(repo.commit_files({"a.md": b"a\n"}, "slow"))

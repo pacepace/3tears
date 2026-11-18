@@ -6,6 +6,7 @@ import time
 
 import jwt as pyjwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from threetears.core.security import (
     TURN_ASSERTION_LIFETIME,
@@ -18,19 +19,18 @@ from threetears.core.security import (
 )
 
 
-def _mint(priv, **overrides):
-    args = {
-        "signing_key": priv,
-        "kid": "hub-1",
-        "issuer": "hub",
-        "agent_id": "agent-1",
-        "user_id": "user-1",
-        "customer_id": "cust-1",
-        "conversation_id": "conv-1",
-        "turn_id": "turn-1",
-    }
-    args.update(overrides)
-    return mint_turn_assertion(**args)
+def _mint(priv: Ed25519PrivateKey, *, now: int | None = None) -> str:
+    return mint_turn_assertion(
+        signing_key=priv,
+        kid="hub-1",
+        issuer="hub",
+        agent_id="agent-1",
+        user_id="user-1",
+        customer_id="cust-1",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+        now=now,
+    )
 
 
 def test_round_trip_carries_whose_turn_it_is() -> None:

@@ -1358,13 +1358,13 @@ class TestDelete:
 
 def _sample_item(
     item_id: uuid.UUID | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, Any] | str | None = None,
     vec: list[float] | None = None,
     blob: bytes | None = None,
     date_created: datetime | None = None,
     date_updated: datetime | None = None,
 ) -> dict[str, Any]:
-    """build a sample row dict for :class:`_ItemCollection`."""
+    """build a sample row dict for :class:`_ItemCollection`; a ``str`` payload is JSON as legacy callers hand it."""
     now = datetime.now(UTC)
     return {
         "id": item_id or uuid.uuid4(),

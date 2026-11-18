@@ -194,7 +194,7 @@ class _Pod:
         l1 = SQLiteBackend(db_name=f"write_generation_{uuid.uuid4().hex[:8]}")
         l1.initialize(_metadata())
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope=_SCOPE)
         if source is not None:
             self.registry.set_generation_source(source)
         self.collection = cls(self.registry, rows, nats_client=nats_client, write_buffer=write_buffer)
@@ -396,7 +396,7 @@ class TestASwitchedOnCollectionAdvancesOncePerCommit:
     ) -> None:
         # an explicit ``None`` is not NO_L2: the caches to invalidate are other pods'
         registry = CollectionRegistry()
-        registry.configure(l3_pool=NoL3())  # type: ignore[arg-type]
+        registry.configure(l3_pool=NoL3())
         registry.set_generation_source(source)
         members = _SwitchedOnMembers(registry, {}, nats_client=None)
         await _save(members, "m1")
@@ -407,7 +407,7 @@ class TestASwitchedOnCollectionAdvancesOncePerCommit:
         self, source: _CountingSource
     ) -> None:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=NoL3())  # type: ignore[arg-type]
+        registry.configure(l3_pool=NoL3())
         registry.set_generation_source(source)
         members = _SwitchedOnMembers(registry, {}, nats_client=None)
         told: list[tuple[str, str | None, int | None]] = []
@@ -635,7 +635,7 @@ def _cas_pod(
     l1 = SQLiteBackend(db_name=f"write_generation_cas_{uuid.uuid4().hex[:8]}")
     l1.initialize(_cas_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3() if l3 else None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3() if l3 else None, kv_key_scope=_SCOPE)
     registry.set_generation_source(source)
     return registry, cls(registry, rows, write_buffer=write_buffer)
 

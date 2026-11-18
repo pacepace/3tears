@@ -44,6 +44,8 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import CorruptCacheEntry
 from threetears.core.testing.l1_tables import TEST_L1_KEEP
 
+from packages.core.tests.optional_support import present
+
 _ROW_ID = uuid.UUID("01926f3a-0000-7000-8000-000000000001")
 _WHEN = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 
@@ -132,6 +134,12 @@ class _RecordingPool:
     async def execute(self, sql: str, *args: Any) -> str:
         self.args.append(args)
         return "INSERT 0 1"
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        raise AssertionError(f"a flush writes; it read {sql!r}")
+
+    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        raise AssertionError(f"a flush writes; it read {sql!r}")
 
 
 def _wired() -> tuple[CollectionRegistry, _RecordingPool]:
@@ -241,7 +249,7 @@ class _RecordingDurableStore:
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
         conn: Any = None,
@@ -447,7 +455,7 @@ async def test_a_buffered_row_whose_instant_will_not_parse_still_drains() -> Non
     )
 
     pending = await WriteBuffer(l1_backend=SQLiteBackend(db_name=db_name)).drain(
-        decode=lambda table, text: registry.get_collection(table).decode_row(text.encode("utf-8"))
+        decode=lambda table, text: present(registry.get_collection(table)).decode_row(text.encode("utf-8"))
     )
 
     assert [write.data for write in pending] == [{"id": "h1", "date_created": "not a time"}]
@@ -462,9 +470,9 @@ async def test_drain_reads_only_the_process_local_write_buffer() -> None:
             super().__init__(**kwargs)
             self.queries: list[str] = []
 
-        def execute_query(self, query: str, *args: Any, **kwargs: Any) -> Any:
-            self.queries.append(" ".join(query.split()))
-            return super().execute_query(query, *args, **kwargs)
+        def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+            self.queries.append(" ".join(sql.split()))
+            return super().execute_query(sql, params)
 
     l1 = _Recording(db_name=f"wb_drain_{uuid.uuid4().hex}")
     buffer = WriteBuffer(l1_backend=l1)

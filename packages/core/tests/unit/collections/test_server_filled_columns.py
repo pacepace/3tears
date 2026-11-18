@@ -171,7 +171,7 @@ def _registry(nats: FakeNatsClient, store: _FakeDefaultingStore | None, schema: 
     l1 = SQLiteBackend(db_name=f"server_filled_{uuid.uuid4().hex[:8]}")
     l1.initialize(schema.to_sqlalchemy_table(MetaData()).metadata)
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)
     return registry
 
 
@@ -272,7 +272,7 @@ class TestASynchronousWriteCachesTheRowL3Holds:
         """
         nats, store = FakeNatsClient(), _FakeDefaultingStore(_SCHEMA)
         registry = CollectionRegistry()
-        registry.configure(l1_backend=None, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)
         coll = _Ledger(registry, _config())
         entity = coll.create({"id": _ID, "label": "first", "spec": {"openapi": "3.1.0"}})
         assert entity.spec == {"openapi": "3.1.0"}, "the handle no longer carries the key before the save"

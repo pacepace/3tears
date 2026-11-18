@@ -79,6 +79,15 @@ class _Log:
             self.changes.append(change)
         return len(self.changes)
 
+    async def put_back(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        raise AssertionError("a restore labels the log it fills; nothing is put back beside it")
+
 
 @pytest.fixture
 async def ring(db_container: str) -> AsyncIterator[tuple[asyncpg.Pool, str]]:

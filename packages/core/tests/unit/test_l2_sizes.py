@@ -38,7 +38,7 @@ class _Lister:
     """answers ``STREAM.LIST`` from a fixed set of streams, ``limit`` per page, as the server pages it."""
 
     def __init__(self, streams: Sequence[Mapping[str, Any]], *, limit: int = 256) -> None:
-        self.streams = list(streams)
+        self.streams: Sequence[Mapping[str, Any]] = list(streams)
         self.limit = limit
         self.asked: list[int] = []
         self.fail = False

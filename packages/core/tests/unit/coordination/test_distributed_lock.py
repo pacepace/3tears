@@ -185,6 +185,22 @@ class _UnreachableNats:
         return self._js
 
 
+def _bucket_over(
+    fake_kv: _FakeKv, *, full_name: str = "itest-scheduler-locks", ttl: timedelta | None = timedelta(seconds=60)
+) -> NatsKvBucket:
+    """the real bucket wrapper over the fake nats-py handle, its self-heal re-opening through an unreachable broker.
+
+    The one place a bucket is built here: nats-py's ``KeyValue`` is a concrete class with no protocol to
+    conform to, and the bucket is typed by it, so the fake handle goes in unchecked here and nowhere else.
+    """
+    return NatsKvBucket(
+        client=_UnreachableNats(fake_kv),  # type: ignore[arg-type]
+        full_name=full_name,
+        kv=fake_kv,  # type: ignore[arg-type]
+        ttl=ttl,
+    )
+
+
 # parity-exempt: minimal NatsClient stand-in exposing only kv_bucket(); the distributed-lock body touches only that surface, so full NatsClient parity would be over-mocking
 class _FakeClient:
     """Minimal :class:`NatsClient` stand-in exposing only ``kv_bucket``.
@@ -205,15 +221,11 @@ class _FakeClient:
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> NatsKvBucket:
-        del storage, create_if_missing, history
+        del storage, create_if_missing, history, direct
         self.kv_bucket_calls.append((name, ttl))
-        return NatsKvBucket(
-            client=_UnreachableNats(self._fake_kv),  # type: ignore[arg-type]
-            full_name=f"itest-{name}",
-            kv=self._fake_kv,  # type: ignore[arg-type]
-            ttl=ttl,
-        )
+        return _bucket_over(self._fake_kv, full_name=f"itest-{name}", ttl=ttl)
 
 
 @pytest.mark.asyncio
@@ -233,7 +245,7 @@ async def test_heartbeat_geq_ttl_raises_value_error() -> None:
     client = _FakeClient(fake_kv)
     with pytest.raises(ValueError, match="heartbeat"):
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "job",
             ttl=timedelta(seconds=5),
             heartbeat=timedelta(seconds=5),
@@ -247,7 +259,7 @@ async def test_acquire_and_release() -> None:
     fake_kv = _FakeKv()
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "backup",
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=10),
@@ -267,7 +279,7 @@ async def test_lock_held_raises_when_key_exists() -> None:
     client = _FakeClient(fake_kv)
     with pytest.raises(LockHeld, match="job"):
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "job",
             ttl=timedelta(seconds=1),
             heartbeat=timedelta(milliseconds=10),
@@ -285,7 +297,7 @@ async def test_create_kv_error_propagates() -> None:
     client = _FakeClient(fake_kv)
     with pytest.raises(KvError):
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "job",
             ttl=timedelta(seconds=1),
             heartbeat=timedelta(milliseconds=10),
@@ -299,7 +311,7 @@ async def test_heartbeat_refreshes_key() -> None:
     fake_kv = _FakeKv()
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "job",
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=30),
@@ -331,7 +343,7 @@ async def test_body_exception_still_releases_lock() -> None:
 
     with pytest.raises(Boom):
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "job",
             ttl=timedelta(seconds=1),
             heartbeat=timedelta(milliseconds=20),
@@ -350,7 +362,7 @@ async def test_release_swallows_kverror_during_cleanup() -> None:
     # the cleanup is best-effort: a transient delete failure must not
     # mask normal completion of the lock body.
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "job",
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=20),
@@ -372,7 +384,7 @@ async def test_external_cancellation_during_body_cleans_up() -> None:
     async def hold_lock() -> None:
         try:
             async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
+                client,
                 "job",
                 ttl=timedelta(seconds=1),
                 heartbeat=timedelta(milliseconds=20),
@@ -404,7 +416,7 @@ async def test_custom_bucket_name_threads_through() -> None:
     fake_kv = _FakeKv()
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "k",
         bucket_name="custom-locks",
         ttl=timedelta(seconds=1),
@@ -441,26 +453,22 @@ async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
             storage: str = "memory",
             create_if_missing: bool = True,
             history: int = 1,
+            direct: bool | None = None,
         ) -> NatsKvBucket:
-            del storage, create_if_missing, history
+            del storage, create_if_missing, history, direct
             self.kv_bucket_calls.append((name, ttl))
             # mimic NatsClient.kv_bucket: first-caller's ttl pins the
             # bucket; subsequent calls ignore the new ttl and return
             # the cached bucket.
             if self._cached is None:
-                self._cached = NatsKvBucket(
-                    client=_UnreachableNats(fake_kv),  # type: ignore[arg-type]
-                    full_name=f"itest-{name}",
-                    kv=fake_kv,  # type: ignore[arg-type]
-                    ttl=ttl,
-                )
+                self._cached = _bucket_over(fake_kv, full_name=f"itest-{name}", ttl=ttl)
             return self._cached
 
     client = _CachingClient()
 
     # first caller pins ttl=10s on the bucket
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "first",
         ttl=timedelta(seconds=10),
         heartbeat=timedelta(milliseconds=10),
@@ -472,7 +480,7 @@ async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
     # rather than silently use 10s.
     with pytest.raises(ValueError, match="bucket"):
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "second",
             ttl=timedelta(seconds=30),
             heartbeat=timedelta(milliseconds=10),
@@ -499,22 +507,18 @@ async def test_ttl_match_against_existing_bucket_acquires() -> None:
             storage: str = "memory",
             create_if_missing: bool = True,
             history: int = 1,
+            direct: bool | None = None,
         ) -> NatsKvBucket:
-            del storage, create_if_missing, history
+            del storage, create_if_missing, history, direct
             self.kv_bucket_calls.append((name, ttl))
             if self._cached is None:
-                self._cached = NatsKvBucket(
-                    client=_UnreachableNats(fake_kv),  # type: ignore[arg-type]
-                    full_name=f"itest-{name}",
-                    kv=fake_kv,  # type: ignore[arg-type]
-                    ttl=ttl,
-                )
+                self._cached = _bucket_over(fake_kv, full_name=f"itest-{name}", ttl=ttl)
             return self._cached
 
     client = _CachingClient()
 
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "first",
         ttl=timedelta(seconds=10),
         heartbeat=timedelta(milliseconds=10),
@@ -523,7 +527,7 @@ async def test_ttl_match_against_existing_bucket_acquires() -> None:
 
     # same ttl on second call: no raise, lock acquires normally
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "second",
         ttl=timedelta(seconds=10),
         heartbeat=timedelta(milliseconds=10),
@@ -551,7 +555,7 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
     fake_kv.update = failing_update  # type: ignore[method-assign, method-assign]
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
-        client,  # type: ignore[arg-type]
+        client,
         "job",
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=20),
@@ -746,7 +750,7 @@ class TestAHolderReleasesALockItRenewedMidFlight:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "raced",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=5),
@@ -777,7 +781,7 @@ class TestAHolderReleasesALockItRenewedMidFlight:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "handover",
             heartbeat=timedelta(seconds=30),
         ):
@@ -842,7 +846,7 @@ class TestAHolderThatLostTheLockNeverTakesItBack:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "stalled",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -878,7 +882,7 @@ class TestAHolderThatLostTheLockNeverTakesItBack:
         fake_kv.get = _get_then_lose_it  # type: ignore[method-assign]
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "raced",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -897,7 +901,7 @@ class TestAHolderThatLostTheLockNeverTakesItBack:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "expired",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -915,7 +919,7 @@ class TestAHolderThatLostTheLockNeverTakesItBack:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "held",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -939,7 +943,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         fake_kv.update = _broker_down  # type: ignore[method-assign]
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "unreachable",
             heartbeat=timedelta(seconds=0.02),
             # the lease's TTL is whole seconds; one second is the shortest a lock can have
@@ -967,7 +971,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         fake_kv.update = _one_blip  # type: ignore[method-assign]
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "blip",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -985,7 +989,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
 
         with pytest.raises(LockLost) as lost:
             async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
+                client,
                 "interrupted",
                 heartbeat=timedelta(seconds=0.01),
                 ttl=timedelta(seconds=1),
@@ -1008,7 +1012,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
 
         async def _hold() -> None:
             async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
+                client,
                 "cancelled",
                 heartbeat=timedelta(seconds=0.01),
                 ttl=timedelta(seconds=1),
@@ -1028,7 +1032,7 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "checked",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -1064,7 +1068,7 @@ class TestTheMaximumHoldIsTheCallersToSet:
 
         with pytest.raises(LockLost) as lost:
             async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
+                client,
                 "wedged-by-its-own-limit",
                 heartbeat=timedelta(seconds=0.01),
                 ttl=timedelta(seconds=1),
@@ -1080,7 +1084,7 @@ class TestTheMaximumHoldIsTheCallersToSet:
 
         with pytest.raises(ValueError, match="max_hold"):
             async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
+                client,
                 "never",
                 max_hold=timedelta(seconds=-1),
             ):
@@ -1137,12 +1141,6 @@ class _OldReleaseLock:
             await self.bucket.delete(key=self.key, revision=entry[1])
 
 
-def _bucket_over(fake_kv: _FakeKv) -> NatsKvBucket:
-    return NatsKvBucket(
-        client=_UnreachableNats(fake_kv), full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60)
-    )
-
-
 class TestARollingUpgradeNeverFreesAHeldLock:
     """During a deploy an old replica (raw-token entries) and a new one (lease envelopes) share a key.
 
@@ -1159,7 +1157,7 @@ class TestARollingUpgradeNeverFreesAHeldLock:
         before = fake_kv.store["tick"]
 
         with pytest.raises(LockHeld, match="tick"):
-            async with nats_distributed_lock(client, "tick"):  # type: ignore[arg-type]
+            async with nats_distributed_lock(client, "tick"):
                 pass  # pragma: no cover - never enters
 
         assert fake_kv.store["tick"] == before, "the new replica wrote over an old replica's held lock"
@@ -1172,7 +1170,7 @@ class TestARollingUpgradeNeverFreesAHeldLock:
         client = _FakeClient(fake_kv)
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "tick",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),
@@ -1193,7 +1191,7 @@ class TestARollingUpgradeNeverFreesAHeldLock:
         client = _FakeClient(fake_kv)
         old = _OldReleaseLock(_bucket_over(fake_kv), "tick")
 
-        async with nats_distributed_lock(client, "tick", heartbeat=timedelta(seconds=30)):  # type: ignore[arg-type]
+        async with nats_distributed_lock(client, "tick", heartbeat=timedelta(seconds=30)):
             held_entry = fake_kv.store["tick"]
             assert not await old.acquire(), "an old replica acquired a lock a new replica holds"
             # an old holder that had lost the key to this one: its renewal and release leave it alone
@@ -1233,7 +1231,7 @@ class TestARenewalAppliedButNeverAnsweredKeepsTheLock:
         body_finished = False
 
         async with nats_distributed_lock(
-            client,  # type: ignore[arg-type]
+            client,
             "sweep",
             heartbeat=timedelta(seconds=0.01),
             ttl=timedelta(seconds=1),

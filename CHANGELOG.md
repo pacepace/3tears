@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a registry and a collection's `l3_pool` say what they accept: `L3PoolLike`
+
+`CollectionRegistry.configure`, `register` and `bind_table` and a collection's `l3_pool` take
+`threetears.core.backends.protocol.L3PoolLike`: a `DurableStore` (a `SqlL3Backend`, or a non-SQL store such as a git
+backend), held as given, or a raw asyncpg-shaped pool (`RawL3Pool`: asyncpg's `Pool`, `NatsProxyL3Backend`), wrapped
+in a `SqlL3Backend`. That is what they always accepted at run time; they were typed `L3Backend` only, so a type checker
+refused a `DurableStore` or a raw pool handed to them. `l3_pool` is now a property whose setter takes `L3PoolLike` and
+holds it unchanged; reading it still answers the raw-SQL surface. Nothing
+changes at run time.
+
 ### nats: `NatsClientLike`, what a holder of the whole client types it by; `FakeNatsClient` is one
 
 `threetears.nats.kv.NatsClientLike` is the client's surface a consumer holding one client uses: declaring and opening

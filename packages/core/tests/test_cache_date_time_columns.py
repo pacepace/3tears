@@ -44,7 +44,7 @@ def _duckdb() -> Any:
     return DuckDBBackend()
 
 
-def _metadata(*extra: Column) -> MetaData:
+def _metadata(*extra: Column[Any]) -> MetaData:
     metadata = MetaData()
     Table(
         "clock_rows",
@@ -77,7 +77,7 @@ def make_backend(request: pytest.FixtureRequest) -> Iterator[Callable[[MetaData]
 def _round_trip(backend: Any, **values: Any) -> dict[str, Any]:
     entity_id = str(_fresh_id())
     backend.upsert("clock_rows", {"id": entity_id, **values})
-    row = backend.select_by_id("clock_rows", entity_id)
+    row: dict[str, Any] | None = backend.select_by_id("clock_rows", entity_id)
     assert row is not None
     return row
 

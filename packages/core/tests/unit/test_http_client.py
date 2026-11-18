@@ -494,7 +494,7 @@ async def test_span_emitted_and_no_header_leak() -> None:
     assert "threetears.core.http_client.request" in names
 
     for span in spans:
-        for value in span.attributes.values():
+        for value in (span.attributes or {}).values():
             assert secret not in str(value)
 
 
@@ -769,13 +769,12 @@ async def test_stream_returns_4xx_un_retried() -> None:
 
 async def test_stream_retries_connect_error_then_succeeds() -> None:
     calls = [0]
-    real = _streaming_transport(200, b"recovered")
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls[0] += 1
         if calls[0] == 1:
             raise httpx.ConnectError("boom")
-        return real.handler(request)
+        return httpx.Response(status_code=200, content=b"recovered")
 
     async with _client(httpx.MockTransport(handler)) as client, client.stream("GET", "/x") as response:
         body = await response.aread()

@@ -50,11 +50,13 @@ __all__ = [
     "KeyLedReadingStore",
     "L3AnswerCutError",
     "L3Backend",
+    "L3PoolLike",
     "L3Reader",
     "LoadFile",
     "LoadResult",
     "LoadingStore",
     "OrderedDurableStore",
+    "RawL3Pool",
     "RowcountUnreadableError",
     "TruncatingStore",
     "load_requests",
@@ -287,6 +289,42 @@ class DurableStore(Protocol):
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return every row matching the equality ``filters`` (all rows when ``None``/empty)."""
         ...
+
+
+class RawL3Pool(Protocol):
+    """a raw asyncpg-shaped pool: the surface :class:`~threetears.core.backends.sql.SqlL3Backend` wraps.
+
+    A bare asyncpg ``Pool`` or the L3 rail's ``NatsProxyL3Backend``: parameterized SQL and pooled
+    connections, none of the structured :class:`DurableStore` ops. The wrapper sends its raw-SQL
+    methods here (``fetch`` / ``fetchrow`` / ``execute``, and ``fetchval`` / ``transaction`` when the
+    pool has them) and takes connections from ``acquire`` for its own transactions. Parameters are
+    positional-only so a pool naming its SQL parameter differently still is one.
+    """
+
+    def acquire(self) -> Any:
+        """an asyncpg-Pool-style ``acquire()`` async context manager yielding a connection."""
+        ...
+
+    async def fetch(self, query: str, /, *params: Any) -> Any:
+        """run a SELECT and return its rows."""
+        ...
+
+    async def fetchrow(self, query: str, /, *params: Any) -> Any:
+        """run a SELECT and return its first row, or ``None``."""
+        ...
+
+    async def execute(self, query: str, /, *params: Any) -> Any:
+        """run a statement and return its status tag."""
+        ...
+
+
+#: what a registry (:meth:`~threetears.core.collections.registry.CollectionRegistry.configure`,
+#: ``register``, ``bind_table``) and a collection's ``l3_pool`` accept as L3. A :class:`DurableStore`
+#: (a :class:`~threetears.core.backends.sql.SqlL3Backend`, or a non-SQL store such as scriob's
+#: ``GitL3Backend``) is held unchanged; a :class:`RawL3Pool` is wrapped in a ``SqlL3Backend`` (by the
+#: registry when configured, by the collection on first use when assigned directly), which gains it
+#: the structured ops. An :class:`L3Backend` that is not also a ``DurableStore`` is a raw pool too.
+type L3PoolLike = L3Backend | DurableStore | RawL3Pool
 
 
 @runtime_checkable

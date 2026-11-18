@@ -136,7 +136,11 @@ class TestThePoolStartsDespiteStalledConnects:
         assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
         # the retry WARNING counts the connections the failed attempt had open, the ones the
         # half-built pool already held among them.
-        closed = [r.extra_data["connections_closed"] for r in caplog.records if "attempt 1 failed" in r.getMessage()]
+        closed = [
+            r.__dict__["extra_data"]["connections_closed"]
+            for r in caplog.records
+            if "attempt 1 failed" in r.getMessage()
+        ]
         assert closed == [3]
 
     async def test_a_started_pool_keeps_no_connection_it_has_since_closed(

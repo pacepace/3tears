@@ -1,4 +1,4 @@
-"""a durable L3 a test hands the registry when the test is not about L3."""
+"""a durable L3 a test hands the registry when the test is not about L3, and a raw pool whose statements go elsewhere."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.protocol import DurableStore, RawL3Pool
 
 
 class NoL3(DurableStore):
@@ -38,3 +38,23 @@ class NoL3(DurableStore):
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         raise AssertionError(f"NoL3 scanned {table}: the test's collection reads its own rows")
+
+
+class ConnOnlyPool(RawL3Pool):
+    """a raw transport a collection wraps as its SQL store, for a test that hands every statement a connection.
+
+    The collection reads what it needs of the transport (``rows_per_statement``, when a subclass states it) and
+    sends its statements to the ``conn=`` given, so a statement reaching this pool is a test that went wrong.
+    """
+
+    def acquire(self) -> Any:
+        raise AssertionError("ConnOnlyPool acquired: the test's statements go to the connection it gives")
+
+    async def fetch(self, query: str, /, *params: Any) -> Any:
+        raise AssertionError(f"ConnOnlyPool fetched {query!r}: the test's statements go to the connection it gives")
+
+    async def fetchrow(self, query: str, /, *params: Any) -> Any:
+        raise AssertionError(f"ConnOnlyPool fetched {query!r}: the test's statements go to the connection it gives")
+
+    async def execute(self, query: str, /, *params: Any) -> Any:
+        raise AssertionError(f"ConnOnlyPool ran {query!r}: the test's statements go to the connection it gives")

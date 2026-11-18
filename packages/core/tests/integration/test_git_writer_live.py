@@ -55,13 +55,15 @@ pytestmark = pytest.mark.integration
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
 
 #: quick timings, so a handover takes seconds rather than the production half minute.
+#: the deployment's forward seal (envelope.py): the same in every process of the test's deployment
+FORWARD_SEED = new_signing_seed()
+
 FAST = {
     "lease_ttl": timedelta(seconds=2),
     "lease_renew": timedelta(milliseconds=500),
     "watch_interval": timedelta(milliseconds=200),
     "forward_timeout": timedelta(seconds=10),
-    # the deployment's forward seal (envelope.py): the same in every process of the test's deployment
-    "forward_signing_seed": new_signing_seed(),
+    "forward_signing_seed": FORWARD_SEED,
 }
 
 
@@ -126,7 +128,7 @@ async def connect(nats_container: str, namespace: str) -> AsyncIterator[Callable
     for client in clients:
         # a client cut off by the proxy may not close cleanly; that is the point of its test
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(client.close(), timeout=5)
+            await asyncio.wait_for(client.shutdown(), timeout=5)
 
 
 @pytest.fixture()
@@ -301,7 +303,7 @@ async def test_a_sealed_request_replayed_is_refused_and_the_first_ones_after_a_f
     lease_key = writer.config.lease_key
     sealer = ForwardEnvelope(
         nats,
-        seed=FAST["forward_signing_seed"],
+        seed=FORWARD_SEED,
         audience=lease_key,
         bucket="unused-by-a-sender",
         anchor=GitDirReplayAnchor(tmp_path / "sender-anchor"),
@@ -515,7 +517,7 @@ async def test_the_writer_checks_what_it_is_sent_and_runs_only_operations_it_has
     lease_key = writer.config.lease_key
     sealer = ForwardEnvelope(
         nats,
-        seed=FAST["forward_signing_seed"],
+        seed=FORWARD_SEED,
         audience=lease_key,
         bucket="unused-by-a-sender",
         anchor=GitDirReplayAnchor(tmp_path / "sender-anchor"),

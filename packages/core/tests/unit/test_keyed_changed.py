@@ -94,7 +94,7 @@ def _held(db: duckdb.DuckDBPyConnection, state: str) -> dict[tuple[Any, ...], st
     return {(row[0], row[1]): row[2] for row in db.execute(sql, [state]).fetchall()}
 
 
-def _changed(db: Any, held: Mapping[tuple[Any, ...], str], state: str = "PA", **options: Any) -> ChangedRows:
+def _changed(db: Any, held: Mapping[tuple[Any, ...], str | None], state: str = "PA", **options: Any) -> ChangedRows:
     return run_inline(
         read_changed(
             db,

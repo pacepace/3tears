@@ -6,24 +6,36 @@ tests): a key batch, a leading prefix of the key, a NULL bucket matched null-saf
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import pytest
 
 from threetears.core.sql_fragments import unnest_key_join
 
 duckdb = pytest.importorskip("duckdb")
 
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
-def _db() -> object:
-    db = duckdb.connect(":memory:")
+
+def _db() -> DuckDBPyConnection:
+    db: DuckDBPyConnection = duckdb.connect(":memory:")
     db.execute("CREATE TABLE votes (state VARCHAR, geo_id BIGINT, votes BIGINT)")
     db.execute("INSERT INTO votes VALUES ('VA', 1, 10), ('VA', 2, 20), ('OH', 1, 30), (NULL, 9, 90)")
     return db
 
 
-def _read(db: object, columns: list[str], casts: list[str], values: list[list[str | None]], **kw: bool) -> list[tuple]:
-    unnested, joined = unnest_key_join(columns, casts, **kw)
+def _read(
+    db: DuckDBPyConnection,
+    columns: list[str],
+    casts: list[str],
+    values: list[list[str | None]],
+    *,
+    null_safe: bool = False,
+) -> list[tuple[Any, ...]]:
+    unnested, joined = unnest_key_join(columns, casts, null_safe=null_safe)
     sql = f"SELECT t.* FROM votes AS t JOIN (SELECT {unnested}) AS k ON {joined}"  # noqa: S608
-    return sorted(db.execute(sql, values).fetchall(), key=str)  # type: ignore[attr-defined]
+    return sorted(db.execute(sql, values).fetchall(), key=str)
 
 
 def test_a_key_batch_reads_exactly_its_rows() -> None:

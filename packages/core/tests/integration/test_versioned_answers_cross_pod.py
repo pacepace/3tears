@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
@@ -50,7 +50,7 @@ class TestTwoReplicas:
     async def test_racing_replicas_compute_once(self, replicas: tuple[NatsClient, NatsClient]) -> None:
         calls: list[str] = []
 
-        def computer(name: str):  # noqa: ANN202 - a local factory
+        def computer(name: str) -> Callable[[], Awaitable[str]]:
             async def compute() -> str:
                 calls.append(name)
                 await asyncio.sleep(0.4)

@@ -391,7 +391,9 @@ class TestRetiredKeysArePurged:
         bucket = await _bucket(nats)
         assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2"), len(_entry_keys(bucket, "v3"))) == ([], [], 1)
 
-    async def test_keys_deleted_before_a_later_version_fails_are_still_purged(self) -> None:
+    async def test_keys_deleted_before_a_later_version_fails_are_still_purged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         purged: list[str] = []
 
         async def recording(keys: list[str]) -> int:
@@ -404,16 +406,16 @@ class TestRetiredKeysArePurged:
             await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
         bucket = await _bucket(nats)
 
-        def v2_unreadable(original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-            async def read(*args: Any, **kwargs: Any) -> Any:
+        def v2_unreadable[**P, R](original: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+            async def read(*args: P.args, **kwargs: P.kwargs) -> R:
                 if f"{_TABLE}_index.v2." in str(kwargs.get("key")):
                     raise KvError("broker unreachable")
                 return await original(*args, **kwargs)
 
             return read
 
-        bucket.get_latest = v2_unreadable(bucket.get_latest)  # type: ignore[method-assign]
-        bucket.get_entry = v2_unreadable(bucket.get_entry)  # type: ignore[method-assign]
+        monkeypatch.setattr(bucket, "get_latest", v2_unreadable(bucket.get_latest))
+        monkeypatch.setattr(bucket, "get_entry", v2_unreadable(bucket.get_entry))
         with pytest.raises(KvError):
             await answers.retire_older_than(3)
         # v1 is forgotten once cleared, so no later retirement would ever purge its keys
@@ -488,7 +490,9 @@ class TestAWriterRetiredWhileComputing:
         await retirer.retire_older_than(2)  # the next retirement: no writer holds the lock now
         assert (_entry_keys(bucket, "v1"), _shard_keys(bucket, "v1")) == ([], [])
 
-    async def test_an_unreadable_floor_takes_the_answer_back_and_still_answers(self) -> None:
+    async def test_an_unreadable_floor_takes_the_answer_back_and_still_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         nats = FakeNatsClient()
         bucket = await _bucket(nats)
         hold = asyncio.Event()
@@ -497,16 +501,16 @@ class TestAWriterRetiredWhileComputing:
         computing = asyncio.create_task(answers.answer("v1", "a", compute, order=1))
         await compute.started.wait()
 
-        def unreadable(original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-            async def read(*args: Any, **kwargs: Any) -> Any:
+        def unreadable[**P, R](original: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+            async def read(*args: P.args, **kwargs: P.kwargs) -> R:
                 if str(kwargs.get("key")).endswith("_index.versions"):
                     raise KvError("broker unreachable")
                 return await original(*args, **kwargs)
 
             return read
 
-        bucket.get_latest = unreadable(bucket.get_latest)  # type: ignore[method-assign]
-        bucket.get_entry = unreadable(bucket.get_entry)  # type: ignore[method-assign]
+        monkeypatch.setattr(bucket, "get_latest", unreadable(bucket.get_latest))
+        monkeypatch.setattr(bucket, "get_entry", unreadable(bucket.get_entry))
         hold.set()
         assert _text(await computing) == "answered"
         assert _entry_keys(bucket, "v1") == []  # unknown counts as retired: never kept

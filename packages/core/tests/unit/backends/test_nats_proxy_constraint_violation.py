@@ -24,12 +24,12 @@ from threetears.core.exceptions import DataLayerUnavailableError
 from .scripted_broker import TX_ID, scripted_proxy
 
 
-def _violation(sqlstate: str = "23505", **fields: Any) -> dict[str, Any]:
+def _violation(sqlstate: str | None = "23505", **fields: Any) -> dict[str, Any]:
     """
     a failed reply as the broker sends it for a constraint violation.
 
-    :param sqlstate: the server's SQLSTATE
-    :ptype sqlstate: str
+    :param sqlstate: the server's SQLSTATE, ``None`` for a reply that names none
+    :ptype sqlstate: str | None
     :param fields: further contract fields, overriding the defaults
     :ptype fields: Any
     :return: the reply dict

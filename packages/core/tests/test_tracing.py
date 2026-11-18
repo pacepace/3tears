@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +29,9 @@ def test_traced_without_otel(monkeypatch: pytest.MonkeyPatch) -> None:
         sys.modules.pop("threetears.observe.tracing", None)
         tracing = importlib.import_module("threetears.observe.tracing")
 
-        @tracing.traced
+        fresh_traced: Callable[[Callable[[int, int], int]], Callable[[int, int], int]] = tracing.traced
+
+        @fresh_traced
         def add(a: int, b: int) -> int:
             return a + b
 

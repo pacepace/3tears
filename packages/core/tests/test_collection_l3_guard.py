@@ -22,6 +22,8 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 
+from packages.core.tests.durable_support import ConnOnlyPool
+
 
 class _Thing(BaseEntity):
     """Minimal entity; this suite is about the collection's L3 handle, not entity behaviour."""
@@ -94,7 +96,7 @@ def test_it_returns_the_handle_when_one_is_configured() -> None:
     pass-through of whatever it resolved, not of what the caller passed.
     """
     registry = CollectionRegistry()
-    registry.configure(l3_pool=object())
+    registry.configure(l3_pool=ConnOnlyPool())
     collection = _ThingCollection(registry, DefaultCoreConfig(), nats_client=None)
 
     assert collection.l3_pool is not None, "fixture must have an L3 for this to mean anything"

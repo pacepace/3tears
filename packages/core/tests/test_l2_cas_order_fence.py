@@ -209,7 +209,7 @@ def _replica(
     l1 = SQLiteBackend(db_name=f"fence_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=NoL3(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=NoL3(), kv_key_scope=_SCOPE)
     collection = cls(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store, buffer)
     return collection, registry
 

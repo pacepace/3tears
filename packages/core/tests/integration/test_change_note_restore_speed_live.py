@@ -93,6 +93,15 @@ class _LostLog:
             self.calls[-1] += 1
         return self.appended
 
+    async def put_back(
+        self,
+        changes: Sequence[Any] | AsyncIterable[Any],
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        raise AssertionError("a restore labels the log it fills; nothing is put back beside it")
+
 
 async def _seeded(db_container: str, *, rows: int, max_size: int = 2) -> AsyncIterator[_Ring]:
     """a ring whose current table holds ``_NOTES`` keyed notes naming ``rows`` distinct rows (each noted

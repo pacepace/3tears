@@ -23,7 +23,7 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
+from packages.core.tests.dialect_support import pg_dialect
 from sqlalchemy.schema import CreateTable
 
 from threetears.core.collections.scope_epochs import scope_epochs_schema
@@ -86,7 +86,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
     try:
         await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}"')
-        dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+        dialect = pg_dialect()
         for declared in (scope_epochs_schema("o24_scope_epochs"), source_tokens_schema("o24_source_tokens")):
             table = declared.to_sqlalchemy_table(MetaData())
             await connection.execute(str(CreateTable(table).compile(dialect=dialect)))

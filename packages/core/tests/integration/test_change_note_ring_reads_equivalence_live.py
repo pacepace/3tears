@@ -119,7 +119,7 @@ async def _seed(ring: _Ring, rng: random.Random, now: datetime) -> datetime:
     for index in range(NOTE_RING_SIZE):
         notes = f"{ring.schema}.{note_table(index)}"
         await ring.conn.execute(f"DELETE FROM {notes}")  # noqa: S608
-        rows = []
+        rows: list[tuple[str, list[str] | None, str | None, str | None, str | None, datetime]] = []
         for _ in range(rng.randrange(0, 25)):
             table = rng.choice((_ASKED, _ASKED, _OTHER))
             tenant = rng.choice((None, "a", "b"))

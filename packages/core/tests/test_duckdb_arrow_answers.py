@@ -126,7 +126,7 @@ def test_execute_arrow_lets_go_of_the_interpreter_lock() -> None:
 
 def test_a_text_numeric_is_stored_as_its_dict_row_is(backend: Any) -> None:
     """the rail answers a NUMERIC as its digits; typed in Arrow, it stores what the same row as a dict stores."""
-    rows = [
+    rows: list[dict[str, str | None]] = [
         {"id": "a", "share": "0.5000"},
         {"id": "b", "share": "1.5"},
         {"id": "c", "share": "2.12345"},

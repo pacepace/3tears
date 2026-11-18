@@ -908,7 +908,9 @@ def _changed_world(seed: int) -> tuple[dict[str, Any], dict[str, Any], dict[str,
     old_races = {r: f"race{r}" for r in range(rng.randrange(3, 30))}
     new_races = {r: (f"{n}!" if rng.random() < 0.3 else n) for r, n in old_races.items() if rng.random() > 0.2}
     new_races.update({r: f"new{r}" for r in range(500, 500 + rng.randrange(0, 5))})
-    touched_races = {(str(r),) for r in old_races.keys() | new_races.keys() if old_races.get(r) != new_races.get(r)}
+    touched_races: set[tuple[str, ...]] = {
+        (str(r),) for r in old_races.keys() | new_races.keys() if old_races.get(r) != new_races.get(r)
+    }
     touched_races.add(("-1",))
     before = {
         _VOTES: _votes([(s, g, v) for (s, g), v in old_votes.items()]),

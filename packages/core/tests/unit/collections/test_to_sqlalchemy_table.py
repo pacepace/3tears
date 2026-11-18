@@ -40,7 +40,7 @@ import sys
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from packages.core.tests.dialect_support import pg_dialect
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.schema import CreateTable
 from threetears.core.collections.schema_backed import (
@@ -334,7 +334,7 @@ def test_to_sqla_server_default_is_the_expression_in_the_ddl() -> None:
         ],
         l1_eviction=TEST_L1_TABLE,
     )
-    ddl = str(CreateTable(schema.to_sqlalchemy_table(sa.MetaData())).compile(dialect=postgresql.dialect()))
+    ddl = str(CreateTable(schema.to_sqlalchemy_table(sa.MetaData())).compile(dialect=pg_dialect()))
     assert "tags JSONB DEFAULT '[]'::jsonb" in ddl
     assert "created TIMESTAMP WITH TIME ZONE DEFAULT now()" in ddl
 
@@ -540,7 +540,8 @@ def test_parity_helper_catches_vector_dim_regression() -> None:
             ],
             l1_eviction=TEST_L1_TABLE,
         )
-        return schema.to_sqlalchemy_table(sa.MetaData())
+        table: sa.Table = schema.to_sqlalchemy_table(sa.MetaData())
+        return table
 
     a = _build(1024)
     b = _build(768)
@@ -570,7 +571,8 @@ def test_parity_helper_catches_enum_value_regression() -> None:
             ],
             l1_eviction=TEST_L1_TABLE,
         )
-        return schema.to_sqlalchemy_table(sa.MetaData())
+        table: sa.Table = schema.to_sqlalchemy_table(sa.MetaData())
+        return table
 
     a = _build(("alpha", "beta", "gamma"))
     b = _build(("alpha", "beta"))  # dropped "gamma"
@@ -601,7 +603,8 @@ def test_parity_helper_catches_numeric_scale_regression() -> None:
             ],
             l1_eviction=TEST_L1_TABLE,
         )
-        return schema.to_sqlalchemy_table(sa.MetaData())
+        table: sa.Table = schema.to_sqlalchemy_table(sa.MetaData())
+        return table
 
     a = _build(8)
     b = _build(4)
@@ -718,7 +721,8 @@ def test_parity_helper_catches_using_regression() -> None:
             ),
             l1_eviction=TEST_L1_TABLE,
         )
-        return schema.to_sqlalchemy_table(sa.MetaData())
+        table: sa.Table = schema.to_sqlalchemy_table(sa.MetaData())
+        return table
 
     a = _build("hnsw")
     b = _build("btree")
@@ -739,20 +743,20 @@ def _keyed_by_optional(*, nulls_not_distinct: bool) -> sa.Table:
         indexes=(Index("ix_t_owner_key", "owner", "key", unique=True, nulls_not_distinct=nulls_not_distinct),),
         l1_eviction=TEST_L1_TABLE,
     )
-    return schema.to_sqlalchemy_table(sa.MetaData())
+    table: sa.Table = schema.to_sqlalchemy_table(sa.MetaData())
+    return table
 
 
 def test_nulls_not_distinct_emits_the_dialect_kwarg() -> None:
     """``nulls_not_distinct=True`` reaches SQLAlchemy as ``postgresql_nulls_not_distinct``, and the DDL says so."""
-    from sqlalchemy.dialects import postgresql
     from sqlalchemy.schema import CreateIndex
 
     table = _keyed_by_optional(nulls_not_distinct=True)
     (idx,) = table.indexes
     assert idx.dialect_kwargs.get("postgresql_nulls_not_distinct") is True
-    assert "NULLS NOT DISTINCT" in str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert "NULLS NOT DISTINCT" in str(CreateIndex(idx).compile(dialect=pg_dialect()))
     (plain,) = _keyed_by_optional(nulls_not_distinct=False).indexes
-    assert "NULLS NOT DISTINCT" not in str(CreateIndex(plain).compile(dialect=postgresql.dialect()))
+    assert "NULLS NOT DISTINCT" not in str(CreateIndex(plain).compile(dialect=pg_dialect()))
 
 
 def test_parity_helper_catches_nulls_not_distinct_regression() -> None:
@@ -908,23 +912,21 @@ def test_to_sqla_desc_column_emits_descending_index() -> None:
     """a ``desc`` column is emitted as ``column.desc()``: the compiled
     ``CREATE INDEX`` equals the migration's ``(agent_id, date_created DESC)``.
     """
-    from sqlalchemy.dialects import postgresql
     from sqlalchemy.schema import CreateIndex
 
     t = _desc_schema().to_sqlalchemy_table(sa.MetaData())
     (idx,) = t.indexes
-    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    compiled = str(CreateIndex(idx).compile(dialect=pg_dialect()))
     assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created DESC)"
 
 
 def test_to_sqla_index_without_desc_stays_ascending() -> None:
     """an index that names no ``desc`` column compiles with no ``DESC``."""
-    from sqlalchemy.dialects import postgresql
     from sqlalchemy.schema import CreateIndex
 
     t = _desc_schema(()).to_sqlalchemy_table(sa.MetaData())
     (idx,) = t.indexes
-    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    compiled = str(CreateIndex(idx).compile(dialect=pg_dialect()))
     assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created)"
 
 

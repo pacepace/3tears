@@ -62,8 +62,8 @@ class _PriceRow(BaseEntity):
 class _PriceTable:
     """``price_rows`` in memory: an upsert on ``sku`` that fills ``tier``'s default and returns the stored key.
 
-    An asyncpg-pool-shaped double: the raw pool has no production protocol (``l3_pool`` is typed
-    ``Any`` by design), so there is nothing to declare parity against.
+    An asyncpg-pool-shaped double (:class:`~threetears.core.backends.protocol.RawL3Pool`): the registry
+    wraps it in ``SqlL3Backend``. Its statements are its own; it hands out no connection.
     """
 
     def __init__(self) -> None:
@@ -93,6 +93,9 @@ class _PriceTable:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         return []
+
+    def acquire(self) -> Any:
+        raise AssertionError("price_rows' statements go to the pool; none takes a connection")
 
 
 class _Prices(DeclaredTableCollection[_PriceRow]):

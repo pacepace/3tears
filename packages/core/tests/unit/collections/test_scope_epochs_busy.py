@@ -49,6 +49,7 @@ async def _begin(error: BaseException) -> int:
     conn = _Conn(error)
     async with CallerTransaction(conn):
         return await _epochs().begin(conn=conn)
+    raise AssertionError("the caller's transaction swallowed what begin raised")
 
 
 async def test_a_refused_nowait_is_the_record_busy() -> None:

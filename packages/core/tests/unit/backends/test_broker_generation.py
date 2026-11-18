@@ -443,7 +443,7 @@ def _pod(
     l1 = SQLiteBackend(db_name=f"broker_generation_{uuid.uuid4().hex[:8]}")
     l1.initialize(metadata)
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope="pod")
     registry.set_generation_source(source if source is not None else BrokerGenerationSource())
     return cls(registry, broker.proxy())
 
@@ -565,7 +565,7 @@ class TestASourceThatCannotReadLeavesAbsenceCachingOff:
     @staticmethod
     def _guard(source: BrokerGenerationSource | None) -> Exception | RevocationGuard:
         registry = CollectionRegistry()
-        registry.configure(l2_client=FakeNatsClient(), l3_pool=NoL3(), kv_key_scope="pod")  # type: ignore[arg-type]
+        registry.configure(l2_client=FakeNatsClient(), l3_pool=NoL3(), kv_key_scope="pod")
         if source is not None:
             registry.set_generation_source(source)
         assert (registry.readable_generation_source is not None) == (source is not None and source.reads_generations)

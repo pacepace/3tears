@@ -37,6 +37,8 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
+from packages.core.tests.durable_support import ConnOnlyPool
+
 LAYER = TableSchema(
     name="layer",
     primary_key=("feature_id", "source_version"),
@@ -100,8 +102,11 @@ class _Table:
             held = held[: int(limit.group(1))]
         return [{c: r[c] for c in columns} for r in held[: self.cap]]
 
+    async def fetchrow(self, sql: str, *params: Any) -> Any:
+        raise AssertionError(f"a key-led read asks for pages of rows, never one: {sql!r}")
 
-class _Pool:
+
+class _Pool(ConnOnlyPool):
     """a raw transport the collection wraps as its SQL store; statements go to the connection given.
 
     It says how many rows it answers a statement, as the L3 rail's client does.
@@ -402,7 +407,7 @@ async def test_a_transport_that_cuts_nothing_is_never_read_again() -> None:
 async def test_a_transport_that_says_nothing_is_taken_to_cut_at_the_rail_s_cap() -> None:
     collection = collection_for_schema(LAYER, entity_class=_Shape)(CollectionRegistry(), DefaultCoreConfig(), None)
 
-    class _Silent:
+    class _Silent(ConnOnlyPool):
         """a raw transport that does not say how many rows it answers."""
 
     collection.l3_pool = _Silent()
@@ -485,6 +490,9 @@ class _Versions:
             if r["feature_id"] == params[0] and (len(params) == 1 or r["source_version"] > params[1])
         ]
         return held[: int(limit.group(1))]
+
+    async def fetchrow(self, sql: str, *params: Any) -> Any:
+        raise AssertionError(f"a whole-table read asks for pages of rows, never one: {sql!r}")
 
 
 async def test_a_whole_table_read_hands_over_each_page_before_it_asks_for_the_next() -> None:
