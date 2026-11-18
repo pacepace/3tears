@@ -66,6 +66,7 @@ from packages.evals.tests.test_result_reading_fields import (
     add_a_regressed_step,
     enrich,
 )
+from packages.evals.tests.unchecked import unchecked
 
 SCOPE = "uni-1"
 LOGGER = "threetears.evals.kernel.phase_log"
@@ -330,14 +331,6 @@ class _Down(CountingStore):
         raise ConnectionError("the backend is down")
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the call is refused: the bad value is what they exercise.
-    """
-    return function
-
-
 class TestOneOutageContract:
     @pytest.mark.parametrize("path", ["store", "engine"])
     def test_an_outage_is_a_storage_error_on_either_path(self, path: str) -> None:
@@ -367,9 +360,7 @@ class TestOneOutageContract:
         storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
 
         with pytest.raises(ValueError, match="kind"):
-            _unchecked(storage.result_groups)(
-                ["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")}
-            )
+            unchecked(storage.result_groups)(["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")})
         with pytest.raises(TypeError, match="string"):
             storage.result_groups(["run-1"], SCOPE, by="eval_run_id", measures={"n": ("count", None)})
         assert store.calls == []

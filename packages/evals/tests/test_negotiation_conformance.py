@@ -11,7 +11,7 @@ name that mistake, against the router that shows it; the guide's own client pass
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -20,6 +20,7 @@ import pytest
 from threetears.evals.negotiation import LearnedSettings, SettingFacts, WireSettings, negotiate, read_router_refusal
 from threetears.evals.schema import ClientRequestSettings, StopReason
 from threetears.evals.testing import NegotiationConformanceFailure, RouterTransport, check_refusal_negotiation
+from packages.evals.tests.unchecked import unchecked
 
 #: What the scripted client is asked for: an output cap, a temperature and an effort word.
 ASKED = WireSettings(max_tokens=1024, temperature=0.0, reasoning_effort="high")
@@ -146,12 +147,7 @@ class Client:
 async def _checked_loosely(build_client: Callable[[RouterTransport], Client]) -> None:
     """:func:`check_refusal_negotiation` over this module's client, whose mistakes include a reply short of the port
     (:class:`Unreporting`): what the check exists to catch, so the client is handed over unchecked."""
-    await _unchecked(check_refusal_negotiation)(build_client)
-
-
-def _unchecked(check: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
-    """``check`` with its signature unchecked, for a call that hands it an ill-typed client on purpose."""
-    return check
+    await unchecked(check_refusal_negotiation)(build_client)
 
 
 async def test_a_client_that_negotiates_passes() -> None:

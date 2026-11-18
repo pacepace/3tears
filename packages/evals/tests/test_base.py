@@ -39,6 +39,7 @@ from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, sampled_model_names, stored_models, stored_sample
 from packages.evals.tests.clock_support import frozen_clock
+from packages.evals.tests.unchecked import unchecked
 
 
 @pytest.fixture(autouse=True)
@@ -46,11 +47,6 @@ def _frozen_clock() -> Iterator[None]:
     """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
     with frozen_clock():
         yield
-
-
-def _unchecked[T](function: Callable[..., T]) -> Callable[..., T]:
-    """``function``, called with arguments its signature refuses, on purpose: what the model does with them is the test."""
-    return function
 
 
 class _Sample(EvalBaseModel):
@@ -115,7 +111,7 @@ def test_the_base_pins_its_configuration_values_literally() -> None:
 
     assert Aliased.model_validate({"wireName": 1}).wire_name == 1
     assert Aliased.model_validate({"wire_name": 2}).wire_name == 2
-    assert _unchecked(Aliased)(wire_name=3).wire_name == 3
+    assert unchecked(Aliased)(wire_name=3).wire_name == 3
 
 
 def test_the_document_base_derives_from_the_same_options_and_names_only_its_deltas() -> None:
@@ -187,7 +183,7 @@ def test_the_dict_path_passes_a_lone_surrogate_through_unrepaired() -> None:
 def test_an_unknown_field_is_refused() -> None:
     """The ``forbid`` stance still holds after the copy."""
     with pytest.raises(ValidationError, match="unexpected_keyword_argument|extra_forbidden"):
-        _unchecked(_Sample)(name="ok", unknown_field="value")
+        unchecked(_Sample)(name="ok", unknown_field="value")
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         _Sample.from_dict({"name": "ok", "unknown_field": "value"})

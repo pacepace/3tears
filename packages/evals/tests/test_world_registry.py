@@ -28,6 +28,7 @@ from threetears.evals.kernel.host.world import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
+from packages.evals.tests.unchecked import unchecked
 
 
 #: The schema a sound dimension declares.
@@ -66,14 +67,6 @@ def _sound_dimension(
         perceived_by=perceived_by,
         when=when,
     )
-
-
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the registry refuses that value: the bad value is what they exercise.
-    """
-    return function
 
 
 _SOUND_BINDINGS: dict[str, Callable[..., object]] = {
@@ -415,7 +408,7 @@ class TestRegistrationRefusals:
         caused it.
         """
         with pytest.raises(WorldRegistrationError, match="shelf_stock's schema is not a mapping"):
-            _unchecked(_sound_dimension)(schema="integer")
+            unchecked(_sound_dimension)(schema="integer")
 
     def test_two_dimensions_of_one_name_are_refused(self) -> None:
         """The registry keys by name, so a duplicate would shadow rather than collide."""
@@ -442,7 +435,7 @@ class TestRegistrationRefusals:
         door — a handle that resolves to something that cannot be called.
         """
         with pytest.raises(WorldRegistrationError, match="binding 'h.read' is not callable"):
-            _unchecked(WorldRegistry)(
+            unchecked(WorldRegistry)(
                 [_sound_dimension()], bindings={"h.seed": lambda value: None, "h.read": "https://tv/state"}
             )
 

@@ -7,12 +7,12 @@ is (``test_prompt_catalogue``, ``test_retired_names``).
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from threetears.evals.ops import AnalysisGeneration
+from packages.evals.tests.unchecked import unchecked
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
 
@@ -28,11 +28,6 @@ GENERATION_PATH = (
 WRITER_NAMES = frozenset({"ANALYSIS_GEN_PROMPT", "EVAL_ANALYSIS_GEN_DEFAULT", "generate_analysis", "gen_prompt"})
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function``, called with what its signature refuses, on purpose: the refusal is the test."""
-    return function
-
-
 def test_a_generation_names_no_prompt_of_its_own() -> None:
     """``analysis_generate`` writes with the analyst skill the package ships, so its settings name no prompt at all."""
     generation = AnalysisGeneration(budget_s=1.0)
@@ -41,7 +36,7 @@ def test_a_generation_names_no_prompt_of_its_own() -> None:
     # A host still passing the planner's prompt settings is refused by name, never read.
     for retired in ("prompt_id", "resolve_prompt"):
         with pytest.raises(TypeError, match=retired):
-            _unchecked(AnalysisGeneration)(budget_s=1.0, **{retired: None})
+            unchecked(AnalysisGeneration)(budget_s=1.0, **{retired: None})
 
 
 @pytest.mark.parametrize("relative", GENERATION_PATH)

@@ -14,7 +14,6 @@ refusal (``refuse_ignored_template_fields``) over the kind's entry in the host's
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -38,6 +37,7 @@ from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, 
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.unchecked import unchecked
 
 _SCOPE = "judge-template-fields"
 
@@ -99,17 +99,9 @@ def test_the_judge_kind_declares_every_field_but_what_it_reads() -> None:
     assert set(TEMPLATE_FIELDS) - entry.ignored_template_fields == set(), "a judge template is a kind and an intent"
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the call is refused: the bad value is what they exercise.
-    """
-    return function
-
-
 def test_a_kind_declaring_a_name_no_template_has_is_refused() -> None:
     with pytest.raises(ValueError, match="not template fields"):
-        _unchecked(LaunchableKind)(
+        unchecked(LaunchableKind)(
             launch=lambda _request: None,
             resolve_subject=lambda _subject, _scope: None,
             ignored_template_fields=frozenset({"world_sed"}),

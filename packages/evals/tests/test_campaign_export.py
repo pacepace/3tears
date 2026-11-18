@@ -24,7 +24,7 @@ import ast
 import dataclasses
 import json
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,7 @@ from packages.evals.tests.ops_support import (
     ops_fixture,
     settled,
 )
+from packages.evals.tests.unchecked import unchecked
 
 SCOPE = TOYHOST_SCOPE
 
@@ -903,14 +904,6 @@ def test_the_function_exports_a_closure_past_the_actions_ceiling() -> None:
     assert _closure_bytes(exported) > host.campaign_export_max_bytes and exported.page is None
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the call is refused: the bad value is what they exercise.
-    """
-    return function
-
-
 async def test_the_host_raises_and_lowers_the_ceiling() -> None:
     toy = off_loop(Toy)
     size = _closure_bytes(off_loop(toy.export))
@@ -922,7 +915,7 @@ async def test_the_host_raises_and_lowers_the_ceiling() -> None:
         assert outcomes[-1].is_error is refused, (ceiling, outcomes[-1].text)
     for bad in (0, -1, True, 1.5):
         with pytest.raises(ValueError, match="campaign_export_max_bytes must be a positive integer"):
-            _unchecked(dataclasses.replace)(toy.host, campaign_export_max_bytes=bad)
+            unchecked(dataclasses.replace)(toy.host, campaign_export_max_bytes=bad)
 
 
 def test_a_reading_host_takes_the_ceiling() -> None:

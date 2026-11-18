@@ -41,6 +41,7 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.unchecked import unchecked
 
 
 def _launching(**settings: object) -> tuple[LaunchHost, EvalStorage]:
@@ -385,14 +386,9 @@ async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_la
     assert host.job_manager.admitted_count == 0
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function``, called with what its signature refuses, on purpose: the refusal is the test."""
-    return function
-
-
 def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument() -> None:
     with pytest.raises(ValueError, match="cassete_mode"):
-        _unchecked(LaunchableKind)(
+        unchecked(LaunchableKind)(
             launch=lambda _request: None,
             resolve_subject=lambda _subject, _scope: None,
             unhonoured_launch_arguments=frozenset({"cassete_mode"}),

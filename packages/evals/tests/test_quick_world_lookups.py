@@ -12,7 +12,7 @@ comparison is served the same recording.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ import pytest
 
 from threetears.evals import Eval, World
 from threetears.evals.quick.tools import ToolRecordingMiss
+from packages.evals.tests.unchecked import unchecked
 
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]
 
@@ -234,21 +235,13 @@ def test_tools_no_agent_could_be_handed_are_refused(tools: Any, said: str) -> No
         World(tools=tools)
 
 
-def _unchecked(function: Callable[..., Any]) -> Callable[..., Any]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the call is refused: the bad value is what they exercise.
-    """
-    return function
-
-
 async def test_a_synchronous_agent_handed_a_worlds_tools_is_refused_before_anything_runs() -> None:
     def sync_agent(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
         """Cannot await its tools."""
         return 1
 
     with pytest.raises(ValueError, match="must be one: its tools are async functions"):
-        await Eval(CASES, _unchecked(World(tools=[Dice().roll]))(sync_agent), [total], k=1).run(store=":memory:")
+        await Eval(CASES, unchecked(World(tools=[Dice().roll]))(sync_agent), [total], k=1).run(store=":memory:")
 
 
 async def test_every_arm_of_a_comparison_is_served_one_recording(tmp_path: Path) -> None:

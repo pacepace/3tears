@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import ast
 import warnings
-from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -53,6 +52,7 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     TOYHOST_MEASURES,
     toyhost_profile,
 )
+from packages.evals.tests.unchecked import unchecked
 
 #: One arbitrary lever level, for the tests that care which NAMES a map carries rather than what
 #: they resolved to.
@@ -358,19 +358,11 @@ def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field
     assert not {"style", "caveat_kinds"} & {f.name for f in fields(toy)}
 
 
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
-
-    The tests that use it assert the call is refused: the bad value is what they exercise.
-    """
-    return function
-
-
 @pytest.mark.parametrize("retired", ["style", "caveat_kinds"])
 def test_passing_a_retired_style_field_is_refused_naming_it(retired: str) -> None:
     """A host still passing ``style=`` or ``caveat_kinds=`` is refused, the field named, rather than ignored."""
     with pytest.raises(TypeError, match=retired):
-        _unchecked(replace)(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
+        unchecked(replace)(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent() -> None:

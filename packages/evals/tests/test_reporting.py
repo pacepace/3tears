@@ -111,6 +111,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.host_vocabulary import HOST_NOUNS
+from packages.evals.tests.unchecked import unchecked
 
 #: Whole-word host nouns in PROSE. The list is imported, never retyped; only the matching
 #: differs, and it has to. The canary splits identifiers into parts because `\b` cannot see
@@ -146,15 +147,6 @@ def _catalog_name_of(row_name: str) -> str:
     names = _catalog_names_of(row_name)
     assert len(names) == 1, f"{row_name!r} resolves from {names} -- it needs exactly one registered catalog name"
     return names[0]
-
-
-def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
-    """``function`` with its signature unchecked, for a call that leaves out a required argument on purpose.
-
-    The tests that use it assert the call raises ``TypeError``: the omission is what they exercise, so the call is
-    made through a ``Callable[..., object]`` rather than a signature the checker would refuse it against.
-    """
-    return function
 
 
 def _predicted(cell: CostEstimateCell) -> PredictedValue:
@@ -1606,15 +1598,15 @@ class TestPlacementHelper:
         "call",
         [
             pytest.param(
-                lambda run, result: _unchecked(place_results)([run], [result], None, source="test"), id="place_results"
+                lambda run, result: unchecked(place_results)([run], [result], None, source="test"), id="place_results"
             ),
             pytest.param(
-                lambda run, result: _unchecked(project_score_records)([run], [result], profile=_JUDGED_HOST),
+                lambda run, result: unchecked(project_score_records)([run], [result], profile=_JUDGED_HOST),
                 id="project_score_records",
             ),
-            pytest.param(lambda run, result: _unchecked(compute_frontier)([run], [result]), id="compute_frontier"),
+            pytest.param(lambda run, result: unchecked(compute_frontier)([run], [result]), id="compute_frontier"),
             pytest.param(
-                lambda run, result: _unchecked(compute_history)([run], [result], profile=_JUDGED_HOST),
+                lambda run, result: unchecked(compute_history)([run], [result], profile=_JUDGED_HOST),
                 id="compute_history",
             ),
         ],
