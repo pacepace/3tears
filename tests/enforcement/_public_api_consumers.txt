@@ -401,3 +401,4 @@ packages/core/src/threetears/core/collections/marker_purge.py:RemovalMarkerPurge
 packages/core/src/threetears/core/collections/marker_purge.py:MarkerPurgePass  # bluelabsio/14-eng-ai-bot: src/aibots/hub/common/collection_markers.py purge_tick and report read a pass's outcome (behind, purged, oldest_marker_age)
 packages/core/src/threetears/core/collections/marker_purge.py:L2_MARKER_PURGE_AGE  # bluelabsio/14-eng-ai-bot: src/aibots/hub/common/collection_markers.py report names the age in the command's output
 packages/core/src/threetears/core/collections/marker_purge.py:L2_MARKER_PURGE_INTERVAL  # bluelabsio/14-eng-ai-bot: src/aibots/hub/app.py runs the collection-marker-purge PeriodicTask at it
+packages/nats/src/threetears/nats/kv.py:NatsClientLike  # bluelabsio/14-eng-ai-survey: src/tests/support/doubles.py RegistryHolder holds its client by it, so FakeBusRegistry hands 3tears FakeNatsClient over with no ignore (this release)

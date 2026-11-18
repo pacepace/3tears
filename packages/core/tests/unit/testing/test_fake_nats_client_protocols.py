@@ -21,7 +21,7 @@ from threetears.nats import (
     TypedSubscriber,
 )
 from threetears.nats.change_log import ChangeLogLike
-from threetears.nats.kv import KvBucketLike, KvDeclaringClient
+from threetears.nats.kv import KvBucketLike, KvDeclaringClient, NatsClientLike
 from threetears.nats.subjects import Subject
 
 
@@ -43,6 +43,10 @@ def _kv_publisher(client: FakeNatsClient) -> KvPublisher:
 
 
 def _kv_declaring_client(client: FakeNatsClient) -> KvDeclaringClient:
+    return client
+
+
+def _nats_client_like(client: FakeNatsClient) -> NatsClientLike:
     return client
 
 
@@ -111,6 +115,24 @@ async def test_a_bucket_opened_through_the_protocol_is_a_bucket_and_takes_replic
     bucket = await opener.kv_bucket(name="b", replicas=3)
     assert await bucket.put(key="k", value=b"v") == 1
     assert await bucket.get(key="k") == b"v"
+
+
+def test_the_double_is_what_a_holder_of_the_whole_client_types_it_by() -> None:
+    assert isinstance(FakeNatsClient(), NatsClientLike)
+
+
+@pytest.mark.asyncio
+async def test_a_holder_of_the_whole_client_reads_its_namespace_publishes_raw_and_to_jetstream() -> None:
+    client = FakeNatsClient(namespace="ns")
+    held: NatsClientLike = client
+    assert held.namespace == "ns"
+    seen: list[str] = []
+    await held.subscribe_typed(subject=Subject.raw("a.b"), cb=lambda m: _keep(seen, m), message_type=_Message)
+    await held.publish_raw(subject=Subject.raw("a.b"), payload=_Message(value="raw").model_dump_json().encode())
+    assert seen == ["raw"]
+    assert client.published == []
+    await held.jetstream_publish(subject=Subject.raw("audit.x"), payload=b"event")
+    assert [(str(subject), payload) for subject, payload in client.jetstream_published] == [("audit.x", b"event")]
 
 
 def test_the_double_binds_a_change_log_an_epoch_source_and_reader_take() -> None:

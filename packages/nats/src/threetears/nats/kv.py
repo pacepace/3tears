@@ -84,6 +84,7 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
 )
 from threetears.nats import kv_watch
+from threetears.nats.capabilities import ChangeLogBinder, KvPublisher, TypedSubscriber
 from threetears.nats.change_log import (
     CHANGE_LOG_CONTINUES_METADATA,
     CHANGE_LOG_RESTORING_METADATA,
@@ -103,7 +104,7 @@ if TYPE_CHECKING:
     from nats.aio.subscription import Subscription as _NatsSubscription
     from nats.js.kv import KeyValue
 
-    from threetears.nats.client import NatsClient
+    from threetears.nats.client import NatsClient, PublishPin
     from threetears.nats.subjects import Subject
 
 __all__ = [
@@ -118,6 +119,7 @@ __all__ = [
     "KvStreamOpening",
     "KvTimings",
     "NatsChangeLog",
+    "NatsClientLike",
     "NatsKvBucket",
     "build_kv_stream_config",
     "kv_stream_differences",
@@ -3705,6 +3707,71 @@ class JetStreamPublisher(Protocol):
     """
 
     async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None: ...
+
+
+@runtime_checkable
+class NatsClientLike(KvDeclaring, KvPublisher, TypedSubscriber, JetStreamPublisher, ChangeLogBinder, Protocol):
+    """What a holder of the whole client uses of it: :class:`NatsClient` and the testing fake both satisfy it.
+
+    For a consumer that keeps one client and hands it on -- a registry holding the client its
+    collections, coordination buckets and listeners are bound with -- rather than taking one slice
+    for one call. A field typed by this takes a :class:`NatsClient` in production and
+    :class:`threetears.core.testing.kv.FakeNatsClient` in a test, with no cast: the declaring and
+    opening of KV buckets, a typed or raw publish and a typed subscription, a JetStream publish, a
+    change log, the namespace subjects are built under, and the reconnect hook a bucket's declarer
+    re-runs after the broker comes back. A consumer that also needs what the fake does not serve
+    (requests, durable consumers, object stores) types that one call by its own capability.
+    """
+
+    @property
+    def namespace(self) -> str:
+        """the subject namespace prefix the client was bound with.
+
+        :return: namespace prefix
+        :rtype: str
+        """
+        ...
+
+    async def publish_raw(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        reply_to: Subject | None = None,
+        pin: PublishPin | None = None,
+    ) -> None:
+        """publish raw bytes to a subject.
+
+        :param subject: target subject
+        :ptype subject: Subject
+        :param payload: pre-serialized message bytes
+        :ptype payload: bytes
+        :param reply_to: optional reply subject
+        :ptype reply_to: Subject | None
+        :param pin: keeps this publish on the connection a run's first publish used, or ``None``
+        :ptype pin: PublishPin | None
+        :return: None
+        :rtype: None
+        """
+        ...
+
+    def add_reconnect_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """register an async hook run after each successful reconnect.
+
+        :param callback: an argument-less coroutine function
+        :ptype callback: Callable[[], Awaitable[None]]
+        :return: None
+        :rtype: None
+        """
+        ...
+
+    async def reconnect(self) -> None:
+        """reconnect, then run every registered hook in registration order.
+
+        :return: None
+        :rtype: None
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------

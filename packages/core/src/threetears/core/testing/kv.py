@@ -82,9 +82,9 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from uuid import uuid7
 
@@ -94,6 +94,10 @@ from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError, KvFullError, PublishError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import contain, get_logger
+
+if TYPE_CHECKING:
+    from threetears.nats.client import PublishPin
+    from threetears.nats.subjects import Subject
 
 __all__ = ["FakeChangeLog", "FakeKvBucket", "FakeNatsClient", "FakeSubscription"]
 
@@ -1258,9 +1262,12 @@ class FakeSubscription:
         self._closed = True
 
 
-# parity-with: threetears.nats.kv.KvCapable
+# parity-with: threetears.nats.kv.NatsClientLike
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
+
+    a :class:`threetears.nats.kv.NatsClientLike`, as :class:`threetears.nats.NatsClient` is: a
+    consumer that holds its client typed by that protocol takes this fake in its tests with no cast.
 
     matches the narrow surface KV consumers depend on. the bucket
     cache mirrors :class:`NatsClient`'s internal cache: repeat
@@ -1276,7 +1283,9 @@ class FakeNatsClient:
     real listener against it.
     """
 
-    def __init__(self, *, bucket_age: timedelta | None = None, declared_buckets: Iterable[str] = ()) -> None:
+    def __init__(
+        self, *, bucket_age: timedelta | None = None, declared_buckets: Iterable[str] = (), namespace: str = "test"
+    ) -> None:
         """initialize with a bucket registry holding only what a declarer already created.
 
         :param bucket_age: how long ago every bucket this client creates reports having been
@@ -1301,6 +1310,9 @@ class FakeNatsClient:
             rather than every such test failing with an absent bucket that has nothing to do with
             what it tests. Each is created in the default shape (no TTL, memory storage)
         :ptype declared_buckets: Iterable[str]
+        :param namespace: what :attr:`namespace` answers, as the real client answers the namespace it
+            connected with; bucket names here are never prefixed with it
+        :ptype namespace: str
         :return: None
         :rtype: None
         :raises ValueError: when ``bucket_age`` is negative
@@ -1312,7 +1324,10 @@ class FakeNatsClient:
         for name in declared_buckets:
             # declared by ANOTHER identity: this client only binds them, so it never recreates one
             self._buckets[name] = self._new_bucket(name=name, ttl=None, storage="memory", direct=None, may_create=False)
+        self._namespace = namespace
         self.published: list[Any] = []
+        # every JetStream publish, in order: (subject, payload)
+        self.jetstream_published: list[tuple[Subject, bytes]] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
         # what the real client remembers: every bucket this client declared through
@@ -1326,6 +1341,15 @@ class FakeNatsClient:
         self._still_wanted: dict[str, Callable[[], Awaitable[bool]]] = {}
         # change log name -> its in-memory log, shared by every caller of :meth:`change_log`
         self._change_logs: dict[str, FakeChangeLog] = {}
+
+    @property
+    def namespace(self) -> str:
+        """the subject namespace this client was given, as the real client answers the one it connected with.
+
+        :return: namespace prefix
+        :rtype: str
+        """
+        return self._namespace
 
     @property
     def remembered_declarations(self) -> frozenset[str]:
@@ -1520,6 +1544,57 @@ class FakeNatsClient:
         self.published.append(message)
         for callback, message_type in list(self._subscribers.get(str(subject), [])):
             await callback(message_type.model_validate_json(message.model_dump_json()))
+
+    async def publish_raw(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        reply_to: Subject | None = None,
+        pin: PublishPin | None = None,
+    ) -> None:
+        """deliver raw bytes to this client's subscribers on that subject, decoded as each one's envelope.
+
+        The keyword form of the raw shorthand ``publish(subject, payload_bytes)``: recorded nowhere, as
+        that form is not.
+
+        :param subject: the subject published to; stringified for the subscriber lookup
+        :ptype subject: Subject
+        :param payload: the serialized message
+        :ptype payload: bytes
+        :param reply_to: ignored; present so the surface matches the real client
+        :ptype reply_to: Subject | None
+        :param pin: ignored; the fake has one connection, so order is kept anyway
+        :ptype pin: PublishPin | None
+        :return: None
+        :rtype: None
+        """
+        del reply_to, pin
+        await self.publish(subject, payload)
+
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | float = timedelta(seconds=10),
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        """record a JetStream publish in :attr:`jetstream_published`; the fake holds no stream, so it is acknowledged at once.
+
+        :param subject: the JetStream subject
+        :ptype subject: Subject
+        :param payload: the serialized message
+        :ptype payload: bytes
+        :param timeout: ignored; nothing waits for an acknowledgement
+        :ptype timeout: timedelta | float
+        :param headers: ignored; the fake keeps the payload only
+        :ptype headers: Mapping[str, str] | None
+        :return: None
+        :rtype: None
+        """
+        del timeout, headers
+        self.jetstream_published.append((subject, payload))
 
     async def subscribe_typed(
         self,

@@ -26,7 +26,7 @@ from threetears.nats import (
     TypedSubscriber,
 )
 from threetears.nats.change_log import ChangeLogLike
-from threetears.nats.kv import KvStreamClient, NatsChangeLog
+from threetears.nats.kv import KvStreamClient, NatsChangeLog, NatsClientLike
 
 _CAPABILITIES: list[type[Any]] = [
     ChangeLogBinder,
@@ -101,6 +101,11 @@ def _subscription_handle(subscription: Subscription) -> SubscriptionHandle:
     return subscription
 
 
+# what a holder of the whole client types it by (the testing fake is one too: core's test_fake_nats_client_protocols)
+def _nats_client_like(client: NatsClient) -> NatsClientLike:
+    return client
+
+
 @pytest.mark.parametrize("capability", _CAPABILITIES, ids=lambda c: c.__name__)
 def test_the_client_is_every_capability(capability: type[Any]) -> None:
     client = NatsClient.__new__(NatsClient)
@@ -122,6 +127,11 @@ def test_the_client_is_what_a_bucket_holds_and_its_subscription_is_a_handle() ->
     assert isinstance(NatsClient.__new__(NatsClient), KvStreamClient)
     assert isinstance(Subscription.__new__(Subscription), SubscriptionHandle)
     assert not isinstance(_OnlyRequests(), KvStreamClient)
+
+
+def test_the_client_is_what_a_holder_of_the_whole_client_types_it_by() -> None:
+    assert isinstance(NatsClient.__new__(NatsClient), NatsClientLike)
+    assert not isinstance(_OnlyRequests(), NatsClientLike)
 
 
 def test_importing_the_capabilities_loads_no_nats_client() -> None:
