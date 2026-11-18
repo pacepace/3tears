@@ -80,6 +80,7 @@ from threetears.core.backends.protocol import (
     LoadFile,
     LoadingStore,
     OrderedDurableStore,
+    PrefixDeletingStore,
     TruncatingStore,
     copy_bounds,
     load_requests,
@@ -3320,6 +3321,81 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if not doomed:
             return 0
         return await self.delete_rows(doomed, conn=conn)
+
+    async def delete_prefixes(self, prefixes: Sequence[Mapping[str, Any]], *, conn: Any) -> int:
+        """delete every row of some key prefixes on a caller's transaction, in statements whose count and cost do not
+        grow with the rows already held: what a load does when whole runs, or whole parts, are gone from its source.
+
+        Each prefix names the key's leading columns and their values (a state's run: ``{"state": "PA", "run_id":
+        7}``). The store deletes them without reading a row back
+        (:meth:`~threetears.core.backends.protocol.PrefixDeletingStore.delete_prefixes`): a key-led ``DELETE`` a
+        group of prefixes that differ only in their last column. Where :meth:`clear_partition` reads the prefixes'
+        keys and deletes them by key, so its epoch names each row, this one's epoch names the prefixes: the change is
+        recorded as a whole-table change narrowed to them, as a load from files is (:meth:`load_files`), never key by
+        key.
+
+        **On the caller's transaction only**, as :meth:`delete_rows` is: the rows are gone when the caller's
+        :class:`CallerTransaction` commits, and a failing delete fails the transaction. When it ends, whichever way,
+        the prefixes are settled (:meth:`settle_prefixes`): this process drops the table from its L1 and cached scans,
+        each derived cache that takes a partition (a :class:`~threetears.core.collections.copy_follower.CopyFollower`)
+        reads each prefix again as a key range, and the table's write generation advances once, its epoch naming the
+        prefixes, so every following process does the same at its catch-up. The change note the delete leaves is one
+        for the table, naming the prefixes too, so a log restored from the notes says what the epoch said.
+
+        **One kind of write a table a transaction**: a transaction that deletes a table's prefixes writes no row of
+        that table by key (:meth:`CallerTransaction.enroll_prefixes`); its new rows go in a transaction of their own.
+
+        :param prefixes: the key prefixes to delete, each the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :return: the rows deleted
+        :rtype: int
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection has no durable
+            store, its store cannot delete by prefix, or it defers its L3 writes; when a prefix does not lead the key;
+            when the transaction wrote rows of the table by key
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_prefixes")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(
+                f"{type(self).__name__}.delete_prefixes: {self.table_name} has no durable store to delete from"
+            )
+        if not isinstance(store, PrefixDeletingStore):
+            raise ValueError(
+                f"{type(self).__name__}.delete_prefixes: the store of {self.table_name} cannot delete by key prefix"
+            )
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.delete_prefixes: {self.table_name} defers its L3 writes, and a buffered row "
+                f"of a prefix would land after the prefix was deleted"
+            )
+        if not prefixes:
+            return 0
+        reach = self._load_reach({}, prefixes)
+        # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+        transaction.enroll_prefixes(self, reach)
+        deleted = await store.delete_prefixes(self.table_name, [dict(prefix) for prefix in prefixes], conn=conn)
+        log.debug(
+            "key-prefix delete written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "prefixes": len(reach), "rows": deleted}},
+        )
+        return deleted
+
+    async def settle_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> None:
+        """settle the caches of the key prefixes a caller's transaction deleted (:meth:`delete_prefixes`), once it has
+        ended: as :meth:`load_files` settles a load's prefixes (:meth:`_drop_and_advance`).
+
+        :param prefixes: each prefix, the key's leading columns and their values as text
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation had to advance and could not; this
+            process's caches were dropped
+        """
+        await self._drop_and_advance(
+            "key prefixes deleted", reach=WholeReach(prefixes=tuple(dict(prefix) for prefix in prefixes))
+        )
 
     async def delete_rows(
         self,

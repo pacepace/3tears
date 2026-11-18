@@ -79,8 +79,9 @@ RULE_ADVICE: Final[Mapping[str, str]] = {
         "(a lease, a nonce, a session), add a waiver line naming that lifetime"
     ),
     RULE_EPOCH_BYPASS: (
-        "write through the collection (save_entity / bypassing_write), or call "
-        "announce_change(table, rows) in the same function so every pod learns which rows changed"
+        "write through the collection (save_entity / bypassing_write; whole key prefixes with delete_prefixes, "
+        "which settles them by prefix), or call announce_change(table, rows) in the same function so every pod "
+        "learns which rows changed"
     ),
     RULE_WHOLE_REREAD: (
         "catch up by epochs (fetch mine+1..head and apply their rows) instead of re-reading the whole "

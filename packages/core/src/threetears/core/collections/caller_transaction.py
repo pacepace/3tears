@@ -37,12 +37,12 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import repeat
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import GenerationUnavailableError
@@ -88,6 +88,32 @@ class SharedAdvance:
         return len(self.changed)
 
 
+class _PrefixSettling(Protocol):
+    """a collection that deleted key prefixes on a caller's transaction, settled by them when it ends
+    (:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_prefixes`).
+    """
+
+    @property
+    def table_name(self) -> str:
+        """the table.
+
+        :return: its name
+        :rtype: str
+        """
+        ...
+
+    async def settle_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> None:
+        """settle every cache of the rows of ``prefixes`` once the transaction that deleted them has ended.
+
+        :param prefixes: each prefix, the key's leading columns and their values as text
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation had to advance and could not
+        """
+        ...
+
+
 #: the shared advances of the transaction settling in this context, by table.
 _SHARED: ContextVar[Mapping[str, SharedAdvance]] = ContextVar("threetears_shared_advances", default={})
 
@@ -108,6 +134,20 @@ def shared_advance_for(table_name: str) -> SharedAdvance | None:
 _SETTLE_OFF_LOOP_ROWS: Final = 64
 
 _ByCollection = dict[int, tuple["BaseCollection[Any]", list[Any], list[dict[str, Any] | None]]]
+
+
+def _mixed_writes(table: str) -> str:
+    """the refusal of a keyed write and a key-prefix delete of one table in one transaction.
+
+    :param table: the table
+    :ptype table: str
+    :return: the message
+    :rtype: str
+    """
+    return (
+        f"{table}: one transaction both deleted key prefixes of the table and wrote rows of it by key; its commit is "
+        f"recorded as one epoch, which names rows or prefixes, never both. Write the rows in a transaction of their own"
+    )
 
 
 def _grouped(
@@ -201,7 +241,7 @@ class CallerTransaction:
     :ivar conn: the connection the transaction is open on
     """
 
-    __slots__ = ("_enrolled", "_options", "_outermost", "_token", "_transaction", "conn")
+    __slots__ = ("_enrolled", "_options", "_outermost", "_reaches", "_token", "_transaction", "conn")
 
     def __init__(self, conn: Any, **options: Any) -> None:
         """name the connection to open the transaction on.
@@ -215,6 +255,9 @@ class CallerTransaction:
         self.conn = conn
         self._options = options
         self._enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]] = []
+        # the key prefixes deleted whole, a table's collection and prefixes each: settled by prefix, never a key at a
+        # time. A list: a transaction deletes the prefixes of a table or two, looked up by name
+        self._reaches: list[tuple[_PrefixSettling, list[dict[str, str]]]] = []
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
@@ -275,7 +318,10 @@ class CallerTransaction:
         :ptype row: dict[str, Any] | None
         :return: nothing
         :rtype: None
+        :raises ValueError: when the transaction deleted key prefixes of the table (:meth:`enroll_prefixes`)
         """
+        if self._reaches:
+            self._refuse_keyed_beside_prefixes((collection.table_name,))
         self._enrolled.append((collection, entity_id, row))
 
     @staticmethod
@@ -315,8 +361,51 @@ class CallerTransaction:
         :ptype enrollments: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
         :return: nothing
         :rtype: None
+        :raises ValueError: when the transaction deleted key prefixes of a table they name (:meth:`enroll_prefixes`)
         """
+        if self._reaches:
+            self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments})
         self._enrolled.extend(enrollments)
+
+    def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
+        """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
+        prefixes when it ends: the table's caches dropped and its generation advanced once, its epoch naming the
+        prefixes (a follower reads each as a key range), never a key at a time.
+
+        **One kind of write a table a transaction.** A table whose prefixes this transaction deletes takes no keyed
+        write in it, before or after, and the reverse: its commit is recorded as ONE epoch, which names either rows or
+        prefixes. Write the table's new rows in a transaction of their own.
+
+        :param collection: the collection that deleted them
+        :ptype collection: _PrefixSettling
+        :param prefixes: each prefix, the key's leading columns and their values as text
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the transaction wrote keyed rows of the table
+        """
+        table = collection.table_name
+        if any(enrolled.table_name == table for enrolled, _, _ in self._enrolled):
+            raise ValueError(_mixed_writes(table))
+        held = next((prefixes for each, prefixes in self._reaches if each.table_name == table), None)
+        if held is None:
+            held = []
+            self._reaches.append((collection, held))
+        held.extend(dict(prefix) for prefix in prefixes if dict(prefix) not in held)
+
+    def _refuse_keyed_beside_prefixes(self, tables: Iterable[str]) -> None:
+        """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`).
+
+        :param tables: the tables the keyed write names
+        :ptype tables: Iterable[str]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when one of them had prefixes deleted
+        """
+        cleared = {collection.table_name for collection, _ in self._reaches}
+        for table in tables:
+            if table in cleared:
+                raise ValueError(_mixed_writes(table))
 
     def restate(self, collection: BaseCollection[Any], entity_id: Any, *, row: dict[str, Any]) -> None:
         """replace the row ``collection``'s latest enrollment of ``entity_id`` carries, once the write knows it as stored.
@@ -436,6 +525,8 @@ class CallerTransaction:
         """
         enrolled = list(self._enrolled)
         self._enrolled.clear()
+        reaches = list(self._reaches)
+        self._reaches.clear()
         count = len(enrolled)
         if count < _SETTLE_OFF_LOOP_ROWS:
             by_collection, shared = _grouped(enrolled)
@@ -450,6 +541,13 @@ class CallerTransaction:
             failure = await self._settle_each(by_collection)
         finally:
             _SHARED.reset(sharing)
+        for collection, prefixes in reaches:
+            try:
+                await collection.settle_prefixes(prefixes)
+            except GenerationUnavailableError as exc:
+                # logged where the advance failed; the table's caches were dropped
+                if failure is None:
+                    failure = exc
         if count >= _SETTLE_OFF_LOOP_ROWS:
             # the enrollments often hold the only reference to the rows a write sent: freeing 33,786 rows of 179
             # columns at once held the loop 25 ms (save_rows, the WD2 bench); freed a slice at a time on a thread

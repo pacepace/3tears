@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
-from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn
+from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -60,6 +60,7 @@ __all__ = [
     "build_key_led_delete_sql",
     "build_led_by_select_sql",
     "build_ordered_upsert_sql",
+    "build_prefix_delete_sql",
     "build_select_column_list",
     "build_where_pk",
     "build_whole_key_delete_sql",
@@ -931,6 +932,38 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
         f"DELETE /*+ YbBatchedNL(named doomed) */ FROM {schema.name} AS doomed "
         f"WHERE ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}) AS named)"
     )
+
+
+def build_prefix_delete_sql(schema: TableSchema, columns: KeyColumns, *, last_as_array: bool) -> str:
+    """build one DELETE of every row whose key leads with ``columns`` at the values given: a key-prefix range.
+
+    ``DELETE FROM t WHERE <k1> = $1 AND <k2> = $2 ...``, each column with its write cast (:func:`render_param`), and,
+    with ``last_as_array``, the last as ``<kn> = ANY($n::<type>[])``: several prefixes that differ only in their last
+    column (a state's runs) in one statement. Led by the key, so a hash-sharded table (YugabyteDB hashes the leading
+    key column) is looked up at the prefix's leading value and reads the prefix's range alone, never the table. The
+    statement's cost is the rows it deletes; nothing is returned.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the prefix's columns, the key's leading ones in key order
+    :ptype columns: KeyColumns
+    :param last_as_array: whether the last column binds an array of values
+    :ptype last_as_array: bool
+    :return: parameterized DELETE SQL
+    :rtype: str
+    :raises ValueError: when ``columns`` is empty or is not the key's leading columns, or the last column has no array
+        form and ``last_as_array`` is asked
+    """
+    if not columns or tuple(columns) != tuple(schema.pk_columns[: len(columns)]):
+        raise ValueError(f"{schema.name}: {list(columns)} is not a leading part of the key {list(schema.pk_columns)}")
+    fixed: KeyColumns = columns[:-1] if last_as_array else columns
+    pk_where = [
+        f"{as_written(name)} = {render_param(schema.column(name), index)}" for index, name in enumerate(fixed, start=1)
+    ]
+    if last_as_array:
+        last: KeyColumn = columns[-1]
+        pk_where.append(f"{as_written(last)} = ANY(${len(fixed) + 1}::{_required_array_type(schema, last)})")
+    return f"DELETE FROM {schema.name} WHERE {' AND '.join(pk_where)}"
 
 
 def returning_rows_sql(schema: TableSchema, delete_sql: str) -> str:

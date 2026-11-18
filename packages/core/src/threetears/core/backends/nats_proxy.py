@@ -2354,6 +2354,38 @@ class _ProxyConnection:
             response.get("row_count"),
         )
 
+    async def delete_prefixes(self, table: str, prefixes: Sequence[Mapping[str, Any]]) -> int:
+        """delete every row of ``table`` whose key leads with one of ``prefixes``, in the open transaction: the
+        ``l3.tx.delete_prefixes`` request, which names the table and the prefixes and carries no SQL.
+
+        The broker deletes the rows in the session, noted as one whole-table change note naming the prefixes (a pod
+        may not set that mark: ``set_config`` is refused at the door), and records the commit's epoch by the
+        prefixes, so a follower reads each prefix as a key range rather than a key at a time.
+
+        :param table: the table, as the session's statements name it
+        :ptype table: str
+        :param prefixes: each prefix, the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :return: the rows deleted
+        :rtype: int
+        :raises ValueError: outside an open transaction
+        :raises DataLayerUnavailableError: on a broker error, or a broker without the request
+        """
+        if self.tx_id is None:
+            raise ValueError("delete_prefixes runs only inside an open transaction (l3.tx.delete_prefixes)")
+        payload = {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": str(self.tx_id),  # convert at border: NATS l3.tx.delete_prefixes request payload field
+            "table": table,
+            "prefixes": [{column: transport_param(value) for column, value in prefix.items()} for prefix in prefixes],
+        }
+        subject = Subjects.l3_tx("delete_prefixes", namespace=self._backend.ns).path
+        response = await self._backend.nats_request(subject, payload)
+        if not response.get("success", False):
+            self._backend.raise_for_failed_reply(response, "tx.delete_prefixes")
+        return int(response.get("row_count") or 0)
+
     async def fetchrow(
         self,
         query: str,

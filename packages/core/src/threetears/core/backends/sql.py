@@ -61,7 +61,14 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.declared import whole_read
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
-from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
+from threetears.core.ddl.change_notes import (
+    NOTE_REACH_SETTING,
+    NOTE_WHOLE_SETTING,
+    WHOLE_COPY_ROWS,
+    note_reach_text,
+    prefix_write_mark_sql,
+    prefix_write_restore_sql,
+)
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
@@ -1631,6 +1638,108 @@ class SqlL3Backend:
             extra={"extra_data": {"table": table, "keys": len(named), "statements": len(statements)}},
         )
         return found
+
+    async def delete_prefixes(self, table: str, prefixes: Sequence[Mapping[str, Any]], *, conn: Any) -> int:
+        """Delete every row of a schema-registered table whose key leads with one of ``prefixes``, on ``conn``'s
+        transaction, in statements whose count is the prefixes' and never the rows': nothing is read back.
+
+        The prefixes are grouped by their columns and by every value but the last column's, and each group is one
+        key-led ``DELETE`` (:func:`~threetears.core.backends.schema_sql.build_prefix_delete_sql`), its last column an
+        array when that column has an array form, else one statement a prefix. A state's gone runs, ``(state,
+        run_id)``, are one statement however many rows they hold.
+
+        The delete is noted as ONE whole-table change note of the table naming the prefixes (the note a load from
+        files leaves, :mod:`threetears.core.ddl.change_notes`), never a note a row: the statements are marked whole
+        before (:func:`~threetears.core.ddl.change_notes.prefix_write_mark_sql`) and the marks put back after
+        (:func:`~threetears.core.ddl.change_notes.prefix_write_restore_sql`), so the transaction's other writes are
+        noted as they would have been. Two statements more, whatever the rows.
+
+        On the L3 rail a pod may not set those marks (the broker refuses ``set_config``), so the broker runs the
+        delete itself: the connection's ``delete_prefixes`` (the ``l3.tx.delete_prefixes`` request), whose commit
+        the broker then records by the prefixes.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param prefixes: each prefix, the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: the rows deleted
+        :rtype: int
+        :raises ValueError: when no schema is registered for ``table``, or a prefix is not a leading part of the key
+        """
+        if self._scope_aware:
+            deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes])
+            return int(deleted)
+        statements = self._prefix_deletes(table, prefixes)
+        if not statements:
+            return 0
+        reach = note_reach_text(prefixes=prefixes)
+        prior = await self._fetchrow(
+            prefix_write_mark_sql(), NOTE_WHOLE_SETTING, NOTE_REACH_SETTING, reach, table, conn=conn
+        )
+        assert prior is not None  # narrow: a SELECT of no FROM answers one row
+        deleted = 0
+        for sql, args in statements:
+            deleted += parse_rowcount(await self._execute(sql, *args, conn=conn))
+        await self._execute(
+            prefix_write_restore_sql(),
+            NOTE_WHOLE_SETTING,
+            prior["whole"] or "",
+            NOTE_REACH_SETTING,
+            prior["reach"] or "",
+            prior["guard"],
+            prior["noted"] or "",
+            conn=conn,
+        )
+        _logger.debug(
+            "key-prefix delete",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "prefixes": len(prefixes),
+                    "statements": len(statements),
+                    "rows": deleted,
+                }
+            },
+        )
+        return deleted
+
+    def _prefix_deletes(self, table: str, prefixes: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[Any]]]:
+        """:meth:`delete_prefixes`' statements, each with its arguments: the prefixes grouped by their columns and
+        every value but the last column's, each value bound with its column's write form.
+
+        :param table: the table
+        :ptype table: str
+        :param prefixes: each prefix, the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :return: each statement and its arguments, in the prefixes' first-seen order
+        :rtype: list[tuple[str, list[Any]]]
+        :raises ValueError: when no schema is registered, or a prefix is not a leading part of the key
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"delete_prefixes needs the schema of {table!r} registered")
+        groups: dict[tuple[tuple[str, ...], tuple[Any, ...]], list[Any]] = {}
+        for prefix in prefixes:
+            columns = tuple(schema.pk_columns[: len(prefix)])
+            if not prefix or set(columns) != set(prefix):
+                raise ValueError(
+                    f"{table}: {dict(prefix)} is not a key prefix (the leading columns of {list(schema.pk_columns)})"
+                )
+            values = [schema_sql.normalize_write_value(schema.column(name), prefix[name]) for name in columns]
+            last = groups.setdefault((columns, tuple(values[:-1])), [])
+            if values[-1] not in last:
+                last.append(values[-1])
+        statements: list[tuple[str, list[Any]]] = []
+        for (columns, lead), lasts in groups.items():
+            if schema_sql.key_array_type(schema, columns[-1]) is not None:
+                sql = schema_sql.build_prefix_delete_sql(schema, columns, last_as_array=True)
+                statements.append((sql, [*lead, lasts]))
+            else:
+                sql = schema_sql.build_prefix_delete_sql(schema, columns, last_as_array=False)
+                statements += [(sql, [*lead, value]) for value in lasts]
+        return statements
 
     async def _planned_delete(
         self, table: str, keys: Sequence[Sequence[Any]], *, max_rows: int

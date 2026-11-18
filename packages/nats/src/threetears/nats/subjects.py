@@ -2133,21 +2133,24 @@ class Subjects:
     @classmethod
     def l3_tx(
         cls,
-        op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "commit", "rollback"],
+        op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "delete_prefixes", "commit", "rollback"],
         *,
         namespace: str | None = None,
     ) -> Subject:
         """request/reply subject for L3 broker explicit-transaction operations.
 
-        the platform broker exposes seven per-op subjects (versus the
+        the platform broker exposes per-op subjects (versus the
         original four-method shape) so DML ``execute``, single-row
         ``fetchrow``, multi-row ``fetch`` and the bulk ``copy`` are
         addressable independently from a generic ``exec``. the asyncpg
         session on the broker side dispatches each op to the matching
         connection method without pre-classifying the SQL verb.
+        ``delete_prefixes`` carries no SQL: a table and its key prefixes,
+        whose rows the broker deletes in the session and whose commit it
+        records by those prefixes (3tears ``SqlL3Backend.delete_prefixes``).
 
         :param op: transaction operation phase
-        :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "commit", "rollback"]
+        :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "delete_prefixes", "commit", "rollback"]
         :param namespace: the subject namespace, for a client built on an explicit one; the
             process default when ``None``
         :ptype namespace: str | None

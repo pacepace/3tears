@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `SchemaBackedCollection.delete_prefixes` deletes whole key prefixes at a cost the rows held do not set
+
+**Added:** `SchemaBackedCollection.delete_prefixes(prefixes, *, conn) -> int` deletes every row of some key prefixes
+(each the key's leading columns and their values, e.g. `{"state": "PA", "run_id": 7}`) on a `CallerTransaction`, and
+answers the rows deleted. No row is read back: the store sends one key-led `DELETE` a group of prefixes that differ
+only in their last column (`... WHERE state = $1 AND run_id = ANY($2)`), the same statements for 1,000 rows or
+100,000. The delete leaves ONE change note for the table naming the prefixes (the transaction's other writes are noted
+as before). When the transaction ends, the table is settled by the prefixes, as `load_files` settles a load's: this
+process drops it from L1 and its cached scans, a `CopyFollower` reads each prefix again as a key range, and the write
+generation advances once, its epoch naming the prefixes, so every following process does the same. A transaction
+that deletes a table's prefixes writes no row of that table by key (refused either way round: one epoch names rows
+or prefixes). Seams: `threetears.core.backends.protocol.PrefixDeletingStore`, `SqlL3Backend.delete_prefixes`,
+`CallerTransaction.enroll_prefixes`, `SchemaBackedCollection.settle_prefixes`,
+`threetears.core.ddl.change_notes.prefix_write_mark_sql` / `prefix_write_restore_sql`,
+`schema_sql.build_prefix_delete_sql`. On the L3 rail the pod sends `l3.tx.delete_prefixes` (new op of
+`Subjects.l3_tx`: the table and the prefixes, no SQL), which the hub's broker must answer: until it does, the call
+fails on the rail. The epoch-bypass rule counts a store's `delete_prefixes` called outside the collection.
+For reports' gone LSF runs (794 s on the 2026-11-02 replay: 23 runs read back and deleted row by row).
+
 ### backup: `stream_stdout` and `pipe_through` answer an `AsyncGenerator`
 
 `threetears.backup.stream_stdout` and `pipe_through` are typed `AsyncGenerator[bytes]` (they always were async
