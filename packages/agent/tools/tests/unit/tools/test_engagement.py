@@ -15,6 +15,7 @@ from uuid import UUID
 import pytest
 
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
+from threetears.core.security import DoorCredential
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.engagement import (
     EngagementScopeUnavailableError,
@@ -52,9 +53,17 @@ class _FakeResolver:
     def __init__(self, *, scope: EngagementScope | None = None, error: Exception | None = None) -> None:
         self._scope = scope
         self._error = error
-        self.calls: list[tuple[UUID, UUID, str]] = []
+        self.calls: list[tuple[UUID | None, UUID, str]] = []
 
-    async def resolve(self, engagement_id: UUID, *, customer_id: UUID, identity_token: str) -> EngagementScope:
+    async def resolve(
+        self,
+        engagement_id: UUID | None,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        credential: DoorCredential | None = None,
+    ) -> EngagementScope:
+        del credential
         self.calls.append((engagement_id, customer_id, identity_token))
         if self._error is not None:
             raise self._error

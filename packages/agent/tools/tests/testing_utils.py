@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock
 
 from sqlalchemy import MetaData
 
+from threetears.core.backends.protocol import RawL3Pool
+
 from threetears.agent.tools.collections import context_items_table
+
+
+def unchecked[T](function: Callable[..., T]) -> Callable[..., T]:
+    """``function``, called with what its signature refuses, on purpose: the refusal is the test."""
+    return function
 
 
 def _naive(dt: datetime) -> datetime:
@@ -97,8 +105,15 @@ def make_nats_mock() -> AsyncMock:
 
 
 # parity-exempt: asyncpg Pool subset shim used by the agent-tools test_helpers module; the test_helpers shim returns rows from a dict the agent-tools collection tests share
-class FakePool:
+class FakePool(RawL3Pool):
     """In-memory mock of asyncpg.Pool for testing."""
+
+    def acquire(self) -> Any:
+        """refused: the collections under test send single statements, never through a held connection.
+
+        :raises AssertionError: always
+        """
+        raise AssertionError("FakePool lends no connection: the context collections send single statements")
 
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
@@ -126,7 +141,7 @@ class FakePool:
                     row["short_desc"] = args[4]
                     row["long_desc"] = args[5]
                     row["content"] = args[6]
-                    row["metadata"] = json.loads(args[7]) if args[7] else None
+                    row["metadata"] = json.loads(args[7]) if isinstance(args[7], str) and args[7] else None
                     row["date_accessed"] = args[8]
                     row["date_updated"] = args[10]
                     return {"context_id": row["context_id"]}
@@ -138,7 +153,7 @@ class FakePool:
                 "short_desc": args[4],
                 "long_desc": args[5],
                 "content": args[6],
-                "metadata": json.loads(args[7]) if args[7] else None,
+                "metadata": json.loads(args[7]) if isinstance(args[7], str) and args[7] else None,
                 "date_accessed": args[8],
                 "date_created": args[9],
                 "date_updated": args[10],

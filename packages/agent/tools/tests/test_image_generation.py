@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, TypedDict
+
 import pytest
 
 from threetears.agent.tools import (
@@ -22,7 +24,7 @@ class _StubBackend:
         output: GeneratedImage | None = None,
         raise_with: Exception | None = None,
     ) -> None:
-        self.calls: list[dict] = []
+        self.calls: list[dict[str, object]] = []
         self._output = output or GeneratedImage(
             data=b"fake-image-bytes",
             mime_type="image/png",
@@ -38,6 +40,9 @@ class _StubBackend:
         style: str | None = None,
         source_image: bytes | None = None,
         source_mime_type: str | None = None,
+        size: str | None = None,
+        aspect: str | None = None,
+        seed: int | None = None,
     ) -> GeneratedImage:
         self.calls.append(
             {
@@ -52,6 +57,15 @@ class _StubBackend:
         return self._output
 
 
+class _Persisted(TypedDict):
+    """One ``persist_generated`` call as the stub context saw it."""
+
+    image: GeneratedImage
+    prompt: str
+    model_name: str
+    style: str | None
+
+
 class _StubContext:
     """Minimal :class:`ImageGenerationContext` impl for tests."""
 
@@ -63,7 +77,7 @@ class _StubContext:
         persist_returns: str = "[image:test-id]",
         persist_raises: Exception | None = None,
     ) -> None:
-        self.persist_calls: list[dict] = []
+        self.persist_calls: list[_Persisted] = []
         self.attached_calls: int = 0
         self._attached = attached
         self._attached_raises = attached_raises
@@ -365,6 +379,8 @@ async def test_custom_description_override() -> None:
 from threetears.agent.tools import SourceImage, SourceImageContext, SourceImageRefused  # noqa: E402
 from threetears.interfaces.media import GENERATION_IGNORED, GENERATION_SOURCE_USED  # noqa: E402
 
+from packages.agent.tools.tests.testing_utils import unchecked  # noqa: E402
+
 
 class _EditingBackend:
     """A backend that takes a source, a size and a seed, and says what it did with them."""
@@ -372,7 +388,7 @@ class _EditingBackend:
     takes_source_image = True
 
     def __init__(self, *, source_used: bool | None = True, ignored: dict[str, str] | None = None) -> None:
-        self.calls: list[dict] = []
+        self.calls: list[dict[str, object]] = []
         self._source_used = source_used
         self._ignored = ignored or {}
 
@@ -388,7 +404,7 @@ class _EditingBackend:
         seed: int | None = None,
     ) -> GeneratedImage:
         self.calls.append({"source_image": source_image, "size": size, "aspect": aspect, "seed": seed})
-        metadata: dict = {GENERATION_IGNORED: dict(self._ignored)}
+        metadata: dict[str, Any] = {GENERATION_IGNORED: dict(self._ignored)}
         if source_image is not None and self._source_used is not None:
             metadata[GENERATION_SOURCE_USED] = self._source_used
         return GeneratedImage(data=b"img", mime_type="image/png", metadata=metadata)
@@ -403,8 +419,8 @@ class _WordsOnlyBackend(_StubBackend):
 class _SourceContext(_StubContext):
     """A host that hands over a source by id, or refuses it with why."""
 
-    def __init__(self, *, sources: dict[str, SourceImage], **kw) -> None:
-        super().__init__(persist_returns="Made an image [media:new-1].\n![x](/m/new-1)", **kw)
+    def __init__(self, *, sources: dict[str, SourceImage]) -> None:
+        super().__init__(persist_returns="Made an image [media:new-1].\n![x](/m/new-1)")
         self._sources = sources
         self.asked: list[str] = []
 
@@ -431,6 +447,7 @@ async def test_a_source_by_id_reaches_the_backend_and_is_named_to_the_host() -> 
     assert context.asked == ["m1"]
     assert backend.calls[0]["source_image"] == b"cat-bytes"
     image = context.persist_calls[0]["image"]
+    assert image.metadata is not None
     assert image.metadata["source_label"] == "cat.png"
     assert image.metadata[GENERATION_SOURCE_USED] is True
     assert result == "Made an image [media:new-1].\n![x](/m/new-1)"
@@ -520,11 +537,30 @@ async def test_size_aspect_and_seed_reach_a_backend_that_takes_them() -> None:
     assert backend.calls[0] == {"source_image": None, "size": "1024x1536", "aspect": "portrait", "seed": 7}
 
 
+class _BackendBeforeOptions:
+    """A backend written before ``size``, ``aspect`` and ``seed`` existed: its generate takes none of them."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        style: str | None = None,
+        source_image: bytes | None = None,
+        source_mime_type: str | None = None,
+    ) -> GeneratedImage:
+        self.calls.append(prompt)
+        return GeneratedImage(data=b"img", mime_type="image/png")
+
+
 @pytest.mark.asyncio
 async def test_an_option_a_backend_does_not_take_is_not_sent_and_is_named() -> None:
-    old = _StubBackend()  # its generate takes no size or seed
+    old = _BackendBeforeOptions()
     context = _StubContext()
-    tool = create_image_generation_tool({"old": old}, context, default_model="old")
+    # a backend written before size and seed existed no longer meets the protocol, yet still takes every call
+    tool = unchecked(create_image_generation_tool)({"old": old}, context, default_model="old")
 
     result = await tool.ainvoke({"prompt": "x", "seed": 7, "size": "512x512"})
 

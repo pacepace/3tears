@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -13,11 +14,14 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.context import ToolContextManager
 
-from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
+from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock, unchecked
+
+_CONVERSATION = uuid.UUID("00000000-0000-0000-0000-000000000001")
+_USER = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_mgr_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
@@ -55,7 +59,7 @@ def collection(registry: CollectionRegistry, config: DefaultCoreConfig, pool: Fa
 
 @pytest.fixture()
 def ctx(collection: ContextItemCollection) -> ToolContextManager:
-    return ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1")
+    return ToolContextManager(collection, _CONVERSATION, _USER)
 
 
 # -- Construction guard --
@@ -71,7 +75,7 @@ def test_init_rejects_none_collection() -> None:
     thread the context collection fails loudly and locally.
     """
     with pytest.raises(TypeError, match="collection"):
-        ToolContextManager(None, "00000000-0000-0000-0000-000000000001", "user1")
+        unchecked(ToolContextManager)(None, _CONVERSATION, _USER)
 
 
 # -- Variable tests --
@@ -88,7 +92,7 @@ async def test_set_get_variable(ctx: ToolContextManager) -> None:
 
 @pytest.mark.asyncio
 async def test_set_variable_limit(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_limit=2)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_limit=2)
     await ctx.set_variable("a", "1")
     await ctx.set_variable("b", "2")
     with pytest.raises(ValueError, match="Variable limit reached"):
@@ -97,7 +101,7 @@ async def test_set_variable_limit(collection: ContextItemCollection) -> None:
 
 @pytest.mark.asyncio
 async def test_set_variable_truncates(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_max_chars=10)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_max_chars=10)
     await ctx.set_variable("long", "x" * 100)
     var = await ctx.get_variable("long")
     assert var is not None
@@ -106,7 +110,7 @@ async def test_set_variable_truncates(collection: ContextItemCollection) -> None
 
 @pytest.mark.asyncio
 async def test_set_variable_upsert(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_limit=1)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, var_limit=1)
     await ctx.set_variable("key", "v1")
     await ctx.set_variable("key", "v2")  # Should not raise
     var = await ctx.get_variable("key")
@@ -351,19 +355,19 @@ def test_build_media_context_empty(ctx: ToolContextManager) -> None:
 
 
 def test_workflow_lifecycle(ctx: ToolContextManager) -> None:
-    state = ctx.declare_workflow("Test plan", ["step1", "step2"])
-    assert state["status"] == "active"
-    assert state["current_step"] == 0
+    declared = ctx.declare_workflow("Test plan", ["step1", "step2"])
+    assert declared["status"] == "active"
+    assert declared["current_step"] == 0
 
-    state = ctx.advance_workflow_step()
-    assert state is not None
-    assert state["current_step"] == 1
-    assert state["status"] == "active"
+    first = ctx.advance_workflow_step()
+    assert first is not None
+    assert first["current_step"] == 1
+    assert first["status"] == "active"
 
-    state = ctx.advance_workflow_step()
-    assert state is not None
-    assert state["current_step"] == 2
-    assert state["status"] == "completed"
+    last = ctx.advance_workflow_step()
+    assert last is not None
+    assert last["current_step"] == 2
+    assert last["status"] == "completed"
 
 
 def test_has_active_workflow(ctx: ToolContextManager) -> None:
@@ -383,7 +387,7 @@ def test_workflow_state_none(ctx: ToolContextManager) -> None:
 
 @pytest.mark.asyncio
 async def test_result_limit_evicts_lru(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", result_limit=3)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, result_limit=3)
     ids = []
     for i in range(5):
         cid = await ctx.save_tool_result(f"tool{i}", f"result{i}")
@@ -402,7 +406,7 @@ async def test_result_limit_evicts_lru(collection: ContextItemCollection) -> Non
 
 @pytest.mark.asyncio
 async def test_result_limit_does_not_evict_variables(collection: ContextItemCollection) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", result_limit=2)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, result_limit=2)
     await ctx.set_variable("name", "Alice")
     for i in range(3):
         await ctx.save_tool_result(f"tool{i}", f"result{i}")
@@ -419,7 +423,7 @@ async def test_result_limit_does_not_evict_variables(collection: ContextItemColl
 
 @pytest.mark.asyncio
 async def test_result_limit_lru_access_protects(collection: ContextItemCollection, pool: FakePool) -> None:
-    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", result_limit=3)
+    ctx = ToolContextManager(collection, _CONVERSATION, _USER, result_limit=3)
     id_a = await ctx.save_tool_result("a", "result_a")
     id_b = await ctx.save_tool_result("b", "result_b")
     id_c = await ctx.save_tool_result("c", "result_c")

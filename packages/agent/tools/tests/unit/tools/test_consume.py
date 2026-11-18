@@ -16,6 +16,7 @@ from uuid import UUID
 import pytest
 
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
+from threetears.core.security import DoorCredential
 from threetears.agent.tools.consume import (
     ConsumeObjectError,
     open_object_stream,
@@ -107,7 +108,10 @@ class _FakeResolver:
         self._error = error
         self.calls: list[tuple[UUID, UUID, str]] = []
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self, object_id: UUID, *, customer_id: UUID, identity_token: str, credential: DoorCredential | None = None
+    ) -> ObjectHandle:
+        del credential
         self.calls.append((object_id, customer_id, identity_token))
         if self._error is not None:
             raise self._error
