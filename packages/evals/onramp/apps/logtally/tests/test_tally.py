@@ -17,6 +17,11 @@ class ParseTests(unittest.TestCase):
     def test_the_query_string_is_not_part_of_the_page(self):
         self.assertEqual(parse(line("/menu?lang=en")).page, "/menu")
 
+    def test_the_referring_page_and_its_absence(self):
+        self.assertIsNone(parse(line()).referer)
+        linked = line().replace('"-" "Mozilla', '"https://example.org/eat" "Mozilla')
+        self.assertEqual(parse(linked).referer, "https://example.org/eat")
+
     def test_a_line_not_in_the_format(self):
         self.assertIsNone(parse('203.0.113.9 - - [02/Nov/2026:08:14:07 +0000] "GET /me'))
         self.assertIsNone(parse("trace: cache warmed"))

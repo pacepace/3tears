@@ -23,6 +23,51 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
 (a score within a tolerance of a panel's mean rating), `shipeta` (a tolerance), `standings` (the share of a night's
 teams in their published place).
 
+## Defect families
+
+The held-out apps and the development apps grouped by the family of their planted slip, so that a claim about a kind
+of defect is made from the apps that carry it, and not by accident from an app whose neighbour carries it. The
+development apps' rows are from the record of the taken defects, not from their code. Near-neighbours are apps of
+another family, or of the same family, whose slip or setting an eval would see as close.
+
+| App | Set | Family | Near-neighbours |
+|---|---|---|---|
+| recipes | development | the wrong unit (a teaspoon-to-tablespoon constant) | shipeta |
+| glossator | development | text normalisation (accented letters dropped from a slug) | docnames, mdtable |
+| holds | development | to be filled by the coordinator | |
+| parcelrate | held out | boundary (`<` for `<=`) | loyalty; shipeta shares its courier setting |
+| loyalty | held out | boundary (an inverted comparison on one branch) | parcelrate |
+| weatherboard | held out | rounding (negatives truncated toward zero) | proration |
+| proration | held out | rounding (floored with `//` where half up was meant) | weatherboard; reorder shares the `//` |
+| reorder | held out | division (`//` where a fraction was meant) | proration |
+| shipeta | held out | the wrong unit (days added as hours) | recipes |
+| docnames | held out | text normalisation (an apostrophe split as a separator) | glossator, mdtable |
+| mdtable | held out | text normalisation (width counted in code points, not after composing) | glossator, docnames |
+| faqrank | held out | tokenisation (query and index split differently) | docnames |
+| digest | held out | regex (a sentence pattern too loose) | postal, logtally |
+| postal | held out | regex (a greedy `(.+)` where `(.+?)` was meant) | plurals (the same fix), digest |
+| logtally | held out | empty input (a `-` field refused by too narrow a pattern) | gradecurve; regex: digest, postal |
+| gradecurve | held out | empty input (a blank score counted as zero) | logtally |
+| statements | held out | locale parsing (day-first dates read month first) | shelfprice |
+| shelfprice | held out | locale parsing (a decimal comma read as a thousands separator) | statements |
+| standups | held out | time and daylight saving (a series stepped in UTC) | slotfinder (scheduling, an hour out) |
+| passcheck | held out | case (matched without lowering one side) | contactmerge (the same `.lower()` fix) |
+| previews | held out | off-by-one (a cut that forgets the ellipsis's length) | |
+| tickets | held out | a dropped case (a missing state-machine transition) | |
+| standings | held out | ordering (a wrong tie-break) | |
+| moodscore | held out | a counter reset at the wrong time (a negation window left open) | |
+| contactmerge | held out | to be filled by its builder (being changed) | |
+| plurals | held out | to be filled by its builder (being changed) | |
+| slotfinder | held out | to be filled by its builder (being changed) | |
+
+## Shares near the ceiling
+
+Two apps keep the share their slip reaches on data drawn without regard to it, and that share is high: `reorder`
+(77%; every line whose sales do not divide by its window) and `standups` (62%; every series that crosses a clock
+change). Their data is left as drawn. Because the defect shows on most inputs, almost any eval that checks a few rows
+against the labels reads the twin better, so on these two apps the `measures_the_app` check says little beyond
+`eval_runs`. Read a comparison's `measures_the_app` rate on them as near its ceiling for every arm.
+
 ## parcelrate: pricing, a wrong boundary
 
 - **Defect.** `rates.quote` picks a parcel's band with `weight < up_to_kg`. The card says a band covers weights up to
