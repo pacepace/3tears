@@ -3,7 +3,7 @@
 constructs a minimal `McpServer` against an in-memory `ToolRegistry`,
 then calls tools the way a client does: a real MCP ``ClientSession``
 over the server's own Streamable-HTTP app (``build_http_app``, served
-in-process through ``httpx.ASGITransport``). Every assertion is on the
+in-process through ``httpx2.ASGITransport``). Every assertion is on the
 ``CallToolResult`` the client receives, so the tests cover what reaches
 the wire -- including the SDK's wrapping of a content list into
 ``isError=False`` -- rather than an intermediate return value.
@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import httpx
+import httpx2
 import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
@@ -112,7 +112,7 @@ async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any
     """
     await server.start()
     app = server.build_http_app()
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+    client = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
             async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
@@ -136,7 +136,8 @@ def _payload_from_result(result: mcp_types.CallToolResult) -> dict[str, Any]:
     """parse the JSON envelope inside a CallToolResult error content."""
     text_block = result.content[0]
     assert isinstance(text_block, mcp_types.TextContent)
-    return json.loads(text_block.text)
+    payload: dict[str, Any] = json.loads(text_block.text)
+    return payload
 
 
 def _content_text(result: mcp_types.CallToolResult) -> str:
@@ -269,9 +270,13 @@ class TestDispatchHappyPath:
     @pytest.mark.asyncio
     async def test_handler_returning_call_tool_result_passes_through(self) -> None:
         """handler that returns a full CallToolResult (isError=True downstream envelope) is forwarded verbatim."""
-        error_result = mcp_types.CallToolResult(
-            content=[mcp_types.TextContent(type="text", text='{"error": {"code": "INSUFFICIENT_CREDITS"}}')],
-            isError=True,
+        # From the wire names, as McpServer builds one: 1.x's field is ``isError`` and 2.x's
+        # ``is_error``, so a constructor keyword is wrong on one major while a validated dict is right on both.
+        error_result = mcp_types.CallToolResult.model_validate(
+            {
+                "content": [mcp_types.TextContent(type="text", text='{"error": {"code": "INSUFFICIENT_CREDITS"}}')],
+                "isError": True,
+            }
         )
 
         async def handler(**_kwargs: Any) -> mcp_types.CallToolResult:

@@ -8,6 +8,7 @@ and the env-var convenience constructor.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -18,11 +19,11 @@ from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
 class _FakeTransport:
     """httpx.MockTransport-ish, with a recorded request log."""
 
-    def __init__(self, responder: object) -> None:
+    def __init__(self, responder: Callable[[httpx.Request], httpx.Response]) -> None:
         """capture responder callable shaped like httpx.MockTransport.
 
         :param responder: callable taking httpx.Request returning httpx.Response
-        :ptype responder: object
+        :ptype responder: Callable[[httpx.Request], httpx.Response]
         """
         self.requests: list[httpx.Request] = []
         self._responder = responder
@@ -30,7 +31,7 @@ class _FakeTransport:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         """record + dispatch."""
         self.requests.append(request)
-        return self._responder(request)  # type: ignore[operator]
+        return self._responder(request)
 
 
 def _build_client(transport: httpx.MockTransport) -> PlatformHttpClient:

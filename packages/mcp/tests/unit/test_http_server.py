@@ -2,7 +2,7 @@
 
 drives a real :class:`~threetears.mcp.server.McpServer` over the SDK's
 Streamable-HTTP transport in-process (the Starlette ASGI app via
-``httpx.ASGITransport``, its lifespan run explicitly) and asserts:
+``httpx2.ASGITransport``, its lifespan run explicitly) and asserts:
 
 1. transport smoke -- a real MCP client can ``initialize``,
    ``tools/list`` (sees the registered tool), and ``tools/call``
@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-import httpx
+import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -113,8 +113,8 @@ async def _mcp_client(app: Any, *, token: str) -> AsyncIterator[ClientSession]:
     """
     headers = {"Authorization": f"Bearer {token}"}
 
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    client = httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="http://mcp.test",
         headers=headers,
         follow_redirects=True,

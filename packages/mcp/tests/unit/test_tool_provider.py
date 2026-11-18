@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import httpx
+import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -58,7 +58,7 @@ async def _session(server: McpServer) -> AsyncIterator[ClientSession]:
     """an initialized client session against ``server``'s Streamable-HTTP app."""
     await server.start()
     app = server.build_http_app()
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+    client = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
             async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:

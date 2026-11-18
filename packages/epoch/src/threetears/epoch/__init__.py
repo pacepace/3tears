@@ -51,6 +51,7 @@ from threetears.epoch.generation import (
 )
 from threetears.epoch.generation_tick import (
     DEFAULT_BROADCAST_GRACE,
+    GenerationReader,
     GenerationWatcher,
     QuietPass,
     QuietReader,
@@ -82,6 +83,7 @@ __all__ = [
     "DEFAULT_STOP_TIMEOUT",
     "DEFAULT_WATCH_RESTART_DELAY",
     "MAX_WATCH_RESTART_DELAY",
+    "GenerationReader",
     "GenerationWatcher",
     "EpochBumpMessage",
     "DurableEpoch",

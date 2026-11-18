@@ -13,19 +13,21 @@ import json
 import logging
 import socket
 import textwrap
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
+from threetears.agent.tools.base_tool import ToolResult
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.driver import NavStep, RenderedPage
+from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.llm_retry import StructuredCallTimeoutError
 from threetears.scrape.robots import RobotsGate
@@ -71,8 +73,7 @@ _ROWS_HTML = """
 _SINGLE_HTML = "<html><body><table><tr><td>Acme Corp</td><td>42</td></tr></table></body></html>"
 
 
-# parity-with: threetears.scrape.driver.ScrapeDriver
-class _FakeDriver:
+class _FakeDriver(ScrapeDriver):
     def __init__(
         self,
         html: str,
@@ -107,12 +108,11 @@ class _FakeDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
-        # Accepted and ignored, like every other optional on this protocol. Fake-parity
-        # enforcement only requires the params production REQUIRES, so an optional added to
-        # ScrapeDriver does not fail the gate -- it fails at the first test that passes it.
-        # ScrapeDriver's contract is "accept the full signature, use what you need", so a
-        # stand-in that does not is not standing in for it.
-        session_state: dict[str, object] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         self.render_calls.append(url)
         self.wait_for_calls.append(wait_for)
@@ -129,6 +129,42 @@ class _FakeDriver:
         )
 
 
+class _DriverPredatingSessionState(ScrapeDriver):
+    """A driver written against 0.19.x, before ``render`` took ``session_state``.
+
+    ``ScrapeDriver`` ships on PyPI as a pluggable contract, so drivers like this exist out of
+    tree, and the tool must still use them. Its ``render`` lacks the parameter on purpose:
+    that missing parameter is what every test using it is about.
+
+    :param page_html: what a render answers; ``None`` means a render must never be attempted
+    :ptype page_html: str | None
+    """
+
+    def __init__(self, page_html: str | None = None) -> None:
+        self._page_html = page_html
+
+    @property
+    def name(self) -> str:
+        return "old"
+
+    async def render(  # type: ignore[override]  # the pre-session_state signature IS the fixture
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        wait_for: str | None = None,
+        capture_network: bool = False,
+        nav_steps: list[NavStep] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+    ) -> RenderedPage:
+        if self._page_html is None:
+            raise AssertionError("a driver that cannot take a stored solve was rendered with one")
+        return RenderedPage(html=self._page_html, status=200, final_url=url, timing_ms=1.0)
+
+
 def _collections() -> tuple[ScrapeRecipeCollection, ScrapeExtractionCollection]:
     return (
         ScrapeRecipeCollection(get_registry(), get_config(), nats_client=None),
@@ -136,7 +172,7 @@ def _collections() -> tuple[ScrapeRecipeCollection, ScrapeExtractionCollection]:
     )
 
 
-async def _seed_recipe(recipe_collection, target_id: str, strategy: dict) -> None:
+async def _seed_recipe(recipe_collection: ScrapeRecipeCollection, target_id: str, strategy: dict[str, Any]) -> None:
     entity = recipe_collection.create(
         {
             "target_id": target_id,
@@ -153,7 +189,7 @@ _STORED_SOLVE_KEY = SecretStr("an-operator-master-key-for-the-stored-solve-tests
 _STORED_SOLVE_SCHEMA = {"employer": "str"}
 
 
-def _robots_file(body: str):
+def _robots_file(body: str) -> Callable[[str], Awaitable[tuple[int, str]]]:
     """A robots fetcher serving *body* for every origin."""
 
     async def _fetch(_url: str) -> tuple[int, str]:
@@ -168,7 +204,14 @@ async def _settle_background_tasks() -> None:
         await asyncio.sleep(0)
 
 
-async def _execute_with_a_stored_solve(driver, health, *, url: str, circuit=None, robots=None):
+async def _execute_with_a_stored_solve(
+    driver: ScrapeDriver,
+    health: ScrapeTargetHealthCollection,
+    *,
+    url: str,
+    circuit: TargetCircuit | None = None,
+    robots: RobotsGate | None = None,
+) -> ToolResult:
     """Run ``execute`` for a target a human has already solved, through backend ``"old"``.
 
     The solve is stored the way the operator flow stores one -- sealed under the tool's key in
@@ -237,6 +280,7 @@ class TestDeriveTargetId:
             target_id="warn_named",
         )
 
+        assert result.metadata is not None
         assert result.metadata["target_id"] == "warn_named"
 
 
@@ -414,6 +458,7 @@ class TestScrapeToolExecute:
         )
 
         assert result.success is True
+        assert result.metadata is not None
         assert result.metadata["validation_status"] == "validated"
         assert result.metadata["target_id"] == target_id
         records = json.loads(result.content)["records"]
@@ -439,6 +484,7 @@ class TestScrapeToolExecute:
         )
 
         assert result.success is True
+        assert result.metadata is not None
         assert result.metadata["record_count"] == 2
 
     async def test_wait_for_and_nav_steps_are_forwarded_to_the_driver(self) -> None:
@@ -482,6 +528,7 @@ class TestScrapeToolExecute:
             target_id="my_custom_id",
         )
 
+        assert result.metadata is not None
         assert result.metadata["target_id"] == "my_custom_id"
 
     async def test_repeated_call_reuses_the_recipe_with_no_new_candidate_generation(self) -> None:
@@ -508,6 +555,8 @@ class TestScrapeToolExecute:
             url="https://example.gov/warn", field_schema={"employer": "str", "affected_count": "int"}
         )
 
+        assert first.metadata is not None
+        assert second.metadata is not None
         assert first.metadata["target_id"] == second.metadata["target_id"] == target_id
         assert first.content == second.content
         recipe = await recipe_collection.get(target_id)
@@ -543,9 +592,9 @@ class TestScrapeToolFetchHealth:
         )
         seen: list[str] = []
 
-        def _capture(*_args, **_kwargs):
-            def _with_structured_output(_schema, **_kw):
-                async def _ainvoke(prompt):
+        def _capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            def _with_structured_output(_schema: object, **_kw: object) -> SimpleNamespace:
+                async def _ainvoke(prompt: str) -> object:
                     seen.append(prompt)
                     return verdict
 
@@ -594,8 +643,7 @@ class TestScrapeToolFetchHealth:
         assert recipe.consecutive_validation_failures == 1
 
 
-# parity-with: threetears.scrape.driver.ScrapeDriver
-class _WallDriver:
+class _WallDriver(ScrapeDriver):
     """A wall that renders a fresh per-request id every time, like a real interstitial.
 
     This is the shape that defeats the classifier's verdict cache: the cache keys on a
@@ -618,7 +666,11 @@ class _WallDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
-        session_state: dict[str, object] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         del timeout, wait_for, capture_network, nav_steps
         self.render_calls += 1
@@ -642,7 +694,14 @@ class TestScrapeToolFetchCircuit:
     """
 
     @staticmethod
-    def _tool(driver, circuit, recipe_collection, extraction_collection, health_collection, **kwargs):
+    def _tool(
+        driver: ScrapeDriver,
+        circuit: TargetCircuit,
+        recipe_collection: ScrapeRecipeCollection,
+        extraction_collection: ScrapeExtractionCollection,
+        health_collection: ScrapeTargetHealthCollection,
+        **kwargs: Any,
+    ) -> ScrapeTool:
         return ScrapeTool(
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
@@ -674,9 +733,9 @@ class TestScrapeToolFetchCircuit:
         )
         classifications: list[str] = []
 
-        def _capture(*_args, **_kwargs):
-            def _with_structured_output(_schema, **_kw):
-                async def _ainvoke(prompt):
+        def _capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            def _with_structured_output(_schema: object, **_kw: object) -> SimpleNamespace:
+                async def _ainvoke(prompt: str) -> object:
                     classifications.append(prompt)
                     return verdict
 
@@ -695,6 +754,7 @@ class TestScrapeToolFetchCircuit:
         )
         assert all(not r.success for r in results)
         assert "backing off" in (results[-1].error or "")
+        assert results[-1].metadata is not None
         assert results[-1].metadata["circuit_state"] == "open"
         assert results[-1].metadata["retry_after_seconds"] > 0
 
@@ -786,6 +846,7 @@ class TestScrapeToolFetchCircuit:
         assert json.loads(third.content)["validation_status"] == "backoff", (
             "a suppressed poll on a circuit opened by transport failures reported the target as walled"
         )
+        assert third.metadata is not None
         assert third.metadata["validation_status"] == "backoff"
 
     async def test_an_eval_loop_that_raises_does_not_strand_the_targets_probe(self) -> None:
@@ -932,21 +993,11 @@ class TestScrapeToolFetchCircuit:
         target_id = await derived_target_id(url, schema)
         await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
 
-        class _PreSessionStateDriver:
-            """# parity-with: threetears.scrape.driver.ScrapeDriver"""
-
-            @property
-            def name(self) -> str:
-                return "old"
-
-            async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None) -> None:
-                raise AssertionError("the render must not be attempted once the mismatch is known")
-
         breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
         breaker.record_failure()
         circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
         tool = self._tool(
-            _PreSessionStateDriver(),
+            _DriverPredatingSessionState(),
             circuit,
             recipe_collection,
             extraction_collection,
@@ -972,7 +1023,7 @@ class TestScrapeToolFetchCircuit:
         )
 
     @staticmethod
-    def _robots_fetcher(body: str):
+    def _robots_fetcher(body: str) -> Callable[[str], Awaitable[tuple[int, str]]]:
         async def _fetch(_url: str) -> tuple[int, str]:
             return 200, body
 
@@ -1116,7 +1167,7 @@ def test_matching_egress_on_both_says_nothing(caplog: pytest.LogCaptureFixture) 
     assert not caplog.records, f"the correct configuration was noisy: {[r.message for r in caplog.records]}"
 
 
-def _build_tool(caplog: pytest.LogCaptureFixture, **kwargs):
+def _build_tool(caplog: pytest.LogCaptureFixture, **kwargs: Any) -> list[str]:
     """Construct a ScrapeTool with the collections these warning tests do not care about.
 
     Returns the WARNING records emitted during construction, which is the only thing under test
@@ -1302,8 +1353,8 @@ async def test_the_exit_a_page_came_through_reaches_the_health_row() -> None:
     from threetears.scrape.health import ScrapeTargetHealthCollection
     from threetears.scrape.tool import ScrapeTool
 
-    class _ExitReportingDriver:
-        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+    class _ExitReportingDriver(ScrapeDriver):
+        """Reports leaving by ``tor`` on a page nothing can be extracted from."""
 
         @property
         def name(self) -> str:
@@ -1383,29 +1434,6 @@ async def test_a_driver_predating_session_state_still_works() -> None:
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 
-    class _PreSessionStateDriver:
-        """A driver as it would have been written before this bundle. Deliberately NOT
-        declaring session_state, which is the whole point."""
-
-        @property
-        def name(self) -> str:
-            return "old"
-
-        async def render(
-            self,
-            url: str,
-            *,
-            timeout: float = 30.0,
-            wait_for: str | None = None,
-            capture_network: bool = False,
-            nav_steps: list[NavStep] | None = None,
-            results_path: str | None = None,
-            fragment_field: str | None = None,
-            link_selector: str | None = None,
-            seen_urls: set[str] | None = None,
-        ) -> RenderedPage:
-            return RenderedPage(html=_SINGLE_HTML, status=200, final_url=url, timing_ms=1.0)
-
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
     url, schema = "https://example.gov/old-driver", {"employer": "str"}
@@ -1414,7 +1442,7 @@ async def test_a_driver_predating_session_state_still_works() -> None:
     tool = ScrapeTool(
         recipe_collection=recipes,
         extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-        drivers={"nodriver": _PreSessionStateDriver()},  # type: ignore[dict-item]
+        drivers={"nodriver": _DriverPredatingSessionState(_SINGLE_HTML)},
         api_key="k",
         robots=None,
         block_private_hosts=False,
@@ -1442,31 +1470,15 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
 
-    class _PreSessionStateDriver:
-        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
-
-        @property
-        def name(self) -> str:
-            return "old"
-
-        async def render(
-            self,
-            url: str,
-            *,
-            timeout: float = 30.0,
-            wait_for: str | None = None,
-            capture_network: bool = False,
-            nav_steps: list[NavStep] | None = None,
-        ) -> RenderedPage:
-            raise AssertionError("the render must not be attempted once the mismatch is known")
-
     health = ScrapeTargetHealthCollection(CollectionRegistry(), DefaultCoreConfig(), nats_client=None)
     circuit = TargetCircuit(health, policy=BackoffPolicy(failure_threshold=1))
     pacer = FakeDelayPacer()
     gate = RobotsGate(fetch=_robots_file("User-agent: *\nCrawl-delay: 10\n"), delay_pacer=pacer)
     url = "https://example.gov/x"
 
-    result = await _execute_with_a_stored_solve(_PreSessionStateDriver(), health, url=url, circuit=circuit, robots=gate)
+    result = await _execute_with_a_stored_solve(
+        _DriverPredatingSessionState(), health, url=url, circuit=circuit, robots=gate
+    )
 
     assert result.success is False
     assert "does not accept session_state" in (result.error or ""), (
@@ -1500,21 +1512,11 @@ async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.robots import RobotsGate
 
-    class _PreSessionStateDriver:
-        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
-
-        @property
-        def name(self) -> str:
-            return "old"
-
-        async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None) -> RenderedPage:
-            raise AssertionError("the render must not be attempted once the mismatch is known")
-
     health = ScrapeTargetHealthCollection(CollectionRegistry(), DefaultCoreConfig(), nats_client=None)
     gate = RobotsGate(fetch=_robots_file("User-agent: *\nCrawl-delay: 10\n"))
 
     result = await _execute_with_a_stored_solve(
-        _PreSessionStateDriver(), health, url="https://example.gov/x", robots=gate
+        _DriverPredatingSessionState(), health, url="https://example.gov/x", robots=gate
     )
     assert "does not accept session_state" in (result.error or ""), "the refusal path was not the one taken"
 
@@ -1565,8 +1567,9 @@ async def test_a_render_failure_logs_what_actually_went_wrong(caplog: pytest.Log
         "the log line carries no traceback, so the failure that opened the circuit is "
         "indistinguishable from every other failure that opens it"
     )
-    assert record.extra_data["error_type"] == "TimeoutError", (
-        f"the error type is not filterable from the record: {getattr(record, 'extra_data', None)}"
+    extra_data: dict[str, Any] = getattr(record, "extra_data", {})
+    assert extra_data.get("error_type") == "TimeoutError", (
+        f"the error type is not filterable from the record: {extra_data or None}"
     )
 
 
@@ -1591,7 +1594,9 @@ def test_every_gate_is_handled_where_the_outcome_is_decided() -> None:
     # The gate enum's members, read from the module's source like the tail below rather than
     # imported: what this pins is the shape of the source, and a source-inspection test needs
     # no binding to the enum to read its member names.
-    module_source = _inspect.getsource(_inspect.getmodule(ScrapeTool))
+    tool_module = _inspect.getmodule(ScrapeTool)
+    assert tool_module is not None
+    module_source = _inspect.getsource(tool_module)
     (gate_class,) = (
         node for node in ast.parse(module_source).body if isinstance(node, ast.ClassDef) and node.name == "_Gate"
     )
@@ -1630,8 +1635,8 @@ async def test_a_driver_taking_kwargs_is_not_called_incompatible() -> None:
     to receive it is refused before its render.
     """
 
-    class _Forwards:
-        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+    class _Forwards(ScrapeDriver):
+        """A forwarding wrapper: everything it is given goes on in ``**kwargs``."""
 
         def __init__(self) -> None:
             self.session_states: list[Any] = []
@@ -1644,22 +1649,14 @@ async def test_a_driver_taking_kwargs_is_not_called_incompatible() -> None:
             self.session_states.append(kwargs.get("session_state"))
             raise NotImplementedError
 
-    class _Declines:
-        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
-
-        @property
-        def name(self) -> str:
-            return "declines"
-
-        async def render(self, url: str, *, timeout: float = 30.0) -> RenderedPage:
-            raise AssertionError("a driver that cannot take the solve was called with one")
-
     def _health() -> ScrapeTargetHealthCollection:
         return ScrapeTargetHealthCollection(CollectionRegistry(), DefaultCoreConfig(), nats_client=None)
 
     forwards = _Forwards()
     forwarded = await _execute_with_a_stored_solve(forwards, _health(), url="https://example.gov/fwd")
-    declined = await _execute_with_a_stored_solve(_Declines(), _health(), url="https://example.gov/dec")
+    declined = await _execute_with_a_stored_solve(
+        _DriverPredatingSessionState(), _health(), url="https://example.gov/dec"
+    )
 
     assert "does not accept session_state" not in (forwarded.error or ""), "a forwarding driver was refused"
     assert len(forwards.session_states) == 1 and forwards.session_states[0] is not None, (
@@ -1741,7 +1738,7 @@ class TestTheFleetAndTheSiteBothBind:
     def _pacer(*, claimed: bool, retry_after: float = 0.0) -> FakeDelayPacer:
         return FakeDelayPacer(claimed=claimed, retry_after_seconds=retry_after)
 
-    async def _slept_waiting_for(self, pacer) -> list[float]:
+    async def _slept_waiting_for(self, pacer: FakeDelayPacer) -> list[float]:
         from threetears.core.collections.registry import CollectionRegistry
         from threetears.core.config import DefaultCoreConfig
         from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -2164,6 +2161,7 @@ class TestSsrfGuard:
         result = await tool.execute(url=url, field_schema={"employer": "str", "affected_count": "int"})
         # Reached the fetch/extract path (recipe reuse, no network) rather than being SSRF-refused.
         assert result.success is True
+        assert result.metadata is not None
         assert result.metadata["validation_status"] == "validated"
 
 
@@ -2194,8 +2192,8 @@ class TestScrapeToolModelOutage:
             block_private_hosts=False,
         )
 
-        def _down(*_args, **_kwargs):
-            async def _ainvoke(_prompt) -> None:
+        def _down(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            async def _ainvoke(_prompt: object) -> None:
                 raise RuntimeError("provider down")
 
             return SimpleNamespace(with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=_ainvoke))
@@ -2212,6 +2210,7 @@ class TestScrapeToolModelOutage:
             "validation_status": MODEL_UNAVAILABLE_STATUS,
             "records": [],
         }
+        assert result.metadata is not None
         assert result.metadata["validation_status"] == MODEL_UNAVAILABLE_STATUS
         assert result.error is not None
         assert result.error.startswith(
@@ -2243,6 +2242,7 @@ class TestScrapeToolModelOutage:
             result = await tool.execute(url=url, field_schema=schema)
 
         assert not result.success
+        assert result.metadata is not None
         assert result.metadata["validation_status"] == MODEL_UNAVAILABLE_STATUS
         assert result.error is not None
         assert "scrape multi-row judge: no answer within the 120.0s deadline" in result.error

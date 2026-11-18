@@ -26,17 +26,24 @@ from typing import Any
 
 from nats.errors import NoRespondersError
 from threetears.nats.errors import RequestError
-from threetears.nats.transport import IncomingMessage
+from threetears.nats.capabilities import SubscriptionHandle
+from threetears.nats.subjects import Subject
+from threetears.nats.transport import IncomingMessage, RawMessageCallback
 from threetears.scrape.operator_control import SessionDisplay
 
 
 @dataclass
 class _Registration:
-    """One subscriber, and the queue group it shares with the key's other owners."""
+    """One subscriber, and the queue group it shares with the key's other owners.
 
-    subject: str
-    cb: Any
+    The handle ``subscribe`` hands back, so it is a :class:`SubscriptionHandle` as the real
+    client's is: the subject it holds, and whether it has ended.
+    """
+
+    subject: Subject
+    cb: RawMessageCallback
     queue: str | None
+    is_closed: bool = False
 
 
 # parity-exempt: subset shim for nats.aio.Client carrying only subscribe/unsubscribe/flush/publish_raw_reply/publish_raw/request_raw, which is the entire surface serve_owner, forward and the byte pipe reach through; it exists so both ends derive a session's subject for real rather than against a stub, and the full client's jetstream/kv/auth methods are unreachable from owner-routed forwarding or from a stream that has already been routed
@@ -71,14 +78,15 @@ class FakeBus:
         one with a ``TypeError`` that says nothing about the pipe.
         """
         del deadletter_on_failure
-        registration = _Registration(subject=subject.path, cb=cb, queue=queue)
+        registration = _Registration(subject=subject, cb=cb, queue=queue)
         self.registrations.append(registration)
         return registration
 
-    async def unsubscribe(self, sub: _Registration) -> None:
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
         """Drop a subscriber. Dropping one twice is not an error."""
-        if sub in self.registrations:
+        if isinstance(sub, _Registration) and sub in self.registrations:
             self.registrations.remove(sub)
+            sub.is_closed = True
 
     async def flush(self, timeout: float = 2.0) -> None:
         """Nothing is buffered here, so registration is already visible."""
@@ -112,7 +120,7 @@ class FakeBus:
         """
         self.sent.append(payload)
         for registration in list(self.registrations):
-            if registration.subject == subject.path:
+            if registration.subject.path == subject.path:
                 await registration.cb(IncomingMessage(data=payload, reply_subject=None, subject=subject.path))
 
     async def request_raw(self, *, subject: Any, payload: bytes, timeout: timedelta) -> bytes:
@@ -124,7 +132,7 @@ class FakeBus:
         that branch pass untested.
         """
         self.sent.append(payload)
-        matched = [r for r in self.registrations if r.subject == subject.path]
+        matched = [r for r in self.registrations if r.subject.path == subject.path]
         if not matched:
             raise RequestError(f"no responders for {subject.path}") from NoRespondersError()
         self._inbox += 1

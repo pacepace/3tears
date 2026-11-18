@@ -49,7 +49,7 @@ from .session_state import DEFAULT_SESSION_STATE_TTL, open_session_state, seal_s
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from pydantic import SecretStr
-    from threetears.nats import NatsClient
+    from threetears.nats import ForwardTransport
 
     from .operator_session import SessionClaim
 
@@ -224,7 +224,7 @@ async def _perform(
 
 @asynccontextmanager
 async def serve_session(
-    nats: NatsClient,
+    nats: ForwardTransport,
     claim: SessionClaim,
     display: SessionDisplay,
     *,
@@ -250,7 +250,7 @@ async def serve_session(
     optimisation and the check is the mechanism.
 
     :param nats: the platform's connected client
-    :ptype nats: NatsClient
+    :ptype nats: ForwardTransport
     :param claim: this pod's live claim on the session, which decides both the subject served
         and whether a message may be acted on
     :ptype claim: SessionClaim
@@ -368,7 +368,7 @@ def _family_for(owned_node: str | None) -> str | None:
 
 
 async def _send(
-    nats: NatsClient,
+    nats: ForwardTransport,
     session_id: str,
     message: dict[str, Any],
     *,
@@ -382,7 +382,7 @@ async def _send(
 
 
 async def open_tab(
-    nats: NatsClient,
+    nats: ForwardTransport,
     session_id: str,
     *,
     target_id: str,
@@ -423,7 +423,7 @@ async def open_tab(
 
 
 async def complete_tab(
-    nats: NatsClient,
+    nats: ForwardTransport,
     session_id: str,
     *,
     tab_id: str,
@@ -443,7 +443,7 @@ async def complete_tab(
 
 
 async def close_session(
-    nats: NatsClient,
+    nats: ForwardTransport,
     session_id: str,
     *,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
@@ -458,7 +458,7 @@ async def close_session(
 
 
 async def read_state(
-    nats: NatsClient,
+    nats: ForwardTransport,
     session_id: str,
     *,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,

@@ -17,7 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
-import httpx
+import httpx2
 import mcp
 import pytest
 from mcp import ClientSession
@@ -87,10 +87,10 @@ def _host_app(transport: McpHttpTransport, mcp_routes: list[BaseRoute]) -> Starl
     return Starlette(routes=[Route("/health", _health), *mcp_routes], lifespan=_lifespan)
 
 
-def _http(app: Starlette) -> httpx.AsyncClient:
+def _http(app: Starlette) -> httpx2.AsyncClient:
     """an in-process HTTP client for ``app`` presenting the known client key."""
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    return httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="http://host.test",
         headers={"Authorization": "Bearer client-key"},
     )

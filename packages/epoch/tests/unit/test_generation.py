@@ -19,7 +19,13 @@ import pytest
 from threetears.core.collections.generation import GenerationSource
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeChangeLog, FakeNatsClient
-from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource, generation_kv_key
+from threetears.epoch import (
+    EPOCH_CHANGES_BUCKET,
+    EpochGenerationReader,
+    EpochGenerationSource,
+    GenerationReader,
+    generation_kv_key,
+)
 from threetears.nats import KvError
 from threetears.nats.subjects import set_default_namespace
 
@@ -159,3 +165,9 @@ class TestAWatchOnALogNotYetDeclaredWaitsForIt:
             client.is_closed = True  # type: ignore[attr-defined]
             with pytest.raises(KvError, match="connection closed"):
                 await asyncio.wait_for(first, timeout=1)
+
+
+def test_the_reader_is_what_a_marking_follower_types_it_as() -> None:
+    """A parameter typed ``GenerationReader`` takes the platform's reader, statically and at run time."""
+    reader: GenerationReader = EpochGenerationReader(FakeNatsClient())
+    assert isinstance(reader, GenerationReader)

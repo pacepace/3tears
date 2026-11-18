@@ -59,10 +59,10 @@ class TestTheForwardFamilyASessionRidesOn:
         nothing is permitted to serve.
         """
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):
             scoped = [str(r.subject) for r in bus.registrations]
         bus_unscoped, display2 = FakeBus(), RecordingDisplay()
-        async with serve_session(bus_unscoped, _claim(), display2, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus_unscoped, _claim(), display2, session_state_key=_KEY):
             unscoped = [str(r.subject) for r in bus_unscoped.registrations]
         assert scoped != unscoped, "naming the owned node did not change the subject the owner serves"
         # the scoped subject carries a family segment between the prefix and the key digest.
@@ -94,7 +94,7 @@ class TestTheForwardFamilyASessionRidesOn:
         granted = set(build_permissions(Principal.TOOL_POD, pod_id=pod_id, tool_namespaces=(stem,)).subscribe)
 
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):
             served = [str(r.subject) for r in bus.registrations]
 
         assert served, "the owner subscribed nothing at all"
@@ -123,11 +123,11 @@ class TestTheForwardFamilyASessionRidesOn:
         each building it.
         """
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
-            same = await read_state(bus, _SESSION, owned_node=self._OWNED_NODE)  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):
+            same = await read_state(bus, _SESSION, owned_node=self._OWNED_NODE)
             assert same is not None
             with pytest.raises(Exception):
-                await read_state(bus, _SESSION, owned_node="tools.other-provider")  # type: ignore[arg-type]
+                await read_state(bus, _SESSION, owned_node="tools.other-provider")
 
 
 class TestAMessageReachesThePodHoldingTheSession:
@@ -136,11 +136,11 @@ class TestAMessageReachesThePodHoldingTheSession:
     async def test_each_message_reaches_the_display(self) -> None:
         """All four, because a contract with one untested member is a contract with a gap."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            opened = await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com")  # type: ignore[arg-type]
-            await complete_tab(bus, _SESSION, tab_id=opened["tab_id"])  # type: ignore[arg-type]
-            state = await read_state(bus, _SESSION)  # type: ignore[arg-type]
-            await close_session(bus, _SESSION)  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
+            opened = await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com")
+            await complete_tab(bus, _SESSION, tab_id=opened["tab_id"])
+            state = await read_state(bus, _SESSION)
+            await close_session(bus, _SESSION)
 
         assert [t.target_id for t in display.opened] == ["t-1"]
         assert display.completed == ["tab-1"]
@@ -155,21 +155,21 @@ class TestAMessageReachesThePodHoldingTheSession:
         routing this whole module exists for would be decorative.
         """
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             with pytest.raises(NoOwnerError):
-                await read_state(bus, "some-other-session")  # type: ignore[arg-type]
+                await read_state(bus, "some-other-session")
         assert display.reads == 0, "a pod answered for a session it does not hold"
 
     async def test_no_owner_at_all_is_distinguishable_from_a_failure(self) -> None:
         """A caller retries or self-promotes on "no owner" and must not do that on a fault."""
         bus = FakeBus()
         with pytest.raises(NoOwnerError):
-            await read_state(bus, _SESSION)  # type: ignore[arg-type]
+            await read_state(bus, _SESSION)
 
     async def test_the_subscription_is_dropped_when_serving_ends(self) -> None:
         """A pod that stopped serving must stop receiving, or it answers after releasing."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             assert bus.registrations, "nothing subscribed while the session was served"
         assert not bus.registrations, "the subscription outlived the session it served"
 
@@ -185,8 +185,8 @@ class TestTheHumansWorkIsSealedBeforeItTravels:
         adding a second field that happens to include it.
         """
         bus, display = FakeBus(), RecordingDisplay(raw_state=_RAW_STATE)
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
+            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")
 
         assert "session_state" not in reply, "the raw export was returned to the caller"
         for payload in bus.sent:
@@ -196,8 +196,8 @@ class TestTheHumansWorkIsSealedBeforeItTravels:
     async def test_the_sealed_reply_opens_back_to_the_original_solve(self) -> None:
         """Sealing that could not be reversed would be a very secure way to lose the work."""
         bus, display = FakeBus(), RecordingDisplay(raw_state=_RAW_STATE)
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
+            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")
 
         assert reply["session_state_sealed"], "no sealed state came back"
         assert reply["session_state_expires_at"], "a sealed solve came back with no expiry"
@@ -206,8 +206,8 @@ class TestTheHumansWorkIsSealedBeforeItTravels:
     async def test_a_tab_that_exported_nothing_carries_no_sealed_field(self) -> None:
         """An export can fail, and an empty seal would be a solve that is not there."""
         bus, display = FakeBus(), RecordingDisplay(raw_state=None)
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
+            reply = await complete_tab(bus, _SESSION, tab_id="tab-1")
 
         assert "session_state_sealed" not in reply
         assert "session_state" not in reply, "an absent export still left the raw key behind"
@@ -224,10 +224,10 @@ class TestAPodThatLostTheSessionStopsActing:
         """
         bus, display = FakeBus(), RecordingDisplay()
         claim = _claim()
-        async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, claim, display, session_state_key=_KEY):
             claim.lost.set()
             with pytest.raises(ForwardedHandlerError):
-                await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com")  # type: ignore[arg-type]
+                await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com")
 
         assert display.opened == [], "a pod that had lost the session still drove its display"
 
@@ -237,7 +237,7 @@ class TestAPodThatLostTheSessionStopsActing:
         claim = _claim()
         claim.lost.set()
         with pytest.raises(RuntimeError, match="not held by this pod"):
-            async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+            async with serve_session(bus, claim, display, session_state_key=_KEY):
                 pytest.fail("a pod served a session it had already lost")
         assert not bus.registrations, "a lost session was subscribed anyway"
 
@@ -257,7 +257,7 @@ class TestAHandoverReleasesWhatThisPodWasHolding:
         loopback, so closing this one cannot touch the display the new owner just brought up."""
         bus, display = FakeBus(), RecordingDisplay()
         claim = _claim()
-        async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, claim, display, session_state_key=_KEY):
             claim.lost.set()
 
         assert display.closed == 1, (
@@ -269,7 +269,7 @@ class TestAHandoverReleasesWhatThisPodWasHolding:
         """The caller owns a normal teardown. Closing twice would race its own close and, on the
         single-pod deployment where nothing is ever lost, would end sessions that are still live."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             pass
 
         assert display.closed == 0, "serving closed a session that ended normally"
@@ -292,7 +292,7 @@ class TestAHandoverReleasesWhatThisPodWasHolding:
         bus, display = FakeBus(), _Refuses()
         claim = _claim()
         # Must not raise: the sidecar's TTL is still the backstop.
-        async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, claim, display, session_state_key=_KEY):
             claim.lost.set()
 
         assert attempts == [True], (
@@ -306,7 +306,7 @@ class TestTheContractRefusesWhatItCannotCarryOut:
     async def test_an_unknown_operation_is_refused_by_name(self) -> None:
         """A caller seeing this is running a different version of this contract."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             with pytest.raises(ForwardedHandlerError) as caught:
                 await _raw_send(bus, {"op": "open_session"})
         assert caught.value.type_name == "UnknownControlMessage"
@@ -322,7 +322,7 @@ class TestTheContractRefusesWhatItCannotCarryOut:
     async def test_a_malformed_payload_is_refused_rather_than_guessed_at(self) -> None:
         """Half-reading a control message is how a tab opens against the wrong target."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             with pytest.raises(ForwardedHandlerError):
                 await _raw_bytes(bus, b"not json at all")
         assert display.opened == []
@@ -330,7 +330,7 @@ class TestTheContractRefusesWhatItCannotCarryOut:
     async def test_a_missing_required_field_names_the_field(self) -> None:
         """The message is all a caller gets back, so it has to say which field."""
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             with pytest.raises(ForwardedHandlerError, match="url"):
                 await _raw_send(bus, {"op": OPEN_TAB, "target_id": "t-1"})
         assert display.opened == []
@@ -343,8 +343,8 @@ class TestWhatACallerSends:
         """A target is re-driven from url plus nav_steps, so losing them loses the target."""
         bus, display = FakeBus(), RecordingDisplay()
         steps = [{"action": "click", "selector": "#accept"}]
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", nav_steps=steps)  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
+            await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", nav_steps=steps)
 
         assert display.opened[0].nav_steps == steps
 
@@ -362,7 +362,7 @@ class TestNoCookieJarTravelsInTheClearInEitherDirection:
         bus, display = FakeBus(), RecordingDisplay()
         sealed = seal_session_state(_RAW_STATE, _KEY).sealed
 
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed)
 
         assert display.opened[0].session_state == _RAW_STATE, (
@@ -383,7 +383,7 @@ class TestNoCookieJarTravelsInTheClearInEitherDirection:
         wrong_key = SecretStr("b" * 32)
         sealed = seal_session_state(_RAW_STATE, wrong_key).sealed
 
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):
             await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed)
 
         assert display.opened[0].session_state is None, "an untrusted solve was handed to the browser anyway"
@@ -401,4 +401,4 @@ async def _raw_bytes(bus: FakeBus, payload: bytes) -> bytes:
     """Send arbitrary bytes to the session's subject."""
     from threetears.nats import forward
 
-    return await forward(bus, _SESSION, payload, timeout=timedelta(seconds=5))  # type: ignore[arg-type]
+    return await forward(bus, _SESSION, payload, timeout=timedelta(seconds=5))

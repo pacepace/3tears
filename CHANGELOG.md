@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: `ForwardTransport`, what `forward` and `serve_owner` use of a client
+
+`threetears.nats.ForwardTransport` (`subscribe`, `unsubscribe`, `flush`, `publish_raw_reply`, `request_raw`) is the
+surface owner-routed forwarding reaches. `NatsClient` satisfies it. `forward`, `serve_owner` and scrape's operator
+control (`serve_session`, `open_tab`, `complete_tab`, `close_session`, `read_state`) take it instead of the whole
+client, so an in-memory bus double type-checks with no ignore. Nothing changes at run time.
+
+### epoch: `GenerationReader`; mcp's `LocalGrantAuthorizer` takes it
+
+`threetears.epoch.GenerationReader` is a `GenerationWatcher` that also `read`s a table's generation once: what a holder
+that marks a generation and then follows it uses of `EpochGenerationReader`, which satisfies it.
+`LocalGrantAuthorizer(generation_reader=)` is typed by it, so a test's reader double type-checks. Nothing changes at
+run time.
+
 ### core: `TokenBucketLike` and `WindowedCounterLike`; scrape's circuit and robots gate take them
 
 `threetears.core.coordination.TokenBucketLike` (`claim`, `refund`) and `WindowedCounterLike` (`record_attempt`,

@@ -47,7 +47,7 @@ from threetears.observe import PeriodicTask, cancel_and_wait, contain, get_logge
 _GRANTS_IMPORT_ERROR: ImportError | None = None
 try:
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
-    from threetears.epoch import EpochGenerationReader, TableFollower, follow_tables
+    from threetears.epoch import GenerationReader, TableFollower, follow_tables
 except ImportError as _exc:  # NOSILENT: the grants extra is optional; LocalGrantAuthorizer names it
     _GRANTS_IMPORT_ERROR = _exc
 
@@ -467,7 +467,7 @@ class LocalGrantAuthorizer:
     :ptype registry: CollectionRegistry | None
     :param generation_reader: reads the table's generation for the mark start() takes, and watches it
         for the follow; given with ``registry``
-    :ptype generation_reader: EpochGenerationReader | None
+    :ptype generation_reader: GenerationReader | None
     :param admin_principal_ids: optional set of principal UUIDs to log explicitly at start-time as
         auto-granted. logging the specific principal_id (not just "admins get everything") keeps the
         audit trail concrete for the v1 single-identity stdio mode
@@ -482,7 +482,7 @@ class LocalGrantAuthorizer:
         grant_loader: GrantLoader,
         grant_reader: GrantReader | None = None,
         registry: CollectionRegistry | None = None,
-        generation_reader: EpochGenerationReader | None = None,
+        generation_reader: GenerationReader | None = None,
         admin_principal_ids: set[UUID] | None = None,
         retry_interval_seconds: float = 5.0,
     ) -> None:
@@ -499,7 +499,7 @@ class LocalGrantAuthorizer:
         :param registry: the registry that follows the table; optional
         :ptype registry: CollectionRegistry | None
         :param generation_reader: the follow's epoch-bucket reader; optional, with ``registry``
-        :ptype generation_reader: EpochGenerationReader | None
+        :ptype generation_reader: GenerationReader | None
         :param admin_principal_ids: principals to log as auto-granted
         :ptype admin_principal_ids: set[UUID] | None
         :param retry_interval_seconds: how often an owed read is retried (only with a registry)

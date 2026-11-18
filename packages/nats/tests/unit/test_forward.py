@@ -23,11 +23,12 @@ from threetears.nats import (
     ForwardedHandlerError,
     ForwardError,
     IncomingMessage,
+    NatsClient,
     Subject,
     Subjects,
     set_default_namespace,
 )
-from threetears.nats.forward import forward, serve_owner
+from threetears.nats.forward import ForwardTransport, forward, serve_owner
 
 
 @pytest.fixture(autouse=True)
@@ -402,3 +403,14 @@ class _LoopbackBus:
             IncomingMessage(data=payload, reply_subject="_INBOX.loopback", subject=subject.path)
         )
         return self.replies[before]
+
+
+def _forward_transport(client: NatsClient) -> ForwardTransport:
+    """The client where a forward transport is asked for: this line is the static check."""
+    return client
+
+
+def test_the_client_is_a_forward_transport() -> None:
+    """``forward`` and ``serve_owner`` take the client itself, statically and at run time."""
+    client = NatsClient.__new__(NatsClient)
+    assert isinstance(_forward_transport(client), ForwardTransport)

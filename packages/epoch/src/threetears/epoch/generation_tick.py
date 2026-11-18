@@ -57,6 +57,7 @@ from threetears.epoch.generation import EpochGenerationReader
 
 __all__ = [
     "DEFAULT_BROADCAST_GRACE",
+    "GenerationReader",
     "GenerationWatcher",
     "QuietPass",
     "QuietReader",
@@ -89,6 +90,26 @@ class GenerationWatcher(Protocol):
         :ptype table_name: str
         :return: the generations, ``None`` while the table has none
         :rtype: AsyncGenerator[str | None]
+        """
+        ...
+
+
+@runtime_checkable
+class GenerationReader(GenerationWatcher, Protocol):
+    """a :class:`GenerationWatcher` that also reads a table's generation once.
+
+    what a holder that marks a generation and then follows it uses of
+    :class:`~threetears.epoch.generation.EpochGenerationReader`, which satisfies it; a parameter
+    typed by it takes the reader or a double of it.
+    """
+
+    async def read(self, table_name: str) -> str | None:
+        """the table's write generation as it stands now.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the generation, ``None`` while the table has none
+        :rtype: str | None
         """
         ...
 

@@ -66,7 +66,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
 from nats.errors import NoRespondersError as _NatsNoRespondersError, TimeoutError as _NatsTimeoutError
 
@@ -76,14 +76,15 @@ from threetears.nats.errors import NatsClientError, RequestError
 from threetears.nats.subjects import Subject, Subjects
 
 if TYPE_CHECKING:
-    from threetears.nats.client import NatsClient, Subscription
-    from threetears.nats.transport import IncomingMessage
+    from threetears.nats.capabilities import SubscriptionHandle
+    from threetears.nats.transport import IncomingMessage, RawMessageCallback
 
 __all__ = [
     "DEFAULT_FORWARD_TIMEOUT",
     "ForwardError",
     "ForwardedHandlerError",
     "ForwardHandler",
+    "ForwardTransport",
     "NoOwnerError",
     "forward",
     "serve_owner",
@@ -91,6 +92,44 @@ __all__ = [
 
 
 log = get_logger(__name__)
+
+
+@runtime_checkable
+class ForwardTransport(Protocol):
+    """what :func:`forward` and :func:`serve_owner` use of a client, and nothing more.
+
+    :class:`threetears.nats.NatsClient` satisfies it. it exists for the reason
+    :class:`threetears.nats.pipe.PipeTransport` does: a test can carry a request to a subscriber
+    and its reply back through an in-memory double, so both ends derive a key's subject for
+    real, and the double is checked against a surface small enough to be worth checking.
+    """
+
+    async def subscribe(
+        self,
+        subject: Subject,
+        *,
+        cb: RawMessageCallback,
+        queue: str | None = None,
+        deadletter_on_failure: bool = True,
+    ) -> SubscriptionHandle:
+        """subscribe *cb* to *subject*, in queue group *queue* when given."""
+        ...
+
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """end a subscription :meth:`subscribe` returned."""
+        ...
+
+    async def flush(self) -> None:
+        """wait until everything sent so far, a subscription included, has reached the server."""
+        ...
+
+    async def publish_raw_reply(self, *, reply_subject: str, payload: bytes) -> None:
+        """reply *payload* to a request's reply subject."""
+        ...
+
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+        """send a request and answer its reply's bytes."""
+        ...
 
 
 #: default request timeout for :func:`forward` when the caller does not
@@ -233,7 +272,7 @@ def _subject_for(key: str, family: str | None) -> Subject:
 
 @asynccontextmanager
 async def serve_owner(
-    nats: NatsClient,
+    nats: ForwardTransport,
     key: str,
     handler: ForwardHandler,
     *,
@@ -265,8 +304,8 @@ async def serve_owner(
     unsubscribes, and the ``async with`` raises
     :class:`~threetears.core.coordination.LockLost`.
 
-    :param nats: connected canonical :class:`threetears.nats.NatsClient`
-    :ptype nats: NatsClient
+    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`ForwardTransport`
+    :ptype nats: ForwardTransport
     :param key: ownership key; mapped deterministically to a forward
         subject via :meth:`Subjects.forward`
     :ptype key: str
@@ -317,7 +356,7 @@ async def serve_owner(
     # deadletter_on_failure is off: handler failures are framed back to
     # the caller (above), they are not transport faults to deadletter.
     # sender-posture: primitive -- serve_owner hands each request to its caller's handler
-    sub: Subscription = await nats.subscribe(
+    sub: SubscriptionHandle = await nats.subscribe(
         subject=subject,
         cb=_on_request,
         queue=subject.path,
@@ -333,7 +372,7 @@ async def serve_owner(
 
 
 async def forward(
-    nats: NatsClient,
+    nats: ForwardTransport,
     key: str,
     payload: bytes,
     *,
@@ -349,8 +388,8 @@ async def forward(
     :class:`ForwardedHandlerError` carrying the original type name +
     message.
 
-    :param nats: connected canonical :class:`threetears.nats.NatsClient`
-    :ptype nats: NatsClient
+    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`ForwardTransport`
+    :ptype nats: ForwardTransport
     :param key: ownership key; mapped to a forward subject via
         :meth:`Subjects.forward`
     :ptype key: str
