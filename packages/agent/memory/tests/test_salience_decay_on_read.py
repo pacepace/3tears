@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from packages.agent.memory.tests.statement_pool import StatementPool
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.core.collections import SalienceDecay

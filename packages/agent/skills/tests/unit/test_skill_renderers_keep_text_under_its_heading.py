@@ -71,7 +71,7 @@ def _list_tool(coll: FakeSkillsCollection, registry: FakeRegistry) -> Any:
     [tool] = load_skill_list_tool(
         agent_id=AGENT,
         user_id=PERSON,
-        skills_collection=coll,  # type: ignore[arg-type]
+        skills_collection=coll,
         registry=registry,
     )
     return tool
@@ -81,7 +81,7 @@ def _introspect_tool(registry: FakeRegistry) -> Any:
     [tool] = load_skill_introspect_tool(
         agent_id=AGENT,
         user_id=PERSON,
-        skills_collection=FakeSkillsCollection(),  # type: ignore[arg-type]
+        skills_collection=FakeSkillsCollection(),
         registry=registry,
     )
     return tool
@@ -109,8 +109,8 @@ def _history(coll: FakeSkillsCollection, **fields: Any) -> tuple[Any, UUID]:
     [tool] = load_skill_history_tool(
         agent_id=AGENT,
         user_id=PERSON,
-        skills_collection=coll,  # type: ignore[arg-type]
-        invocations_collection=inv,  # type: ignore[arg-type]
+        skills_collection=coll,
+        invocations_collection=inv,
         tz="America/Los_Angeles",
     )
     return tool, skill_id
@@ -143,7 +143,7 @@ class TestSkillCreateSummary:
         [tool] = load_skill_create_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
+            skills_collection=coll,
             registry=FakeRegistry(),
         )
         out = await tool.ainvoke({"name": "deploy", "summary": "Ship it\n\n  safely\nto prod", "body": "Run helm"})

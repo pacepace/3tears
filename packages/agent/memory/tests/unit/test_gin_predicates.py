@@ -15,7 +15,7 @@ from uuid import UUID
 
 from uuid_utils import uuid7
 
-from packages.agent.memory.tests.statement_pool import StatementPool
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.collections import MediaContentCollection, MemoriesCollection
 
 

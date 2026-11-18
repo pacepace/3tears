@@ -51,7 +51,7 @@ async def _create(**fields: Any) -> str:
     [tool] = load_skill_create_tool(
         agent_id=uuid4(),
         user_id=uuid4(),
-        skills_collection=FakeSkillsCollection(),  # type: ignore[arg-type]
+        skills_collection=FakeSkillsCollection(),
         registry=FakeRegistry(permitted_tools=_PERMITTED),
         offer_tool_skills=True,
     )
@@ -273,7 +273,7 @@ class _RecordingSkills(FakeSkillsCollection):
 async def _get(raw: str) -> tuple[str, list[tuple[UUID, UUID]]]:
     """call ``skill_get`` with ``raw``; return its answer and the pks it looked up."""
     skills = _RecordingSkills()
-    [tool] = load_skill_get_tool(agent_id=uuid4(), user_id=uuid4(), skills_collection=skills)  # type: ignore[arg-type]
+    [tool] = load_skill_get_tool(agent_id=uuid4(), user_id=uuid4(), skills_collection=skills)
     out = await tool.ainvoke({"skill_id": raw})
     assert isinstance(out, str)
     return out, skills.asked

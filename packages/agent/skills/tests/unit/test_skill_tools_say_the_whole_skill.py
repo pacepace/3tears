@@ -88,8 +88,8 @@ def _invoke_tool(coll: FakeSkillsCollection, inv: FakeInvocationsCollection, act
     [tool] = load_skill_invoke_tool(
         agent_id=AGENT,
         user_id=PERSON,
-        skills_collection=coll,  # type: ignore[arg-type]
-        invocations_collection=inv,  # type: ignore[arg-type]
+        skills_collection=coll,
+        invocations_collection=inv,
         conversation_id_resolver=lambda: CONV,
         active_skill_probe=active.probe,
         active_skill_setter=active.set,
@@ -153,7 +153,7 @@ class TestSkillGetIsWhole:
         [tool] = load_skill_get_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
+            skills_collection=coll,
             tz="America/Los_Angeles",
         )
         out = await tool.ainvoke({"skill_id": str(skill_id)})
@@ -166,7 +166,7 @@ class TestSkillGetIsWhole:
     async def test_a_skill_never_used_says_so(self) -> None:
         coll = FakeSkillsCollection()
         skill_id = _seed(coll)
-        [tool] = load_skill_get_tool(agent_id=AGENT, user_id=PERSON, skills_collection=coll)  # type: ignore[arg-type]
+        [tool] = load_skill_get_tool(agent_id=AGENT, user_id=PERSON, skills_collection=coll)
         out = await tool.ainvoke({"skill_id": str(skill_id)})
         assert "used: never" in out and "UTC" in out
         assert "skill_history" not in out
@@ -176,7 +176,7 @@ def _update_tool(coll: FakeSkillsCollection) -> Any:
     [tool] = load_skill_update_tool(
         agent_id=AGENT,
         user_id=PERSON,
-        skills_collection=coll,  # type: ignore[arg-type]
+        skills_collection=coll,
         registry=FakeRegistry(permitted_tools={"web_search"}),
     )
     return tool
@@ -231,8 +231,8 @@ async def _report_setup(coll: FakeSkillsCollection) -> tuple[Any, UUID, FakeInvo
         agent_id=AGENT,
         conversation_id_resolver=lambda: CONV,
         active_skill_probe=active.probe,
-        invocations_collection=inv,  # type: ignore[arg-type]
-        skills_collection=coll,  # type: ignore[arg-type]
+        invocations_collection=inv,
+        skills_collection=coll,
     )
     return report, skill_id, inv
 
@@ -295,8 +295,8 @@ class TestSkillHistory:
         [tool] = load_skill_history_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
-            invocations_collection=inv,  # type: ignore[arg-type]
+            skills_collection=coll,
+            invocations_collection=inv,
             tz="America/Los_Angeles",
         )
         out = await tool.ainvoke({"skill_id": "tide-check", "limit": 2})
@@ -339,8 +339,8 @@ class TestSkillHistory:
         [tool] = load_skill_history_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
-            invocations_collection=inv,  # type: ignore[arg-type]
+            skills_collection=coll,
+            invocations_collection=inv,
             count_cap=2,
         )
         lines = (await tool.ainvoke({"skill_id": "tide-check", "limit": 1})).splitlines()
@@ -353,8 +353,8 @@ class TestSkillHistory:
         [tool] = load_skill_history_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
-            invocations_collection=FakeInvocationsCollection(coll),  # type: ignore[arg-type]
+            skills_collection=coll,
+            invocations_collection=FakeInvocationsCollection(coll),
         )
         out = await tool.ainvoke({"skill_id": "tide-check", "cursor": "two"})
         assert "not one skill_history gave" in out
@@ -365,8 +365,8 @@ class TestSkillHistory:
         [tool] = load_skill_history_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
-            invocations_collection=FakeInvocationsCollection(coll),  # type: ignore[arg-type]
+            skills_collection=coll,
+            invocations_collection=FakeInvocationsCollection(coll),
         )
         assert (
             await tool.ainvoke({"skill_id": str(skill_id)}) == f"[skill:{skill_id}] tide-check has not been used yet."
@@ -378,8 +378,8 @@ class TestSkillHistory:
         [tool] = load_skill_history_tool(
             agent_id=AGENT,
             user_id=PERSON,
-            skills_collection=coll,  # type: ignore[arg-type]
-            invocations_collection=FakeInvocationsCollection(coll),  # type: ignore[arg-type]
+            skills_collection=coll,
+            invocations_collection=FakeInvocationsCollection(coll),
         )
         out = await tool.ainvoke({"skill_id": str(skill_id)})
         assert out == "[TOOL ERROR] skill_history: skill not found"

@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 from uuid import uuid7
 
-from packages.agent.memory.tests.statement_pool import StatementPool
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MediaContentCollection, MemoriesCollection
 from threetears.agent.memory.entities import MemoryEntity

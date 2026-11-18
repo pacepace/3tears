@@ -31,11 +31,14 @@ run locally / in the integration lane with a docker daemon available.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 
 import asyncpg
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.agent.skills.migrations import register as register_skills
@@ -92,7 +95,9 @@ async def _create_factory_schema(conn: asyncpg.Connection, schema: str) -> None:
     :rtype: None
     """
     metadata = _factory_metadata()
-    dialect = postgresql.dialect()
+    # SQLAlchemy leaves the dialect classes' constructors unannotated: the call goes through the typed Dialect
+    dialect_class: type[Dialect] = postgresql.dialect
+    dialect = dialect_class()
     # Tables in dependency order: agent_skills first so the composite FK
     # on agent_skill_invocations resolves against an existing target.
     for table_name in _TABLES:
@@ -102,7 +107,7 @@ async def _create_factory_schema(conn: asyncpg.Connection, schema: str) -> None:
             await conn.execute(str(CreateIndex(index).compile(dialect=dialect)))
 
 
-async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, tuple]:
+async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, tuple[Any, ...]]:
     """Return ``column_name -> (data_type, is_nullable, column_default)``.
 
     ``udt_name`` distinguishes ``text`` from ``text[]`` (the latter
@@ -116,7 +121,7 @@ async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[st
     :param table: table name
     :ptype table: str
     :return: column name -> structural signature tuple
-    :rtype: dict[str, tuple]
+    :rtype: dict[str, tuple[Any, ...]]
     """
     rows = await conn.fetch(
         """
@@ -172,7 +177,7 @@ async def _constraints(
     table: str,
     *,
     other_schema: str,
-) -> dict[str, tuple]:
+) -> dict[str, tuple[Any, ...]]:
     """Return constraint signatures keyed by a stable, name-free key.
 
     Primary-key / unique / check / foreign-key constraints are matched
@@ -194,7 +199,7 @@ async def _constraints(
         its own schema, which differs between the two compared schemas)
     :ptype other_schema: str
     :return: set-shaped dict of structural constraint signatures
-    :rtype: dict[str, tuple]
+    :rtype: dict[str, tuple[Any, ...]]
     """
     del other_schema
     rows = await conn.fetch(
@@ -218,7 +223,7 @@ async def _constraints(
         schema,
         table,
     )
-    result: dict[str, tuple] = {}
+    result: dict[str, tuple[Any, ...]] = {}
     for r in rows:
         contype = r["contype"]
         cols = tuple(r["cols"] or ())
@@ -340,7 +345,7 @@ async def _apply_both_schemas(
 
 
 @pytest.fixture
-async def two_schemas(pg_url: str):  # noqa: ANN201 -- async-gen fixture
+async def two_schemas(pg_url: str) -> AsyncIterator[tuple[str, str, str]]:
     """Create two fresh schemas and drop both on teardown.
 
     :param pg_url: testcontainer URL

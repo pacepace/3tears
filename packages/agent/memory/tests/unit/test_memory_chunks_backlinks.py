@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from packages.agent.memory.tests.statement_pool import StatementPool
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.entities import MemoryChunkEntity
 from threetears.core.collections.registry import CollectionRegistry
