@@ -13,12 +13,13 @@ comparison on them is development-set evidence like any other.
 Each share below is printed by `python packages/evals/onramp/held_out_shares.py` (standard library only), which runs
 every case in the app's shipped data through the app and through the app with its twin laid over it.
 `packages/evals/tests/test_onramp_held_out.py` holds every app in `held-out.jsonl`, on the pool, to three promises:
-the twin agrees with every label (for the two apps whose labels grade, the app never reads better than the twin), the
+the twin agrees with every label (for the apps whose labels grade, the app never reads better than the twin), the
 defect reaches more than a fifth of the cases and fewer than all, and the app's own `tests/` pass under
 `python -m unittest discover tests`, run from the app's directory as a trial would, on the app and on its twin.
 
 Graded apps, whose outputs need a graded judgement rather than an exact match: `weatherboard` (a tolerance),
-`faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries).
+`faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries), `shipeta` (a
+tolerance), `standings` (the share of a night's teams in their published place).
 
 ## parcelrate: pricing, a wrong boundary
 
@@ -138,4 +139,123 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
   ```diff
   -DAY_FIRST = False
   +DAY_FIRST = True
+  ```
+
+## contactmerge: de-duplication, case-sensitive matching
+
+- **Defect.** `contacts.email_key` strips an address but keeps its case, so `Jo.Bloggs@Example.com` and
+  `jo.bloggs@example.com` are two keys. The docstring and README say an address matches whatever its case. A pair
+  that also shares a phone number is still joined by the phone, so only pairs linked by a differently cased address
+  alone come apart.
+- **Where.** `apps/contactmerge/contacts.py`, `email_key`.
+- **Share.** 12 of 44 reviewed pairs (27%) are decided otherwise than Priya's review (`data/reviewed_pairs.jsonl`,
+  `same`); 5 of its first 20.
+- **Twin diff.**
+  ```diff
+  -    return email.strip()
+  +    return email.strip().lower()
+  ```
+
+## slotfinder: time zones, southern-hemisphere daylight saving
+
+- **Defect.** `slots.in_summer_time` tests `starts <= day < ends`, which holds for a northern city whose summer starts
+  and ends in one calendar year. Sydney's starts in October and ends in April, so the test is never true there: from
+  October to April the app reads Sydney an hour behind its clocks, and every window Sydney's hours bound moves.
+- **Where.** `apps/slotfinder/slots.py`, `in_summer_time`, its last line.
+- **Share.** 13 of 46 logged requests (28%) get free slots other than the ones offered (`data/requests.jsonl`,
+  `offered`); 7 of its first 20. The log runs through 2026 in date order, so the affected requests (a Sydney attendee
+  in its summer) sit at both ends of it. The requests were drawn from a larger random set to hold the share near
+  a quarter.
+- **Twin diff.**
+  ```diff
+  -    return starts <= day < ends
+  +    return starts <= day < ends if starts < ends else not ends <= day < starts
+  ```
+
+## shipeta: an estimate, the wrong unit (graded, with a tolerance)
+
+- **Defect.** `eta.transit_hours` adds a lane's `customs_days` to a count of hours, so a lane abroad waits one hour
+  at customs where the lane table means one day (two for `BHM` to `AMS`). Domestic lanes have no customs wait and are
+  right.
+- **Where.** `apps/shipeta/eta.py`, `transit_hours`, the customs line.
+- **Share.** 15 of 52 delivered shipments (29%) are delivered more than 3 hours from the app's estimate
+  (`data/delivered.jsonl`, `delivered_at`); 5 of its first 20. Every shipment is within 3 hours of the twin's
+  estimate; the mean miss is 9.4 hours on the app and 0.9 on the twin. The README states the 3-hour tolerance.
+- **Twin diff.**
+  ```diff
+  -    hours += lane.customs_days
+  +    hours += lane.customs_days * 24
+  ```
+
+## standings: ranking with ties, a wrong tie-break (graded)
+
+- **Defect.** `standings.table` sorts on `(points, handed_in)` with `reverse=True`, which puts more points first but
+  also puts the later answer sheet first among teams level on points. The rule is that the earlier sheet ranks higher.
+  Teams level on both still share a place, so only nights with a points tie broken by the sheet's time go wrong.
+- **Where.** `apps/standings/standings.py`, `table`, its first line.
+- **Share.** 9 of 32 quiz nights (28%) have fewer teams in Dee's published place than the twin
+  (`data/nights.jsonl`, `published`); 7 of its first 20. The mean share of a night's teams in their published place
+  is 0.946 on the app and 1.000 on the twin, and no night reads better on the app.
+- **Twin diff.**
+  ```diff
+  -    ordered = sorted(entries, key=lambda e: (e.points, _seconds(e.handed_in)), reverse=True)
+  +    ordered = sorted(entries, key=lambda e: (-e.points, _seconds(e.handed_in)))
+  ```
+
+## mdtable: text width, unicode normalisation
+
+- **Defect.** `mdtable.display_width` counts code points, so a name that arrives decomposed (`e` and a combining
+  U+0301 for `é`, as text copied from some apps does) counts one character more per accent than a reader sees, and
+  its column is padded short or too wide. The docstring says an accented letter counts once either way. Text that
+  arrives precomposed is right.
+- **Where.** `apps/mdtable/mdtable.py`, `display_width`.
+- **Share.** 12 of 42 handbook tables (29%) are written otherwise than the signed-off Markdown
+  (`data/tables.jsonl`, `expected`); 5 of its first 20.
+- **Twin diff.**
+  ```diff
+  -    return len(text)
+  +    return len(unicodedata.normalize("NFC", text))
+  ```
+
+## gradecurve: a curve, blank scores counted as zero
+
+- **Defect.** `curve.section_mean` counts a blank score (a student who did not sit the exam) as 0 and divides by the
+  whole section, where the rule leaves such students out of the mean. A section with a blank gets a lower mean, a
+  bigger lift, and letters a band too high for many of its students. The absent student still gets `I`.
+- **Where.** `apps/gradecurve/curve.py`, `section_mean`.
+- **Share.** 40 of 114 students (35%) get a letter other than the registrar's (`data/registrar.jsonl`, `letter`); 7
+  of its first 20. Five of the eight sections have a blank; B, D and F have none and are right.
+- **Twin diff.**
+  ```diff
+  -    return sum(s or 0.0 for s in scores) / len(scores)
+  +    return sum(s for s in scores if s is not None) / sum(s is not None for s in scores)
+  ```
+
+## plurals: message templates, a greedy pattern
+
+- **Defect.** `messages._FIELD` is `\{(.+)\}`, which runs from a template's first `{` to its last `}`. A template
+  with one field is right; one with two or more fields is read as one field, and comes out unfilled (its first name
+  is not a value), half-filled (`Moved 3 files} to {folder`), or refused with `TemplateError` (two plural fields read
+  as one field with four forms).
+- **Where.** `apps/plurals/messages.py`, `_FIELD`.
+- **Share.** 14 of 46 review-sheet strings (30%) render otherwise than the approved text (`data/strings.jsonl`,
+  `approved`), 2 of them refused; 6 of its first 20.
+- **Twin diff.**
+  ```diff
+  -_FIELD = re.compile(r"\{(.+)\}")
+  +_FIELD = re.compile(r"\{(.+?)\}")
+  ```
+
+## proration: billing, integer division
+
+- **Defect.** `proration.share` floors with `//`, where each invoice line is to be rounded to the nearest penny, half
+  a penny up. A line whose exact amount has a fraction of a half penny or more comes out one penny short.
+- **Where.** `apps/proration/proration.py`, `share`.
+- **Share.** 15 of 46 plan changes (33%) get invoice lines other than the provider's (`data/invoices.jsonl`,
+  `credit_pence` and `charge_pence`); 6 of its first 20. The invoices were chosen from a larger draw to hold the share
+  near a third: on uniformly drawn changes nearly three in four have a line with such a fraction.
+- **Twin diff.**
+  ```diff
+  -    return pence * days // of_days
+  +    return (2 * pence * days + of_days) // (2 * of_days)
   ```
