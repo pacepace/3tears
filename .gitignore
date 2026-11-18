@@ -60,6 +60,8 @@ cover/
 
 # Django stuff:
 *.log
+# ...except an on-ramp app's shipped access logs, which are its data.
+!packages/evals/onramp/apps/*/data/logs/*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
