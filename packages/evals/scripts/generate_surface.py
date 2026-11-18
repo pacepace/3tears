@@ -501,11 +501,11 @@ def exit_codes() -> list[tuple[str, str]]:
     return re.findall(r"^\| (\d) \| (.+?) \|$", _section(EXAMPLES_GUIDE, "Running them"), re.M)
 
 
-def printed_first_line(rung_heading: str) -> str:
-    """The first line a rung's run prints, as ``docs/ladder.md`` shows it."""
-    block = re.search(r"```text\n(.*?)\n", _section(PACKAGE_ROOT / "docs" / "ladder.md", rung_heading), re.S)
+def printed_first_line(rung_heading: str, lines: int = 1) -> list[str]:
+    """The first ``lines`` lines a rung's run prints, as ``docs/ladder.md`` shows them."""
+    block = re.search(r"```text\n(.*?)\n```", _section(PACKAGE_ROOT / "docs" / "ladder.md", rung_heading), re.S)
     assert block is not None, f"docs/ladder.md shows no output under {rung_heading}"
-    return block[1]
+    return block[1].splitlines()[:lines]
 
 
 def agent_file(surface: Surface) -> str:
@@ -568,18 +568,21 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield ""
     yield "READING WHAT COMES BACK"
     yield from _wrapped("The first line printed is the answer. Rung 1 prints:")
-    yield from _wrapped(printed_first_line("Rung 1: your own function"), "  ")
-    yield from _wrapped("A comparison's first line: where v2 stands, and how strong the evidence is. Rung 3a prints:")
-    yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
+    for line in printed_first_line("Rung 1: your own function"):
+        yield from _wrapped(line, "  ")
     yield from _wrapped(
-        "Run again into its store with cases appended, a comparison continues (only new cases run) and its pass-rate "
-        "and ranged-score verdicts keep their error at every reading; a runner or grader is known by its name (a "
-        "judge by model and criteria), not its code: rename the eval to compare an edit."
+        "A comparison's first line is what to do (contrasts()'s \"advice\"; to a v2 no better it says switch at most 1 "
+        'time in 3, 1 in 10 with undo="hard"); the second, what is proven. Rung 3a prints:'
+    )
+    for line in printed_first_line("Rung 3a: two prompts, compared", 2):
+        yield from _wrapped(line, "  ")
+    yield from _wrapped(
+        "Run again into its store with cases appended, it continues (only new cases run), its error kept at every "
+        "reading; rename an eval to compare an edit."
     )
     yield from _wrapped(
-        "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
-        "refusal before anything runs goes to stderr with exit 2; an action that refuses answers with refused: "
-        "and a remedy: saying what to do instead."
+        "Below: each measure's rate, the top misses and why, where the report is. A refusal goes to stderr, "
+        "exit 2; an action that refuses answers with refused: and a remedy:."
     )
     yield from _wrapped(f"Exit codes: {'; '.join(f'{code} {meaning}' for code, meaning in exit_codes())}.", "  ")
     yield ""
