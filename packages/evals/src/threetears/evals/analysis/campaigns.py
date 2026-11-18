@@ -267,6 +267,13 @@ class AspectDefinition(EvalBaseModel):
             "at from moderate to strong (`Aspect.undo`). Omitted, it is easy to undo."
         ),
     )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        description=(
+            "`easy` where a lowering of `undo` declared after the results was ignored, the earlier `hard` kept "
+            "(`Aspect.undo_ignored`). Omitted, none was."
+        ),
+    )
     design: AspectDesign | None = Field(
         default=None,
         description="What the aspect sets out to vary and hold itself to. Omitted, the aspect is exploratory.",
@@ -696,6 +703,7 @@ def _declared_aspect(
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
         undo=defined.undo,
+        undo_ignored=defined.undo_ignored,
         design=defined.design,
         run_ids=list(dict.fromkeys(defined.run_ids)),
         declared_at=at if declares else None,

@@ -53,7 +53,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.analysis.aspects import AspectDeclaration
-from threetears.evals.analysis.style import LATE_UNDO_SENTENCE
+from threetears.evals.analysis.style import UNDO_LOWERING_IGNORED_SENTENCE
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.significance import (
     SeparationTest,
@@ -894,22 +894,16 @@ def redrawn_sentence(
     return " ".join(said)
 
 
-def undo_read_late(family: ComparisonFamily, declared: AspectDeclaration | None) -> bool:
-    """Whether ``family``'s advice reads the default bar because its switch was declared hard to undo after the
-    aspect's first result (:data:`~threetears.evals.analysis.style.LATE_UNDO_SENTENCE`): its aspect declares ``hard``
-    and its ``advice_bar`` is below the hard bar for the arms it advised on.
+def undo_lowering_ignored(family: ComparisonFamily, declared: AspectDeclaration | None) -> bool:
+    """Whether ``family``'s advice ignored a switch declared easy to undo after the results, its aspect having declared
+    it hard before them (:data:`~threetears.evals.analysis.style.UNDO_LOWERING_IGNORED_SENTENCE`): the aspect records the
+    ignored lowering (``undo_ignored``) and the family read advice.
 
     :param family: The family.
     :param declared: What its campaign declared, as its aspect reads it.
-    :return: Whether it read the default for a late ``hard``.
+    :return: Whether a late lowering was ignored.
     """
-    advised = sum(1 for comparison in family.comparisons if comparison.advice is not None)
-    return (
-        declared is not None
-        and declared.undo == "hard"
-        and family.advice_bar is not None
-        and family.advice_bar < ADVICE_BARS["hard"] * max(1, advised)
-    )
+    return declared is not None and declared.undo_ignored is not None and family.advice_bar is not None
 
 
 def read_by_bet(family: ComparisonFamily) -> bool:
@@ -1216,13 +1210,13 @@ def _primary_family(
 
 class _AdviceRule(NamedTuple):
     """How a quick-path comparison reads its advice: the reading it advises on (the first grader's, which the first
-    line leads on; None where none is filed), the switch's ease of undoing as it is read (``hard`` only where it was
-    declared so before the aspect's first result), whether a ``hard`` was declared after it (so the default is read,
-    and the disclosure says so), and the question's margin in the reading's units (0 where it declares none)."""
+    line leads on; None where none is filed), the switch's ease of undoing as declared, whether a lowering declared
+    after the results was ignored (the disclosure says so), and the question's margin in the reading's units (0 where
+    it declares none)."""
 
     reading: str | None = None
     undo: Literal["easy", "hard"] = "easy"
-    late: bool = False
+    ignored: bool = False
     margin: float = 0.0
 
 
@@ -1230,9 +1224,9 @@ def _advised(family: ComparisonFamily, tested: Sequence[_Tested], rule: _AdviceR
     """``family`` with its advice read beside its verdicts: on each contrast of the advised reading the bet read
     (:func:`_advice_of`), at the family's ``advice_bar``, the bar the switch's ease of undoing names
     (:data:`~threetears.evals.analysis.stats.ADVICE_BARS`) times the arms read, so the chance any arm that is not
-    better is advised stays the bar's; a ``hard`` declared after the results reads the default and the disclosure says
-    so (:data:`~threetears.evals.analysis.style.LATE_UNDO_SENTENCE`). Every other reading, and a family no bet read
-    (an engine campaign's), is left with none."""
+    better is advised stays the bar's; where a lowering declared after the results was ignored, the disclosure says so
+    (:data:`~threetears.evals.analysis.style.UNDO_LOWERING_IGNORED_SENTENCE`). Every other reading, and a family no bet
+    read (an engine campaign's), is left with none."""
     if rule.reading is None:
         return family
     advised = {
@@ -1252,26 +1246,33 @@ def _advised(family: ComparisonFamily, tested: Sequence[_Tested], rule: _AdviceR
         if one is None or comparison.name != rule.reading or comparison.reading == "trial":
             comparisons.append(comparison)
             continue
-        comparisons.append(comparison.model_copy(update={"advice": _advice_of(one, bar, rule.margin)}))
+        comparisons.append(
+            comparison.model_copy(update={"advice": _advice_of(one, bar, rule.margin, comparison.verdict)})
+        )
     disclosure = family.disclosure
-    if rule.late:
+    if rule.ignored:
         # Said before the closing re-read sentence, which says the bet read the family (:func:`read_by_bet`).
         head = disclosure.removesuffix(REREAD_SENTENCE).rstrip() if disclosure else ""
         tail = f" {REREAD_SENTENCE}" if disclosure and disclosure.endswith(REREAD_SENTENCE) else ""
-        disclosure = f"{head} {LATE_UNDO_SENTENCE}".strip() + tail
+        disclosure = f"{head} {UNDO_LOWERING_IGNORED_SENTENCE}".strip() + tail
     return family.model_copy(update={"comparisons": comparisons, "advice_bar": bar, "disclosure": disclosure})
 
 
-def _advice_of(one: _Tested, bar: float, margin: float) -> Literal["switch", "keep"] | None:
+def _advice_of(one: _Tested, bar: float, margin: float, verdict: ComparisonVerdict) -> Literal["switch", "keep"] | None:
     """The advice on a primary the bet read (:func:`~threetears.evals.analysis.stats.advice_path`), toward the contrast
     arm's better side: switch once its evidence has reached ``bar`` while it is still ahead (within ``margin``); keep
-    otherwise. None where the bet cannot read it."""
+    otherwise. A standing decision leads it (``verdict``): decided worse keeps the control, decided better switches once
+    the evidence has reached the bar, so the advice never points against the proof. None where the bet cannot read
+    it."""
     if one.bet_samples is None or one.value_range is None:
         return None
     control, contrast = one.bet_samples
     # The arm's better side is the falling mean where lower is better: read with the arms' roles swapped.
     pair = (control, contrast) if one.comparison.higher_is_better else (contrast, control)
-    path = advice_path(*pair, value_range=one.value_range, bar=bar, margin=margin)
+    standing: Literal["better", "worse"] | None = (
+        "better" if verdict == "improved" else "worse" if verdict == "regressed" else None
+    )
+    path = advice_path(*pair, value_range=one.value_range, bar=bar, margin=margin, standing=standing)
     if not path:
         return None
     return "switch" if path[-1] else "keep"
@@ -1558,26 +1559,20 @@ def _question_lean(
     return "worse" if declared.margin is not None else "better"
 
 
-def _question_advice(declared: AspectDeclaration | None, first_result_at: str | None) -> _AdviceRule:
+def _question_advice(declared: AspectDeclaration | None) -> _AdviceRule:
     """How a quick-path comparison reads its advice (:class:`_AdviceRule`): on its first grader's reading (the
-    design's ``measure_order``, which the first line leads on), asked or not; ``hard`` where the aspect declared the
-    switch hard to undo before its first result, and the default where it declared it after, or carries no time (a bar
-    picked once the evidence was seen would be a second look); and an asked question's margin, in points of a 0-100
-    pass rate, as the reading's share of 1."""
+    design's ``measure_order``, which the first line leads on), asked or not; at ``hard`` wherever the aspect declares
+    it, whenever it did (a bar raised after the results can only make the advice say switch less often, so it is
+    honoured); with the lowering its aspect records as ignored (``undo_ignored``: a declaration after the results that
+    would have lowered an earlier ``hard``, which the aspect keeps); and an asked question's margin, in points of a
+    0-100 pass rate, as the reading's share of 1."""
     if declared is None or not declared.design.measure_order:
         return _AdviceRule()
     reading = declared.design.measure_order[0]
     asked = asks_a_question(declared)
     margin = 0.0 if declared.margin is None or not asked else declared.margin / 100.0
-    if declared.undo != "hard":
-        return _AdviceRule(reading=reading, margin=margin)
-    late = declared.asked_at is None or (
-        first_result_at is not None
-        and aware_instant(declared.asked_at, "the aspect") > aware_instant(first_result_at, "its first result")
-    )
-    if late:
-        return _AdviceRule(reading=reading, late=True, margin=margin)
-    return _AdviceRule(reading=reading, undo="hard", margin=margin)
+    undo: Literal["easy", "hard"] = "hard" if declared.undo == "hard" else "easy"
+    return _AdviceRule(reading=reading, undo=undo, ignored=declared.undo_ignored is not None, margin=margin)
 
 
 def _one_check(members: Iterable[ResultView], catalog: Mapping[str, MetricDescriptor]) -> str | None:
@@ -1852,7 +1847,7 @@ def multiple_comparisons(
             lean=_question_lean(declared, first_result_at),
         )
         if reread_order is not None:
-            family = _advised(family, tested, _question_advice(declared, first_result_at))
+            family = _advised(family, tested, _question_advice(declared))
         families.append(family)
     checks = [
         _guardrail_check(
@@ -2419,7 +2414,7 @@ __all__ = [
     "PlanningReading",
     "multiple_comparisons",
     "read_by_bet",
-    "undo_read_late",
+    "undo_lowering_ignored",
     "planning_readings",
     "reading_scope",
     "aspect_looks",

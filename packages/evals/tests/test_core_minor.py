@@ -696,6 +696,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
         "MembershipChange.change": frozenset({"joined", "left"}),
         "Aspect.undo": frozenset({"hard"}),
+        "Aspect.undo_ignored": frozenset({"easy"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),

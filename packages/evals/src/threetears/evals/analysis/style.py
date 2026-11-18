@@ -573,11 +573,13 @@ CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b
 #: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
 EVIDENCE_TERM = "evidence"
 
-#: What a quick-path comparison whose switch was declared hard to undo after its first result says, in its family's
-#: disclosure: the advice reads the default bar, since a bar chosen once the evidence was seen is a second look.
-LATE_UNDO_SENTENCE = (
-    "The switch was declared hard to undo after these results were in, so the advice reads the default bar of "
-    "moderate evidence."
+#: What a quick-path comparison says, in its family's disclosure and under its first line, where a switch declared hard
+#: to undo before its results was declared easy after them: the lowering is ignored, since a bar lowered once the
+#: evidence was seen would be a second look, and the advice reads strong evidence. A bar raised after the results is
+#: honoured, which can only make the advice say switch less often, and says nothing.
+UNDO_LOWERING_IGNORED_SENTENCE = (
+    "The switch was declared easy to undo after these results were in, and that was ignored: it was declared hard to "
+    "undo before them, so the advice reads strong evidence."
 )
 
 #: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
@@ -659,8 +661,8 @@ GLOSSARY: dict[str, str] = {
     # The promise the advice keeps (stats.advice_path), said with what it is.
     "advice": (
         "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
-        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better at most "
-        "one time in three (one in ten), however often anyone looks."
+        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better (with a "
+        "margin, worse by more than it) at most one time in three (one in ten), however often anyone looks."
     ),
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
@@ -914,7 +916,7 @@ __all__ = [
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
     "EVIDENCE_TERM",
-    "LATE_UNDO_SENTENCE",
+    "UNDO_LOWERING_IGNORED_SENTENCE",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "CHECK_LINK_TITLE",

@@ -2106,8 +2106,10 @@ class FamilyComparison(EvalDocumentModel):
             "On a family's primary the bet read: what to do, beside the proof `verdict`. `switch` once the evidence that "
             "the contrast arm is better (no worse than the margin, on a question with one) has reached the family's "
             "`advice_bar` at some count, in the order bet on, while the arm is still ahead (within the margin) and the "
-            "evidence against it has not reached the bar now (`stats.advice_path`); `keep` otherwise. If the arm is "
-            "not really better, it reads `switch` at most one time in `advice_bar`, however often it is read. None "
+            "evidence against it has not reached the bar now (`stats.advice_path`); `keep` otherwise; a standing "
+            "`verdict` leads it (improved reads `switch` once the evidence reached the bar, regressed reads `keep`). If "
+            "the arm is not really better (on a question with a margin: worse by more than the margin), it reads "
+            "`switch` at most one time in the bar per arm, for all its arms together, however often it is read. None "
             "where no advice is read: a secondary reading, or a contrast no bet read (an engine campaign's)."
         ),
     )

@@ -94,8 +94,8 @@ pip install, fetch the examples from the repository first
 
 - **Advice, then a verdict, not a mean.** Every version is run over the same frozen cases and tested case by case
   against a control. The first line says what to do ("Advice: switch to v2"), once the evidence reaches moderate (strong
-  where the switch is hard to undo); if v2 is not really better, it says switch at most one time in three, however
-  often anyone looks. Then a small test still gets a fair read of what is proven: where the candidate stands, by how
+  where the switch is hard to undo); if v2 is not really better (with a margin: worse by more than it), it says switch
+  at most one time in three, however often anyone looks. Then a small test still gets a fair read of what is proven: where the candidate stands, by how
   much, the interval, and how strong the evidence is ("v2 ahead of v1, not yet proven ... the evidence that v2 is better
   is moderate"), never "no difference" ([why](docs/design.md#numbers)).
 - **Guardrails apart from capability.** What a version must never do is decided on its own, so a gain cannot pay for

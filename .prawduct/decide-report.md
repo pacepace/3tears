@@ -2,7 +2,7 @@
 
 A design study: no product behaviour changed, no model was called, no test was run. Every number is from a seeded
 simulation or from the package's own functions at evals/main 77137c804, run locally. The scratch is committed under
-`scratch/decide/`, and its restatement of the bet is checked equal to the package before any table is drawn
+`.prawduct/artifacts/decide-scratch/`, and its restatement of the bet is checked equal to the package before any table is drawn
 (appendix).
 
 ## Recommendation
@@ -252,7 +252,7 @@ the expected regret in points. The realised effect is in brackets.
 On the on-ramp model, a gentle one, the Bayesian rules look best. Their trouble is on the other families: in the full
 swing family at 24 cases, read at every look, P ≥ 0.9 advised switching to an arm 20 points worse 24% of the time,
 and the expected-loss rule 24% (`compact_every_look.md`). The pass/fail, full-swing and skewed versions of this table
-are in `scratch/decide/compact_every_look.md`.
+are in `.prawduct/artifacts/decide-scratch/compact_every_look.md`.
 
 **T-E. Switch, keep for now, or keep: what the advice says at one look** (on-ramp model; switch / ahead but below the
 bar / level or behind)
@@ -537,7 +537,7 @@ Only works I am sure of are cited.
 
 ## Appendix: how the numbers were made
 
-- **Code.** `scratch/decide/core.py` restates the package's mixture bet over the counts of each lattice value the
+- **Code.** `.prawduct/artifacts/decide-scratch/core.py` restates the package's mixture bet over the counts of each lattice value the
   paired differences take (multiples of 1/3 on [-1, 1]). Its stakes are constant, so every current-capital quantity
   depends on the counts alone. `check_core.py` checks it, on 300 seeded random samples of 2 to 30 cases, against
   bp-decide's `analysis/stats.py`:

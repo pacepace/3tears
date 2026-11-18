@@ -55,6 +55,7 @@ from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.verdict import MIN_CASES, VerdictLine, verdict_line
 from threetears.evals.analysis.report.words import (
     NO_ADVICE_SENTENCE,
+    advice_decided_words,
     advice_held_words,
     advice_words,
     advice_worst_words,
@@ -290,6 +291,14 @@ def contrast_advice(
         )
         past = margin is not None and low is not None and low < -margin
         allowed = size(comparison, margin) if past and margin is not None else None
+        lead = gain((verdict, comparison, family))
+        # A standing decision holding the advice against where the arm stands now is the caveat that matters most.
+        if switching and comparison.verdict == "improved" and lead <= 0:
+            caveat = advice_decided_words(verdict.arm, verdict.control, better=True, cases=comparison.decided_at_cases)
+            return f"{advice_words('switch', verdict.arm, verdict.control)} {caveat}"
+        if not switching and comparison.verdict == "regressed" and lead > 0:
+            caveat = advice_decided_words(verdict.arm, verdict.control, better=False, cases=comparison.decided_at_cases)
+            return f"{advice_words('keep', verdict.arm, verdict.control)} {caveat}"
         if switching:
             action = advice_words("switch", verdict.arm, verdict.control)
             if low is None:

@@ -571,14 +571,14 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     for line in printed_first_line("Rung 1: your own function"):
         yield from _wrapped(line, "  ")
     yield from _wrapped(
-        "A comparison's first line is what to do (contrasts()'s \"advice\"; to a v2 no better it says switch at most 1 "
-        'time in 3, 1 in 10 with undo="hard"); the second, what is proven. Rung 3a prints:'
+        'A comparison prints what to do (contrasts()\'s "advice": to a v2 no better (worse by more than a margin, given one): switch '
+        'at most 1 time in 3, 1 in 10 with undo="hard"), then what is proven:'
     )
     for line in printed_first_line("Rung 3a: two prompts, compared", 2):
         yield from _wrapped(line, "  ")
     yield from _wrapped(
-        "Run again into its store with cases appended, it continues (only new cases run), its error kept at every "
-        "reading; rename an eval to compare an edit."
+        "Run again with cases appended, it continues, its error kept; a runner or grader is known by its name (a "
+        "judge by model and criteria), not its code: rename it to compare an edit."
     )
     yield from _wrapped(
         "Below: each measure's rate, the top misses and why, where the report is. A refusal goes to stderr, "

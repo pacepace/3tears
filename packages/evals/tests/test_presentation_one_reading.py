@@ -336,11 +336,12 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     (contrasts,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
     assert column.term == "verdict"
-    cells = {row["verdict"].text.split(";")[0] for row in contrasts.rows}
-    # The question's own reading, which its bet can still decide, says it is not yet proven; the rest are undecided.
-    assert cells and all(
-        cell.startswith("v2 ") and ("undecided" in cell or "not yet proven" in cell) for cell in cells
-    ), cells
+    cells = {row["reading"].text: row["verdict"].text.split(";")[0] for row in contrasts.rows}
+    # The question's own reading, which its bet can still decide, says it is not yet proven; every other reading is
+    # secondary and undecided.
+    assert cells and all(cell.startswith("v2 ") for cell in cells.values()), cells
+    assert cells.pop("Accuracy").endswith("not yet proven"), cells
+    assert cells and all("undecided" in cell and "not yet proven" not in cell for cell in cells.values()), cells
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
     assert html.count('<dt id="g-cannot-tell-apart">') == 1

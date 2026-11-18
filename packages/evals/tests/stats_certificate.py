@@ -355,6 +355,19 @@ def _shards() -> list[Shard]:
                     {"family": family, "start": block.start, "count": len(block)},
                 )
             )
+    # A question with a margin on a candidate exactly the margin worse, and three arms none better: 4,000 a family.
+    for job, families in (("advice-margin", advice.MARGIN_FAMILIES), ("advice-arms", advice.ARMS_FAMILIES)):
+        for family in families:
+            for block in _blocks(4_000, 500):
+                shards.append(
+                    Shard(
+                        f"{job}-{family}-{block.start}",
+                        f"{job}-{family}",
+                        "local",
+                        job,
+                        {"family": family, "start": block.start, "count": len(block)},
+                    )
+                )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -563,6 +576,9 @@ def run_local(shard: Shard) -> dict[str, int]:
         return _counts(len(reads), sum(read[-1].decided for read in reads))
     if shard.job == "advice":
         return advice.count(args["family"], range(args["start"], args["start"] + args["count"]))
+    if shard.job in ("advice-margin", "advice-arms"):
+        advised_of = advice.margin_advised if shard.job == "advice-margin" else advice.arms_advised
+        return advice.count_of(advised_of, args["family"], range(args["start"], args["start"] + args["count"]))
     if shard.job == "small-cover":
         sides = [
             quick.missed_side(quick.small_covers(f"cover-{s}-{i}")) for s in args["shards"] for i in range(args["per"])
@@ -883,6 +899,36 @@ def _claims() -> list[Claim]:
                         seeds,
                     )
                 )
+    for undo, bar in ADVICE_BARS.items():
+        tag = f"{bar:g}"
+        for family in advice.MARGIN_FAMILIES:
+            claims.append(
+                Claim(
+                    f"advice.margin.{family}.{undo}.every-look",
+                    f"On a question with a margin of {advice.MARGIN:g}, a candidate exactly the margin worse than the "
+                    f"control ({family}), the switch {undo} to undo, read after every case from the second to "
+                    f"{advice.HORIZON}: the advice ever says switch at most one time in {tag}.",
+                    f"advice-margin-{family}",
+                    f"ever{tag}",
+                    "at_most",
+                    1.0 / bar,
+                    f"advice-margin-{family}-<index>, 0-3999, on stats.advice_path",
+                )
+            )
+        for family in advice.ARMS_FAMILIES:
+            claims.append(
+                Claim(
+                    f"advice.arms.{family}.{undo}.every-look",
+                    f"{advice.ARMS} arms against one control, none better ({family}), the switch {undo} to undo, its "
+                    f"bar times the arms read, read after every case from the second to {advice.HORIZON}: the advice "
+                    f"says switch to any of them at most one time in {tag}.",
+                    f"advice-arms-{family}",
+                    f"ever{tag}",
+                    "at_most",
+                    1.0 / bar,
+                    f"advice-arms-{family}-<index>, 0-3999, on stats.advice_path",
+                )
+            )
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),

@@ -91,6 +91,11 @@ class AspectDeclaration(EvalDocumentModel):
             "`hard` reads the advice at strong evidence. None = easy to undo, the default."
         ),
     )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="A lowering of `undo` declared after the results and ignored (`Aspect.undo_ignored`); None for none.",
+    )
     unread_without_control: str | None = Field(
         default=None,
         description=(
@@ -201,6 +206,7 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
             declared_by=campaign.declared_by,
             unread_without_control=unread,
             undo=aspect.undo,
+            undo_ignored=aspect.undo_ignored,
         )
     )
     return AspectView(

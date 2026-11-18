@@ -22,7 +22,7 @@ Each comparison is seeded by its family and index alone (``advice-<family>-<inde
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 from typing import Literal
 
@@ -88,4 +88,100 @@ def count(family: Family, indices: Sequence[int]) -> dict[str, int]:
     return totals
 
 
-__all__ = ["FAMILIES", "HORIZON", "ONCE_AT", "Family", "advised", "comparison", "count", "pair"]
+#: The margin a question declares in the margin claims: five points of a pass rate.
+MARGIN = 0.05
+
+#: The families a candidate exactly the margin worse is drawn from: each holds the mean difference at exactly
+#: ``-MARGIN`` (the on-ramp's clipped shares would not).
+MarginFamily = Literal["passfail", "swing", "skewed"]
+
+MARGIN_FAMILIES: tuple[MarginFamily, ...] = ("passfail", "swing", "skewed")
+
+#: How many arms the several-arms claims read against one control, and the families they are drawn from.
+ARMS = 3
+
+ArmsFamily = Literal["passfail", "onramp"]
+
+ARMS_FAMILIES: tuple[ArmsFamily, ...] = ("passfail", "onramp")
+
+
+def _worse_by_margin(family: MarginFamily, draw: random.Random) -> tuple[Fraction, Fraction]:
+    """One case's (control, candidate) values from ``family``, the candidate worse by exactly :data:`MARGIN`."""
+    if family == "passfail":
+        share = draw.uniform(0.25, 0.7)
+        return Fraction(int(draw.random() < share)), Fraction(int(draw.random() < share - MARGIN))
+    if family == "swing":
+        # A full win half of (1 - margin) of the time: a mean difference of -margin.
+        return (Fraction(0), Fraction(1)) if draw.random() < (1 - MARGIN) / 2 else (Fraction(1), Fraction(0))
+    # Skewed: +1/3 on a share q of cases and -1 on the rest, q / 3 - (1 - q) = -margin.
+    return (Fraction(0), Fraction(1, 3)) if draw.random() < (3 - 3 * MARGIN) / 4 else (Fraction(1), Fraction(0))
+
+
+def margin_advised(family: MarginFamily, index: int) -> dict[str, bool]:
+    """Whether a question with a margin of :data:`MARGIN` advised switch, at any count from two to :data:`HORIZON`, on
+    a candidate exactly the margin worse (``ever<bar>``), seeded ``advice-margin-<family>-<index>``."""
+    draw = random.Random(f"advice-margin-{family}-{index}")
+    pairs = [_worse_by_margin(family, draw) for _ in range(HORIZON)]
+    control, candidate = [a for a, _ in pairs], [b for _, b in pairs]
+    said: dict[str, bool] = {}
+    for bar in ADVICE_BARS.values():
+        path = advice_path(control, candidate, value_range=(0.0, 1.0), bar=bar, margin=MARGIN)
+        assert path is not None
+        said[f"ever{bar:g}"] = any(path)
+    return said
+
+
+def _arms_case(family: ArmsFamily, draw: random.Random) -> list[Fraction]:
+    """One case's values for the control and :data:`ARMS` arms, every arm exactly as good as the control."""
+    if family == "passfail":
+        share = draw.uniform(0.2, 0.7)
+        return [Fraction(int(draw.random() < share)) for _ in range(ARMS + 1)]
+    base = draw.uniform(0.1, 0.6)
+    shares = [min(1.0, max(0.0, base + draw.gauss(0.0, 0.1))) for _ in range(ARMS + 1)]
+    return [Fraction(sum(draw.random() < share for _ in range(3)), 3) for share in shares]
+
+
+def arms_advised(family: ArmsFamily, index: int) -> dict[str, bool]:
+    """Whether any of :data:`ARMS` arms, none better than the control, was advised switch at any count from two to
+    :data:`HORIZON`, at each bar times the arms read (``ever<bar>``), seeded ``advice-arms-<family>-<index>``."""
+    draw = random.Random(f"advice-arms-{family}-{index}")
+    cases = [_arms_case(family, draw) for _ in range(HORIZON)]
+    control = [case[0] for case in cases]
+    said: dict[str, bool] = {}
+    for bar in ADVICE_BARS.values():
+        paths = [
+            advice_path(control, [case[arm] for case in cases], value_range=(0.0, 1.0), bar=bar * ARMS)
+            for arm in range(1, ARMS + 1)
+        ]
+        said[f"ever{bar:g}"] = any(any(path or ()) for path in paths)
+    return said
+
+
+def count_of(advised_of: Callable[[str, int], dict[str, bool]], family: str, indices: Sequence[int]) -> dict[str, int]:
+    """How many of the comparisons ``indices`` ``advised_of`` said switch on, by field, and ``n``."""
+    totals: dict[str, int] = {"n": len(indices)}
+    for index in indices:
+        for field, said in advised_of(family, index).items():
+            totals[field] = totals.get(field, 0) + int(said)
+    return totals
+
+
+__all__ = [
+    "ARMS",
+    "ARMS_FAMILIES",
+    "FAMILIES",
+    "HORIZON",
+    "MARGIN",
+    "MARGIN_FAMILIES",
+    "ONCE_AT",
+    "ArmsFamily",
+    "Family",
+    "MarginFamily",
+    "advised",
+    "arms_advised",
+    "comparison",
+    "count",
+    "count_of",
+    "margin_advised",
+    "pair",
+]

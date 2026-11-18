@@ -256,7 +256,8 @@ def _first_screen(result: Result, *, advised: bool) -> str:
     on, then the proof under it. A secondary check is a lead only, never advice on what to run, so it reads the proof
     alone."""
     printed = result.render().splitlines()
-    if not printed[0].startswith(f"{result.name}: Advice: ") and not printed[0].startswith(f"{result.name}: No advice"):
+    # The print opens on the advice exactly where its reading carries one (the rows' typed ``advice``).
+    if not any(row["advice"] is not None for row in result.contrasts()):
         return printed[0]
     proof = printed[1].removeprefix(f"{result.name}: ")
     return f"{printed[0]} {proof}" if advised else printed[1]

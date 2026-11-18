@@ -468,21 +468,31 @@ questions, each on its own line: what to do (the advice), then what is proven (t
 ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the first grader's reading, asked or not:
 
 - **Switch** once the evidence that v2 is better has reached moderate (3), while v2 is still ahead and the evidence
-  against it has not reached 3. Where the switch would be hard to undo, declare it before anything runs
+  against it has not reached 3. On a question with a margin (`Eval(..., margin=0.05)`, is v2 no worse?), the
+  evidence is that v2 is no worse than the margin below v1, and "ahead" is within the margin: a v2 exactly as good as
+  v1 is meant to be advised switch there. Where the switch would be hard to undo, declare it before anything runs
   (`Eval(..., undo="hard")`) and the bar is strong (10). With several arms the bar is that times their count, and the
   advice names the advised arm with the best estimate.
+- **A decision leads.** Once the proof has decided, the advice follows it: decided better reads switch, decided worse
+  reads keep, whatever the lead has done since. Neither can make the advice say switch more often: a one-arm decision
+  of better needs the evidence for v2 at 11 or more, past either bar.
 - **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
   The advice never says there is not enough to say.
 - **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the
   margin, on a question with one), or, where it keeps, what the bar needs beside the evidence there is.
-- **The promise.** However often anyone looks, if the candidate is not really better the advice says switch at most
-  one time in three, or one time in ten for a switch declared hard to undo. It holds for every distribution on the
-  reading's range, read after every case or once (the certificate's `advice.no-better.*` claims). Nothing bounds how
+- **The promise.** However often anyone looks, if the candidate is not really better (on a question with a margin: if
+  it is worse than the control by more than the margin), the advice says switch at most one time in three, or one time
+  in ten for a switch declared hard to undo. With several arms it holds for all of them together. It holds for every
+  distribution on the reading's range, read after every case or once (the certificate's `advice.no-better.*`,
+  `advice.margin.*` and `advice.arms.*` claims). Nothing bounds how
   often it keeps a candidate that is better: on eight cases a moderate gain is often kept, and adding cases is what
   changes that.
-- **`undo` is declared with the question, before the data.** One declared after the results
-  (`Result.against(..., undo="hard")`) reads the default bar of 3, and the print and the page say so: a bar picked
-  once the evidence was seen would be a second look. A comparison continued with another `undo` is a new comparison.
+- **`undo` is declared with the question, before the data, and never lowered after it.** A `"hard"` declared after
+  the results (`Result.against(..., undo="hard")`) is honoured: raising the bar can only make the advice say switch
+  less often. An `"easy"` declared after the results over an earlier `"hard"` is ignored, the `"hard"` kept, and the
+  print and the page say so: a bar lowered once the evidence was seen would be a second look. Where nothing was
+  declared before, `"easy"` is the default already, so nothing is lowered. A comparison continued with another `undo`
+  is a new comparison.
 - **An agent reads it typed.** `Result.contrasts()` rows carry `advice` (`switch` or `keep` on the first grader's
   reading, None elsewhere) beside `outcome`, and a stored analysis carries it on the family's comparison (`advice`)
   with the bar it read (`advice_bar`). `gate()` reads the proof, never the advice.
@@ -492,7 +502,7 @@ ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the fi
 **The proof comes second.** It leads on where the candidate stands on the question's reading, by how much, how far
 the interval lets it be either way, and how strong the evidence is, and it says "decided" only when the evidence
 clears the bar; until then the question's own reading says `not yet proven` and what proving it needs
-(`The evidence that v2 is better is moderate (3.3); proving it needs 22.`):
+(`The evidence that v2 is better is moderate (3.3); proving it needs evidence of 22.`):
 
 - **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
   to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet

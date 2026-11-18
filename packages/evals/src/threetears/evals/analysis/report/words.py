@@ -259,12 +259,13 @@ def standing_words(
 
 def proof_bar_words(figure: str) -> str:
     """What a question's undecided primary needs to be proven, said after its evidence's sentence, the figure in the
-    page's form on the scale the evidence is printed on: ``; proving it needs 22``.
+    page's form on the scale the evidence is printed on: ``; proving it needs evidence of 22``, in the words the advice
+    states its own bar in.
 
     :param figure: The evidence the proof's bar comes to, in the page's form.
     :return: The clause, opening on its semicolon.
     """
-    return f"; proving it needs {figure}"
+    return f"; proving it needs evidence of {figure}"
 
 
 #: What the advice line does, by its value (``FamilyComparison.advice``). Filled by :func:`advice_words`.
@@ -329,6 +330,22 @@ def advice_held_words(side: _StandingSide, arm: str, *, grade: str, figure: str,
         return f"{arm} is behind it."
     which = "a switch that is hard to undo" if hard else "a switch"
     return f"{arm} is ahead, but {which} needs evidence of {bar} and this is {grade} ({figure})."
+
+
+def advice_decided_words(arm: str, control: str, *, better: bool, cases: int | None) -> str:
+    """The advice line's one caveat where a standing decision holds it against where the arm stands now: the decision,
+    and when it was made. ``It was proven better than v1, decided at 6 cases.`` (advising switch while behind) or ``v2
+    was proven worse than v1, decided at 6 cases.`` (advising keep while ahead).
+
+    :param arm: The arm, as the page names it.
+    :param control: The control, as the page names it.
+    :param better: Whether the decision is better (advising switch), else worse (advising keep).
+    :param cases: The paired cases it was decided at, where recorded.
+    :return: The sentence, with its closing stop.
+    """
+    subject = "It" if better else arm
+    when = f", decided at {cases} cases" if cases is not None else ""
+    return f"{subject} was proven {'better' if better else 'worse'} than {control}{when}."
 
 
 #: What an engine comparison's first line says in place of advice: its test is read once, at a fixed count, by a bet
@@ -947,6 +964,7 @@ def counted(n: int, of: int, what: str) -> str:
 __all__ = [
     "BAR_DECISION_WORDS",
     "NO_ADVICE_SENTENCE",
+    "advice_decided_words",
     "advice_held_words",
     "advice_words",
     "advice_worst_words",

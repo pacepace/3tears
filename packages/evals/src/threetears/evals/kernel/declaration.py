@@ -1136,9 +1136,17 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         exclude_if=lambda value: value is None,
         description=(
             "How hard switching to a candidate is to undo, declared with the question: `hard` raises the evidence "
-            "the advice switches at from moderate (3) to strong (10). None = easy to undo, the default. Declared "
-            "with the aspect (`asked_at`): where that is after the aspect's first stored result the advice reads "
-            "the default, and the page says so."
+            "the advice switches at from moderate (3) to strong (10). None = easy to undo, the default. A `hard` "
+            "declared after the results is honoured: raising the bar can only make the advice say switch less often."
+        ),
+    )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "An `undo` declared after the results that would have lowered the bar, ignored: `easy` where the aspect "
+            "it was read from declared `hard`, which this aspect keeps (`undo`). The page and the print say so. None = "
+            "nothing was ignored."
         ),
     )
 

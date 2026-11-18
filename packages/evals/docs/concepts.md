@@ -559,8 +559,10 @@ excludes zero. See [reading a comparison](reading-reports.md#reading-a-compariso
 #### Advice
 What to do on a comparison, said above its verdict on the first grader's reading: `switch` to the candidate once the
 evidence that it is better reaches moderate (strong where the switch was declared hard to undo, `Eval(undo="hard")`),
-while it is still ahead; `keep` the control otherwise. However often anyone looks, if the candidate is not really better
-the advice says switch at most one time in three, or one time in ten for a switch declared hard to undo. A program reads
+while it is still ahead, and whenever the verdict has decided it better; `keep` the control otherwise. However often
+anyone looks, if the candidate is not really better (on a question with a margin: if it is worse by more than the
+margin), the advice says switch at most one time in three, or one time in ten for a switch declared hard to undo. A
+program reads
 it as `Result.contrasts()`'s `advice`; the gate reads the verdict, never the advice. See
 [reading a comparison](reading-reports.md#a-small-comparison-on-the-quick-path).
 
