@@ -461,9 +461,38 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ### A small comparison on the quick path
 
-A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first line leads on where the
-candidate stands on the question's reading, by how much, how far the interval lets it be either way, and how strong
-the evidence is, and it says "decided" only when the evidence clears the bar:
+A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first screen answers two
+questions, each on its own line: what to do (the advice), then what is proven (the proof).
+
+**The advice comes first.** `Advice: switch to v2. At worst it is 25 points behind v1.` or `Advice: keep v1. v2 is
+ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the first grader's reading, asked or not:
+
+- **Switch** once the evidence that v2 is better has reached moderate (3), while v2 is still ahead and the evidence
+  against it has not reached 3. Where the switch would be hard to undo, declare it before anything runs
+  (`Eval(..., undo="hard")`) and the bar is strong (10). With several arms the bar is that times their count, and the
+  advice names the advised arm with the best estimate.
+- **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
+  The advice never says there is not enough to say.
+- **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the
+  margin, on a question with one), or, where it keeps, what the bar needs beside the evidence there is.
+- **The promise.** However often anyone looks, if the candidate is not really better the advice says switch at most
+  one time in three, or one time in ten for a switch declared hard to undo. It holds for every distribution on the
+  reading's range, read after every case or once (the certificate's `advice.no-better.*` claims). Nothing bounds how
+  often it keeps a candidate that is better: on eight cases a moderate gain is often kept, and adding cases is what
+  changes that.
+- **`undo` is declared with the question, before the data.** One declared after the results
+  (`Result.against(..., undo="hard")`) reads the default bar of 3, and the print and the page say so: a bar picked
+  once the evidence was seen would be a second look. A comparison continued with another `undo` is a new comparison.
+- **An agent reads it typed.** `Result.contrasts()` rows carry `advice` (`switch` or `keep` on the first grader's
+  reading, None elsewhere) beside `outcome`, and a stored analysis carries it on the family's comparison (`advice`)
+  with the bar it read (`advice_bar`). `gate()` reads the proof, never the advice.
+- **An engine campaign gives no advice.** Its test is read once at a fixed count by a bet tuned to that count, which
+  keeps no running evidence an advice could keep its promise on; its first line says so and leads on the proof.
+
+**The proof comes second.** It leads on where the candidate stands on the question's reading, by how much, how far
+the interval lets it be either way, and how strong the evidence is, and it says "decided" only when the evidence
+clears the bar; until then the question's own reading says `not yet proven` and what proving it needs
+(`The evidence that v2 is better is moderate (3.3); proving it needs 22.`):
 
 - **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
   to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet

@@ -2,34 +2,35 @@
 recommendation statistics. Differences live on the lattice v = (i - 3) / 3, i = 0..6 (pass/fail uses i in {0, 3, 6}),
 so every quantity read on the capital NOW (constant stakes) is a function of the counts per lattice value alone.
 Checked against bp-decide's analysis/stats.py by check_core.py before any table is drawn."""
+
 from __future__ import annotations
 
 import math
 
 import numpy as np
 
-VALUES = (np.arange(7) - 3) / 3.0          # the difference on [-1, 1]
-Z = (VALUES + 1.0) / 2.0                    # rescaled to [0, 1] as _scaled_to_unit does for (-1, 1)
+VALUES = (np.arange(7) - 3) / 3.0  # the difference on [-1, 1]
+Z = (VALUES + 1.0) / 2.0  # rescaled to [0, 1] as _scaled_to_unit does for (-1, 1)
 D = 10
 CAP = 0.9
 W = np.arange(1, D + 1) / (D * (D + 1) / 2)  # _MIXTURE_WEIGHTS, in proportion to j
 LOGW = np.log(W)
 
 
-def _up_table(m: np.ndarray | float) -> np.ndarray:
+def up_table(m: np.ndarray | float) -> np.ndarray:
     """log(1 + (j/D)(CAP/m)(z_v - m)) for every stake j and lattice value v; m broadcasts in front."""
     m = np.asarray(m, dtype=float)[..., None, None]
     j = np.arange(1, D + 1)[:, None] / D
     return np.log1p(j * CAP / m * (Z[None, :] - m))
 
 
-def _down_table(m: np.ndarray | float) -> np.ndarray:
+def down_table(m: np.ndarray | float) -> np.ndarray:
     m = np.asarray(m, dtype=float)[..., None, None]
     j = np.arange(1, D + 1)[:, None] / D
     return np.log1p(j * CAP / (1.0 - m) * (m - Z[None, :]))
 
 
-def _mix(logcaps: np.ndarray) -> np.ndarray:
+def mix(logcaps: np.ndarray) -> np.ndarray:
     """log of the weighted mixture over the last axis (stakes)."""
     x = logcaps + LOGW
     top = x.max(axis=-1)
@@ -38,15 +39,15 @@ def _mix(logcaps: np.ndarray) -> np.ndarray:
 
 def log_up_down(counts: np.ndarray, m: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
     """counts (..., 7): the upward and downward mixture log capital against the rescaled null m, now."""
-    up = _mix(counts @ _up_table(m).T)
-    down = _mix(counts @ _down_table(m).T)
+    up = mix(counts @ up_table(m).T)
+    down = mix(counts @ down_table(m).T)
     return up, down
 
 
 def hedged_log_at(counts: np.ndarray, m: np.ndarray, toward: float = 0.5) -> np.ndarray:
     """The hedged capital now at a per-element null m (shape counts.shape[:-1])."""
-    up = _mix(np.einsum("...v,...jv->...j", counts, _up_table(m)))
-    down = _mix(np.einsum("...v,...jv->...j", counts, _down_table(m)))
+    up = mix(np.einsum("...v,...jv->...j", counts, up_table(m)))
+    down = mix(np.einsum("...v,...jv->...j", counts, down_table(m)))
     return np.logaddexp(up + math.log(toward), down + math.log1p(-toward))
 
 
@@ -81,10 +82,10 @@ def dp_posterior(counts: np.ndarray, a: float = 1.0, base_m2: float = 1.0 / 3.0)
     n = counts.sum(axis=-1)
     s1 = counts @ VALUES
     s2 = counts @ (VALUES**2)
-    A = n + a
-    mu = s1 / A
-    m2 = (s2 + a * base_m2) / A
-    var = np.maximum(m2 - mu**2, 0.0) / (A + 1.0)
+    total = n + a
+    mu = s1 / total
+    m2 = (s2 + a * base_m2) / total
+    var = np.maximum(m2 - mu**2, 0.0) / (total + 1.0)
     return mu, np.sqrt(var)
 
 

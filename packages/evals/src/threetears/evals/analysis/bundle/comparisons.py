@@ -1051,7 +1051,6 @@ def _primary_family(
     *,
     lean: Literal["better", "worse"] | None,
     redrawn: RedrawnCells = RedrawnCells(),
-
 ) -> ComparisonFamily:
     """A quick-path comparison's family, its question asked: decided on the primary reading alone, every other reading
     shown and decided on nothing. One rule whatever the readings hold: the family never falls back to a correction
@@ -1573,7 +1572,8 @@ def _question_advice(declared: AspectDeclaration | None, first_result_at: str | 
     if declared.undo != "hard":
         return _AdviceRule(reading=reading, margin=margin)
     late = declared.asked_at is None or (
-        first_result_at is not None and aware_instant(declared.asked_at, "the aspect") > aware_instant(first_result_at, "its first result")
+        first_result_at is not None
+        and aware_instant(declared.asked_at, "the aspect") > aware_instant(first_result_at, "its first result")
     )
     if late:
         return _AdviceRule(reading=reading, late=True, margin=margin)

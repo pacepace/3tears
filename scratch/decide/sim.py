@@ -3,6 +3,7 @@ case and acts on the first "switch". Seeded; pure numpy over core.py (checked ag
 
 Usage: python sim.py [reps] > out.txt
 """
+
 from __future__ import annotations
 
 import math
@@ -62,7 +63,9 @@ def rules(idx: np.ndarray) -> dict[str, np.ndarray]:
     tilted = np.logaddexp(up + math.log(0.9), down + math.log(0.1))
     crossed = tilted >= math.log(20)
     first = np.where(crossed.any(1), crossed.argmax(1), idx.shape[1])
-    up_side = np.take_along_axis(up + math.log(0.9) >= down + math.log(0.1), np.minimum(first, idx.shape[1] - 1)[:, None], 1)[:, 0]
+    up_side = np.take_along_axis(
+        up + math.log(0.9) >= down + math.log(0.1), np.minimum(first, idx.shape[1] - 1)[:, None], 1
+    )[:, 0]
     decided_up = (np.arange(idx.shape[1])[None, :] >= first[:, None]) & up_side[:, None]
     out = {
         "est": est,
@@ -82,11 +85,11 @@ def rules(idx: np.ndarray) -> dict[str, np.ndarray]:
     # The evidence that the arm is no worse than a margin below the control: the upward mixture against -margin.
     for margin in (0.05, 0.10):
         m = (1.0 - margin) / 2.0
-        out[f"ev3m{int(margin * 100)}"] = (core._mix(counts @ core._up_table(m).T) >= math.log(3)) & (est > 0)
+        out[f"ev3m{int(margin * 100)}"] = (core.mix(counts @ core.up_table(m).T) >= math.log(3)) & (est > 0)
     for margin in (0.0, 0.05, 0.10):
         m = (1.0 - margin) / 2.0
-        hu = core._mix(counts @ core._up_table(m).T)
-        hd = core._mix(counts @ core._down_table(m).T)
+        hu = core.mix(counts @ core.up_table(m).T)
+        hd = core.mix(counts @ core.down_table(m).T)
         excluded = np.logaddexp(hu, hd) + math.log(0.5) >= math.log(10)
         out[f"cs{int(margin * 100)}"] = excluded & (est > 0)
     mu, sd = core.dp_posterior(counts, a=1.0)
@@ -100,7 +103,23 @@ def rules(idx: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-RULES = ("today", "leader", "ev2", "ev3", "ev10", "ev3s", "ev10s", "ev3m5", "ev3m10", "cs0", "cs5", "cs10", "p80", "p90", "el1")
+RULES = (
+    "today",
+    "leader",
+    "ev2",
+    "ev3",
+    "ev10",
+    "ev3s",
+    "ev10s",
+    "ev3m5",
+    "ev3m10",
+    "cs0",
+    "cs5",
+    "cs10",
+    "p80",
+    "p90",
+    "el1",
+)
 
 
 def cell(model: str, effect: float, seed: int) -> dict:

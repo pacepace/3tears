@@ -108,9 +108,7 @@ _SMOKE = {"passfail": (20, 4), "onramp": (13, 4), "swing": (15, 7), "skewed": (1
 # --- the first screen ---------------------------------------------------------------------------------------------
 
 
-def _eval(
-    control: Sequence[int], candidate: Sequence[int], name: str, **declared: Any
-) -> Eval:
+def _eval(control: Sequence[int], candidate: Sequence[int], name: str, **declared: Any) -> Eval:
     cases = [{"id": f"c{index:02d}", "a": a, "b": b} for index, (a, b) in enumerate(zip(control, candidate))]
 
     def v1(case: dict[str, Any]) -> int:

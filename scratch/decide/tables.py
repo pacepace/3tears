@@ -1,7 +1,7 @@
 """Tables of the report from sim.py's pickled results."""
+
 from __future__ import annotations
 
-import math
 import pickle
 import sys
 
@@ -47,8 +47,10 @@ def main() -> None:
     for model in ("passfail", "onramp", "extreme", "skewed"):
         print(f"\n### {model}\n")
         for protocol, slot in (("one look at n", 0), ("every look to n, act on the first switch", 1)):
-            print(f"\n**{model}, {protocol}**: share told to switch, by true effect (realised effect in brackets), "
-                  "and expected regret in points at cost 0\n")
+            print(
+                f"\n**{model}, {protocol}**: share told to switch, by true effect (realised effect in brackets), "
+                "and expected regret in points at cost 0\n"
+            )
             heads = [f"{e:+.1f} [{res[(model, e)][0]:+.3f}]" for e in EFFECTS if (model, e) in res]
             for look in LOOKS:
                 print(f"\nn = {look}\n")
@@ -62,20 +64,27 @@ def main() -> None:
                         delta, r = res[(model, e)]
                         p = r[(rule, look)][slot]
                         cells.append(f"{fmt(p)} / {regret(delta, p):.1f}")
-                    worst = max(
-                        (regret(res[k][0], res[k][1][(rule, look)][slot]), k[1]) for k in res if k[0] == model
-                    )
+                    worst = max((regret(res[k][0], res[k][1][(rule, look)][slot]), k[1]) for k in res if k[0] == model)
                     print(f"| {NAMES[rule]} | " + " | ".join(cells) + f" | {worst[0]:.1f} at {worst[1]:+.3f} |")
-    print("\n### Three-way split of the advice (read off the path) at one look: switch / ahead but below the bar / level or behind\n")
+    print(
+        "\n### Three-way split of the advice (read off the path) at one look: switch / ahead but below the bar / level or behind\n"
+    )
     for model in ("passfail", "onramp"):
         for c in (3, 10):
             print(f"\n{model}, bar {c}\n")
             print("| n | " + " | ".join(f"{e:+.1f}" for e in EFFECTS) + " |")
             print("|---|" + "---|" * len(EFFECTS))
             for look in LOOKS:
-                print(f"| {look} | " + " | ".join(
-                    "{:.2f} / {:.2f} / {:.2f}".format(*res[(model, e)][1][("split", c, look)]) for e in EFFECTS) + " |")
-    print("\n### Told to switch to an arm that is no better: the most over every effect <= 0, every look to 100 [CP 95%]\n")
+                print(
+                    f"| {look} | "
+                    + " | ".join(
+                        "{:.2f} / {:.2f} / {:.2f}".format(*res[(model, e)][1][("split", c, look)]) for e in EFFECTS
+                    )
+                    + " |"
+                )
+    print(
+        "\n### Told to switch to an arm that is no better: the most over every effect <= 0, every look to 100 [CP 95%]\n"
+    )
     print("| rule | " + " | ".join(("passfail", "onramp", "extreme", "skewed")) + " |")
     print("|---|---|---|---|---|")
     for rule in RULES:
@@ -90,9 +99,15 @@ def main() -> None:
 
 def summary(cost: float = 0.0) -> None:
     """Worst expected regret over every model and every effect on the fine grid, split by the side it falls on."""
-    print(f"\n### Worst expected regret in points over all four data models and every effect from -0.3 to +0.3, switching cost {100 * cost:g} pts\n")
-    print("Each cell: worst when the arm is worse (a wrong switch) / worst when the arm is better (a missed gain); one look at n, then every look to n acting on the first switch.\n")
-    print("| rule | n=8 one look | n=8 every look | n=24 one look | n=24 every look | n=100 one look | n=100 every look |")
+    print(
+        f"\n### Worst expected regret in points over all four data models and every effect from -0.3 to +0.3, switching cost {100 * cost:g} pts\n"
+    )
+    print(
+        "Each cell: worst when the arm is worse (a wrong switch) / worst when the arm is better (a missed gain); one look at n, then every look to n acting on the first switch.\n"
+    )
+    print(
+        "| rule | n=8 one look | n=8 every look | n=24 one look | n=24 every look | n=100 one look | n=100 every look |"
+    )
     print("|---|---|---|---|---|---|---|")
     for rule in RULES:
         cells = []

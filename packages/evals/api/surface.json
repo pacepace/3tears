@@ -18,7 +18,7 @@
     },
     "threetears.evals.Eval": {
       "kind": "class",
-      "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False, question: str | None = None, margin: float | None = None) -> None",
+      "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False, question: str | None = None, margin: float | None = None, undo: Literal['easy', 'hard'] = 'easy') -> None",
       "tier": "host-contract"
     },
     "threetears.evals.Example": {
@@ -1478,7 +1478,7 @@
     },
     "threetears.evals.kernel.Aspect": {
       "kind": "model",
-      "signature": "Aspect(label: str, short_name: str | None = None, template_id: str | None = None, stratum: None = None, margin: float | None = None, design: AspectDesign | None = None, run_ids: list[str] = list(), membership: list[MembershipChange] = list(), declared_at: str | None = None, asked_at: str | None = None, margin_declared_at: str | None = None)",
+      "signature": "Aspect(label: str, short_name: str | None = None, template_id: str | None = None, stratum: None = None, margin: float | None = None, design: AspectDesign | None = None, run_ids: list[str] = list(), membership: list[MembershipChange] = list(), declared_at: str | None = None, asked_at: str | None = None, margin_declared_at: str | None = None, undo: Literal['hard'] | None = None)",
       "tier": "stable"
     },
     "threetears.evals.kernel.AspectAnalysis": {
