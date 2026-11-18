@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
+
+**Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and
+`three_scope_visibility_clause` wraps over it) admitted a row through an assignment of ANY role. A narrow role bound
+at scope `all` -- one action on one system namespace -- showed its holder every customer's rows of every listed
+type. Each scope arm now also reads the role, as `Role.actions_for` reads it (a non-empty action list under the
+type's bucket or the `*` bucket; a `permissions` value stored as a JSON string decoded as the role collection
+decodes it):
+
+- scope `all` and `type_customer` admit only through a role granting an action on the listed type;
+- scope `namespace` admits its customer only through a role granting an action on that namespace's own type. A
+  customer admin's grant on the customer namespace still opens every list of its customer; a role bound where it
+  grants nothing opens nothing.
+
+The signature is unchanged; a caller passes the listed type as before. What a caller sees can only narrow, and
+only through grants whose role does nothing where its scope points: every built-in role the hub seeds keeps its
+reach.
+
+**Changed (breaking):** `caller_visible_customers_query` takes `scope_namespace_type`, keyword-only and required,
+and returns two binds (the caller, then the type). The RLS set is now one type's, its arms read the role as the
+per-row clause does, and a `type_customer` grant adds its customer only for its own type, as the per-row clause
+always required. No released consumer calls it.
+
 ### nats: a move off a lame-duck server loses nothing as the server closes the old connection
 
 **Fixed:** a client moving off a server in lame-duck mode kept each subscription's old half in its queue group
