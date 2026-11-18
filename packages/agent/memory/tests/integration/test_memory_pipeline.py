@@ -21,6 +21,7 @@ pgvector search surface is still exercised end-to-end.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import json
 import uuid
 from datetime import UTC, datetime
@@ -99,7 +100,7 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
-class _StubEmbedding:
+class _StubEmbedding(Embeddings):
     """
     deterministic embedding provider: returns a fixed 1024-dim vector.
 

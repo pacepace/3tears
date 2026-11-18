@@ -30,6 +30,12 @@ from threetears.agent.acl import (
     ScopeType,
 )
 
+from .authorizer_fakes import (
+    FakeGroupCollection,
+    FakeGroupMemberCollection,
+    FakeRoleAssignmentCollection,
+    FakeRoleCollection,
+)
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
     ACTION_MEMORY_READ,
@@ -472,10 +478,10 @@ def _build_deps(
         ),
         namespace_collection=namespace_collection,
         namespace_provisioner=namespace_provisioner,
-        group_collection=object(),
-        group_member_collection=object(),
-        role_collection=object(),
-        role_assignment_collection=object(),
+        group_collection=FakeGroupCollection(),
+        group_member_collection=FakeGroupMemberCollection(),
+        role_collection=FakeRoleCollection(),
+        role_assignment_collection=FakeRoleAssignmentCollection(),
     )
 
 

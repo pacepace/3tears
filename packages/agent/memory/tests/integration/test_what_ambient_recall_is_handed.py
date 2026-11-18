@@ -33,11 +33,11 @@ import pytest
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection, MemoryConsolidationsCollection
-from threetears.agent.memory.extraction import REPLY_NOT_A_SOURCE, MemoryExtractor
+from threetears.agent.memory.extraction import REPLY_NOT_A_SOURCE, ExtractionResult, MemoryExtractor
 from threetears.agent.memory.origin import UNATTENDED_TAG, made_by_tag, origin_of
 from threetears.agent.memory.retrieval import MemoryRetriever
 from threetears.agent.memory.retrieval_scope import RetrievalScope
-from threetears.agent.memory.revisions import SAME_EVENT_RATIONALE, write_once
+from threetears.agent.memory.revisions import SAME_EVENT_RATIONALE, Written, write_once
 from threetears.agent.memory.tools import (
     PERMANENT_NEEDS_THE_PERSON,
     load_memory_add_tool,
@@ -480,7 +480,7 @@ class TestOneEventIsStoredOnce:
         near: Any,
         cosine: float = 0.9,
         **more: Any,
-    ):
+    ) -> Written:
         return await write_once(
             world.memories,
             world.edges,
@@ -653,7 +653,9 @@ class TestExtraction:
             consolidations_collection=world.edges,
         )
 
-    async def _extract(self, world: _World, extractor: MemoryExtractor, said: str, turn: uuid.UUID, **more: Any):
+    async def _extract(
+        self, world: _World, extractor: MemoryExtractor, said: str, turn: uuid.UUID, **more: Any
+    ) -> ExtractionResult:
         return await extractor.extract(
             user_id=world.user_id,
             conversation_id=uuid.uuid4(),

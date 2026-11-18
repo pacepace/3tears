@@ -8,6 +8,7 @@ Collections against a simple stub pool and pass them through.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import math
 import uuid
 from collections.abc import Awaitable, Callable
@@ -1009,7 +1010,7 @@ class TestFormatMemoryContext:
 # -- MemoryRetriever end-to-end ------------------------------------------------
 
 
-class StubEmbeddingProvider:
+class StubEmbeddingProvider(Embeddings):
     """Stub LangChain ``Embeddings`` for testing."""
 
     def __init__(self, embedding: list[float] | None = None) -> None:
@@ -1035,9 +1036,9 @@ class StubEmbeddingProvider:
 
 
 def _make_mock_pool(
-    memory_rows: list[dict] | None = None,
-    media_rows: list[dict] | None = None,
-    chunk_rows: list[dict] | None = None,
+    memory_rows: list[dict[str, Any]] | None = None,
+    media_rows: list[dict[str, Any]] | None = None,
+    chunk_rows: list[dict[str, Any]] | None = None,
 ) -> AsyncMock:
     """Create a mock pool that returns predetermined rows for each fetch call.
 
@@ -1048,7 +1049,7 @@ def _make_mock_pool(
     med = media_rows or []
     chk = chunk_rows or []
 
-    async def _fetch(sql: str, *args: object) -> list[dict]:
+    async def _fetch(sql: str, *args: object) -> list[dict[str, Any]]:
         sql_lower = sql.lower().strip()
         if "ts_rank_cd" in sql_lower:
             return []
@@ -1179,7 +1180,7 @@ class TestMemoryRetrieverE2E:
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        class FailingProvider:
+        class FailingProvider(Embeddings):
             async def aembed_query(self, text: str) -> list[float]:
                 _ = text
                 raise RuntimeError("embedding service down")
@@ -1258,7 +1259,7 @@ class TestMemoryRetrieverE2E:
 # -- FTS NULL-embedding guard --------------------------------------------------
 
 
-def _make_null_embedding_recording_pool(fts_null_rows: list[dict]) -> AsyncMock:
+def _make_null_embedding_recording_pool(fts_null_rows: list[dict[str, Any]]) -> AsyncMock:
     """build a pool that models the DB honoring ``embedding IS NOT NULL``.
 
     The vector legs of every collection already filter NULL embeddings.
@@ -1274,7 +1275,7 @@ def _make_null_embedding_recording_pool(fts_null_rows: list[dict]) -> AsyncMock:
     absent. all other legs return empty.
 
     :param fts_null_rows: rows a guardless FTS query would surface
-    :ptype fts_null_rows: list[dict]
+    :ptype fts_null_rows: list[dict[str, Any]]
     :return: asyncpg-shape recording mock
     :rtype: AsyncMock
     """
@@ -1301,7 +1302,7 @@ def _make_null_embedding_recording_pool(fts_null_rows: list[dict]) -> AsyncMock:
         },
     ]
 
-    async def _fetch(sql: str, *args: object) -> list[dict]:
+    async def _fetch(sql: str, *args: object) -> list[dict[str, Any]]:
         _ = args
         sql_lower = sql.lower()
         if "from memories" not in sql_lower:
@@ -1376,7 +1377,7 @@ class TestFtsNullEmbeddingGuard:
         """
         recorded: list[str] = []
 
-        async def _fetch(sql: str, *args: object) -> list[dict]:
+        async def _fetch(sql: str, *args: object) -> list[dict[str, Any]]:
             _ = args
             recorded.append(sql)
             return []

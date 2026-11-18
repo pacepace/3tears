@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from packages.agent.memory.tests.statement_pool import StatementPool
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.core.collections import SalienceDecay
@@ -19,7 +20,7 @@ from threetears.core.config import DefaultCoreConfig
 _DECAY = SalienceDecay(half_life=timedelta(days=60), floor=0.1, pinned="evergreen")
 
 
-class _Recording:
+class _Recording(StatementPool):
     """an L3 that records each statement and answers none."""
 
     def __init__(self) -> None:

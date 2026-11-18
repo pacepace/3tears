@@ -31,7 +31,7 @@ _COLLECTIONS_SRC = (
 
 #: the call a filtered method of each collection makes, so a chunk read cannot filter on its own tags: the clause
 #: spliced into a hand-written statement, or the same clause as a keyed helper's ``where=`` guards (its row ``t``)
-_APPLIES = {
+_APPLIES: dict[type, tuple[str, ...]] = {
     MemoriesCollection: (
         'filter_clause(self.read_filter, "memories.tags"',
         'filter_clause(self.read_filter, "m.tags"',

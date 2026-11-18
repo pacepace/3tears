@@ -18,7 +18,6 @@ with.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -31,6 +30,7 @@ from threetears.agent.acl import (
     Role,
     RoleAssignmentCollection,
 )
+from .authorizer_fakes import FakeRoleCollection
 from threetears.agent.memory.authorize import (
     MEMORY_OWNER_GROUP_PREFIX,
     MEMORY_OWNER_ROLE_NAME,
@@ -60,45 +60,6 @@ class _StubNamespace:
         """
         self.id = id
         self.customer_id = customer_id
-
-
-# not a Fake<Name>: the parity walker does not inspect this, and a marker
-# would claim a surface comparison that is not run.
-class _BuiltinRoleCollection:
-    """role collection stand-in serving one builtin role.
-
-    only :meth:`find_platform_by_name` participates in the ensure path; the rest of
-    :class:`~threetears.agent.acl.collections.RoleCollection`'s surface is
-    inherited from :class:`~threetears.core.collections.base.BaseCollection`
-    and is not reached here.
-    """
-
-    def __init__(self, role: Role) -> None:
-        """store the single builtin role this stand-in reports.
-
-        :param role: builtin role the ensure path looks for by name
-        :ptype role: Role
-        :return: nothing
-        :rtype: None
-        """
-        self._role = role
-
-    async def find_platform_by_name(self, name: str) -> SimpleNamespace | None:
-        """the platform role named ``name``, as :meth:`RoleCollection.find_platform_by_name` answers it.
-
-        :param name: the role's name
-        :ptype name: str
-        :return: the role, carrying ``id``, ``name`` and ``is_builtin``; None when none is named so
-        :rtype: SimpleNamespace | None
-        """
-        return next(
-            (
-                SimpleNamespace(id=role.id, name=role.name, is_builtin=role.is_built_in)
-                for role in (self._role,)
-                if role.name == name
-            ),
-            None,
-        )
 
 
 def _pool() -> AsyncMock:
@@ -156,7 +117,7 @@ def wiring() -> tuple[MemoryAuthorizerDependencies, dict[str, AsyncMock], UUID, 
         namespace_collection=MagicMock(),
         group_collection=_collection(GroupCollection, pools["groups"]),
         group_member_collection=_collection(GroupMemberCollection, pools["group_members"]),
-        role_collection=_BuiltinRoleCollection(
+        role_collection=FakeRoleCollection(
             Role(id=uuid7(), name=MEMORY_OWNER_ROLE_NAME, permissions={}, is_built_in=True),
         ),
         role_assignment_collection=_collection(RoleAssignmentCollection, pools["role_assignments"]),
@@ -260,7 +221,7 @@ async def test_ensure_skips_every_write_when_the_owner_role_is_unseeded(
     :rtype: None
     """
     deps, pools, user_id, customer_id, namespace_id = wiring
-    deps.role_collection = _BuiltinRoleCollection(
+    deps.role_collection = FakeRoleCollection(
         Role(id=uuid7(), name="SomeOtherRole", permissions={}, is_built_in=True),
     )
 

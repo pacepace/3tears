@@ -9,6 +9,7 @@ end-to-end merge is in ``tests/integration/test_dream_consolidation.py``.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import json
 import uuid
 from collections.abc import Iterator
@@ -62,7 +63,7 @@ class StubReflectorFactory:
         return StubChatModel(self._content)
 
 
-class StubEmbeddings:
+class StubEmbeddings(Embeddings):
     """LangChain ``Embeddings`` stub returning a fixed vector."""
 
     def __init__(self, vector: list[float] | None = None) -> None:
@@ -445,6 +446,7 @@ class TestConsolidatedEvent:
             result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
 
         dispatch.assert_awaited_once()
+        assert dispatch.await_args is not None
         event = dispatch.await_args.args[0]
         assert isinstance(event, MemoryConsolidatedEvent)
         assert event.agent_id == str(_AID)
@@ -469,6 +471,7 @@ class TestConsolidatedEvent:
         ) as dispatch:
             await service.run_consolidation(_AID)
 
+        assert dispatch.await_args is not None
         event = dispatch.await_args.args[0]
         assert event.user_id is None
         assert event.customer_id is None

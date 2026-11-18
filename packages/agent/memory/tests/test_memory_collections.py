@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,11 +66,11 @@ def _make_metadata() -> MetaData:
 _SAMPLE_EMBEDDING_DIM = 3
 
 
-def _sample_data() -> dict:
+def _sample_data() -> dict[str, Any]:
     """build a sample memory row for tests.
 
     :return: row data
-    :rtype: dict
+    :rtype: dict[str, Any]
     """
     return {
         "memory_id": uuid.uuid7(),
@@ -85,7 +87,7 @@ def _sample_data() -> dict:
     }
 
 
-def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
+def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
     """Create a mock asyncpg pool backed by an in-memory dict.
 
     collections-task-04 partitioned the memories table on ``agent_id``
@@ -97,7 +99,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
     filters accordingly.
 
     :param store: initial pool contents keyed by memory_id string
-    :ptype store: dict[str, dict] | None
+    :ptype store: dict[str, dict[str, Any]] | None
     :return: asyncpg-shape mock
     :rtype: AsyncMock
     """
@@ -105,7 +107,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         store = {}
     pg = AsyncMock()
 
-    async def _fetchrow(query: str, *args: object) -> dict | None:
+    async def _fetchrow(query: str, *args: object) -> dict[str, Any] | None:
         # composite-pk fetch: SQL is ``WHERE agent_id = $1 AND memory_id = $2``
         # so ``args`` is ``(agent_id, memory_id)``; lookup keyed by
         # memory_id (the UNIQUE side) keeps the mock terse but still
@@ -118,7 +120,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
                 return None
             return row
         # fetch_content_for_recall: agent_id, memory_id, user_id
-        return store.get(str(args[0]) if args else None)
+        return store.get(str(args[0])) if args else None
 
     async def _fetchval(query: str, *args: object) -> bool:
         # count_by_user query: agent_id $1, user_id $2
@@ -171,7 +173,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
             return "DELETE 1"
         return "0"
 
-    async def _fetch(query: str, *args: object) -> list[dict]:
+    async def _fetch(query: str, *args: object) -> list[dict[str, Any]]:
         if "SELECT 1 AS held" in query:
             # count_by_user's existence probe (holds_any): agent_id $1, user_id $2, one row at most
             held = any(
@@ -264,7 +266,7 @@ def _make_nats_mock() -> AsyncMock:
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     """build an initialized SQLiteBackend for one test."""
     b = SQLiteBackend(db_name=f"test_mem_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
@@ -383,7 +385,7 @@ class TestMemoriesCollectionSave:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         nats = _make_nats_mock()
@@ -678,7 +680,7 @@ class TestAScanCachesNothing:
 
         # a one-method L3 whose scan is overtaken by a write of the row it returns
         class _WriteLandsDuringScan:
-            async def fetch(self, sql: str, *args: object) -> list[dict]:
+            async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
                 del args
                 if sql.startswith("SELECT version()"):
                     # the keyed read's one-time dialect probe (its YugabyteDB index hint): a PostgreSQL answer

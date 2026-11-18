@@ -127,7 +127,7 @@ class _StubNamespaceEntity:
         self.owner_agent_id = owner_agent_id
         self.customer_id = customer_id
         self.schema_name = ""
-        self.metadata = {}
+        self.metadata: dict[str, Any] = {}
         self.date_created = datetime.now(UTC)
         self.date_updated = datetime.now(UTC)
 

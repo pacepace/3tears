@@ -231,7 +231,9 @@ _BY_USER_REPOINTS = (
 )
 
 
-async def _rolled_back(conn: asyncpg.Connection, merge: Any) -> tuple[object, ...]:
+async def _rolled_back(
+    conn: asyncpg.Connection, merge: Any
+) -> tuple[dict[str, list[Any]], list[Any], list[list[tuple[Any, ...]]]]:
     """``merge`` in a transaction rolled back after it: the keys it moved per table (sorted), the memories it
     deleted, and every table's rows after.
 
@@ -240,7 +242,7 @@ async def _rolled_back(conn: asyncpg.Connection, merge: Any) -> tuple[object, ..
     :param merge: the merge, answering ``(moved by table, deleted memories)``
     :ptype merge: Any
     :return: what it moved, what it deleted, what it left
-    :rtype: tuple[object, ...]
+    :rtype: tuple[dict[str, list[Any]], list[Any], list[list[tuple[Any, ...]]]]
     """
     transaction = conn.transaction()
     await transaction.start()

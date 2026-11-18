@@ -31,7 +31,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain.agents.middleware.types import ExtendedModelResponse
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 
@@ -117,7 +117,7 @@ def _configurable(context: str = "user prefers dark mode") -> dict[str, Any]:
 def _request(
     system: SystemMessage | None,
     *,
-    messages: list[BaseMessage] | None = None,
+    messages: list[AnyMessage] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> ModelRequest:
     """build a minimal ``ModelRequest`` for the direct-drive tests.
@@ -189,6 +189,7 @@ class TestInjection:
         _req, out = _drive(MemoryInjectionMiddleware(), req, _configurable("user prefers dark mode"))
         assert isinstance(out, ExtendedModelResponse)
         assert out.command is not None
+        assert out.command.update is not None
         assert out.command.update["metadata"][SURFACED_MEMORY_IDS_KEY] == ["user prefers dark mode"]
 
     def test_no_base_system_message_becomes_block(self) -> None:

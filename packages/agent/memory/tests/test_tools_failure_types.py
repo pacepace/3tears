@@ -62,7 +62,8 @@ def _unique_violation(constraint: str, *, named: bool = True) -> Exception:
     fields = {"C": "23505", "M": f'duplicate key value violates unique constraint "{constraint}"'}
     if named:
         fields["n"] = constraint
-    return asyncpg.PostgresError.new(fields)
+    error: Exception = asyncpg.PostgresError.new(fields)
+    return error
 
 
 # parity-exempt: one stand-in answering the read and write calls every memory tool makes across the memories, media, chunk and edge collections; the SQL behind them is covered by the collection tests

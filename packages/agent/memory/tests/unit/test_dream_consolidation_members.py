@@ -68,7 +68,8 @@ async def _members_section(contents: list[tuple[str, str]]) -> list[str]:
     await service.run_consolidation(_AID)
     [[_system, human]] = reflector.asked
     [(_nonce, body)] = _FENCE.findall(str(human.content))
-    return body.split("\n")
+    lines: list[str] = body.split("\n")
+    return lines
 
 
 class TestConsolidationMembers:

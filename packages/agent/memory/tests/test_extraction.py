@@ -9,6 +9,7 @@ through.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import asyncio
 import json
 import logging
@@ -105,7 +106,7 @@ class StubChatModelFactory:
 _STUB_EMBEDDING_DIM = 3
 
 
-class StubEmbeddingProvider:
+class StubEmbeddingProvider(Embeddings):
     """Stub LangChain ``Embeddings`` returning a fixed vector."""
 
     def __init__(
