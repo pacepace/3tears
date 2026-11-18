@@ -26,13 +26,13 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.models import LlmPurpose
-
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection, StoredTimestampUnreadable
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
+    record_circuit_state,
     record_robots_block,
     record_validated_fetch,
 )
@@ -558,10 +558,11 @@ async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(con
     )
     await entity.save()
     # A second write stamps ``date_updated``: the row as it stands after an update is the one
-    # whose ``date_updated`` the NEXT update fences on.
-    entity.consecutive_fetch_failures = 1
-    await entity.save()
-    written = entity.to_dict()
+    # whose ``date_updated`` the NEXT update fences on. Written through the circuit's own writer.
+    updated = await record_circuit_state(
+        writer, target_id="warn_l2", circuit_state="closed", consecutive_fetch_failures=1, blocked_until=None
+    )
+    written = updated.to_dict()
 
     read = await reader.get("warn_l2")
     assert read is not None, "the row did not reach the second pod through L2"

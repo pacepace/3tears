@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json as _json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -27,7 +28,7 @@ class TestNodriverDownloadDriver:
         assert driver.name == "nodriver_download"
 
     async def test_render_success_parses_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
@@ -61,7 +62,7 @@ class TestNodriverDownloadDriver:
         await client.aclose()
 
     async def test_render_sends_request_payload_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["payload"] = _json.loads(request.content)
@@ -146,6 +147,7 @@ class TestNodriverDownloadDriver:
 
         await driver.render("https://workforcewv.org/notice.pdf")
 
+        assert mock_parse.await_args is not None
         assert mock_parse.await_args.kwargs["ocr_config"] is sentinel_ocr
         await client.aclose()
 
@@ -222,7 +224,7 @@ class TestNodriverDownloadDriver:
                 },
             )
 
-        async def failing_parse(*args, **kwargs) -> None:
+        async def failing_parse(*args: object, **kwargs: object) -> None:
             raise DocumentDriverError("parse_failed", "[Parsing failed: corrupt pdf]")
 
         monkeypatch.setattr("threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html", failing_parse)

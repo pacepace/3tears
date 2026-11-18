@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
-
 from threetears.scrape.driver import RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.multi_document import MultiDocumentDriver, MultiDocumentDriverError
 
@@ -58,11 +59,11 @@ class _FakeDocumentDriver(ScrapeDriver):
         )
 
 
-def _listing_client(handler) -> httpx.AsyncClient:
+def _listing_client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def _html_listing_handler(links: list[str]):
+def _html_listing_handler(links: list[str]) -> Callable[[httpx.Request], httpx.Response]:
     body = (
         "<html><body><ul>" + "".join(f'<li><a href="{link}">notice</a></li>' for link in links) + "</ul></body></html>"
     )
@@ -73,7 +74,7 @@ def _html_listing_handler(links: list[str]):
     return handler
 
 
-def _json_listing_handler(records: list[dict]):
+def _json_listing_handler(records: object) -> Callable[[httpx.Request], httpx.Response]:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=json.dumps(records).encode())
 
@@ -335,7 +336,7 @@ class TestMultiDocumentDriver:
         assert page.html == "<html><body></body></html>"
 
     async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["user_agent"] = request.headers.get("user-agent")

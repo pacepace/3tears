@@ -12,9 +12,8 @@ from typing import Any
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError
-
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.driver import NavStep, RenderedPage
+from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.tool import ScrapeTool
 
@@ -25,8 +24,7 @@ async def _disallow_everything(_url: str) -> tuple[int, str]:
     return 200, "User-agent: *\nDisallow: /\n"
 
 
-# parity-with: threetears.scrape.driver.ScrapeDriver
-class NeverRendersDriver:
+class NeverRendersDriver(ScrapeDriver):
     """A driver whose render is a failure: the probe below must stop before any fetch."""
 
     @property
@@ -41,7 +39,11 @@ class NeverRendersDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
-        session_state: dict[str, object] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         raise AssertionError(f"the target-id probe fetched {url}; it must stop at the robots gate")
 
@@ -72,6 +74,7 @@ async def derived_target_id(url: str, field_schema: dict[str, Any]) -> str:
         block_private_hosts=False,
     )
     result = await tool.execute(url=url, field_schema=field_schema)
+    assert result.metadata is not None, f"the target-id probe returned no metadata: {result.error!r}"
     assert result.metadata["validation_status"] == "needs_human", (
         f"the target-id probe did not stop at the robots gate: {result.error!r}"
     )

@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-
 from threetears.scrape.collections import ScrapeTarget, ScrapeTargetCollection
 from threetears.scrape.target_source import (
     CollectionTargetSource,
@@ -23,8 +22,8 @@ from threetears.scrape.target_source import (
 from .test_collections import FakeDurableStore
 
 
-def _target(target_id: str = "t1", **overrides) -> ScrapeTarget:
-    data = {
+def _target(target_id: str = "t1", **overrides: object) -> ScrapeTarget:
+    data: dict[str, object] = {
         "target_id": target_id,
         "url": "https://example.gov/warn",
         "driver_backend": "nodriver",

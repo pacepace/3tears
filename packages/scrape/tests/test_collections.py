@@ -15,7 +15,7 @@ here can catch an entity field that has no DDL column. That check lives in
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -23,7 +23,6 @@ from uuid import uuid4
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-
 from threetears.scrape.collections import (
     ScrapeCollection,
     ScrapeExtractionCollection,
@@ -60,13 +59,12 @@ class FakeDurableStore:
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: list[str] | None = None,
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
         conn: Any = None,
     ) -> int:
-        pk = pk or []
-        key = self._pk_tuple({col: row[col] for col in pk})
+        key = self._pk_tuple({col: row[col] for col in pk or ()})
         self._table(table)[key] = dict(row)
         return 1
 
@@ -348,7 +346,7 @@ class TestInMemoryL3FallbackWarning:
     """
 
     @staticmethod
-    def _fresh_table(base: type[ScrapeCollection]) -> type[ScrapeCollection]:
+    def _fresh_table(base: type[ScrapeCollection[Any]]) -> type[ScrapeCollection[Any]]:
         """A collection over a table no other test has touched.
 
         The once-per-table guard is deliberately class-level and process-wide

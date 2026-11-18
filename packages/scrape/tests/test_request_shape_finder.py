@@ -14,9 +14,12 @@ generalizes, not just "works for the one real case it was built against."
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass
 
-from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage
+import json
+from typing import Any
+
+from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
 from threetears.scrape.request_shape_finder import (
     CapturedRequestShape,
     RequestShapeResult,
@@ -24,15 +27,23 @@ from threetears.scrape.request_shape_finder import (
 )
 
 
-# parity-with: threetears.scrape.driver.ScrapeDriver
-class _FakeDriver:
+@dataclass(frozen=True)
+class _RenderCall:
+    """What one ``render`` was asked to do."""
+
+    url: str
+    capture_network: bool
+    nav_steps: list[NavStep] | None
+
+
+class _FakeDriver(ScrapeDriver):
     """Mirrors test_driver_network_capture.py's own _FakeInnerDriver."""
 
     def __init__(self, network_calls: list[NetworkCall], status: int = 200, final_url: str | None = None) -> None:
         self._network_calls = network_calls
         self._status = status
         self._final_url = final_url
-        self.render_calls: list[dict] = []
+        self.render_calls: list[_RenderCall] = []
 
     @property
     def name(self) -> str:
@@ -46,13 +57,13 @@ class _FakeDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
-        session_state: dict[str, object] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
-        self.render_calls.append({"url": url, "capture_network": capture_network, "nav_steps": nav_steps})
+        self.render_calls.append(_RenderCall(url=url, capture_network=capture_network, nav_steps=nav_steps))
         return RenderedPage(
             html="<html></html>",
             status=self._status,
@@ -152,19 +163,21 @@ class TestCaptureRequestShape:
     async def test_passes_capture_network_true_to_the_driver(self) -> None:
         driver = _FakeDriver([])
         await capture_request_shape("https://example.com/page", driver=driver)
-        assert driver.render_calls[0]["capture_network"] is True
+        assert driver.render_calls[0].capture_network is True
 
     async def test_appends_a_settle_wait_nav_step(self) -> None:
         driver = _FakeDriver([])
         await capture_request_shape("https://example.com/page", driver=driver, settle_wait_ms=5000)
-        nav_steps = driver.render_calls[0]["nav_steps"]
+        nav_steps = driver.render_calls[0].nav_steps
+        assert nav_steps is not None
         assert nav_steps[-1] == NavStep(action="wait_ms", ms=5000)
 
     async def test_caller_supplied_nav_steps_run_before_the_settle_wait(self) -> None:
         driver = _FakeDriver([])
         click_step = NavStep(action="click", selector="#accept")
         await capture_request_shape("https://example.com/page", driver=driver, nav_steps=[click_step])
-        nav_steps = driver.render_calls[0]["nav_steps"]
+        nav_steps = driver.render_calls[0].nav_steps
+        assert nav_steps is not None
         assert nav_steps[0] == click_step
         assert nav_steps[-1].action == "wait_ms"
 

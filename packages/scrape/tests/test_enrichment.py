@@ -16,13 +16,12 @@ import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-from threetears.scrape.collections import ENRICHMENT_STATUSES, ScrapeExtractionCollection
-from threetears.scrape.migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
-from uuid_utils import uuid7
-from threetears.scrape.enrichment import EnrichmentFailedError, enrich_extraction, run_enrichment
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.scrape.collections import ENRICHMENT_STATUSES, ScrapeExtraction, ScrapeExtractionCollection
+from threetears.scrape.enrichment import EnrichmentFailedError, enrich_extraction, run_enrichment
+from threetears.scrape.migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
+from uuid_utils import uuid7
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
@@ -42,7 +41,7 @@ _PAGE_HTML = "<html><body><p>Acme Corp is closing its plant in Q3.</p></body></h
 _STRUCTURED_FIELDS = {"employer": "Acme Corp", "affected_count": 42}
 
 
-async def _persisted_extraction(collection: ScrapeExtractionCollection):
+async def _persisted_extraction(collection: ScrapeExtractionCollection) -> ScrapeExtraction:
     original = collection.create(
         {
             "target_id": "warn_act_ca",
@@ -120,7 +119,7 @@ class TestRunEnrichment:
         assert ainvoke_mock.await_count == 1
 
     async def test_genuinely_nothing_noteworthy_returns_empty_dict(self) -> None:
-        parsed = {"notes": {}}
+        parsed: dict[str, dict[str, str]] = {"notes": {}}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             notes = await run_enrichment(_PAGE_HTML, _STRUCTURED_FIELDS, api_key="k")
@@ -272,7 +271,7 @@ class TestARowWrittenBeforeTheStatusExisted:
     """
 
     @staticmethod
-    async def _read_back(raw_notes):
+    async def _read_back(raw_notes: object) -> ScrapeExtraction:
         collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         row_id = str(uuid7())
         await collection.save_to_store(

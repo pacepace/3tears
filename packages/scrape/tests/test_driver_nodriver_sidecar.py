@@ -10,10 +10,12 @@ to whoever operates one.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
-
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.scrape.collections import (
     ScrapeExtraction,
     ScrapeExtractionCollection,
@@ -23,8 +25,6 @@ from threetears.scrape.collections import (
 )
 from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver, NodriverSidecarError
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
 
 _test_registry = CollectionRegistry()
 _test_config = DefaultCoreConfig()
@@ -82,7 +82,7 @@ class TestNodriverSidecarDriver:
         assert driver.name == "nodriver"
 
     async def test_render_success_parses_response(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
@@ -109,7 +109,7 @@ class TestNodriverSidecarDriver:
         await client.aclose()
 
     async def test_render_sends_request_payload_shape(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             import json as _json
@@ -134,7 +134,7 @@ class TestNodriverSidecarDriver:
         await client.aclose()
 
     async def test_render_forwards_capture_network_flag(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             import json as _json
@@ -153,7 +153,7 @@ class TestNodriverSidecarDriver:
         await client.aclose()
 
     async def test_render_forwards_nav_steps_as_plain_dicts(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             import json as _json
@@ -176,7 +176,7 @@ class TestNodriverSidecarDriver:
         await client.aclose()
 
     async def test_render_omits_nav_steps_key_when_none(self) -> None:
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             import json as _json
@@ -427,7 +427,7 @@ class TestSidecarDriverEgress:
         from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
-        sent: dict = {}
+        sent: dict[str, Any] = {}
 
         def _handler(request: httpx.Request) -> httpx.Response:
             sent.update(json.loads(request.content))
@@ -449,7 +449,7 @@ class TestSidecarDriverEgress:
         import httpx
         from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
-        sent: dict = {}
+        sent: dict[str, Any] = {}
 
         def _handler(request: httpx.Request) -> httpx.Response:
             sent.update(json.loads(request.content))
@@ -470,7 +470,7 @@ class TestSidecarDriverEgress:
         from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
-        sent: dict = {}
+        sent: dict[str, Any] = {}
 
         def _handler(request: httpx.Request) -> httpx.Response:
             sent.update(json.loads(request.content))
@@ -514,7 +514,7 @@ class TestSidecarDriverEgress:
         from threetears.core.egress import DirectEgress
         from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
-        sent: dict = {}
+        sent: dict[str, Any] = {}
 
         def _handler(request: httpx.Request) -> httpx.Response:
             sent.update(json.loads(request.content))

@@ -20,6 +20,8 @@ from collections.abc import Sequence
 import pytest
 from threetears.scrape.operator import DisplayReader, DisplayTransport, DisplayWriter, relay_stream
 
+from packages.scrape.tests.relay_support import silent_operator, when_set
+
 #: An endpoint that is not an address, handed to every relay in this module.
 #:
 #: If the seam ever regresses to opening its own TCP connection, this cannot silently succeed:
@@ -214,10 +216,10 @@ class TestASubstitutedTransportRelaysExactlyAsTheTcpDefaultDoes:
         relay = asyncio.create_task(
             relay_stream(
                 lambda _d: asyncio.sleep(0),
-                asyncio.Event().wait,
+                silent_operator,
                 *_NOT_AN_ADDRESS,
                 transport=transport,
-                until=lost.wait,
+                until=when_set(lost),
             )
         )
         await asyncio.sleep(0.05)
@@ -233,7 +235,7 @@ class TestASubstitutedTransportRelaysExactlyAsTheTcpDefaultDoes:
         relay = asyncio.create_task(
             relay_stream(
                 lambda _d: asyncio.sleep(0),
-                asyncio.Event().wait,
+                silent_operator,
                 *_NOT_AN_ADDRESS,
                 transport=transport,
             )
@@ -257,7 +259,7 @@ class TestASubstitutedTransportRelaysExactlyAsTheTcpDefaultDoes:
 
         with pytest.raises(OSError, match="nothing is serving session-a3f9c2:0"):
             await asyncio.wait_for(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, *_NOT_AN_ADDRESS, transport=_refuses),
+                relay_stream(lambda _d: asyncio.sleep(0), silent_operator, *_NOT_AN_ADDRESS, transport=_refuses),
                 timeout=5,
             )
 
@@ -275,21 +277,21 @@ async def test_a_router_built_with_a_transport_reaches_the_display_through_it() 
     """
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-
     from threetears.scrape.operator import build_operator_router
 
     opened: list[tuple[str, int]] = []
     to_client = _FakeDisplayReader([b"RFB 003.008\n"])
     from_client = _FakeDisplayWriter()
 
-    async def _transport(host: str, port: int):
+    async def _transport(host: str, port: int) -> tuple[DisplayReader, DisplayWriter]:
         opened.append((host, port))
         return to_client, from_client
 
     async def _authorize(token: str) -> str | None:
         return "session-1" if token == "good" else None
 
-    async def _display(_session: str) -> tuple[str, int]:
+    async def _display(session_id: str) -> tuple[str, int]:
+        del session_id
         return ("not-an-address", 0)
 
     app = FastAPI()
@@ -323,7 +325,7 @@ async def test_the_display_connection_is_closed_even_when_the_relay_is_cancelled
     writer = _FakeDisplayWriter()
     reader = _FakeDisplayReader([])  # parks: nothing to read, so the relay stays open
 
-    async def _transport(host: str, port: int):
+    async def _transport(host: str, port: int) -> tuple[DisplayReader, DisplayWriter]:
         return reader, writer
 
     parked: asyncio.Queue[bytes] = asyncio.Queue()  # never filled: the operator sends nothing

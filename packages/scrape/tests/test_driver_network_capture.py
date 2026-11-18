@@ -15,15 +15,14 @@ contract's own bare fixture doesn't provide.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
-
-from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage
+from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.network_capture import NetworkCaptureDriver, NetworkCaptureDriverError
 
 
-# parity-with: threetears.scrape.driver.ScrapeDriver
-class _FakeInnerDriver:
+class _FakeInnerDriver(ScrapeDriver):
     def __init__(self, network_calls: list[NetworkCall], html: str = "<html><body>shell</body></html>"):
         self._network_calls = network_calls
         self._html = html
@@ -43,9 +42,11 @@ class _FakeInnerDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
-        session_state: dict[str, object] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         self.render_calls.append(url)
         self.capture_network_calls.append(capture_network)
@@ -59,7 +60,7 @@ class _FakeInnerDriver:
         )
 
 
-def _call(body: dict, url: str = "https://example.gov/api", content_type: str = "application/json") -> NetworkCall:
+def _call(body: object, url: str = "https://example.gov/api", content_type: str = "application/json") -> NetworkCall:
     return NetworkCall(url=url, method="POST", status=200, content_type=content_type, body=json.dumps(body))
 
 

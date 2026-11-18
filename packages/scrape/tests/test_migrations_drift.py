@@ -19,13 +19,12 @@ the bug instead of catching it (fixed alongside
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.data.store import DataStore
 from threetears.core.entities.base import BaseEntity
-
-from typing import Any
-
 from threetears.scrape.collections import ScrapeCollection, ScrapeExtraction, ScrapeRecipe, ScrapeTarget
 from threetears.scrape.health import ScrapeTargetHealth
 from threetears.scrape.migrations import register
@@ -162,7 +161,8 @@ def captured_ddl() -> list[str]:
         pkg = register(runner)
         store = _FakeStore()
         for version_num in sorted(pkg.versions.keys()):
-            await pkg.versions[version_num](store)
+            # A store bound to the recording session, holding the DDL lock: a preview that captures DDL.
+            await pkg.versions[version_num](DataStore.over_session(store, holds_ddl_lock=True))
         return store.executed
 
     return asyncio.run(_capture())

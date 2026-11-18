@@ -16,7 +16,9 @@ from collections.abc import Iterator
 from urllib.parse import urljoin
 
 import pytest
-from threetears.scrape.operator import TOKEN_SUBPROTOCOL_PREFIX, relay_stream, token_from_subprotocols
+from threetears.scrape.operator import TOKEN_SUBPROTOCOL_PREFIX, ClaimWatch, relay_stream, token_from_subprotocols
+
+from packages.scrape.tests.relay_support import silent_operator, when_set
 
 
 def test_the_module_imports_without_the_optional_web_framework() -> None:
@@ -179,7 +181,7 @@ class TestTheRelayMovesBytesAndInterpretsNothing:
         with pytest.raises(OSError):
             # Port 1 on loopback: reserved, and nothing listens there.
             await asyncio.wait_for(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", 1, until=_stop),
+                relay_stream(lambda _d: asyncio.sleep(0), silent_operator, "127.0.0.1", 1, until=_stop),
                 timeout=5,
             )
         assert started == [], "the stop signal was constructed for a relay that never opened"
@@ -189,7 +191,7 @@ class TestTheRelayMovesBytesAndInterpretsNothing:
         with pytest.raises(OSError):
             # Port 1 on loopback: reserved, and nothing listens there.
             await asyncio.wait_for(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", 1), timeout=5
+                relay_stream(lambda _d: asyncio.sleep(0), silent_operator, "127.0.0.1", 1), timeout=5
             )
 
 
@@ -237,7 +239,7 @@ class _StubClaim:
 def _mounted_app(
     resolved: list[str] | None = None,
     checked: list[str] | None = None,
-    claim: object | None = None,
+    claim: ClaimWatch | None = None,
     *,
     with_claim_lookup: bool = False,
     claim_asked: list[str] | None = None,
@@ -261,7 +263,6 @@ def _mounted_app(
     came too late.
     """
     from fastapi import FastAPI
-
     from threetears.scrape.operator import build_operator_router
 
     async def _authorize(token: str) -> str | None:
@@ -274,7 +275,7 @@ def _mounted_app(
             resolved.append(session_id)
         return ("127.0.0.1", rfb_port if rfb_port is not None else 5900)
 
-    async def _claim(session_id: str) -> object | None:
+    async def _claim(session_id: str) -> ClaimWatch | None:
         if claim_asked is not None:
             claim_asked.append(session_id)
         return claim
@@ -366,7 +367,6 @@ class TestThePageAndItsClientSurviveAPrefix:
         version-skew this package vendors the tree to prevent.
         """
         from fastapi.testclient import TestClient
-
         from threetears.scrape.operator import OPERATOR_PAGE
 
         page = OPERATOR_PAGE.read_text()
@@ -524,7 +524,7 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
         lost = asyncio.Event()
         with _quiet_listener() as port:
             relay = asyncio.create_task(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port, until=lost.wait)
+                relay_stream(lambda _d: asyncio.sleep(0), silent_operator, "127.0.0.1", port, until=when_set(lost))
             )
             await asyncio.sleep(0.05)
             assert not relay.done(), "the relay ended before the claim was lost"
@@ -534,9 +534,7 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
     async def test_a_relay_with_no_stop_signal_still_runs(self) -> None:
         """One pod has no handover to survive and must not need a signal to show a display."""
         with _quiet_listener() as port:
-            relay = asyncio.create_task(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port)
-            )
+            relay = asyncio.create_task(relay_stream(lambda _d: asyncio.sleep(0), silent_operator, "127.0.0.1", port))
             await asyncio.sleep(0.05)
             assert not relay.done(), "a relay with no stop signal ended on its own"
             relay.cancel()
@@ -640,7 +638,7 @@ class TestThePageKeepsItsTwoInvisibleGuarantees:
         "not authorised" with a perfectly valid token, and the two halves each look right on
         their own.
         """
-        from threetears.scrape.operator import TOKEN_SUBPROTOCOL_PREFIX, OPERATOR_PAGE
+        from threetears.scrape.operator import OPERATOR_PAGE, TOKEN_SUBPROTOCOL_PREFIX
 
         page = OPERATOR_PAGE.read_text()
         assert f"`{TOKEN_SUBPROTOCOL_PREFIX}${{token}}`" in page, (

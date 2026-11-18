@@ -20,8 +20,6 @@ from urllib.parse import urljoin
 
 import httpx
 import pytest
-from packages.scrape.tests.egress_fakes import FakeEgress
-from packages.scrape.tests.scrape_tool_support import derived_target_id
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
@@ -35,6 +33,9 @@ from threetears.scrape.drivers.multi_document import MultiDocumentDriver
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.tool import ScrapeTool
+
+from packages.scrape.tests.egress_fakes import FakeEgress
+from packages.scrape.tests.scrape_tool_support import derived_target_id
 
 _START = "https://8.8.8.8/start"
 _OTHER_PUBLIC = "https://8.8.4.4/elsewhere"
@@ -100,6 +101,10 @@ class _BoundDriver(ScrapeDriver):
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
         session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         return await self._inner.render(url, timeout=timeout, **self._bound)
@@ -220,6 +225,7 @@ class TestALinkThePageChoseIsChecked:
         assert "169.254.169.254" not in _hosts(egress), "a detail link into the metadata endpoint was fetched"
         assert _requested(egress) == [_START, second]
         assert not (result.error or "").startswith("refused: "), "one hostile row refused the whole listing"
+        assert eval_loop.await_args is not None
         page_html = eval_loop.await_args.args[1]
         assert "Acme Corp" in page_html and "Beta LLC" in page_html, "a row was dropped rather than degraded"
         assert "42" in page_html, "the public row lost its detail fields"
@@ -271,6 +277,7 @@ class TestWhatTheGuardLeavesAlone:
 
         assert _requested(egress)[:2] == [_START, _OTHER_PUBLIC]
         assert not (result.error or "").startswith("refused: "), result.error
+        assert eval_loop.await_args is not None
         assert eval_loop.await_args.args[2] == _OTHER_PUBLIC, "the page was not the redirect's target"
 
     @pytest.mark.parametrize("kind", ["document", "listing_detail", "api", "multi_document"])

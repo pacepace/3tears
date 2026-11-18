@@ -21,6 +21,7 @@ import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,9 +35,10 @@ _NOVNC = _ASSETS / "novnc"
 _PROVENANCE = _ASSETS / "novnc-provenance.json"
 
 
-def _record() -> dict:
+def _record() -> dict[str, Any]:
     """The provenance record, which is the single source of truth for every claim below."""
-    return json.loads(_PROVENANCE.read_text(encoding="utf-8"))
+    record: dict[str, Any] = json.loads(_PROVENANCE.read_text(encoding="utf-8"))
+    return record
 
 
 def _tree_digest(root: Path) -> str:

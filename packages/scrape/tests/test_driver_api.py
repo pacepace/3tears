@@ -19,6 +19,8 @@ exercise anything backend-agnostic.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -86,7 +88,7 @@ class TestResultsPath:
 # ===========================================================================
 
 
-def _json_response_handler(body: dict | list, *, status: int = 200):
+def _json_response_handler(body: object, *, status: int = 200) -> Callable[[httpx.Request], httpx.Response]:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, content=json.dumps(body).encode())
 
@@ -306,7 +308,7 @@ class TestApiDriver:
         """The default browser User-Agent (a live-found WAF workaround) only
         applies to a client this driver constructs itself -- an injected
         client's own header policy (or lack of one) must be left alone."""
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["user_agent"] = request.headers.get("user-agent")
