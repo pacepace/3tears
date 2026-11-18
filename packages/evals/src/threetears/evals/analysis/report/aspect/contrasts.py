@@ -14,6 +14,7 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonFamily,
     FamilyComparison,
 )
+from threetears.evals.analysis.bundle.comparisons import read_by_bet
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, unread_arms
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -264,8 +265,10 @@ def contrast_advice(
         ]
         read = [(verdict, comparison, family) for verdict, comparison, family in found if comparison.advice is not None]
         if not read:
-            unbet = any(comparison.p_raw is not None and comparison.evidence_better is None for _, comparison, _ in found)
-            return NO_ADVICE_SENTENCE if unbet and bundle.question_declared else None
+            # An engine campaign's: no bet read any of its families, so nothing keeps a running evidence.
+            engine = not any(read_by_bet(family) for family in bundle.multiple_comparisons.families)
+            tested_once = any(comparison.p_raw is not None for _, comparison, _ in found)
+            return NO_ADVICE_SENTENCE if engine and tested_once and bundle.question_declared else None
 
         def gain(entry: tuple[Verdict, FamilyComparison, ComparisonFamily]) -> float:
             delta = entry[1].delta or 0.0

@@ -1,0 +1,222 @@
+"""The advice beside the proof: what to do on a comparison, read off the evidence its bet holds.
+
+Fast guards on the bars and the rule (each fails if either moves), the first screens it opens with, where it is
+stored and served, the ``undo`` input and its timing, and that the gate stays on the proof. The promise itself (a
+candidate that is not better is advised at most one time in three, or ten) is certified at size by
+``stats_certificate.py``'s ``advice.no-better.*`` claims; here it is held on the rule's own arithmetic.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Sequence
+from fractions import Fraction
+from pathlib import Path
+from typing import Any, Literal
+
+import pytest
+
+from threetears.evals import Eval
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, advice_path
+from threetears.evals.analysis.style import ADVICE_PROMISE, ADVICE_TERM, GLOSSARY, LATE_UNDO_SENTENCE
+
+from packages.evals.tests import advice_nulls
+
+_QUESTION = "Does v2 pass more often than v1?"
+
+#: The held-out-1 on-ramp run's primary, per app (control, candidate) trials met of three, in the plan's order.
+_ONRAMP = [
+    (0, 3), (2, 3), (3, 3), (3, 3), (2, 3), (1, 2), (3, 3), (2, 1), (3, 3), (3, 3), (3, 3), (1, 2),
+    (1, 2), (0, 1), (3, 3), (3, 3), (3, 3), (3, 3), (0, 3), (1, 3), (2, 3), (3, 2), (2, 2), (0, 3),
+]  # fmt: skip
+
+
+def test_the_bars_are_the_evidence_words_own_steps() -> None:
+    """Moderate (3) where the switch is easy to undo, strong (10) where it is hard: never drifting from the words."""
+    assert dict(ADVICE_BARS) == {"easy": 3.0, "hard": 10.0}
+    assert (ADVICE_BARS["easy"], ADVICE_BARS["hard"]) == EVIDENCE_STEPS
+
+
+def test_the_promise_is_stated_once_and_defined_in_the_glossary() -> None:
+    assert ADVICE_PROMISE == (
+        "However often anyone looks, if the candidate is not really better the advice says switch at most one time in "
+        "three, or one time in ten for a switch declared hard to undo."
+    )
+    assert "one time in three (one in ten)" in GLOSSARY[ADVICE_TERM]
+
+
+def test_all_wins_switch_once_the_evidence_reaches_each_bar() -> None:
+    """Eight wins of eight: moderate evidence from the third case, strong from the fifth."""
+    assert advice_path([0] * 8, [1] * 8, value_range=(0, 1), bar=3) == [False, False] + [True] * 6
+    assert advice_path([0] * 8, [1] * 8, value_range=(0, 1), bar=10) == [False] * 4 + [True] * 4
+
+
+def test_the_advice_stands_once_reached_and_withdraws_when_the_arm_is_no_longer_ahead() -> None:
+    """Read off the path, as a decision is: six wins reach the bar; ten losses after them bring the arm level at twelve
+    cases, and the advice withdraws there."""
+    control, candidate = [0] * 6 + [1] * 10, [1] * 6 + [0] * 10
+    said = advice_path(control, candidate, value_range=(0, 1), bar=3)
+    assert said == [False, False] + [True] * 9 + [False] * 5
+
+
+def test_a_margin_reads_the_evidence_of_no_worse_than_it() -> None:
+    """Forty agreeing cases are evidence the arm is no worse than five points below the control, from the 32nd case;
+    against zero they are no evidence it is better."""
+    same = [1] * 20 + [0] * 20
+    with_margin = advice_path(same, same, value_range=(0, 1), bar=3, margin=0.05)
+    assert with_margin is not None and with_margin.index(True) == 31 and with_margin[-1]
+    assert advice_path(same, same, value_range=(0, 1), bar=3) == [False] * 40
+
+
+def test_the_on_ramp_result_reads_switch_at_either_bar() -> None:
+    control = [Fraction(a, 3) for a, _ in _ONRAMP]
+    candidate = [Fraction(b, 3) for _, b in _ONRAMP]
+    for bar in ADVICE_BARS.values():
+        path = advice_path(control, candidate, value_range=(0, 1), bar=bar)
+        assert path is not None and path[-1], bar
+
+
+def test_an_arm_eight_cases_ahead_on_moderate_evidence_reads_switch_only_where_easy_to_undo() -> None:
+    """The +0.3 sample at eight cases (v1 met 8 of 24 trials, v2 15): its evidence reached 3.5, below strong."""
+    control = [Fraction(x, 3) for x in (0, 1, 1, 0, 2, 1, 2, 1)]
+    candidate = [Fraction(x, 3) for x in (3, 3, 2, 1, 2, 1, 1, 2)]
+    easy = advice_path(control, candidate, value_range=(0, 1), bar=ADVICE_BARS["easy"])
+    hard = advice_path(control, candidate, value_range=(0, 1), bar=ADVICE_BARS["hard"])
+    assert easy == [False] * 3 + [True] * 5
+    assert hard == [False] * 8
+
+
+@pytest.mark.parametrize(("bar", "margin"), [(1.0, 0.0), (0.5, 0.0), (3.0, -0.1)])
+def test_an_unusable_bar_or_margin_is_refused(bar: float, margin: float) -> None:
+    with pytest.raises(ValueError):
+        advice_path([0, 1], [1, 1], value_range=(0, 1), bar=bar, margin=margin)
+
+
+def test_a_small_seeded_null_reads_as_the_certificate_counted_it() -> None:
+    """A smoke of the certificate's claims, 60 not-better comparisons a family read after every case: the counts the
+    real path gave on these seeds, so a change to the rule, the bars or the families' draws turns this red before a
+    re-certification is due. (Sixty is too few to hold the promise's bound; the certificate holds it at 4,000.)"""
+    counted = {family: advice_nulls.count(family, range(60)) for family in advice_nulls.FAMILIES}
+    assert {family: (totals["ever3"], totals["ever10"]) for family, totals in counted.items()} == _SMOKE
+
+
+#: The smoke's counts (ever advised at 3, at 10) by family, as advice_nulls.count gave them on seeds 0-59.
+_SMOKE = {"passfail": (20, 4), "onramp": (13, 4), "swing": (15, 7), "skewed": (18, 4)}
+
+
+# --- the first screen ---------------------------------------------------------------------------------------------
+
+
+def _eval(
+    control: Sequence[int], candidate: Sequence[int], name: str, **declared: Any
+) -> Eval:
+    cases = [{"id": f"c{index:02d}", "a": a, "b": b} for index, (a, b) in enumerate(zip(control, candidate))]
+
+    def v1(case: dict[str, Any]) -> int:
+        return int(case["a"])
+
+    def v2(case: dict[str, Any]) -> int:
+        return int(case["b"])
+
+    def passed(case: dict[str, Any], out: int) -> bool:
+        return out == 1
+
+    return Eval(cases, {"v1": v1, "v2": v2}, passed, k=1, name=name, **declared)
+
+
+_HALF = [0, 1, 0, 1, 0, 1, 0, 1, 1, 0]
+
+
+def test_all_wins_opens_on_switch_and_its_proof_below_it() -> None:
+    result = asyncio.run(_eval([0] * 8, [1] * 8, "all-wins", question=_QUESTION).run(store=":memory:"))
+    first, second = result.render().splitlines()[:2]
+    assert first == "Advice: switch to v2. At worst it is 21 points ahead of v1."
+    assert second.startswith("all-wins: Passed score: v2 better than v1, decided at 6 cases when the evidence reached")
+    assert [row["advice"] for row in result.contrasts()] == ["switch"]
+
+
+def test_moderate_evidence_switches_where_easy_and_keeps_where_hard_to_undo() -> None:
+    ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+    easy = asyncio.run(_eval(_HALF, ahead, "moderate", question=_QUESTION).run(store=":memory:"))
+    hard = asyncio.run(_eval(_HALF, ahead, "moderate-hard", question=_QUESTION, undo="hard").run(store=":memory:"))
+    assert easy.render().splitlines()[0] == "Advice: switch to v2. At worst it is 11 points behind v1."
+    assert hard.render().splitlines()[0] == (
+        "Advice: keep v1. v2 is ahead, but a switch that is hard to undo needs evidence of 10 and this is moderate "
+        "(7.8)."
+    )
+    # The proof line says it is not yet proven, and what proving it needs.
+    proof = easy.render().splitlines()[1]
+    assert "v2 ahead of v1, not yet proven." in proof
+    assert "The evidence that v2 is better is moderate (7.8); proving it needs 22." in proof
+
+
+def test_a_level_arm_keeps_the_control_and_never_says_there_is_not_enough_to_say() -> None:
+    level = [1, 0, 0, 1, 0, 1, 1, 0, 1, 0]
+    result = asyncio.run(_eval(_HALF, level, "level", question=_QUESTION).run(store=":memory:"))
+    first = result.render().splitlines()[0]
+    assert first == "Advice: keep v1. v2 is level with it."
+    assert "not enough" not in result.render()
+
+
+def test_a_gate_reads_its_advice_against_its_margin_and_says_the_one_caveat() -> None:
+    same = [1] * 20 + [0] * 20
+    result = asyncio.run(
+        _eval(same, same, "gate", question="Is v2 no worse than v1?", margin=0.05).run(store=":memory:")
+    )
+    assert result.render().splitlines()[0] == (
+        "Advice: switch to v2. At worst it is 10 points behind v1, past the 5 points you allow."
+    )
+
+
+def test_the_gate_stays_on_the_proof_whatever_the_advice_says() -> None:
+    """Advised to switch, not proven: the gate reads the proof, undecided, never passed."""
+    ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+    result = asyncio.run(_eval(_HALF, ahead, "gated", question=_QUESTION).run(store=":memory:"))
+    assert [row["advice"] for row in result.contrasts()] == ["switch"]
+    assert result.gate().outcome == "undecided"
+    assert not result.gate().failed
+
+
+def test_an_undo_declared_after_the_results_reads_the_default_and_says_so() -> None:
+    ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+
+    async def read() -> tuple[str, str]:
+        first = await _eval(_HALF, ahead, "late", question=_QUESTION, undo="hard").run(store=":memory:")
+        again = await first.against("v1", undo="hard")
+        return first.render(), again.render()
+
+    before, after = asyncio.run(read())
+    assert before.splitlines()[0].startswith("Advice: keep v1.")
+    assert after.splitlines()[0] == "Advice: switch to v2. At worst it is 11 points behind v1."
+    assert LATE_UNDO_SENTENCE in after.splitlines()
+
+
+def test_undo_is_stored_on_the_aspect_only_where_hard() -> None:
+    ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+
+    def aspect(undo: Literal["easy", "hard"]) -> dict[str, Any]:
+        result = asyncio.run(_eval(_HALF, ahead, f"stored-{undo}", question=_QUESTION, undo=undo).run(store=":memory:"))
+        campaign = get_campaign(result.host.storage, result.campaign_id, result.scope_id)
+        return campaign.aspects[0].model_dump(mode="json")
+
+    easy, hard = aspect("easy"), aspect("hard")
+    assert "undo" not in easy
+    assert hard["undo"] == "hard"
+
+
+def test_an_unknown_undo_is_refused() -> None:
+    with pytest.raises(ValueError, match='undo= is "easy"'):
+        _eval(_HALF, _HALF, "refused", question=_QUESTION, undo="maybe")  # type: ignore[arg-type]
+
+
+def test_a_comparison_continued_with_another_undo_is_a_new_comparison(tmp_path: Path) -> None:
+    ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
+    store = tmp_path / "evals.sqlite"
+
+    async def twice() -> str:
+        await _eval(_HALF, ahead, "continued", question=_QUESTION).run(store=store)
+        again = await _eval(_HALF, ahead, "continued", question=_QUESTION, undo="hard").run(store=store)
+        return again.render()
+
+    assert "how hard the switch is to undo changed" in asyncio.run(twice())

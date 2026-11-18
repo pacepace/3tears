@@ -36,8 +36,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from threetears.evals.analysis.stats import EVIDENCE_STEPS, SIGNIFICANCE_ALPHA, exact_rate_interval
+from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, SIGNIFICANCE_ALPHA, exact_rate_interval
 
+from packages.evals.tests import advice_nulls as advice
 from packages.evals.tests import engine_take_up as engine
 from packages.evals.tests import null_newcomers as quick
 
@@ -58,6 +59,7 @@ RUN_KEY = Path(__file__).resolve().parent / "fixtures" / "stats_certification_ru
 #: the import sits (inside a function, under ``TYPE_CHECKING``), that resolves to a file in this repository, is in the
 #: digest: the package's reading, its runner and its engine, and every other workspace module they reach.
 ENTRY_POINTS = (
+    "packages/evals/tests/advice_nulls.py",
     "packages/evals/tests/null_newcomers.py",
     "packages/evals/tests/engine_take_up.py",
     "packages/evals/tests/stats_certificate.py",
@@ -327,6 +329,20 @@ def _shards() -> list[Shard]:
                     },
                 )
             )
+    # The advice on a candidate no better than the control, read after every case to a hundred: 4,000 a family, read
+    # here on the package's own advice_path. Its shards count fields of their own (advice_nulls.advised), which no pool
+    # shard records.
+    for family in advice.FAMILIES:
+        for block in _blocks(4_000, 500):
+            shards.append(
+                Shard(
+                    f"advice-{family}-{block.start}",
+                    f"advice-{family}",
+                    "local",
+                    "advice",
+                    {"family": family, "start": block.start, "count": len(block)},
+                )
+            )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -516,6 +532,8 @@ def run_local(shard: Shard) -> dict[str, int]:
             for i in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(reads), sum(read[-1].decided for read in reads))
+    if shard.job == "advice":
+        return advice.count(args["family"], range(args["start"], args["start"] + args["count"]))
     if shard.job == "small-cover":
         sides = [
             quick.missed_side(quick.small_covers(f"cover-{s}-{i}")) for s in args["shards"] for i in range(args["per"])
@@ -789,6 +807,35 @@ def _claims() -> list[Claim]:
             "rerun-<shard>-<index>, shards 0-39 of 50, restated",
         )
     )
+    for family in advice.FAMILIES:
+        for undo, bar in ADVICE_BARS.items():
+            tag = f"{bar:g}"
+            group, seeds = f"advice-{family}", f"advice-{family}-<index>, 0-3999, on stats.advice_path"
+            said = f"a candidate no better than the control ({family}), the switch {undo} to undo"
+            claims.append(
+                Claim(
+                    f"advice.no-better.{family}.{undo}.every-look",
+                    f"For {said}, read after every case from the second to {advice.HORIZON}, the advice ever says "
+                    f"switch at most one time in {tag} (Ville, on the running maximum of its evidence).",
+                    group,
+                    f"ever{tag}",
+                    "at_most",
+                    1.0 / bar,
+                    seeds,
+                )
+            )
+            for n in advice.ONCE_AT:
+                claims.append(
+                    Claim(
+                        f"advice.no-better.{family}.{undo}.once-{n}",
+                        f"For {said}, read once at {n} cases, the advice says switch at most one time in {tag}.",
+                        group,
+                        f"once{n}_{tag}",
+                        "at_most",
+                        1.0 / bar,
+                        seeds,
+                    )
+                )
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),
