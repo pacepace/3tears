@@ -128,15 +128,15 @@ check read. `k` is the trials an arm ran on each app. The package averages each 
 compares each app's share passed, paired across apps; no trial is pooled with another app's. Each check is read as
 its own comparison, the plan's primary first; the others are leads. Each tier is read on its own, never pooled.
 
-The reading holds its error: `tests/test_onramp_reading.py` simulates arms that differ only by noise (an arm-by-app
-draw, as two runs of one design disagreed) and checks that they read separated at most 5% of the time with apps as
-cases, and that the same rows read with each trial as its own case separate more often than that.
+The primary check is the comparison's question, which the package tests alone and one-sided, toward the candidate;
+the other checks are read with no question, as leads. The error rate the reading holds under the on-ramp's null (apps
+as cases, three trials each, an arm-by-app spread) is the package's certified claim (`small-n.once.onramp` and
+`small-n.continued.onramp.separates` in `tests/fixtures/stats_certificate.json`). `tests/test_onramp_reading.py`
+reads those claims, and guards on seeded noise-only runs that the replay hands the package apps, not trials: read with
+each trial as its own case, the same runs separate where the apps do not.
 
 What it costs to read a difference this way is apps. `--power APPS K EFFECT` simulates a plan through the same
-reading and says how often it separates. The package reads a comparison by an anytime-valid bet, which pays for being
-read again with cases appended: at 8 apps it separates nothing, whatever the effect; an effect of 0.30 on the
-primary check's share needs some 32 to 40 apps to be read more often than not (`plans/held-out-1.toml` has the
-figures).
+reading and says how often it separates; `plans/held-out-1.toml` has the figures for its size.
 
 ### Development set and held-out set
 
