@@ -12,7 +12,7 @@ other, of 0 bytes.
 :func:`tally` counts a day's lines by page. A page is the request's path without its query string, so ``/menu`` and
 ``/menu?lang=en`` are one page. Each page gets its hits (every request for it, whatever its status), the bytes sent
 for it, and how many of its requests were answered ``404`` or with a ``5xx`` error. A line that is not in the
-combined format at all (a line cut short when the disk filled, a stray debug line) is counted in ``unparsed`` and
+combined format at all (a line cut short when the disk filled, a stray trace line) is counted in ``unparsed`` and
 otherwise left out.
 """
 

@@ -19,7 +19,7 @@ class ParseTests(unittest.TestCase):
 
     def test_a_line_not_in_the_format(self):
         self.assertIsNone(parse('203.0.113.9 - - [02/Nov/2026:08:14:07 +0000] "GET /me'))
-        self.assertIsNone(parse("debug: cache warmed"))
+        self.assertIsNone(parse("trace: cache warmed"))
 
 
 class TallyTests(unittest.TestCase):
