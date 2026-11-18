@@ -64,7 +64,7 @@ another family, or of the same family, whose slip or setting an eval would see a
 | tipsplit | held out | order of operations (a voucher taken off before the tip is worked out) | proration (billing) |
 | nextbus | held out | time zones (a time with no offset read as UTC, not local) | standups (time); shipeta (an estimate in time) |
 | spamscore | held out | boolean precedence (`a and b or c` where `a and (b or c)` was meant) | moodscore, passcheck (graded heuristics) |
-| tripcarbon | held out | a stale constant (last year's factor for one mode) | holds (a wrong constant); recipes (a wrong unit) |
+| tripcarbon | held out | an accumulation overwritten (`=` where a running total was meant) | contactmerge (keyed state); moodscore (a counter) |
 | warranty | held out | an early return inside a loop (`return` where `continue` was meant) | tickets (a case decided wrongly) |
 | nutrilabel | held out | the wrong key (a lookup on the wrong field, hidden by its default) | statements (a wrong default) |
 | tillchange | held out | ordering (numbers sorted as strings) | standings (ordering) |
@@ -505,21 +505,29 @@ against the labels reads the twin better, so on these two apps the `measures_the
   +    if LINK.search(message.body) and (not known or elsewhere):
   ```
 
-## tripcarbon: travel emissions, a stale constant (graded, with a tolerance)
+## tripcarbon: travel emissions, a total overwritten (graded, with a tolerance)
 
-- **Defect.** `footprint.FACTORS` carries last year's factor for `rail` (0.03546 kg CO2e per passenger-km), where the
-  docstring and the README say the factors are the 2026 reporting year's (0.02857). Every rail leg is about 24% too
-  high, so a trip where rail is a large part of the footprint misses the audited figure; a trip with a short rail leg
-  beside a flight or hotel nights stays inside the tolerance, and a trip with no rail is right.
-- **Where.** `apps/tripcarbon/footprint.py`, `FACTORS`, the `rail` line.
+- **Defect.** `footprint.Trip.from_row` tallies a trip's hotel nights by country, but sets each country's count to
+  the latest stay's nights instead of adding them up. A trip with two hotels in one country (Paris and Lyon, a
+  Manchester-Leeds-Newcastle roadshow) keeps only its last stay there, and its footprint comes out low by the
+  other stays' nights. The docstring and the README count every night of every stay. A trip with one hotel per
+  country, or none, is right; a long trip whose lost nights are a small part of it stays inside the tolerance.
+- **Where.** `apps/tripcarbon/footprint.py`, `Trip.from_row`, the line in the `for stay` loop.
 - **Share.** 14 of 46 audited trips (30%) are estimated more than 5% from the auditors' figure
-  (`data/audited.jsonl`, `audited_kg`), the tolerance the README states; 7 of its first 20 and 3 of its first 5. 27
-  of the 46 have a rail leg. The mean miss is 6.6% on the app and 1.3% on the twin. The audited figures are the
-  twin's within 2.5%, standing for the auditors' own distances.
+  (`data/audited.jsonl`, `audited_kg`), the tolerance the README states; 5 of its first 20 and 3 of its first 5. 17
+  of the 46 have two stays in one country, and 17 trips move. The mean miss is 7.4% on the app and 1.2% on the twin.
+  The audited figures are the twin's within 2.5%, standing for the auditors' own distances.
+- **Never worse on a row.** On the continuous miss (|estimate - audited| / audited), the app comes closer than the
+  twin on no trip, and `held_out_shares.py` counts any such trip as the twin's. The generator redraws any trip where the
+  app comes closer, so the noise can't land a trip on the app's side. On the shipped draw it redrew none.
+- **Data edit.** The first version of this app planted a stale `rail` factor in `FACTORS`, one wrong literal in a
+  constants table. The development apps recipes and holds carry the same slip, so the defect was replaced before any
+  run. The trips were redrawn with stays, in the `hotels` list the defect needs; the earlier draw had 4 trips (TR-2727,
+  TR-2866, TR-2892, TR-2908) where the app came closer on the continuous miss, which the redraw rule now excludes.
 - **Twin diff.**
   ```diff
-  -    "rail": 0.03546,
-  +    "rail": 0.02857,
+  -            nights[stay["country"]] = int(stay["nights"])
+  +            nights[stay["country"]] = nights.get(stay["country"], 0) + int(stay["nights"])
   ```
 
 ## warranty: warranty decisions, an early return inside a loop

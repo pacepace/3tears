@@ -506,13 +506,16 @@ def tripcarbon(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
     def misses(module: ModuleType) -> list[float]:
         return [abs(module.footprint_kg(module.Trip.from_row(r)) - r["audited_kg"]) / r["audited_kg"] for r in rows]
 
-    means = [sum(misses(module)) / len(rows) for module in (app, twin)]
+    shipped, fixed = misses(app), misses(twin)
+    means = [sum(miss) / len(rows) for miss in (shipped, fixed)]
+    # The twin is off on a trip outside the tolerance, and also on one the app comes closer to, however slightly.
+    closer = sum(a < t for a, t in zip(shipped, fixed, strict=True))
     return Reach(
-        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in misses(app)),
+        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in shipped),
         len(rows),
-        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in misses(twin)),
+        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in fixed) + closer,
         f"audited trips estimated more than 5% from the audited figure (mean miss {means[0]:.1%} against "
-        f"{means[1]:.1%})",
+        f"{means[1]:.1%}; {sum(a != t for a, t in zip(shipped, fixed, strict=True))} trips move)",
     )
 
 

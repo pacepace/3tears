@@ -2,9 +2,10 @@
 
 Business-travel emissions for our quarterly sustainability report. `footprint_kg(trip)` gives one traveller's trip in
 kg CO2e; `Trip.from_row` reads a trip as the travel desk exports it (`trip_id`, `legs` with `mode`, `km` and, for a
-flight, `cabin`, and `hotel_nights` by country), and `footprint_file(path)` does a whole export. How a trip is
-worked out is in the module docstring of `footprint.py`: each leg's distance times its mode's conversion factor for
-the 2026 reporting year, flights weighted by cabin, plus a factor per hotel night by country.
+flight, `cabin`, and `hotels`, one stay per hotel with its `country` and `nights`), and `footprint_file(path)` does a
+whole export. How a trip is worked out is in the module docstring of `footprint.py`: each leg's distance times its
+mode's conversion factor for the 2026 reporting year, flights weighted by cabin, plus a factor for each night of each
+hotel stay, by country.
 
 The report's figures are audited. `data/audited.jsonl` is last quarter's audit sample: each trip as exported, with
 `audited_kg`, the auditors' own figure, worked from the 2026 factors and their own distances and booking records.
