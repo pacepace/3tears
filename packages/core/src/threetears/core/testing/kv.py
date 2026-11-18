@@ -1475,12 +1475,12 @@ class FakeNatsClient:
                 continue
             refill.owed = False
 
-    async def ping(self, *, timeout: float = 2.0) -> bool:
+    async def ping(self, *, timeout: float | None = None) -> bool:
         """a health probe's round trip, as the real client makes it: answered by :attr:`answers_ping`, which a test
         sets False for a broker that has stopped answering.
 
-        :param timeout: seconds the real client would wait; nothing is waited on here
-        :ptype timeout: float
+        :param timeout: seconds the real client would wait (its own default when None); nothing is waited on here
+        :ptype timeout: float | None
         :return: whether the broker answered
         :rtype: bool
         """
