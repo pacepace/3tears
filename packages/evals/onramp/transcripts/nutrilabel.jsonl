@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "label.py"}
+{"tool": "read", "path": "data/approved.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom label import label\n\ndef print_label(case):\n    \"\"\"The nutrition label the spec sheet gets.\"\"\"\n    return {\"label\": label(case)}\n\n\ndef as_approved(case, out):\n    \"\"\"The label is the signed-off text.\"\"\"\n    return out[\"label\"] == case[\"approved\"]\n\nsheets = Eval(\"data/approved.jsonl\", runner=print_label, grader=[as_approved], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_approved\", \"pass_rate\": 0.75, \"finished\": true}"}

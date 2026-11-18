@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "address.py"}
+{"tool": "read", "path": "data/order_addresses.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom address import label_lines\n\ndef print_label(case):\n    \"\"\"The label lines for the order's address.\"\"\"\n    return {\"lines\": label_lines(case[\"address\"])}\n\n\ndef matches_courier(case, out):\n    \"\"\"The label is the one the courier's system prints.\"\"\"\n    return out[\"lines\"] == case[\"courier_label\"]\n\nlabels = Eval(\"data/order_addresses.jsonl\", runner=print_label, grader=[matches_courier], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_courier\", \"pass_rate\": 0.5682, \"finished\": true}"}

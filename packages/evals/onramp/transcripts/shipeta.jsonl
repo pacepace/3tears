@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "eta.py"}
+{"tool": "read", "path": "data/delivered.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from datetime import datetime\n\nfrom threetears.evals import Eval\n\nfrom eta import estimate, hours_between\n\ndef predict(case):\n    \"\"\"How far the estimate was from the delivery scan, in hours.\"\"\"\n    eta = estimate(datetime.fromisoformat(case[\"booked_at\"]), case[\"origin\"], case[\"destination\"])\n    return {\"miss_h\": hours_between(eta, datetime.fromisoformat(case[\"delivered_at\"]))}\n\n\ndef within_three_hours(case, out):\n    \"\"\"The shipment was delivered within three hours of its estimate, as the README promises.\"\"\"\n    return out[\"miss_h\"] <= 3.0 + 1e-9\n\nshipments = Eval(\"data/delivered.jsonl\", runner=predict, grader=[within_three_hours], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"within_three_hours\", \"pass_rate\": 0.7115, \"finished\": true}"}

@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "messages.py"}
+{"tool": "read", "path": "data/strings.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom messages import render\n\ndef show(case):\n    \"\"\"The string the app shows for the template and its values.\"\"\"\n    return {\"text\": render(case[\"template\"], case[\"values\"])}\n\n\ndef as_approved(case, out):\n    \"\"\"The string is the approved text.\"\"\"\n    return out[\"text\"] == case[\"approved\"]\n\nstrings = Eval(\"data/strings.jsonl\", runner=show, grader=[as_approved], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_approved\", \"pass_rate\": 0.7609, \"finished\": true}"}

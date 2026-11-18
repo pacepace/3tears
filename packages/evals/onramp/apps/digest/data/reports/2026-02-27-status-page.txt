@@ -1,0 +1,1 @@
+Our status page showed an outage that was not happening for 20 minutes on Friday. The status page monitor checked an endpoint that had been retired. No customers were affected, but support received about 60 questions. The monitor now checks the live health endpoint.

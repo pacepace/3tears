@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "curve.py"}
+{"tool": "read", "path": "data/registrar.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom curve import curve_file\n\ndef grade(case):\n    \"\"\"The student's letter, from their section's curve.\"\"\"\n    results = curve_file(f\"data/marks/section-{case['section']}.csv\")\n    return {\"letter\": next((r.letter for r in results if r.student == case[\"student\"]), None)}\n\n\ndef registrar_letter(case, out):\n    \"\"\"The student gets the letter the registrar holds.\"\"\"\n    return out[\"letter\"] == case[\"letter\"]\n\nstudents = Eval(\"data/registrar.jsonl\", runner=grade, grader=[registrar_letter], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"registrar_letter\", \"pass_rate\": 0.6491, \"finished\": true}"}

@@ -244,6 +244,18 @@ def _shards() -> list[Shard]:
                     {"null": null, "shards": list(block), "per": 150},
                 )
             )
+    # The on-ramp's held-out plans under its null: read at twenty-four cases, then continued once with eight more: 40
+    # shards of 150 (tags planned-onramp-<shard>-<index>).
+    for block in _blocks(40, 5):
+        shards.append(
+            Shard(
+                f"small-planned-onramp-{block.start}",
+                "small-planned-onramp",
+                "local",
+                "small-planned",
+                {"null": "onramp", "shards": list(block), "per": 150},
+            )
+        )
     for asks in ("gate", "late"):
         # A gate, and a question pointed at the leader after the read: continued from eight cases to five reads (tags
         # <asks>-<index>), and read once at sixteen cases (tags <asks>-once-<index>); 6,000 newcomers each.
@@ -347,6 +359,15 @@ def _shards() -> list[Shard]:
                 {"flow": "small-continued", "null": null, "tags": [f"continued-{null}-0-{i}" for i in range(30)]},
             )
         )
+    shards.append(
+        Shard(
+            "eq-small-planned-onramp",
+            "eq-small-planned",
+            "pool",
+            "equivalence",
+            {"flow": "small-planned", "null": "onramp", "tags": [f"planned-onramp-0-{i}" for i in range(30)]},
+        )
+    )
     # A gate's page reads its margin on every read, about five seconds a continued newcomer: 15 to a shard.
     for asks, plan, count, size in (
         ("gate", "", 210, 15),
@@ -509,6 +530,14 @@ def run_local(shard: Shard) -> dict[str, int]:
             better=sum(c.strong_better for c in came),
             worse=sum(c.strong_worse for c in came),
         )
+    if shard.job == "small-planned":
+        planned = {"start": quick.PLANNED_START, "reads": quick.PLANNED_READS, "add": quick.PLANNED_ADD}
+        came = [
+            quick.came_to(quick.small_continued(args["null"], f"planned-{args['null']}-{s}-{i}", **planned))
+            for s in args["shards"]
+            for i in range(args["per"])
+        ]
+        return _counts(len(came), sum(c.separated for c in came))
     if shard.job == "small-asks":
         plan = {"start": 16, "reads": 1} if args["plan"] == "-once" else {}
         reads = [
@@ -619,6 +648,11 @@ async def _equivalence(flow: str, null: quick.Null | None, tags: Sequence[str]) 
         elif flow == "small-continued":
             assert null is not None
             product, restated = await quick.small_continued_product(null, tag), quick.small_continued(null, tag)
+        elif flow == "small-planned":
+            assert null is not None
+            planned = {"start": quick.PLANNED_START, "reads": quick.PLANNED_READS, "add": quick.PLANNED_ADD}
+            product = await quick.small_continued_product(null, tag, **planned)
+            restated = quick.small_continued(null, tag, **planned)
         elif flow in ("small-gate", "small-late", "small-gate-once", "small-late-once"):
             asks = cast("quick.Asks", flow.removeprefix("small-").removesuffix("-once"))
             plan = {"start": 16, "reads": 1} if flow.endswith("-once") else {}
@@ -711,6 +745,19 @@ def _claims() -> list[Claim]:
                     seeds,
                 )
             )
+    claims.append(
+        Claim(
+            "small-n.planned.onramp.separates",
+            "Under the onramp null a question's primary read at twenty-four cases and, where it does not separate, "
+            "continued once with eight more (the on-ramp's held-out plans: apps as cases, three trials each), separates "
+            "at most α.",
+            "small-planned-onramp",
+            "hits",
+            "at_most",
+            alpha,
+            "planned-onramp-<shard>-<index>, shards 0-39 of 150, restated",
+        )
+    )
     for asks, said in (
         (
             "gate",
@@ -792,6 +839,7 @@ def _claims() -> list[Claim]:
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),
+        ("small-planned", "the on-ramp's planned comparison, twenty-four cases then eight more, under its null"),
         ("small-gate", "a gate continued to five reads"),
         ("small-gate-once", "a gate read once at sixteen cases"),
         ("small-late", "a question set after each read, pointed at the leader"),

@@ -23,6 +23,37 @@ HERE = Path(__file__).resolve().parent
 APPS = HERE / "apps"
 TWINS = HERE / "twins"
 
+
+class UntrackedSource(RuntimeError):
+    """An app or twin whose committed files cannot be listed: a trial is made of committed files only, so none is
+    made."""
+
+
+def tracked(directory: Path) -> list[str]:
+    """Every file under ``directory`` that git tracks, relative to it, in order: what a trial or a grading copy takes.
+    An ignored file (a ``__pycache__``, a ``.pyc``, a local log) never reaches a trial.
+
+    :raises UntrackedSource: ``git`` cannot list the directory's files (no repository, no git), or lists none.
+    """
+    done = subprocess.run(
+        ["git", "-C", str(directory), "ls-files", "-z", "--", "."], capture_output=True, text=True, check=False
+    )
+    files = sorted(name for name in done.stdout.split("\0") if name)
+    if done.returncode != 0 or not files:
+        raise UntrackedSource(f"git lists no committed file under {directory}: {done.stderr.strip() or 'none'}")
+    return files
+
+
+def copy_tracked(source: Path, dest: Path) -> list[str]:
+    """Copy every file git tracks under ``source`` to the same place under ``dest`` (made as needed, files there
+    replaced), and nothing else; the files copied, relative to ``source``."""
+    files = tracked(source)
+    for relative in files:
+        (dest / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, dest / relative)
+    return files
+
+
 #: Lines one read returns, from the line it starts at.
 READ_LINES = 200
 #: The largest file a read takes, in bytes: no more of a file than this is ever held in memory.
@@ -189,8 +220,9 @@ class Sandbox:
 
     @classmethod
     def create(cls, root: Path, app: str, build: DocsBuild, runner: Runner | None = None) -> Sandbox:
-        """A fresh copy of ``apps/<app>`` at ``root``, which must not exist yet."""
-        shutil.copytree(APPS / app, root, ignore=shutil.ignore_patterns("__pycache__"))
+        """A fresh copy of ``apps/<app>``'s committed files at ``root``, which must not exist yet."""
+        root.mkdir(parents=True)
+        copy_tracked(APPS / app, root)
         return cls(root, app, build, runner)
 
     def readable(self, path: str) -> Path | None:
@@ -333,14 +365,15 @@ class Sandbox:
         return Observation(observation.ok, observation.text, 0 if observation.ok else 1, observation.first_error)
 
     def grading_copy(self, dest: Path, *, twin: bool, overlay: list[str]) -> Path:
-        """A copy of the app as shipped (or its fixed twin), with ``overlay``'s files from the sandbox laid over it.
+        """A copy of the app as shipped (or its fixed twin), its committed files only, with ``overlay``'s files from the
+        sandbox laid over it.
 
         Files of the app itself are never overlaid, so an agent that edited the app is graded on the app.
         """
-        shutil.copytree(APPS / self.app, dest, ignore=shutil.ignore_patterns("__pycache__"))
+        dest.mkdir(parents=True)
+        shipped = set(copy_tracked(APPS / self.app, dest))
         if twin:
-            shutil.copytree(TWINS / self.app, dest, ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-        shipped = {p.relative_to(APPS / self.app).as_posix() for p in (APPS / self.app).rglob("*") if p.is_file()}
+            copy_tracked(TWINS / self.app, dest)
         for relative in overlay:
             source = self.root / relative
             if relative in shipped or not source.is_file():
@@ -361,8 +394,9 @@ class Sandbox:
         }
 
     def made(self) -> list[str]:
-        """Every file in the sandbox the app did not ship, its store and caches aside: what the agent left."""
-        shipped = {p.relative_to(APPS / self.app).as_posix() for p in (APPS / self.app).rglob("*") if p.is_file()}
+        """Every file in the sandbox the app did not ship (its committed files, :func:`tracked`, which is what a trial is
+        made of), its store and caches aside: what the agent left."""
+        shipped = set(tracked(APPS / self.app))
         return sorted(
             relative
             for path in self.root.rglob("*")

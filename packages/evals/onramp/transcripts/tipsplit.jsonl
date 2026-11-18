@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "split.py"}
+{"tool": "read", "path": "data/terminal.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom split import Bill, split\n\ndef share(case):\n    \"\"\"What each diner at the table is charged.\"\"\"\n    return {\"charged\": split(Bill.from_row(case))}\n\n\ndef as_charged(case, out):\n    \"\"\"Every diner is charged what the terminals charged.\"\"\"\n    return out[\"charged\"] == case[\"charged\"]\n\ntables = Eval(\"data/terminal.jsonl\", runner=share, grader=[as_charged], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_charged\", \"pass_rate\": 0.6591, \"finished\": true}"}

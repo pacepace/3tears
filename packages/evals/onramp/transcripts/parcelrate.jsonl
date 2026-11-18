@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "rates.py"}
+{"tool": "read", "path": "data/courier_invoice.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom rates import quote\n\n\ndef price(case):\n    \"\"\"Quote one consignment as the desk quotes it.\"\"\"\n    return {\"pence\": quote(case[\"weight_kg\"], case[\"zone\"], signed=case[\"signed\"]).pence}\n\n\ndef matches_invoice(case, out):\n    \"\"\"Our quote comes to what the courier charged for the consignment.\"\"\"\n    return out[\"pence\"] == case[\"charged_pence\"]\n\n\ninvoice = Eval(\"data/courier_invoice.jsonl\", runner=price, grader=[matches_invoice], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_invoice\", \"pass_rate\": 0.725, \"finished\": true}"}

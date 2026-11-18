@@ -1,0 +1,127 @@
+# The plan of the second held-out comparison of the on-ramp docs: held-out-1's comparison continued with eight fresh
+# held-out apps, committed before any run of it.
+#
+# `./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/held-out-2.toml --dry-run` quotes it.
+# `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/held-out-2.toml --cap 9.60` runs it, once
+# the owner approves the spend. A live run is refused while the plan or anything under packages/evals is uncommitted,
+# while any app below is a placeholder, when the command line says anything the plan does not, or when the run it
+# continues is missing, is not the one named below, or differs from this plan in any term of the comparison (the
+# builds, the tier and model, k, the primary check, the question and so the direction). run.json records this plan's
+# commit, the head commit and the run it continues.
+#
+# The owner's ruling of 2026-11-18: continue the held-out-1 comparison with 8 fresh blind apps, as a new plan.
+
+name = "held-out-2"
+# The same question as held-out-1's, word for word: it is the same comparison, and the question sets its lean.
+question = "Does the candidate docs build let a coding agent add an eval that measures the app more often, on apps nobody tuned the docs against?"
+
+# THE RUN THIS CONTINUES
+#
+# held-out-1 (plans/held-out-1.toml at 0941140d8), run 20261118T062749Z: 24 held-out apps, k=3, the cheap tier, the
+# control f9ab6f74d against the candidate 1f0ec4c68. Its result under held-out-1: no result, not promoted. The primary,
+# measures_the_app, read with apps as cases: the candidate 22 points ahead (90% interval -1 to +45), the bet's p 0.063
+# against 0.05, not separated. That result stands as held-out-1's and is not changed by this plan. This plan reads its
+# own eight apps AFTER those 24, as one comparison: the 24 as they ran, their capital carried forward. (The run and
+# its plan commit are the [continues] table below.)
+# The new held-out apps, read from held-out.jsonl after held-out-1's 24, in this declared order (the package's bet shuffles
+# each run's new cases once by their ids, fixed before any answer, and appends them). Each was written, with its twin and
+# its planted defect recorded, by a builder who never read the docs' history or any trial transcript. None is in
+# held-out-1 or the development set.
+cases = ["held-out.jsonl"]
+apps = [
+    "latefines",
+    "tipsplit",
+    "nextbus",
+    "spamscore",
+    "tripcarbon",
+    "warranty",
+    "nutrilabel",
+    "tillchange",
+]
+
+# Trials per arm on each app, as held-out-1's.
+k = 3
+
+# The run this plan's run continues, and the plan commit it recorded.
+[continues]
+run = "20261118T062749Z"
+plan_commit = "0941140d8"
+
+# The arms, as held-out-1's, by commit: the comparison's two fixed builds, whole (docs and messages).
+[[arms]]
+name = "docs@control"
+ref = "f9ab6f74d"
+
+[[arms]]
+name = "docs@candidate"
+ref = "1f0ec4c68"
+
+# The tier, as held-out-1's: the cheap one (run.json records its model, which must be held-out-1's).
+#
+# The quote (`--dry-run` of this plan, 2026-11-18), at 2 arms x 8 apps x k=3:
+#   cheap: 48 runs, each capped at $0.20; at most $9.60; expected $0.31 (the mean billed over held-out-1's 144 stored
+#   trials of this model, $0.0064 a run, at most $0.0282)
+# The cap, $0.20 a run as held-out-1's, is what holds a run; the expectation is description.
+[tiers.cheap]
+cap_usd = 9.60
+
+# The check compared, as held-out-1's. The secondaries are read with no question, as leads, never as a result.
+[check]
+primary = "measures_the_app"
+secondary = ["eval_runs", "read_right"]
+
+# THE TEST
+#
+# The package's own paired reading over apps (packages/evals/onramp/reading.py, read_continued): held-out-1's 24 apps
+# as they ran, then this plan's 8, read as ONE comparison by the package's continuation (each run into one store in
+# turn: the cases already read keep their values, only the appended ones run, and the anytime-valid bet reads one
+# committed order, its capital carried forward). The question's measure is tested alone and one-sided, leaning toward
+# the candidate, at the package's level (5%). The reading says `improved`, `regressed`, `equivalent`, `not_separated`
+# or `untested`. No other test is run on these data. The error rate of this read (24 apps read, then 8 more) is the
+# package's certified claim small-n.planned.onramp.separates (packages/evals/tests/fixtures/stats_certificate.json).
+#
+# The primary is graded as held-out-1's was: checks.measures_the_app and the regrade that feeds it are unchanged since
+# 0941140d8, and `--read <held-out-1's run> --today` grades every one of held-out-1's 144 stored trials as the run did.
+# What changed in the harness since (read_right's grading, the report's headline, the console, the quote, a stall's
+# label, and trials made of committed files only) touches no primary grade, and no message an agent sees.
+#
+# WHAT COUNTS AS A RESULT
+#
+# - The candidate is promoted on held-out apps, for the cheap tier's model, when the continued primary reads
+#   `improved`.
+# - `regressed`: the candidate build is worse on held-out apps; not promoted.
+# - `not_separated`, `equivalent` or `untested`: no result; not promoted.
+#
+# WHAT DOES NOT COUNT
+#
+# - This plan's eight apps read alone: description only. The result is the continued reading over all 32.
+# - held-out-1's result read again on its own: it was read once, and stands as it was.
+# - Any test whose unit is the trial, or that pools trials of two arms, or of two tiers.
+# - The secondary checks, the per-app tallies, errors_hit, cost or turns: description, never a result.
+# - The development set's apps, or any app added after this plan is committed for its run.
+# - A further top-up: this is the comparison's only continuation. More apps would be held-out-3, with its own
+#   pre-registration, committed before it runs.
+# - Attribution to llms.txt alone: the arms are whole builds.
+#
+# THE LEAK RULE
+#
+# An app stops being held out once any trial's transcript on it is read while writing a docs change; from then on it is
+# a development-set app. This plan's eight apps have no trial transcript yet, and no one working on the docs reads this
+# run's transcripts (steps.jsonl, record.json, the stuck lines) before its result is read. held-out-1's stuck lines and
+# its review's quotes have been read, but its two builds are fixed by commit, so no docs change can draw on them for
+# this comparison; any NEW candidate is compared on apps nobody has read so.
+#
+# SIZING
+#
+# `./scripts/onramp-agent.sh --power-continued packages/evals/onramp/runs/20261118T062749Z 8 SCALE` simulates this plan
+# through the same reading: held-out-1's 24 apps as they ran, then 8 apps drawn with replacement from those 24, each
+# drawn app's control share kept and its candidate share at the control's plus SCALE times the difference held-out-1
+# observed on it, its 3 trials per arm drawn at those shares, the two read as one comparison (200 simulated runs, seed
+# 1, on the package's reading of 2026-11-18):
+#
+#   added  scale                    separated in       95% range
+#       8  1 (the effect holds)     169 of 200         0.79 to 0.89
+#       8  1/3 (a third of it)      115 of 200         0.50 to 0.64
+#
+# The draws resample held-out-1's own apps, so the first row assumes the observed effect holds on new apps; a smaller
+# effect, or apps unlike these, reads `not_separated` more often, which is no result, not evidence of no effect.

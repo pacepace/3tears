@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "departures.py"}
+{"tool": "read", "path": "data/answers.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom departures import load_timetable, next_departures\n\nTIMETABLE = load_timetable(\"data/timetable.json\")\n\n\ndef answer(case):\n    \"\"\"The departures the planner gives for the stop and the time asked.\"\"\"\n    return {\"shown\": next_departures(TIMETABLE, case[\"stop\"], case[\"asked_at\"])}\n\n\ndef as_shown(case, out):\n    \"\"\"The departures are the ones the old planner showed.\"\"\"\n    return out[\"shown\"] == case[\"shown\"]\n\nquestions = Eval(\"data/answers.jsonl\", runner=answer, grader=[as_shown], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_shown\", \"pass_rate\": 0.6957, \"finished\": true}"}

@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "strength.py"}
+{"tool": "read", "path": "data/reviewed.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom strength import rate\n\ndef meter(case):\n    \"\"\"The band the meter shows for the password.\"\"\"\n    return {\"band\": rate(case[\"password\"], case[\"username\"]).band}\n\n\ndef team_band(case, out):\n    \"\"\"The meter shows the band the security team gave the password.\"\"\"\n    return out[\"band\"] == case[\"team_band\"]\n\nreviewed = Eval(\"data/reviewed.jsonl\", runner=meter, grader=[team_band], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"team_band\", \"pass_rate\": 0.5455, \"finished\": true}"}

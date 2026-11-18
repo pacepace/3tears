@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "slots.py"}
+{"tool": "read", "path": "data/requests.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom slots import free_slots, from_request\n\ndef find(case):\n    \"\"\"The free slots the finder offers for the request.\"\"\"\n    return {\"slots\": [slot.strftime(\"%H:%M\") for slot in free_slots(*from_request(case))]}\n\n\ndef offers_the_slots(case, out):\n    \"\"\"The finder offers exactly the slots that were offered.\"\"\"\n    return out[\"slots\"] == case[\"offered\"]\n\nrequests = Eval(\"data/requests.jsonl\", runner=find, grader=[offers_the_slots], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"offers_the_slots\", \"pass_rate\": 0.7174, \"finished\": true}"}

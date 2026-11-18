@@ -1,0 +1,1 @@
+Shipping quotes at checkout were too high for orders to Ireland on Monday. From 08:00 to 11:20 orders to Ireland were charged the rest-of-world rate, approx. £12 instead of £4.50, because a zone table update dropped the Ireland row. Customers placed 180 orders in the window. The zone table was restored at 11:20 and the difference was refunded.

@@ -666,12 +666,25 @@ _HARNESS_SAID = (
     "a read takes",
 )
 _MISSING = re.compile(r"^(?P<path>\S+): no such file$")
+#: ``ls`` of a path it cannot list: one outside the app's directory and the package (the harness's bound), or one
+#: inside them that does not exist (the agent's own wrong path), which ``ls`` words alike.
+_LS_UNLISTED = re.compile(r"^ls: (?P<path>\S+) is not in the app's directory or the installed package$")
+
+
+def _inside(path: str) -> bool:
+    """Whether ``path`` names a place inside the app's directory: relative, and never climbing out of it."""
+    parts = Path(path).parts
+    return not Path(path).is_absolute() and ".." not in parts
 
 
 def cause(step: Step, guide: str = "") -> str:
-    """What caused a failed turn, when the harness can tell it mechanically (:data:`CAUSES`): its own rules and limits,
-    or the docs for a read of a file the build's guide (``guide``, its text) names and the build does not ship."""
+    """What caused a failed turn, when the harness can tell it mechanically (:data:`CAUSES`): its own rules and limits;
+    the agent, for ``ls`` of a relative path in the app's directory that does not exist; or the docs for a read of a
+    file the build's guide (``guide``, its text) names and the build does not ship."""
     said = step.observation.first_error or step.observation.text
+    unlisted = _LS_UNLISTED.match(said)
+    if unlisted is not None and _inside(unlisted["path"]):
+        return AGENT  # a relative path that stays in the app's directory: it does not exist there
     if step.act is None or any(phrase in said for phrase in _HARNESS_SAID):
         return HARNESS
     missing = _MISSING.match(said)
