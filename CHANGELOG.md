@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### registry: a call no endpoint took answers `TOOL_RESTARTING`, a code of its own
+
+**Changed:** when every endpoint the caller may use failed to take a call (a pod restarting: no responders, the
+connection closed, the durable result waiter could not open, no acknowledgement inside the accept window) the
+registry answers `TOOL_RESTARTING` instead of `TOOL_NOT_READY`. The call never ran, so a retry is safe, as before;
+the hub serves it as 503 with `Retry-After`. Its own code lets a timed caller retry it in seconds (the hub's
+scheduled tool calls) while still waiting out `TOOL_NOT_READY`, a tool that is loading for minutes. A pending
+endpoint still answers `TOOL_NOT_READY`; a tool with nothing to route to still answers `TOOL_UNAVAILABLE`.
+**Consumers:** a caller that branched on `TOOL_NOT_READY` for this case must take `TOOL_RESTARTING` too, and the
+hub needs its face for it (`error_faces`) before this registry runs.
+
+### models: the live Claude CLI test judges each `<q>...</q>` on its own
+
+The pool test's quote reader (`packages/models/tests/live/quotes.py`, unit-tested without the CLI) reads every
+quote alone, so commentary between two empty quotes is no longer failed as a leak (release run 41441569060).
+
+### core: CPU-clock timing helpers in `threetears.core.testing.calibrate`
+
+**Added:** `cpu_seconds`, `thread_cpu_seconds`, `CpuStopwatch` and `best_cpu_seconds` (the fastest of
+`BEST_OF_RUNS` awaits, each from a collected heap, the warm-up discarded), beside the wall-clock
+`best_seconds_interleaved`: a bound on an operation's own cost is a bound on CPU, not on how busy the machine is.
+Moved from survey's `tests/support/cpu_budget.py`.
+
 ### datasources: `read_partitions` reads a batch again when a page holds more rows than it asked for
 
 A page of a part that comes back over-full (rows written between the batch's page starts and its pages) no longer
