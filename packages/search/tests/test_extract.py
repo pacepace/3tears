@@ -39,6 +39,7 @@ from threetears.search.extract import (
     extract,
 )
 
+from packages.search.tests.facet_text import facet_text
 from packages.search.tests.search_instances import PROVENANCE
 
 #: the checkout root, from which ``packages.search.tests`` imports in a fresh interpreter.
@@ -181,6 +182,7 @@ class ScriptedHeavyFetcher(HeavyFetcher):  # parity-with: threetears.search.cont
         *,
         max_bytes: int,
         timeout_seconds: float | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> TransportResponse:
         """Answer with the loaded reply.
 
@@ -190,6 +192,8 @@ class ScriptedHeavyFetcher(HeavyFetcher):  # parity-with: threetears.search.cont
         :ptype max_bytes: int
         :param timeout_seconds: ignored
         :ptype timeout_seconds: float | None
+        :param headers: ignored
+        :ptype headers: Mapping[str, str] | None
         :return: the scripted rendered document
         :rtype: TransportResponse
         """
@@ -335,7 +339,7 @@ async def test_unknown_robots_rules_are_honoured_as_deny(robots_reply: Transport
     result = await extract(_candidate(), transport=transport)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
-    assert result.facets[EXTRACTION_REASON_FACET].startswith("robots.txt could not be read (")
+    assert facet_text(result, EXTRACTION_REASON_FACET).startswith("robots.txt could not be read (")
     assert result.content is None
     assert transport.requested == [_ROBOTS_URL]
 
@@ -347,8 +351,9 @@ async def test_the_page_fetch_carries_the_cap_and_the_content_type_gate() -> Non
     await extract(_candidate(), transport=transport, max_bytes=4096)
 
     assert transport.caps[_PAGE_URL] == 4096
-    assert transport.gates[_PAGE_URL] is not None
-    assert "text/html" in transport.gates[_PAGE_URL]
+    gate = transport.gates[_PAGE_URL]
+    assert gate is not None
+    assert "text/html" in gate
 
 
 async def test_a_cap_refusal_is_recorded_as_refused_not_failed() -> None:
@@ -453,7 +458,7 @@ async def test_a_read_that_did_not_happen_says_why(
 
     result = await extract(_candidate() if locators is None else _candidate(locators=locators), transport=transport)
 
-    assert reason in result.facets[EXTRACTION_REASON_FACET]
+    assert reason in facet_text(result, EXTRACTION_REASON_FACET)
 
 
 async def test_a_candidate_with_no_locator_fails_without_fetching() -> None:

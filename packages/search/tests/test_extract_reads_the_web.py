@@ -40,6 +40,7 @@ from threetears.search.extract import (
 )
 from threetears.search.testing import RecordedFetchTransport, RecordedPage
 
+from packages.search.tests.facet_text import facet_text
 from packages.search.tests.search_instances import PROVENANCE
 
 _SITE = "https://journal.example.org"
@@ -316,7 +317,7 @@ async def test_a_page_read_under_a_reader_s_larger_cap_still_keeps_a_page_s_cap(
     result = await extract(_candidate(), transport=transport, max_bytes=1024, readers=(_reader(max_bytes=1_000_000),))
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
-    assert result.facets[EXTRACTION_REASON_FACET].endswith("past the 1 KB a page may be")
+    assert facet_text(result, EXTRACTION_REASON_FACET).endswith("past the 1 KB a page may be")
 
 
 # --- other carriers, through a reader -------------------------------------
@@ -389,7 +390,9 @@ async def test_without_a_reader_a_pdf_is_refused_at_the_gate() -> None:
     result = await extract(_candidate(), transport=transport)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
-    assert result.facets[EXTRACTION_REASON_FACET].startswith("the address is not a page or text, so it is not read")
+    assert facet_text(result, EXTRACTION_REASON_FACET).startswith(
+        "the address is not a page or text, so it is not read"
+    )
 
 
 # --- text, read as written -------------------------------------------------
@@ -480,10 +483,10 @@ async def test_a_binary_answer_is_refused_before_its_body_and_says_what_is_read(
     result = await extract(_candidate(), transport=transport)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
-    assert result.facets[EXTRACTION_REASON_FACET].startswith(
+    assert facet_text(result, EXTRACTION_REASON_FACET).startswith(
         "the address is not a page or text, so it is not read; an image, an archive, audio or video is not read"
     )
-    assert repr(declared) in result.facets[EXTRACTION_REASON_FACET]
+    assert repr(declared) in facet_text(result, EXTRACTION_REASON_FACET)
 
 
 # --- a page's source --------------------------------------------------------
@@ -855,7 +858,7 @@ async def test_a_frame_on_another_site_is_named_not_followed() -> None:
     assert result.facets[EXTRACTION_REASON_FACET] == (
         "only the page's menu was readable; the article is at https://viewer.other.net/doc/9"
     )
-    assert "another site" in result.facets[EXTRACTION_NEXT_STEP_FACET]
+    assert "another site" in facet_text(result, EXTRACTION_NEXT_STEP_FACET)
     assert transport.fetched == [_ROBOTS, _PAGE]
 
 
@@ -885,8 +888,12 @@ async def test_a_frame_robots_refuses_is_not_read() -> None:
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
-    assert result.facets[EXTRACTION_REASON_FACET].startswith("only the page's menu was readable; the article is at")
-    assert result.facets[EXTRACTION_NEXT_STEP_FACET].startswith("the site's robots.txt does not allow it to be read")
+    assert facet_text(result, EXTRACTION_REASON_FACET).startswith(
+        "only the page's menu was readable; the article is at"
+    )
+    assert facet_text(result, EXTRACTION_NEXT_STEP_FACET).startswith(
+        "the site's robots.txt does not allow it to be read"
+    )
     assert f"{frame_site}/42.pdf" not in transport.fetched
 
 
@@ -897,7 +904,7 @@ async def test_a_page_with_several_frames_does_not_guess() -> None:
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
-    assert "holds 2 frames" in result.facets[EXTRACTION_NEXT_STEP_FACET]
+    assert "holds 2 frames" in facet_text(result, EXTRACTION_NEXT_STEP_FACET)
     assert transport.fetched == [_ROBOTS, _PAGE]
 
 
@@ -926,7 +933,7 @@ async def test_a_frame_is_not_followed_once_the_time_is_spent() -> None:
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000, timeout_seconds=0.5)
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
-    assert result.facets[EXTRACTION_NEXT_STEP_FACET].startswith("no time was left to read it")
+    assert facet_text(result, EXTRACTION_NEXT_STEP_FACET).startswith("no time was left to read it")
     assert transport.fetched == [_ROBOTS, _PAGE]
 
 
@@ -935,7 +942,7 @@ async def test_a_frame_is_not_followed_once_the_page_used_the_cap() -> None:
 
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000, max_bytes=len(_MENU_WITH_FRAME))
 
-    assert result.facets[EXTRACTION_NEXT_STEP_FACET].startswith("the page used the whole size limit")
+    assert facet_text(result, EXTRACTION_NEXT_STEP_FACET).startswith("the page used the whole size limit")
 
 
 @pytest.mark.parametrize(
@@ -985,6 +992,6 @@ async def test_a_frame_address_is_carried_as_a_plain_url() -> None:
 
     result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
 
-    reason = result.facets[EXTRACTION_REASON_FACET]
+    reason = facet_text(result, EXTRACTION_REASON_FACET)
     assert " " not in reason.rsplit("the article is at ", 1)[1]
     assert "\n" not in reason

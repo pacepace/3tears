@@ -53,6 +53,7 @@ from threetears.search.contracts import (
     LocalCapExceeded,
     SearchRequest,
     SearchTransport,
+    Spend,
     StreamedResponse,
     StreamingTransport,
     TimedOut,
@@ -1082,15 +1083,17 @@ class _Network:
         self._connect = anyio.connect_tcp
         monkeypatch.setattr(anyio, "connect_tcp", self.connect_tcp)
 
-    async def connect_tcp(self, remote_host: str, remote_port: int, **kwargs: object) -> anyio.abc.SocketStream:
+    async def connect_tcp(
+        self, remote_host: str, remote_port: int, *, local_host: str | None = None
+    ) -> anyio.abc.SocketStream:
         """Connect to the loopback server ``remote_host`` stands for.
 
         :param remote_host: the host the client asked for
         :ptype remote_host: str
         :param remote_port: the port the client asked for, ignored for the route's own
         :ptype remote_port: int
-        :param kwargs: the rest of the connect call, passed through
-        :ptype kwargs: object
+        :param local_host: the local address to bind, passed through (httpcore's only other argument)
+        :ptype local_host: str | None
         :return: the connected stream
         :rtype: anyio.abc.SocketStream
         :raises ConnectionRefusedError: for a host with no route
@@ -1101,7 +1104,7 @@ class _Network:
             raise ConnectionRefusedError(f"no route to {remote_host}")
         if port == _BLACKHOLE:
             await asyncio.sleep(3600)
-        return await self._connect("127.0.0.1", port, **kwargs)
+        return await self._connect("127.0.0.1", port, local_host=local_host)
 
 
 def _resolver(
@@ -1121,7 +1124,7 @@ def _resolver(
         if asked is not None:
             asked.append(host)
         if host not in answers:
-            raise TransportFailed(f"cannot resolve host {host!r}")
+            raise TransportFailed(f"cannot resolve host {host!r}", spend=Spend())
         return answers[host]
 
     return resolve
@@ -1581,6 +1584,17 @@ async def _body(response: StreamedResponse) -> bytes:
     return b"".join([chunk async for chunk in response])
 
 
+async def _next_chunk(response: StreamedResponse) -> bytes:
+    """Read the stream's next chunk, as a coroutine a task can run.
+
+    :param response: the open stream
+    :ptype response: StreamedResponse
+    :return: the next chunk
+    :rtype: bytes
+    """
+    return await anext(aiter(response))
+
+
 def test_the_transport_satisfies_all_three_seams() -> None:
     """One machine, three protocols: a host injects the one object wherever each is asked for."""
     transport = _transport()
@@ -1856,7 +1870,7 @@ async def test_a_close_from_another_task_fails_the_read_it_interrupts() -> None:
         response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=1024)
         gate.release()
         assert await anext(aiter(response)) == b"one"
-        reader = asyncio.create_task(anext(aiter(response)))
+        reader = asyncio.create_task(_next_chunk(response))
         await asyncio.sleep(0.05)
         await response.aclose()
         with pytest.raises(TransportFailed, match="before its body ended"):
@@ -1978,7 +1992,8 @@ async def test_healthy_upstreams_leave_no_breaker_state_and_a_failing_one_keeps_
     healthy = [f"h{index}.example" for index in range(100)]
     async with LocalHttpServer((Reply(status=503, body=b""),)) as failing, LocalHttpServer() as fine:
         _Network(no_proxy_env, {_PUBLIC: _port(fine), _OTHER_PUBLIC: _port(failing)})
-        answers = {name: (_PUBLIC,) for name in healthy} | {"flaky.example": (_OTHER_PUBLIC,)}
+        answers: dict[str, tuple[str, ...]] = {name: (_PUBLIC,) for name in healthy}
+        answers["flaky.example"] = (_OTHER_PUBLIC,)
         transport = _guarded(_resolver(answers), breaker_failure_threshold=2)
         assert (await transport.request("GET", "http://flaky.example/x")).status_code == 503
         for name in healthy:

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import JsonValue
 
 from threetears.search.contracts import (
     FACET_HEIGHT,
@@ -321,7 +322,7 @@ def test_an_unreadable_time_bound_is_unsatisfied_rather_than_silently_ignored() 
 
 
 @pytest.mark.parametrize("bad", [True, -1, 0, 10.0, "10"], ids=["bool", "negative", "zero", "float", "string"])
-def test_an_unusable_max_results_culls_nothing_and_says_so(bad: object) -> None:
+def test_an_unusable_max_results_culls_nothing_and_says_so(bad: JsonValue) -> None:
     """`bool` is an int subclass and a negative slices from the end."""
     corpus = Corpus(entries=(_entry("https://a"), _entry("https://b"), _entry("https://c")))
 
