@@ -893,7 +893,7 @@ def _claims() -> list[Claim]:
                     " separates at most α."
                     if shown == "at_most"
                     else f" separates more often than the uninterrupted watcher can ({engine.UNINTERRUPTED_LOOKS:.0%}, "
-                    "engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it, though not shown past α."
+                    "engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it."
                 ),
                 group,
                 "hits",

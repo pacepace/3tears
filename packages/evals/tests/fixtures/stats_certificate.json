@@ -1,6 +1,6 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "7c059a52e1308cc5935f7471d11a8e716cce0e431b5509a8c390cb8a9b1ec564",
+ "digest": "277b4dfeaf31541a0d493b6573dd35a572bed2fc68f7b97d9f607f857bb79954",
  "entry_points": [
   "packages/evals/tests/null_newcomers.py",
   "packages/evals/tests/engine_take_up.py",
@@ -469,7 +469,7 @@
   "packages/evals/src/threetears/evals/testing/store_conformance.py": "25a1c3fa992892cfc773985b6dd7d7d8e3de9a8079196f5b89668f2261086159",
   "packages/evals/src/threetears/evals/transports/__init__.py": "c37f4ff40275c5cc6181133736bd814fa5b4a043430ced5da58044014c9377dc",
   "packages/evals/src/threetears/evals/transports/fastmcp/__init__.py": "314be38cca6408903c49ecb78b76e61917d6c7a0017eb7385da386b43b297f53",
-  "packages/evals/tests/engine_take_up.py": "4a6a2521241763fda2e95da81c60a45b875ff13f062ab0e446cc50614e607e8b",
+  "packages/evals/tests/engine_take_up.py": "6c0abe448924aa5b3def5379a92944d542e55b3d4c23a9bc2d22d94dbe2e2d1d",
   "packages/evals/tests/fixtures/toyhost/__init__.py": "a3741131d46126219d446654834a302fd0af6d6dc558f2d69c8ece6cc694a86c",
   "packages/evals/tests/fixtures/toyhost/contract.py": "0ddb092f4ba3705068a7002e71b06fe80104073c64a5d314e25a7fc3e53d482d",
   "packages/evals/tests/fixtures/toyhost/host.py": "2fe04c85fce83d62dc3d6921ccdc613602bc3f8dba6cafed5823345715dcfbf3",
@@ -483,11 +483,11 @@
   "packages/evals/tests/null_newcomers.py": "3ed80dd4782f8a1fe5d53aa398f8d2bbce19f1349a29644eb6fdf3ab8e1a54c5",
   "packages/evals/tests/off_loop.py": "f14aa1407cc8a8c4f1d0314b3c3ebe897ca2f78eaa50d463e3dfcc7999dfc20c",
   "packages/evals/tests/simulation_support.py": "5c0fd59556836300f75e044b2d33f54b7e81536f61cc0d2a6309e00c87449af4",
-  "packages/evals/tests/stats_certificate.py": "ba5330e5cbf6816ba397df75e1b3ab69be205d86d537bd4e2260ce7694d2e3f2",
+  "packages/evals/tests/stats_certificate.py": "50bf81abf44e93d442e38b6fc87993adb4f38bb2f69af5eb94a9046ddb1df72e",
   "packages/evals/tests/test_certified_simulations.py": "0d60e95ede467df82a24819afdcd447131a2f522e2f1b92785156325d87060ca"
  },
- "pool_request": "4f857ff5e7d64860906b1cd66b026914",
- "wall_s": 370,
+ "pool_request": "1c5a4fe6497f43f6b6b69a892959bd47",
+ "wall_s": 641,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -1034,13 +1034,13 @@
    "says": "Watchers whose arms are b-slower-4x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 21,
+   "count": 23,
    "replicates": 1000,
    "bounds": [
-    0.01304519229038709,
-    0.03192233518041715
+    0.014634582325176736,
+    0.03431233761285396
    ],
-   "figure": 0.021,
+   "figure": 0.023,
    "holds": true,
    "seeds": "cut-b-slower-4x-<index>, 0-999, through the product"
   },
@@ -1049,13 +1049,13 @@
    "says": "Watchers whose arms are b-slower-20x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 36,
+   "count": 34,
    "replicates": 1000,
    "bounds": [
-    0.025338914929837746,
-    0.04949291171801301
+    0.02365864810759795,
+    0.04718943861570718
    ],
-   "figure": 0.036,
+   "figure": 0.034,
    "holds": true,
    "seeds": "cut-b-slower-20x-<index>, 0-999, through the product"
   },
@@ -1360,6 +1360,21 @@
    "seeds": "engine-null-3-60-0.25-<index>, 0-9999, restated over the product's p"
   },
   {
+   "id": "engine.null.3.60.0.25.baseline",
+   "says": "The same reading is the uninterrupted engine watcher's over its plan (looks at 20, 40 and 60 coin pairs): it separates at most 3%, the line a comparison whose interrupts cut is shown to lean past.",
+   "test": "at_most",
+   "target": 0.03,
+   "count": 219,
+   "replicates": 10000,
+   "bounds": [
+    0.019121355640043802,
+    0.024961694133894208
+   ],
+   "figure": 0.024961694133894208,
+   "holds": true,
+   "seeds": "engine-null-3-60-0.25-<index>, 0-9999, restated over the product's p"
+  },
+  {
    "id": "engine.null.3.60.0.5",
    "says": "Under the null, 60 pass/fail pairs (never tied: each arm alone right 50% of the time) read over 3 looks, each at \u03b1/3, stopping at the first by the engine's bounded test, the fixed-n plug-in bet tuned to the level read, separate at most \u03b1.",
    "test": "at_most",
@@ -1424,10 +1439,10 @@
    "says": "An engine comparison (fixed, alike-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1439,13 +1454,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 26,
-   "replicates": 800,
+   "count": 71,
+   "replicates": 2400,
    "bounds": [
-    0.021337717816597226,
-    0.04725904731245861
+    0.023175543563431766,
+    0.03717042045488267
    ],
-   "figure": 0.04725904731245861,
+   "figure": 0.03717042045488267,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-check-drain-<index>, through the engine"
   },
@@ -1454,10 +1469,10 @@
    "says": "An engine comparison (fixed, alike-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1469,13 +1484,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 26,
-   "replicates": 800,
+   "count": 76,
+   "replicates": 2400,
    "bounds": [
-    0.021337717816597226,
-    0.04725904731245861
+    0.025029146059929425,
+    0.03947682864390417
    ],
-   "figure": 0.04725904731245861,
+   "figure": 0.03947682864390417,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -1484,13 +1499,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 25,
-   "replicates": 800,
+   "count": 76,
+   "replicates": 2400,
    "bounds": [
-    0.02032335607795921,
-    0.04578707114551711
+    0.025029146059929425,
+    0.03947682864390417
    ],
-   "figure": 0.04578707114551711,
+   "figure": 0.03947682864390417,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine"
   },
@@ -1499,10 +1514,10 @@
    "says": "An engine comparison (fixed, b-slower-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1514,13 +1529,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 24,
-   "replicates": 800,
+   "count": 66,
+   "replicates": 2400,
    "bounds": [
-    0.01931416441226077,
-    0.04431019198630476
+    0.021330900946960017,
+    0.034855225720796745
    ],
-   "figure": 0.04431019198630476,
+   "figure": 0.034855225720796745,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -1529,10 +1544,10 @@
    "says": "An engine comparison (fixed, b-slower-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1544,14 +1559,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 32,
-   "replicates": 800,
+   "count": 81,
+   "replicates": 2400,
    "bounds": [
-    0.027518044266912255,
-    0.056001190266175505
+    0.026890861922582936,
+    0.04177527009847043
    ],
-   "figure": 0.056001190266175505,
-   "holds": false,
+   "figure": 0.04177527009847043,
+   "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-drain-<index>, through the engine"
   },
   {
@@ -1559,14 +1574,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 30,
-   "replicates": 800,
+   "count": 77,
+   "replicates": 2400,
    "bounds": [
-    0.02544149541702944,
-    0.05310285152730826
+    0.025400864806041513,
+    0.03993713037942309
    ],
-   "figure": 0.05310285152730826,
-   "holds": false,
+   "figure": 0.03993713037942309,
+   "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine"
   },
   {
@@ -1574,10 +1589,10 @@
    "says": "An engine comparison (fixed, b-slower-4x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1589,14 +1604,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 29,
-   "replicates": 800,
+   "count": 75,
+   "replicates": 2400,
    "bounds": [
-    0.024409078930750977,
-    0.051648075565138896
+    0.024657751441259854,
+    0.03901620862903671
    ],
-   "figure": 0.051648075565138896,
-   "holds": false,
+   "figure": 0.03901620862903671,
+   "holds": true,
    "seeds": "engine-fixed-b-slower-4x-check-drain-<index>, through the engine"
   },
   {
@@ -1604,10 +1619,10 @@
    "says": "An engine comparison (fixed, b-slower-4x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 800,
-   "replicates": 800,
+   "count": 2400,
+   "replicates": 2400,
    "bounds": [
-    0.9953995154792554,
+    0.9984641475245362,
     1.0
    ],
    "figure": 1.0,
@@ -1619,14 +1634,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 30,
-   "replicates": 800,
+   "count": 65,
+   "replicates": 2400,
    "bounds": [
-    0.02544149541702944,
-    0.05310285152730826
+    0.020963133106270057,
+    0.03439104973311519
    ],
-   "figure": 0.05310285152730826,
-   "holds": false,
+   "figure": 0.03439104973311519,
+   "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-drain-<index>, through the engine"
   },
   {
@@ -1634,13 +1649,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 19,
-   "replicates": 800,
+   "count": 88,
+   "replicates": 2400,
    "bounds": [
-    0.014358214544197882,
-    0.03684092736807326
+    0.02950954732915756,
+    0.04498101160346196
    ],
-   "figure": 0.03684092736807326,
+   "figure": 0.04498101160346196,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -1649,10 +1664,10 @@
    "says": "An engine comparison (looks, alike-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1664,14 +1679,14 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 17,
-   "replicates": 500,
+   "count": 40,
+   "replicates": 1500,
    "bounds": [
-    0.019928600046205572,
-    0.05388035073607661
+    0.019117869613302516,
+    0.03613674069767653
    ],
-   "figure": 0.05388035073607661,
-   "holds": false,
+   "figure": 0.03613674069767653,
+   "holds": true,
    "seeds": "engine-looks-alike-20x-check-drain-<index>, through the engine"
   },
   {
@@ -1679,10 +1694,10 @@
    "says": "An engine comparison (looks, alike-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1694,13 +1709,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 14,
-   "replicates": 500,
+   "count": 34,
+   "replicates": 1500,
    "bounds": [
-    0.015390600673838864,
-    0.04653332699148355
+    0.01574719303712821,
+    0.03153139214328765
    ],
-   "figure": 0.04653332699148355,
+   "figure": 0.03153139214328765,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -1709,29 +1724,29 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 14,
-   "replicates": 500,
+   "count": 41,
+   "replicates": 1500,
    "bounds": [
-    0.015390600673838864,
-    0.04653332699148355
+    0.01968469398469551,
+    0.036899430541827705
    ],
-   "figure": 0.04653332699148355,
+   "figure": 0.036899430541827705,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine"
   },
   {
    "id": "engine.cut.looks.b-slower-20x.check.separates",
-   "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than \u03b1: the cells the cuts draw afresh lean it past \u03b1.",
+   "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it, though not shown past \u03b1.",
    "test": "above",
-   "target": 0.05,
-   "count": 29,
-   "replicates": 500,
+   "target": 0.03,
+   "count": 98,
+   "replicates": 1500,
    "bounds": [
-    0.03918386879718837,
-    0.08223822089383676
+    0.05335567221310032,
+    0.07904511450039414
    ],
-   "figure": 0.03918386879718837,
-   "holds": false,
+   "figure": 0.05335567221310032,
+   "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine"
   },
   {
@@ -1739,10 +1754,10 @@
    "says": "An engine comparison (looks, b-slower-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1754,28 +1769,28 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 14,
-   "replicates": 500,
+   "count": 33,
+   "replicates": 1500,
    "bounds": [
-    0.015390600673838864,
-    0.04653332699148355
+    0.015191023102596905,
+    0.030758435242559556
    ],
-   "figure": 0.04653332699148355,
+   "figure": 0.030758435242559556,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-drain-<index>, through the engine"
   },
   {
    "id": "engine.cut.looks.b-slower-20x.grade.separates",
-   "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than \u03b1: the cells the cuts draw afresh lean it past \u03b1.",
+   "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it, though not shown past \u03b1.",
    "test": "above",
-   "target": 0.05,
-   "count": 36,
-   "replicates": 500,
+   "target": 0.03,
+   "count": 120,
+   "replicates": 1500,
    "bounds": [
-    0.0509343331251326,
-    0.0982874373368548
+    0.06677043503782684,
+    0.09490023350365145
    ],
-   "figure": 0.0509343331251326,
+   "figure": 0.06677043503782684,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine"
   },
@@ -1784,10 +1799,10 @@
    "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1799,14 +1814,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 17,
-   "replicates": 500,
+   "count": 41,
+   "replicates": 1500,
    "bounds": [
-    0.019928600046205572,
-    0.05388035073607661
+    0.01968469398469551,
+    0.036899430541827705
    ],
-   "figure": 0.05388035073607661,
-   "holds": false,
+   "figure": 0.036899430541827705,
+   "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-drain-<index>, through the engine"
   },
   {
@@ -1814,13 +1829,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 8,
-   "replicates": 500,
+   "count": 47,
+   "replicates": 1500,
    "bounds": [
-    0.006932321202483662,
-    0.031282001689853234
+    0.023111501734855544,
+    0.04145052352390416
    ],
-   "figure": 0.031282001689853234,
+   "figure": 0.04145052352390416,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -1829,10 +1844,10 @@
    "says": "An engine comparison (looks, b-slower-4x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1844,13 +1859,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 11,
-   "replicates": 500,
+   "count": 47,
+   "replicates": 1500,
    "bounds": [
-    0.011032276361257153,
-    0.03902255084480727
+    0.023111501734855544,
+    0.04145052352390416
    ],
-   "figure": 0.03902255084480727,
+   "figure": 0.04145052352390416,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -1859,10 +1874,10 @@
    "says": "An engine comparison (looks, b-slower-4x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, its family read as the product builds it. Each comparison held exactly, at the simulation's full size.",
    "test": "every",
    "target": 1.0,
-   "count": 500,
-   "replicates": 500,
+   "count": 1500,
+   "replicates": 1500,
    "bounds": [
-    0.9926493899480924,
+    0.9975437685158017,
     1.0
    ],
    "figure": 1.0,
@@ -1874,14 +1889,14 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 18,
-   "replicates": 500,
+   "count": 32,
+   "replicates": 1500,
    "bounds": [
-    0.021472856586093512,
-    0.056300176201791896
+    0.014636644287193499,
+    0.02998375942601822
    ],
-   "figure": 0.056300176201791896,
-   "holds": false,
+   "figure": 0.02998375942601822,
+   "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-drain-<index>, through the engine"
   },
   {
@@ -1889,13 +1904,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 8,
-   "replicates": 500,
+   "count": 36,
+   "replicates": 1500,
    "bounds": [
-    0.006932321202483662,
-    0.031282001689853234
+    0.016864603823180127,
+    0.03307243190970549
    ],
-   "figure": 0.031282001689853234,
+   "figure": 0.03307243190970549,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine"
   }
