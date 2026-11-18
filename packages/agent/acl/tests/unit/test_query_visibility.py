@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
@@ -380,9 +380,17 @@ class _Tables:
                             for key in ("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id")
                         },
                         "namespace_customer_id": self.namespaces.get(namespace) if namespace is not None else None,
+                        # the bound namespace's own type, and the role each grant binds (a reader on every type unless
+                        # the grant names its own): the set counts a grant only through a role acting where it needs
+                        "namespace_type": "customer" if namespace in self.namespaces else None,
+                        "role_permissions": grant.get("role_permissions", _READER) if grant else None,
                     }
                 )
         return rows
+
+
+#: the role a double's grant binds unless it names its own: a reader on every type
+_READER: Final = {"*": ["read"]}
 
 
 def _grant(group: UUID, scope_type: str, **values: Any) -> dict[str, Any]:

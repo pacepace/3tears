@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-acl: `visible_customers` counts a grant only through a role that acts where its scope needs one
+
+**Fixed (security):** `threetears.agent.acl.visible_customers` read every grant without the role it binds: `is_all`
+came from `scope_type='all'` alone, and its `type_customer` and `namespace` grants had no role check. Any assignment
+at scope `all` -- a one-action system role, or a role with no action at all -- made every listing paging through it
+(the hub's group, membership and knowledge listings) fleet-wide: the leak #1276 closed in
+`caller_visible_customer_clause`, open still in this independent reading of the same set. The walk now reads each
+grant's role by its key (`roles` joined on `role_id`, and the bound namespace's `namespace_type`) and decides by the
+evaluator's own rule: a fleet-wide grant counts when its role acts on the listed type, a `type_customer` grant on the
+type when its role acts on it, a namespace grant when its role acts on that namespace's own type (a customer admin's
+grant on the customer namespace still opens that customer). `namespace_type=None`: a fleet-wide grant counts when its
+role grants any action at all, a `type_customer` grant when its role acts on the grant's own type. **Added:**
+`threetears.agent.acl.types.permissions_act_on` (`Role.actions_for`'s rule, which it and the method share,
+non-empty; any action anywhere for no type) and `decode_role_permissions` (how `RoleCollection` and `visible_customers`
+read a stored `permissions`; a double-encoded value decodes with or without the JSONB codec, as the SQL clause reads
+it). Held equal to the per-row clause over every scope and role shape on a real database
+(`test_query_visibility_roles.py`). A fixture seeding roles with no action (`'[]'`, `'{}'`) now sees nothing through
+them, as production does: the acl suites' fixtures seed a reader (`{"*": ["read"]}`).
+
 ### core: a pool's workers name themselves (`process_name=`, `name_process`)
 
 **Added:** `ProcessWorkers(..., process_name=)` and `SharedArrowPool(..., process_name=)`: each worker names itself so

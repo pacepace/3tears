@@ -92,7 +92,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         )
         await connection.executemany(
             "INSERT INTO roles (role_id, customer_id, name, description, permissions)"
-            " VALUES ($1, NULL, $2, 'r', '[]'::jsonb)",
+            " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
             [(role, f"r{n}") for n, role in enumerate(_ROLES)],
         )
         await connection.executemany(

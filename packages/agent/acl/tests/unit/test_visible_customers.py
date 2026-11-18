@@ -16,12 +16,16 @@ from uuid import UUID, uuid4
 from threetears.core.keyed import Sort
 
 from threetears.agent.acl import VisibleCustomers, visible_customers, visible_rows
+from threetears.agent.acl.types import decode_role_permissions, permissions_act_on
 
 _ORDER = (Sort("date_created", cast="timestamptz"), Sort("id", cast="uuid"))
 
 
 #: the one group the double's caller is a member of
 _GROUP = UUID(int=99)
+
+#: the role the double's grants bind
+_ROLE = UUID(int=98)
 
 
 class _Conn:
@@ -32,7 +36,8 @@ class _Conn:
         """record what the reads answer.
 
         :param grants: what the group's grants cover: ``is_all``, and ``customer_ids`` (each a ``type_customer``
-            grant on the ``knowledge`` type)
+            grant on the ``knowledge`` type), each through a role reading ``knowledge``; ``role`` the permissions of
+            the role every grant binds instead
         :ptype grants: dict[str, Any]
         :param pages: each page read's rows, in turn
         :ptype pages: list[list[dict[str, Any]]]
@@ -43,12 +48,16 @@ class _Conn:
         self.page_reads: list[tuple[str, tuple[Any, ...]]] = []
 
     def _grant_rows(self) -> list[dict[str, Any]]:
+        role = self.grants.get("role", {"knowledge": ["knowledge.read"]})
         rows = [
             {
                 "scope_type": "type_customer",
                 "scope_customer_id": customer,
                 "scope_namespace_type": "knowledge",
                 "scope_namespace_id": None,
+                "role_id": _ROLE,
+                "role_permissions": role,
+                "namespace_type": None,
             }
             for customer in self.grants["customer_ids"]
         ]
@@ -59,6 +68,9 @@ class _Conn:
                     "scope_customer_id": None,
                     "scope_namespace_type": None,
                     "scope_namespace_id": None,
+                    "role_id": _ROLE,
+                    "role_permissions": role,
+                    "namespace_type": None,
                 }
             )
         return rows
@@ -144,7 +156,7 @@ async def test_the_set_is_read_once_for_the_namespace_type() -> None:
 
     assert visible == VisibleCustomers(is_all=False, customer_ids=(second, first))
     ((sql, params),) = conn.grant_reads
-    assert '"group_members"' in sql and '"role_assignments"' in sql and caller in params
+    assert '"group_members"' in sql and '"role_assignments"' in sql and '"roles"' in sql and caller in params
     # the caller's own memberships, by the code's literal (Const), not a bound text
     assert "t.\"member_type\" = 'user'" in sql and "user" not in params, (sql, params)
 
@@ -201,3 +213,37 @@ async def test_a_set_of_customers_admits_platform_rows_and_pages_to_a_short_page
     assert len(second_params) == 3, "the second page binds the last row's two sort values and the customers"
     assert second_params[-1] == [customer]
     assert "ANY($3::uuid[])" in second_sql
+
+
+async def test_a_grant_through_a_role_acting_nowhere_on_the_type_covers_nothing() -> None:
+    """Flips if the set counts a grant whose role grants no action on the listed type: a fleet-wide grant of a narrow
+    system role, or of a role with no action at all, made every admin listing fleet-wide (3tears #1276's leak)."""
+    roles: list[dict[str, Any]] = [{"system": ["group.read"]}, {}, {"knowledge": []}, {"knowledge": "read"}]
+    for role in roles:
+        conn = _Conn({"is_all": True, "customer_ids": [uuid4()], "role": role}, [])
+        visible = await visible_customers(conn, user_id=uuid4(), namespace_type="knowledge")
+        assert visible == VisibleCustomers(is_all=False, customer_ids=()), role
+
+
+async def test_a_wildcard_role_or_one_double_encoded_counts_as_the_evaluator_reads_it() -> None:
+    customer = uuid4()
+    stored: list[Any] = [{"*": ["read"]}, '{"knowledge": ["knowledge.read"]}', '"{\\"knowledge\\": [\\"read\\"]}"']
+    for role in stored:
+        conn = _Conn({"is_all": True, "customer_ids": [customer], "role": role}, [])
+        visible = await visible_customers(conn, user_id=uuid4(), namespace_type="knowledge")
+        assert visible == VisibleCustomers(is_all=True, customer_ids=(customer,)), role
+
+
+def test_the_role_rule_is_the_evaluators() -> None:
+    """``permissions_act_on`` is :meth:`Role.actions_for` non-empty; for no one type, any action anywhere."""
+    reader = decode_role_permissions({"knowledge": ["read"], "tool": [], "skill": "x"})
+    assert reader == {"knowledge": frozenset({"read"}), "tool": frozenset()}
+    assert permissions_act_on(reader, "knowledge")
+    assert not permissions_act_on(reader, "tool")
+    assert not permissions_act_on(reader, "skill")
+    assert permissions_act_on(reader, None)
+    assert permissions_act_on(decode_role_permissions({"*": ["read"]}), "anything")
+    assert not permissions_act_on(decode_role_permissions({}), None)
+    assert not permissions_act_on(decode_role_permissions({"tool": []}), None)
+    assert decode_role_permissions('"{\\"knowledge\\": [\\"read\\"]}"') == {"knowledge": frozenset({"read"})}
+    assert decode_role_permissions(None) == {}

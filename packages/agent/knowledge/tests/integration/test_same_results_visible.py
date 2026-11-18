@@ -92,7 +92,7 @@ async def _grant(conn: asyncpg.Connection, scope: str, **values: Any) -> None:
         f"g{group}",
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '[]'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
         role,
         f"r{role}",
     )

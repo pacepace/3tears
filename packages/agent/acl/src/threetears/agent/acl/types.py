@@ -27,10 +27,11 @@ vocabulary:
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final
+from typing import Any, Final
 from typing import Mapping
 from uuid import UUID
 
@@ -50,6 +51,8 @@ __all__ = [
     "ScopeType",
     "Trail",
     "WILDCARD_RESOURCE_TYPE",
+    "decode_role_permissions",
+    "permissions_act_on",
 ]
 
 
@@ -59,6 +62,72 @@ __all__ = [
 #: fall back to the wildcard bucket whenever no type-specific bucket
 #: matches.
 WILDCARD_RESOURCE_TYPE = "*"
+
+
+def decode_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
+    """a role's stored ``permissions`` as ``{resource_type: frozenset(actions)}``: how every reader of a role row reads
+    it (:class:`threetears.agent.acl.RoleCollection`, :func:`threetears.agent.acl.visible_customers`).
+
+    asyncpg answers a JSONB column as a parsed ``dict`` (the JSONB codec registered) or as its raw ``str``, and a
+    double-encoded write stores the object as a JSON string, which decodes to a ``str`` holding it: each lands here.
+    A bucket that is not a list is no bucket.
+
+    :param raw: the column's value as the driver answers it
+    :ptype raw: Any
+    :return: the permissions
+    :rtype: dict[str, frozenset[str]]
+    """
+    parsed: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str) and raw:
+        loaded = json.loads(raw)
+        if isinstance(loaded, str) and loaded:
+            loaded = json.loads(loaded)
+        if isinstance(loaded, dict):
+            parsed = loaded
+    result: dict[str, frozenset[str]] = {}
+    for resource_type, actions in parsed.items():
+        if isinstance(actions, list):
+            result[resource_type] = frozenset(str(a) for a in actions)
+    return result
+
+
+def _granted_actions(permissions: Mapping[str, frozenset[str]], resource_type: str) -> frozenset[str]:
+    """the actions ``permissions`` grant on ``resource_type``: its own bucket and the :data:`WILDCARD_RESOURCE_TYPE`
+    bucket, unioned (:meth:`Role.actions_for`, the one rule).
+
+    :param permissions: a role's permissions
+    :ptype permissions: Mapping[str, frozenset[str]]
+    :param resource_type: the namespace type
+    :ptype resource_type: str
+    :return: the actions, possibly none
+    :rtype: frozenset[str]
+    """
+    type_specific = permissions.get(resource_type, frozenset())
+    wildcard = permissions.get(WILDCARD_RESOURCE_TYPE, frozenset())
+    return frozenset(type_specific | wildcard)
+
+
+def permissions_act_on(permissions: Mapping[str, frozenset[str]], namespace_type: str | None) -> bool:
+    """whether a role with ``permissions`` grants any action on ``namespace_type`` (:func:`_granted_actions`); for
+    None ("any type", a listing that names none), whether it grants any action on any type.
+
+    WHY None asks for one action anywhere: a grant reaches a type only through a role that acts on it, and a listing of
+    no type names none to check, so the weakest grant that is still a grant is the bar: a role with no action at all
+    (``{}``, or empty buckets) is no grant on any type, and opens nothing, as the evaluator authorizes nothing through
+    it; a role acting somewhere may be what the listing shows.
+
+    :param permissions: a role's permissions
+    :ptype permissions: Mapping[str, frozenset[str]]
+    :param namespace_type: the type, or None for any
+    :ptype namespace_type: str | None
+    :return: whether it acts there
+    :rtype: bool
+    """
+    if namespace_type is None:
+        return any(permissions.values())
+    return bool(_granted_actions(permissions, namespace_type))
 
 
 class ActorType(StrEnum):
@@ -382,10 +451,7 @@ class Role:
         :return: action set for the resource type (possibly empty)
         :rtype: frozenset[str]
         """
-        type_specific = self.permissions.get(resource_type, frozenset())
-        wildcard = self.permissions.get(WILDCARD_RESOURCE_TYPE, frozenset())
-        result = type_specific | wildcard
-        return result
+        return _granted_actions(self.permissions, resource_type)
 
 
 @dataclass(frozen=True)

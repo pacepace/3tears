@@ -353,3 +353,86 @@ async def test_a_grant_on_any_namespace_of_a_customer_is_membership_in_it(pg_poo
 
     assert sees == {customer_a}
     assert customer_set == (False, {customer_a})
+
+
+#: every scope a grant takes here, as ``_holder``'s keywords given the customer and its namespaces: each is read the
+#: same way by the per-row clause and by :func:`visible_customers`
+_SCOPES: dict[str, Any] = {
+    "fleet-wide": lambda customer, namespaces: {"scope_type": "all"},
+    "per-type, the listed type": lambda customer, namespaces: {
+        "scope_type": "type_customer",
+        "scope_customer_id": customer,
+        "scope_namespace_type": _LISTED,
+    },
+    "per-type, another type": lambda customer, namespaces: {
+        "scope_type": "type_customer",
+        "scope_customer_id": customer,
+        "scope_namespace_type": "datasource",
+    },
+    "the customer namespace": lambda customer, namespaces: {
+        "scope_type": "namespace",
+        "scope_namespace_id": namespaces["customer"],
+    },
+    "a datasource namespace": lambda customer, namespaces: {
+        "scope_type": "namespace",
+        "scope_namespace_id": namespaces["datasource"],
+    },
+}
+
+#: the roles a grant binds, as permissions: what each grants is the evaluator's to say, never asserted by hand
+_ROLES: dict[str, tuple[Any, bool]] = {
+    **_PERMISSION_SHAPES,
+    "a customer admin": ({"customer": ["customer.read", "customer.admin"]}, False),
+    "a datasource reader": ({"datasource": ["datasource.read"]}, False),
+    "a narrow system role": ({"system": ["group.read"]}, False),
+}
+
+
+@pytest.mark.parametrize("scope", list(_SCOPES))
+@pytest.mark.parametrize("role", list(_ROLES))
+async def test_the_customer_set_a_listing_pages_within_is_the_set_the_clause_admits(
+    pg_pool: asyncpg.Pool, scope: str, role: str
+) -> None:
+    """Flips if :func:`visible_customers` and :func:`caller_visible_customer_clause` admit different customers for
+    one grant: every scope a grant takes, through every role shape. Both read the role a grant binds; they are two
+    spellings (Python over the grant rows, SQL per row) of :meth:`Role.actions_for`'s one rule, held equal here."""
+    permissions, double_encoded = _ROLES[role]
+    customer_a, customer_b = uuid.uuid4(), uuid.uuid4()
+    async with pg_pool.acquire() as conn:
+        await _things(conn, customer_a, customer_b)
+        namespaces = {kind: await _namespace(conn, customer_a, kind) for kind in ("customer", "datasource")}
+        role_id = await _role(conn, permissions, double_encoded=double_encoded)
+        holder = await _holder(conn, role_id, **_SCOPES[scope](customer_a, namespaces))
+        clause_sees = await _visible(conn, holder)
+        is_all, customers = await _customer_set(conn, holder)
+
+    set_sees = {customer_a, customer_b} if is_all else customers & {customer_a, customer_b}
+    assert set_sees == clause_sees, (scope, role, is_all, customers, clause_sees)
+
+
+async def _any_type_set(conn: asyncpg.Connection, user_id: uuid.UUID) -> tuple[bool, set[uuid.UUID]]:
+    seen = await visible_customers(conn, user_id=user_id, namespace_type=None)
+    return seen.is_all, set(seen.customer_ids)
+
+
+async def test_a_listing_of_no_one_type_counts_a_grant_only_through_a_role_acting_somewhere(
+    pg_pool: asyncpg.Pool,
+) -> None:
+    """``namespace_type=None``: a fleet-wide grant through a role with no action at all (``{}``, or only empty
+    buckets) is no grant; through a role acting on any type it is every customer. A per-type grant counts through a
+    role acting on the grant's own type alone."""
+    customer_a = uuid.uuid4()
+    async with pg_pool.acquire() as conn:
+        empty = await _holder(conn, await _role(conn, {}), scope_type="all")
+        hollow = await _holder(conn, await _role(conn, {_LISTED: [], "*": []}), scope_type="all")
+        narrow = await _holder(conn, await _role(conn, {"system": ["group.read"]}), scope_type="all")
+        reader = await _role(conn, {"datasource": ["datasource.read"]})
+        typed_here = await _holder(
+            conn, reader, scope_type="type_customer", scope_customer_id=customer_a, scope_namespace_type="datasource"
+        )
+        typed_elsewhere = await _holder(
+            conn, reader, scope_type="type_customer", scope_customer_id=customer_a, scope_namespace_type=_LISTED
+        )
+        sets = [await _any_type_set(conn, user) for user in (empty, hollow, narrow, typed_here, typed_elsewhere)]
+
+    assert sets == [(False, set()), (False, set()), (True, set()), (False, {customer_a}), (False, set())]

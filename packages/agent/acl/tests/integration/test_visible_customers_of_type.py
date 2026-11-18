@@ -73,7 +73,7 @@ async def _grant(conn: asyncpg.Connection, user: uuid.UUID, scope: str, **values
         f"g{group}",
     )
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '[]'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
         role,
         f"r{role}",
     )
@@ -174,7 +174,7 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
     )
     await conn.execute(
         "INSERT INTO roles (role_id, customer_id, name, description, permissions)"
-        " VALUES (gen_random_uuid(), NULL, 'r', 'r', '[]'::jsonb)"
+        " VALUES (gen_random_uuid(), NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)"
     )
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type)"
@@ -244,7 +244,7 @@ async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:
     of the customer's, type_customer on another type, type_customer on the type again), group 21 also ``all``."""
     role = uuid.uuid4()
     await conn.execute(
-        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, 'r', 'r', '[]'::jsonb)",
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)",
         role,
     )
     groups = [uuid.uuid4() for _ in range(_GROUPS)]
