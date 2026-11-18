@@ -17,7 +17,6 @@ from threetears.nats import (
     KvBucketOpener,
     KvPublisher,
     NatsClient,
-    PayloadBounded,
     Publisher,
     PullSubscriber,
     RawReplier,
@@ -37,7 +36,6 @@ _CAPABILITIES: list[type[Any]] = [
     JetStreamPublisher,
     KvBucketOpener,
     KvPublisher,
-    PayloadBounded,
     Publisher,
     PullSubscriber,
     RawReplier,
@@ -49,10 +47,6 @@ _CAPABILITIES: list[type[Any]] = [
 
 # held by mypy (typecheck.sh checks tests): a NatsClient is each capability, signatures and all
 def _requester(client: NatsClient) -> RawRequester:
-    return client
-
-
-def _payload_bounded(client: NatsClient) -> PayloadBounded:
     return client
 
 
