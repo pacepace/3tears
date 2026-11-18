@@ -1069,7 +1069,7 @@ async def test_a_lame_duck_move_takes_the_old_half_out_of_its_group_long_before_
     await client.subscribe(Subject.raw("events.>"), cb=_cb)
     current.calls.clear()
     await options_of[current]["lame_duck_mode_cb"]()
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
     await _until(lambda: "unsub 1" in current.calls, seconds=3.0)
 
     after = current.calls[current.calls.index("unsub 1") :]
