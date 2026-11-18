@@ -82,6 +82,10 @@ COVER_AT, EFFECT = 16, 0.3
 #: The most reads a continued newcomer takes.
 READS = 5
 
+#: The on-ramp's held-out plans: a comparison read at twenty-four apps and, not separated, continued once with eight more
+#: (``packages/evals/onramp/plans/held-out-2.toml``): its start, its one add, and its reads.
+PLANNED_START, PLANNED_ADD, PLANNED_READS = 24, 8, 2
+
 
 @dataclass(frozen=True)
 class Read:
@@ -340,12 +344,13 @@ GATE_QUESTION, GATE_MARGIN = "Is v2 no worse than v1?", 0.05
 
 
 async def small_continued_product(
-    null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS
+    null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS, add: int | None = None
 ) -> list[Read]:
     """One newcomer under ``null`` who reads at eight cases and, while nothing separates, appends cases and runs the
     comparison again into the same store, at most :data:`READS` reads: each add four cases plus up to sixteen more the
     nearer the primary's p came to zero. Every read is the product's continuation (only appended cases run); what each
-    read asks is ``asks``. ``start`` and ``reads`` read another plan: sixteen cases once is a single read."""
+    read asks is ``asks``. ``start``, ``reads`` and ``add`` (a fixed size for every add) read another plan: sixteen
+    cases once is a single read, and the on-ramp's held-out plans read twenty-four, then eight more."""
     calls: Counter[tuple[int, int]] = Counter()
     arms = {"v1": _drawn(null, tag, 0, calls), "v2": _drawn(null, tag, 1, calls)}
     store = InMemoryDocumentStore()
@@ -370,11 +375,13 @@ async def small_continued_product(
         if taken[-1].decided:
             break
         p = taken[-1].p if taken[-1].p is not None else 1.0
-        n += 4 + int(16 * (1.0 - min(1.0, p)))
+        n += add if add is not None else 4 + int(16 * (1.0 - min(1.0, p)))
     return taken
 
 
-def small_continued(null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS) -> list[Read]:
+def small_continued(
+    null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS, add: int | None = None
+) -> list[Read]:
     """:func:`small_continued_product` restated over the bet alone: the same draws, the committed order, the bet staked
     as the question leans (the asked side, toward worse for a gate with its equivalence test beside it under Holm,
     evenly and against the trailing arm for a question set after the results), the decision rule, the add sizes and
@@ -403,7 +410,7 @@ def small_continued(null: Null, tag: str, asks: Asks = "question", *, start: int
         if taken[-1].decided:
             break
         p = taken[-1].p if taken[-1].p is not None else 1.0
-        n += 4 + int(16 * (1.0 - min(1.0, p)))
+        n += add if add is not None else 4 + int(16 * (1.0 - min(1.0, p)))
     return taken
 
 

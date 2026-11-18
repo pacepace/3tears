@@ -17,7 +17,7 @@ a working eval to an unfamiliar app, from the docs and the error messages alone?
 |---|---|
 | `eval_runs` | the agent's eval file, run by the eval door on a fresh copy of the app, exits 0 or 4, stores a finished run, and scores at least one result |
 | `measures_the_app` | the eval reads better on the fixed twin than on the app, and a runner that does nothing fails at least half its cases |
-| `read_right` | the agent's report gives the run's first line verbatim, the named measure's value within 0.005, and whether the run finished |
+| `read_right` | the agent's report gives the run's first line, at least its lead sentence (the verdict and its counts) as printed, the named measure's value within 0.005 (exact decimals, inclusive), and whether the run finished |
 
 Nothing under `src/` imports this directory, and the wheel does not ship it.
 
@@ -36,7 +36,9 @@ the agent's commands and every re-grade run only in trial containers, never on t
 | `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --cap 4.50 --k 7 --arm docs@candidate=PATH.whl` | the live comparison: cheap tier, 3 apps, 2 arms | see below |
 | `./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/<plan>.toml --dry-run` | a committed plan's arms, and each tier's quote | free |
 | `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/<plan>.toml --cap <its total>` | a plan, run as committed: its arms, apps, `k`, and every tier | the plan's caps |
-| `./scripts/onramp-agent.sh --read packages/evals/onramp/runs/<stamp>` | the package's reading of a stored run, apps as cases, tier by tier | free |
+| `./scripts/onramp-agent.sh --read packages/evals/onramp/runs/<stamp>` | the package's reading of a stored run, apps as cases, tier by tier (a run that continues another, read with it as one comparison) | free |
+| `... --read packages/evals/onramp/runs/<stamp> --today` | the same, each trial graded again by today's checks over its stored facts; says what moved, and that the primary did not; the run is unchanged | free |
+| `./scripts/onramp-agent.sh --power-continued packages/evals/onramp/runs/<stamp> ADD SCALE` | how often continuing a stored run with ADD apps separates, at its observed effect times SCALE, simulated | free |
 | `./scripts/onramp-agent.sh --power APPS K EFFECT` | how often a plan of that size would separate EFFECT, simulated | free |
 
 Add `--arm docs@candidate=PATH.whl` to any form to measure a second build against the control. Before a live or
@@ -73,6 +75,10 @@ How the cap holds:
 
 So a run is billed at most its cap. The one gap: a provider endpoint priced above the catalogue row, about $0.02 a run.
 
+The quote's "expected" is the mean billed over the stored live trials of the tier's model under `runs/` (the most a
+trial was charged, each cut-off call at its ceiling); with none stored, an assumed turn profile at the tier's rates,
+which ran about 8 times high against the first held-out run. The cap, not the expectation, holds a run.
+
 ## Where results land
 
 `runs/<UTC stamp>/` (git-ignored): `onramp.sqlite` (the store), `report/`, `trials.jsonl` (every trial's record and
@@ -82,6 +88,14 @@ writes `run.json` before its first trial: each arm's wheel and commit (the contr
 each tier's model and caps, the plan it ran with the commit the plan was last changed in, and the head commit its code,
 apps and twins are as of. `--read` takes the control and the case order from it, never from the rows' order. A run of more than one tier keeps each tier's files in
 `runs/<UTC stamp>/<tier>/`, and every row of a tier's `trials.jsonl` names its tier. Built wheels, images and environments are cached in `runs/wheels/`, `runs/images/`, `runs/venvs/`.
+
+With two arms or more, `report/` is the package's report of the primary check read with apps as cases (continuing the
+earlier run a plan continues), the same reading `reading.txt` leads with; the run's own campaign, every check over
+trials pooled, is in `campaign-report/` and is description, never the comparison. Under a plan, the console states the
+plan's rule on what may follow its run.
+
+A trial, and every grading copy, is made of the app's (and twin's) committed files only (`git ls-files`): an ignored
+file, a `__pycache__` or a local log, never reaches one.
 
 ## Comparing arms
 
@@ -164,6 +178,14 @@ head commit `run.json` records is what ran), the plan names every app, and it ag
 `k`, its tiers, its total cap, and each arm's wheel built from that arm's commit (`runs/wheels/<ref>/`, built on first
 use). The run records the plan's commit in `run.json`. A second model tier is a second tier of the plan: each runs into
 its own directory, against its own cap, and is read on its own.
+
+A plan may continue an earlier plan's run as one comparison (`[continues]`: the run and the plan commit it recorded).
+The two must share every term: the arms by commit and in order, the tier and its model, `k`, the primary check and the
+question (which sets the lean); no app may be in both. The reading then runs the earlier run's apps, as they ran, and
+the new ones appended after them, into one store, so the package's anytime-valid bet reads one committed order with its
+capital carried forward (`reading.read_continued`). Its error rate for the held-out plans' shape (24 apps, then 8) is the
+certified claim `small-n.planned.onramp.separates`. A continuation is declared before its run, once: a further top-up
+is a new plan with its own pre-registration.
 
 ## Adding an app
 

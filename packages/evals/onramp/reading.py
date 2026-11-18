@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals import Eval, Result
+from threetears.evals.storage import InMemoryDocumentStore
 
 from .checks import GRADERS
 
@@ -205,6 +206,46 @@ async def read(
     return await comparison(rows, check, question=question, lead=lead, arms=arms, apps=apps).run(store=":memory:")
 
 
+@dataclass(frozen=True)
+class Stage:
+    """One run of a continued comparison: its stored rows (one tier's), its arms (the control first) and its apps in
+    the order its cases ran, as its ``run.json`` records them."""
+
+    rows: tuple[Mapping[str, Any], ...]  # Any: stored rows
+    arms: tuple[str, ...]
+    apps: tuple[str, ...]
+
+
+async def read_continued(
+    stages: Sequence[Stage], check: str = PRIMARY, *, question: str | None = None, lead: bool = False
+) -> Result:
+    """The package's reading of runs continued as ONE comparison, apps as cases: the first run's apps, then each later
+    run's appended after them, read by the package's own continuation (``quick/continuation.py``). Each stage is run
+    into one store in turn, so every later run is the earlier comparison with cases appended: the cases already read
+    keep the values they ran with, only the appended ones run, and the bet reads one committed order, its capital
+    carried forward. The first stage alone reads as :func:`read` reads that run.
+
+    :raises Unreadable: No stage, stages whose arms differ, or an app in two stages (a case is read once); or as
+        :func:`comparison` on the rows read so far.
+    """
+    if not stages:
+        raise Unreadable("a continued comparison reads at least one run")
+    if any(stage.arms != stages[0].arms for stage in stages):
+        raise Unreadable(f"the runs' arms differ ({'; '.join(', '.join(stage.arms) for stage in stages)})")
+    apps = [app for stage in stages for app in stage.apps]
+    if repeated := sorted({app for app in apps if apps.count(app) > 1}):
+        raise Unreadable(f"an app is read once in a comparison, and {', '.join(repeated)} is in two runs")
+    store = InMemoryDocumentStore()
+    result: Result | None = None
+    for upto in range(1, len(stages) + 1):
+        rows = [row for stage in stages[:upto] for row in stage.rows]
+        held = [app for stage in stages[:upto] for app in stage.apps]
+        ev = comparison(rows, check, question=question, lead=lead, arms=stages[0].arms, apps=held)
+        result = await ev.run(store=store)
+    assert result is not None  # at least one stage, so at least one run
+    return result
+
+
 def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored rows
     graded = [row for row in rows if row.get("scores", {}).get(check) is not None]
     return f"{sum(1 for row in graded if row['scores'][check] == 1.0)} of {len(graded)}"
@@ -217,22 +258,38 @@ async def read_lines(
     question: str | None = None,
     arms: Sequence[str] = (),
     apps: Sequence[str] = (),
+    earlier: Sequence[Stage] = (),
 ) -> list[str]:  # Any: stored rows
     """What the package reads of a stored run, tier by tier: each check's verdict, the primary first, with apps as cases,
-    and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop."""
+    and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop.
+
+    With ``earlier`` runs, the run continues them as one comparison (:func:`read_continued`): every check is read over
+    the earlier runs' apps and then this run's, and the tallies cover them all. A continued run is one tier's.
+    """
     lines: list[str] = []
+    if earlier and len(tiers_of(rows)) > 1:
+        raise Unreadable("a continued comparison is one tier's: read each tier's run on its own")
     for tier, own in tiers_of(rows).items():
-        design = design_of(own, arms, apps)
+        here = design_of(own, arms, apps)
+        stages = [*earlier, Stage(tuple(own), here.arms, here.apps)]
+        everything = [row for stage in stages for row in stage.rows]
+        design = design_of(everything, here.arms, [app for stage in stages for app in stage.apps])
         head = f"tier {tier}: " if tier is not None else ""
+        continued = (
+            f", continued: {' then '.join(str(len(stage.apps)) for stage in stages)} app(s) as one comparison"
+            if earlier
+            else ""
+        )
         lines.append(
-            f"{head}the package's reading, apps as cases: {len(design.apps)} app(s), {design.k} trial(s) per arm on each"
+            f"{head}the package's reading, apps as cases: {len(design.apps)} app(s), {design.k} trial(s) per arm on "
+            f"each{continued}"
         )
         if len(design.arms) < 2:
             lines.append("  one arm: there is no comparison to read")
             continue
         for check in (primary, *[name for name in CHECKS if name != primary]):
             role = "primary" if check == primary else "secondary, a lead only"
-            result = await read(own, check, question=question, lead=check != primary, arms=arms, apps=apps)
+            result = await read_continued(stages, check, question=question, lead=check != primary)
             lines.append(f"  {check} ({role}): {result.render().splitlines()[0]}")
             for row in result.contrasts(check):
                 lines.append(
@@ -254,9 +311,10 @@ def reading_lines(
     question: str | None = None,
     arms: Sequence[str] = (),
     apps: Sequence[str] = (),
+    earlier: Sequence[Stage] = (),
 ) -> list[str]:  # Any: stored rows
     """:func:`read_lines`, from code with no event loop running (the command line)."""
-    return asyncio.run(read_lines(rows, primary=primary, question=question, arms=arms, apps=apps))
+    return asyncio.run(read_lines(rows, primary=primary, question=question, arms=arms, apps=apps, earlier=earlier))
 
 
 def simulated_rows(
@@ -320,3 +378,45 @@ def power_lines(*, apps: int, k: int, effect: float, spread: float, reps: int, s
         "  simulated under packages/evals/onramp/reading.py simulated_rows, read by the package's own comparison: "
         "a plan's power, not a measurement",
     ]
+
+
+def continued_power(
+    earlier: Stage, *, add: int, scale: float, reps: int, seed: int, question: str | None = None
+) -> tuple[int, int]:
+    """How many of ``reps`` simulated continuations of the ``earlier`` run separate on the primary: each appends
+    ``add`` apps drawn with replacement from the earlier run's apps, each drawn app's control share kept and its
+    candidate share moved to the control's plus ``scale`` times the earlier difference (1: the effect the run observed
+    holds; a third: a third of it), its k trials per arm drawn at those shares, and the two read as one comparison
+    (:func:`read_continued`). The earlier run's own trials are its stored ones, read as they ran."""
+    design = design_of(earlier.rows, earlier.arms, earlier.apps)
+    control, candidate = design.arms[0], design.arms[-1]
+
+    def share(rows: Sequence[Mapping[str, Any]]) -> float:  # Any: stored rows
+        graded = [row["scores"][PRIMARY] for row in rows if row.get("scores", {}).get(PRIMARY) is not None]
+        return sum(graded) / len(graded) if graded else 0.0
+
+    shares = [(share(design.trials[control][app]), share(design.trials[candidate][app])) for app in design.apps]
+    (tier,) = tiers_of(earlier.rows)  # one tier's run, which the continuation's rows share
+    rng = random.Random(seed)
+
+    async def every() -> int:
+        separated = 0
+        for _ in range(reps):
+            rows: list[dict[str, Any]] = []
+            apps = [f"continued-{index + 1}" for index in range(add)]
+            for app in apps:
+                low, high = rng.choice(shares)
+                drawn = {control: low, candidate: min(1.0, max(0.0, low + scale * (high - low)))}
+                for arm in design.arms:
+                    for repeat in range(1, design.k + 1):
+                        passed = 1.0 if rng.random() < drawn.get(arm, low) else 0.0
+                        scores = {name: passed if name == PRIMARY else 1.0 for name in CHECKS}
+                        state = "passed" if passed else "failed"
+                        row = {"arm": arm, "app": app, "repeat": repeat, "state": state, "scores": scores}
+                        rows.append({**row, "tier": tier} if tier is not None else row)
+            later = Stage(tuple(rows), design.arms, tuple(apps))
+            result = await read_continued([earlier, later], PRIMARY, question=question)
+            separated += any(row["outcome"] in SEPARATED for row in result.contrasts(PRIMARY))
+        return separated
+
+    return asyncio.run(every()), reps

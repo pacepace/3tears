@@ -1,6 +1,6 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "179f61c5a0eea03c2e50227c7004dd67712f54f2616d909bc873cd8ee4aa9670",
+ "digest": "e196761ad87a5bf904b956ccfc871b18457b9cf5cf96fa071e69b3ce14204ecb",
  "entry_points": [
   "packages/evals/tests/null_newcomers.py",
   "packages/evals/tests/engine_take_up.py",
@@ -480,13 +480,13 @@
   "packages/evals/tests/fixtures/toyhost/tracing.py": "d02a66fcc2e37ab593a04e17e43a0a90ad979f62dce33c2a55898cf02d913272",
   "packages/evals/tests/fixtures/toyhost/variant.py": "586d9f86875e37eaf02ce36e1a31a66aa5326a65c2d8f3ce58157b26d8c140b2",
   "packages/evals/tests/fixtures/toyhost/world.py": "0ff1103f5fc11c276e4d19489fb5017b3f4264deb07db18a92dcbe5a8e4be8e6",
-  "packages/evals/tests/null_newcomers.py": "3ed80dd4782f8a1fe5d53aa398f8d2bbce19f1349a29644eb6fdf3ab8e1a54c5",
+  "packages/evals/tests/null_newcomers.py": "eaef15cfc961c8bbc514477712eaab9d62b9f394959c5e5ef6c6eccecd4d4950",
   "packages/evals/tests/off_loop.py": "f14aa1407cc8a8c4f1d0314b3c3ebe897ca2f78eaa50d463e3dfcc7999dfc20c",
-  "packages/evals/tests/stats_certificate.py": "52ec5c7d2862d55b5a126606b4f5b8f202e436a77b64282696d54dd6967a5e97",
+  "packages/evals/tests/stats_certificate.py": "144292e550a40827358583de5b25d7d90bacdd613d284223ddbaaaf45dba4935",
   "packages/evals/tests/test_certified_simulations.py": "0d60e95ede467df82a24819afdcd447131a2f522e2f1b92785156325d87060ca"
  },
- "pool_request": "470c6e4ed71f4c7bb7f4c23ad351c8a8",
- "wall_s": 258,
+ "pool_request": "cbdc20f5df294b229c6d2bcea3e9f853",
+ "wall_s": 331,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -669,6 +669,21 @@
    "seeds": "continued-skewed-<shard>-<index>, shards 0-39 of 150, restated"
   },
   {
+   "id": "small-n.planned.onramp.separates",
+   "says": "Under the onramp null a question's primary read at twenty-four cases and, where it does not separate, continued once with eight more (the on-ramp's held-out plans: apps as cases, three trials each), separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 30,
+   "replicates": 6000,
+   "bounds": [
+    0.0033759458090694043,
+    0.0071301776366909375
+   ],
+   "figure": 0.0071301776366909375,
+   "holds": true,
+   "seeds": "planned-onramp-<shard>-<index>, shards 0-39 of 150, restated"
+  },
+  {
    "id": "small-n.gate.once",
    "says": "Under the binary null a gate (is v2 no worse within five points?), its bet leaning toward worse beside its equivalence test, read once at sixteen cases, separates at most \u03b1.",
    "test": "at_most",
@@ -827,6 +842,21 @@
    "replicates": 90,
    "bounds": [
     0.9598410803842248,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool"
+  },
+  {
+   "id": "restated-as-product.small-planned",
+   "says": "Through Eval.run, the on-ramp's planned comparison, twenty-four cases then eight more, under its null reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 30,
+   "replicates": 30,
+   "bounds": [
+    0.8842966917779722,
     1.0
    ],
    "figure": 1.0,
@@ -1048,13 +1078,13 @@
    "says": "Watchers whose arms are b-slower-20x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 34,
+   "count": 35,
    "replicates": 1000,
    "bounds": [
-    0.02365864810759795,
-    0.04718943861570718
+    0.024497527894758793,
+    0.04834238161422172
    ],
-   "figure": 0.034,
+   "figure": 0.035,
    "holds": true,
    "seeds": "cut-b-slower-20x-<index>, 0-999, through the product"
   },
@@ -1093,13 +1123,13 @@
    "says": "An engine comparison (fixed, alike-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.05275542550583546,
-   "count": 38,
+   "count": 40,
    "replicates": 800,
    "bounds": [
-    0.03382980290773352,
-    0.0646173234857556
+    0.03595757591334327,
+    0.06746636779390153
    ],
-   "figure": 0.7683920415323546,
+   "figure": 0.6584377092538167,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine"
   },
@@ -1138,13 +1168,13 @@
    "says": "An engine comparison (fixed, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.05275542550583546,
-   "count": 61,
+   "count": 59,
    "replicates": 800,
    "bounds": [
-    0.05882426814759657,
-    0.09687145157316596
+    0.05661280028025795,
+    0.09410381703020237
    ],
-   "figure": 0.0030022673266477283,
+   "figure": 0.0068699701637562295,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -1183,13 +1213,13 @@
    "says": "An engine comparison (fixed, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.05275542550583546,
-   "count": 42,
+   "count": 39,
    "replicates": 800,
    "bounds": [
-    0.03809584725903492,
-    0.07030525669997573
+    0.03489232958885545,
+    0.06604315993690596
    ],
-   "figure": 0.5350492041855246,
+   "figure": 0.7157361206012157,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -1228,13 +1258,13 @@
    "says": "An engine comparison (looks, alike-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 18,
+   "count": 25,
    "replicates": 500,
    "bounds": [
-    0.021472856586093512,
-    0.056300176201791896
+    0.03261518014932974,
+    0.07292762165047756
    ],
-   "figure": 0.8579150304622211,
+   "figure": 0.3177116682870147,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine"
   },
@@ -1243,13 +1273,13 @@
    "says": "An engine comparison (looks, b-slower-20x, check) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
    "test": "leans",
    "target": 0.044852748968643524,
-   "count": 71,
+   "count": 67,
    "replicates": 500,
    "bounds": [
-    0.11259730285774738,
-    0.17571099496625536
+    0.10537896426139429,
+    0.16702992361382224
    ],
-   "figure": 1.987088505488776e-17,
+   "figure": 2.8224383068675786e-15,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine"
   },
@@ -1273,13 +1303,13 @@
    "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
    "test": "leans",
    "target": 0.044852748968643524,
-   "count": 85,
+   "count": 70,
    "replicates": 500,
    "bounds": [
-    0.13810755590853474,
-    0.20585258258017375
+    0.11078953426406624,
+    0.17354385649370657
    ],
-   "figure": 8.18467965230556e-26,
+   "figure": 7.030948488995512e-17,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine"
   },
@@ -1303,13 +1333,13 @@
    "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 23,
+   "count": 21,
    "replicates": 500,
    "bounds": [
-    0.029380175392402348,
-    0.06822542788123881
+    0.026183576776147313,
+    0.06348694053291842
    ],
-   "figure": 0.4805241197428548,
+   "figure": 0.6512141895793178,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -1348,13 +1378,13 @@
    "says": "An engine comparison (looks, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 27,
+   "count": 25,
    "replicates": 500,
    "bounds": [
-    0.035884259721933084,
-    0.07759746849493648
+    0.03261518014932974,
+    0.07292762165047756
    ],
-   "figure": 0.18714837287248381,
+   "figure": 0.3177116682870147,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine"
   }
