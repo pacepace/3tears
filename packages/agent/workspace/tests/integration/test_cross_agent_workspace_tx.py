@@ -185,6 +185,15 @@ class _InMemoryNatsBus:
         self._handlers[subject] = cb
         return MagicMock()
 
+    @property
+    def max_payload(self) -> int | None:
+        """the broker's payload ceiling: an in-memory bus has none to report.
+
+        :return: None, as a client that has not seen the server's INFO answers
+        :rtype: int | None
+        """
+        return None
+
     async def request_raw(
         self,
         *,

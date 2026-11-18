@@ -7,6 +7,8 @@ methods' signatures copied from :class:`NatsClient` (which satisfies every one o
 its own that inherits several -- and a double implementing those methods is a valid argument.
 
 - :class:`RawRequester` -- a request whose reply comes back as bytes (``request_raw``)
+- :class:`PayloadBounded` -- the broker's largest accepted publish (``max_payload``)
+- :class:`BoundedRequester` -- both of :class:`RawRequester` and :class:`PayloadBounded`: an L3 proxy backend's client
 - :class:`Subscriber` -- a core subscription and its end (``subscribe``, ``unsubscribe``)
 - :class:`TypedSubscriber` -- a subscription delivering a model, and its end (``subscribe_typed``, ``unsubscribe``)
 - :class:`SubscriptionHandle` -- what ``subscribe_typed`` hands back, given back to ``unsubscribe``
@@ -40,11 +42,13 @@ if TYPE_CHECKING:
     from threetears.nats.transport import RawMessageCallback
 
 __all__ = [
+    "BoundedRequester",
     "ChangeLogBinder",
     "DurableSubscriber",
     "JetStreamPublisher",
     "KvBucketOpener",
     "KvPublisher",
+    "PayloadBounded",
     "Publisher",
     "PullSubscriber",
     "RawReplier",
@@ -62,6 +66,20 @@ class RawRequester(Protocol):
     """sends a request and answers its reply's bytes (:meth:`NatsClient.request_raw`)."""
 
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes: ...
+
+
+@runtime_checkable
+class PayloadBounded(Protocol):
+    """reports the largest single publish the broker accepts (:attr:`NatsClient.max_payload`), None while unknown."""
+
+    @property
+    def max_payload(self) -> int | None: ...
+
+
+@runtime_checkable
+class BoundedRequester(RawRequester, PayloadBounded, Protocol):
+    """sends raw requests and knows the broker's payload ceiling: what an L3 proxy backend
+    (:class:`threetears.core.backends.nats_proxy.NatsProxyL3Backend`) holds its client for."""
 
 
 @runtime_checkable

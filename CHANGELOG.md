@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `NatsProxyL3Backend` takes a `BoundedRequester`, the two things it uses of its client
+
+`threetears.nats.PayloadBounded` is a client's `max_payload`; `threetears.nats.BoundedRequester` is that and
+`RawRequester` (`request_raw`) together, the two things `NatsProxyL3Backend` uses of the client it is given. Its
+`nats_client` parameter takes a `BoundedRequester` instead of the whole `NatsClient`, which satisfies it, so a test bus
+implementing those two type-checks as one. A caller passing a `NatsClient` is unchanged; nothing changes at run time.
+
 ### agent/workspace: the workspace tools and the pin functions take a `PinContext`
 
 `threetears.agent.workspace.pin.PinContext` is the slice of a conversation's context manager a workspace pin is

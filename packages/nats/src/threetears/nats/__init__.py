@@ -216,11 +216,13 @@ from threetears.nats.subject_permissions import (
     kv_stream_name,
 )
 from threetears.nats.capabilities import (
+    BoundedRequester,
     ChangeLogBinder,
     DurableSubscriber,
     JetStreamPublisher,
     KvBucketOpener,
     KvPublisher,
+    PayloadBounded,
     Publisher,
     PullSubscriber,
     RawReplier,
@@ -438,11 +440,13 @@ __all__ = [
     "PublishPin",
     "Subscription",
     # one capability of the client each, for a consumer to type its parameter by (capabilities.py)
+    "BoundedRequester",
     "ChangeLogBinder",
     "DurableSubscriber",
     "JetStreamPublisher",
     "KvBucketOpener",
     "KvPublisher",
+    "PayloadBounded",
     "Publisher",
     "PullSubscriber",
     "RawReplier",
