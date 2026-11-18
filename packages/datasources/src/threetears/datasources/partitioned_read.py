@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from functools import partial
 from typing import Annotated, Any, Final, TypeVar
 
 from threetears.core.keyed import DeclaredKey, KeyColumn
@@ -226,6 +227,77 @@ _BATCH_ROWS: Final = 50_000
 _MAX_BOUNDARIES: Final = 990
 
 
+class _OverFullPageError(IncompleteReadError):
+    """a page of a part held more rows than it asked for: rows were written into the part between its batch's page
+    starts and its pages (or the key is not unique, which every read fails alike). Its batch is read again from fresh
+    page starts, as a batch whose part moved is; still over-full on the last read, it is raised.
+
+    :param message: what was read
+    :ptype message: str
+    :param part: the part whose page held too many rows
+    :ptype part: str
+    """
+
+    def __init__(self, message: str, *, part: str) -> None:
+        super().__init__(message)
+        self.part = part
+
+
+async def _settled(read: Callable[[], Awaitable[_ResultT]], *, relation: str) -> _ResultT:
+    """one batch's read of named parts, read again from fresh page starts while one of its pages comes back over-full,
+    up to :data:`~threetears.datasources.query_client.CHANGED_READ_ATTEMPTS` reads in all (each re-read logged at
+    warning, the last failure at error and raised).
+
+    :param read: the batch's read, from its page starts
+    :ptype read: Callable[[], Awaitable[_ResultT]]
+    :param relation: the relation, for the log
+    :ptype relation: str
+    :return: the read that held no over-full page
+    :rtype: _ResultT
+    :raises IncompleteReadError: a page over-full on every read
+    """
+    for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
+        try:
+            return await read()
+        except _OverFullPageError as exc:
+            if attempt == CHANGED_READ_ATTEMPTS:
+                log.error(
+                    "a part's page held too many rows on every read of its batch",
+                    extra={"extra_data": {"relation": relation, "part": exc.part, "attempts": CHANGED_READ_ATTEMPTS}},
+                )
+                raise
+            _log_read_again(relation, exc.part, attempt, "a page held more rows than it asked for")
+    raise AssertionError("unreachable: the last attempt returns or raises")  # pragma: no cover
+
+
+def _log_read_again(relation: str, part: str, attempt: int, why: str) -> None:
+    """the warning a batch read again logs.
+
+    :param relation: the relation
+    :ptype relation: str
+    :param part: the part that sent its batch round again
+    :ptype part: str
+    :param attempt: the read that failed, from 1
+    :ptype attempt: int
+    :param why: what it found
+    :ptype why: str
+    :return: nothing
+    :rtype: None
+    """
+    log.warning(
+        "a part changed while it was read; reading its batch again",
+        extra={
+            "extra_data": {
+                "relation": relation,
+                "part": part,
+                "attempt": attempt,
+                "attempts": CHANGED_READ_ATTEMPTS,
+                "why": why,
+            }
+        },
+    )
+
+
 def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int) -> tuple[str, list[Any]]:
     """the condition keeping keys at or above ``values`` (``below`` False) or strictly below them.
 
@@ -339,9 +411,10 @@ async def _read_pages(
                 rows = result.rows
                 answered = len(rows)
                 if _count(collected) + answered > page_size:
-                    raise IncompleteReadError(
+                    raise _OverFullPageError(
                         f"{datasource_name}: {relation} {partition_by}={part}: a page held more than {page_size} "
-                        "rows; rows were written during the read, or the key is not unique"
+                        "rows; rows were written during the read, or the key is not unique",
+                        part=part,
                     )
                 if not result.truncated:
                     return _joined([*collected, rows], types)
@@ -433,7 +506,9 @@ async def _read_partitions(
     read are the next read's "before", and the whole batch is read again from its page starts, up to
     three reads in all (each re-read logged at warning). Nothing of the batch has been handed back
     yet, so the caller only ever sees parts proven whole. A part still moving on the last read is
-    raised as before (logged at error). No other failure is read again.
+    raised as before (logged at error). A page holding more rows than it asked for (rows written
+    between the batch's page starts and its pages) sends its batch round the same loop, with or
+    without ``prove``: the caller never reads a part again itself. No other failure is read again.
 
     The batches bound what is held: a batch's rows wait for its check; the next batch is read while
     the caller works on this one.
@@ -584,21 +659,32 @@ async def _read_partitions(
     async def batch(members: list[str]) -> list[tuple[str, Any]]:
         moved: str | None = None
         for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
-            read, after, moved = await read_batch(members)
+            why = "its fingerprint moved"
+            try:
+                read, after, moved = await read_batch(members)
+            except _OverFullPageError as exc:
+                # rows written between the page starts and the pages: what the part holds now is the next read's
+                # "before", as for a moved fingerprint
+                if attempt == CHANGED_READ_ATTEMPTS:
+                    log.error(
+                        "a part's page held too many rows on every read of its batch",
+                        extra={
+                            "extra_data": {"relation": relation, "part": exc.part, "attempts": CHANGED_READ_ATTEMPTS}
+                        },
+                    )
+                    raise
+                read, moved, why = [], exc.part, "a page held more rows than it asked for"
+                after = await client.relation_fingerprint_groups(
+                    datasource_name,
+                    relation=relation,
+                    key=plain_columns(columns),
+                    group_by=partition_by,
+                    where_in={partition_by: members},
+                )
             if moved is None:
                 return read
             if attempt < CHANGED_READ_ATTEMPTS:
-                log.warning(
-                    "a part changed while it was read; reading its batch again",
-                    extra={
-                        "extra_data": {
-                            "relation": relation,
-                            "part": moved,
-                            "attempt": attempt,
-                            "attempts": CHANGED_READ_ATTEMPTS,
-                        }
-                    },
-                )
+                _log_read_again(relation, moved, attempt, why)
                 # taken after the read that moved: what the next read must find unchanged, and count
                 for part in members:
                     if part in after:
@@ -664,7 +750,8 @@ async def _read_named_partitions(
 
     A part with a count is batched by it; a part without one is a batch of its own, so a batch's rows
     stay bounded by what is known of them. Each batch's page starts come in one statement, its pages are
-    read side by side, and each part is checked against its count when it has one.
+    read side by side, and each part is checked against its count when it has one. A batch with a page holding more
+    rows than it asked for is read again from fresh page starts (:func:`_settled`), and only then handed back.
 
     :return: each part's value and rows: the counted parts in sorted order, then the others in sorted order
     :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
@@ -676,7 +763,9 @@ async def _read_named_partitions(
         [part] for part in sorted(set(parts) - set(counted))
     ]
     total = 0
-    for members in batches:
+
+    async def read_batch(members: list[str]) -> tuple[dict[str, tuple[int, int]], list[Any]]:
+        """one read of a batch from fresh page starts: each part's span of pages, and the pages."""
         starts = await _boundaries(
             client,
             datasource_name,
@@ -724,6 +813,10 @@ async def _read_named_partitions(
                 )
                 spans[part] = (len(pages_read), len(pages_read) + 1)
                 pages_read.append(rows)
+        return spans, pages_read
+
+    for members in batches:
+        spans, pages_read = await _settled(partial(read_batch, members), relation=relation)
         for part in members:
             start, end = spans[part]
             rows = _joined(pages_read[start:end], types)

@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: `read_partitions` reads a batch again when a page holds more rows than it asked for
+
+A page of a part that comes back over-full (rows written between the batch's page starts and its pages) no longer
+fails the read at once: its batch is read again from fresh page starts, up to `CHANGED_READ_ATTEMPTS` reads, with or
+without `prove` (the loop a moved fingerprint already took). Still over-full on the last read, it raises
+`IncompleteReadError` as before. Callers that retried a part themselves on that message can drop the retry.
+
 ### nats: the hub requests take a `RawRequester`
 
 `ask_hub`, `report_cache_index_moved`, `declare_pod_object_store` and `retire_pod_objects` take a

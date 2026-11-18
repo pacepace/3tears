@@ -305,6 +305,7 @@ class _SettlingRail:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
         self.after_page: Any = None
+        self.after_starts: Any = None
         self.page_starts_asked = 0
         self.refuse_pages = False
         self._fingerprints_asked = 0
@@ -347,6 +348,8 @@ class _SettlingRail:
                 for index, row in enumerate(self.part_rows(state))
                 if index % size == 0
             ]
+            if self.after_starts is not None:
+                self.after_starts()
             return DatasourceQueryResult(rows=starts, row_count=len(starts), truncated=False, correlation_id=uuid7())
         if self.refuse_pages:
             raise DatasourceQueryError("QUERY_EXECUTION_ERROR", "the warehouse refused the statement")
@@ -454,6 +457,83 @@ class TestAPartChangedWhileItWasRead:
             await _read_all_partitions(rail, [])
 
         assert rail.page_starts_asked == 1
+
+
+def _written_between_starts_and_pages(rail: _SettlingRail, *, times: int) -> None:
+    """a row lands in S00 between its first two page starts once the starts are read, ``times`` times: the
+    page from S00's first start then holds one row more than it asked for."""
+    landed = 0
+
+    def lands() -> None:
+        nonlocal landed
+        if landed < times:
+            landed += 1
+            rail.rows.append({"state": "S00", "race": f"S00-r0{'x' * landed}", "votes": 1})
+
+    rail.after_starts = lands
+
+
+async def _read_named(rail: _SettlingRail, read: list[tuple[str, list[dict[str, Any]]]], *, prove: bool) -> None:
+    async for part in read_partitions(
+        rail,  # type: ignore[arg-type]
+        "w",
+        columns=["state", "race", "votes"],
+        relation="s.r",
+        key=["race"],
+        partition_by="state",
+        parts=["S00", "S01"],
+        page_size=2,
+        prove=prove,
+    ):
+        read.append(part)
+
+
+class TestAnOverFullPageIsReadAgain:
+    """a page that holds more rows than it asked for (rows written between its batch's page starts and its pages)
+    sends its batch into the re-read loop, as a moved fingerprint does: the caller never retries it by the text."""
+
+    @pytest.mark.parametrize("prove", [False, True])
+    async def test_a_row_written_once_between_starts_and_pages_is_read_again_and_comes_back_whole(
+        self, prove: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Flips if an over-full page fails the read instead of reading its batch again from fresh page starts."""
+        rail = _SettlingRail(_rows())
+        _written_between_starts_and_pages(rail, times=1)
+        read: list[tuple[str, list[dict[str, Any]]]] = []
+        with caplog.at_level("WARNING"):
+            await _read_named(rail, read, prove=prove)
+
+        assert read == [(state, rail.part_rows(state)) for state in ("S00", "S01")]
+        assert len(dict(read)["S00"]) == 4
+        # one batch read again: one page-starts ask more than the same read with nothing written
+        undisturbed = _SettlingRail(_rows())
+        await _read_named(undisturbed, [], prove=prove)
+        assert rail.page_starts_asked == undisturbed.page_starts_asked + 1
+        retries = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert [getattr(r, "extra_data", {}).get("attempt") for r in retries] == [1]
+        assert getattr(retries[0], "extra_data", {}).get("part") == "S00"
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    @pytest.mark.parametrize("prove", [False, True])
+    async def test_a_page_over_full_on_every_read_fails_as_before_and_hands_back_none_of_its_batch(
+        self, prove: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Flips if a page over-full on every read is read more than three times, or its batch is handed back."""
+        rail = _SettlingRail(_rows())
+        _written_between_starts_and_pages(rail, times=99)
+        read: list[tuple[str, list[dict[str, Any]]]] = []
+        with caplog.at_level("WARNING"), pytest.raises(IncompleteReadError, match="a page held more than 2 rows"):
+            await _read_named(rail, read, prove=prove)
+
+        assert read == []
+        assert rail.page_starts_asked == 3, "S00's batch, first in sorted order, read three times and no more"
+        assert [getattr(r, "extra_data", {}).get("attempt") for r in caplog.records if r.levelname == "WARNING"] == [
+            1,
+            2,
+        ]
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert getattr(errors[0], "extra_data", {}).get("attempts") == 3
 
 
 class TestTheRailReadsByKeyWithNoFingerprint:
