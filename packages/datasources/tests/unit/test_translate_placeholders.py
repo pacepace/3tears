@@ -98,6 +98,17 @@ class TestEdgeCaseDoubleDollar:
         sql = "SELECT $$dollar-quoted$$"
         assert translate_placeholders(sql, "pyformat") == "SELECT $$dollar-quoted$$"
 
+    def test_a_dollar_quoted_body_and_a_comment_keep_their_dollar_numbers(self) -> None:
+        """Flips if a ``$1`` inside a dollar-quoted string or a comment is translated as a placeholder."""
+        sql = "SELECT $$ costs $1 $$, $tag$ $2 $tag$, $1 -- not $2\n/* nor $3 */"
+        assert translate_placeholders(sql, "pyformat") == (
+            "SELECT $$ costs $1 $$, $tag$ $2 $tag$, %s -- not $2\n/* nor $3 */"
+        )
+
+    def test_a_race_named_with_a_dollar_amount(self) -> None:
+        sql = "SELECT * FROM races WHERE name = 'Proposition: 40 - Impose one-time wealth tax over $1 billion' AND id = $1"
+        assert translate_placeholders(sql, "numeric") == sql.replace("id = $1", "id = :1")
+
 
 class TestEdgeCaseStringLiteral:
     """``'$N'`` / ``"$N"`` inside literals preserved verbatim."""

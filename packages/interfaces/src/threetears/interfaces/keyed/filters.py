@@ -16,7 +16,7 @@ from typing import Any, Final
 
 __all__ = [
     "IN_SUBQUERY",
-    "PLACEHOLDER",
+    "SQL_TOKEN",
     "SQL_TYPE",
     "AnyOf",
     "Const",
@@ -29,6 +29,7 @@ __all__ = [
     "batched_join_hint",
     "by_conditions",
     "clause_guards",
+    "each_placeholder",
     "narrowing",
     "one_use_each",
     "prefix_conditions",
@@ -58,8 +59,54 @@ def quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-#: a positional placeholder in a fragment the caller wrote (``$1``), renumbered when the fragment joins a statement
-PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
+#: a statement read as SQL reads it, a token at a time: a quoted literal (``'...'`` with ``''`` inside it, an
+#: ``E'...'`` with its backslash escapes, a dollar-quoted ``$$...$$`` or ``$tag$...$tag$``), a quoted name
+#: (``"..."``), a comment (``--`` to the line's end, ``/* ... */``), each holding no placeholder however much it
+#: looks like one; or a placeholder, its number the ``n`` group. A ``$1`` in a race's name (``'Proposition: 40 -
+#: Impose one-time wealth tax over $1 billion'``) read as a placeholder refused the statement as binding too few
+#: parameters (reports' Contest Details, 2026-11-18)
+SQL_TOKEN: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\w$])[Ee]'(?:[^'\\]|\\.|'')*'"
+    r"|'(?:[^']|'')*'"
+    r'|"(?:[^"]|"")*"'
+    r"|(?<![\w$])\$(?P<tag>(?:[A-Za-z_][A-Za-z0-9_]*)?)\$.*?\$(?P=tag)\$"
+    r"|--[^\n]*"
+    r"|/\*.*?\*/"
+    r"|\$(?P<n>\d+)",
+    re.DOTALL,
+)
+
+
+def _placeholder_numbers(sql: str) -> list[int]:
+    """the number of each placeholder ``sql`` names, in order, a use each: never a ``$n`` inside a literal, a quoted
+    name or a comment (:data:`SQL_TOKEN`).
+
+    :param sql: the statement or fragment
+    :ptype sql: str
+    :return: the numbers
+    :rtype: list[int]
+    """
+    return [int(match.group("n")) for match in SQL_TOKEN.finditer(sql) if match.group("n") is not None]
+
+
+def each_placeholder(sql: str, replace: Callable[[int], str]) -> str:
+    """``sql`` with each placeholder (and nothing that only looks like one: :data:`SQL_TOKEN`) replaced by what
+    ``replace`` answers for its number, in one pass.
+
+    :param sql: the statement or fragment
+    :ptype sql: str
+    :param replace: the text a placeholder of a number becomes
+    :ptype replace: Callable[[int], str]
+    :return: the text
+    :rtype: str
+    """
+
+    def placed(match: re.Match[str]) -> str:
+        number = match.group("n")
+        return match.group() if number is None else replace(int(number))
+
+    return SQL_TOKEN.sub(placed, sql)
+
 
 #: a SQL type a set filter's array is cast to: a name, optionally with a precision, never anything else
 SQL_TYPE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_ ]*(\(\d+(,\s*\d+)?\))?$")
@@ -274,19 +321,15 @@ def renumbered(fragment: Fragment, before: int) -> str:
     :rtype: str
     :raises ValueError: when the fragment names a placeholder it binds no parameter for
     """
-    numbers = [int(found) for found in PLACEHOLDER.findall(fragment.sql)]
+    numbers = _placeholder_numbers(fragment.sql)
     if numbers and max(numbers) > len(fragment.params):
         raise ValueError(f"a fragment names ${max(numbers)} but binds {len(fragment.params)} parameters")
-    return PLACEHOLDER.sub(lambda match: f"${int(match.group(1)) + before}", fragment.sql)
-
-
-#: a quoted literal or identifier, or a placeholder: what :func:`one_use_each` reads a statement as
-_TOKEN: Final[re.Pattern[str]] = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\$(\d+)\b")
+    return each_placeholder(fragment.sql, lambda number: f"${number + before}")
 
 
 def one_use_each(sql: str, params: Sequence[Any]) -> tuple[str, list[Any]]:
     """``sql`` with every use of a placeholder its own number, and the parameters each binds, in that order: a
-    statement naming ``$2`` three times names ``$2``, ``$3`` and ``$4``, each bound to the old ``$2``'s value. A
+    placeholder inside a quoted literal, a quoted name or a comment is text, and stays (:data:`SQL_TOKEN`).
     placeholder inside a quoted literal or identifier is text, and stays.
 
     Some drivers bind each placeholder once (Redshift through a datasource reader refuses a statement naming one
@@ -303,16 +346,13 @@ def one_use_each(sql: str, params: Sequence[Any]) -> tuple[str, list[Any]]:
     """
     sent: list[Any] = []
 
-    def placed(match: re.Match[str]) -> str:
-        if match.group(1) is None:
-            return match.group()
-        number = int(match.group(1))
+    def placed(number: int) -> str:
         if not 1 <= number <= len(params):
             raise ValueError(f"the statement names ${number} but binds {len(params)} parameters")
         sent.append(params[number - 1])
         return f"${len(sent)}"
 
-    return _TOKEN.sub(placed, sql), sent
+    return each_placeholder(sql, placed), sent
 
 
 def narrowing(fragment: Fragment, before: int) -> str:
@@ -406,7 +446,7 @@ class Pin(str):
         """
         if not expression.strip():
             raise ValueError("a pinned expression names its expression")
-        if PLACEHOLDER.search(expression):
+        if _placeholder_numbers(expression):
             raise ValueError(f"a pinned expression takes no parameters, got {expression!r}")
         return cls(expression)
 
@@ -590,7 +630,7 @@ class Selected:
     def __post_init__(self) -> None:
         if not self.expression.strip():
             raise ValueError(f"a selected column {self.alias!r} names its expression")
-        if PLACEHOLDER.search(self.expression):
+        if _placeholder_numbers(self.expression):
             raise ValueError(f"a selected column takes no parameters, got {self.expression!r}")
 
 
@@ -618,4 +658,4 @@ def sqlite_numbered(query: str) -> str:
     :return: the statement, ``?n`` placeholders
     :rtype: str
     """
-    return PLACEHOLDER.sub(r"?\1", query)
+    return each_placeholder(query, lambda number: f"?{number}")

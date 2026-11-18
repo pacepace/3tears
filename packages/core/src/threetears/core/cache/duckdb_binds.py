@@ -25,6 +25,8 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any, Final, TypeVar
 
+from threetears.interfaces.keyed.filters import SQL_TOKEN
+
 try:
     import duckdb
 
@@ -53,8 +55,9 @@ _VARIABLE: Final = "_threetears_bound"
 #: the one-row relation the variable is set from, registered only while it is
 _RELATION: Final = "_threetears_bound_row"
 
-#: a placeholder (``$n`` or ``?``), or a string, quoted name or comment, which holds none
-_TOKENS: Final = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|\$(\d+)|(\?)", re.DOTALL)
+#: a placeholder (``$n``, its number the ``n`` group, or ``?``, the ``q`` group), or a string, quoted name,
+#: dollar-quoted string or comment, which holds none: the keyed builders' one reading (``SQL_TOKEN``) and DuckDB's ``?``
+_TOKENS: Final = re.compile(SQL_TOKEN.pattern + r"|(?P<q>\?)", re.DOTALL)
 
 _INT32: Final = (-(2**31), 2**31 - 1)
 
@@ -119,8 +122,8 @@ def _placeholders(query: str) -> list[re.Match[str]] | None:
     :return: each placeholder's match
     :rtype: list[re.Match[str]] | None
     """
-    found = [m for m in _TOKENS.finditer(query) if m.group(1) or m.group(2)]
-    numbered = {bool(m.group(1)) for m in found}
+    found = [m for m in _TOKENS.finditer(query) if m.group("n") or m.group("q")]
+    numbered = {bool(m.group("n")) for m in found}
     return found if len(numbered) <= 1 else None
 
 
@@ -141,8 +144,8 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
     found = _placeholders(query)
     if not found:
         return None
-    numbered = bool(found[0].group(1))
-    asked = [int(m.group(1)) - 1 for m in found] if numbered else list(range(len(found)))
+    numbered = bool(found[0].group("n"))
+    asked = [int(m.group("n")) - 1 for m in found] if numbered else list(range(len(found)))
     if numbered and (max(asked) >= len(params) or set(asked) != set(range(len(params)))):
         return None
     if not numbered and len(found) != len(params):

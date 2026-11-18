@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### interfaces, core, datasources: a `$1` inside a literal, a quoted name or a comment is not a placeholder
+
+**Fixed:** `renumbered` (every keyed helper moving a fragment's or a `Derived`'s placeholders past its own, through
+`ranked_order` among them) read any `$n` in the text as a placeholder, so a relation naming reports' California race
+'Proposition: 40 - Impose one-time wealth tax over $1 billion' as a literal was refused ("a fragment names $1 but
+binds 0 parameters"), and one binding parameters would have had the literal's text renumbered. A statement is now
+read a token at a time as SQL reads it (`threetears.interfaces.keyed.filters.SQL_TOKEN`): a quoted literal (with `''`,
+an `E'...'` with its escapes, `$$...$$` or `$tag$...$tag$`), a quoted name or a comment holds no placeholder. The same
+reading moves to every other site that moves or fills placeholders: `one_use_each`, `sqlite_numbered`,
+`literal_select`'s literals, `Pin.expr` and `Selected` (which refuse an expression naming a placeholder),
+`threetears.core.cache.duckdb_binds` and `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
+now also leaves a dollar-quoted body and a comment alone). **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
+(also from `threetears.core.keyed`). **Removed:** `threetears.interfaces.keyed.PLACEHOLDER` (new in this release:
+read alone it is the bug), its one caller on `each_placeholder`.
+
 ### core, nats: a copy's checkpoint asks for its whole room before its first part
 
 **Fixed:** `CopyCheckpoints.write` put its parts one by one, each asking the Object Store for its own room, so a
