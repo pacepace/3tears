@@ -1,16 +1,17 @@
 """``ensure_conversation_owner_assignment`` against arity-enforcing collections.
 
 Nothing exercised this function before these tests. ``test_authorize.py``
-constructs its bundle with ``group_collection=object()``, which is honest for
-what it asserts -- it never reaches the ensure path -- and is why the ensure
-path had no coverage at all. ``groups`` is keyed on the composite
+constructs its rbac collections over a registry with no tier wired, which is
+honest for what it asserts -- it never reaches the ensure path -- and is why
+the ensure path had no coverage at all. ``groups`` is keyed on the composite
 ``(row_scope, group_id)`` and ``group_members`` on ``(group_id, id)``; both
 reads passed the bare id, so the function raised ``primary key arity
 mismatch`` at its first statement in every process that reached it, and
 neither the membership write nor the role assignment below had ever executed.
 
 So these tests use the REAL :class:`GroupCollection` /
-:class:`GroupMemberCollection` / :class:`RoleAssignmentCollection`, wired with
+:class:`GroupMemberCollection` / :class:`RoleAssignmentCollection` /
+:class:`RoleCollection`, wired with
 no L1 and no L2 over a mocked asyncpg pool. The pk declaration under test is
 then the production one, ``normalize_pk`` is the production one, and the SQL
 the pool is handed carries the values the caller actually addressed the row
@@ -19,8 +20,7 @@ with.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
@@ -29,9 +29,10 @@ import pytest
 from threetears.agent.acl import (
     GroupCollection,
     GroupMemberCollection,
-    Role,
     RoleAssignmentCollection,
+    RoleCollection,
 )
+from threetears.core.collections import BaseCollection
 from threetears.conversations.authorize import (
     CONVERSATION_OWNER_GROUP_PREFIX,
     CONVERSATION_OWNER_ROLE_NAME,
@@ -63,43 +64,29 @@ class _StubNamespace:
         self.customer_id = customer_id
 
 
-# not a Fake<Name>: the parity walker does not inspect this, and a marker
-# would claim a surface comparison that is not run.
-class _BuiltinRoleCollection:
-    """role collection stand-in serving one builtin role.
+def _role_pool(role_name: str) -> AsyncMock:
+    """build a mocked asyncpg pool whose ``roles`` table holds one builtin platform role.
 
-    only :meth:`find_platform_by_name` participates in the ensure path; the rest of
-    :class:`~threetears.agent.acl.collections.RoleCollection`'s surface is
-    inherited from :class:`~threetears.core.collections.base.BaseCollection`
-    and is not reached here.
+    :param role_name: name of the one builtin role the table holds
+    :ptype role_name: str
+    :return: pool whose ``fetch`` answers a ``roles`` read naming ``role_name`` with that row, and every other read
+        with none
+    :rtype: AsyncMock
     """
-
-    def __init__(self, role: Role) -> None:
-        """store the single builtin role this stand-in reports.
-
-        :param role: builtin role the ensure path looks for by name
-        :ptype role: Role
-        :return: nothing
-        :rtype: None
-        """
-        self._role = role
-
-    async def find_platform_by_name(self, name: str) -> SimpleNamespace | None:
-        """the platform role named ``name``, as :meth:`RoleCollection.find_platform_by_name` answers it.
-
-        :param name: the role's name
-        :ptype name: str
-        :return: the role, carrying ``id``, ``name`` and ``is_builtin``; None when none is named so
-        :rtype: SimpleNamespace | None
-        """
-        return next(
-            (
-                SimpleNamespace(id=role.id, name=role.name, is_builtin=role.is_built_in)
-                for role in (self._role,)
-                if role.name == name
-            ),
-            None,
-        )
+    now = datetime.now(UTC)
+    row = {
+        "role_id": uuid7(),
+        "name": role_name,
+        "description": "",
+        "permissions": {},
+        "customer_id": None,
+        "is_builtin": True,
+        "date_created": now,
+        "date_updated": now,
+    }
+    pool = _pool()
+    pool.fetch = AsyncMock(side_effect=lambda sql, *args: [row] if '"roles"' in sql and role_name in args else [])
+    return pool
 
 
 def _pool() -> AsyncMock:
@@ -118,15 +105,15 @@ def _pool() -> AsyncMock:
     return pool
 
 
-def _collection(cls: type, pool: AsyncMock) -> Any:
+def _collection[C: BaseCollection[Any]](cls: type[C], pool: AsyncMock) -> C:
     """build a real collection over a mocked pool, with no L1 and no L2.
 
     :param cls: collection class to construct
-    :ptype cls: type
+    :ptype cls: type[C]
     :param pool: mocked asyncpg pool serving as the L3 backend
     :ptype pool: AsyncMock
     :return: constructed collection instance
-    :rtype: Any
+    :rtype: C
     """
     registry = MagicMock()
     # a mock registry carries no write-generation source (a MagicMock attribute would be one)
@@ -157,9 +144,7 @@ def wiring() -> tuple[ConversationAuthorizerDependencies, dict[str, AsyncMock], 
         namespace_collection=MagicMock(),
         group_collection=_collection(GroupCollection, pools["groups"]),
         group_member_collection=_collection(GroupMemberCollection, pools["group_members"]),
-        role_collection=_BuiltinRoleCollection(
-            Role(id=uuid7(), name=CONVERSATION_OWNER_ROLE_NAME, permissions={}, is_built_in=True),
-        ),
+        role_collection=_collection(RoleCollection, _role_pool(CONVERSATION_OWNER_ROLE_NAME)),
         role_assignment_collection=_collection(RoleAssignmentCollection, pools["role_assignments"]),
     )
     return deps, pools, uuid7(), uuid7(), uuid7()
@@ -261,9 +246,7 @@ async def test_ensure_skips_every_write_when_the_owner_role_is_unseeded(
     :rtype: None
     """
     deps, pools, user_id, customer_id, namespace_id = wiring
-    deps.role_collection = _BuiltinRoleCollection(
-        Role(id=uuid7(), name="SomeOtherRole", permissions={}, is_built_in=True),
-    )
+    deps.role_collection = _collection(RoleCollection, _role_pool("SomeOtherRole"))
 
     await ensure_conversation_owner_assignment(
         user_id=user_id,

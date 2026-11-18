@@ -15,12 +15,18 @@ import pytest
 
 from threetears.agent.acl import (
     Group,
+    GroupCollection,
+    GroupMemberCollection,
     GroupMembership,
     MemberType,
     Role,
     RoleAssignment,
+    RoleAssignmentCollection,
+    RoleCollection,
     ScopeType,
 )
+from threetears.core.collections import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.namespaces import build_agent_namespace_name
 
 from threetears.conversations import (
@@ -332,16 +338,20 @@ def _build_deps(
 
     membership_loader = _MembershipLoader()
     grant_loader = _GrantLoader()
+    # the rbac collections are real ones over a registry with no tier wired: these tests never reach the owner
+    # ensure path that reads them (test_owner_assignment_ensure.py covers it), so nothing is ever read through them
+    registry = CollectionRegistry()
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return ConversationAuthorizerDependencies(
         acl_cache=AclCache(
             membership_loader=membership_loader,
             grant_loader=grant_loader,
         ),
         namespace_collection=namespace_collection,
-        group_collection=object(),
-        group_member_collection=object(),
-        role_collection=object(),
-        role_assignment_collection=object(),
+        group_collection=GroupCollection(registry, config, nats_client=None),
+        group_member_collection=GroupMemberCollection(registry, config, nats_client=None),
+        role_collection=RoleCollection(registry, config, nats_client=None),
+        role_assignment_collection=RoleAssignmentCollection(registry, config, nats_client=None),
     )
 
 
