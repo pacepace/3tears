@@ -845,6 +845,20 @@ def _claims() -> list[Claim]:
                 f"engine-null-{looks}-{cases}-{plus}-<index>, 0-9999, restated over the product's p",
             )
         )
+        if (cases, plus, looks) == (engine.LOOK_CASES * engine.PLANNED, 0.25, engine.PLANNED):
+            claims.append(
+                Claim(
+                    f"engine.null.{looks}.{cases}.{plus}.baseline",
+                    f"The same reading is the uninterrupted engine watcher's over its plan (looks at {engine.LOOK_CASES}, "
+                    f"{2 * engine.LOOK_CASES} and {cases} coin pairs): it separates at most "
+                    f"{engine.UNINTERRUPTED_LOOKS:.0%}, the line a comparison whose interrupts cut is shown to lean past.",
+                    f"engine-null-{looks}-{cases}-{plus}",
+                    "hits",
+                    "at_most",
+                    engine.UNINTERRUPTED_LOOKS,
+                    f"engine-null-{looks}-{cases}-{plus}-<index>, 0-9999, restated over the product's p",
+                )
+            )
     for reading, law, grader, stop in sorted(engine.SHOWN):
         read = "at a fixed count of 40 at α" if reading == "fixed" else "over a plan of three looks, each at α/3"
         group = (
@@ -878,12 +892,13 @@ def _claims() -> list[Claim]:
                 + (
                     " separates at most α."
                     if shown == "at_most"
-                    else " separates more often than α: the cells the cuts draw afresh lean it past α."
+                    else f" separates more often than the uninterrupted watcher can ({engine.UNINTERRUPTED_LOOKS:.0%}, "
+                    "engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it, though not shown past α."
                 ),
                 group,
                 "hits",
                 shown,
-                alpha,
+                alpha if shown == "at_most" else engine.UNINTERRUPTED_LOOKS,
                 seeds,
             )
         )

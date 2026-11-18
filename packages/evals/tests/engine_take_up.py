@@ -111,8 +111,14 @@ FIXED_CASES, LOOK_CASES, PLANNED = 40, 20, 3
 
 
 #: Comparisons in each long simulation at a fixed count, in each under a plan of looks, and in each smoke check: each
-#: long one a pool request of its own, inside its window.
-FIXED_REPLICATES, LOOKS_REPLICATES, SMOKE = 800, 500, 3
+#: long one a pool request of its own, inside its window. Enough that a rate near 3% shows its Clopper-Pearson upper
+#: bound under α.
+FIXED_REPLICATES, LOOKS_REPLICATES, SMOKE = 2400, 1500, 3
+
+#: The most the uninterrupted watcher over the plan of looks (20, 40 and 60 coin pairs at α/3) separates at, which the
+#: certificate shows of its restated reading (``engine.null.3.60.0.25.baseline``), and above which a comparison whose
+#: interrupts every one cut is shown to lean.
+UNINTERRUPTED_LOOKS = 0.03
 
 CALLER = Caller(scope_id=SCOPE, identity="engine-operator")
 
@@ -788,7 +794,7 @@ def t_test_rate(reading: Reading) -> float:
 #: What a simulation's count shows, by its Clopper-Pearson 95% bounds (``stats_certificate.judge``):
 #:
 #: - ``at_most``: the upper bound is at most α: the reading holds α, interrupted as the row says;
-#: - ``above``: the lower bound is above α: the redrawn cells lean the reading past α.
+#: - ``above``: the lower bound is above :data:`UNINTERRUPTED_LOOKS`: the redrawn cells lean the reading.
 Shown = Literal["at_most", "above"]
 
 #: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.
