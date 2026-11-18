@@ -47,7 +47,8 @@ from threetears.core.namespaces import (
     build_namespace_name,
 )
 
-from packages.agent.workspace.tests.helpers.workspace_shims import FakeWorkspaceEntity
+from threetears.agent.workspace.entities import Workspace
+from packages.agent.workspace.tests.helpers.workspace_shims import make_workspace
 
 #: the schema this deployment's platform tables actually live in. Deliberately
 #: NOT ``platform``: that is the value the removed hardcoded default used, and
@@ -195,20 +196,6 @@ def _pinned(row: dict[str, Any], query: str, params: tuple[Any, ...]) -> bool:
     return True
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    """structural stand-in for :class:`Workspace` carrying what the helper touches.
-
-    :ivar id: workspace id, which is ALSO the id of its paired namespace row
-    :ivar namespace_name: canonical namespace name of the workspace itself
-    :ivar customer_id: what the helper stamps
-    """
-
-    id: UUID
-    namespace_name: str
-    customer_id: UUID | None = None
-
-
 def _make_pool(*, workspace_id: UUID, customer_id: UUID) -> _BrokerLikePool:
     """build a deployment whose platform schema is not called ``platform``.
 
@@ -241,19 +228,15 @@ def _make_pool(*, workspace_id: UUID, customer_id: UUID) -> _BrokerLikePool:
     )
 
 
-def _make_workspace(workspace_id: UUID) -> _FakeWorkspace:
+def _make_workspace(workspace_id: UUID) -> Workspace:
     """build the workspace entity the helper enriches.
 
     :param workspace_id: workspace id
     :ptype workspace_id: UUID
     :return: fake workspace entity
-    :rtype: _FakeWorkspace
+    :rtype: Workspace
     """
-    return _FakeWorkspace(
-        id=workspace_id,
-        # convert at border: canonical namespace-name token segment
-        namespace_name=build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(workspace_id)),
-    )
+    return make_workspace(id=workspace_id)
 
 
 class TestTheFakeReproducesTheDeployment:

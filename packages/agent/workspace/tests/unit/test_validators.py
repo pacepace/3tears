@@ -14,7 +14,7 @@ import sys
 import types
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -32,25 +32,16 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.workspace_shims import (
-    FakeWorkspaceEntity,
+    FakeWorkspaceCollection,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    make_workspace,
 )
 
 
 # ---------------------------------------------------------------------------
 # fakes
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str = "ws"
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
 
 
 @dataclass
@@ -409,7 +400,7 @@ async def test_write_file_atomic_validator_failure_aborts_before_inserts(
         ),
     ]
     pool = _FakePool()
-    ws = _FakeWorkspaceEntity(id=uuid4())
+    ws = make_workspace(id=uuid4())
     with pytest.raises(WorkspaceValidationError) as excinfo:
         await write_file_atomic(
             db_pool=pool,
@@ -420,9 +411,9 @@ async def test_write_file_atomic_validator_failure_aborts_before_inserts(
             actor_id=uuid4(),
             correlation_id=uuid4(),
             expected_sha256=None,
-            workspace_file_collection=None,
-            workspace_file_version_collection=None,
-            workspace_collection=None,
+            workspace_file_collection=FakeWorkspaceFileCollection(),
+            workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+            workspace_collection=FakeWorkspaceCollection(),
             validators=entries,
         )
     assert excinfo.value.pattern == "*.yaml"
@@ -458,7 +449,7 @@ async def test_write_file_atomic_validator_pass_proceeds_to_inserts(
         ),
     ]
     pool = _FakePool()
-    ws = _FakeWorkspaceEntity(id=uuid4())
+    ws = make_workspace(id=uuid4())
     new_version, _new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
@@ -468,9 +459,9 @@ async def test_write_file_atomic_validator_pass_proceeds_to_inserts(
         actor_id=uuid4(),
         correlation_id=uuid4(),
         expected_sha256=None,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
         validators=entries,
     )
     assert new_version == 1
@@ -484,7 +475,7 @@ async def test_write_file_atomic_validator_pass_proceeds_to_inserts(
 async def test_write_file_atomic_no_validators_is_noop() -> None:
     """validators=None preserves pre-shard behavior exactly."""
     pool = _FakePool()
-    ws = _FakeWorkspaceEntity(id=uuid4())
+    ws = make_workspace(id=uuid4())
     new_version, _new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
@@ -494,9 +485,9 @@ async def test_write_file_atomic_no_validators_is_noop() -> None:
         actor_id=uuid4(),
         correlation_id=uuid4(),
         expected_sha256=None,
-        workspace_file_collection=None,
-        workspace_file_version_collection=None,
-        workspace_collection=None,
+        workspace_file_collection=FakeWorkspaceFileCollection(),
+        workspace_file_version_collection=FakeWorkspaceFileVersionCollection(),
+        workspace_collection=FakeWorkspaceCollection(),
         validators=None,
     )
     assert new_version == 1

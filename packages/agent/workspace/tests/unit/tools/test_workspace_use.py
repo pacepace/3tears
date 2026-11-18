@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -14,39 +13,43 @@ from threetears.agent.workspace import pin as pin_module
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools.workspace_use import WorkspaceUseTool
+from threetears.agent.workspace.entities import Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
+    FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
+    make_workspace,
 )
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """minimal stand-in for :class:`Workspace` exposing id and name."""
-
-    id: UUID
-    name: str
-
-
-# parity-exempt: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
-class _FakeCollection:
+class _FakeCollection(FakeWorkspaceCollection):
     """records lookup calls and serves entities keyed by (agent_id, name)."""
 
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
+        super().__init__()
         self._entities = entities
         self.find_by_agent_calls: list[UUID] = []
         self.find_by_agent_and_name_calls: list[tuple[UUID, str]] = []
 
-    async def find_by_agent(self, agent_id: UUID) -> list[_FakeWorkspaceEntity]:
+    async def find_by_agent(self, agent_id: UUID, *, include_deleted: bool = False) -> list[Workspace]:
         self.find_by_agent_calls.append(agent_id)
         return list(self._entities)
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         self.find_by_agent_and_name_calls.append((agent_id, name))
         for entity in self._entities:
             if entity.name == name:
                 return entity
         return None
+
+
+class _FailingCollection(FakeWorkspaceCollection):
+    """a collection whose lookup by name fails as a database outage would."""
+
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
+        raise RuntimeError("db down")
+
+    async def find_by_agent(self, agent_id: UUID, *, include_deleted: bool = False) -> list[Workspace]:
+        return []
 
 
 class _RecordingPin:
@@ -92,7 +95,7 @@ async def test_execute_happy_path_pins_workspace(
     """found workspace pins via pin.set_pin with correct args; returns success."""
     agent_id = uuid4()
     workspace_id = uuid4()
-    entity = _FakeWorkspaceEntity(id=workspace_id, name="main")
+    entity = make_workspace(id=workspace_id, name="main")
     coll = _FakeCollection([entity])
     fake_ctx = _FakeContext()
     tool = WorkspaceUseTool(
@@ -125,8 +128,8 @@ async def test_execute_not_found_returns_error_with_available_names(
     """missing workspace yields error mentioning name and the available list."""
     agent_id = uuid4()
     available = [
-        _FakeWorkspaceEntity(id=uuid4(), name="alpha"),
-        _FakeWorkspaceEntity(id=uuid4(), name="beta"),
+        make_workspace(id=uuid4(), name="alpha"),
+        make_workspace(id=uuid4(), name="beta"),
     ]
     coll = _FakeCollection(available)
     tool = WorkspaceUseTool(
@@ -154,15 +157,8 @@ async def test_execute_traps_collection_errors_as_data(
 ) -> None:
     """collection failures surface as ToolResult(success=False, error=...)."""
 
-    class _Failing:
-        async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Any:
-            raise RuntimeError("db down")
-
-        async def find_by_agent(self, agent_id: UUID) -> list[_FakeWorkspaceEntity]:
-            return []
-
     tool = WorkspaceUseTool(
-        workspace_collection=_Failing(),
+        workspace_collection=_FailingCollection(),
         agent_id=uuid4(),
         context_provider=lambda: _FakeContext(),
         acl_cache=permissive_acl_cache,
@@ -188,7 +184,7 @@ async def test_execute_traps_set_pin_errors_as_data(
         raise RuntimeError("kv unavailable")
 
     monkeypatch.setattr(pin_module, "set_pin", _boom)
-    coll = _FakeCollection([_FakeWorkspaceEntity(id=uuid4(), name="m")])
+    coll = _FakeCollection([make_workspace(id=uuid4(), name="m")])
     tool = WorkspaceUseTool(
         workspace_collection=coll,
         agent_id=uuid4(),

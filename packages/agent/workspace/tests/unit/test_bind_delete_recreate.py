@@ -36,15 +36,16 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     asks_journal_max,
 )
 from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileLease,
     FakeWorkspaceFileLeaseHandle,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -68,39 +69,13 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    """minimal stand-in exposing the attrs bind and capture-back read."""
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-    id: UUID
-    name: str = "ws_test"
-    agent_id: UUID = field(default_factory=uuid4)
-    owner_agent_id: UUID = field(default_factory=uuid4)
-    date_deleted: None = None
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    """head-state file row exposing the fields bind reads."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """serves the one workspace by ``(agent_id, workspace_id)``."""
 
-    def __init__(self, workspace: _FakeWorkspace) -> None:
+    def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
 
-    async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> _FakeWorkspace | None:
+    async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> Workspace | None:
         found = self.workspace.agent_id == agent_id and self.workspace.id == workspace_id
         return self.workspace if found else None
 
@@ -108,10 +83,10 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """the head-state rows L3 holds, set by the test between windows."""
 
-    def __init__(self, files: list[_FakeFile]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self.files = files
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         del workspace_id
         return list(self.files)
 
@@ -126,7 +101,7 @@ class _FakeSandbox(FakeWorkspaceSandbox):
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         del root_name
         return self.root / path
 
@@ -253,7 +228,7 @@ class _FakePool(FakeAsyncpgPool):
 
 @asynccontextmanager
 async def _window(
-    ws: _FakeWorkspace,
+    ws: Workspace,
     files: _FakeFileCollection,
     pool: _FakePool,
     bind_root: Path,
@@ -261,7 +236,7 @@ async def _window(
     """one L3_WINS bind window over the fakes, with an idle watcher.
 
     :param ws: the workspace
-    :ptype ws: _FakeWorkspace
+    :ptype ws: Workspace
     :param files: the head-state rows L3 holds as the window opens
     :ptype files: _FakeFileCollection
     :param pool: the pool capture-back writes through
@@ -274,11 +249,11 @@ async def _window(
     async with bind(
         agent_id=ws.agent_id,
         workspace_id=ws.id,
-        sandbox=_FakeSandbox(bind_root),  # type: ignore[arg-type]
+        sandbox=_FakeSandbox(bind_root),
         lease=_FakeLease(),  # type: ignore[arg-type]
-        workspace_collection=_FakeWorkspaceCollection(ws),  # type: ignore[arg-type]
-        workspace_file_collection=files,  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection(ws),
+        workspace_file_collection=files,
+        workspace_file_version_collection=_FakeVersionCollection(),
         db_pool=pool,
         actor_id=uuid4(),
         correlation_id=uuid4(),
@@ -308,7 +283,7 @@ async def test_capture_back_delete_then_recreate_emits_monotonic_versions(
        emit version 3 (not 1), proving journal-derived version wins over
        a raw counter.
     """
-    ws = _FakeWorkspace(id=uuid4())
+    ws = make_workspace(id=uuid4(), name="ws_test")
     bind_root = tmp_path / "bind_root"
     bind_root.mkdir()
 
@@ -316,7 +291,9 @@ async def test_capture_back_delete_then_recreate_emits_monotonic_versions(
     # seed journal to reflect an already-present version 1 row for a.txt;
     # the journal-max cache emulates what L3 returns on the COALESCE query.
     pool.conn.journal_max_by_path[(ws.id, "a.txt")] = 1
-    files = _FakeFileCollection([_FakeFile("a.txt", b"alpha", _sha256(b"alpha"), 1)])
+    files = _FakeFileCollection(
+        [make_workspace_file(relative_path="a.txt", content=b"alpha", sha256=_sha256(b"alpha"), version=1)]
+    )
 
     # phase 1: the window projects a.txt onto disk; the body deletes it.
     async with _window(ws, files, pool, bind_root) as disk_root:

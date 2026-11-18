@@ -48,15 +48,16 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileLease,
     FakeWorkspaceFileLeaseHandle,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
+    make_workspace_file,
 )
 from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
@@ -70,45 +71,14 @@ def _sha(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    """stand-in for :class:`Workspace` exposing the fields bind reads."""
-
-    id: UUID
-    name: str
-    current_version: int = 0
-    date_deleted: datetime | None = None
-    # WS-ACL-10: capture-back audit publishes require owner_agent_id
-    owner_agent_id: UUID = field(default_factory=uuid4)
-    # collections-task-02: workspaces is partitioned on agent_id; the
-    # capture / watch / seed paths thread workspace.agent_id into
-    # UPDATE workspaces SQL.
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    """stand-in for :class:`WorkspaceFile` exposing the fields bind reads."""
-
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """fake :class:`WorkspaceCollection` exposing :meth:`find_by_id`."""
 
-    def __init__(self, workspaces: list[_FakeWorkspace]) -> None:
+    def __init__(self, workspaces: list[Workspace]) -> None:
         self.workspaces = workspaces
         self.find_by_id_calls: list[tuple[UUID, UUID]] = []
 
-    async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> _FakeWorkspace | None:
+    async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> Workspace | None:
         self.find_by_id_calls.append((agent_id, workspace_id))
         for ws in self.workspaces:
             if ws.id == workspace_id and ws.agent_id == agent_id and ws.date_deleted is None:
@@ -119,10 +89,10 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake :class:`WorkspaceFileCollection` exposing :meth:`find_by_workspace`."""
 
-    def __init__(self, files: list[_FakeFile]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         self._files = files
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         del workspace_id
         return list(self._files)
 
@@ -137,7 +107,7 @@ class _FakeSandbox(FakeWorkspaceSandbox):
     def __init__(self, roots: dict[str, Path]) -> None:
         self.roots = roots
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         root = self.roots[root_name]
         candidate = (root / path).resolve()
         candidate.relative_to(root)
@@ -289,7 +259,7 @@ def _build_harness(
     tmp_path: Path,
     *,
     workspace_name: str = "ws_test",
-    initial_files: list[_FakeFile] | None = None,
+    initial_files: list[WorkspaceFile] | None = None,
 ) -> dict[str, Any]:
     """assemble a fake bind environment wired against ``tmp_path``.
 
@@ -300,7 +270,7 @@ def _build_harness(
     at N would diverge from the real DB state.
     """
     ws_id = uuid7()
-    ws = _FakeWorkspace(id=ws_id, name=workspace_name)
+    ws = make_workspace(id=ws_id, name=workspace_name)
     bind_root = tmp_path / "bind_root"
     bind_root.mkdir(parents=True, exist_ok=True)
     sandbox = _FakeSandbox({"bind": bind_root})
@@ -367,7 +337,7 @@ async def test_bind_sync_l3_to_disk_on_enter(tmp_path: Path) -> None:
     content = b"hello\n"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("a.txt", content, _sha(content), 1)],
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
     )
     async with await _call_bind(harness) as disk_root:
         assert (disk_root / "a.txt").read_bytes() == content
@@ -381,7 +351,9 @@ async def test_bind_body_updates_file_emits_update_journal(
     initial = b"v1"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("notes.txt", initial, _sha(initial), 1)],
+        initial_files=[
+            make_workspace_file(relative_path="notes.txt", content=initial, sha256=_sha(initial), version=1)
+        ],
     )
     async with await _call_bind(harness) as disk_root:
         (disk_root / "notes.txt").write_bytes(b"v2")
@@ -426,7 +398,7 @@ async def test_bind_body_deletes_file_emits_delete_journal(
     content = b"goodbye"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("bye.txt", content, _sha(content), 3)],
+        initial_files=[make_workspace_file(relative_path="bye.txt", content=content, sha256=_sha(content), version=3)],
     )
     async with await _call_bind(harness) as disk_root:
         (disk_root / "bye.txt").unlink()
@@ -506,8 +478,8 @@ async def test_bind_exit_skips_a_directory_it_cannot_read_keeps_its_rows_and_cap
     harness = _build_harness(
         tmp_path,
         initial_files=[
-            _FakeFile("sub/kept.txt", content, _sha(content), 2),
-            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+            make_workspace_file(relative_path="sub/kept.txt", content=content, sha256=_sha(content), version=2),
+            make_workspace_file(relative_path="gone.txt", content=b"gone", sha256=_sha(b"gone"), version=1),
         ],
     )
     skipped_before = _skipped("capture_back")
@@ -541,7 +513,10 @@ async def test_bind_exit_skips_a_directory_it_cannot_read_keeps_its_rows_and_cap
 async def test_bind_exit_refuses_a_root_it_cannot_list(tmp_path: Path) -> None:
     """the root is never a subtree to skip: an unlistable root still refuses, and deletes nothing."""
     content = b"still here"
-    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
+    )
     unlistable = None
     try:
         with pytest.raises(CaptureBackFailedError) as failed:
@@ -564,7 +539,10 @@ async def test_bind_exit_refuses_a_root_that_is_gone(tmp_path: Path) -> None:
     import shutil
 
     content = b"still here"
-    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
+    )
 
     with pytest.raises(CaptureBackFailedError) as failed:
         async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
@@ -579,7 +557,10 @@ async def test_bind_exit_refuses_a_root_that_is_gone(tmp_path: Path) -> None:
 async def test_bind_exit_refuses_a_root_now_on_another_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """an unmounted volume leaves an empty mount point at the root; capture-back refuses it rather than delete all."""
     content = b"on the volume"
-    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
+    )
     disk_root = harness["bind_root"] / harness["workspace"].name
     stat = _RootOnAnotherDevice(disk_root).install(monkeypatch)
 
@@ -598,7 +579,10 @@ async def test_bind_exit_still_deletes_every_file_the_body_removed(tmp_path: Pat
     """the guards refuse an unreadable or replaced root, never a body that deleted every file."""
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("a.txt", b"a", _sha(b"a"), 1), _FakeFile("sub/b.txt", b"b", _sha(b"b"), 1)],
+        initial_files=[
+            make_workspace_file(relative_path="a.txt", content=b"a", sha256=_sha(b"a"), version=1),
+            make_workspace_file(relative_path="sub/b.txt", content=b"b", sha256=_sha(b"b"), version=1),
+        ],
     )
     async with await _call_bind(harness, watch_changes=ScriptedWatch()) as disk_root:
         (disk_root / "a.txt").unlink()
@@ -617,8 +601,8 @@ async def test_a_disk_wins_seed_skips_a_directory_it_cannot_read_and_keeps_its_r
     harness = _build_harness(
         tmp_path,
         initial_files=[
-            _FakeFile("sub/kept.txt", content, _sha(content), 2),
-            _FakeFile("gone.txt", b"gone", _sha(b"gone"), 1),
+            make_workspace_file(relative_path="sub/kept.txt", content=content, sha256=_sha(content), version=2),
+            make_workspace_file(relative_path="gone.txt", content=b"gone", sha256=_sha(b"gone"), version=1),
         ],
     )
     disk_root = harness["bind_root"] / harness["workspace"].name
@@ -653,7 +637,10 @@ async def test_a_disk_wins_seed_refuses_a_root_on_another_device(
 ) -> None:
     """the device recorded when the window opens is checked again before the seed reads disk."""
     content = b"on the volume"
-    harness = _build_harness(tmp_path, initial_files=[_FakeFile("a.txt", content, _sha(content), 1)])
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
+    )
     disk_root = harness["bind_root"] / harness["workspace"].name
     disk_root.mkdir(parents=True)
     # the first stat of the root records its device; every later one finds it elsewhere
@@ -674,7 +661,9 @@ async def test_bind_body_no_changes_opens_no_transaction(
     content = b"stable"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("fixed.txt", content, _sha(content), 1)],
+        initial_files=[
+            make_workspace_file(relative_path="fixed.txt", content=content, sha256=_sha(content), version=1)
+        ],
     )
     async with await _call_bind(harness):
         pass
@@ -696,7 +685,7 @@ async def test_bind_body_exception_skips_capture_and_releases_lease(
     content = b"v1"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("a.txt", content, _sha(content), 1)],
+        initial_files=[make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1)],
     )
 
     class _Boom(RuntimeError):
@@ -774,7 +763,9 @@ async def test_recover_writes_disk_diffs_back_to_l3(tmp_path: Path) -> None:
     existing = b"original"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("live.txt", existing, _sha(existing), 2)],
+        initial_files=[
+            make_workspace_file(relative_path="live.txt", content=existing, sha256=_sha(existing), version=2)
+        ],
     )
 
     # pre-populate disk root to simulate what a crashed bind left behind
@@ -806,7 +797,7 @@ async def test_recover_unchanged_file_skipped(tmp_path: Path) -> None:
     content = b"same"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("keep.txt", content, _sha(content), 1)],
+        initial_files=[make_workspace_file(relative_path="keep.txt", content=content, sha256=_sha(content), version=1)],
     )
     disk_root = harness["bind_root"] / harness["workspace"].name
     disk_root.mkdir(parents=True, exist_ok=True)
@@ -899,7 +890,7 @@ async def test_bind_emits_one_audit_event_per_changed_file(
     initial = b"v1"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("a.txt", initial, _sha(initial), 1)],
+        initial_files=[make_workspace_file(relative_path="a.txt", content=initial, sha256=_sha(initial), version=1)],
     )
     nats = _FakeNats()
     # WS-ACL-10 audit publish reads identity from the current scope.
@@ -991,7 +982,9 @@ async def test_bind_no_changes_publishes_no_audit_events(tmp_path: Path) -> None
     content = b"stable"
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("fixed.txt", content, _sha(content), 1)],
+        initial_files=[
+            make_workspace_file(relative_path="fixed.txt", content=content, sha256=_sha(content), version=1)
+        ],
     )
     nats = _FakeNats()
     async with bind(
@@ -1070,7 +1063,7 @@ async def test_watch_batch_deleted_change_emits_delete(tmp_path: Path) -> None:
     watch = ScriptedWatch()
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("gone.txt", content, _sha(content), 2)],
+        initial_files=[make_workspace_file(relative_path="gone.txt", content=content, sha256=_sha(content), version=2)],
     )
     executions = harness["pool"].conn.executions
     async with await _call_bind(harness, on_conflict=BindConflictPolicy.DISK_WINS, watch_changes=watch) as disk_root:
@@ -1118,7 +1111,9 @@ async def test_watch_batch_just_wrote_suppresses_roundtrip(
     watch = ScriptedWatch()
     harness = _build_harness(
         tmp_path,
-        initial_files=[_FakeFile("own_write.txt", payload, _sha(payload), 1)],
+        initial_files=[
+            make_workspace_file(relative_path="own_write.txt", content=payload, sha256=_sha(payload), version=1)
+        ],
     )
     executions = harness["pool"].conn.executions
     async with await _call_bind(harness, watch_changes=watch) as disk_root:

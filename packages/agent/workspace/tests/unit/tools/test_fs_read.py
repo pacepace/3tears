@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -17,12 +15,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.fs_read import FsReadTool
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -31,47 +30,29 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: datetime | None = None
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-    date_updated: datetime = datetime(2026, 1, 1, tzinfo=UTC)
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
         self.find_calls: list[tuple[UUID, str]] = []
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> _FakeFileEntity | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         self.find_calls.append((workspace_id, relative_path))
         for f in self._files:
             if f.relative_path == relative_path:
@@ -112,18 +93,18 @@ class _FakeContext(FakeWorkspaceContext):
 def _build_tool(
     *,
     acl_cache: Any,
-    workspace_entities: list[_FakeWorkspaceEntity] | None = None,
-    files: list[_FakeFileEntity] | None = None,
+    workspace_entities: list[Workspace] | None = None,
+    files: list[WorkspaceFile] | None = None,
     deny_reads: list[str] | None = None,
     agent_id: UUID | None = None,
 ) -> tuple[FsReadTool, _FakeFileCollection, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    workspaces = _FakeWorkspaceCollection(workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")])
+    workspaces = _FakeWorkspaceCollection(workspace_entities or [make_workspace(id=uuid4(), name="ws")])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = FsReadTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=file_coll,  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=file_coll,
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -142,12 +123,9 @@ async def test_fs_read_happy_returns_content_sha_version(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """explicit workspace + allowed read returns text + metadata."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="docs/readme.md",
-        content=b"hello world",
-        sha256="a" * 64,
-        version=2,
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(
+        relative_path="docs/readme.md", content=b"hello world", sha256="a" * 64, version=2
     )
     tool, files, sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
@@ -170,13 +148,8 @@ async def test_fs_read_binary_returns_base64_with_is_binary_true(
 ) -> None:
     """non-UTF-8 content returns base64 and is_binary=True."""
     raw = b"\x89PNG\r\n\x1a\n\xff\xfe"
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="img/logo.png",
-        content=raw,
-        sha256="b" * 64,
-        version=1,
-    )
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(relative_path="img/logo.png", content=raw, sha256="b" * 64, version=1)
     tool, _files, _sandbox, _ = _build_tool(
         workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
     )
@@ -199,7 +172,7 @@ async def test_fs_read_missing_file_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """file not in head-state returns ToolResult.success=False."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="missing.md", workspace="ws")
     assert result.success is False
@@ -213,17 +186,10 @@ async def test_fs_read_sandbox_denied_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """SandboxDenied becomes ToolResult with error text (no raise)."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, files, sandbox, _ = _build_tool(
         workspace_entities=[ws],
-        files=[
-            _FakeFileEntity(
-                relative_path="secret.env",
-                content=b"TOKEN=xyz",
-                sha256="c" * 64,
-                version=1,
-            )
-        ],
+        files=[make_workspace_file(relative_path="secret.env", content=b"TOKEN=xyz", sha256="c" * 64, version=1)],
         deny_reads=["secret.env"],
         acl_cache=permissive_acl_cache,
     )

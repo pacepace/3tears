@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -23,13 +22,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -46,52 +46,28 @@ _FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audien
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: datetime | None = None
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-    date_updated: datetime = datetime(2026, 1, 1, tzinfo=UTC)
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> _FakeFileEntity | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         for f in self._files:
             if f.relative_path == relative_path:
                 return f
@@ -201,14 +177,14 @@ class _FakePool(FakeAsyncpgPool):
 def _build_tool(
     *,
     acl_cache: Any,
-    workspace_entities: list[_FakeWorkspaceEntity] | None = None,
-    files: list[_FakeFileEntity] | None = None,
+    workspace_entities: list[Workspace] | None = None,
+    files: list[WorkspaceFile] | None = None,
     head_row: dict[str, Any] | None = None,
     deny_writes: list[str] | None = None,
     agent_id: UUID | None = None,
 ) -> tuple[DocSetTool, _FakePool, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    ws_entity = workspace_entities[0] if workspace_entities else _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws_entity = workspace_entities[0] if workspace_entities else make_workspace(id=uuid4(), name="ws")
     workspaces = _FakeWorkspaceCollection(workspace_entities or [ws_entity])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_writes=deny_writes)
@@ -217,9 +193,9 @@ def _build_tool(
     if head_row is not None and "version" in head_row:
         pool.conn.journal_max_version = int(head_row["version"])
     tool = DocSetTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=file_coll,  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=file_coll,
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -243,14 +219,11 @@ async def test_doc_set_mutates_scalar_preserves_key_order(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """scalar mutation preserves YAML key order in the written bytes."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
     sha_initial = hashlib.sha256(initial).hexdigest()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=initial,
-        sha256=sha_initial,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=initial, sha256=sha_initial, version=1
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
     tool, pool, _sandbox, _ = _build_tool(
@@ -299,13 +272,10 @@ async def test_doc_set_preserves_comments_round_trip(
         "    - audience_unit: donors\n"
         "      vb_candidates: 2\n"
     ).encode("utf-8")
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     sha_initial = hashlib.sha256(commented_yaml).hexdigest()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=commented_yaml,
-        sha256=sha_initial,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=commented_yaml, sha256=sha_initial, version=1
     )
     head = {
         "content": commented_yaml,
@@ -342,13 +312,8 @@ async def test_doc_set_sandbox_denied_returns_clean_error_no_writes(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """SandboxDenied -> clean error; no DB reads or writes happened."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="secret.yaml",
-        content=b"k: v\n",
-        sha256="a" * 64,
-        version=1,
-    )
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(relative_path="secret.yaml", content=b"k: v\n", sha256="a" * 64, version=1)
     tool, pool, sandbox, _ = _build_tool(
         workspace_entities=[ws],
         files=[file_entity],
@@ -382,14 +347,11 @@ async def test_doc_set_stale_expected_sha_returns_mismatch_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """expected_sha256 != current sha -> clean error naming current sha."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
     sha_current = hashlib.sha256(initial).hexdigest()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=initial,
-        sha256=sha_current,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=initial, sha256=sha_current, version=1
     )
     head = {"content": initial, "sha256": sha_current, "version": 1}
     tool, pool, _sandbox, _ = _build_tool(
@@ -424,13 +386,8 @@ async def test_doc_set_unknown_format_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """file with unregistered suffix -> clean error naming path."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    file_entity = _FakeFileEntity(
-        relative_path="notes.txt",
-        content=b"plain",
-        sha256="b" * 64,
-        version=1,
-    )
+    ws = make_workspace(id=uuid4(), name="ws")
+    file_entity = make_workspace_file(relative_path="notes.txt", content=b"plain", sha256="b" * 64, version=1)
     tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
@@ -459,7 +416,7 @@ async def test_doc_set_missing_file_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """no head row -> clean error naming file and workspace, no writes."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
@@ -486,14 +443,11 @@ async def test_doc_set_writes_inside_single_transaction(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """every execute + fetchrow happens inside one transaction."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
     sha_initial = hashlib.sha256(initial).hexdigest()
-    file_entity = _FakeFileEntity(
-        relative_path="audience_settings.yaml",
-        content=initial,
-        sha256=sha_initial,
-        version=1,
+    file_entity = make_workspace_file(
+        relative_path="audience_settings.yaml", content=initial, sha256=sha_initial, version=1
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
     tool, pool, _sandbox, _ = _build_tool(

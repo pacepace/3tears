@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -22,13 +21,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -37,52 +37,28 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: datetime | None = None
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-    date_updated: datetime = datetime(2026, 1, 1, tzinfo=UTC)
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> _FakeFileEntity | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         for f in self._files:
             if f.relative_path == relative_path:
                 return f
@@ -188,23 +164,23 @@ class _FakePool(FakeAsyncpgPool):
 def _build_tool(
     *,
     acl_cache: Any,
-    workspace_entities: list[_FakeWorkspaceEntity] | None = None,
-    files: list[_FakeFileEntity] | None = None,
+    workspace_entities: list[Workspace] | None = None,
+    files: list[WorkspaceFile] | None = None,
     head_row: dict[str, Any] | None = None,
     deny_writes: list[str] | None = None,
     agent_id: UUID | None = None,
 ) -> tuple[FsWriteTool, _FakePool, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    ws_entity = workspace_entities[0] if workspace_entities else _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws_entity = workspace_entities[0] if workspace_entities else make_workspace(id=uuid4(), name="ws")
     workspaces = _FakeWorkspaceCollection(workspace_entities or [ws_entity])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_writes=deny_writes)
     pool = _FakePool()
     pool.conn.head_row = head_row
     tool = FsWriteTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=file_coll,  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=file_coll,
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -276,12 +252,7 @@ async def test_fs_write_update_existing_file_bumps_version_and_sha(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """existing head -> action=update, version incremented, sha changes."""
-    existing = _FakeFileEntity(
-        relative_path="a.md",
-        content=b"old",
-        sha256="old" * 21 + "o",
-        version=5,
-    )
+    existing = make_workspace_file(relative_path="a.md", content=b"old", sha256="old" * 21 + "o", version=5)
     head = {"content": b"old", "sha256": "old" * 21 + "o", "version": 5}
     tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
     pool.conn.journal_max_version = 5
@@ -309,12 +280,7 @@ async def test_fs_write_stale_expected_sha_returns_mismatch_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """expected_sha256 != current sha -> error names current sha and advises retry."""
-    existing = _FakeFileEntity(
-        relative_path="a.md",
-        content=b"old",
-        sha256="c" * 64,
-        version=2,
-    )
+    existing = make_workspace_file(relative_path="a.md", content=b"old", sha256="c" * 64, version=2)
     head = {"content": b"old", "sha256": "c" * 64, "version": 2}
     tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
 

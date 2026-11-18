@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4, uuid7
@@ -34,15 +33,16 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileLease,
     FakeWorkspaceFileLeaseHandle,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -57,52 +57,14 @@ def _sha(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    """stand-in for :class:`Workspace` exposing fields bind reads.
-
-    :ivar id: workspace identifier
-    :ivar name: workspace name
-    :ivar current_version: current version pointer
-    :ivar date_deleted: soft-delete timestamp, None when live
-    """
-
-    id: UUID
-    name: str
-    current_version: int = 0
-    date_deleted: datetime | None = None
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
-@dataclass
-class _FakeFile(FakeWorkspaceFile):
-    """stand-in for :class:`WorkspaceFile` exposing fields bind reads.
-
-    :ivar relative_path: workspace-relative path
-    :ivar content: file content bytes
-    :ivar sha256: sha256 hex digest of content
-    :ivar version: file version number
-    """
-
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """fake :class:`WorkspaceCollection` exposing :meth:`find_by_id`."""
 
-    def __init__(self, workspaces: list[_FakeWorkspace]) -> None:
+    def __init__(self, workspaces: list[Workspace]) -> None:
         """capture workspaces list the collection serves.
 
         :param workspaces: live workspace entities to serve
-        :ptype workspaces: list[_FakeWorkspace]
+        :ptype workspaces: list[Workspace]
         :return: None
         :rtype: None
         """
@@ -112,7 +74,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         self,
         agent_id: UUID,
         workspace_id: UUID,
-    ) -> _FakeWorkspace | None:
+    ) -> Workspace | None:
         """locate a live workspace by ``(agent_id, workspace_id)`` pair.
 
         :param agent_id: agent partition the workspace belongs to
@@ -120,9 +82,9 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param workspace_id: identifier to lookup
         :ptype workspace_id: UUID
         :return: matched workspace or None
-        :rtype: _FakeWorkspace | None
+        :rtype: Workspace | None
         """
-        result: _FakeWorkspace | None = None
+        result: Workspace | None = None
         for ws in self._workspaces:
             if ws.id == workspace_id and ws.agent_id == agent_id and ws.date_deleted is None:
                 result = ws
@@ -140,11 +102,11 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
     the rows the import step just committed.
     """
 
-    def __init__(self, files: list[_FakeFile]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         """capture files the collection serves.
 
         :param files: head-state file entities
-        :ptype files: list[_FakeFile]
+        :ptype files: list[WorkspaceFile]
         :return: None
         :rtype: None
         """
@@ -166,29 +128,26 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
         """
         self._conn = conn
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         """count calls and return a file list reflecting current state.
 
         :param workspace_id: unused; fake is single-workspace
         :ptype workspace_id: UUID
         :return: file list reflecting seeds and any conn-written upserts
-        :rtype: list[_FakeFile]
+        :rtype: list[WorkspaceFile]
         """
         del workspace_id
         self.find_calls += 1
-        result: list[_FakeFile]
+        result: list[WorkspaceFile]
         if self._conn is None:
             result = list(self._files)
         else:
             # merge seeded files with conn-side head_by_path so tests can
             # observe what bind's capture-back snapshot would see.
-            by_path: dict[str, _FakeFile] = {f.relative_path: f for f in self._files}
+            by_path: dict[str, WorkspaceFile] = {f.relative_path: f for f in self._files}
             for rel, row in self._conn.head_by_path.items():
-                by_path[rel] = _FakeFile(
-                    relative_path=rel,
-                    content=row["content"],
-                    sha256=row["sha256"],
-                    version=row["version"],
+                by_path[rel] = make_workspace_file(
+                    relative_path=rel, content=row["content"], sha256=row["sha256"], version=row["version"]
                 )
             result = list(by_path.values())
         return result
@@ -211,11 +170,11 @@ class _FakeSandbox(FakeWorkspaceSandbox):
         """
         self._roots = roots
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         """resolve ``root / path`` while enforcing simple parentage.
 
         :param path: workspace-relative path
-        :ptype path: str
+        :ptype path: str | Path
         :param root_name: named root to resolve under
         :ptype root_name: str
         :return: resolved absolute path
@@ -457,18 +416,18 @@ class _FakePool(FakeAsyncpgPool):
         return _FakeAcquireCM(conn=self.conn)
 
 
-def _harness(tmp_path: Path, initial_files: list[_FakeFile]) -> dict[str, Any]:
+def _harness(tmp_path: Path, initial_files: list[WorkspaceFile]) -> dict[str, Any]:
     """build a fake bind harness rooted at ``tmp_path``.
 
     :param tmp_path: scratch root from pytest
     :ptype tmp_path: Path
     :param initial_files: seed head-state file list
-    :ptype initial_files: list[_FakeFile]
+    :ptype initial_files: list[WorkspaceFile]
     :return: harness dict with wired fakes
     :rtype: dict[str, Any]
     """
     ws_id = uuid7()
-    ws = _FakeWorkspace(id=ws_id, name="ws_test")
+    ws = make_workspace(id=ws_id, name="ws_test")
     bind_root = tmp_path / "bind_root"
     bind_root.mkdir(parents=True, exist_ok=True)
     sandbox = _FakeSandbox({"bind": bind_root})
@@ -577,7 +536,7 @@ async def test_populated_l3_does_not_reimport(tmp_path: Path) -> None:
     h = _harness(
         tmp_path,
         initial_files=[
-            _FakeFile("seeded.txt", existing, _sha(existing), 1),
+            make_workspace_file(relative_path="seeded.txt", content=existing, sha256=_sha(existing), version=1),
         ],
     )
     # pretend disk has a new file that bind would pick up on capture-back
@@ -616,7 +575,7 @@ async def test_second_bind_after_import_is_no_op_on_enter(
     h = _harness(
         tmp_path,
         initial_files=[
-            _FakeFile("a.txt", content, _sha(content), 1),
+            make_workspace_file(relative_path="a.txt", content=content, sha256=_sha(content), version=1),
         ],
     )
     disk_root = h["bind_root"] / h["workspace"].name

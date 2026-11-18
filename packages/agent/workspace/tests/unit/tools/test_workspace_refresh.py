@@ -26,14 +26,15 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -48,35 +49,14 @@ def _sha(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    """stand-in for :class:`Workspace`.
-
-    :ivar id: workspace identifier
-    :ivar name: workspace name
-    :ivar agent_id: owning agent (partition column on workspaces)
-    :ivar date_deleted: soft-delete timestamp, None when live
-    """
-
-    id: UUID
-    name: str
-    agent_id: UUID = field(default_factory=uuid4)
-    date_deleted: Any = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """fake workspace collection serving resolve_workspace."""
 
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         """capture entities.
 
         :param entities: workspace entities to serve
-        :ptype entities: list[_FakeWorkspaceEntity]
+        :ptype entities: list[Workspace]
         :return: None
         :rtype: None
         """
@@ -86,7 +66,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         self,
         agent_id: UUID,
         name: str,
-    ) -> _FakeWorkspaceEntity | None:
+    ) -> Workspace | None:
         """locate by (agent_id, name).
 
         :param agent_id: owning agent (unused)
@@ -94,10 +74,10 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param name: workspace name
         :ptype name: str
         :return: matched entity or None
-        :rtype: _FakeWorkspaceEntity | None
+        :rtype: Workspace | None
         """
         del agent_id
-        result: _FakeWorkspaceEntity | None = None
+        result: Workspace | None = None
         for e in self._entities:
             if e.name == name:
                 result = e
@@ -108,7 +88,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         self,
         workspace_id: UUID,
         agent_id: UUID,
-    ) -> _FakeWorkspaceEntity | None:
+    ) -> Workspace | None:
         """locate by (id, agent).
 
         :param workspace_id: target id
@@ -116,10 +96,10 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         :param agent_id: owning agent (unused)
         :ptype agent_id: UUID
         :return: matched entity or None
-        :rtype: _FakeWorkspaceEntity | None
+        :rtype: Workspace | None
         """
         del agent_id
-        result: _FakeWorkspaceEntity | None = None
+        result: Workspace | None = None
         for e in self._entities:
             if e.id == workspace_id:
                 result = e
@@ -127,28 +107,14 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         return result
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    """stand-in for :class:`WorkspaceFile`.
-
-    :ivar relative_path: path within workspace
-    :ivar sha256: hex digest
-    :ivar version: version number
-    """
-
-    relative_path: str
-    sha256: str
-    version: int = 1
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake head-state file collection."""
 
-    def __init__(self, files: list[_FakeFileEntity]) -> None:
+    def __init__(self, files: list[WorkspaceFile]) -> None:
         """capture seeded files.
 
         :param files: head-state entities to serve
-        :ptype files: list[_FakeFileEntity]
+        :ptype files: list[WorkspaceFile]
         :return: None
         :rtype: None
         """
@@ -157,13 +123,13 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
     async def find_by_workspace(
         self,
         workspace_id: UUID,
-    ) -> list[_FakeFileEntity]:
+    ) -> list[WorkspaceFile]:
         """return seeded files (copy).
 
         :param workspace_id: unused
         :ptype workspace_id: UUID
         :return: copy of seeded files
-        :rtype: list[_FakeFileEntity]
+        :rtype: list[WorkspaceFile]
         """
         del workspace_id
         return list(self._files)
@@ -186,11 +152,11 @@ class _FakeSandbox(FakeWorkspaceSandbox):
         """
         self._roots = roots
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         """resolve ``root / path``; raise :class:`KeyError` for unknown roots.
 
         :param path: relative path below the root
-        :ptype path: str
+        :ptype path: str | Path
         :param root_name: named root
         :ptype root_name: str
         :return: resolved absolute path
@@ -365,7 +331,7 @@ async def test_refresh_happy_path_imports_disk_files(
     """
     agent_id = uuid4()
     workspace_id = uuid7()
-    entity = _FakeWorkspaceEntity(id=workspace_id, name="ws_test")
+    entity = make_workspace(id=workspace_id, name="ws_test")
     wcoll = _FakeWorkspaceCollection([entity])
     fcoll = _FakeFileCollection([])
     vcoll = _FakeVersionCollection()
@@ -419,7 +385,7 @@ async def test_refresh_no_bind_root_returns_clean_error(
     del tmp_path
     agent_id = uuid4()
     workspace_id = uuid7()
-    entity = _FakeWorkspaceEntity(id=workspace_id, name="ws_test")
+    entity = make_workspace(id=workspace_id, name="ws_test")
     wcoll = _FakeWorkspaceCollection([entity])
     fcoll = _FakeFileCollection([])
     vcoll = _FakeVersionCollection()
@@ -457,13 +423,9 @@ async def test_refresh_idempotent_on_unchanged_files(
     """
     agent_id = uuid4()
     workspace_id = uuid7()
-    entity = _FakeWorkspaceEntity(id=workspace_id, name="ws_test")
+    entity = make_workspace(id=workspace_id, name="ws_test")
     content = b"stable\n"
-    head = _FakeFileEntity(
-        relative_path="alpha.yaml",
-        sha256=_sha(content),
-        version=1,
-    )
+    head = make_workspace_file(relative_path="alpha.yaml", sha256=_sha(content), version=1)
     wcoll = _FakeWorkspaceCollection([entity])
     fcoll = _FakeFileCollection([head])
     vcoll = _FakeVersionCollection()

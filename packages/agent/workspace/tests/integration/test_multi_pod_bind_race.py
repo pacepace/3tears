@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4, uuid7
@@ -48,46 +47,28 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
+from threetears.agent.workspace.entities import Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceEntity,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
+    make_workspace,
 )
 
 
 pytestmark = pytest.mark.asyncio
 
 
-@dataclass
-class _FakeWorkspace(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    agent_id: UUID
-    current_version: int = 0
-    date_deleted: datetime | None = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-    @property
-    def owner_agent_id(self) -> UUID:
-        """alias of :attr:`agent_id` matching the production entity."""
-        return self.agent_id
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, ws: _FakeWorkspace) -> None:
+    def __init__(self, ws: Workspace) -> None:
         self._ws = ws
 
     async def find_by_id(
         self,
         agent_id: UUID,
         workspace_id: UUID,
-    ) -> _FakeWorkspace | None:
+    ) -> Workspace | None:
         if workspace_id != self._ws.id or agent_id != self._ws.agent_id:
             return None
         return self._ws
@@ -106,7 +87,7 @@ class _FakeSandbox(FakeWorkspaceSandbox):
     def __init__(self, roots: dict[str, Path]) -> None:
         self._roots = roots
 
-    def resolve_fs_path(self, path: str, root_name: str) -> Path:
+    def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         root = self._roots[root_name]
         candidate = (root / path).resolve()
         candidate.relative_to(root)
@@ -169,7 +150,7 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
     ws_name = "racer"
     (bind_root / ws_name).mkdir()
     agent_id = uuid4()
-    workspace = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
+    workspace = make_workspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
     # the hub declares the agent's own workspace-locks bucket; the leases only bind it
     nats = FakeNatsClient(declared_buckets=(agent_platform_bucket_suffix(agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX),))
@@ -185,11 +166,11 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
         async with bind(
             agent_id=agent_id,
             workspace_id=ws_id,
-            sandbox=sandbox,  # type: ignore[arg-type]
+            sandbox=sandbox,
             lease=lease,
-            workspace_collection=_FakeWorkspaceCollection(workspace),  # type: ignore[arg-type]
-            workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-            workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+            workspace_collection=_FakeWorkspaceCollection(workspace),
+            workspace_file_collection=_FakeFileCollection(),
+            workspace_file_version_collection=_FakeVersionCollection(),
             db_pool=_FakePool(),
             actor_id=uuid4(),
             correlation_id=uuid7(),

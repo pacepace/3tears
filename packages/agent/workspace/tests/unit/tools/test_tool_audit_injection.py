@@ -47,13 +47,14 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgTransaction,
     asks_journal_max,
 )
+from threetears.agent.workspace.entities import WorkspaceFile, Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file,
 )
 
 
@@ -87,40 +88,17 @@ class _FakeNats:
             raise self.raise_on_publish
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    template_name: str | None = None
-    date_deleted: Any = None
-    current_version: int = 0
-    # WS-ACL-10 audit envelope inputs: workspace_audit_identity reads
-    # these directly off the workspace to fill owner_agent_id and
-    # customer_id on the envelope. fixture defaults to fresh UUIDs so
-    # tests do not depend on the specific identity values.
-    owner_agent_id: UUID = field(default_factory=uuid4)
-    customer_id: UUID | None = field(default_factory=uuid4)
-    # collections-task-02 partition column on workspaces; helpers and
-    # tools thread workspace.agent_id into UPDATE workspaces SQL.
-    agent_id: UUID = field(default_factory=uuid4)
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -130,27 +108,17 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
         return []
 
 
-@dataclass
-class _FakeFileEntity(FakeWorkspaceFile):
-    relative_path: str
-    content: bytes
-    sha256: str
-    version: int = 1
-
-
 class _FakeFileCollection(FakeWorkspaceFileCollection):
-    def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
+    def __init__(self, files: list[WorkspaceFile] | None = None) -> None:
         self._files = files or []
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> _FakeFileEntity | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         for f in self._files:
             if f.relative_path == relative_path:
                 return f
         return None
 
-    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[WorkspaceFile]:
         return list(self._files)
 
 
@@ -280,13 +248,13 @@ async def test_fs_write_publishes_audit_on_success(
 ) -> None:
     """fs_write success path emits one workspace.fs_write audit event."""
     agent_id = uuid4()
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws", customer_id=uuid4())
     nats = _FakeNats()
     pool = _FakePool()
     tool = FsWriteTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -322,13 +290,13 @@ async def test_fs_write_success_preserved_when_publish_raises(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """raising NATS publish does not break the tool's success return."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws", customer_id=uuid4())
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
     pool = _FakePool()
     tool = FsWriteTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -351,17 +319,17 @@ async def test_fs_edit_publishes_audit_with_occurrence_count(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """fs_edit audit details include occurrences, bytes, and sha pair."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    existing = _FakeFileEntity(relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1)
+    ws = make_workspace(id=uuid4(), name="ws", customer_id=uuid4())
+    existing = make_workspace_file(relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1)
     head = {"content": existing.content, "sha256": existing.sha256, "version": 1}
     pool = _FakePool()
     pool.conn.head_row = head
     pool.conn.journal_max_version = 1
     nats = _FakeNats()
     tool = FsEditTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([existing]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([existing]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -392,22 +360,17 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """doc_set audit details carry jsonpath + value + sha pair."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    existing = _FakeFileEntity(
-        relative_path="config.yaml",
-        content=b"k: 1\n",
-        sha256="e" * 64,
-        version=3,
-    )
+    ws = make_workspace(id=uuid4(), name="ws", customer_id=uuid4())
+    existing = make_workspace_file(relative_path="config.yaml", content=b"k: 1\n", sha256="e" * 64, version=3)
     head = {"content": existing.content, "sha256": existing.sha256, "version": 3}
     pool = _FakePool()
     pool.conn.head_row = head
     pool.conn.journal_max_version = 3
     nats = _FakeNats()
     tool = DocSetTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([existing]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([existing]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -443,22 +406,17 @@ async def test_doc_merge_publishes_audit_with_partial_keys(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """doc_merge audit details list merged top-level keys."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    existing = _FakeFileEntity(
-        relative_path="config.yaml",
-        content=b"a: 1\nb: 2\n",
-        sha256="f" * 64,
-        version=2,
-    )
+    ws = make_workspace(id=uuid4(), name="ws", customer_id=uuid4())
+    existing = make_workspace_file(relative_path="config.yaml", content=b"a: 1\nb: 2\n", sha256="f" * 64, version=2)
     head = {"content": existing.content, "sha256": existing.sha256, "version": 2}
     pool = _FakePool()
     pool.conn.head_row = head
     pool.conn.journal_max_version = 2
     nats = _FakeNats()
     tool = DocMergeTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([existing]),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection([existing]),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -500,9 +458,9 @@ async def test_workspace_create_publishes_audit(
     agent_id = uuid4()
 
     tool = WorkspaceCreateTool(
-        workspace_collection=_FakeWorkspaceCollection([]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([]),
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
@@ -553,13 +511,13 @@ async def test_workspace_reset_publishes_audit(
     template_dir.mkdir()
     (template_dir / "a.md").write_bytes(b"hello\n")
     ws_id = uuid4()
-    ws = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=1)
+    ws = make_workspace(id=ws_id, name="seed", template_name="starter", current_version=1, customer_id=uuid4())
     nats = _FakeNats()
     pool = _FakePool()
     tool = WorkspaceResetTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(templates_root=template_dir),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -593,7 +551,7 @@ async def test_workspace_delete_publishes_audit(
 ) -> None:
     """soft-delete emits workspace.delete audit."""
     ws_id = uuid4()
-    ws = _FakeWorkspaceEntity(id=ws_id, name="bye")
+    ws = make_workspace(id=ws_id, name="bye", customer_id=uuid4())
 
     async def _get_pin(_ctx: Any) -> Any:
         return None
@@ -607,9 +565,9 @@ async def test_workspace_delete_publishes_audit(
     nats = _FakeNats()
     pool = _FakePool()
     tool = WorkspaceDeleteTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -640,7 +598,7 @@ async def test_workspace_rollback_publishes_single_audit_event(
 ) -> None:
     """rollback emits exactly one audit event with files_changed count."""
     ws_id = uuid4()
-    ws = _FakeWorkspaceEntity(id=ws_id, name="ws", current_version=5)
+    ws = make_workspace(id=ws_id, name="ws", current_version=5, customer_id=uuid4())
     nats = _FakeNats()
 
     # pool where resolve_ref sees no matching row -> rollback becomes
@@ -648,18 +606,11 @@ async def test_workspace_rollback_publishes_single_audit_event(
     pool = _FakePool()
     pool.conn.head_row = None  # resolve_ref returns None -> skip
     tool = WorkspaceRollbackTool(
-        workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
+        workspace_collection=_FakeWorkspaceCollection([ws]),
         workspace_file_collection=_FakeFileCollection(
-            [
-                _FakeFileEntity(
-                    relative_path="a.md",
-                    content=b"x",
-                    sha256="aa" * 32,
-                    version=1,
-                )
-            ]
-        ),  # type: ignore[arg-type]
-        workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
+            [make_workspace_file(relative_path="a.md", content=b"x", sha256="aa" * 32, version=1)]
+        ),
+        workspace_file_version_collection=_FakeVersionCollection(),
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),

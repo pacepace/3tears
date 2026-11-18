@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
@@ -17,12 +16,14 @@ from threetears.core.security import SandboxDenied
 from threetears.agent.workspace.tools.workspace_history import (
     WorkspaceHistoryTool,
 )
+from threetears.agent.workspace.entities import Workspace, WorkspaceFileVersion
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
+    make_workspace,
+    make_workspace_file_version,
 )
 
 
@@ -31,47 +32,21 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: Any = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
         return None
-
-
-@dataclass
-# parity-exempt: workspace version-row stand-in for the workspace_history tool unit; the production VersionRow has more attributes than the test reads
-class _FakeVersionRow:
-    relative_path: str
-    version: int
-    action: str
-    label: str | None
-    actor_id: UUID
-    correlation_id: UUID
-    date_created: datetime
-    sha256: str
-    content: bytes
 
 
 class _FakeFileCollection(FakeWorkspaceFileCollection):
@@ -79,19 +54,19 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
 
 
 class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
-    def __init__(self, rows: list[_FakeVersionRow]) -> None:
+    def __init__(self, rows: list[WorkspaceFileVersion]) -> None:
         self._rows = rows
         self.by_workspace_calls: list[tuple[UUID, int]] = []
         self.by_path_calls: list[tuple[UUID, str, int]] = []
 
-    async def find_by_workspace(self, workspace_id: UUID, limit: int) -> list[_FakeVersionRow]:
+    async def find_by_workspace(self, workspace_id: UUID, limit: int) -> list[WorkspaceFileVersion]:
         self.by_workspace_calls.append((workspace_id, limit))
         ordered = sorted(self._rows, key=lambda r: r.date_created, reverse=True)
         return ordered[:limit]
 
     async def find_by_workspace_and_path(
         self, workspace_id: UUID, relative_path: str, limit: int
-    ) -> list[_FakeVersionRow]:
+    ) -> list[WorkspaceFileVersion]:
         self.by_path_calls.append((workspace_id, relative_path, limit))
         filtered = [r for r in self._rows if r.relative_path == relative_path]
         ordered = sorted(filtered, key=lambda r: r.date_created, reverse=True)
@@ -134,14 +109,12 @@ def _row(
     label: str | None = None,
     content: bytes = b"payload",
     offset_seconds: int = 0,
-) -> _FakeVersionRow:
-    return _FakeVersionRow(
+) -> WorkspaceFileVersion:
+    return make_workspace_file_version(
         relative_path=relative_path,
         version=version,
         action=action,
         label=label,
-        actor_id=uuid4(),
-        correlation_id=uuid4(),
         date_created=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=offset_seconds),
         sha256="s" * 64,
         content=content,
@@ -150,8 +123,8 @@ def _row(
 
 def _build_tool(
     *,
-    workspace_entities: list[_FakeWorkspaceEntity],
-    version_rows: list[_FakeVersionRow],
+    workspace_entities: list[Workspace],
+    version_rows: list[WorkspaceFileVersion],
     acl_cache: Any,
     deny_reads: list[str] | None = None,
 ) -> tuple[WorkspaceHistoryTool, _FakeVersionCollection, _RecordingSandbox]:
@@ -159,9 +132,9 @@ def _build_tool(
     versions = _FakeVersionCollection(version_rows)
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = WorkspaceHistoryTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
-        workspace_file_version_collection=versions,  # type: ignore[arg-type]
+        workspace_collection=workspaces,
+        workspace_file_collection=_FakeFileCollection(),
+        workspace_file_version_collection=versions,
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
@@ -180,7 +153,7 @@ async def test_history_workspace_wide_returns_newest_first_without_content(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """no relative_path: all journal rows newest-first, no content blob in output."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     rows = [
         _row(
             relative_path="a.txt",
@@ -223,7 +196,7 @@ async def test_history_per_path_calls_enforce_and_narrow_query(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """relative_path triggers sandbox.enforce('read', path) and path-scoped query."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     rows = [
         _row(relative_path="a.txt", version=1, offset_seconds=0),
         _row(relative_path="b.md", version=1, offset_seconds=5),
@@ -245,7 +218,7 @@ async def test_history_filters_sandbox_denied_rows_when_no_path(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """workspace-wide history drops rows whose path fails sandbox read."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     rows = [
         _row(relative_path="public.md", version=1, offset_seconds=0),
         _row(relative_path="secret.env", version=1, offset_seconds=5),
@@ -268,7 +241,7 @@ async def test_history_sandbox_denied_relative_path_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """per-path history with a denied read path surfaces a clean error."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, _versions, _sandbox = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="secret.env", version=1)],
@@ -286,7 +259,7 @@ async def test_history_limit_is_capped_at_max(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """out-of-range limit is clamped to max (500)."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, versions, _ = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="a", version=1)],
@@ -302,7 +275,7 @@ async def test_history_limit_is_clamped_to_at_least_one(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """zero/negative limit is clamped to the floor of 1."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, versions, _ = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="a", version=1)],
@@ -334,7 +307,7 @@ def test_history_mcp_name_is_exact_string(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         version_rows=[],
         acl_cache=permissive_acl_cache,
     )
@@ -345,7 +318,7 @@ def test_history_mcp_schema_shape(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         version_rows=[],
         acl_cache=permissive_acl_cache,
     )

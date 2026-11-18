@@ -19,10 +19,11 @@ from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
 )
+from threetears.agent.workspace.entities import Workspace
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
+    make_workspace,
 )
 
 
@@ -31,29 +32,17 @@ from packages.agent.workspace.tests.helpers.workspace_shims import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _FakeWorkspaceEntity(FakeWorkspaceEntity):
-    id: UUID
-    name: str
-    date_deleted: Any = None
-
-    @property
-    def namespace_name(self) -> str:
-        """canonical workspace namespace name (WS-ACL-06)."""
-        return f"workspace.{self.id}"
-
-
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
+    def __init__(self, entities: list[Workspace]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> Workspace | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -157,7 +146,7 @@ def _journal_row(content: bytes, version: int = 1) -> dict[str, Any]:
 
 def _build_tool(
     *,
-    workspace_entities: list[_FakeWorkspaceEntity],
+    workspace_entities: list[Workspace],
     acl_cache: Any,
     script: dict[tuple[str, Any], dict[str, Any] | None] | None = None,
     deny_reads: list[str] | None = None,
@@ -166,7 +155,7 @@ def _build_tool(
     pool = _FakePool(conn=_FakeConnection(script=dict(script or {})))
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = WorkspaceDiffTool(
-        workspace_collection=workspaces,  # type: ignore[arg-type]
+        workspace_collection=workspaces,
         workspace_file_collection=object(),  # type: ignore[arg-type]
         workspace_file_version_collection=object(),  # type: ignore[arg-type]
         sandbox=sandbox,  # type: ignore[arg-type]
@@ -188,7 +177,7 @@ async def test_diff_two_integer_versions_returns_unified_diff(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """from_ref=1, to_ref=3 emit plain unified diff between their content."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("a.txt", 1): _journal_row(b"first\nsecond\nthird\n", version=1),
         ("a.txt", 3): _journal_row(b"first\nchanged\nthird\n", version=3),
@@ -208,7 +197,7 @@ async def test_diff_checkpoint_label_resolves_via_label_selector(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """string ref (non-digit, non-head) treated as checkpoint label."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("m.txt", "v1"): _journal_row(b"alpha\n"),
         ("m.txt", "head"): _journal_row(b"alpha-plus\n"),
@@ -230,7 +219,7 @@ async def test_diff_binary_content_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """non-UTF-8 content in either ref triggers clean error text."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("bin.dat", 1): _journal_row(b"\xff\xfe\x00\x01"),
         ("bin.dat", 2): _journal_row(b"ok text\n"),
@@ -247,7 +236,7 @@ async def test_diff_missing_from_ref_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """from_ref resolves to no row -> clean error naming the ref."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     script = {
         ("a.txt", 99): None,
         ("a.txt", "head"): _journal_row(b"x\n"),
@@ -265,7 +254,7 @@ async def test_diff_missing_to_ref_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """to_ref resolves to no row -> clean error naming the ref."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     script = {
         ("a.txt", "head"): _journal_row(b"x\n"),
         ("a.txt", "never"): None,
@@ -282,7 +271,7 @@ async def test_diff_sandbox_denied_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """SandboxDenied surfaces as clean tool error; no ref queries issued."""
-    ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
+    ws = make_workspace(id=uuid4(), name="ws")
     tool, pool, sandbox = _build_tool(
         workspace_entities=[ws],
         script={},
@@ -310,7 +299,7 @@ def test_diff_mcp_name_is_exact_string(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.diff"
@@ -320,7 +309,7 @@ def test_diff_mcp_schema_shape(
     permissive_acl_cache: MagicMock,
 ) -> None:
     tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        workspace_entities=[make_workspace(id=uuid4(), name="ws")],
         acl_cache=permissive_acl_cache,
     )
     defn = tool.mcp_schema()
