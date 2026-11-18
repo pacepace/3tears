@@ -5,4 +5,4 @@
 {"tool": "read", "path": "data/archive_index.jsonl", "start": 1}
 {"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom naming import stored_name\n\n\ndef file_it(case):\n    \"\"\"The name the new store files the document under.\"\"\"\n    return {\"name\": stored_name(case[\"title\"], case[\"uploaded\"], case[\"extension\"])}\n\n\ndef keeps_archive_name(case, out):\n    \"\"\"The document keeps the name the archive gave it.\"\"\"\n    return out[\"name\"] == case[\"archive_name\"]\n\n\narchive = Eval(\"data/archive_index.jsonl\", runner=file_it, grader=[keeps_archive_name], k=1)\n"}
 {"tool": "run", "command": "python -m threetears.evals evals.py"}
-{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"keeps_archive_name\", \"pass_rate\": 0.6667, \"finished\": true}"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"keeps_archive_name\", \"pass_rate\": 0.6905, \"finished\": true}"}
