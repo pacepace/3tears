@@ -13,6 +13,8 @@ The contract this pins:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import asyncio
 import json
 import uuid
@@ -20,9 +22,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
-from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer, flush_pending
@@ -30,8 +32,10 @@ from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.kv import FakeNatsClient, FakeSubscription
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
+
+from packages.core.tests.durable_support import NoL3
 
 _SCOPE = "cas-principal"
 _TABLE = "attempt_counters"
@@ -50,15 +54,6 @@ def _metadata() -> MetaData:
         info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
-
-
-class _NoL3(DurableStore):
-    """a durable L3 with no ``transaction()``: it satisfies ``DurableStore``, so the registry does not wrap it as SQL.
-
-    this test is not about L3. a bare ``object()`` here was wrapped in ``SqlL3Backend``, whose ``transaction()``
-    calls ``.acquire()``; the flush took its atomic-batch path, failed, and fell back to per-entity writes through
-    a broad ``except``. this goes to the per-entity writes directly, which is what the test means.
-    """
 
 
 class _Counter(BaseEntity):
@@ -162,13 +157,26 @@ class _Nats(FakeNatsClient):
         super().__init__()
         self._listening: list[tuple[Any, Any]] = []
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
+        assert message is not None, "an invalidation is published as a model"
         for cb, message_type in list(self._listening):
             await cb(message_type.model_validate_json(message.model_dump_json()))
 
-    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **_: Any) -> object:
-        self._listening.append((cb, message_type))
-        return object()
+    async def subscribe_typed[E: BaseModel](
+        self,
+        *,
+        subject: Any,
+        cb: Callable[[E], Awaitable[None]],
+        message_type: type[E],
+        queue: str | None = None,
+        max_in_flight: int | None = None,
+        deadletter_on_failure: bool = True,
+    ) -> FakeSubscription:
+        entry: tuple[Any, Any] = (cb, message_type)
+        self._listening.append(entry)
+        return FakeSubscription(subject=subject, entry=entry)
 
 
 def _replica(
@@ -184,7 +192,7 @@ def _replica(
     l1 = SQLiteBackend(db_name=f"cas_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=_NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
     if generations is not None:
         registry.set_generation_source(generations)
     collection = cls(
@@ -304,8 +312,8 @@ class TestPeersListening:
         nats, store = _Nats(), _Store()
         first, first_registry = _replica(_WriteBehindCounters, nats, store, buffer=WriteBuffer())
         second, second_registry = _replica(_WriteBehindCounters, nats, store, buffer=WriteBuffer())
-        await first_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
-        await second_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await first_registry.start_invalidation_listener(nats)
+        await second_registry.start_invalidation_listener(nats)
         for replica in (first, second, first, second):
             await replica.l2_cas_mutate("acct-1", _increment)
         assert await _l2_count(nats) == 4, "a peer's listener evicted the compare-and-swap key"
@@ -316,7 +324,7 @@ class TestPeersListening:
         writer, _ = _replica(_SynchronousCounters, nats, store)
         await writer.l2_cas_mutate("acct-1", _increment)
         reader, reader_registry = _replica(_SynchronousCounters, nats, store, scope="other-principal")
-        await reader_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await reader_registry.start_invalidation_listener(nats)
         assert await reader.get("acct-1") is not None  # pulls through into the reader's own key
         bucket = await nats.kv_bucket(name="collections")
         other_key = f"other-principal.{_TABLE}.acct-1"

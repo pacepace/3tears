@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, Index, TableSchema
+from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, Index, IndexDef, TableSchema
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _KEY = ("office_key", "candidate", "geo")
 
 
-def _schema(*indexes: object) -> TableSchema:
+def _schema(*indexes: IndexDef) -> TableSchema:
     return TableSchema(
         name="results",
         primary_key=_KEY,
@@ -20,7 +21,8 @@ def _schema(*indexes: object) -> TableSchema:
             Column("state", STRING_TYPE),
             Column("votes", BIGINT_TYPE, nullable=True),
         ],
-        indexes=tuple(indexes),  # type: ignore[arg-type], l1_eviction=TEST_L1_TABLE
+        indexes=tuple(indexes),
+        l1_eviction=TEST_L1_TABLE,
     )
 
 
@@ -47,7 +49,7 @@ class TestTheOrderIsTheIndexTheFiltersLead:
         ],
         ids=["partial", "descending", "another-method"],
     )
-    def test_an_index_that_cannot_answer_the_order_is_never_chosen(self, index: object) -> None:
+    def test_an_index_that_cannot_answer_the_order_is_never_chosen(self, index: IndexDef) -> None:
         """Flips if a partial, descending or non-btree index is taken to answer an ascending keyset page."""
         assert _schema(index).keyset_order({"state"}) == _KEY
 
