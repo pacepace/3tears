@@ -5,9 +5,10 @@ The server writes Apache's combined log format, one request a line::
     203.0.113.9 - - [02/Nov/2026:08:14:07 +0000] "GET /menu?lang=en HTTP/1.1" 200 5120 "-" "Mozilla/5.0 ..."
 
 The fields are the client, two unused fields, the time, the request line (method, path, protocol), the status, the
-size of the response body in bytes, the referring page and the browser. A response with no body (a ``304 Not
-Modified``, a ``204 No Content``, the answer to a ``HEAD``) is logged with ``-`` for its size: it is a hit like any
-other, of 0 bytes.
+size of the response body in bytes, the referring page and the browser. A field the server has no value for is
+logged as ``-``: a request typed into the address bar has ``-`` for its referring page, and a response with no body
+(a ``304 Not Modified``, a ``204 No Content``, the answer to a ``HEAD``) has ``-`` for its size. Such a response is a
+hit like any other, of 0 bytes.
 
 :func:`tally` counts a day's lines by page. A page is the request's path without its query string, so ``/menu`` and
 ``/menu?lang=en`` are one page. Each page gets its hits (every request for it, whatever its status), the bytes sent
@@ -39,6 +40,7 @@ class Request:
     page: str
     status: int
     size: int
+    referer: str | None
 
 
 @dataclass
@@ -60,14 +62,24 @@ class Tally:
         return [(page, stats.hits) for page, stats in ranked[:n]]
 
 
+def _value(field: str) -> str | None:
+    """A log field's value, or ``None`` for ``-``, the log's mark for a field with no value."""
+    return None if field == "-" else field
+
+
 def parse(line: str) -> Request | None:
     """One log line as a :class:`Request`, or ``None`` when it is not in the combined format."""
     match = _LINE.match(line)
     if match is None:
         return None
-    size = 0 if match["size"] == "-" else int(match["size"])
     page = match["target"].split("?", 1)[0]
-    return Request(method=match["method"], page=page, status=int(match["status"]), size=size)
+    return Request(
+        method=match["method"],
+        page=page,
+        status=int(match["status"]),
+        size=int(_value(match["size"]) or 0),
+        referer=_value(match["referer"]),
+    )
 
 
 def tally(lines: Iterable[str]) -> Tally:
