@@ -15,7 +15,7 @@ class _RecordingConn:
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self._rows = rows
-        self.sql: str | None = None
+        self.sql = ""
         self.params: tuple[Any, ...] = ()
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:

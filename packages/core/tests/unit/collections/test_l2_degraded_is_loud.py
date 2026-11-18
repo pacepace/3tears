@@ -12,6 +12,10 @@ counted and raised.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+from typing import Any
+
 import json
 import logging
 import uuid
@@ -47,7 +51,9 @@ class _Row(BaseEntity):
 class _Rows(BaseCollection[_Row]):
     """a three-tier collection whose L3 is a dict."""
 
-    def __init__(self, registry: CollectionRegistry, nats_client: AsyncMock, l3_rows: dict[str, dict]) -> None:
+    def __init__(
+        self, registry: CollectionRegistry, nats_client: AsyncMock, l3_rows: dict[str, dict[str, Any]]
+    ) -> None:
         self._l3_rows = l3_rows
         super().__init__(
             registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), nats_client
@@ -61,21 +67,24 @@ class _Rows(BaseCollection[_Row]):
     def entity_class(self) -> type[_Row]:
         return _Row
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(str(entity_id))
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         self._l3_rows[str(data["id"])] = dict(data)
         return 1
 
     async def delete_from_store(self, entity_id: object) -> None:
         self._l3_rows.pop(str(entity_id), None)
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 class _StoreRows(_Rows):
@@ -100,7 +109,7 @@ def _bucket(failure: BaseException) -> AsyncMock:
 
 
 @pytest.fixture()
-def registry() -> CollectionRegistry:
+def registry() -> Iterator[CollectionRegistry]:
     metadata = MetaData()
     Table(
         _TABLE,
@@ -165,7 +174,7 @@ class TestAFullBucketBehindADurableTier:
         assert _degraded("get", "full") >= before + 1
 
     async def test_the_save_lands_in_l3_and_counts_full(self, registry: CollectionRegistry) -> None:
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = _Rows(registry, _bucket(_full()), l3_rows=l3_rows)
         before = _degraded("put", "full")
 

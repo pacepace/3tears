@@ -102,7 +102,7 @@ async def test_an_upsert_builds_and_measures_its_statements_off_the_loop(monkeyp
 
 async def test_a_copy_page_is_converted_and_encoded_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     converted, encoded = _Threads(), _Threads()
-    monkeypatch.setattr(nats_proxy, "transport_param", converted.wrap(nats_proxy.transport_param))
+    monkeypatch.setattr(nats_proxy, "transport_param", converted.wrap(schema_sql.transport_param))
     broker = _Broker()
     proxy = broker.proxy()
     monkeypatch.setattr(proxy, "encode_request", encoded.wrap(proxy.encode_request))

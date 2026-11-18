@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import time
-from datetime import timedelta
+from collections.abc import Mapping
+from datetime import date, timedelta
+from typing import Any
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 import jwt as pyjwt
 import pytest
@@ -13,6 +17,10 @@ from threetears.core.security import (
     SERVICE_ENVELOPE_LEEWAY,
     SERVICE_ENVELOPE_MAX_LIFETIME,
     SERVICE_ENVELOPE_REPLAY_TTL,
+    EnvelopeJwksSource,
+    EnvelopeLedger,
+    ServiceEnvelopeClaims,
+    ServiceEnvelopeDoor,
     ServiceEnvelopeError,
     body_hash,
     build_jwks,
@@ -21,18 +29,19 @@ from threetears.core.security import (
     verify_and_record,
     verify_service_envelope,
 )
+from threetears.core.security.door_proof import DoorWindow
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
 _BODY = {"principal_id": "p-1", "grant": "workspace.read", "nested": {"b": 2, "a": 1}}
 
 
-def _keys(kid: str = "idc-1"):
+def _keys(kid: str = "idc-1") -> tuple[Ed25519PrivateKey, dict[str, Any]]:
     priv, pub = generate_signing_keypair()
     return priv, build_jwks({kid: pub})
 
 
-def _mint(priv, **overrides):
-    args = {
+def _mint(priv: Ed25519PrivateKey, **overrides: Any) -> str:
+    args: dict[str, Any] = {
         "signing_key": priv,
         "kid": "idc-1",
         "issuer": "identity-core",
@@ -44,8 +53,14 @@ def _mint(priv, **overrides):
     return mint_service_envelope(**args)
 
 
-def _verify(envelope, jwks, **overrides):
-    args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure", "body": _BODY}
+def _verify(envelope: str, jwks: Mapping[str, Any], **overrides: Any) -> ServiceEnvelopeClaims:
+    args: dict[str, Any] = {
+        "jwks": jwks,
+        "issuer": "identity-core",
+        "audience": "hub.claim_grant",
+        "op": "ensure",
+        "body": _BODY,
+    }
     args.update(overrides)
     return verify_service_envelope(envelope, **args)
 
@@ -143,7 +158,12 @@ class TestVerify:
     def test_a_missing_claim_is_refused(self) -> None:
         priv, jwks = _keys()
         now = int(time.time())
-        payload = {"iss": "identity-core", "aud": "hub.claim_grant", "op": "ensure", "bh": body_hash(_BODY)}
+        payload: dict[str, Any] = {
+            "iss": "identity-core",
+            "aud": "hub.claim_grant",
+            "op": "ensure",
+            "bh": body_hash(_BODY),
+        }
         payload |= {"iat": now, "exp": now + 30}
         envelope = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "idc-1"})
         with pytest.raises(ServiceEnvelopeError, match="MissingRequiredClaim"):
@@ -152,7 +172,12 @@ class TestVerify:
     def test_a_non_eddsa_envelope_is_refused(self) -> None:
         _, jwks = _keys()
         now = int(time.time())
-        payload = {"iss": "identity-core", "aud": "hub.claim_grant", "op": "ensure", "bh": body_hash(_BODY)}
+        payload: dict[str, Any] = {
+            "iss": "identity-core",
+            "aud": "hub.claim_grant",
+            "op": "ensure",
+            "bh": body_hash(_BODY),
+        }
         payload |= {"jti": "j", "iat": now, "exp": now + 30}
         envelope = pyjwt.encode(payload, key="a-shared-secret-long-enough-for-hs256!", algorithm="HS256")
         with pytest.raises(ServiceEnvelopeError, match="not EdDSA"):
@@ -169,7 +194,7 @@ class TestVerifyAndRecord:
         priv, jwks = _keys()
         envelope = _mint(priv)
         guard = FakeReplayGuard()
-        args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
+        args: dict[str, Any] = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
         await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
         with pytest.raises(ServiceEnvelopeError, match="already used"):
             await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
@@ -178,7 +203,7 @@ class TestVerifyAndRecord:
         priv, jwks = _keys()
         envelope = _mint(priv, jti="shared-id")
         guard = FakeReplayGuard()
-        args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
+        args: dict[str, Any] = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
         with pytest.raises(ServiceEnvelopeError, match="another body"):
             await verify_and_record(envelope, body={"other": 1}, replay_guard=guard, **args)
         await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
@@ -228,12 +253,12 @@ class TestVerifyAndRecord:
 class _Jwks:
     """a sender's key set, counting fetches, rotating to ``after_refresh`` on a forced one."""
 
-    def __init__(self, jwks, *, after_refresh=None) -> None:
+    def __init__(self, jwks: dict[str, Any], *, after_refresh: dict[str, Any] | None = None) -> None:
         self.jwks = jwks
         self.after_refresh = after_refresh
         self.refreshes = 0
 
-    async def get_jwks(self, *, refresh: bool = False):
+    async def get_jwks(self, *, refresh: bool = False) -> dict[str, Any]:
         if refresh:
             self.refreshes += 1
             if self.after_refresh is not None:
@@ -241,11 +266,10 @@ class _Jwks:
         return self.jwks
 
 
-def _door(jwks_source, *, guard=None, today=None):
-    from datetime import date
-
-    from threetears.core.security import ServiceEnvelopeDoor
-    from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow
+def _door(
+    jwks_source: EnvelopeJwksSource, *, guard: EnvelopeLedger | None = None, today: date | None = None
+) -> ServiceEnvelopeDoor:
+    from threetears.core.security.door_proof import DoorProofSwitch
 
     window = DoorWindow(door="claim_grant", opened=date(2026, 10, 7), required_from=date(2027, 1, 5))
     switch = DoorProofSwitch(window, today=(lambda: today) if today else (lambda: date(2026, 10, 8)))
@@ -258,7 +282,7 @@ def _door(jwks_source, *, guard=None, today=None):
     )
 
 
-def _with_envelope(envelope):
+def _with_envelope(envelope: str) -> dict[str, Any]:
     return {**_BODY, SERVICE_ENVELOPE_FIELD: envelope}
 
 
@@ -300,8 +324,6 @@ class TestServiceEnvelopeDoor:
         assert await _door(_Jwks(jwks)).admit(_BODY, op="ensure") is True
 
     async def test_no_envelope_is_refused_from_the_windows_date(self) -> None:
-        from datetime import date
-
         _, jwks = _keys()
         door = _door(_Jwks(jwks), today=date(2027, 1, 5))
         assert await door.admit(_BODY, op="ensure") is False
@@ -315,7 +337,7 @@ class TestServiceEnvelopeDoor:
 
     async def test_no_key_set_available_refuses(self) -> None:
         class _Unavailable:
-            async def get_jwks(self, *, refresh: bool = False) -> None:
+            async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
                 raise ServiceEnvelopeError("no trusted key set")
 
         priv, _ = _keys()
@@ -355,7 +377,7 @@ class TestAdmitMessage:
         assert await door.admit_message(b"\xff", op="ensure") is False
 
 
-def _seed_and_public():
+def _seed_and_public() -> tuple[str, Ed25519PublicKey]:
     import base64
 
     from cryptography.hazmat.primitives import serialization
@@ -395,11 +417,7 @@ class TestPinnedSender:
 
 class TestSignerFromSecretRef:
     @staticmethod
-    def _window():
-        from datetime import date
-
-        from threetears.core.security.door_proof import DoorWindow
-
+    def _window() -> DoorWindow:
         return DoorWindow(door="hub.claim_grant", opened=date(2026, 10, 8), required_from=date(2027, 1, 5))
 
     def test_a_provisioned_seed_gives_a_signer(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -476,7 +494,7 @@ class TestHubJwksSource:
         class _Provider:
             refreshed = 0
 
-            def __call__(self):
+            def __call__(self) -> dict[str, Any]:
                 return jwks
 
             async def refresh_now(self) -> bool:
@@ -523,8 +541,6 @@ class TestSealedModel:
 
 class TestARequiredDoor:
     async def test_a_message_without_an_envelope_is_refused_and_a_signed_one_admitted(self) -> None:
-        from threetears.core.security import ServiceEnvelopeDoor
-
         priv, jwks = _keys()
         door = ServiceEnvelopeDoor.required(
             door="hub.merge",
@@ -538,8 +554,6 @@ class TestARequiredDoor:
         assert await door.admit(_with_envelope(_mint(priv)), op="ensure") is True
 
     def test_a_door_with_neither_switch_nor_name_is_refused(self) -> None:
-        from threetears.core.security import ServiceEnvelopeDoor
-
         _, jwks = _keys()
         with pytest.raises(ValueError, match="needs a name"):
             ServiceEnvelopeDoor(switch=None, issuer="i", audience="a", jwks=_Jwks(jwks), replay_guard=FakeReplayGuard())
@@ -560,7 +574,7 @@ class TestServiceEnvelopeDoorCauses:
         from threetears.core.security import PinnedEnvelopeJwks  # noqa: PLC0415
 
         class _Fails:
-            async def get_jwks(self, *, refresh: bool = False) -> None:
+            async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
                 raise ServiceEnvelopeError("the sender's JWKS could not be fetched")
 
         priv, _ = _keys()

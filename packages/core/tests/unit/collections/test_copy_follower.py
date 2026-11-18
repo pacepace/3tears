@@ -1121,7 +1121,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
     follower.register()
     bus = FakeNatsClient()
     writer = CollectionRegistry()
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     running = asyncio.create_task(follower.run())
     try:
         l3.put(_rows("IL", 5))
@@ -1141,7 +1141,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
         # it commits: the epochs move, and the writer's registry says so for the epochs' rows alone
         lock.commit("state:IL")
         lock.held = None
-        await writer.publish_invalidation(bus, "scope_epochs", ["state:IL"])  # type: ignore[arg-type]
+        await writer.publish_invalidation(bus, "scope_epochs", ["state:IL"])
         for _ in range(200):
             if _copy(backend) == l3.held():
                 break
@@ -2039,11 +2039,11 @@ async def test_a_relabel_never_hides_a_failed_apply_the_next_pass_tries_the_appl
     def failing(changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
         raise RuntimeError("the apply failed")
 
-    backend.apply_staged = failing  # type: ignore[method-assign]
+    backend.apply_staged = failing
     with pytest.raises(RuntimeError):
         await follower.catch_up()
     assert follower.stamp == before
-    backend.apply_staged = real  # type: ignore[method-assign]
+    backend.apply_staged = real
     applies = _applies_counted(backend)
     assert await follower.catch_up()
     assert len(applies) == 1

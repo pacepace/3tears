@@ -18,6 +18,8 @@ import random
 import threading
 import time
 import uuid
+from functools import partial
+from operator import contains
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -113,7 +115,7 @@ class TestAnswerJson:
         answer = {"total": bad, "rows": [{"share": bad, "n": 1}] * 300, "flat": [bad]}
         text = answer_json(answer)
         assert json.loads(text) == {"total": None, "rows": [{"share": None, "n": 1}] * 300, "flat": [None]}
-        assert "NaN" not in text and "Infinity" not in text
+        assert not contains(text, "NaN") and not contains(text, "Infinity")
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_a_non_finite_float_is_written_as_null(self, bad: float) -> None:
@@ -126,7 +128,7 @@ class TestAnswerJson:
             "nested": {"x": [None]},
         }
         assert json.loads(text) == expected
-        assert "NaN" not in text and "Infinity" not in text
+        assert not contains(text, "NaN") and not contains(text, "Infinity")
 
     def test_no_one_encoder_call_writes_a_long_list_or_a_whole_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
         answer = {"rows": [{"id": n} for n in range(5000)], "meta": {"states": list(range(600))}}
@@ -157,8 +159,9 @@ class TestTheAnswerIsNeverCopiedWhole:
         added: list[int] = []
         original = _Answer.append
 
-        def recording(self: _Answer, piece: str) -> None:
+        def recording(self: bytearray, piece: str) -> None:
             added.append(len(piece))
+            assert isinstance(self, _Answer)
             original(self, piece)
 
         monkeypatch.setattr(_Answer, "append", recording)
@@ -174,7 +177,7 @@ class TestTheAnswerIsNeverCopiedWhole:
         assert text == plain and not text != plain
         assert text != plain[:-1] + " " and text != plain + " "
         assert len(text) == len(plain)
-        assert '"n": 2999' in text and "é" not in text and "NaN" not in text
+        assert contains(text, '"n": 2999') and not contains(text, "é") and not contains(text, "NaN")
         assert str(text) == plain
         assert json.loads(text) == json.loads(plain)
         assert text.encode("utf-8") is text and text.encode("ascii") is text
@@ -189,7 +192,7 @@ class TestTheAnswerIsNeverCopiedWhole:
     async def test_a_computed_answer_json_is_stored_and_given(self) -> None:
         answer = _series(3, 5_000)
 
-        async def compute() -> _Answer:
+        async def compute() -> bytearray:
             return answer_json(answer)
 
         answers = _answers()
@@ -200,11 +203,11 @@ class TestTheAnswerIsNeverCopiedWhole:
         assert again.outcome is AnswerOutcome.READ and again.body == given.body
 
 
-async def _gz(text: _Answer) -> bytes:
+async def _gz(text: bytearray) -> bytes:
     """the answer's gzip, as the answers write it."""
     answers = _answers()
 
-    async def compute() -> _Answer:
+    async def compute() -> bytearray:
         return text
 
     await answers.retire_older_than(5)
@@ -355,7 +358,7 @@ class TestAnyShapeIsWrittenInShortCalls:
     def test_a_non_finite_number_deep_in_a_run_is_null(self) -> None:
         answer = {"series": [{"points": [[k, float("nan") if k == 7777 else k / 2] for k in range(9000)]}] * 3}
         text = answer_json(answer)
-        assert "NaN" not in text
+        assert not contains(text, "NaN")
         assert json.loads(text)["series"][2]["points"][7777] == [7777, None]
 
     def test_a_key_json_refuses_is_refused(self) -> None:
@@ -548,7 +551,7 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
                 (steps[2], reader, AnswerOutcome.READ),
             ):
                 late, took, given = await _late_during(
-                    lambda answers=answers: answers.answer_with_outcome("v1", "large", compute, order=1)
+                    partial(answers.answer_with_outcome, "v1", "large", compute, order=1)
                 )
                 floor, _, _ = await _late_while(_busy, took)
                 assert given.outcome is outcome
@@ -591,7 +594,9 @@ class TestAWorkerLetsTheLoopRunBetweenSlices:
         registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
         return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="pauses_answers")
 
-    async def _pauses_storing_then_reading(self, text: str, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
+    async def _pauses_storing_then_reading(
+        self, text: str, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[list[Any], list[Any]]:
         bus = FakeNatsClient()
         writer, reader = self._replica(bus), self._replica(bus, l1=True)
 

@@ -59,7 +59,7 @@ __all__ = [
 @overload
 async def read_by(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected] | None = ...,
@@ -73,7 +73,7 @@ async def read_by(
 @overload
 async def read_by(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected] | None = ...,
@@ -86,7 +86,7 @@ async def read_by(
 
 async def read_by(
     conn: Any,
-    table: str,
+    table: str | Derived,
     *,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected] | None = None,
@@ -99,8 +99,8 @@ async def read_by(
 
     :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
     :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
-    :ptype table: str
+    :param table: the table, a TRUSTED identifier, or a :class:`~threetears.core.keyed.Derived` relation read as one
+    :ptype table: str | Derived
     :param by: column -> its value (``= $n``, typed by the column), ``None`` (``IS NULL``) or an
         :class:`~threetears.core.keyed.AnyOf`; columns are TRUSTED identifiers; at least one
     :ptype by: Mapping[str, Any]

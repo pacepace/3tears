@@ -14,7 +14,8 @@ fixture's own body against a real server, because the property is what nats-serv
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import inspect
+from collections.abc import Generator
 from datetime import timedelta
 
 import pytest
@@ -28,15 +29,16 @@ _NAMESPACE = "admissionlive"
 _TOKEN = "a-connect-token-this-bus-does-not-verify"  # noqa: S105 - not a credential, nothing verifies it
 
 
-def _bus(system_account: bool) -> Iterator[str]:
+def _bus(system_account: bool) -> Generator[str]:
     """start one NATS container through the fixture's own body.
 
     :param system_account: whether the server declares the SYSTEM account
     :ptype system_account: bool
     :return: generator yielding the container's url, stopping it when closed
-    :rtype: Iterator[str]
+    :rtype: Generator[str]
     """
-    return fixtures.nats_container.__wrapped__(True, system_account)
+    bus: Generator[str] = inspect.unwrap(fixtures.nats_container)(True, system_account)
+    return bus
 
 
 async def _admits(url: str, token: str | None) -> bool:

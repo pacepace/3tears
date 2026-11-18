@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Literal
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
 from threetears.core.cache.duckdb import DuckDBBackend
@@ -241,7 +242,7 @@ class _Pod:
         self.members = cls(self.registry, rows, write_buffer=write_buffer)
 
     async def listen(self) -> None:
-        await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
+        await self.registry.start_invalidation_listener(self.bus)
 
     async def follow(self, source: _Source) -> None:
         """follow the table and take the first mark, as a pod does once at startup."""
@@ -266,7 +267,9 @@ class _Lossy(FakeNatsClient):
         super().__init__()
         self.deaf = False
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         if self.deaf:
             return
         await super().publish(subject=subject, message=message, reply_to=reply_to)
@@ -329,7 +332,7 @@ class TestAHeardRowIsEvictedCountedAndPassedOnRowByRow:
         # an agent pod holds caches derived from the access tables and none of the tables
         writer = _Pod(bus, {}, source, scope="writer")
         bare = CollectionRegistry()
-        await bare.start_invalidation_listener(bus)  # type: ignore[arg-type]
+        await bare.start_invalidation_listener(bus)
         cache = _PersonCache(bare, ("ada", "grace"))
         await _save(writer, "m1", "ada")
         assert cache.entries == {"grace": "access-of-grace"}
@@ -729,7 +732,7 @@ class TestATableWideDropReadsL1InPages:
 
             def traced() -> Any:
                 conn = handed()
-                conn.set_trace_callback(statements.append)  # type: ignore[union-attr]
+                conn.set_trace_callback(statements.append)
                 return conn
 
             monkeypatch.setattr(l1, "get_connection", traced)

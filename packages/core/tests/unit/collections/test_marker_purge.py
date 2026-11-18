@@ -159,7 +159,7 @@ class TestTheLease:
         stream = _stream(3)
         held = await theirs.hold("kv-marker-purge.ns-collections", ttl=60, renew_every=20)
         try:
-            result = await RemovalMarkerPurger(stream, lease=mine, clock=lambda: _NOW).run_pass()  # type: ignore[arg-type]
+            result = await RemovalMarkerPurger(stream, lease=mine, clock=lambda: _NOW).run_pass()
         finally:
             await held.release()
 
@@ -171,7 +171,7 @@ class TestTheLease:
         stream = _stream(3)
 
         result = await RemovalMarkerPurger(
-            stream,  # type: ignore[arg-type]
+            stream,
             lease=KVLease(None, bucket=leases, pod_id="hub-a"),
             clock=lambda: _NOW,
         ).run_pass()
@@ -207,7 +207,7 @@ class TestTheLease:
         stream.purge_aged_removal_markers = losing  # type: ignore[method-assign]
 
         result = await RemovalMarkerPurger(
-            stream,  # type: ignore[arg-type]
+            stream,
             lease=_Lease(),  # type: ignore[arg-type]
             page_messages=5,
             clock=lambda: _NOW,

@@ -29,7 +29,7 @@ class TestCacheClassVocabulary:
 
     def test_is_a_str_enum_so_it_serializes_as_its_value(self) -> None:
         """a declaration survives a JSON round trip as its bare string."""
-        assert CacheClass.PRIVATE == "private"
+        assert CacheClass.PRIVATE.value == "private"
         assert str(CacheClass.AUTHENTICATED) == "authenticated"
 
 

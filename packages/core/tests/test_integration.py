@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+from typing import Any
+
 import json
 import uuid
 from datetime import UTC, datetime
@@ -95,6 +99,7 @@ class TestModelMixins:
     def test_mixins_compose_into_declarative_model(self) -> None:
         """Mixins can be composed into a full SQLAlchemy declarative model."""
         table = _ComposedModel.__table__
+        assert isinstance(table, Table)
         col_names = {c.name for c in table.columns}
         assert "id" in col_names
         assert "date_created" in col_names
@@ -139,7 +144,7 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: AsyncMock | None = None,
         write_buffer: WriteBuffer | None = None,
-        l3_rows: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
@@ -152,10 +157,12 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(str(entity_id))
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._l3_rows.get(str(pk))
@@ -167,11 +174,12 @@ class StubCollection(BaseCollection[StubEntity]):
     async def delete_from_store(self, entity_id: object) -> None:
         self._l3_rows.pop(str(entity_id), None)
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 def _make_nats_mock() -> AsyncMock:
@@ -242,7 +250,7 @@ _TEST_SCOPE = "test-principal"
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_integ_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
@@ -282,7 +290,7 @@ class TestThreeTierIntegration:
         8. Delete from all tiers
         """
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         # 1. Create entity
@@ -366,7 +374,7 @@ class TestThreeTierIntegration:
     ) -> None:
         """When L1 is invalidated but L2 still has data, get() hits L2 and re-promotes to L1."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "item-2", "name": "Sprocket", "score": 5})
@@ -423,7 +431,7 @@ class TestThreeTierIntegration:
     async def test_multiple_entities_independent(self, registry: CollectionRegistry, config: DefaultCoreConfig) -> None:
         """Multiple entities in the same collection are independent."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         e1 = coll.create({"id": "a", "name": "Alpha", "score": 1})

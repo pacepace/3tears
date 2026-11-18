@@ -32,7 +32,10 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+
+from packages.core.tests.optional_support import present
 
 
 # canonical testcontainer harness -- single ``pytest_plugins`` entry
@@ -135,7 +138,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         key = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
+        row = await present(self.l3_pool).fetchrow(
             "SELECT * FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
             key[0],
             key[1],
@@ -144,8 +147,10 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
             return None
         return dict(row)
 
-    async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
-        status = await self.l3_pool.execute(
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
+        status = await present(self.l3_pool).execute(
             """
             INSERT INTO fake_refs
                 (conversation_id, item_id, score, note, date_created, date_updated)
@@ -167,7 +172,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
 
     async def delete_from_store(self, entity_id: Any) -> None:
         key = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
+        await present(self.l3_pool).execute(
             "DELETE FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
             key[0],
             key[1],
@@ -177,93 +182,18 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return json.dumps(data, default=str).encode()
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        return json.loads(data)
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
-class _InMemoryKvBucket:
-    """typed-wrapper KV bucket stand-in for cross-pod simulation."""
-
-    def __init__(self) -> None:
-        self.kv: dict[str, bytes] = {}
-        # each key's latest revision, a deletion's included: a read seeds L2 at the revision it
-        # saw before its L3 query, and lands only if nothing happened to the key since.
-        self.latest: dict[str, int] = {}
-        self._sequence = 0
-
-    def _advance(self, key: str) -> int:
-        self._sequence += 1
-        self.latest[key] = self._sequence
-        return self._sequence
-
-    async def get(self, *, key: str) -> bytes | None:
-        return self.kv.get(key)
-
-    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
-        return (self.kv.get(key), self.latest.get(key, 0))
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self.kv[key] = value
-        return self._advance(key)
-
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
-        if self.latest.get(key, 0) != revision:
-            return None
-        self.kv[key] = value
-        return self._advance(key)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
-        existed = key in self.kv
-        self.kv.pop(key, None)
-        self._advance(key)
-        return existed or revision is None
-
-
-class _InMemoryNatsBus:
-    """typed-wrapper NATS stand-in: KV bucket + typed pub/sub."""
-
-    def __init__(self) -> None:
-        self._bucket = _InMemoryKvBucket()
-        self._subs: dict[str, list[tuple[Any, Any]]] = {}
-
-    @property
-    def kv(self) -> dict[str, bytes]:
-        return self._bucket.kv
-
-    async def kv_bucket(
-        self,
-        *,
-        name: str,  # noqa: ARG002
-        ttl: Any = None,  # noqa: ARG002
-        storage: str = "memory",  # noqa: ARG002
-        create_if_missing: bool = True,  # noqa: ARG002
-        history: int = 1,  # noqa: ARG002
-    ) -> _InMemoryKvBucket:
-        return self._bucket
-
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
-        subject_str = str(subject)
-        for cb, message_type in self._subs.get(subject_str, []):
-            payload = message.model_dump_json()
-            decoded = message_type.model_validate_json(payload)
-            await cb(decoded)
-
-    async def subscribe_typed(
-        self,
-        *,
-        subject: Any,
-        cb: Any,
-        message_type: Any,
-        queue: Any = None,  # noqa: ARG002
-        max_in_flight: Any = None,  # noqa: ARG002
-        deadletter_on_failure: bool = True,  # noqa: ARG002
-    ) -> None:
-        subject_str = str(subject)
-        self._subs.setdefault(subject_str, []).append((cb, message_type))
+async def _l2_bucket(nats: FakeNatsClient) -> FakeKvBucket:
+    """the collections bucket every pod's collection keeps its L2 entries in."""
+    return await nats.kv_bucket(name=BaseCollection.L2_BUCKET_SUFFIX)
 
 
 def _build_pod(
     pool: asyncpg.Pool,
-    nats: _InMemoryNatsBus,
+    nats: FakeNatsClient,
     cfg: DefaultCoreConfig,
 ) -> tuple[FakeRefCollection, CollectionRegistry, SQLiteBackend]:
     """construct a per-pod (L1, L2, L3) stack."""
@@ -284,7 +214,7 @@ def cfg_always() -> DefaultCoreConfig:
 class TestCompositePkThreeTier:
     async def test_save_populates_all_tiers(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """save via composite-pk collection persists to L3, L1, L2."""
-        nats = _InMemoryNatsBus()
+        nats = FakeNatsClient()
         coll, _reg, l1 = _build_pod(pg_pool, nats, cfg_always)
         try:
             entity = coll.create(
@@ -309,13 +239,13 @@ class TestCompositePkThreeTier:
             l1_row = coll.get_row_sync(("conv-i1", "item-i1"))
             assert l1_row is not None
 
-            assert "test-principal.fake_refs.conv-i1_item-i1" in nats.kv
+            assert "test-principal.fake_refs.conv-i1_item-i1" in (await _l2_bucket(nats)).keys()
         finally:
             l1.reset()
 
     async def test_cold_start_l3_pull_through(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """pod restart: fresh L1 + existing L3 row resolves via get."""
-        nats = _InMemoryNatsBus()
+        nats = FakeNatsClient()
         # pod 1 writes
         coll_a, _reg_a, l1_a = _build_pod(pg_pool, nats, cfg_always)
         entity = coll_a.create(
@@ -332,7 +262,7 @@ class TestCompositePkThreeTier:
             l1_a.reset()
 
         # clear L2 to force L3 pull-through
-        nats.kv.clear()
+        (await _l2_bucket(nats)).wipe()
 
         # pod 2 starts fresh; same L3
         coll_b, _reg_b, l1_b = _build_pod(pg_pool, nats, cfg_always)
@@ -348,7 +278,7 @@ class TestCompositePkThreeTier:
 
     async def test_cross_pod_invalidation_composite(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """pod A save emits ``ids`` envelope; pod B evicts composite L1 row."""
-        nats = _InMemoryNatsBus()
+        nats = FakeNatsClient()
         coll_a, _reg_a, l1_a = _build_pod(pg_pool, nats, cfg_always)
         coll_b, reg_b, l1_b = _build_pod(pg_pool, nats, cfg_always)
         try:

@@ -30,10 +30,12 @@ from threetears.core.collections.registry import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.nats import Subjects
+from threetears.nats import Subjects, SubscriptionHandle
 from threetears.nats.errors import PublishError
-from threetears.core.testing.kv import FakeKvBucket
+from threetears.core.testing.kv import FakeKvBucket, FakeSubscription
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP, TEST_L1_TABLE
+
+from packages.core.tests.optional_support import present
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
-        l3_rows: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
@@ -88,10 +90,12 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(str(entity_id))
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._l3_rows.get(str(pk))
@@ -103,11 +107,11 @@ class StubCollection(BaseCollection[StubEntity]):
     async def delete_from_store(self, entity_id: object) -> None:
         self._l3_rows.pop(str(entity_id), None)
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        raw = json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        raw: dict[str, Any] = json.loads(data)
         for key in ("date_created", "date_updated"):
             if key in raw and isinstance(raw[key], str):
                 raw[key] = datetime.fromisoformat(raw[key])
@@ -147,6 +151,8 @@ class InMemoryNatsBus:
         self._bucket = _InMemoryKvBucket()
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self.publish_count: int = 0
+        #: raised by every publish while set: NATS down, at the typed-wrapper boundary
+        self.publish_error: PublishError | None = None
         self._received_messages: list[tuple[str, Any]] = []
 
     # --- KV ---
@@ -166,6 +172,8 @@ class InMemoryNatsBus:
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
         """typed publish. dispatches to every subscriber on ``subject``."""
+        if self.publish_error is not None:
+            raise self.publish_error
         self.publish_count += 1
         subject_str = str(subject)
         self._received_messages.append((subject_str, message))
@@ -186,15 +194,26 @@ class InMemoryNatsBus:
         queue: Any = None,  # noqa: ARG002
         max_in_flight: Any = None,  # noqa: ARG002
         deadletter_on_failure: bool = True,  # noqa: ARG002
-    ) -> None:
+    ) -> FakeSubscription:
         """typed subscribe matching wrapper kw-only api."""
         subject_str = str(subject)
-        self._subscribers.setdefault(subject_str, []).append((cb, message_type))
+        entry: tuple[Any, Any] = (cb, message_type)
+        self._subscribers.setdefault(subject_str, []).append(entry)
+        return FakeSubscription(subject=subject, entry=entry)
+
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """drop the one subscription this handle names."""
+        if not isinstance(sub, FakeSubscription) or sub.is_closed:
+            return
+        sub.mark_closed()
+        entries = self._subscribers.get(str(sub.subject), [])
+        if sub.entry in entries:
+            entries.remove(sub.entry)
 
 
 def _make_pod(
     nats: InMemoryNatsBus,
-    l3_rows: dict[str, dict],
+    l3_rows: dict[str, dict[str, Any]],
     config: DefaultCoreConfig,
     write_buffer: WriteBuffer | None = None,
 ) -> tuple[StubCollection, CollectionRegistry]:
@@ -235,7 +254,7 @@ def shared_nats() -> InMemoryNatsBus:
 
 
 @pytest.fixture()
-def shared_pg() -> dict[str, dict]:
+def shared_pg() -> dict[str, dict[str, Any]]:
     return {}
 
 
@@ -261,7 +280,7 @@ class TestInvalidationSignalContract:
 
     @pytest.mark.asyncio
     async def test_invalidation_signal_evicts_l1(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Receiving an invalidation signal evicts the entity from L1."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -290,7 +309,7 @@ class TestInvalidationSignalContract:
 
     @pytest.mark.asyncio
     async def test_invalidation_for_unknown_table_is_ignored(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Signal for an unregistered table is silently ignored."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -310,7 +329,7 @@ class TestInvalidationSignalContract:
 
     @pytest.mark.asyncio
     async def test_invalidation_for_a_registered_table_never_initialized_in_l1_is_ignored(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """A REGISTERED Collection (unlike `test_invalidation_for_unknown_table_is_ignored`
         above) whose table this pod's L1 backend was never `initialize()`-d with must be
@@ -345,7 +364,7 @@ class TestInvalidationSignalContract:
 
     @pytest.mark.asyncio
     async def test_invalidation_for_missing_entity_is_safe(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Evicting a non-existent entity does not crash."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -375,7 +394,7 @@ class TestSetterEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_field_setter_emits_signal(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """collection[id, field] = value emits an invalidation signal."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -407,7 +426,7 @@ class TestSetterEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_dict_setter_emits_signal(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """collection[id] = data_dict emits an invalidation signal."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -434,7 +453,7 @@ class TestSaveEntityEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_save_new_entity_emits_signal(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Saving a new entity emits an invalidation signal."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -457,7 +476,7 @@ class TestSaveEntityEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_save_existing_entity_evicts_other_pod_l1(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Saving an existing entity evicts stale L1 on other pods."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -471,7 +490,7 @@ class TestSaveEntityEmitsSignal:
         await pod_b.ensure("e1")
 
         # Pod A modifies and saves
-        entity_a = await pod_a.get("e1")
+        entity_a = present(await pod_a.get("e1"))
         entity_a.name = "Updated"
         await pod_a.save_entity(entity_a)
 
@@ -485,7 +504,7 @@ class TestSaveEntityEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_deferred_save_emits_signal(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_deferred: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_deferred: DefaultCoreConfig
     ) -> None:
         """Deferred save still emits invalidation (L1+L2 updated, other pods must evict)."""
         buf = WriteBuffer()
@@ -511,7 +530,7 @@ class TestDeleteEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_delete_evicts_other_pod_l1(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Deleting on pod A evicts pod B's L1 cache."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -538,7 +557,7 @@ class TestReloadEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_reload_evicts_other_pod_l1(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Reloading from L3 on pod A evicts pod B's stale L1."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -554,7 +573,7 @@ class TestReloadEmitsSignal:
         shared_pg["e1"]["name"] = "ExternalUpdate"
 
         # Pod A reloads from L3
-        entity_a = await pod_a.get("e1")
+        entity_a = present(await pod_a.get("e1"))
         await pod_a.reload_entity(entity_a)
 
         # Pod B's stale L1 should be evicted
@@ -571,7 +590,7 @@ class TestInvalidateCacheEmitsSignal:
 
     @pytest.mark.asyncio
     async def test_invalidate_cache_evicts_other_pod_l1(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Explicit cache invalidation on pod A evicts pod B's L1."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -599,7 +618,7 @@ class TestCacheConvergence:
 
     @pytest.mark.asyncio
     async def test_rapid_setter_updates_all_signals_received(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Rapid sequential updates via save_entity; pod B converges."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -615,7 +634,7 @@ class TestCacheConvergence:
 
         # 10 sequential save_entity calls (async, so signals are synchronous)
         for i in range(10):
-            entity = await pod_a.get("e1")
+            entity = present(await pod_a.get("e1"))
             entity.name = f"v{i + 1}"
             await pod_a.save_entity(entity)
 
@@ -632,7 +651,7 @@ class TestCacheConvergence:
 
     @pytest.mark.asyncio
     async def test_both_pods_write_caches_converge(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Both pods write different values; after settling, both see the last write."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -645,12 +664,12 @@ class TestCacheConvergence:
         await pod_b.ensure("e1")
 
         # Pod A writes
-        entity_a = await pod_a.get("e1")
+        entity_a = present(await pod_a.get("e1"))
         entity_a.name = "from_pod_a"
         await pod_a.save_entity(entity_a)
 
         # Pod B writes (last writer wins)
-        entity_b = await pod_b.get("e1")
+        entity_b = present(await pod_b.get("e1"))
         entity_b.name = "from_pod_b"
         await pod_b.save_entity(entity_b)
 
@@ -664,7 +683,7 @@ class TestCacheConvergence:
 
     @pytest.mark.asyncio
     async def test_three_pods_all_converge(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Three pods: write on one, all three converge."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -680,14 +699,14 @@ class TestCacheConvergence:
         await pod_c.ensure("e1")
 
         # Pod B updates
-        entity_b = await pod_b.get("e1")
+        entity_b = present(await pod_b.get("e1"))
         entity_b.name = "from_pod_b"
         await pod_b.save_entity(entity_b)
 
         # All pods converge to pod B's value
-        assert (await pod_a.get("e1")).name == "from_pod_b"
-        assert (await pod_b.get("e1")).name == "from_pod_b"
-        assert (await pod_c.get("e1")).name == "from_pod_b"
+        assert present(await pod_a.get("e1")).name == "from_pod_b"
+        assert present(await pod_b.get("e1")).name == "from_pod_b"
+        assert present(await pod_c.get("e1")).name == "from_pod_b"
 
 
 # ---------------------------------------------------------------------------
@@ -702,16 +721,13 @@ class TestSignalFailureResilience:
     async def test_signal_publish_failure_does_not_break_save(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, save_entity still succeeds."""
         nats = InMemoryNatsBus()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
         # Sabotage publish at the typed-wrapper boundary; the registry
         # narrow-catches PublishError and continues, the write stays
         # durable, and other pods' next read pulls fresh from L3.
-        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
-            raise PublishError("NATS down")
-
-        nats.publish = broken_publish
+        nats.publish_error = PublishError("NATS down")
 
         entity = pod_a.create({"id": "e1", "name": "Alice", "score": 0})
         await pod_a.save_entity(entity)
@@ -724,20 +740,17 @@ class TestSignalFailureResilience:
     async def test_signal_publish_failure_does_not_break_setter(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, setter still writes to L1."""
         nats = InMemoryNatsBus()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
         pod_a.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
-        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
-            raise PublishError("NATS down")
-
-        nats.publish = broken_publish
+        nats.publish_error = PublishError("NATS down")
 
         pod_a["e1", "name"] = "Bob"
 
         # L1 write succeeded
-        row = pod_a.get_row_sync("e1")
+        row = present(pod_a.get_row_sync("e1"))
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -747,10 +760,7 @@ class TestSignalFailureResilience:
         l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
         pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
-        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
-            raise PublishError("NATS down")
-
-        nats.publish = broken_publish
+        nats.publish_error = PublishError("NATS down")
 
         result = await pod_a.delete("e1")
         assert result is True
@@ -763,7 +773,7 @@ class TestSignalFailureResilience:
         l1.initialize(_make_metadata())
         reg = CollectionRegistry()
         reg.configure(l1_backend=l1)
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(reg, config_always, nats_client=None, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 0})
@@ -783,7 +793,7 @@ class TestListenerLifecycle:
 
     @pytest.mark.asyncio
     async def test_listener_not_started_no_eviction(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Without starting the listener, signals are not processed."""
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
@@ -820,7 +830,7 @@ class TestWriterDoesNotEvictOwnL1:
 
     @pytest.mark.asyncio
     async def test_writer_reads_own_entity_after_save(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """save_entity then an L1-only read of the same entity must hit.
 
@@ -841,7 +851,7 @@ class TestWriterDoesNotEvictOwnL1:
 
     @pytest.mark.asyncio
     async def test_other_pod_still_evicted_after_fix(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """Cross-pod eviction MUST survive the origin-skip change.
 
@@ -857,7 +867,7 @@ class TestWriterDoesNotEvictOwnL1:
         await pod_a.ensure("e1")
         await pod_b.ensure("e1")
 
-        entity_a = await pod_a.get("e1")
+        entity_a = present(await pod_a.get("e1"))
         entity_a.name = "Updated"
         await pod_a.save_entity(entity_a)
 
@@ -928,7 +938,7 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
         config: DefaultCoreConfig,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
-        l3_rows: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
@@ -946,21 +956,23 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
         conv, ent = entity_id
         return f"{conv}:{ent}"
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(self._key(entity_id))
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         self._l3_rows[self._key((data["conversation_id"], data["entity_id"]))] = dict(data)
         return 1
 
     async def delete_from_store(self, entity_id: object) -> None:
         self._l3_rows.pop(self._key(entity_id), None)
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        raw = json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        raw: dict[str, Any] = json.loads(data)
         for key in ("date_created", "date_updated"):
             if key in raw and isinstance(raw[key], str):
                 raw[key] = datetime.fromisoformat(raw[key])
@@ -969,7 +981,7 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
 
 def _make_uuid_pod(
     nats: InMemoryNatsBus,
-    l3_rows: dict[str, dict],
+    l3_rows: dict[str, dict[str, Any]],
     config: DefaultCoreConfig,
 ) -> tuple[CompUuidCollection, CollectionRegistry]:
     l1 = SQLiteBackend(db_name=f"test_uuidpod_{uuid.uuid4().hex[:8]}")
@@ -985,7 +997,7 @@ class TestUuidTypeDisciplineRoundTrip:
 
     @pytest.mark.asyncio
     async def test_pk_columns_are_uuid_after_create_and_save(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict[str, Any], config_always: DefaultCoreConfig
     ) -> None:
         """create -> save -> read-back PK via accessor yields UUID objects.
 

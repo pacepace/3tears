@@ -97,8 +97,8 @@ class TestSandboxDecision:
         assert SandboxDecision.DENY.value == "deny"
 
     def test_str_enum_behavior(self) -> None:
-        assert SandboxDecision.ALLOW == "allow"
-        assert SandboxDecision.DENY == "deny"
+        assert SandboxDecision.ALLOW.value == "allow"
+        assert SandboxDecision.DENY.value == "deny"
 
     def test_members(self) -> None:
         names = {member.name for member in SandboxDecision}

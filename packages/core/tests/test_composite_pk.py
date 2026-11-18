@@ -18,6 +18,8 @@ invalidation wire envelope uniformly. these tests pin:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import json
 import uuid
 from datetime import datetime
@@ -36,6 +38,8 @@ from threetears.core.collections.registry import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+
+from packages.core.tests.optional_support import present
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +76,7 @@ def _composite_metadata() -> MetaData:
 
 
 @pytest.fixture()
-def backend() -> SQLiteBackend:
+def backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_comp_{uuid.uuid4().hex[:8]}")
     b.initialize(_composite_metadata())
     yield b
@@ -289,7 +293,9 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         key = self.normalize_pk(entity_id)
         return self._l3_rows.get(key)
 
-    async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         key = (data["conversation_id"], data["item_id"])
         self._l3_rows[key] = dict(data)
         return 1
@@ -302,7 +308,8 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return json.dumps(data, default=str).encode()
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        return json.loads(data)
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 def _nats_mock() -> AsyncMock:
@@ -369,7 +376,7 @@ def _nats_mock() -> AsyncMock:
 
 
 @pytest.fixture()
-def composite_l1() -> SQLiteBackend:
+def composite_l1() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_comp_coll_{uuid.uuid4().hex[:8]}")
     b.initialize(_composite_metadata())
     yield b
@@ -414,7 +421,9 @@ class TestNormalizePk:
             async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+            async def save_to_store(
+                self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+            ) -> int:
                 return 1
 
             async def delete_from_store(self, entity_id: Any) -> None:
@@ -467,7 +476,9 @@ class TestL2Key:
             async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+            async def save_to_store(
+                self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+            ) -> int:
                 return 1
 
             async def delete_from_store(self, entity_id: Any) -> None:
@@ -654,8 +665,8 @@ class TestDerivedCompositeIdentity:
         assert l3_rows[("conv-A", "item-1")]["score"] == 1
         assert l3_rows[("conv-B", "item-1")]["score"] == 2
         # L1: independent rows
-        assert coll.get_row_sync(("conv-A", "item-1"))["score"] == 1
-        assert coll.get_row_sync(("conv-B", "item-1"))["score"] == 2
+        assert present(coll.get_row_sync(("conv-A", "item-1")))["score"] == 1
+        assert present(coll.get_row_sync(("conv-B", "item-1")))["score"] == 2
         # L2: two distinct keys
         assert f"{_TEST_SCOPE}.fake_refs.conv-A_item-1" in nats.store
         assert f"{_TEST_SCOPE}.fake_refs.conv-B_item-1" in nats.store

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -1129,7 +1131,7 @@ class _ScriptedReplyPlan:
     without hand-rolling stateful mocks per test.
     """
 
-    def __init__(self, entries: list[tuple[str, dict]]) -> None:
+    def __init__(self, entries: list[tuple[str, dict[str, Any]]]) -> None:
         """capture ``(subject, response_dict)`` pairs in order.
 
         :param entries: list of ``(expected_subject, response_dict)``
@@ -1138,7 +1140,7 @@ class _ScriptedReplyPlan:
         :rtype: None
         """
         self._entries = list(entries)
-        self.calls: list[tuple[str, dict]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def __call__(
         self,

@@ -295,6 +295,12 @@ def _with_lock(lock: Any) -> _BucketCollection:
     return _BucketCollection(registry, DefaultCoreConfig(), None, None, build_lock=lock)
 
 
+def _timed(collection: _BucketCollection, **timings: float) -> None:
+    """give this one collection shorter peer-wait timings than its class declares, as a test's clock needs."""
+    for name, seconds in timings.items():
+        setattr(collection, name, seconds)
+
+
 class TestTheBuildLockIsInjected:
     """a pod's collection takes a lock over a bucket the hub declared, not the bucket it may not declare."""
 
@@ -307,7 +313,7 @@ class TestTheBuildLockIsInjected:
     def test_a_held_lock_waits_for_the_peers_value_and_does_not_derive(self) -> None:
         lock = _HeldLock()
         collection = _with_lock(lock)
-        collection.peer_poll_interval = 0.01
+        _timed(collection, peer_poll_interval=0.01)
 
         async def peer_lands() -> dict[str, Any] | None:
             fetched = asyncio.create_task(collection.fetch_from_store((4,)))
@@ -322,8 +328,7 @@ class TestTheBuildLockIsInjected:
     def test_a_peer_slower_than_any_fixed_budget_is_waited_for_and_not_duplicated(self) -> None:
         lock = _HeldUntil()
         collection = _with_lock(lock)
-        collection.peer_poll_interval = 0.01
-        collection.peer_retake_seconds = 0.02
+        _timed(collection, peer_poll_interval=0.01, peer_retake_seconds=0.02)
 
         async def slow_peer_lands() -> dict[str, Any] | None:
             fetched = asyncio.create_task(collection.fetch_from_store((6,)))
@@ -338,8 +343,7 @@ class TestTheBuildLockIsInjected:
     def test_a_peer_that_lets_go_without_the_value_is_taken_over_once(self) -> None:
         lock = _HeldUntil()
         collection = _with_lock(lock)
-        collection.peer_poll_interval = 0.01
-        collection.peer_retake_seconds = 0.02
+        _timed(collection, peer_poll_interval=0.01, peer_retake_seconds=0.02)
 
         async def peer_dies() -> dict[str, Any] | None:
             fetched = asyncio.create_task(collection.fetch_from_store((7,)))
@@ -354,10 +358,13 @@ class TestTheBuildLockIsInjected:
     def test_a_long_wait_backs_off_its_reads_and_says_it_is_waiting(self, caplog: pytest.LogCaptureFixture) -> None:
         lock = _HeldUntil()
         collection = _with_lock(lock)
-        collection.peer_poll_interval = 0.01
-        collection.peer_poll_max_interval = 0.04
-        collection.peer_retake_seconds = 0.02
-        collection.peer_wait_log_seconds = 0.1
+        _timed(
+            collection,
+            peer_poll_interval=0.01,
+            peer_poll_max_interval=0.04,
+            peer_retake_seconds=0.02,
+            peer_wait_log_seconds=0.1,
+        )
         reads: list[tuple[Any, ...]] = []
         load_derived = collection.load_derived
 

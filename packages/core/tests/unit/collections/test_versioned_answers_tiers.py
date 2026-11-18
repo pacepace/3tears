@@ -46,7 +46,7 @@ async def _replica(bus: FakeNatsClient, *, l1: Any = None) -> VersionedAnswers:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1 or _l1(), l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     answers = VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name=_TABLE)
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     return answers
 
 
@@ -219,7 +219,7 @@ class TestAMissedBroadcastIsCaughtUp:
         await b_registry.stop_invalidation_listener()  # B's listener is down: it misses what follows
         await a.answer("v2", "page", _Computer(), order=2)
         await a.retire_older_than(2)
-        await b_registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+        await b_registry.start_invalidation_listener(bus)
         stale = _Computer()
         assert (await b.answer_with_outcome("v1", "page", stale, order=1)).outcome is AnswerOutcome.READ
         assert stale.calls == 0  # the missed retirement left the answer in B's L1

@@ -67,10 +67,12 @@ class _Collection(BaseCollection[_Entity]):
     def entity_class(self) -> type[_Entity]:
         return _Entity
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return next((r for r in self.l3_pool.tables[self.table] if r["id"] == entity_id), None)  # type: ignore[union-attr]
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         return 1
 
     async def delete_from_store(self, entity_id: object) -> None:
@@ -87,21 +89,22 @@ class _Collection(BaseCollection[_Entity]):
                     if r[cascade.child_column] == entity_id:
                         r[cascade.child_column] = None
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 class _Shelves(_Collection):
     table = "shelves"
-    delete_cascades = (DeleteCascade("books", "shelf_id", "CASCADE"),)
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (DeleteCascade("books", "shelf_id", "CASCADE"),)
 
 
 class _Books(_Collection):
     table = "books"
-    delete_cascades = (DeleteCascade("books", "sequel_of", "SET NULL"),)
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (DeleteCascade("books", "sequel_of", "SET NULL"),)
 
 
 class _Source:

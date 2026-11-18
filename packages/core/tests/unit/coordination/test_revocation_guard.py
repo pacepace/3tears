@@ -29,6 +29,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import BaseModel
 from freezegun import freeze_time
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -58,7 +59,9 @@ def _frozen_clock() -> Iterator[None]:
 class _Nats(FakeNatsClient):
     """the shared collections bucket; no replica here subscribes to invalidations."""
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 
@@ -69,7 +72,9 @@ class _FailingNats(FakeNatsClient):
         del kwargs
         raise KvError("kv down")
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 

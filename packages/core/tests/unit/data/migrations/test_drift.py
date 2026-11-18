@@ -15,6 +15,8 @@ the three moving pieces that answer it:
 
 from __future__ import annotations
 
+from typing import Any
+
 from threetears.core.data.migrations import (
     DriftReport,
     diff_expected_live,
@@ -124,7 +126,7 @@ class TestDiff:
 
     def test_extra_table_reported(self) -> None:
         """live table with no matching CREATE appears in extra_tables."""
-        expected: dict = {}
+        expected: dict[str, Any] = {}
         live = {"hand_rolled": {"id": "uuid"}}
         report = diff_expected_live(expected, live)
         assert report.extra_tables == ["hand_rolled"]

@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -197,10 +198,10 @@ class _HookedBucket(FakeKvBucket):
             raise KvError("simulated L2 write failure")
         return await super().put(key=key, value=value, ttl=ttl)
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
         if self.fail_delete:
             raise KvError("simulated L2 delete failure")
-        return await super().delete(key=key, revision=revision)
+        return await super().delete(key=key, revision=revision, marker_ttl=marker_ttl)
 
 
 class _HookedNats(FakeNatsClient):
@@ -211,7 +212,9 @@ class _HookedNats(FakeNatsClient):
         self.bucket = _HookedBucket("collections")
         self.published: list[Any] = []
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         """record the invalidation broadcast every write sends; no replica here subscribes."""
         self.published.append(message)
 
@@ -219,10 +222,12 @@ class _HookedNats(FakeNatsClient):
         self,
         *,
         name: str,
-        ttl: object | None = None,
+        ttl: timedelta | None = None,
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
+        replicas: int | None = None,
     ) -> _HookedBucket:
         return self.bucket
 

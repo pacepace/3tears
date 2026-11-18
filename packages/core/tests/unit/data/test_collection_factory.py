@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.exceptions import L2ScopeNotConfiguredError
 from threetears.core.collections.registry import CollectionRegistry
@@ -147,7 +148,7 @@ class TestFetchReturnsDict:
     async def test_fetch_from_store_returns_plain_dict(self) -> None:
         pool = FakeAsyncpgPool(rows={"w1": {"id": "w1", "name": "sprocket", "score": 42}})
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
             registry=registry,
@@ -164,7 +165,7 @@ class TestFetchReturnsDict:
         pool = FakeAsyncpgPool(rows={"w1": {"id": "w1", "name": "sprocket", "score": 42}})
         l1 = _make_l1()
         registry = CollectionRegistry()
-        registry.configure(l1_backend=l1, l3_pool=pool)
+        registry.configure(l1_backend=l1, l3_pool=SqlL3Backend(pool))
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
             registry=registry,
@@ -184,7 +185,7 @@ class TestFetchReturnsDict:
     async def test_datastore_query_returns_dicts(self) -> None:
         pool = FakeAsyncpgPool(rows={"w1": {"id": "w1", "name": "sprocket", "score": 42}})
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))
         store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
 
         rows = await store.query("SELECT * FROM widgets WHERE id = $1", "w1")
@@ -203,7 +204,7 @@ class TestL2RegistryFallback:
     async def test_factory_resolves_l2_from_registry(self) -> None:
         l2_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=_widget_pool(), l2_client=l2_client, kv_key_scope="hub")
+        registry.configure(l3_pool=SqlL3Backend(_widget_pool()), l2_client=l2_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -217,7 +218,7 @@ class TestL2RegistryFallback:
     async def test_explicit_none_disables_l2(self) -> None:
         registry_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=_widget_pool(), l2_client=registry_client, kv_key_scope="hub")
+        registry.configure(l3_pool=SqlL3Backend(_widget_pool()), l2_client=registry_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -234,7 +235,7 @@ class TestL2RegistryFallback:
         constructor_client = FakeNatsClient()
         registry_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=_widget_pool(), l2_client=registry_client, kv_key_scope="hub")
+        registry.configure(l3_pool=SqlL3Backend(_widget_pool()), l2_client=registry_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -256,7 +257,7 @@ class TestL2RegistryFallback:
         from ``l2_key`` in a request path rather than at wiring.
         """
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool())
+        registry.configure(l3_pool=SqlL3Backend(FakeAsyncpgPool()))
 
         with pytest.raises(L2ScopeNotConfiguredError) as excinfo:
             registry.bind_table("widgets", l2_client=object())
@@ -267,9 +268,9 @@ class TestL2RegistryFallback:
     def test_bind_table_without_an_l2_client_needs_no_scope(self) -> None:
         """an L1/L3-only override touches no keyspace, so the guard must not fire."""
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool())
+        registry.configure(l3_pool=SqlL3Backend(FakeAsyncpgPool()))
 
-        registry.bind_table("widgets", l3_pool=FakeAsyncpgPool())
+        registry.bind_table("widgets", l3_pool=SqlL3Backend(FakeAsyncpgPool()))
 
         assert registry.get_l3_pool("widgets") is not None
 
@@ -277,7 +278,7 @@ class TestL2RegistryFallback:
         default_client = FakeNatsClient()
         table_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=_widget_pool(), l2_client=default_client, kv_key_scope="hub")
+        registry.configure(l3_pool=SqlL3Backend(_widget_pool()), l2_client=default_client, kv_key_scope="hub")
         registry.bind_table("widgets", l2_client=table_client)
 
         collection = create_dynamic_collection(
@@ -295,7 +296,7 @@ class TestL2RegistryFallback:
         l2_client = FakeNatsClient()
         registry = CollectionRegistry()
         # create_table runs its DDL on one acquired connection under the DDL lock
-        registry.configure(l3_pool=FakeLockingPool(), l2_client=l2_client, kv_key_scope="hub")
+        registry.configure(l3_pool=SqlL3Backend(FakeLockingPool()), l2_client=l2_client, kv_key_scope="hub")
         store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
 
         collection = await store.create_table(_widgets_table())
@@ -321,7 +322,7 @@ class TestVectorColumns:
     async def test_save_casts_vector_and_binds_bracketed_text(self) -> None:
         pool = FakeAsyncpgPool()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))
         collection = create_dynamic_collection(
             table_def=_embeddings_table(),
             registry=registry,
@@ -339,7 +340,7 @@ class TestVectorColumns:
     async def test_fetch_coerces_vector_text_to_list(self) -> None:
         pool = FakeAsyncpgPool(rows={"e1": {"id": "e1", "embedding": "[0.1,0.2,0.3]"}})
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))
         collection = create_dynamic_collection(
             table_def=_embeddings_table(),
             registry=registry,
@@ -355,7 +356,7 @@ class TestVectorColumns:
         pool = FakeAsyncpgPool(rows={"e1": {"id": "e1", "embedding": "[0.1,0.2,0.3]"}})
         l1 = _make_l1()
         registry = CollectionRegistry()
-        registry.configure(l1_backend=l1, l3_pool=pool)
+        registry.configure(l1_backend=l1, l3_pool=SqlL3Backend(pool))
         collection = create_dynamic_collection(
             table_def=_embeddings_table(),
             registry=registry,
@@ -373,7 +374,7 @@ class TestVectorColumns:
 
     def test_serialize_deserialize_vector_for_l2(self) -> None:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool())
+        registry.configure(l3_pool=SqlL3Backend(FakeAsyncpgPool()))
         collection = create_dynamic_collection(
             table_def=_embeddings_table(),
             registry=registry,
@@ -408,7 +409,7 @@ class TestTimestamptzColumns:
         from datetime import datetime
 
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool())
+        registry.configure(l3_pool=SqlL3Backend(FakeAsyncpgPool()))
         collection = create_dynamic_collection(
             table_def=_events_table(),
             registry=registry,
@@ -444,7 +445,7 @@ class TestANaiveInstantNeverReachesL3:
 
     def _collection(self, pool: FakeAsyncpgPool) -> Any:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
+        registry.configure(l3_pool=SqlL3Backend(pool))
         return create_dynamic_collection(
             table_def=_clock_table(),
             registry=registry,
@@ -522,7 +523,7 @@ class TestDynamicSaveReportsTheRealRowcount:
     )
     async def test_rowcount_comes_from_the_status_tag(self, tag: str, expected: int) -> None:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=_TaggingPool(tag))
+        registry.configure(l3_pool=SqlL3Backend(_TaggingPool(tag)))
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
             registry=registry,

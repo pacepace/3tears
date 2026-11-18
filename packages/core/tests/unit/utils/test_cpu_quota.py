@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from threetears.core.utils.cpu_quota import bound_native_threads, default_execut
 pyarrow = pytest.importorskip("pyarrow")
 
 
-def _cores(n: int | None) -> object:
+def _cores(n: int | None) -> Callable[[], int | None]:
     return lambda: n
 
 

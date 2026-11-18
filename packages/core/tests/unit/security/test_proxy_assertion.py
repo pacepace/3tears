@@ -14,13 +14,23 @@ from threetears.core.security.identity_token import (
     build_jwks,
     generate_signing_keypair,
 )
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.core.security.proxy_assertion import mint_proxy_assertion, verify_proxy_assertion
 
 # a datetime, not an ISO string: freezegun parses a string with dateutil at decoration time (import), a clock read.
 _FROZEN = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 
 
-def _mint(priv, *, kid="proxy-1", pod_id="pod-1", body_hash="bh-1", nonce="n-1", iat=None, exp=None):
+def _mint(
+    priv: Ed25519PrivateKey,
+    *,
+    kid: str = "proxy-1",
+    pod_id: str = "pod-1",
+    body_hash: str = "bh-1",
+    nonce: str = "n-1",
+    iat: int | None = None,
+    exp: int | None = None,
+) -> str:
     now = int(time.time())
     return mint_proxy_assertion(
         signing_key=priv,

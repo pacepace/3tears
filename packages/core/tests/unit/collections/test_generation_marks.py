@@ -58,7 +58,6 @@ class TestTheFirstGenerationSeenDropsTheTable:
         marks.follow(_TABLE)
         verdict = _settle(marks, _TABLE, "inc-a:4")
         assert verdict is GenerationVerdict.FIRST_SIGHT
-        assert verdict is not GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-a:4"
 
     def test_the_same_generation_again_is_current(self) -> None:
@@ -98,7 +97,6 @@ class TestAnAdvanceIsAccountedForWhenEveryRowWasHeard:
         marks.hear(_TABLE, "inc-a:3", 1)
         verdict = _settle(marks, _TABLE, "inc-a:3")
         assert verdict is GenerationVerdict.MISSED
-        assert verdict is not GenerationVerdict.CURRENT
         # the drop accounts for everything up to the generation read
         assert _settle(marks, _TABLE, "inc-a:3") is GenerationVerdict.CURRENT
 
@@ -125,7 +123,6 @@ class TestAnotherIncarnationIsAReplacedStore:
         marks = _followed("inc-a:9")
         verdict = _settle(marks, _TABLE, "inc-b:9")
         assert verdict is GenerationVerdict.REPLACED
-        assert verdict is not GenerationVerdict.CURRENT
         assert marks.recorded(_TABLE) == "inc-b:9"
 
     def test_hearing_every_row_of_the_new_incarnation_does_not_excuse_the_old_ones_missed(self) -> None:

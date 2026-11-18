@@ -305,7 +305,7 @@ async def test_a_collection_with_invalidation_columns_settles_each_row_with_them
     assert changed["save_arrow"][0]["columns"] == {"office_key": "sn_NC1", "votes": "2"}
 
 
-def _cached_results(rows: int) -> tuple[Any, SQLiteBackend]:
+def _cached_results(rows: int, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, SQLiteBackend]:
     """a results collection over a real SQLite L1 that holds ``rows`` of its rows."""
     metadata = MetaData()
     SCHEMA.to_sqlalchemy_table(metadata)
@@ -322,13 +322,13 @@ def _cached_results(rows: int) -> tuple[Any, SQLiteBackend]:
         pass
 
     # the settle evicts again as the transaction ends; these tests pin the write's own eviction
-    collection.invalidate_cache_many = settle
+    monkeypatch.setattr(collection, "invalidate_cache_many", settle)
     return collection, l1
 
 
 @pytest.mark.parametrize("how", ["save_arrow", "delete_arrow"])
-async def test_every_key_leaves_l1_in_one_write(how: str, l1_statements: Any) -> None:
-    collection, l1 = _cached_results(40)
+async def test_every_key_leaves_l1_in_one_write(monkeypatch: pytest.MonkeyPatch, how: str, l1_statements: Any) -> None:
+    collection, l1 = _cached_results(40, monkeypatch)
     proxy = _Hub(write_arrow=True).proxy()
     collection.l3_pool = proxy
     statements = l1_statements(l1)

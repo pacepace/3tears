@@ -39,7 +39,7 @@ async def _broadcast(batched: bool, monkeypatch: pytest.MonkeyPatch) -> tuple[_H
     bus = FakeNatsClient()
     sender, receiver = CollectionRegistry(), CollectionRegistry()
     heard = _Heard(receiver, monkeypatch)
-    await receiver.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await receiver.start_invalidation_listener(bus)
     sender.batch_invalidations = batched
     published: list[Any] = []
     real_publish = bus.publish
@@ -55,7 +55,7 @@ async def _broadcast(batched: bool, monkeypatch: pytest.MonkeyPatch) -> tuple[_H
         )
         for n in range(_ROWS)
     ]
-    await sender.publish_invalidations(bus, "results", messages)  # type: ignore[arg-type]
+    await sender.publish_invalidations(bus, "results", messages)
     await receiver.stop_invalidation_listener()
     return heard, len(published)
 
@@ -81,8 +81,8 @@ async def test_a_batch_from_this_registry_is_not_applied_here() -> None:
     registry.batch_invalidations = True
     applied: list[Any] = []
     registry.register_derived_cache("results", on_row=applied.append, on_table_dropped=lambda: None)
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     messages = [registry.row_message("results", ("a", "b")) for _ in range(3)]
-    await registry.publish_invalidations(bus, "results", messages)  # type: ignore[arg-type]
+    await registry.publish_invalidations(bus, "results", messages)
     await registry.stop_invalidation_listener()
     assert len(applied) == 3

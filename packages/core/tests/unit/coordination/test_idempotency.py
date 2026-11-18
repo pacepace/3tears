@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import l2_order_of
@@ -41,7 +42,9 @@ _SCOPE = "claims-principal"
 class _Nats(FakeNatsClient):
     """the shared collections bucket; no replica here subscribes to invalidations."""
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 

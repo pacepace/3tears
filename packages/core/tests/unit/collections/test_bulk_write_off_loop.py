@@ -75,7 +75,13 @@ _SCHEMA = TableSchema(
     columns=[
         *(Column(name, STRING_TYPE) for name in _KEY),
         *(
-            Column(name, kind, nullable=True, **({"precision": 18, "scale": 6} if kind == NUMERIC_TYPE else {}))
+            Column(
+                name,
+                kind,
+                nullable=True,
+                precision=18 if kind == NUMERIC_TYPE else None,
+                scale=6 if kind == NUMERIC_TYPE else None,
+            )
             for name, kind in _VALUES
         ),
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
@@ -236,6 +242,10 @@ async def _written(
     return ticks, host.ticks
 
 
+#: the collection a baseline's steps enroll their keys under: only its identity is read
+_STAND_IN = MagicMock()
+
+
 def _loop_steps(rows: list[dict[str, Any]], *, stamped: bool) -> float:
     """what the write's per-row steps alone take here, done as the loop once did them, so the bound is in proportion
     to this machine: ``save_arrow``'s keys zipped from their columns, checked for a twin and enrolled; ``save_rows``'
@@ -257,7 +267,7 @@ def _loop_steps(rows: list[dict[str, Any]], *, stamped: bool) -> float:
             data = [None] * len(keys)
         assert len(set(keys)) == len(keys)
         for key, each in zip(keys, data, strict=True):
-            transaction.enroll(MagicMock, key, row=each)
+            transaction.enroll(_STAND_IN, key, row=each)
         return time.perf_counter() - started
     finally:
         gc.enable()
@@ -274,7 +284,7 @@ def _delete_steps(rows: list[dict[str, Any]]) -> float:
         named = [tuple(key) for key in keys]
         assert not [key for key in named if len(key) != len(_KEY)]
         for key in named:
-            transaction.enroll(MagicMock, key if len(key) > 1 else key[0], row=None)
+            transaction.enroll(_STAND_IN, key if len(key) > 1 else key[0], row=None)
         return time.perf_counter() - started
     finally:
         gc.enable()
@@ -301,14 +311,14 @@ def _returned_steps(rows: list[dict[str, Any]]) -> float:
         started = time.perf_counter()
         named = [tuple(row[name] for name in _KEY) for row in rows]
         for key in named:
-            transaction.enroll(MagicMock, key, row=None)
+            transaction.enroll(_STAND_IN, key, row=None)
         found: dict[tuple[Any, ...], dict[str, Any]] = {}
         for reply in replies:
             for row in reply:
                 read = _rehydrated(row)
                 bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
                 found[bound] = schema_sql.coerce_row(_SCHEMA, read)
-        transaction.restate_many(MagicMock, found)
+        transaction.restate_many(_STAND_IN, found)
         return time.perf_counter() - started
     finally:
         gc.enable()
@@ -376,7 +386,7 @@ class TestTheWritesPerRowStepsLeaveTheLoop:
         async def settle(keys: Any) -> None:
             settled.extend(keys)
 
-        collection.invalidate_cache_many = settle
+        monkeypatch.setattr(collection, "invalidate_cache_many", settle)
         async with backend.acquire() as conn, CallerTransaction(conn):
             if how == "save_arrow":
                 await collection.save_arrow(_table(rows), conn=conn)
@@ -386,7 +396,9 @@ class TestTheWritesPerRowStepsLeaveTheLoop:
         assert settled == [_key(index) for index in range(200)]
 
     @pytest.mark.parametrize("how", ["save_arrow", "save_rows"])
-    async def test_a_key_twice_is_still_refused_before_anything_is_enrolled(self, how: str) -> None:
+    async def test_a_key_twice_is_still_refused_before_anything_is_enrolled(
+        self, monkeypatch: pytest.MonkeyPatch, how: str
+    ) -> None:
         rows = _rows_of(200)
         rows[150] = {**rows[150], **dict(zip(_KEY, _key(3), strict=True))}
         backend = _Hub(door=how == "save_arrow").proxy()
@@ -397,7 +409,7 @@ class TestTheWritesPerRowStepsLeaveTheLoop:
         async def settle(keys: Any) -> None:
             settled.extend(keys)
 
-        collection.invalidate_cache_many = settle
+        monkeypatch.setattr(collection, "invalidate_cache_many", settle)
         async with backend.acquire() as conn, CallerTransaction(conn):
             with pytest.raises(ValueError, match="two rows share a key"):
                 if how == "save_arrow":
@@ -427,13 +439,15 @@ class TestABulkDeletesKeysLeaveTheLoop:
         async def settle(keys: Any) -> None:
             settled.extend(keys)
 
-        collection.invalidate_cache_many = settle
+        monkeypatch.setattr(collection, "invalidate_cache_many", settle)
         async with backend.acquire() as conn, CallerTransaction(conn):
             assert await collection.delete_rows([_key(index) for index in range(200)], conn=conn) == 200
         assert made and threading.get_ident() not in made, "the enrollments were made on the loop"
         assert settled == [_key(index) for index in range(200)]
 
-    async def test_a_key_of_the_wrong_width_is_still_refused_before_anything_is_enrolled(self) -> None:
+    async def test_a_key_of_the_wrong_width_is_still_refused_before_anything_is_enrolled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         keys = [_key(index) for index in range(200)]
         keys[150] = keys[150][:-1]
         backend = _Hub(door=False).proxy()
@@ -444,7 +458,7 @@ class TestABulkDeletesKeysLeaveTheLoop:
         async def settle(keys: Any) -> None:
             settled.extend(keys)
 
-        collection.invalidate_cache_many = settle
+        monkeypatch.setattr(collection, "invalidate_cache_many", settle)
         async with backend.acquire() as conn, CallerTransaction(conn):
             with pytest.raises(ValueError, match=r"key \('k0-0-150'.*has 6 values where the key has 7"):
                 await collection.delete_rows(keys, conn=conn)
@@ -473,7 +487,7 @@ class TestADeleteReturningItsRowsLeavesTheLoop:
         async def settle(keys: list[Any], *, rows: list[dict[str, Any] | None] | None = None) -> None:
             settled.append((list(keys), list(rows or [])))
 
-        collection.invalidate_cache_many = settle
+        monkeypatch.setattr(collection, "invalidate_cache_many", settle)
         keys = [_key(index) for index in range(2500)]
         async with backend.acquire() as conn, CallerTransaction(conn):
             assert await collection.delete_rows([*keys, _key(9999)], conn=conn) == 2501
