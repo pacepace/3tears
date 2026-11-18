@@ -28,8 +28,8 @@ from threetears.evals.analysis.stats import (
     GuardrailVerdict,
     bet_decided_at,
     bet_evidence,
-    bet_order,
     bounded_difference_interval,
+    bounded_mean_p,
     bounded_separation_p,
     composite_significance,
     contrast_cases,
@@ -469,6 +469,9 @@ class _Tested(NamedTuple):
     #: Why no test ran, in the shared reading states' closed set of reasons, where none ran; a family decided on its
     #: primary states it on a primary it cannot decide.
     untested_state: StateOf | None = None
+    #: Whether the p is the engine's bounded test on 0 to 1 (:func:`_fixed_count_test`), which its family re-reads with
+    #: its stakes tuned to the level each interval is read at.
+    tuned: bool = False
 
 
 def _compare(
@@ -488,9 +491,9 @@ def _compare(
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
     design a fixed case set exists for — else unpaired over each side's per-case values. **A reading on the range 0 to
-    1 is read by the bounded test by betting, whatever its spread** (:func:`_fixed_count_test`), which holds α at
-    every n for every distribution on the range: a t-test on pass/fail values does not (on fair coin pairs at 40 cases
-    it separated 5.28% of the time at α). **Any other reading keeps the t-test**
+    1 is read by the bounded test by betting, whatever its spread** (:func:`_fixed_count_test`, the bet its bounded
+    interval is drawn by), which holds α at every n for every distribution on the range: a t-test on pass/fail values
+    does not (on fair coin pairs at 40 cases it separated 5.28% of the time at α). **Any other reading keeps the t-test**
     (:func:`~threetears.evals.analysis.stats.composite_significance`), and where its values have no spread the bounded
     test on its declared range (:func:`~threetears.evals.analysis.stats.separation_test`). With no range such a gap is
     ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
@@ -526,7 +529,8 @@ def _compare(
     a, b, paired = _test_samples(control_values, contrast_values)
     bet = _bet_samples(control_values, contrast_values, value_range, places) if paired else None
     # On a quick-path comparison the mixture bet reads a paired reading on its declared range, in its committed order.
-    # Elsewhere, a reading on 0 to 1 is read by the bounded test whatever its spread (:func:`_fixed_count_test`), and any
+    # Elsewhere, a reading on 0 to 1 is read by the bounded test whatever its spread (:func:`_fixed_count_test`; its family
+    # tunes its stakes to the level its interval is read at), and any
     # other by the t-test where its values have spread and the bounded test on its range where they have none; with no
     # range a gap with no spread is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597).
     separation = (
@@ -637,7 +641,14 @@ def _compare(
             better, worse = (up, down) if higher_is_better else (down, up)
             comparison = comparison.model_copy(update={"evidence_better": better, "evidence_worse": worse})
     return _Tested(
-        comparison, p_raw, equivalence_p_raw, (a, b), value_range, bet_samples=bet, untested_state=untested_state
+        comparison,
+        p_raw,
+        equivalence_p_raw,
+        (a, b),
+        value_range,
+        bet_samples=bet,
+        untested_state=untested_state,
+        tuned=bet is None and separation.basis == "bounded" and _reads_0_to_1(a, b, value_range),
     )
 
 
@@ -650,41 +661,103 @@ _TOO_FEW_COMPLETE = (
 )
 
 
+def _reads_0_to_1(a: Sequence[float], b: Sequence[float], value_range: tuple[float, float] | None) -> bool:
+    """Whether a contrast is a reading on the range 0 to 1 with every value inside it, which the engine reads by the
+    bounded test whatever its spread (:func:`_fixed_count_test`)."""
+    return (
+        value_range is not None
+        and tuple(value_range) == _TRIAL_PASS_RANGE
+        and all(0 <= exact_decimal(v) <= 1 for v in (*a, *b))
+    )
+
+
 def _fixed_count_test(
-    a: Sequence[float], b: Sequence[float], *, paired: bool, value_range: tuple[float, float] | None
+    a: Sequence[float],
+    b: Sequence[float],
+    *,
+    paired: bool,
+    value_range: tuple[float, float] | None,
+    alpha: float = SIGNIFICANCE_ALPHA,
 ) -> SeparationReading:
     """The test a contrast is read by at the count it has, where no committed order lets a bet be read again as cases
     are added: an engine campaign's, at a fixed count or at each look of a plan.
 
     **A reading on the range 0 to 1, every value inside it, is read by the bounded test by betting, whatever the
-    spread**: a pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on 0 to 1. Paired,
-    the mixture bet the quick path reads (:func:`~threetears.evals.analysis.stats.separation_test` with ``mixture``),
-    over the pairs in the order fixed by their count alone (:func:`~threetears.evals.analysis.stats.bet_order`),
-    never the order the case ids sort in, which a host's listing can tie to the values. Its capital is a nonnegative
-    martingale under the null, so its p holds α at every n for every distribution on the range: on pass/fail pairs
-    it holds where the paired t-test erred above α (5.28% on fair coin pairs at 40 cases), which
-    ``tests/test_engine_fixed_count_bounded.py`` computes exactly from 10 to 100 cases. Unpaired, the bounded test at
-    a cut between the two means (:func:`~threetears.evals.analysis.stats.bounded_separation_p`).
+    spread**: a pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on 0 to 1. It is
+    the bet the engine's bounded interval is drawn by (:func:`~threetears.evals.analysis.stats.bounded_separation_p`
+    with no mixture): paired, a bet on the differences in the order fixed by their count alone
+    (:func:`~threetears.evals.analysis.stats.bet_order`), each stake tuned to that count and to ``alpha``; unpaired,
+    the bounded test at a cut between the two means. Its stakes are set from the values before each one, so under the
+    null its capital is a nonnegative supermartingale, and by Ville's inequality its p holds α at every n for every
+    distribution on the range, whatever level its stakes were tuned to. On pass/fail pairs it holds where the paired
+    t-test erred above α (5.28% on fair coin pairs at 40 cases). A family re-reads it with its stakes tuned to the
+    level each of its intervals is read at (:func:`_corrected_family`), so the interval excludes zero exactly where
+    the p clears that level.
 
     **Any other reading keeps the separation test every other surface reads a gap by**
     (:func:`~threetears.evals.analysis.stats.separation_test`): the t-test where the values have spread, and the bounded
     test on its declared range where they have none. That is a reading on a wider declared range (a 1 to 5 judged
     scale), on none (cost, latency, a count), or with a value outside its range, which bounds nothing then.
+
+    :param alpha: The two-sided level the bet's stakes are tuned to; the p is valid whatever it is.
     """
-    if value_range is None or tuple(value_range) != _TRIAL_PASS_RANGE:
-        return separation_test(a, b, paired=paired, value_range=value_range)
-    if any(not 0 <= exact_decimal(v) <= 1 for v in (*a, *b)):
-        return separation_test(a, b, paired=paired, value_range=value_range)
-    if paired:
-        order = bet_order(len(a))
-        return separation_test(
-            [a[i] for i in order], [b[i] for i in order], paired=True, value_range=value_range, mixture=True
-        )
-    tested = separation_test(a, b, paired=False, value_range=value_range)
-    if tested.basis != "t":
+    tested = separation_test(a, b, paired=paired, value_range=value_range)
+    if not _reads_0_to_1(a, b, value_range) or tested.basis == "identical":
         return tested
-    p = bounded_separation_p(a, b, paired=False, value_range=value_range)
-    return tested if p is None else tested._replace(p=p, basis="bounded")
+    p = (
+        bounded_separation_p(a, b, paired=True, value_range=_TRIAL_PASS_RANGE, alpha=alpha)
+        if paired
+        else _unpaired_bounded_p(a, b, alpha)
+    )
+    return tested if p is None else tested._replace(p=p, basis="bounded", refusal=None)
+
+
+#: Bisection steps over the cut between two unpaired means (:func:`_unpaired_bounded_p`).
+_CUT_STEPS = 40
+
+
+def _unpaired_bounded_p(a: Sequence[float], b: Sequence[float], alpha: float) -> float | None:
+    """The two-sided p of the bounded test between two unpaired samples on 0 to 1, read at the cut the engine's
+    unpaired bounded interval reads (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`): each arm's
+    mean bounded on its own by the bet with stakes tuned to ``alpha``/4, as that interval's ends are.
+
+    One direction (``mean(b) > mean(a)``) is shown at a cut ``c`` where the bet rejects ``mean(a) ≥ c`` and the bet
+    rejects ``mean(b) ≤ c``; its p is twice the least, over every cut, of the larger of the two. Under a null with
+    ``mean(b) ≤ mean(a)`` every cut has one of the two true, and each bet's p only falls as its null moves away from the
+    truth, so that least is at least the smaller of the two bets' p's at the true means, each valid: the direction's p
+    holds its level. The two-sided p is twice the smaller direction's. The interval at ``1 − alpha`` excludes zero only
+    where some cut lies between one arm's upper end and the other's lower end, each at ``alpha``/4, so the p is then
+    below ``alpha``: a contrast never reads not separated beside an interval that excludes zero.
+
+    :return: The p, in ``[0, 1]``; None with fewer than two values a side.
+    """
+    if len(a) < 2 or len(b) < 2:
+        return None
+    level = alpha / 4.0
+
+    def direction(lower: Sequence[float], upper: Sequence[float]) -> float:
+        negated = [-exact_decimal(v) for v in lower]
+
+        def below(cut: float) -> float:  # the bet against mean(lower) >= cut
+            return bounded_mean_p(negated, -cut, (-1.0, 0.0), alpha=level)
+
+        def above(cut: float) -> float:  # the bet against mean(upper) <= cut
+            return bounded_mean_p(upper, cut, (0.0, 1.0), alpha=level)
+
+        # ``below`` falls and ``above`` rises as the cut rises: the larger of the two is least where they cross.
+        low, high = 0.0, 1.0
+        least = min(max(below(cut), above(cut)) for cut in (low, high))
+        for _ in range(_CUT_STEPS):
+            middle = (low + high) / 2.0
+            left, right = below(middle), above(middle)
+            least = min(least, max(left, right))
+            if left > right:
+                low = middle
+            else:
+                high = middle
+        return min(1.0, 2.0 * least)
+
+    return min(1.0, 2.0 * min(direction(a, b), direction(b, a)))
 
 
 def _bet_samples(
@@ -1154,6 +1227,19 @@ def _primary_disclosure(
     return f"{sentence} {REREAD_SENTENCE}"
 
 
+def _tuned_to(one: _Tested, level: float) -> _Tested:
+    """``one``, its bounded test's p read again with its stakes tuned to ``level`` (:func:`_fixed_count_test`)."""
+    control_sample, contrast_sample = one.samples
+    separation = _fixed_count_test(
+        control_sample,
+        contrast_sample,
+        paired=one.comparison.test == "paired",
+        value_range=one.value_range,
+        alpha=level,
+    )
+    return one._replace(p_raw=separation.p, comparison=one.comparison.model_copy(update={"p_raw": separation.p}))
+
+
 def _corrected_family(
     aspect: str | None,
     axes: list[MeritAxis],
@@ -1195,8 +1281,9 @@ def _corrected_family(
     a separation needs that interval to exclude zero. A rate is read by one method everywhere: a campaign's reading of
     the pass rate and a floor are the bounded test's on the same per-case shares, so at a looser level either nests
     inside the contrast's, and the two part only by level, never by method. Its p is the bounded test's, as every
-    reading on 0 to 1 is (:func:`_fixed_count_test`); the interval rule only removes separations, so the family's
-    error stays at α.
+    reading on 0 to 1 is (:func:`_fixed_count_test`), read by the bet its interval is drawn by with its stakes tuned
+    to the interval's level, so the interval excludes zero exactly where the p clears α/m; the interval rule only
+    removes separations, so the family's error stays at α.
 
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
     :param axes: The question's merit axes.
@@ -1225,6 +1312,12 @@ def _corrected_family(
     planned = looks if looks is not None and looks > 1 else None
     alpha = looks_alpha(planned)
     family_size = sum(1 for one in tested if one.p_raw is not None)
+    # An engine reading on 0 to 1 is read again by its bounded test with its stakes tuned to the level each of the
+    # family's intervals is read at, α/m (α/(L m) under a plan of L looks): the interval is that bet's inversion, so it
+    # excludes zero exactly where this p clears α/m, and then Holm's adjusted p, at most m times it, clears α. A
+    # contrast never reads not separated beside an interval that excludes zero.
+    if family_size:
+        tested = [_tuned_to(one, alpha / family_size) if one.tuned and one.p_raw is not None else one for one in tested]
     n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
     raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
     # Which raw p each one is: a bet's, or another test's. A bet comparison's adjusted p holds every other p at 1.

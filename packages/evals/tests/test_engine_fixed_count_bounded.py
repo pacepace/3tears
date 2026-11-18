@@ -1,16 +1,21 @@
-"""An engine family reads a reading on 0 to 1 by the bounded test, and holds an eval of one check once.
+"""An engine family reads a reading on 0 to 1 by the bounded test its interval is drawn by, and holds an eval of one
+check once.
 
-**The bounded test holds α on pass/fail pairs, exactly.** The engine reads a comparison once at the count it has (no
-committed order lets it be read again as cases are added): on 0 to 1, by the mixture bet over the pairs in the order
-fixed by their count. On pairs of pass/fail answers its capital depends only on how many pairs went each way
-(``engine_take_up.hedged_log_capital``, held here to the product's p), so the chance it separates by ``n`` pairs is a
-sum over the walk of those counts, computed exactly as fractions (``engine_take_up.exact_rates``): at most α at every
-count from 10 to 100, at every share of pairs one arm alone got right, and under the engine's plan of looks at α/L. The
-paired t test it read by before separated fair coin pairs 5.28% of the time at 40 cases.
+**The bounded test holds α on pass/fail pairs.** The engine reads a comparison once at the count it has (no committed
+order lets it be read again as cases are added): on 0 to 1, by the fixed-n plug-in bet
+(``stats.bounded_separation_p`` with no mixture), its stakes tuned to the level each of the family's intervals is read
+at. Its stakes are set from the values before each, so under the null its capital is a nonnegative supermartingale and
+Ville's inequality bounds the chance it ever reaches 1/level: α holds at every count. Here every pass/fail sequence of
+up to twelve pairs is enumerated (``engine_take_up.plug_in_separating``, held sequence for sequence to the product's p
+up to seven): the chance is at most α, and at most α/3 at each look of a plan of three. From 10 to 100 pairs the
+statistics certificate counts it by seeded simulation, not exactly (the plug-in's stakes follow the running variance,
+so its capital is path-dependent). The paired t test the engine read by before separated fair coin pairs 5.28% of the
+time at 40 cases.
 
-**Through the product**, forty cases where one arm alone passed ten and the other two: the paired t test reads p ≈ 0.019
-and would separate them; the engine reads the bounded test's p, the restated rule's, and does not, on a check and on a
-grade on 0 to 1 alike.
+**Through the product**: forty cases where one arm alone passed ten and the other two, which the t test would separate
+and the bounded test does not; and seven of forty to one arm alone, which the bounded test separates beside an interval
+that excludes zero. The mixture bet the engine read by before left that one not separated beside the same interval. No
+engine contrast reads not separated beside an interval that excludes zero, paired or unpaired.
 
 **One hypothesis, read once.** An eval whose every trial is graded on one check passes a trial exactly where the check
 holds, so its pass rate is the check case for case; the family holds the check alone. With a second check the pass
@@ -18,17 +23,20 @@ rate is no one check's, and the family holds it beside both.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
-- ``_fixed_count_test``: returning the t-test's reading for a reading on 0 to 1, as before, so the grade separates and
-  the check's p is the t test's.
-- ``_fixed_count_test``: betting in the order the case ids sort in, so the product's p is not the restated one.
+- ``_fixed_count_test``: returning the t-test's reading for a reading on 0 to 1, so the grade separates.
+- ``_fixed_count_test``: reading the paired p by the mixture bet, so seven of forty read not separated beside an
+  interval that excludes zero.
+- ``_corrected_family``: not tuning the bet to α/m, so the p is not the interval's bet.
+- ``_unpaired_bounded_p``: reading at the midpoint cut, so an unpaired interval excludes zero beside no separation.
 - ``multiple_comparisons``: not calling ``_repeats_a_reading`` on the engine, so the pass rate joins the check.
 - ``_one_check``: returning the first check of several, so a two-check eval loses its pass rate.
 """
 
 from __future__ import annotations
 
-import math
+import itertools
 import random
+from collections import Counter
 from dataclasses import replace
 from fractions import Fraction
 
@@ -46,7 +54,7 @@ from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema import EvalResult
 from threetears.evals.schema.models import GoalStateOutcome
-from packages.evals.tests.engine_take_up import exact_rates, hedged_log_capital
+from packages.evals.tests.engine_take_up import exact_small_rate, plug_in_separating
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_aspect_campaign,
@@ -56,7 +64,6 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-from packages.evals.tests.simulation_support import engine_separation
 
 #: A check declared pass/fail on a merit axis, and a grade on 0 to 1 that is no check: the two shapes a 0-1 reading takes.
 _CHECK = MetricDescriptor(
@@ -76,22 +83,39 @@ _GRADE = _CHECK.model_copy(
     update={"name": "graded", "reader_name": "Graded", "description": "A grade on 0 to 1.", "pass_fail": False}
 )
 
-#: Forty cases: ten the contrast alone passed, two the control alone passed, the rest tied, half of them both passing.
-_CASES = 40
-_CONTROL = [0.0] * 10 + [1.0] * 2 + [1.0] * 14 + [0.0] * 14
-_CONTRAST = [1.0] * 10 + [0.0] * 2 + [1.0] * 14 + [0.0] * 14
+
+def _pairs(plus: int, minus: int, cases: int = 40) -> tuple[list[float], list[float]]:
+    """``cases`` pass/fail pairs: ``plus`` the contrast alone passed, ``minus`` the control alone, the rest tied, half of
+    them both passing."""
+    tied = cases - plus - minus
+    both, neither = [1.0] * (tied // 2), [0.0] * (tied - tied // 2)
+    return [0.0] * plus + [1.0] * minus + both + neither, [1.0] * plus + [0.0] * minus + both + neither
 
 
-def _bundle(*, second_check: bool = False) -> AnalysisContextBundle:
-    """A control and a contrast over :data:`_CASES` cases, one trial each, carrying the check and the grade on the
-    same answers; with ``second_check`` each trial is graded on a goal check too, which it always passes."""
+#: Forty cases, ten the contrast alone passed and two the control alone: the t test separates them, the bounded one not.
+_CONTROL, _CONTRAST = _pairs(10, 2)
+
+#: Forty cases, seven the contrast alone passed and none the control: the bounded test tuned to α/2 separates them, and
+#: the interval it draws at 97.5% excludes zero; the mixture bet the engine read by before did not (p 0.048).
+_SWEEP = _pairs(7, 0)
+
+
+def _bundle(
+    sides: tuple[list[float], list[float]] = (_CONTROL, _CONTRAST),
+    *,
+    second_check: bool = False,
+    unpaired: bool = False,
+) -> AnalysisContextBundle:
+    """A control and a contrast, one trial a case, carrying the check and the grade on the same answers; with
+    ``second_check`` each trial is graded on a goal check too, which it always passes; ``unpaired`` runs the contrast on
+    cases of its own."""
     profile = toyhost_profile()
     profile = replace(
         profile, measures=MeasureRegistry((*TOYHOST_MEASURES, _CHECK, _GRADE), families=profile.measures.families)
     )
     runs = []
     results: dict[str, list[EvalResult]] = {}
-    for model, values in (("control-model", _CONTROL), ("contrast-model", _CONTRAST)):
+    for model, values in zip(("control-model", "contrast-model"), sides, strict=True):
         run = make_eval_run(status="completed", candidate_model=model)
         runs.append(run)
         results[run.id] = [
@@ -100,7 +124,7 @@ def _bundle(*, second_check: bool = False) -> AnalysisContextBundle:
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 model=model,
-                test_case_id=f"tc-{case:02d}",
+                test_case_id=f"tc-{case + (1000 if unpaired and model == 'contrast-model' else 0):04d}",
                 goal_state_outcomes=[GoalStateOutcome(expression="filed", passed=True)] if second_check else [],
                 rubric_scores=[],
                 cost_usd=None,
@@ -131,48 +155,38 @@ def _family(bundle: AnalysisContextBundle) -> ComparisonFamily:
     return family
 
 
-# --- the bounded test's own rate, exactly ----------------------------------------------------------------------------
+# --- the bounded test's own rate ---------------------------------------------------------------------------------------
 
 
-def test_the_restated_capital_is_the_product_s_p_on_pass_fail_pairs() -> None:
-    """The product's p on pass/fail pairs is one over the most the restated capital reached over its counts each way, in
-    the order the pairs are bet: what lets the exact rates below stand for the product's test."""
-    rng = random.Random("restated-capital")
-    for _ in range(200):
-        cases = rng.randint(2, 100)
-        diffs = [rng.choice((-1, 0, 0, 1)) for _ in range(cases)]
-        control = [1.0 if d < 0 else 0.0 for d in diffs]
-        contrast = [1.0 if d > 0 else 0.0 for d in diffs]
-        order = bet_order(cases)
-        product = bounded_separation_p(
-            [control[i] for i in order], [contrast[i] for i in order], paired=True, value_range=(0.0, 1.0), mixture=True
-        )
-        up = down = 0
-        most = 0.0
-        for i in order:
-            up, down = up + (diffs[i] > 0), down + (diffs[i] < 0)
-            most = max(most, hedged_log_capital(up, down))
-        assert product == pytest.approx(min(1.0, math.exp(-most)), rel=1e-9)
-        assert engine_separation(control, contrast, paired=True, value_range=(0.0, 1.0)).p == product
+def _product_separates(diffs: tuple[int, ...], level: float) -> bool:
+    control = [1.0 if d < 0 else 0.0 for d in diffs]
+    contrast = [1.0 if d > 0 else 0.0 for d in diffs]
+    p = bounded_separation_p(control, contrast, paired=True, value_range=(0.0, 1.0), alpha=level)
+    return p is not None and p < level
+
+
+@pytest.mark.parametrize("level", [SIGNIFICANCE_ALPHA, SIGNIFICANCE_ALPHA / 3], ids=["alpha", "alpha-over-3"])
+def test_the_enumeration_is_the_product_s_test_sequence_for_sequence(level: float) -> None:
+    """Every pass/fail sequence of up to seven pairs, read by the product's own p: the restated enumeration
+    (``engine_take_up.plug_in_separating``) counts exactly the sequences it separates, by their counts each way."""
+    for cases in range(2, 8):
+        by_product: Counter[tuple[int, int]] = Counter()
+        for diffs in itertools.product((-1, 0, 1), repeat=cases):
+            order = bet_order(cases)
+            if _product_separates(tuple(diffs[order.index(i)] for i in range(cases)), level):
+                by_product[diffs.count(1), diffs.count(-1)] += 1
+        assert plug_in_separating(cases, level) == by_product, cases
 
 
 @pytest.mark.parametrize("plus", [Fraction(1, 20), Fraction(1, 4), Fraction(1, 2)], ids=["rare", "coins", "no-ties"])
-def test_the_bounded_test_holds_alpha_exactly_at_every_count_from_10_to_100(plus: Fraction) -> None:
-    """The exact chance the engine's reading separates pass/fail pairs of equal mean at α, read once at each count from
-    10 to 100: at most α wherever each arm alone gets a pair right at ``plus`` (1/4 for two fair coins)."""
-    rates = exact_rates(SIGNIFICANCE_ALPHA, 100, plus=plus)
-    worst = max(rates[9:])
-    assert worst <= SIGNIFICANCE_ALPHA, f"{float(worst):.5f} at {rates.index(worst) + 1} pairs"
-
-
-def test_the_bounded_test_holds_alpha_exactly_over_the_engine_s_planned_looks() -> None:
-    """Under a plan of three looks at 20, 40 and 60 coin pairs, each read at α/3 in the order fixed by its own count:
-    each look's exact rate is at most α/3, so the chance any separates is at most their sum, at most α."""
-    level = SIGNIFICANCE_ALPHA / 3
-    rates = exact_rates(level, 60)
-    looks = [rates[19], rates[39], rates[59]]
-    assert all(rate <= level for rate in looks), [float(rate) for rate in looks]
-    assert sum(looks) <= SIGNIFICANCE_ALPHA
+def test_the_bounded_test_holds_alpha_exactly_on_every_pass_fail_sequence_up_to_twelve_pairs(plus: Fraction) -> None:
+    """Enumerated in full, every sequence of up to twelve pass/fail pairs of equal mean: the chance the engine's reading
+    separates is at most α at α, and at most α/3 at each look of a plan of three. Ville's inequality holds it at every
+    count; from 10 to 100 pairs the statistics certificate counts it by seeded simulation (``engine.null.*``)."""
+    for level in (SIGNIFICANCE_ALPHA, SIGNIFICANCE_ALPHA / 3):
+        for cases in range(2, 13):
+            rate = exact_small_rate(plug_in_separating(cases, level), cases, plus)
+            assert rate <= level, f"{float(rate):.5f} at {cases} pairs, level {level}"
 
 
 # --- the product -----------------------------------------------------------------------------------------------------
@@ -181,17 +195,62 @@ def test_the_bounded_test_holds_alpha_exactly_over_the_engine_s_planned_looks() 
 def test_the_engine_reads_a_check_and_a_grade_on_0_to_1_by_the_bounded_test_not_the_t_test() -> None:
     t_p = composite_significance(_CONTROL, _CONTRAST, paired=True).p_value
     assert t_p is not None and 2 * t_p < SIGNIFICANCE_ALPHA, "the t test would separate both, Holm over the two"
-    restated = engine_separation(_CONTROL, _CONTRAST, paired=True, value_range=(0.0, 1.0))
-    assert restated.basis == "bounded" and restated.p is not None and restated.p > SIGNIFICANCE_ALPHA
 
     family = _family(_bundle())
     assert family.look_alpha is None and family.family_size == 2
+    level = SIGNIFICANCE_ALPHA / 2
+    bounded = bounded_separation_p(_CONTROL, _CONTRAST, paired=True, value_range=(0.0, 1.0), alpha=level)
+    assert bounded is not None and bounded > level
     for name in ("answered_in_full", "graded"):
         (compared,) = [comparison for comparison in family.comparisons if comparison.name == name]
         assert (compared.basis, compared.test) == ("bounded", "paired"), name
-        assert compared.p_raw == pytest.approx(restated.p, rel=1e-12), name
+        assert compared.p_raw == pytest.approx(bounded, rel=1e-12), "the bet its interval is drawn by, tuned to α/2"
         assert compared.interval == compared.bounded_interval and compared.interval_basis == "bounded", name
         assert compared.verdict == "not_separated", name
+
+
+def test_a_contrast_whose_interval_excludes_zero_is_separated_by_the_same_bet() -> None:
+    """Seven of forty to the contrast alone: the bet tuned to α/2 gives p ≈ 0.022 and its 97.5% interval excludes zero,
+    so both readings separate. Read by the mixture's p beside that interval, as before, they read not separated
+    beside an interval that excludes zero."""
+    family = _family(_bundle(_SWEEP))
+    for name in ("answered_in_full", "graded"):
+        (compared,) = [comparison for comparison in family.comparisons if comparison.name == name]
+        assert compared.interval is not None and compared.interval[0] > 0.0, name
+        assert compared.p_raw == pytest.approx(
+            bounded_separation_p(*_SWEEP, paired=True, value_range=(0.0, 1.0), alpha=SIGNIFICANCE_ALPHA / 2)
+        )
+        assert compared.verdict == "improved", name
+
+
+def _reads_not_separated_beside_an_excluding_interval(family: ComparisonFamily) -> list[str]:
+    return [
+        comparison.name
+        for comparison in family.comparisons
+        if comparison.verdict in ("not_separated", "equivalent")
+        and comparison.interval is not None
+        and (comparison.interval[0] > 0.0 or comparison.interval[1] < 0.0)
+    ]
+
+
+def test_no_engine_contrast_reads_not_separated_beside_an_interval_that_excludes_zero() -> None:
+    """Seeded engine families of pass/fail checks and grades on 0 to 1, paired and unpaired, from 4 to 60 cases and
+    every gap from none to wide: wherever a contrast's interval excludes zero, it is separated."""
+    rng = random.Random("no-contradiction")
+    excluded = 0
+    for index in range(60):
+        cases = rng.choice((4, 8, 12, 20, 40, 60))
+        control_rate = rng.random()
+        contrast_rate = min(1.0, max(0.0, control_rate + rng.choice((-0.6, -0.3, 0.0, 0.3, 0.6))))
+        control = [float(rng.random() < control_rate) for _ in range(cases)]
+        contrast = [float(rng.random() < contrast_rate) for _ in range(cases)]
+        family = _family(_bundle((control, contrast), unpaired=index % 3 == 0))
+        assert not _reads_not_separated_beside_an_excluding_interval(family), (index, cases)
+        excluded += sum(
+            comparison.interval is not None and (comparison.interval[0] > 0.0 or comparison.interval[1] < 0.0)
+            for comparison in family.comparisons
+        )
+    assert excluded >= 10, "the seeds must reach intervals that exclude zero"
 
 
 def test_an_engine_family_of_a_one_check_eval_holds_the_check_once() -> None:

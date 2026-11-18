@@ -15,7 +15,7 @@ The engine path, as a host or an agent drives it (no quick path anywhere):
   every cell with no row and every row that runs again (``kernel.result_condition.runs_again``), a cut row among them,
   written over its row, which then records what it replaced (``EvalResult.written_over``);
 - **read**: a campaign over the runs, control ``a``, read by ``assemble_context_bundle``: on the range 0 to 1 the bounded
-  test (the mixture bet over the pairs in the order fixed by their count), at α at a fixed count, or, under a plan of
+  test (the fixed-n plug-in bet its interval is drawn by), at α at a fixed count, or, under a plan of
   ``L`` looks declared before the first (``AspectDesign.planned_looks``), each look at α/L. A take-up of a launch is that
   launch's occasion, so it is no look of its own (``significance.looks_taken``).
 
@@ -30,13 +30,12 @@ twenty times that when wrong; the control's arms both 2 ms right and 40 ms wrong
 take-up) is interrupted in four of five at a point drawn apart from any answer (after a uniform count of the answers left
 to land), at most five holdings, the last run to its end.
 
-**Against what.** α. The reading's own rate on such pairs, uninterrupted, is computed exactly (:func:`exact_rate`): the
-bounded test's capital on coin pairs is a function of how many cases went each way, so the chance it ever reaches 1/level
-is a sum over those counts, 2.85% at a fixed count of 40 read at α; over three looks read at α/3, each look's own rate
-summed bounds the watcher's at 2.04%. The paired t test the engine read by before separated 5.28% and 4.49% of the time
-(:func:`t_test_rate`). A drained comparison is held exactly to the uninterrupted reading of its first draws
-(:func:`drained_as_uninterrupted`), and every simulation's count to α by its Clopper-Pearson bound, except those that
-cut at every interrupt, whose count is shown above the exact rate (:data:`SHOWN`). The
+**Against what.** α. The bounded test holds it by Ville's inequality; the reading's own rate on pass/fail pairs,
+uninterrupted, is enumerated exactly to about twelve pairs (:func:`plug_in_separating`) and simulated from 10 to 100
+(:func:`null_reads_separate`, the certificate's ``engine.null`` claims). The paired t test the engine read by before
+separated coin pairs 5.28% and 4.49% of the time (:func:`t_test_rate`). A drained comparison is held exactly to the
+uninterrupted reading of its first draws (:func:`drained_as_uninterrupted`), and every simulation's count to α by its
+Clopper-Pearson bound, except those that cut at every interrupt, which show the lean the cuts add (:data:`SHOWN`). The
 family is read as the product builds it (:func:`reading_separates`): an eval of one check holds that check alone, its
 pass rate being the check case for case, and a grade on 0 to 1 is alone in its family too.
 
@@ -110,9 +109,6 @@ SECOND, SECOND_AFTER_S = 0.3, 0.005
 #: each (20, 40 and 60 cases at its three looks), and the looks it plans.
 FIXED_CASES, LOOK_CASES, PLANNED = 40, 20, 3
 
-#: The bound on the reading's own rate under the plan of three looks, uninterrupted, as :func:`exact_rate` computes it:
-#: each look's exact rate at α/3, summed.
-EXACT_LOOKS = 0.02037
 
 #: Comparisons in each long simulation at a fixed count, in each under a plan of looks, and in each smoke check: each
 #: long one a pool request of its own, inside its window.
@@ -455,7 +451,7 @@ def drained_as_uninterrupted(outcome: Outcome) -> str | None:
     where it is. Drained, every cell drew once, so each value read is a fresh fair coin assigned before it was seen and
     the values are those of an uninterrupted launch; and each look's p and verdict are the family's rule on those first
     draws (``simulation_support.family_verdicts``, which reads 0 to 1 by the bounded test), so the comparison separates
-    exactly where the uninterrupted reading does, and its rate is at most :func:`exact_rate`'s."""
+    exactly where the uninterrupted reading does."""
     redrawn = sorted(cell for cell, draws in outcome.draws.items() if len(draws) != 1)
     if redrawn:
         return f"cells drew more than once: {redrawn[:5]}"
@@ -630,69 +626,124 @@ async def taken_up_and_read(engine: Engine, job_id: str, launch_id: str) -> Comp
 # --- the simulations -------------------------------------------------------------------------------------------------
 
 
-#: The bounded test's mixture stake on coin pairs (``stats._mixture_log_path``), restated: ten bets, the j-th staking j/10
-#: of the cap 0.9/m on every pair with weight j/55. A pair is a difference of -1, 0 or 1 on the range ±1, rescaled to 0,
-#: 1/2 or 1 against the null mean m = 1/2, so the j-th bet's capital moves by 1 ± 0.09 j on a pair one arm alone got
-#: right and not at all on a tie: after ``plus`` pairs to ``b`` and ``minus`` to ``a`` it is
-#: ``(1 + 0.09 j)^plus (1 - 0.09 j)^minus``, whatever their order, and the downward bet's is that with the two swapped.
-_STAKES = tuple(0.09 * j for j in range(1, 11))
-_WEIGHTS = tuple(j / 55 for j in range(1, 11))
+#: The plug-in bet's cap on its stake at the null mean 1/2 of a difference rescaled to 0 to 1 (``stats._BET_CAP / m``).
+_CAP = 0.9 / 0.5
 
-
-def hedged_log_capital(plus: int, minus: int) -> float:
-    """The log of the even hedge's capital (half the upward mixture's, half the downward's) after ``plus`` coin pairs
-    went to ``b`` alone and ``minus`` to ``a`` alone, ties moving nothing: the capital the engine's bounded test reads
-    coin pairs by, which ``test_engine_fixed_count_bounded.py`` holds to the product's p."""
-    up = sum(w * (1 + c) ** plus * (1 - c) ** minus for w, c in zip(_WEIGHTS, _STAKES, strict=True))
-    down = sum(w * (1 + c) ** minus * (1 - c) ** plus for w, c in zip(_WEIGHTS, _STAKES, strict=True))
-    return math.log(0.5 * up + 0.5 * down)
-
-
-def exact_rates(level: float, cases: int, *, plus: Fraction = Fraction(1, 4)) -> list[Fraction]:
-    """The chance the bounded test separates pairs of equal mean at ``level``, read once at each count from 1 to
-    ``cases``, computed exactly: each pair goes to ``b`` alone with chance ``plus``, to ``a`` alone with the same chance,
-    and ties otherwise (``plus`` = 1/4 for two fair coins). Its p is one over the most its capital reached
-    (:func:`hedged_log_capital`), a function of the counts each way, so the chance it is below ``level`` by ``n`` pairs
-    is the chance the walk of those counts has entered the region where the capital exceeds 1/level: a sum over the
-    walk's states, kept as exact fractions. The order the pairs are bet in, fixed by their count, moves nothing under
-    the null, every pair drawn alike.
-
-    :return: The rate at each count from 1 to ``cases``.
-    :raises AssertionError: A state's capital lies within 1e-9 of the line in log terms, where float rounding could
-        put it on either side.
-    """
-    threshold = -math.log(level)
-    alive: dict[tuple[int, int], Fraction] = {(0, 0): Fraction(1)}
-    separated, rates = Fraction(0), []
-    for _ in range(cases):
-        grown: dict[tuple[int, int], Fraction] = {}
-        for (up, down), weight in alive.items():
-            for (more_up, more_down), chance in (((1, 0), plus), ((0, 1), plus), ((0, 0), 1 - 2 * plus)):
-                key = (up + more_up, down + more_down)
-                grown[key] = grown.get(key, Fraction(0)) + weight * chance
-        alive = {}
-        for (up, down), weight in grown.items():
-            log_capital = hedged_log_capital(up, down)
-            assert abs(log_capital - threshold) > 1e-9, (up, down)
-            if log_capital > threshold:
-                separated += weight
-            else:
-                alive[up, down] = weight
-        rates.append(separated)
-    return rates
+#: The rescaled values a pass/fail pair takes: 0 where ``a`` alone got it right, 1/2 on a tie, 1 where ``b`` alone did.
+_STEPS = ((0.0, "minus"), (0.5, "tie"), (1.0, "plus"))
 
 
 @functools.cache
-def exact_rate(reading: Reading) -> float:
-    """The rate the engine's reading separates arms of equal accuracy (0.5) at, uninterrupted, by its p: at the fixed
-    count (α), exactly (:func:`exact_rates`); over the plan of looks (α/L), each look's own exact rate at α/L summed, a
-    bound on the watcher who stops at the first, whose looks are each read in the order fixed by their own count. A
-    separation needs the interval to exclude zero too, which only removes some, so the product separates at most this.
+def plug_in_separating(cases: int, level: float) -> Counter[tuple[int, int]]:
+    """Every pass/fail sequence of ``cases`` pairs the engine's bounded test separates at ``level``, counted by how many
+    pairs went to ``b`` alone and to ``a`` alone, enumerated in full (3^cases sequences): the product's fixed-n plug-in
+    bet (``stats.bounded_separation_p`` with no mixture, stakes tuned to ``level``) restated step by step in the same
+    float operations, the upward bet on each difference rescaled to 0 to 1 and the downward bet on its mirror, the
+    sequence read in the order bet on. It separates where either bet's capital ever passed 2/level (its p, twice the
+    smaller side's, below ``level``). A sequence whose capital ends within 1e-9 of that line in log terms is read by
+    the product itself. ``test_engine_fixed_count_bounded.py`` holds the restatement to the product's p.
+
+    Under a null where every pair is drawn alike the order bet on moves nothing, so the chance the test separates is
+    the sum over these counts (:func:`exact_small_rate`). The plug-in's stakes follow the running variance, so its
+    capital is path-dependent and only a full enumeration is exact: feasible to about twelve pairs.
     """
-    if reading == "fixed":
-        return float(exact_rates(SIGNIFICANCE_ALPHA, FIXED_CASES)[-1])
-    rates = exact_rates(SIGNIFICANCE_ALPHA / PLANNED, LOOK_CASES * PLANNED)
-    return float(sum(rates[LOOK_CASES * look - 1] for look in range(1, PLANNED + 1)))
+    side_alpha = level / 2.0
+    line = math.log(2.0 / level)
+    found: Counter[tuple[int, int]] = Counter()
+
+    def walk(
+        t: int, up: tuple[float, float, float, float], down: tuple[float, float, float, float], path: list[float]
+    ) -> None:
+        if t == cases:
+            most = max(up[3], down[3])
+            if abs(most - line) <= 1e-9:
+                a = [1.0 if z == 0.0 else 0.0 for z in path]
+                b = [1.0 if z == 1.0 else 0.0 for z in path]
+                p = _product_p(a, b, level)
+                separated = p is not None and p < level
+            else:
+                separated = most > line
+            if separated:
+                found[sum(z == 1.0 for z in path), sum(z == 0.0 for z in path)] += 1
+            return
+        for z, _ in _STEPS:
+            path.append(z)
+            walk(t + 1, _bet_step(up, z, t, side_alpha, cases), _bet_step(down, 1.0 - z, t, side_alpha, cases), path)
+            path.pop()
+
+    start = (0.0, 0.0, 0.0, 0.0)
+    walk(0, start, start, [])
+    return found
+
+
+def _bet_step(
+    state: tuple[float, float, float, float], z: float, t: int, alpha: float, horizon: int
+) -> tuple[float, float, float, float]:
+    """One value of the plug-in bet against the null 1/2, as ``stats._plug_in_stakes`` and ``stats._log_capital_path``
+    compute it: ``(total, squares, log capital, most log capital)`` after ``z``, the ``t``-th value."""
+    total, squares, log_capital, most = state
+    stake = math.sqrt(2.0 * math.log(1.0 / alpha) / (horizon * ((0.25 + squares) / (t + 1))))
+    log_capital += math.log1p((_CAP if _CAP < stake else stake) * (z - 0.5))
+    total += z
+    squares += (z - (0.5 + total) / (t + 2)) ** 2
+    return total, squares, log_capital, max(most, log_capital)
+
+
+def _product_p(a: list[float], b: list[float], level: float) -> float | None:
+    """The product's p on pairs already in the order bet on: the order :func:`bet_order` would give them undone first."""
+    from threetears.evals.analysis.stats import bet_order, bounded_separation_p
+
+    order = bet_order(len(a))
+    control, contrast = [0.0] * len(a), [0.0] * len(a)
+    for place, index in enumerate(order):
+        control[index], contrast[index] = a[place], b[place]
+    return bounded_separation_p(control, contrast, paired=True, value_range=(0.0, 1.0), alpha=level)
+
+
+def exact_small_rate(separating: Counter[tuple[int, int]], cases: int, plus: Fraction = Fraction(1, 4)) -> Fraction:
+    """The exact chance the sequences :func:`plug_in_separating` counted come up, where each pair goes to ``b`` alone
+    with chance ``plus``, to ``a`` alone with the same chance, and ties otherwise (1/4 for two fair coins)."""
+    return sum(
+        (
+            count * plus ** (up + down) * (1 - 2 * plus) ** (cases - up - down)
+            for (up, down), count in separating.items()
+        ),
+        Fraction(0),
+    )
+
+
+def null_reads_separate(tag: str, cases: int, plus: float, looks: int) -> bool:
+    """One seeded null comparison of pass/fail pairs read as the engine reads a family of one: at a fixed count of
+    ``cases`` at α (``looks`` 1), or over ``looks`` looks at α/looks, look ``k`` reading the first ``k cases / looks``
+    pairs (each in the order fixed by its own count) and the watcher stopping at the first that separates. Each pair
+    goes to ``b`` alone with chance ``plus``, to ``a`` alone with the same chance, and ties otherwise. Read by the
+    product's p (``stats.bounded_separation_p``, stakes tuned to the level read), which separates wherever the engine's
+    verdict does: the verdict also needs the interval drawn by that bet to exclude zero."""
+    from threetears.evals.analysis.stats import bounded_separation_p
+
+    rng = random.Random(tag)
+    level = SIGNIFICANCE_ALPHA / looks
+    a, b = [], []
+    for _ in range(cases):
+        draw = rng.random()
+        a.append(1.0 if draw < plus else 0.0)
+        b.append(1.0 if plus <= draw < 2 * plus else 0.0)
+    for look in range(1, looks + 1):
+        read = round(cases * look / looks)
+        p = bounded_separation_p(a[:read], b[:read], paired=True, value_range=(0.0, 1.0), alpha=level)
+        if p is not None and p < level:
+            return True
+    return False
+
+
+#: The null comparisons the certificate reads, as (cases, share each arm alone gets a pair right, looks): at a fixed
+#: count from 10 to 100 and over three looks at α/3, each with coin pairs, pairs that never tie, and rare discordance.
+NULL_READS: tuple[tuple[int, float, int], ...] = tuple(
+    (cases, plus, looks)
+    for looks, counts in ((1, (10, 20, 40, 60, 100)), (3, (30, 60, 99)))
+    for cases in counts
+    for plus in (0.05, 0.25, 0.5)
+)
 
 
 @functools.cache
@@ -737,8 +788,7 @@ def t_test_rate(reading: Reading) -> float:
 #: What a simulation's count shows, by its Clopper-Pearson 95% bounds (``stats_certificate.judge``):
 #:
 #: - ``at_most``: the upper bound is at most α: the reading holds α, interrupted as the row says;
-#: - ``above``: the lower bound is above the most the uninterrupted reading separates at (:func:`exact_rate`): the
-#:   redrawn cells lean the reading.
+#: - ``above``: the lower bound is above α: the redrawn cells lean the reading past α.
 Shown = Literal["at_most", "above"]
 
 #: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.

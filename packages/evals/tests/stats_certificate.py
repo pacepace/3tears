@@ -296,6 +296,18 @@ def _shards() -> list[Shard]:
                     {"k": k, "horizon": horizon, "start": block.start, "count": len(block)},
                 )
             )
+    # The engine's bounded test on pass/fail pairs under the null, at a fixed count and over three looks: 10,000 a cell.
+    for cases, plus, looks in engine.NULL_READS:
+        for block in _blocks(10_000, 2_500):
+            shards.append(
+                Shard(
+                    f"engine-null-{looks}-{cases}-{plus}-{block.start}",
+                    f"engine-null-{looks}-{cases}-{plus}",
+                    "local",
+                    "engine-null",
+                    {"cases": cases, "plus": plus, "looks": looks, "start": block.start, "count": len(block)},
+                )
+            )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -509,6 +521,17 @@ def run_local(shard: Shard) -> dict[str, int]:
             for i in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(crossed), sum(crossed))
+    if shard.job == "engine-null":
+        separated = [
+            engine.null_reads_separate(
+                f"engine-null-{args['looks']}-{args['cases']}-{args['plus']}-{i}",
+                args["cases"],
+                args["plus"],
+                args["looks"],
+            )
+            for i in range(args["start"], args["start"] + args["count"])
+        ]
+        return _counts(len(separated), sum(separated))
     raise ValueError(f"shard {shard.id} runs on the pool, not here")
 
 
@@ -804,8 +827,25 @@ def _claims() -> list[Claim]:
                 f"cut-{latency}-<index>, 0-999, through the product",
             )
         )
+    for cases, plus, looks in engine.NULL_READS:
+        read = (
+            "at a fixed count, at α" if looks == 1 else f"over {looks} looks, each at α/{looks}, stopping at the first"
+        )
+        ties = {0.05: "rarely discordant", 0.25: "two fair coins", 0.5: "never tied"}[plus]
+        claims.append(
+            Claim(
+                f"engine.null.{looks}.{cases}.{plus}",
+                f"Under the null, {cases} pass/fail pairs ({ties}: each arm alone right {plus:.0%} of the time) read "
+                f"{read} by the engine's bounded test, the fixed-n plug-in bet tuned to the level read, separate at "
+                "most α.",
+                f"engine-null-{looks}-{cases}-{plus}",
+                "hits",
+                "at_most",
+                alpha,
+                f"engine-null-{looks}-{cases}-{plus}-<index>, 0-9999, restated over the product's p",
+            )
+        )
     for reading, law, grader, stop in sorted(engine.SHOWN):
-        exact = engine.exact_rate(cast("engine.Reading", reading))
         read = "at a fixed count of 40 at α" if reading == "fixed" else "over a plan of three looks, each at α/3"
         group = (
             f"engine-drain-{reading}-{law}-{grader}" if stop == "drain" else f"engine-{stop}-{reading}-{law}-{grader}"
@@ -836,16 +876,14 @@ def _claims() -> list[Claim]:
                     "cut": "every interrupt cutting,",
                 }[stop]
                 + (
-                    f" separates at most α (the uninterrupted reading's own rate is at most {exact:.5f}, computed "
-                    "exactly)."
+                    " separates at most α."
                     if shown == "at_most"
-                    else f" separates more often than the uninterrupted reading's own rate can, at most {exact:.5f} "
-                    "computed exactly: the cuts lean it."
+                    else " separates more often than α: the cells the cuts draw afresh lean it past α."
                 ),
                 group,
                 "hits",
                 shown,
-                SIGNIFICANCE_ALPHA if shown == "at_most" else exact,
+                alpha,
                 seeds,
             )
         )

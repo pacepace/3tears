@@ -6,8 +6,8 @@ A first ``job_cancel`` drains: the run starts no further cell, and the cells in 
 what is still in flight, and the take-up runs each cut cell again, written over its row; the family says how many ran
 again. A cancel the launch's lease finds on the record, or delivers before its own process counts it, is the same cancel.
 
-The reading's own rate on coin pairs, uninterrupted, is exact (:func:`~packages.evals.tests.engine_take_up.exact_rate`),
-pinned here to the digits, at most α where the paired t test the engine read by before was above it. The unit suite
+The t test the engine read pass/fail pairs by before erred above α on coin pairs, computed exactly and pinned here to
+the digits; the bounded test it reads them by now holds α (``test_engine_fixed_count_bounded.py``). The unit suite
 keeps a smoke check of every simulation: a few comparisons each, every drained one read exactly as uninterrupted on its
 first draws. The full simulations, and what each shows against α, are the statistics certificate's claims
 (``stats_certificate.py``; ``docs/testing.md`` says how to re-certify).
@@ -30,7 +30,6 @@ from threetears.evals.ops import job_cancel, job_poll
 from threetears.evals.ops import jobs as ops_jobs
 
 from packages.evals.tests.engine_take_up import (
-    EXACT_LOOKS,
     Grader,
     Reading,
     SCOPE,
@@ -39,8 +38,9 @@ from packages.evals.tests.engine_take_up import (
     at_a_fixed_count,
     comparison_tag,
     drained_as_uninterrupted,
-    exact_rate,
+    exact_small_rate,
     held_launch,
+    plug_in_separating,
     t_test_rate,
     make_engine,
     rows_of,
@@ -145,15 +145,17 @@ async def test_a_cancel_the_lease_delivers_before_its_own_process_counts_it_is_s
     assert rows and {row.termination for row in rows} == {"completed"}, "nothing was cut"
 
 
-async def test_the_reading_s_own_rate_is_exact_and_at_most_alpha_where_the_t_test_s_was_above_it() -> None:
-    """The engine's bounded test on coin pairs, at a fixed count of 40, separates at 2.85% with no interrupt at all;
-    under the plan of three looks at α/3, each look's rate summed bounds the watcher's at 2.04%. The paired t test the
-    engine read 0 to 1 by before separated at 5.28% and 4.49%: discrete on such pairs, an at-most-α claim on it failed
-    before any cut. Held to the digits, so a change to the reading moves this first."""
-    assert exact_rate("fixed") == pytest.approx(0.02851, abs=5e-5) and exact_rate("fixed") <= SIGNIFICANCE_ALPHA
-    assert exact_rate("looks") == pytest.approx(EXACT_LOOKS, abs=5e-5) and exact_rate("looks") <= SIGNIFICANCE_ALPHA
+async def test_the_t_test_the_engine_read_by_erred_above_alpha_where_the_bounded_test_holds_it() -> None:
+    """The paired t test the engine read 0 to 1 by before separated coin pairs at 5.28% at a fixed count of 40 and 4.49%
+    over three looks at α/3, computed exactly: discrete on such pairs, an at-most-α claim on it failed before any cut.
+    The bounded test it reads them by now, enumerated over every sequence of twelve coin pairs, separates at 1.92% at α
+    and 0.15% at α/3; from 10 to 100 pairs the certificate counts it (``engine.null.*``)."""
     assert t_test_rate("fixed") == pytest.approx(0.05276, abs=5e-5) and t_test_rate("fixed") > SIGNIFICANCE_ALPHA
     assert t_test_rate("looks") == pytest.approx(0.04485, abs=5e-5)
+    assert float(exact_small_rate(plug_in_separating(12, SIGNIFICANCE_ALPHA), 12)) == pytest.approx(0.0192, abs=5e-5)
+    assert float(exact_small_rate(plug_in_separating(12, SIGNIFICANCE_ALPHA / 3), 12)) == pytest.approx(
+        0.00151, abs=5e-6
+    )
 
 
 async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_and_read_by_the_bounded_test() -> None:

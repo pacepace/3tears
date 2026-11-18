@@ -32,8 +32,8 @@ from statistics import NormalDist
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     SeparationTest,
-    bet_order,
     bounded_difference_interval,
+    bounded_mean_p,
     bounded_separation_p,
     difference_interval,
     exact_decimal,
@@ -381,24 +381,62 @@ class FamilyVerdict:
 
 
 def engine_separation(
-    a: Sequence[float], b: Sequence[float], *, paired: bool, value_range: tuple[float, float] | None
+    a: Sequence[float],
+    b: Sequence[float],
+    *,
+    paired: bool,
+    value_range: tuple[float, float] | None,
+    alpha: float = SIGNIFICANCE_ALPHA,
 ) -> SeparationTest:
-    """The test an engine family reads one comparison by, restated: on the range 0 to 1 with every value inside it,
-    the bounded test whatever the spread (paired, the mixture bet over the pairs in :func:`bet_order` of their count;
-    unpaired, :func:`bounded_separation_p` at a cut between the means); otherwise
+    """The test an engine family reads one comparison by, restated: on the range 0 to 1 with every value inside it, the
+    bounded test whatever the spread (paired, :func:`bounded_separation_p` with no mixture, its stakes tuned to
+    ``alpha``, the bet the engine's bounded interval is drawn by; unpaired, :func:`_unpaired_p`), identical values
+    reading p 1; otherwise
     :func:`~threetears.evals.analysis.stats.separation_test`, the t-test where the values have spread."""
-    if value_range is None or tuple(value_range) != (0.0, 1.0) or any(not 0.0 <= v <= 1.0 for v in (*a, *b)):
-        return separation_test(a, b, paired=paired, value_range=value_range)
-    if paired:
-        order = bet_order(len(a))
-        return separation_test(
-            [a[i] for i in order], [b[i] for i in order], paired=True, value_range=value_range, mixture=True
-        )
-    tested = separation_test(a, b, paired=False, value_range=value_range)
-    if tested.basis != "t":
+    tested = separation_test(a, b, paired=paired, value_range=value_range)
+    if (
+        value_range is None
+        or tuple(value_range) != (0.0, 1.0)
+        or any(not 0.0 <= v <= 1.0 for v in (*a, *b))
+        or tested.basis == "identical"
+    ):
         return tested
-    p = bounded_separation_p(a, b, paired=False, value_range=value_range)
+    p = (
+        bounded_separation_p(a, b, paired=True, value_range=value_range, alpha=alpha)
+        if paired
+        else _unpaired_p(a, b, alpha)
+    )
     return tested if p is None else SeparationTest(p, "bounded")
+
+
+def _unpaired_p(a: Sequence[float], b: Sequence[float], alpha: float) -> float | None:
+    """The engine's unpaired bounded p on 0 to 1, restated: each direction twice the least, over the cut between the two
+    means (bisected 40 times), of the larger of the bet against ``mean(lower) >= cut`` and the bet against
+    ``mean(upper) <= cut``, each staked at ``alpha``/4 as the unpaired bounded interval's ends are; twice the smaller
+    direction."""
+    if len(a) < 2 or len(b) < 2:
+        return None
+
+    def direction(lower: Sequence[float], upper: Sequence[float]) -> float:
+        def below(cut: float) -> float:
+            return bounded_mean_p([-exact_decimal(v) for v in lower], -cut, (-1.0, 0.0), alpha=alpha / 4.0)
+
+        def above(cut: float) -> float:
+            return bounded_mean_p(upper, cut, (0.0, 1.0), alpha=alpha / 4.0)
+
+        low, high = 0.0, 1.0
+        least = min(max(below(cut), above(cut)) for cut in (low, high))
+        for _ in range(40):
+            middle = (low + high) / 2.0
+            left, right = below(middle), above(middle)
+            least = min(least, max(left, right))
+            if left > right:
+                low = middle
+            else:
+                high = middle
+        return min(1.0, 2.0 * least)
+
+    return min(1.0, 2.0 * min(direction(a, b), direction(b, a)))
 
 
 def family_verdicts(
@@ -412,7 +450,8 @@ def family_verdicts(
 
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
-    side's values, its p :func:`engine_separation`'s — on the range 0 to 1 the bounded test's whatever the spread;
+    side's values, its p :func:`engine_separation`'s — on the range 0 to 1 the bounded test's whatever the spread, its
+    stakes tuned to the level each interval is read at (``alpha`` over the family's size);
     on any other reading the t-test's where the values have spread, the bounded test's on the reading's declared range
     (``value_ranges``) where they have none, None where no test can decide or the reading declares no range — as the
     bundle's is. A paired comparison with
@@ -452,6 +491,21 @@ def family_verdicts(
             equivalence_p = paired_equivalence(diffs, margin, value_range=value_range)[1]
         tested.append((p_raw, equivalence_p, delta, a, b, paired, value_range))
     m = sum(1 for p_raw, *_ in tested if p_raw is not None)
+    # A reading on 0 to 1 is read again with its bet's stakes tuned to the level each interval is read at, α/m.
+    tested = [
+        (
+            engine_separation(a, b, paired=paired, value_range=value_range, alpha=alpha / m).p
+            if p_raw is not None
+            else None,
+            equivalence_p,
+            delta,
+            a,
+            b,
+            paired,
+            value_range,
+        )
+        for p_raw, equivalence_p, delta, a, b, paired, value_range in tested
+    ]
     raw = [p for p_raw, equivalence_p, *_ in tested for p in (p_raw, equivalence_p) if p is not None]
     adjusted = iter(holm_adjust(raw, max_true=m) if raw else [])
     verdicts = []
