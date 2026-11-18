@@ -64,7 +64,7 @@ def _column_codes(columns: Sequence[pa.ChunkedArray | pa.Array]) -> tuple[np.nda
     return codes, max(len(encoded.dictionary), 1)
 
 
-def key_codes(tables: Sequence[pa.Table], key: Sequence[str]) -> list[np.ndarray]:
+def key_codes(tables: Sequence[pa.Table], key: Sequence[str], *, room: int = _CODE_ROOM) -> list[np.ndarray]:
     """each table's rows' keys as int64 codes, one code a key: two rows of any of the tables hold the same code
     exactly when they hold the same key.
 
@@ -72,6 +72,9 @@ def key_codes(tables: Sequence[pa.Table], key: Sequence[str]) -> list[np.ndarray
     :ptype tables: Sequence[pa.Table]
     :param key: the key's columns
     :ptype key: Sequence[str]
+    :param room: the most distinct keys a combined code counts before it is coded again (:data:`_CODE_ROOM`, so it
+        never passes an int64; smaller only to hold the re-coding to account)
+    :ptype room: int
     :return: each table's codes, a row's at its row number
     :rtype: list[np.ndarray]
     :raises ValueError: for no key column
@@ -85,7 +88,7 @@ def key_codes(tables: Sequence[pa.Table], key: Sequence[str]) -> list[np.ndarray
         if combined is None:
             combined, count = codes, size
             continue
-        if count * size >= _CODE_ROOM:
+        if count * size >= room:
             recoded = pc.dictionary_encode(pa.array(combined))
             combined = recoded.indices.to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
             count = max(len(recoded.dictionary), 1)
@@ -96,7 +99,7 @@ def key_codes(tables: Sequence[pa.Table], key: Sequence[str]) -> list[np.ndarray
     return [combined[start:end] for start, end in zip(bounds[:-1], bounds[1:], strict=True)]
 
 
-def rows_named(held: pa.Table, named: pa.Table, key: Sequence[str]) -> np.ndarray:
+def rows_named(held: pa.Table, named: pa.Table, key: Sequence[str], *, room: int = _CODE_ROOM) -> np.ndarray:
     """the row numbers of ``held``'s rows whose key ``named`` holds: a left semi join's rows, by number.
 
     :param held: the rows looked in
@@ -105,6 +108,8 @@ def rows_named(held: pa.Table, named: pa.Table, key: Sequence[str]) -> np.ndarra
     :ptype named: pa.Table
     :param key: the key's columns
     :ptype key: Sequence[str]
+    :param room: the most distinct keys a combined code counts before it is coded again (:func:`key_codes`)
+    :ptype room: int
     :return: the row numbers, ascending
     :rtype: np.ndarray
 
@@ -127,7 +132,7 @@ def rows_named(held: pa.Table, named: pa.Table, key: Sequence[str]) -> np.ndarra
             size = max(len(values[column]), 1)
             whole = len(rows) == held.num_rows
             at_held = _places(held[column] if whole else held[column].take(pa.array(rows)), values[column])
-            if count * size >= _CODE_ROOM:
+            if count * size >= room:
                 distinct = pa.array(np.unique(named_code))
                 held_code, named_code = _places(pa.array(held_code), distinct), _places(pa.array(named_code), distinct)
                 count = len(distinct)

@@ -9,7 +9,6 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from threetears.core import arrow_keys
 from threetears.core.arrow_keys import distinct_keys, key_codes, last_rows, rows_named, rows_not_named
 
 KEY = ("state", "run_id", "geo", "at")
@@ -66,13 +65,12 @@ def test_a_null_is_a_value_of_its_own() -> None:
     assert rows_named(held, named, ("a", "b")).tolist() == [1]
 
 
-def test_codes_stay_exact_when_the_combined_count_would_pass_an_int64(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codes_stay_exact_when_the_combined_count_would_pass_an_int64() -> None:
     """the codes so far are coded again before the next column would overflow them: held to a room of 7 distinct
     keys, every column folds through a recode, and equal codes are still exactly equal keys."""
-    monkeypatch.setattr(arrow_keys, "_CODE_ROOM", 7)
     rng = np.random.default_rng(3)
     held = _rows(rng, 500, chunks=2)
-    (codes,) = key_codes([held], KEY)
+    (codes,) = key_codes([held], KEY, room=7)
     keys = _keys(held)
     by_code: dict[int, tuple[object, ...]] = {}
     for code, values in zip(codes.tolist(), keys, strict=True):
@@ -80,7 +78,7 @@ def test_codes_stay_exact_when_the_combined_count_would_pass_an_int64(monkeypatc
     assert len(by_code) == len(set(keys))
     named = _rows(rng, 30).select(list(KEY))
     wanted = set(_keys(named))
-    assert rows_named(held, named, KEY).tolist() == [r for r, values in enumerate(keys) if values in wanted]
+    assert rows_named(held, named, KEY, room=7).tolist() == [r for r, values in enumerate(keys) if values in wanted]
 
 
 def test_distinct_keys_are_each_key_once_in_first_seen_order() -> None:
