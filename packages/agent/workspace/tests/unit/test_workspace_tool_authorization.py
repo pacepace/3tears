@@ -50,6 +50,7 @@ from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
+    FakeWorkspaceContext,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
@@ -525,7 +526,7 @@ def _build_fs_read(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -545,7 +546,7 @@ def _build_fs_list(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -571,7 +572,7 @@ def _build_doc_get(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -594,7 +595,7 @@ def _build_workspace_history(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -632,7 +633,7 @@ def _build_workspace_diff(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_DumbPool(),
         acl_cache=cache,
@@ -643,17 +644,6 @@ def _build_workspace_diff(
         "to_ref": 1,
         "workspace": "ws",
     }
-
-
-# parity-exempt: records only the save_item_by_type_and_key that pin.set_pin calls; no other context-manager surface is used here
-class _PinContext:
-    """the conversation context ``pin.set_pin`` writes the pin through."""
-
-    def __init__(self) -> None:
-        self.saved: list[dict[str, Any]] = []
-
-    async def save_item_by_type_and_key(self, **item: Any) -> None:
-        self.saved.append(item)
 
 
 def _build_workspace_use(
@@ -671,7 +661,7 @@ def _build_workspace_use(
     tool = WorkspaceUseTool(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         agent_id=agent_id,
-        context_provider=lambda: _PinContext(),
+        context_provider=FakeWorkspaceContext,
         db_pool=None,
         acl_cache=cache,
     )
@@ -699,7 +689,7 @@ def _build_workspace_flush(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=None,
         acl_cache=cache,
@@ -743,7 +733,7 @@ def _build_fs_write(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -796,7 +786,7 @@ def _build_fs_edit(
         workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -845,7 +835,7 @@ def _build_doc_set(
         workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -894,7 +884,7 @@ def _build_doc_merge(
         workspace_file_collection=_FakeFileCollection([file_entry]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -937,7 +927,7 @@ def _build_workspace_checkpoint(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -977,7 +967,7 @@ def _build_workspace_rollback(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -1022,7 +1012,7 @@ def _build_workspace_refresh(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -1070,7 +1060,7 @@ def _build_workspace_reset(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_BindRootRaise(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,
@@ -1108,7 +1098,7 @@ def _build_workspace_delete(
         workspace_file_collection=_FakeFileCollection([]),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_PermissiveSandbox(),  # type: ignore[arg-type]
-        context_provider=lambda: object(),
+        context_provider=FakeWorkspaceContext,
         agent_id=agent_id,
         db_pool=_RaisePool(),
         acl_cache=cache,

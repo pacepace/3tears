@@ -10,9 +10,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_reset as workspace_reset_module
 from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -349,7 +350,7 @@ async def test_reset_uses_pin_when_name_omitted(
     async def _get_pin(_ctx: Any) -> _PinnedSnapshot:
         return _PinnedSnapshot(workspace_id=ws_id, workspace_name="pinned")
 
-    monkeypatch.setattr(workspace_reset_module.pin, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -380,7 +381,7 @@ async def test_reset_no_name_and_no_pin_returns_error(
     async def _get_pin(_ctx: Any) -> Any:
         return None
 
-    monkeypatch.setattr(workspace_reset_module.pin, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
 
     pool = _FakePool()
     tool = _build_tool(

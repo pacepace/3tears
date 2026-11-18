@@ -20,7 +20,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.agent.workspace.tools import helpers as helpers_module
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     Sha256Mismatch,
@@ -137,7 +138,7 @@ async def test_resolve_workspace_no_arg_no_pin_raises(
     async def _stub_get_pin(context: Any) -> Any:
         return None
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(NoWorkspacePinned):
         await resolve_workspace(None, _FakeContext(), workspaces, uuid4())
@@ -155,7 +156,7 @@ async def test_resolve_workspace_pin_fallback_hits(
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=pinned.id, workspace_name=pinned.name)
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
 
     result = await resolve_workspace(None, _FakeContext(), workspaces, agent_id)
 
@@ -174,7 +175,7 @@ async def test_resolve_workspace_pin_stale_raises(
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=uuid4(), workspace_name="gone")
 
-    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _stub_get_pin)
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
         await resolve_workspace(None, _FakeContext(), workspaces, uuid4())

@@ -30,8 +30,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.agent.workspace.tools import workspace_create as workspace_create_module
-from threetears.agent.workspace.tools import workspace_delete as workspace_delete_module
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.workspace.tools.doc_merge import DocMergeTool
 from threetears.agent.workspace.tools.doc_set import DocSetTool
 from threetears.agent.workspace.tools.fs_edit import FsEditTool
@@ -493,7 +493,7 @@ async def test_workspace_create_publishes_audit(
     async def _noop_set_pin(*args: Any, **kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr(workspace_create_module.pin, "set_pin", _noop_set_pin)
+    monkeypatch.setattr(pin_module, "set_pin", _noop_set_pin)
     nats = _FakeNats()
     pool = _FakePool()
     agent_id = uuid4()
@@ -600,8 +600,8 @@ async def test_workspace_delete_publishes_audit(
     async def _clear_pin(_ctx: Any) -> None:
         return None
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     nats = _FakeNats()
     pool = _FakePool()

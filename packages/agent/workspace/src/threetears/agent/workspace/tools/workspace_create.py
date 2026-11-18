@@ -46,7 +46,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.call_scope import current_scope
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.nats import Subjects
 from threetears.observe import contain, get_logger
 
@@ -188,7 +188,7 @@ class WorkspaceCreateTool(TearsTool):
         workspace_file_collection: WorkspaceFileCollection,
         workspace_file_version_collection: WorkspaceFileVersionCollection,
         sandbox: WorkspaceSandbox,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         agent_id: UUID,
         db_pool: Any,
         *,
@@ -212,7 +212,7 @@ class WorkspaceCreateTool(TearsTool):
         :ptype sandbox: WorkspaceSandbox
         :param context_provider: zero-arg callable returning the current
             conversation's ToolContextManager
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         :param agent_id: identifier of agent owning the new workspace
         :ptype agent_id: UUID
         :param db_pool: asyncpg pool (or pool-like) supplying acquire+transaction

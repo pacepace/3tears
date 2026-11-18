@@ -10,9 +10,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_delete as workspace_delete_module
 from threetears.agent.workspace.tools.workspace_delete import WorkspaceDeleteTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -186,8 +187,8 @@ async def test_delete_soft_deletes_workspace_in_transaction(
     async def _clear_pin(_ctx: Any) -> None:
         cleared.append(_ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -243,8 +244,8 @@ async def test_delete_clears_pin_when_pinned_workspace_matches(
     async def _clear_pin(ctx: Any) -> None:
         cleared.append(ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(
@@ -277,8 +278,8 @@ async def test_delete_does_not_clear_pin_for_different_workspace(
     async def _clear_pin(ctx: Any) -> None:
         cleared.append(ctx)
 
-    monkeypatch.setattr(workspace_delete_module.pin, "get_pin", _get_pin)
-    monkeypatch.setattr(workspace_delete_module.pin, "clear_pin", _clear_pin)
+    monkeypatch.setattr(pin_module, "get_pin", _get_pin)
+    monkeypatch.setattr(pin_module, "clear_pin", _clear_pin)
 
     pool = _FakePool()
     tool = _build_tool(

@@ -11,9 +11,10 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_create as workspace_create_module
 from threetears.agent.workspace.tools.workspace_create import WorkspaceCreateTool
 from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -267,7 +268,7 @@ class _RecordingNatsClient:
 def patch_set_pin(monkeypatch: pytest.MonkeyPatch) -> _RecordingPin:
     """replace pin.set_pin with a recorder."""
     rec = _RecordingPin()
-    monkeypatch.setattr(workspace_create_module.pin, "set_pin", rec.set_pin)
+    monkeypatch.setattr(pin_module, "set_pin", rec.set_pin)
     return rec
 
 

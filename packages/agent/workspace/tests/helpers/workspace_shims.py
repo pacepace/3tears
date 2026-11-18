@@ -27,6 +27,11 @@ reflects the methods that test exercises.
 
 from __future__ import annotations
 
+from typing import Any
+from uuid import uuid4
+
+from threetears.agent.workspace.pin import PinContext
+
 __all__ = [
     "FakeWorkspaceContext",
     "FakeWorkspaceEntity",
@@ -119,15 +124,45 @@ class FakeWorkspaceFileVersionCollection:
     """
 
 
-# parity-exempt: parity base for workspace test subclasses; production ToolContextManager is heavy and tests use only the pin-namespace surface
-class FakeWorkspaceContext:
-    """parity base for ``ToolContextManager`` / ``WorkspaceContextManager``.
+class FakeWorkspaceContext(PinContext):
+    """an in-memory :class:`~threetears.agent.workspace.pin.PinContext`: the conversation context a pin lives in.
 
-    workspace tests use ``_FakeContext`` to model the per-conversation
-    context manager that workspace tools resolve workspaces +
-    sandboxes through. subclasses provide ``get_pin`` / ``set_pin`` /
-    the pin namespace lookups individual tests exercise.
+    what workspace tools and the pin functions take of the conversation's ``ToolContextManager``.
+    items are held by ``(context_type, key)`` in :attr:`items`; a test that patches the pin functions
+    passes one as a context nothing reads.
     """
+
+    def __init__(self) -> None:
+        self.items: dict[tuple[str, str], dict[str, Any]] = {}
+
+    async def get_item_by_type_and_key(self, context_type: str, key: str) -> dict[str, Any] | None:
+        item = self.items.get((context_type, key))
+        return dict(item) if item is not None else None
+
+    async def save_item_by_type_and_key(
+        self,
+        *,
+        context_type: str,
+        key: str,
+        content: str,
+        short_desc: str = "",
+        long_desc: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        item_id = str(uuid4())
+        self.items[(context_type, key)] = {
+            "context_id": item_id,
+            "context_type": context_type,
+            "key": key,
+            "content": content,
+            "short_desc": short_desc,
+            "long_desc": long_desc,
+            "metadata": metadata,
+        }
+        return item_id
+
+    async def delete_item_by_type_and_key(self, context_type: str, key: str) -> bool:
+        return self.items.pop((context_type, key), None) is not None
 
 
 # parity-exempt: parity base for workspace test subclasses; production WorkspaceSandbox has path-resolution behaviour tests short-circuit to tmp_path

@@ -63,6 +63,8 @@ from threetears.agent.workspace.authorize import (
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.schemas import drop_schema
 
+from packages.agent.workspace.tests.helpers.workspace_shims import FakeWorkspaceContext
+
 
 # rbac-task-01 v016 seeds ``WorkspaceEditor`` with this deterministic UUID
 # (via uuid5 over NAMESPACE_DNS + "threetears.roles.WorkspaceEditor"). the
@@ -1402,14 +1404,11 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             def validate_syntax(self, key: str) -> None:
                 del key
 
-        class _NullContext:
-            pass
-
         read_tool = FsReadTool(
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_b,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1438,7 +1437,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             workspace_file_version_collection=None,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_b,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1481,7 +1480,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_c,
             db_pool=schema_pool,
             acl_cache=acl_cache,
@@ -1510,7 +1509,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             workspace_collection=ws_coll,  # type: ignore[arg-type]
             workspace_file_collection=file_coll,  # type: ignore[arg-type]
             sandbox=_NoopSandbox(),  # type: ignore[arg-type]
-            context_provider=lambda: _NullContext(),
+            context_provider=FakeWorkspaceContext,
             agent_id=agent_a,
             db_pool=schema_pool,
             acl_cache=acl_cache,

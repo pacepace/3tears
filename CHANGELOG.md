@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent/workspace: the workspace tools and the pin functions take a `PinContext`
+
+`threetears.agent.workspace.pin.PinContext` is the slice of a conversation's context manager a workspace pin is
+kept in: `get_item_by_type_and_key`, `save_item_by_type_and_key` and `delete_item_by_type_and_key`. `set_pin`,
+`get_pin`, `clear_pin`, `tools.helpers.resolve_workspace` and every workspace tool's `context_provider` take it
+instead of the whole `ToolContextManager`, which satisfies it; a caller passing a `ToolContextManager` is unchanged.
+Nothing changes at run time.
+
 ### core: a registry and a collection's `l3_pool` say what they accept: `L3PoolLike`
 
 `CollectionRegistry.configure`, `register` and `bind_table` and a collection's `l3_pool` take

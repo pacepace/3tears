@@ -9,9 +9,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.workspace import pin as pin_module
+
 from threetears.agent.tools.base_tool import MCPToolDefinition
 
-from threetears.agent.workspace.tools import workspace_use as workspace_use_module
 from threetears.agent.workspace.tools.workspace_use import WorkspaceUseTool
 from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceContext,
@@ -79,7 +80,7 @@ class _FakeContext(FakeWorkspaceContext):
 def patch_set_pin(monkeypatch: pytest.MonkeyPatch) -> _RecordingPin:
     """replace pin.set_pin in the tool's module namespace with a recorder."""
     recorder = _RecordingPin()
-    monkeypatch.setattr(workspace_use_module.pin, "set_pin", recorder.set_pin)
+    monkeypatch.setattr(pin_module, "set_pin", recorder.set_pin)
     return recorder
 
 
@@ -186,7 +187,7 @@ async def test_execute_traps_set_pin_errors_as_data(
     async def _boom(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("kv unavailable")
 
-    monkeypatch.setattr(workspace_use_module.pin, "set_pin", _boom)
+    monkeypatch.setattr(pin_module, "set_pin", _boom)
     coll = _FakeCollection([_FakeWorkspaceEntity(id=uuid4(), name="m")])
     tool = WorkspaceUseTool(
         workspace_collection=coll,

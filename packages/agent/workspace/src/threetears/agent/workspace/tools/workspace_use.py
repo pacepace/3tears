@@ -12,7 +12,7 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
-from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.workspace.pin import PinContext
 from threetears.observe import contain, get_logger
 
 from threetears.agent.workspace import pin
@@ -56,7 +56,7 @@ class WorkspaceUseTool(TearsTool):
         self,
         workspace_collection: WorkspaceCollection,
         agent_id: UUID,
-        context_provider: Callable[[], ToolContextManager],
+        context_provider: Callable[[], PinContext],
         acl_cache: AclCache,
         db_pool: Any = None,
     ) -> None:
@@ -70,7 +70,7 @@ class WorkspaceUseTool(TearsTool):
         :ptype agent_id: UUID
         :param context_provider: zero-arg callable returning the current
             conversation's ToolContextManager
-        :ptype context_provider: Callable[[], ToolContextManager]
+        :ptype context_provider: Callable[[], PinContext]
         """
         self._workspaces = workspace_collection
         self._agent_id = agent_id

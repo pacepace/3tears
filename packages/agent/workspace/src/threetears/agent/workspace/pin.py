@@ -18,20 +18,49 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
 
 __all__ = [
+    "PinContext",
     "PinnedWorkspace",
     "clear_pin",
     "get_pin",
     "set_pin",
 ]
 
-if TYPE_CHECKING:
-    from threetears.agent.tools.context import ToolContextManager
+
+@runtime_checkable
+class PinContext(Protocol):
+    """the slice of a conversation's context manager a pin is kept in.
+
+    :class:`threetears.agent.tools.context.ToolContextManager` is one. Workspace tools and the pin
+    functions take this rather than the whole manager, so a test hands them a small in-memory
+    context instead of a manager over three storage tiers.
+    """
+
+    async def get_item_by_type_and_key(self, context_type: str, key: str) -> dict[str, Any] | None:
+        """the item of this type under this key, or ``None``."""
+        ...
+
+    async def save_item_by_type_and_key(
+        self,
+        *,
+        context_type: str,
+        key: str,
+        content: str,
+        short_desc: str = "",
+        long_desc: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """save the item of this type under this key, replacing any; returns its id."""
+        ...
+
+    async def delete_item_by_type_and_key(self, context_type: str, key: str) -> bool:
+        """delete the item of this type under this key; ``False`` when there was none."""
+        ...
 
 
 _CONTEXT_TYPE = "workspace_pin"
@@ -59,7 +88,7 @@ class PinnedWorkspace:
 
 
 async def set_pin(
-    context: ToolContextManager,
+    context: PinContext,
     workspace_id: UUID,
     workspace_name: str,
     pinned_by_actor_id: UUID,
@@ -72,7 +101,7 @@ async def set_pin(
     that ``workspace_id`` refers to an extant workspace.
 
     :param context: conversation-scoped context manager
-    :ptype context: ToolContextManager
+    :ptype context: PinContext
     :param workspace_id: identifier of workspace to pin
     :ptype workspace_id: UUID
     :param workspace_name: display name to capture at pin time
@@ -98,7 +127,7 @@ async def set_pin(
     )
 
 
-async def get_pin(context: ToolContextManager) -> PinnedWorkspace | None:
+async def get_pin(context: PinContext) -> PinnedWorkspace | None:
     """return the currently pinned workspace for this conversation, or ``None``.
 
     parses stored border representations back into typed Python objects:
@@ -107,7 +136,7 @@ async def get_pin(context: ToolContextManager) -> PinnedWorkspace | None:
     to UTC defensively).
 
     :param context: conversation-scoped context manager
-    :ptype context: ToolContextManager
+    :ptype context: PinContext
     :return: pin snapshot or None if unset
     :rtype: PinnedWorkspace | None
     """
@@ -127,11 +156,11 @@ async def get_pin(context: ToolContextManager) -> PinnedWorkspace | None:
     return result
 
 
-async def clear_pin(context: ToolContextManager) -> None:
+async def clear_pin(context: PinContext) -> None:
     """remove the pin for this conversation. idempotent no-op if absent.
 
     :param context: conversation-scoped context manager
-    :ptype context: ToolContextManager
+    :ptype context: PinContext
     :return: None
     :rtype: None
     """
