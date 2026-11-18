@@ -307,10 +307,7 @@ def plurals(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
     def off(module: ModuleType) -> int:
         return sum(rendered(module, r) != r["approved"] for r in rows)
 
-    refused = sum(rendered(app, r) is None for r in rows)
-    return Reach(
-        off(app), len(rows), off(twin), f"strings rendered otherwise than the approved text ({refused} refused)"
-    )
+    return Reach(off(app), len(rows), off(twin), "strings rendered otherwise than the approved text")
 
 
 def proration(app: ModuleType, twin: ModuleType, root: Path) -> Reach:

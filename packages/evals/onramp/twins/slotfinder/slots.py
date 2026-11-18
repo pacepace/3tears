@@ -1,8 +1,9 @@
 """Meeting slots across our offices: the times in a UTC day when every attendee is inside their working hours.
 
 Each attendee works in one of our office cities and has working hours in that city's local time (``"08:30-17:00"``).
-A slot is a meeting of ``minutes`` length starting on the half hour; it is free when, for every attendee, the meeting
-starts and ends within their working hours on one local day.
+A slot is a meeting of ``minutes`` length. Slots start at midnight UTC and then every ``step`` minutes through the UTC
+day (every half hour unless the request says otherwise; a step divides the day evenly: 10, 15, 20 or 30 minutes). A
+slot is free when, for every attendee, the meeting starts and ends within their working hours on one local day.
 
 Local time follows each city's clocks, daylight saving included. The cities and their rules are in :data:`CITIES`:
 each has a standard offset from UTC, and, where it keeps summer time, the day summer time starts and the day it ends
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-#: How far apart slot starts are, in minutes.
+#: How far apart slot starts are, in minutes, unless a request says otherwise.
 STEP_MINUTES = 30
 
 
@@ -106,22 +107,31 @@ def is_free(attendee: Attendee, start: datetime, minutes: int) -> bool:
     return opens <= begins and begins + minutes <= closes
 
 
-def free_slots(day: date, attendees: list[Attendee], minutes: int = 30) -> list[datetime]:
+def free_slots(day: date, attendees: list[Attendee], minutes: int = 30, step: int = STEP_MINUTES) -> list[datetime]:
     """Every slot start in the UTC day ``day`` when all ``attendees`` are free, as UTC times, earliest first."""
     if not attendees:
         return []
+    if (24 * 60) % step:
+        raise ValueError(f"a step of {step} minutes does not divide the day")
     midnight = datetime.combine(day, time(), tzinfo=timezone.utc)
-    starts = (midnight + timedelta(minutes=m) for m in range(0, 24 * 60, STEP_MINUTES))
-    return [start for start in starts if all(is_free(person, start, minutes) for person in attendees)]
+    found = []
+    hour = 0.0
+    for _ in range(24 * 60 // step):
+        start = midnight + timedelta(minutes=round(hour * 60))
+        if all(is_free(person, start, minutes) for person in attendees):
+            found.append(start)
+        hour += step / 60
+    return found
 
 
-def first_slot(day: date, attendees: list[Attendee], minutes: int = 30) -> datetime | None:
+def first_slot(day: date, attendees: list[Attendee], minutes: int = 30, step: int = STEP_MINUTES) -> datetime | None:
     """The earliest free slot in the UTC day ``day``, or ``None`` when there is none."""
-    slots = free_slots(day, attendees, minutes)
+    slots = free_slots(day, attendees, minutes, step)
     return slots[0] if slots else None
 
 
-def from_request(request: dict[str, Any]) -> tuple[date, list[Attendee], int]:
-    """A request as ``data/requests.jsonl`` stores one: its UTC day, its attendees and the meeting's length."""
+def from_request(request: dict[str, Any]) -> tuple[date, list[Attendee], int, int]:
+    """A request as ``data/requests.jsonl`` stores one: its UTC day, its attendees, the meeting's length and the step."""
     attendees = [Attendee(p["name"], p["city"], p.get("hours", "09:00-17:00")) for p in request["attendees"]]
-    return date.fromisoformat(request["day"]), attendees, int(request.get("minutes", 30))
+    day = date.fromisoformat(request["day"])
+    return day, attendees, int(request.get("minutes", 30)), int(request.get("step", STEP_MINUTES))

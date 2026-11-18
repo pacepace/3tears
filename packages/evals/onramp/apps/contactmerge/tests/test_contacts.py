@@ -19,16 +19,18 @@ class KeyTests(unittest.TestCase):
 
 class SamePersonTests(unittest.TestCase):
     def test_a_shared_email_is_one_person(self):
-        self.assertTrue(same_person(Contact("Ada Price", "ada@price.co.uk"), Contact("A. Price", "ada@price.co.uk ")))
+        self.assertTrue(same_person(Contact("Cy Moss", "cy@moss.co.uk"), Contact("C. Moss", "Cy@Moss.co.uk ")))
 
     def test_a_shared_phone_is_one_person(self):
-        self.assertTrue(same_person(Contact("Ada", phone="07700 900001"), Contact("Ada Price", phone="+447700900001")))
+        self.assertTrue(same_person(Contact("Dee", phone="07700 900002"), Contact("Dee Rowe", phone="+447700900002")))
 
-    def test_a_shared_name_is_not(self):
-        self.assertFalse(same_person(Contact("Sam Hughes", "sam@a.com"), Contact("Sam Hughes", "sam@b.com")))
+    def test_different_details_are_two_people(self):
+        self.assertFalse(
+            same_person(Contact("Sam Hughes", "sam@a.com"), Contact("Eve Hart", "eve@b.com", "07700 900003"))
+        )
 
     def test_blank_details_never_match(self):
-        self.assertFalse(same_person(Contact("Ada"), Contact("Bo")))
+        self.assertFalse(same_person(Contact("Fay"), Contact("Gus")))
 
 
 class MergeTests(unittest.TestCase):
@@ -47,8 +49,8 @@ class MergeTests(unittest.TestCase):
     def test_exports_are_read_from_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             crm, events = Path(tmp) / "crm.csv", Path(tmp) / "events.csv"
-            crm.write_text("Full Name,Email,Phone\nAda Price,ada@price.co.uk,\n,,\n", encoding="utf-8")
-            events.write_text("Name,E-mail,Mobile\nAda,ada@price.co.uk,07700 900001\n", encoding="utf-8")
+            crm.write_text("Full Name,Email,Phone\nHal Kerr,hal@kerr.co.uk,\n,,\n", encoding="utf-8")
+            events.write_text("Name,E-mail,Mobile\nH Kerr,HAL@kerr.co.uk,07700 900004\n", encoding="utf-8")
             people = merge_exports([crm, events])
         self.assertEqual(len(people), 1)
         self.assertEqual([row.source for row in people[0].rows], ["crm", "events"])

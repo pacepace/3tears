@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-_FIELD = re.compile(r"\{(.+)\}")
+_FIELD = re.compile(r"\{(.+?)\}")
 _OPEN, _CLOSE = "\x00", "\x01"
 
 
@@ -60,7 +60,7 @@ def render(template: str, values: Mapping[str, object]) -> str:
             return match.group(0)
         if not forms:
             return number(values[name])
-        return choose(values[name], forms).replace("#", number(values[name]))
+        return choose(values[name], forms).replace("#", str(values[name]))
 
     text = template.replace("{{", _OPEN).replace("}}", _CLOSE)
     return _FIELD.sub(field, text).replace(_OPEN, "{").replace(_CLOSE, "}")
