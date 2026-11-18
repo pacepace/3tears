@@ -207,7 +207,7 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream() -> No
             raw = pod.raw
             copy_victim = {"sources": [{"name": f"KV_{victim}"}], "subjects": [], "storage": "memory"}
             violations = Violations()
-            probes = (
+            probes: tuple[tuple[str, dict[str, object]], ...] = (
                 (f"$JS.API.STREAM.CREATE.KV_{never_declared}", {"name": f"KV_{never_declared}", **copy_victim}),
                 (f"$JS.API.STREAM.UPDATE.KV_{own}", {"name": f"KV_{own}", **copy_victim}),
                 (f"$JS.API.STREAM.CREATE.{_NS}-exfil", {"name": f"{_NS}-exfil", **copy_victim}),

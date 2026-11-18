@@ -60,7 +60,8 @@ def _verify_response(token: str, account_pub: str) -> dict[str, Any]:
     Ed25519PublicKey.from_public_bytes(_account_pub_raw(account_pub)).verify(
         _b64url_decode(sig), f"{header}.{payload}".encode("ascii")
     )
-    return json.loads(_b64url_decode(payload))
+    claims: dict[str, Any] = json.loads(_b64url_decode(payload))
+    return claims
 
 
 class TestDecodeAuthRequest:

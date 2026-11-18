@@ -15,6 +15,7 @@ from datetime import timedelta
 
 from threetears.nats import NatsKvBucket, NatsObjectStore
 from threetears.nats.kv import KvTimings
+from threetears.nats.object_store import DEFAULT_OBJECT_OP_TIMEOUT
 
 from .listed_stream import SERVER_SUBJECTS_CAP, ListedClient, ListedKv, ListedStream
 
@@ -25,6 +26,10 @@ _OBJ_STREAM = f"OBJ_{_STORE}"
 
 #: the objects the dev store held when the replay stalled
 _DEV_OBJECTS = 2345
+
+
+def _store(stream: ListedStream, *, op_timeout: timedelta = DEFAULT_OBJECT_OP_TIMEOUT) -> NatsObjectStore:
+    return NatsObjectStore(client=ListedClient(stream), full_name=_STORE, op_timeout=op_timeout)  # type: ignore[arg-type]
 
 
 def _bucket(stream: ListedStream) -> NatsKvBucket:
@@ -77,10 +82,12 @@ class TestAKeyListing:
 
 class TestAnObjectListing:
     async def test_a_large_store_lists_its_objects_by_direct_read_with_no_consumer(self) -> None:
-        latest = [(_meta_subject(f"o/{n}"), _record(f"o/{n}", f"n{n}"), None) for n in range(_DEV_OBJECTS)]
+        latest: list[tuple[str, bytes, dict[str, str] | None]] = [
+            (_meta_subject(f"o/{n}"), _record(f"o/{n}", f"n{n}"), None) for n in range(_DEV_OBJECTS)
+        ]
         latest.append((_meta_subject("o/gone"), _record("o/gone", "ngone", deleted=True), None))
         stream = ListedStream(_OBJ_STREAM, latest)
-        store = NatsObjectStore(client=ListedClient(stream), full_name=_STORE)  # type: ignore[arg-type]
+        store = _store(stream)
 
         listed = await store.list_objects(prefix="o/")
 
@@ -89,18 +96,20 @@ class TestAnObjectListing:
     async def test_names_past_the_servers_subject_cap_are_read_from_the_next_page(self) -> None:
         names = [f"a/{n}" for n in range(SERVER_SUBJECTS_CAP + 3)]
         stream = ListedStream(_OBJ_STREAM, [(_meta_subject(name), b"{}", None) for name in names])
-        store = NatsObjectStore(client=ListedClient(stream), full_name=_STORE)  # type: ignore[arg-type]
+        store = _store(stream)
 
         assert await store.list_names(prefix="a/") == sorted(names)
         assert stream.infos == [(f"$O.{_STORE}.M.>", 0), (f"$O.{_STORE}.M.>", SERVER_SUBJECTS_CAP)]
         assert stream.direct_reads == [], "a name listing reads the names from the subjects alone"
 
     async def test_the_orphan_sweep_reads_the_metadata_by_direct_read_and_purges_only_the_orphan(self) -> None:
-        latest = [(f"$O.{_STORE}.C.n{n}", b"chunk", None) for n in range(_DEV_OBJECTS)]
+        latest: list[tuple[str, bytes, dict[str, str] | None]] = [
+            (f"$O.{_STORE}.C.n{n}", b"chunk", None) for n in range(_DEV_OBJECTS)
+        ]
         latest.append((f"$O.{_STORE}.C.orphan", b"chunk", None))
         latest.extend((_meta_subject(f"o/{n}"), _record(f"o/{n}", f"n{n}"), None) for n in range(_DEV_OBJECTS))
         stream = ListedStream(_OBJ_STREAM, latest)
-        store = NatsObjectStore(client=ListedClient(stream), full_name=_STORE, op_timeout=timedelta(seconds=5))
+        store = _store(stream, op_timeout=timedelta(seconds=5))
 
         class _NoClaims:
             async def list_keys(self) -> list[str]:

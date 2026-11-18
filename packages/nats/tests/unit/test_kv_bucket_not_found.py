@@ -666,7 +666,7 @@ class TestAKeyListingFollowsAMovedConnection:
         assert not isinstance(raised, KvBucketNotFoundError), "an unanswered bind is not an absence"
 
     @pytest.mark.asyncio
-    async def test_a_bind_reply_that_is_not_json_is_a_kv_error(self) -> None:
+    async def test_a_bind_reply_that_is_not_json_is_a_kv_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # something other than JetStream answered the API subject; nats-py's json.loads refuses it
         wire = _FakeWire()
 
@@ -674,21 +674,21 @@ class TestAKeyListingFollowsAMovedConnection:
             del subject, payload, timeout
             return _WireMsg(b"<html>not the JetStream API</html>")
 
-        wire.request = _not_jetstream  # type: ignore[method-assign]
+        monkeypatch.setattr(wire, "request", _not_jetstream)
         raised = await _raised_by(self._moved_handle(wire).list_keys())
 
         assert isinstance(raised, KvError), repr(raised)
         assert isinstance(raised.__cause__, json.JSONDecodeError), repr(raised.__cause__)
 
     @pytest.mark.asyncio
-    async def test_a_bug_in_the_bind_on_the_successor_propagates(self) -> None:
+    async def test_a_bug_in_the_bind_on_the_successor_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         wire = _FakeWire()
 
         async def _buggy(subject: str, payload: bytes = b"", timeout: float | None = None) -> _WireMsg:
             del subject, payload, timeout
             raise TypeError("a bug in the call")
 
-        wire.request = _buggy  # type: ignore[method-assign]
+        monkeypatch.setattr(wire, "request", _buggy)
         raised = await _raised_by(self._moved_handle(wire).list_keys())
 
         assert isinstance(raised, TypeError), repr(raised)
@@ -762,7 +762,7 @@ class TestTheRawHandleClassifiers:
         assert not is_bucket_not_found(raised)
 
     @pytest.mark.asyncio
-    async def test_another_not_found_api_answer_is_not_a_missing_stream(self) -> None:
+    async def test_another_not_found_api_answer_is_not_a_missing_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # a 404 with a different JetStream code -- a consumer the server does not have -- shares the
         # class with a missing stream and must not be read as one.
         wire = _FakeWire()
@@ -772,7 +772,7 @@ class TestTheRawHandleClassifiers:
             del subject, payload, timeout
             return _api_error(404, 10014, "consumer not found")
 
-        wire.request = _consumer_missing  # type: ignore[method-assign]
+        monkeypatch.setattr(wire, "request", _consumer_missing)
         raised = await _nats_py_raises(wire.jetstream().consumer_info(_STREAM, "durable"))
         assert is_nats_error(raised)
         assert not is_bucket_not_found(raised)

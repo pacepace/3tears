@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid7
 
 import pytest
+from pydantic import SecretStr
 
 from threetears.nats import RequestTimeoutError, Subject, set_default_namespace
 from threetears.nats.object_store_requests import (
@@ -45,7 +46,7 @@ class _ScriptedRequests:
         self._echo = echo
         self.sent: list[tuple[str, dict[str, Any]]] = []
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
         del timeout
         self.sent.append((subject.path, json.loads(payload)))
         reply = self._replies.pop(0)
@@ -67,7 +68,7 @@ _DECLARED = {
 class TestDeclare:
     async def test_the_ask_goes_to_the_hub_with_the_token_and_names_no_bucket(self) -> None:
         nc = _ScriptedRequests(_DECLARED)
-        declared = await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+        declared = await declare_pod_object_store(nc, identity_token=_TOKEN)
         assert declared == DeclaredObjectStore(
             bucket="3tears-tool_pod-x-objects", pointers_bucket="3tears-tool_pod-x-pointers", max_bytes=1024
         )
@@ -77,41 +78,41 @@ class TestDeclare:
         assert set(body) == {"identity_token", "correlation_id"}
 
     def test_the_token_is_redacted_off_the_wire(self) -> None:
-        request = ObjectStoreDeclareRequest(identity_token=_TOKEN, correlation_id=uuid7())
+        request = ObjectStoreDeclareRequest(identity_token=SecretStr(_TOKEN), correlation_id=uuid7())
         assert _TOKEN not in repr(request)
         assert _TOKEN in request.model_dump_json()
 
     async def test_no_token_is_unavailable_without_asking(self) -> None:
         nc = _ScriptedRequests()
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await declare_pod_object_store(nc, identity_token="")  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token="")
         assert nc.sent == []
 
     async def test_a_refusal_carries_the_hubs_code(self) -> None:
         nc = _ScriptedRequests({"success": False, "error_code": "IDENTITY_REFUSED", "error_message": "no"})
         with pytest.raises(ObjectStoreRequestRefusedError) as raised:
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
         assert raised.value.error_code == "IDENTITY_REFUSED"
 
     async def test_a_hub_failure_is_retryable(self) -> None:
         nc = _ScriptedRequests({"success": False, "error_code": "DECLARE_FAILED", "error_message": "nats"})
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
 
     async def test_a_transport_failure_is_retryable(self) -> None:
         nc = _ScriptedRequests(RequestTimeoutError("no answer"))
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
 
     async def test_a_reply_to_another_request_is_not_trusted(self) -> None:
         nc = _ScriptedRequests({**_DECLARED, "correlation_id": str(uuid7())}, echo=False)
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
 
     async def test_a_success_without_its_buckets_is_not_trusted(self) -> None:
         nc = _ScriptedRequests({"success": True})
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
 
 
 class TestRetire:
@@ -130,21 +131,21 @@ class TestRetire:
     async def test_an_invalid_ask_is_refused_without_asking(self, names: list[str]) -> None:
         nc = _ScriptedRequests()
         with pytest.raises(ObjectStoreRequestRefusedError) as raised:
-            await retire_pod_objects(nc, identity_token=_TOKEN, names=names)  # type: ignore[arg-type]
+            await retire_pod_objects(nc, identity_token=_TOKEN, names=names)
         assert raised.value.error_code == "INVALID_REQUEST"
         assert nc.sent == []
 
     async def test_a_hub_failure_is_retryable(self) -> None:
         nc = _ScriptedRequests({"success": False, "error_code": "RETIRE_FAILED", "error_message": "nats"})
         with pytest.raises(ObjectStoreRequestUnavailableError):
-            await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])  # type: ignore[arg-type]
+            await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])
 
 
 class TestRefusalsThePodActsOn:
     async def test_a_pod_not_opted_in_is_refused_for_good(self) -> None:
         nc = _ScriptedRequests({"success": False, "error_code": "OBJECT_STORE_NOT_GRANTED", "error_message": "no"})
         with pytest.raises(ObjectStoreRequestRefusedError) as raised:
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
         assert raised.value.error_code == "OBJECT_STORE_NOT_GRANTED"
 
     async def test_an_exhausted_budget_is_refused_for_good(self) -> None:
@@ -152,13 +153,13 @@ class TestRefusalsThePodActsOn:
             {"success": False, "error_code": "OBJECT_STORE_BUDGET_EXHAUSTED", "error_message": "full"}
         )
         with pytest.raises(ObjectStoreRequestRefusedError) as raised:
-            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+            await declare_pod_object_store(nc, identity_token=_TOKEN)
         assert raised.value.error_code == "OBJECT_STORE_BUDGET_EXHAUSTED"
 
     async def test_a_retire_against_a_bucket_not_declared_says_to_declare_again(self) -> None:
         nc = _ScriptedRequests({"success": False, "error_code": "OBJECT_STORE_NOT_DECLARED", "error_message": "gone"})
         with pytest.raises(ObjectStoreNotDeclaredError):
-            await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])  # type: ignore[arg-type]
+            await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])
         assert issubclass(ObjectStoreNotDeclaredError, ObjectStoreRequestRefusedError)
 
 
@@ -201,7 +202,8 @@ class TestBind:
     async def test_a_pod_binds_the_buckets_the_hub_declared_and_creates_none(self) -> None:
         nc = _BindingClient(_DECLARED)
         bound = await bind_pod_object_store(nc, identity_token=lambda: _TOKEN)  # type: ignore[arg-type]
-        assert (bound.store, bound.pointers) == ("store", "pointers")
+        held: tuple[object, object] = (bound.store, bound.pointers)  # the stand-ins the fake bound
+        assert held == ("store", "pointers")
         assert nc.bound == [
             ("object_store", {"name": "3tears-tool_pod-x-objects", "prefix_namespace": False}),
             ("kv_bucket", {"name": "tool_pod-x-pointers", "create_if_missing": False}),

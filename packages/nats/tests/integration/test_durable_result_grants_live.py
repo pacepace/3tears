@@ -59,7 +59,9 @@ _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
 _REGISTRY_PW = "registry-pw"  # noqa: S105 - ephemeral testcontainer credential
 
 
-def _minted_permissions(principal: Principal, **ids: str) -> tuple[list[str], list[str]]:
+def _minted_permissions(
+    principal: Principal, *, pod_id: str | None = None, conn_id: str | None = None
+) -> tuple[list[str], list[str]]:
     """mint a real user JWT for one principal and return its (pub allow, sub allow) lists.
 
     Feeding the MINTED strings into the server's static ``authorization`` proves the credential the
@@ -67,15 +69,17 @@ def _minted_permissions(principal: Principal, **ids: str) -> tuple[list[str], li
 
     :param principal: the connection identity class to mint for
     :ptype principal: Principal
-    :param ids: the scoping ids that principal requires (pod_id / conn_id / agent_id)
-    :ptype ids: str
+    :param pod_id: the pod's id, for a pod principal
+    :ptype pod_id: str | None
+    :param conn_id: the connection's id, for an infra principal
+    :ptype conn_id: str | None
     :return: the publish and subscribe allow-lists
     :rtype: tuple[list[str], list[str]]
     """
     token = mint_user_jwt(
         account_seed=generate_account_seed(),
         user_public_key="UTEST",  # sub is irrelevant for the static-permissions projection
-        permissions=build_permissions(principal, **ids),
+        permissions=build_permissions(principal, pod_id=pod_id, conn_id=conn_id),
         name=f"{principal.value}-grant-test",
         expires_in_seconds=600,
     )

@@ -190,7 +190,8 @@ async def test_a_put_that_starts_during_the_sweep_keeps_its_chunks(nats_containe
 
         async def chunk_messages() -> int:
             info = await js.stream_info(store.stream, subjects_filter=chunk_subject)
-            return dict(info.state.subjects or {}).get(chunk_subject, 0)
+            held: int = dict(info.state.subjects or {}).get(chunk_subject, 0)
+            return held
 
         racing = _WriterStartsDuringClaimRead(pointers, start_writer)
         assert await store.purge_orphan_chunks(pointers=racing) == 0  # type: ignore[arg-type]

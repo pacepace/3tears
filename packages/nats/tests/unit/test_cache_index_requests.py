@@ -39,7 +39,7 @@ class _Hub:
         self.asked: list[CacheIndexMovedRequest] = []
         self.subjects: list[str] = []
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
         del timeout
         self.subjects.append(subject.path)
         request = CacheIndexMovedRequest.model_validate_json(payload)
@@ -97,7 +97,7 @@ class TestThePodsReport:
     async def test_the_hub_is_told_the_customer_conversion_version_and_scope(self) -> None:
         hub = _Hub(CacheIndexMovedReply(success=True))
         reply = await report_cache_index_moved(
-            hub,  # type: ignore[arg-type]
+            hub,
             identity_token="tok",
             customer_id=_CUSTOMER,
             conversion="enr-2026",
@@ -112,7 +112,7 @@ class TestThePodsReport:
     async def test_a_hub_that_does_not_answer_is_unavailable(self) -> None:
         with pytest.raises(CacheIndexRequestUnavailableError):
             await report_cache_index_moved(
-                _Hub(error=RequestTimeoutError("no answer")),  # type: ignore[arg-type]
+                _Hub(error=RequestTimeoutError("no answer")),
                 identity_token="tok",
                 customer_id=_CUSTOMER,
                 conversion="c",
@@ -135,7 +135,7 @@ class TestThePodsReport:
     async def test_no_token_asks_nothing(self) -> None:
         hub = _Hub(CacheIndexMovedReply(success=True))
         with pytest.raises(CacheIndexRequestUnavailableError):
-            await report_cache_index_moved(hub, identity_token="", customer_id=_CUSTOMER, conversion="c", version="v")  # type: ignore[arg-type]
+            await report_cache_index_moved(hub, identity_token="", customer_id=_CUSTOMER, conversion="c", version="v")
         assert hub.asked == []
 
 
@@ -158,6 +158,12 @@ class TestTheCodes:
 
     def test_a_customer_that_is_no_uuid_is_refused_before_it_is_sent(self) -> None:
         with pytest.raises(ValidationError):
-            CacheIndexMovedRequest(
-                identity_token=SecretStr("tok"), correlation_id=uuid7(), customer_id="14th", conversion="c", version="v"
+            CacheIndexMovedRequest.model_validate(
+                {
+                    "identity_token": SecretStr("tok"),
+                    "correlation_id": uuid7(),
+                    "customer_id": "14th",
+                    "conversion": "c",
+                    "version": "v",
+                }
             )

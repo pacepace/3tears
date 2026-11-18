@@ -39,7 +39,7 @@ from threetears.nats.hub_requests import ask_hub
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
-    from threetears.nats.client import NatsClient
+    from threetears.nats.capabilities import RawRequester
 
 __all__ = [
     "CACHE_INDEX_REQUEST_ERROR_CODES",
@@ -154,7 +154,7 @@ class CacheIndexMovedReply(BaseModel):
 
 
 async def report_cache_index_moved(
-    nats_client: NatsClient,
+    nats_client: RawRequester,
     *,
     identity_token: str,
     customer_id: UUID,
@@ -166,7 +166,7 @@ async def report_cache_index_moved(
     """tell the hub that the CDN-cached index this pod serves for ``customer_id`` moved to ``version``.
 
     :param nats_client: this pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: RawRequester
     :param identity_token: this pod's CURRENT hub identity token
     :ptype identity_token: str
     :param customer_id: the customer whose index moved

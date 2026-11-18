@@ -55,6 +55,7 @@ from threetears.nats.hub_requests import ask_hub
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
+    from threetears.nats.capabilities import RawRequester
     from threetears.nats.client import NatsClient
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.object_store import NatsObjectStore
@@ -312,7 +313,7 @@ def _refused(reply: ObjectStoreDeclareReply | ObjectStoreRetireReply) -> ObjectS
 
 
 async def declare_pod_object_store(
-    nats_client: NatsClient,
+    nats_client: RawRequester,
     *,
     identity_token: str,
     timeout_seconds: float = DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS,
@@ -320,7 +321,7 @@ async def declare_pod_object_store(
     """ask the hub to declare this pod's own Object Store and pointer bucket; idempotent.
 
     :param nats_client: this pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: RawRequester
     :param identity_token: this pod's CURRENT hub identity token
     :ptype identity_token: str
     :param timeout_seconds: seconds to wait for the answer
@@ -361,7 +362,7 @@ async def declare_pod_object_store(
 
 
 async def retire_pod_objects(
-    nats_client: NatsClient,
+    nats_client: RawRequester,
     *,
     identity_token: str,
     names: Sequence[str],
@@ -370,7 +371,7 @@ async def retire_pod_objects(
     """ask the hub to delete objects this pod no longer serves from its own bucket.
 
     :param nats_client: this pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: RawRequester
     :param identity_token: this pod's CURRENT hub identity token
     :ptype identity_token: str
     :param names: the objects to delete; at most :data:`MAX_RETIRED_OBJECTS`

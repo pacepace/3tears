@@ -109,13 +109,17 @@ class _StubCollection(BaseCollection[_StubEntity]):
         """
         return None
 
-    async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         """no L3 behind this collection.
 
         :param data: row payload
         :ptype data: dict[str, Any]
         :param original_timestamp: optimistic-concurrency stamp
         :ptype original_timestamp: datetime | None
+        :param conn: the caller's transaction handle, which nothing here uses
+        :ptype conn: Any
         :return: rows written
         :rtype: int
         """

@@ -99,6 +99,11 @@ class _Wire:
 
 
 # parity-exempt: stands in for a nats-py connection; the handover calls subscribe, flush, publish, drain and close
+def _held(client: NatsClient) -> object:
+    """the connection ``client`` holds now, as an object: a test compares it with its stand-ins by identity."""
+    return client.raw
+
+
 class _Conn:
     def __init__(self, name: str, *, subscribe_fails: bool = False) -> None:
         self.name = name
@@ -231,7 +236,7 @@ async def test_a_successor_that_cannot_open_changes_nothing() -> None:
     with pytest.raises(RuntimeError, match="callout denied"):
         await client.renew_connection(retire_after=timedelta(seconds=1))
 
-    assert client.raw is current
+    assert _held(client) is current
     assert not current.is_closed
 
 
@@ -248,7 +253,7 @@ async def test_a_successor_that_cannot_take_the_subscriptions_is_closed_and_chan
     with pytest.raises(RuntimeError, match="subscribe refused"):
         await client.renew_connection(retire_after=timedelta(seconds=1))
 
-    assert client.raw is current
+    assert _held(client) is current
     assert successor.is_closed
     assert not current.subs[0].drained
     await current.subs[0].queue_in.put(_Msg(b"still here"))
@@ -280,7 +285,7 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
     await client.renew_connection(retire_after=timedelta(seconds=30))
     await _settle()
 
-    assert client.raw is successor
+    assert _held(client) is successor
     assert [(s.subject, s.queue) for s in successor.subs] == [("events.>", sub.queue)]
     # a round trip settles what was published on the old connection before anything is published
     # on the successor. The old half stays in its group for the hold (retire_after): no UNSUB yet.
@@ -399,7 +404,7 @@ async def test_a_renewal_that_fails_after_subscribing_its_successor_loses_nothin
         b"routed to the successor before the renewal failed",
         b"matched before the UNSUB, delivered after its round trip",
     ]
-    assert client.raw is current
+    assert _held(client) is current
     assert successor.drained, "the successor was drained, not closed with messages in it"
     await client.shutdown()
 
@@ -765,9 +770,9 @@ async def test_refused_renewals_do_not_count_against_the_connection_still_in_use
             await client.renew_connection(retire_after=timedelta(seconds=30))
 
     assert client.is_healthy is True
-    assert client.raw is current
+    assert _held(client) is current
     await client.renew_connection(retire_after=timedelta(seconds=30))
-    assert client.raw is successor
+    assert _held(client) is successor
     await client.shutdown()
 
 
@@ -809,7 +814,7 @@ async def test_a_renewal_cancelled_while_it_waits_for_the_handover_lock_closes_i
         await renewal
 
     assert successor.is_closed
-    assert client.raw is current
+    assert _held(client) is current
     current.subscribe_gate.set()
     await client.unsubscribe(await subscribing)
     await client.shutdown()
@@ -926,7 +931,7 @@ async def test_one_renewal_at_a_time() -> None:
 
     successor.pong_gate.set()
     await first
-    assert client.raw is successor
+    assert _held(client) is successor
     await client.shutdown()
 
 
@@ -1036,7 +1041,7 @@ async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor() -> N
     await client.subscribe(Subject.raw("events.>"), cb=_cb)
 
     await options_of[current]["lame_duck_mode_cb"]()
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
     await _settle()
 
     assert [s.subject for s in successor.subs] == ["events.>"]
@@ -1065,7 +1070,7 @@ async def test_a_reply_owed_across_a_lame_duck_move_leaves_on_the_connection_tha
     await _settle()
 
     await options_of[current]["lame_duck_mode_cb"]()
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
     assert owed[0].reply_subject is not None
     await client.publish_raw_reply(reply_subject=owed[0].reply_subject, payload=b"done")
 
@@ -1093,7 +1098,7 @@ async def test_a_reply_owed_across_a_requested_renewal_leaves_on_the_connection_
 
     request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id=None)
     await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
     assert owed[0].reply_subject is not None
     await client.publish_raw_reply(reply_subject=owed[0].reply_subject, payload=b"done")
 
@@ -1139,7 +1144,7 @@ async def test_a_move_that_cannot_open_a_successor_is_retried_until_it_lands(mon
     client, options_of = await _connected_capturing(current, RuntimeError("no server free"), successor)
 
     await options_of[current]["lame_duck_mode_cb"]()
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
 
     assert not current.is_closed
     await client.shutdown()
@@ -1155,7 +1160,7 @@ async def test_a_move_ends_once_the_server_closed_the_connection_first(monkeypat
     current.is_closed = True
     await asyncio.sleep(0.1)
 
-    assert client.raw is current
+    assert _held(client) is current
     await client.shutdown()
 
 
@@ -1167,7 +1172,7 @@ async def test_lame_duck_under_a_connection_already_replaced_moves_nothing() -> 
     await options_of[current]["lame_duck_mode_cb"]()
     await _settle()
 
-    assert client.raw is successor
+    assert _held(client) is successor
     await client.shutdown()
 
 
@@ -1240,7 +1245,7 @@ async def test_a_renewal_request_for_this_runner_moves_it_to_a_successor() -> No
 
     request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id="pod-a")
     await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
-    await _until(lambda: client.raw is successor)
+    await _until(lambda: _held(client) is successor)
 
     assert not current.is_closed, "the replaced connection is held for its work"
     await client.shutdown()
@@ -1258,7 +1263,7 @@ async def test_a_renewal_request_for_another_runner_moves_nothing() -> None:
     await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
     await asyncio.sleep(0.1)
 
-    assert client.raw is current
+    assert _held(client) is current
     await client.shutdown()
 
 
@@ -1305,7 +1310,7 @@ async def test_a_renewal_request_the_runners_door_does_not_admit_moves_nothing()
     request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id=None)
     await notice.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice.subject))
     await _settle()
-    assert client.raw is current
+    assert _held(client) is current
     await client.shutdown()
 
 

@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from nats.aio.client import Client as NatsPyClient
+from nats.aio.subscription import Subscription as NatsPySubscription
 from nats.js.client import JetStreamContext
 
 import threetears.nats.client as client_module
@@ -107,15 +110,18 @@ async def test_an_event_published_as_the_consumer_stops_is_handled(
         # the loop is inside a fetch: its pull request is on the server
         await until(_fetching, within=_WAIT_SECONDS, what="the loop's pull request")
 
-        send_unsubscribe = client_module.send_unsubscribe
+        # the binding the client calls, read off its module (``send_unsubscribe`` is not its export)
+        send_unsubscribe: Callable[[NatsPyClient, NatsPySubscription], Awaitable[None]] = vars(client_module)[
+            "send_unsubscribe"
+        ]
 
         async def _delivered() -> bool:
             return bool((await _server_state(pod, stream, "stopping")).delivered.consumer_seq)
 
-        async def slow_unsubscribe(*args: Any, **kwargs: Any) -> None:
+        async def slow_unsubscribe(connection: NatsPyClient, subscription: NatsPySubscription) -> None:
             # held until the server has delivered the event to the stopping consumer's pull request
             await until(_delivered, within=_WAIT_SECONDS, what="the event's delivery to the pull request")
-            await send_unsubscribe(*args, **kwargs)
+            await send_unsubscribe(connection, subscription)
 
         # the injection point: hold the stop's UNSUB back on its way to the server
         monkeypatch.setattr(client_module, "send_unsubscribe", slow_unsubscribe)

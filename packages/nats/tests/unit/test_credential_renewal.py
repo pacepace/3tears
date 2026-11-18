@@ -619,7 +619,7 @@ class TestTheClientRenewsItsOwnCredential:
         client.renew_credential(ttl_seconds=lambda: 300)
         await asyncio.sleep(0.05)
 
-        client.raw.is_closed = True
+        monkeypatch.setattr(client.raw, "is_closed", True)
         await client.shutdown()
         stopped_at = len(calls)
         await asyncio.sleep(0.05)

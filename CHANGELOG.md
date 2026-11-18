@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: the hub requests take a `RawRequester`
+
+`ask_hub`, `report_cache_index_moved`, `declare_pod_object_store` and `retire_pod_objects` take a
+`threetears.nats.RawRequester` (`request_raw`, the one call they make) instead of the whole `NatsClient`, which
+satisfies it, so a scripted hub double type-checks with no ignore. Nothing changes at run time.
+
 ### models: `make_callback` answers its concrete callback; `attach_callbacks` takes a `RunnableBinding`
 
 `CircuitBreaker.make_callback` returns a `CircuitBreakerCallback` and `UsageTracker.make_callback` a

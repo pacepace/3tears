@@ -11,18 +11,17 @@ limit applies.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
+from nats.aio.msg import Msg
 
 from threetears.nats.receipt import ReceiptBacklog
 
 
-# parity-exempt: the backlog reads only ``.data`` off a nats-py Msg, so the stand-in carries only that
-class _FakeMsg:
-    """the one attribute of a nats-py ``Msg`` the backlog reads."""
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
+def _msg(data: bytes) -> Msg:
+    """a nats-py ``Msg`` carrying ``data``, the one attribute the backlog reads; no connection behind it."""
+    return Msg(_client=MagicMock(), data=data)
 
 
 async def _parked(awaitable: asyncio.Future[object] | asyncio.Task[object]) -> bool:
@@ -41,7 +40,7 @@ async def _parked(awaitable: asyncio.Future[object] | asyncio.Task[object]) -> b
 @pytest.mark.asyncio
 async def test_messages_come_out_in_arrival_order_with_their_arrival_times() -> None:
     backlog = ReceiptBacklog(msgs_limit=10, bytes_limit=1024)
-    first, second = _FakeMsg(b"a"), _FakeMsg(b"b")
+    first, second = _msg(b"a"), _msg(b"b")
 
     await backlog.put(first, received=1.0)
     await backlog.put(second, received=2.0)
@@ -54,7 +53,7 @@ async def test_messages_come_out_in_arrival_order_with_their_arrival_times() -> 
 async def test_a_closed_backlog_hands_out_what_it_holds_then_ends() -> None:
     """messages already taken off the connection were received, so they are still delivered."""
     backlog = ReceiptBacklog(msgs_limit=10, bytes_limit=1024)
-    held = _FakeMsg(b"a")
+    held = _msg(b"a")
     await backlog.put(held, received=1.0)
 
     await backlog.close()
@@ -77,10 +76,10 @@ async def test_a_reader_waiting_on_an_empty_backlog_ends_when_it_closes() -> Non
 @pytest.mark.asyncio
 async def test_the_message_count_bound_stops_taking_messages_until_one_leaves() -> None:
     backlog = ReceiptBacklog(msgs_limit=2, bytes_limit=1024)
-    await backlog.put(_FakeMsg(b"a"), received=1.0)
-    await backlog.put(_FakeMsg(b"b"), received=2.0)
+    await backlog.put(_msg(b"a"), received=1.0)
+    await backlog.put(_msg(b"b"), received=2.0)
 
-    third = asyncio.ensure_future(backlog.put(_FakeMsg(b"c"), received=3.0))
+    third = asyncio.ensure_future(backlog.put(_msg(b"c"), received=3.0))
     assert await _parked(third), "a full backlog took a message past its count bound"
 
     await backlog.get()
@@ -90,9 +89,9 @@ async def test_the_message_count_bound_stops_taking_messages_until_one_leaves() 
 @pytest.mark.asyncio
 async def test_the_byte_bound_stops_taking_messages_until_bytes_leave() -> None:
     backlog = ReceiptBacklog(msgs_limit=100, bytes_limit=8)
-    await backlog.put(_FakeMsg(b"12345678"), received=1.0)
+    await backlog.put(_msg(b"12345678"), received=1.0)
 
-    next_put = asyncio.ensure_future(backlog.put(_FakeMsg(b"x"), received=2.0))
+    next_put = asyncio.ensure_future(backlog.put(_msg(b"x"), received=2.0))
     assert await _parked(next_put), "a full backlog took a message past its byte bound"
 
     await backlog.get()

@@ -78,16 +78,16 @@ async def test_many_keys_read_in_batched_direct_gets_answer_as_one_at_a_time(nat
         connection = nc.raw
         real_publish = connection.publish
 
-        async def counting(subject: str, *args: object, **kwargs: object) -> object:
+        async def counting(
+            subject: str, payload: bytes = b"", reply: str = "", headers: dict[str, str] | None = None
+        ) -> None:
             nonlocal requests
             requests += subject.startswith("$JS.API.DIRECT.GET.")
-            return await real_publish(subject, *args, **kwargs)
+            await real_publish(subject, payload, reply, headers)
 
-        connection.publish = counting  # type: ignore[method-assign]
-        try:
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(connection, "publish", counting)
             batched = await bucket.get_latest_many(keys=keys, batched=True)
-        finally:
-            connection.publish = real_publish  # type: ignore[method-assign]
 
         assert batched == one_at_a_time
         assert requests == 3
@@ -110,21 +110,21 @@ async def test_a_batched_read_nobody_answers_is_probed_briefly_and_not_tried_aga
         real_publish = connection.publish
         batches = 0
 
-        async def refusing(subject: str, *args: object, **kwargs: object) -> object:
+        async def refusing(
+            subject: str, payload: bytes = b"", reply: str = "", headers: dict[str, str] | None = None
+        ) -> None:
             nonlocal batches
             if subject == f"$JS.API.DIRECT.GET.KV_{bucket.name}":
                 batches += 1
-                return None
-            return await real_publish(subject, *args, **kwargs)
+                return
+            await real_publish(subject, payload, reply, headers)
 
-        connection.publish = refusing  # type: ignore[method-assign]
-        try:
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(connection, "publish", refusing)
             began = asyncio.get_running_loop().time()
             first = await bucket.get_latest_many(keys=keys, batched=True)
             took = asyncio.get_running_loop().time() - began
             again = await bucket.get_latest_many(keys=keys, batched=True)
-        finally:
-            connection.publish = real_publish  # type: ignore[method-assign]
 
         assert first == again == {key: (key.encode(), first[key][1]) for key in keys}
         assert took < 3, f"the unanswered batch waited {took:.1f} s"

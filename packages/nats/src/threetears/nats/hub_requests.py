@@ -26,7 +26,7 @@ from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject
 
 if TYPE_CHECKING:
-    from threetears.nats.client import NatsClient
+    from threetears.nats.capabilities import RawRequester
 
 __all__ = ["HubReply", "HubRequest", "ask_hub"]
 
@@ -85,7 +85,7 @@ def _answers(reply: HubReply, correlation_id: UUID) -> bool:
 
 
 async def ask_hub(
-    nats_client: NatsClient,
+    nats_client: RawRequester,
     *,
     subject: Subject,
     request: HubRequest,
@@ -99,7 +99,7 @@ async def ask_hub(
     """send ``request``, and return the hub's reply once it is a success that answers it.
 
     :param nats_client: the pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: RawRequester
     :param subject: the request subject
     :ptype subject: Subject
     :param request: the request

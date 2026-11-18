@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from typing import TypedDict
 
 import pytest
 from nats.js.api import StorageType
@@ -77,8 +78,17 @@ _POD_B = "01947100-0000-7000-8000-0000000000bb"
 _POD_X = "01947100-0000-7000-8000-0000000000cc"
 _POD_VICTIM = "01947100-0000-7000-8000-0000000000dd"
 
+
 #: representative ids so every principal resolves to a concrete allow-list.
-_IDS: dict[Principal, dict[str, str]] = {
+class _Ids(TypedDict, total=False):
+    """the scoping ids a principal connects with, as ``build_permissions`` takes them."""
+
+    agent_id: str
+    pod_id: str
+    conn_id: str
+
+
+_IDS: dict[Principal, _Ids] = {
     Principal.AGENT_POD: {"agent_id": _AGENT_1, "pod_id": _POD_1},
     Principal.TOOL_POD: {"pod_id": _POD_1},
     Principal.REGISTRY: {"conn_id": "reg-1"},
@@ -240,11 +250,14 @@ class TestIdentityIsolation:
         # tool grant onto a peer agent's identity -- the connect name simply does not feed these.
         p1 = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_1)
         p2 = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_VICTIM)
-        tool_subjects = lambda perm: sorted(  # noqa: E731 -- terse local for the assertion
-            s
-            for s in _all_subjects(perm)
-            if ".tools.internal." in s or ".tools.probe." in s or ".tools.heartbeat." in s
-        )
+
+        def tool_subjects(perm: PrincipalPermissions) -> list[str]:
+            return sorted(
+                s
+                for s in _all_subjects(perm)
+                if ".tools.internal." in s or ".tools.probe." in s or ".tools.heartbeat." in s
+            )
+
         assert (
             tool_subjects(p1)
             == tool_subjects(p2)
@@ -974,10 +987,10 @@ class TestPrincipalRoster:
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_every_member_answers_a_legal_scope(self, principal: Principal) -> None:
-        ids = {k: v for k, v in _IDS[principal].items() if k in {"agent_id", "pod_id"}}
-        if principal is Principal.AGENT_POD:
-            ids.pop("pod_id")  # refused for this principal: the pod id is spoofable here
-        scope = kv_key_scope_for(principal, **ids)
+        ids = _IDS[principal]
+        # the pod id is refused for an agent pod: it is spoofable there
+        pod_id = None if principal is Principal.AGENT_POD else ids.get("pod_id")
+        scope = kv_key_scope_for(principal, agent_id=ids.get("agent_id"), pod_id=pod_id)
         assert scope
 
 
@@ -1086,13 +1099,12 @@ class TestScopedCollectionsGrant:
     @pytest.mark.parametrize("principal", list(Principal))
     def test_the_collections_grant_carries_the_scope_the_process_writes(self, principal: Principal) -> None:
         resource = self._collections(principal)
-        ids = {k: v for k, v in _IDS[principal].items() if k in {"agent_id", "pod_id"}}
-        if principal is Principal.AGENT_POD:
-            ids.pop("pod_id")
+        ids = _IDS[principal]
+        pod_id = None if principal is Principal.AGENT_POD else ids.get("pod_id")
         # pinned as a PAIR: the mint and the writing process must derive the identical value from
         # the identical inputs, or the principal reads and writes keys its own grant does not cover
         # -- and that failure is a deadline, not a refusal anyone sees.
-        assert resource.scope == kv_key_scope_for(principal, **ids)  # type: ignore[attr-defined]
+        assert resource.scope == kv_key_scope_for(principal, agent_id=ids.get("agent_id"), pod_id=pod_id)  # type: ignore[attr-defined]
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_no_other_bucket_is_scoped(self, principal: Principal) -> None:

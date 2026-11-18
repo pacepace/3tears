@@ -140,15 +140,14 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
     :return: the connected client
     :rtype: NatsClient
     """
-    extra = {"inbox_prefix": inbox_prefix} if inbox_prefix is not None else {}
     return await NatsClient.connect(
         nats_url=uri,
         nats_subject_namespace=_NS,
         client_name=f"{user}-own-messages",
         user=user,
         password=password,
+        inbox_prefix=inbox_prefix,
         startup_timeout=timedelta(seconds=10),
-        **extra,
     )
 
 
@@ -316,9 +315,9 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents() -> None:
             for stream in (channels, audit):
                 assert not await admin_js.consumers_info(stream), stream
         finally:
-            for client in (agent, tool, hub):
-                if client is not None:
-                    await client.shutdown(drain_timeout=timedelta(seconds=2))
+            for opened in (agent, tool, hub):
+                if opened is not None:
+                    await opened.shutdown(drain_timeout=timedelta(seconds=2))
 
 
 async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none() -> None:
@@ -413,6 +412,6 @@ async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none() -
             assert (await legacy.get(own_key)).value == b'{"system_prompt": "own"}'
             assert (await legacy.get(other_key)).value == b'{"system_prompt": "another agent"}'
         finally:
-            for client in (agent, hub):
-                if client is not None:
-                    await client.shutdown(drain_timeout=timedelta(seconds=2))
+            for opened in (agent, hub):
+                if opened is not None:
+                    await opened.shutdown(drain_timeout=timedelta(seconds=2))

@@ -39,11 +39,13 @@ def _split(token: str) -> tuple[str, str, str]:
 
 
 def _payload(token: str) -> dict[str, Any]:
-    return json.loads(_b64url_decode(_split(token)[1]))
+    claims: dict[str, Any] = json.loads(_b64url_decode(_split(token)[1]))
+    return claims
 
 
 def _header(token: str) -> dict[str, Any]:
-    return json.loads(_b64url_decode(_split(token)[0]))
+    header: dict[str, Any] = json.loads(_b64url_decode(_split(token)[0]))
+    return header
 
 
 def _account_pub_raw(account_pub: str) -> bytes:
