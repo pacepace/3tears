@@ -835,12 +835,17 @@ def _claims() -> list[Claim]:
                     "second": "three of ten interrupts cut by a second,",
                     "cut": "every interrupt cutting,",
                 }[stop]
-                + (" separates at most α" if shown == "at_most" else " separates more often than α: the cuts lean it")
-                + f" (the uninterrupted reading's own rate is at most {exact:.5f}, computed exactly).",
+                + (
+                    f" separates at most α (the uninterrupted reading's own rate is at most {exact:.5f}, computed "
+                    "exactly)."
+                    if shown == "at_most"
+                    else f" separates more often than the uninterrupted reading's own rate can, at most {exact:.5f} "
+                    "computed exactly: the cuts lean it."
+                ),
                 group,
                 "hits",
                 shown,
-                SIGNIFICANCE_ALPHA,
+                SIGNIFICANCE_ALPHA if shown == "at_most" else exact,
                 seeds,
             )
         )

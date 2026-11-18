@@ -1937,9 +1937,9 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "Which test produced `p_raw`: `t` = a paired t-test, or Welch's t statistic on Hsu's conservative "
             "min(n) − 1 degrees of freedom when unpaired; `bounded` = the bounded test by betting on the reading's "
-            "declared range, where the values have no spread (every shared case moved by one amount, or each side "
-            "constant), valid for the mean at every n; `identical` = identical values on both sides, p 1. None when "
-            "no test ran."
+            "declared range, valid for the mean at every n: on a reading on 0 to 1 whatever its spread, and on any "
+            "other range where the values have no spread (every shared case moved by one amount, or each side "
+            "constant); `identical` = identical values on both sides, p 1. None when no test ran."
         ),
     )
     p_raw: float | None = Field(

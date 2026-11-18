@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an engine campaign reads a reading on 0 to 1 by the bounded test, and an eval of one check holds its check once
+
+**Changed:** an engine campaign's comparison family (a fixed count, or each look of a plan at α/L) reads every reading
+on the range 0 to 1 (the overall pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on
+0 to 1) by the bounded test by betting, whatever its spread: paired, the mixture bet the quick path reads, over the
+pairs in an order fixed by their count; unpaired, the bounded test at a cut between the two means. Its p is that
+test's, and `basis` reads `bounded`. Before, such a reading's p was the paired t test's, which errs above α on
+pass/fail answers: computed exactly on two fair coins, 5.28% at 40 cases read at α, and 4.49% over three looks at α/3.
+The bounded test separates such pairs at 2.85% at 40 cases, at most α at every count from 10 to 100
+(`tests/test_engine_fixed_count_bounded.py`, computed exactly), and the statistics certificate holds the engine's
+null simulations at α, interrupted or not. A reading on any other range (a 1-5 judged scale) or on none (cost,
+latency, a count) keeps the t test where its values have spread.
+
+**Changed:** where every trial of a contrast is graded on one check alone and that check is in the family, the overall
+pass rate is that check case for case, so the family holds it once, as the check: the pass rate is no longer tested
+beside it, on the engine as on the quick path. Holm reads that check at α where it read the two at α/2 each. An eval
+graded on several checks, a judged dimension or a label keeps its pass rate in the family.
+
+**For hosts:** engine campaigns over pass/fail measures, and over grades on 0 to 1, now read by the bounded test.
+Readings shift when a campaign is read again, with no run changed: a p on such a reading is the bounded test's, its
+interval the bounded interval (as a rate's already was), and the bounded test needs more cases to show a small
+difference than the t test claimed to (forty cases where one arm alone passed ten and the other two read p ≈ 0.13
+where the t test read 0.019; a continuous 0-1 score moved two points over twelve cases no longer separates), so some
+separations an engine campaign showed read `not_separated` now. An eval of one check loses its separate pass-rate row
+and reads the check at the family's full level, which can separate a check that the halved level did not; a margin's
+worst case on such an eval is read on the reading's own interval, there being no pass-rate contrast to read. No stored
+shape changes: a bundle is assembled from the runs when read, and its fingerprint hashes the evidence alone, so a
+stored written analysis is not marked stale by this build. Discodon's recorded decision "Keep 1017" on campaign
+01a1dc0f is a person's call and stays recorded as made; re-read under this build, its comparisons could read
+differently only where it holds a 0-1 reading or an eval of one check, and a local enumeration of pass/fail pairs (8 to
+60 cases) found the change separates where the old reading did not in about 3% of one-check configurations (almost all
+from the family's full level) and under 1% otherwise. Re-read the campaign (no model call) before relying on its
+page again.
+
 ### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
 
 **Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on

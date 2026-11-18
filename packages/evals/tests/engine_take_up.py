@@ -35,7 +35,8 @@ bounded test's capital on coin pairs is a function of how many cases went each w
 is a sum over those counts, 2.85% at a fixed count of 40 read at α; over three looks read at α/3, each look's own rate
 summed bounds the watcher's at 2.04%. The paired t test the engine read by before separated 5.28% and 4.49% of the time
 (:func:`t_test_rate`). A drained comparison is held exactly to the uninterrupted reading of its first draws
-(:func:`drained_as_uninterrupted`), and every simulation's count to α by its Clopper-Pearson bound (:data:`SHOWN`). The
+(:func:`drained_as_uninterrupted`), and every simulation's count to α by its Clopper-Pearson bound, except those that
+cut at every interrupt, whose count is shown above the exact rate (:data:`SHOWN`). The
 family is read as the product builds it (:func:`reading_separates`): an eval of one check holds that check alone, its
 pass rate being the check case for case, and a grade on 0 to 1 is alone in its family too.
 
@@ -733,10 +734,11 @@ def t_test_rate(reading: Reading) -> float:
     return separated
 
 
-#: What a simulation's count shows, held to α by its Clopper-Pearson 95% bounds (``stats_certificate.judge``):
+#: What a simulation's count shows, by its Clopper-Pearson 95% bounds (``stats_certificate.judge``):
 #:
 #: - ``at_most``: the upper bound is at most α: the reading holds α, interrupted as the row says;
-#: - ``above``: the lower bound is above α: the redrawn cells lean the reading past α.
+#: - ``above``: the lower bound is above the most the uninterrupted reading separates at (:func:`exact_rate`): the
+#:   redrawn cells lean the reading.
 Shown = Literal["at_most", "above"]
 
 #: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.
