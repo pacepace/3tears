@@ -211,15 +211,10 @@ def figure_keys_check(
     """What each key reads on the snapshot, or why it reads nothing and what to write instead.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param keys: The keys, as a report writes them: a path, with any filters, in braces or not, or ``arm:<id>``.
-    :ptype keys: Sequence[str]
     :param limit: The most keys one page holds.
-    :ptype limit: int
     :param offset: The first key the page holds.
-    :ptype offset: int
     :return: Each key on the page, read or refused.
-    :rtype: KeysChecked
     :raises RefusedInput: No key is given, more than :data:`KEYS_MOST`, or one is empty.
     """
     distinct = list(dict.fromkeys(key.strip() for key in keys))

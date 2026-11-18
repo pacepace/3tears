@@ -9,7 +9,7 @@ awaitable that runs to that ending. It is run either way, and writes the same re
 - **as a job** (:func:`start_job_work`): the record is written carrying a lease from the job manager's
   :class:`~threetears.evals.kernel.job_leases.JobLeases`, and the work runs as a background task the manager
   tracks — the form a transport uses, which returns at once with a job to poll
-  (:func:`~threetears.evals.ops.start_job`);
+  (:func:`~threetears.evals.ops.jobs.start_job`);
 - **in the foreground** (:func:`run_job_work`): the record is written and held the same way, and the caller awaits
   the work to its end in its own frame — the form a short-lived consumer uses (a script, the command line), which
   loses nothing to the job contract: it holds the result when the await returns.
@@ -85,15 +85,10 @@ def end_record[R: EvalDocumentModel](record: R, outcome: JobOutcome, detail: str
     """``record`` as it ends: its outcome, why (unless it completed), when — and any other field the ending sets.
 
     :param record: A job record of this module's shape.
-    :ptype record: R
     :param outcome: How it ended.
-    :ptype outcome: JobOutcome
     :param detail: Why it ended other than completed; ``None`` for a completion.
-    :ptype detail: str | None
     :param **fields: The ending's own fields — a report, a result, the runs a launch started.
-    :ptype fields: Any
     :return: A copy carrying the ending.
-    :rtype: R
     """
     return record.model_copy(update={"outcome": outcome, "detail": detail, "ended_at": utc_now_iso(), **fields})
 
@@ -111,13 +106,9 @@ def leased_job_kind[R: EvalDocumentModel](
     """The lease machinery's reading of a record of this module's shape: ended once its outcome is not ``running``.
 
     :param name: The job kind's name, for a message.
-    :ptype name: str
     :param model: The record's model, declaring ``outcome``, ``detail``, ``ended_at`` and the four lease fields.
-    :ptype model: type[R]
     :param named_runs: The runs the record names as its own, settled with it when it is written lost; ``None`` for none.
-    :ptype named_runs: Callable[[R], Sequence[str]] | None
     :return: The kind, registered by its model so every store read of a record of it settles it.
-    :rtype: LeasedJobKind[R]
     """
     return LeasedJobKind(
         name=name,
@@ -148,15 +139,10 @@ class JobRecorder[R: EvalDocumentModel]:
         """Bind the writes to the record's store.
 
         :param store: Where the record lives.
-        :ptype store: JobRecordStore
         :param executor: Where the store round-trips run; ``None`` for the loop's default executor.
-        :ptype executor: Executor | None
         :param kind: The record's type.
-        :ptype kind: LeasedJobKind[R]
         :param record: The record as it was started.
-        :ptype record: R
         :param leases: The leases the record is held under: a record they have let go of takes no write from here.
-        :ptype leases: JobLeases | None
         """
         self._store = store
         self._executor = executor
@@ -178,9 +164,7 @@ class JobRecorder[R: EvalDocumentModel]:
         """Write ``record`` as the job's own write, carrying the stored lease and cancel fields.
 
         :param record: The record as the job would write it.
-        :ptype record: R
         :return: The record as written, which :attr:`record` now is.
-        :rtype: R
         :raises JobFenced: The stored record has ended — written lost, by a reader that found the lease lapsed or by a
             shutdown — or this process let go of its lease, so the job writes nothing more.
         :raises ConflictError: Every attempt lost its race.
@@ -275,15 +259,11 @@ async def _run_to_end[R: EvalDocumentModel](
     """Run ``work`` and write its ending — completed, failed, cancelled or timed out — whatever the work did.
 
     :param work: The admitted work.
-    :ptype work: JobWork[R]
     :param recorder: Its record's writes.
-    :ptype recorder: JobRecorder[R]
     :param deadline: What bounds the work by its ``budget_s`` — entered here, around the work alone, so a budget that
         fires is caught here and the record says ``timed_out``; a deadline entered around this whole frame
         would reach it as a cancel. ``None`` runs the work unbounded (the foreground form).
-    :ptype deadline: JobTimeoutFactory | None
     :return: The record as it ended; as last written when the record was fenced off (written lost elsewhere).
-    :rtype: R
     """
     record_id, scope_id, name = work.record_id, work.scope_id, work.kind.name
     try:
@@ -335,7 +315,6 @@ async def _write_ending[R: EvalDocumentModel](
     have written is logged at ERROR in full, so what the job paid for can be recovered from the log.
 
     :return: The record as written; ``ended`` itself when no attempt was, so a foreground caller still holds the result.
-    :rtype: R
     :raises JobFenced: The record ended elsewhere first; nothing was written.
     :raises asyncio.CancelledError: Cancelled while waiting to try again; the ending was logged.
     """
@@ -416,17 +395,11 @@ async def start_job_work[R: EvalDocumentModel](
     """Write the work's record, leased, and run the work as a background job the manager tracks.
 
     :param manager: The process's job manager; it must hold leases.
-    :ptype manager: EvalJobManager
     :param work: The admitted work.
-    :ptype work: JobWork[R]
     :param store: Where the record lives — the store the manager's leases renew it in.
-    :ptype store: JobRecordStore
     :param executor: Where the store round-trips run.
-    :ptype executor: Executor | None
     :param key: An exclusivity key: while a job holding it is live, this start is refused. ``None`` for none.
-    :ptype key: str | None
     :return: The record as started.
-    :rtype: R
     :raises ValueError: The manager holds no leases — its job could be read lost by every other process at once.
     :raises RuntimeError: The work was already started; nothing was written.
     :raises ConflictError: A live job holds ``key``; the record is written ``failed`` and admission's holdings released.
@@ -479,19 +452,14 @@ async def run_job_work[R: EvalDocumentModel](
     while it runs, and a cancel asked on the record cancels the caller's await. Not bounded by the work's
     ``budget_s``, which bounds it as a job: the caller waits as long as the work takes, and stops it by cancelling.
     Not marked as a job's work
-    (:func:`~threetears.evals.kernel.running_job` stays the caller's), because it is not one: it is for a caller
+    (:func:`~threetears.evals.kernel.job_context.running_job` stays the caller's), because it is not one: it is for a caller
     that is not a transport — a script, the command line — and waits as long as the work takes.
 
     :param work: The admitted work.
-    :ptype work: JobWork[R]
     :param store: Where the record lives.
-    :ptype store: JobRecordStore
     :param executor: Where the store round-trips run.
-    :ptype executor: Executor | None
     :param leases: The leases the record is held under while the work runs.
-    :ptype leases: JobLeases
     :return: The record as it ended.
-    :rtype: R
     :raises asyncio.CancelledError: The caller was cancelled, or a cancel was asked on the record; it is written
         ``cancelled`` first.
     :raises RuntimeError: The work was already started; nothing was written.
@@ -587,19 +555,12 @@ def action_job_work(
     spending half here as ``run``.
 
     :param scope_id: The caller's scope, where the record lives.
-    :ptype scope_id: str
     :param action: The action's name.
-    :ptype action: str
     :param run: The work: makes the calls and returns the action's typed result.
-    :ptype run: Callable[[], Awaitable[BaseModel]]
     :param label: A short line naming the work.
-    :ptype label: str
     :param budget_s: The work's wall-clock ceiling as a job. Required: no action job runs under a ceiling nobody chose.
-    :ptype budget_s: float
     :param discard: Releases what the handler built for ``run`` when the work never runs.
-    :ptype discard: Callable[[], Awaitable[None]] | None
     :return: The work, its record running.
-    :rtype: JobWork[EvalActionJob]
     :raises ValueError: ``budget_s`` is not positive.
     """
     if not budget_s > 0:

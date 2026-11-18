@@ -93,7 +93,6 @@ class JobLease(EvalBaseModel, CoreShapeModel):
         """The expiry as an aware datetime.
 
         :return: :attr:`expires_at`, parsed.
-        :rtype: datetime
         """
         return datetime.fromisoformat(self.expires_at)
 
@@ -162,11 +161,11 @@ LostField = Annotated[
 JOB_FAULTS_MAX: Final[int] = 32
 
 #: How long one fault may be, in characters; a longer one is cut to it (:func:`with_fault`), marked as cut.
-JOB_FAULT_MAX_CHARS: Final[int] = 2000
+_JOB_FAULT_MAX_CHARS: Final[int] = 2000
 
 #: A job record's faults: what went wrong at its lease's boundary before it ended.
 FaultsField = Annotated[
-    list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]],
+    list[Annotated[str, StringConstraints(min_length=1, max_length=_JOB_FAULT_MAX_CHARS)]],
     Field(
         max_length=JOB_FAULTS_MAX,
         description=(
@@ -183,21 +182,18 @@ FaultsField = Annotated[
 def with_fault(faults: list[str], entry: str) -> list[str]:
     """``faults`` with ``entry`` appended, kept inside :data:`FaultsField`'s caps.
 
-    An entry longer than :data:`JOB_FAULT_MAX_CHARS` is cut to it, ending in ``…``; a list already holding
+    An entry longer than :data:`_JOB_FAULT_MAX_CHARS` is cut to it, ending in ``…``; a list already holding
     :data:`JOB_FAULTS_MAX` entries gives its last place to the new one, keeping the earliest.
 
     :param faults: The record's faults as stored.
-    :ptype faults: list[str]
     :param entry: The fault to add; blank is refused.
-    :ptype entry: str
     :return: The new list; ``faults`` is not changed.
-    :rtype: list[str]
     :raises ValueError: ``entry`` is blank.
     """
     if not entry.strip():
         raise ValueError("a job fault names what went wrong; it cannot be blank")
-    if len(entry) > JOB_FAULT_MAX_CHARS:
-        entry = entry[: JOB_FAULT_MAX_CHARS - 1] + "…"
+    if len(entry) > _JOB_FAULT_MAX_CHARS:
+        entry = entry[: _JOB_FAULT_MAX_CHARS - 1] + "…"
     return [*faults[: JOB_FAULTS_MAX - 1], entry]
 
 
@@ -248,7 +244,6 @@ class LeasedRecord(Protocol):
 __all__ = [
     "DEFAULT_JOB_LEASE_S",
     "JOB_FAULTS_MAX",
-    "JOB_FAULT_MAX_CHARS",
     "JOB_LEASE_RENEWAL_FRACTION",
     "LEASE_POOL_WORKERS",
     "CancelRequestReasonField",

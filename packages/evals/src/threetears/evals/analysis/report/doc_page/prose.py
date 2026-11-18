@@ -52,12 +52,9 @@ def literal_faults(
     """Each text that types a number outside its figure keys and the names the input holds.
 
     :param texts: The prose, as ``(field path, text)``.
-    :ptype texts: Iterable[tuple[str, str]]
     :param report_input: The report input the prose was written against.
-    :ptype report_input: ReportInput
     :param allowed: Further phrases the caller lets prose write with their digits; a typed number wholly inside a match
         is set aside. None for none.
-    :ptype allowed: re.Pattern[str] | None
     :return: One fault per text that types a number, naming every number it types.
     :rtype: Iterator[tuple[str, str]]
     """
@@ -148,12 +145,9 @@ def unit_faults(
     A key that does not parse, resolve or suit its filters is passed over here: the key check refuses it at its path.
 
     :param texts: The prose, as ``(field path, text)``.
-    :ptype texts: Iterable[tuple[str, str]]
     :param report_input: The report input the prose was written against.
-    :ptype report_input: ReportInput
     :param forms: The forms the caller reads the prose's keys in, built from ``report_input`` once for every check it
         makes; None for forms of the prose's own, built from its input as its page builds them.
-    :ptype forms: PageForms | None
     :return: Each fault, in text and then key order.
     :rtype: Iterator[tuple[str, str]]
     :raises ValueError: ``forms`` were built from another input.
@@ -209,9 +203,7 @@ def reads_as_id(identifier: str) -> bool:
     colon, a slash, an equals sign, a bracket or a quote). A plain word (``billing``, ``overall``) reads as a word.
 
     :param identifier: The id.
-    :ptype identifier: str
     :return: Whether it holds one of those characters.
-    :rtype: bool
     """
     return _ID_MARKS.search(identifier) is not None
 
@@ -228,9 +220,7 @@ def reads_as_a_tag(identifier: str) -> bool:
     rewrites it.
 
     :param identifier: The id.
-    :ptype identifier: str
     :return: Whether it reads as a tag.
-    :rtype: bool
     """
     return (
         reads_as_id(identifier)
@@ -272,9 +262,7 @@ def internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
     (``fanout-1`` where the page prints "fanout 1"), as kind ``arm``.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Each such id, to ``(kind, name)``, the first kind that names it.
-    :rtype: dict[str, tuple[str, str]]
     """
     found: dict[str, tuple[str, str]] = {}
     for kind, names in reader_names(report_input).items():
@@ -306,16 +294,11 @@ def typed_ids(text: str, ids: Mapping[str, object], shown: Iterable[str], *, exa
     that name.
 
     :param text: The prose.
-    :ptype text: str
     :param ids: The ids to look for, as the keys of a mapping (what each maps to is the caller's).
-    :ptype ids: Mapping[str, object]
     :param shown: The names a reader is shown, which hide an id inside them.
-    :ptype shown: Iterable[str]
     :param exact: The ids matched in their own case only, where a word of another case is not the id (a case id
         ``q3`` against "Q3"); every other name is matched in any case.
-    :ptype exact: Collection[str]
     :return: The ids typed, in the order they first appear.
-    :rtype: list[str]
     """
     masked = list(_KEY_SPAN.sub(lambda match: "_" * len(match.group()), text))
     candidates = {name: False for name in shown} | dict.fromkeys(ids, True)

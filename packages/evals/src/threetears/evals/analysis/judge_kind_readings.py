@@ -1,6 +1,6 @@
 """A judge campaign's readout: per judge and criterion, agreement with the labels, with itself, and parse validity (#628).
 
-A judge campaign's cells are judge trials (:class:`~threetears.evals.kernel.JudgeTrial`, on each result's
+A judge campaign's cells are judge trials (:class:`~threetears.evals.kernel.judge_cases.JudgeTrial`, on each result's
 ``kind_payload``): one judge configuration asked one frozen case's criterion. This module pools them into the three
 measures a judge is held to, **per (judge, criterion)** — the judge as :class:`~threetears.evals.analysis.JudgeKey`
 keys one (the criterion's dim and scale, the served model, the config that asked, the temperature the call was sent
@@ -226,7 +226,6 @@ def _reading_of_case(
     """One case's trials as the shape the agreement reads take: a result holding the first score, the rest as repeats.
 
     :return: The restated result and its labels as person ratings of it, or ``None`` when no trial of the case scored.
-    :rtype: tuple[EvalResult, list[CalibrationRating]] | None
     """
     first_index = next((i for i, (_, trial) in enumerate(entries) if trial.outcome == "scored"), None)
     if first_index is None:
@@ -306,9 +305,7 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
     :param results: The judge campaign's results — every result of its runs, walked once, so they can be read a page
         at a time; each is kept without its verbatim fields once its trial is read. A result carrying no judge trial is
         listed as unread, never guessed at.
-    :ptype results: Iterable[EvalResult]
     :return: The readings, and every result left out with why.
-    :rtype: JudgeKindReadings
     """
     groups: dict[_GroupKey, list[tuple[EvalResult, JudgeTrial]]] = {}
     unread: list[UnreadJudgeTrial] = []

@@ -64,13 +64,9 @@ def worded(words: dict[str, str], annotation: Any, what: str) -> dict[str, str]:
     a reader's layout exists to keep from them.
 
     :param words: Value → its words.
-    :ptype words: dict[str, str]
     :param annotation: The ``Literal`` the values come from.
-    :ptype annotation: Any
     :param what: What the values are, for the refusal.
-    :ptype what: str
     :return: ``words``, unchanged.
-    :rtype: dict[str, str]
     :raises RuntimeError: The table and the ``Literal`` disagree.
     """
     if set(words) != _literal_values(annotation):
@@ -158,9 +154,7 @@ def disclosure_words(disclosure: str) -> str:
     in headings). Any other disclosure reads unchanged.
 
     :param disclosure: The disclosure as stored.
-    :ptype disclosure: str
     :return: The disclosure in the page's words.
-    :rtype: str
     """
     return _STORED_PER_INTERVAL.sub(r"The family's intervals hold together at \g<joint>.", disclosure)
 
@@ -171,9 +165,7 @@ def reason_words(reason: str | None) -> str | None:
     says the evidence cannot tell its arms apart, and any other reason reads unchanged.
 
     :param reason: The reason as the bundle stores it, or None where it stores none.
-    :ptype reason: str | None
     :return: The reason in the page's words, or None.
-    :rtype: str | None
     """
     if reason is None:
         return None
@@ -188,18 +180,107 @@ def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, high
     better)``, ``the evidence cannot tell v2 and v1 apart``.
 
     :param verdict: What the contrast's test came to.
-    :ptype verdict: ComparisonVerdict
     :param arm: The arm read against the control, as the page names it.
-    :ptype arm: str
     :param control: The control, as the page names it.
-    :ptype control: str
     :param higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
-    :ptype higher_is_better: bool
     :return: The words.
-    :rtype: str
     """
     better_end = "" if higher_is_better else LOWER_IS_BETTER
     return COMPARISON_VERDICT_WORDS[verdict].format(arm=arm, control=control, better_end=better_end)
+
+
+#: Where an arm stands against the control on a reading the bet read and did not decide: the lead's direction, said
+#: before its estimate, its interval and its evidence, never "cannot tell apart", which a reader takes for "the same".
+_StandingSide = Literal["ahead", "behind", "level"]
+
+#: Filled by :func:`standing_words`.
+_STANDING_WORDS = worded(
+    {
+        "ahead": "{arm} ahead of {control}{better_end}, undecided",
+        "behind": "{arm} behind {control}{better_end}, undecided",
+        "level": "{arm} level with {control}, undecided",
+    },
+    _StandingSide,
+    "an undecided standing",
+)
+
+#: The estimate's sentence on such a reading, its size already in the page's form: ``Over 8 paired cases, v2 is 29
+#: points ahead of v1.`` Filled by :func:`standing_words`'s caller through :func:`estimate_sentence`.
+_ESTIMATE_WORDS = worded(
+    {
+        "ahead": "{now}ver {cases} paired cases, {arm} is {size} ahead of {control}.",
+        "behind": "{now}ver {cases} paired cases, {arm} is {size} behind {control}.",
+        "level": "{now}ver {cases} paired cases, {arm} and {control} are level.",
+    },
+    _StandingSide,
+    "an estimate",
+)
+
+
+def standing_side(delta: float | None, *, higher_is_better: bool) -> _StandingSide:
+    """Which side of the control an arm's change puts it on, the better side ``ahead``."""
+    if not delta:
+        return "level"
+    return "ahead" if (delta > 0) == higher_is_better else "behind"
+
+
+def standing_words(side: _StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
+    """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``.
+
+    :param side: Where the arm stands (:func:`standing_side`).
+    :param arm: The arm read against the control, as the page names it.
+    :param control: The control, as the page names it.
+    :param higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
+    :return: The words.
+    """
+    better_end = "" if higher_is_better else LOWER_IS_BETTER
+    return _STANDING_WORDS[side].format(arm=arm, control=control, better_end=better_end)
+
+
+def estimate_sentence(side: _StandingSide, arm: str, control: str, *, cases: int, size: str, now: bool = False) -> str:
+    """The estimate's sentence: ``Over 8 paired cases, v2 is 29 points ahead of v1.``; after a decision made earlier,
+    where it stands now: ``Now, over 40 paired cases, v2 is 15 points ahead of v1.``
+
+    :param side: Where the arm stands (:func:`standing_side`).
+    :param arm: The arm, as the page names it.
+    :param control: The control, as the page names it.
+    :param cases: The paired cases the bet read.
+    :param size: The change's size in the page's form, its unit with it (``29 points``).
+    :param now: Whether a decision made at an earlier count heads it, so this is where the arm stands now.
+    :return: The sentence, with its closing stop.
+    """
+    return _ESTIMATE_WORDS[side].format(arm=arm, control=control, cases=cases, size=size, now="Now, o" if now else "O")
+
+
+def evidence_sentence(
+    arm: str, side: Literal["better", "worse"], grade: str, figure: str, *, against_question: bool
+) -> str:
+    """The graded evidence's sentence, the grade in its one owner's word
+    (:func:`~threetears.evals.analysis.style.evidence_grade`) and the e-value in the page's form: ``The evidence that
+    v2 is better is moderate (3.6).``; where it points the other way from the side the question asks about, it says
+    so: ``The evidence points the other way from the question: that v2 is worse is strong (132).``
+
+    :param arm: The arm, as the page names it.
+    :param side: Which side the evidence is for.
+    :param grade: Its grade's word.
+    :param figure: The e-value, in the page's form.
+    :param against_question: Whether the question asks about the other side.
+    :return: The sentence, with its closing stop.
+    """
+    if against_question:
+        return f"The evidence points the other way from the question: that {arm} is {side} is {grade} ({figure})."
+    return f"The evidence that {arm} is {side} is {grade} ({figure})."
+
+
+def decided_words(cases: int, figure: str) -> str:
+    """When a decision was made, said after it: ``, decided at 24 cases when the evidence reached 22``. A decision
+    stands once made; the figures after it say where the arm stands now.
+
+    :param cases: The paired cases it was decided at.
+    :param figure: The evidence it had reached then, in the page's form.
+    :return: The clause, opening on its comma.
+    """
+    return f", decided at {cases} cases when the evidence reached {figure}"
 
 
 #: What a guardrail came to for an arm against the control, as a reader says it, each arm by its label. Filled by
@@ -252,17 +333,12 @@ def reading_heading(
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
     :param surface: The decision surface the reading is on.
-    :ptype surface: DecisionSurface
     :param name: The measure's key, or a judged dimension's name.
-    :ptype name: str
     :param reading: ``judged`` for a judged dimension, ``trial`` for the overall pass rate; anything else reads a
         measure.
-    :ptype reading: str
     :param declared: A goal check's declared display name (``AnalysisContextBundle.check_name``), printed in place of
         its expression; None for none declared.
-    :ptype declared: str | None
     :return: The heading.
-    :rtype: str
     """
     if reading == "trial":
         return PASS_RATE
@@ -282,9 +358,7 @@ def judged_heading(name: str) -> str:
     spells it, marked judged (``reply stays on topic (judged)``, ``outcome (judged)``), never its stored id.
 
     :param name: The dimension, as the rubric names it.
-    :ptype name: str
     :return: The name.
-    :rtype: str
     """
     return f"{judged_name(name)} (judged)"
 
@@ -298,9 +372,7 @@ def _judged_label(heading: str) -> str:
     the page's charts do. The printed text only: a table's cell keeps the heading as its value, which a program reads.
 
     :param heading: The judged dimension's heading.
-    :ptype heading: str
     :return: The label.
-    :rtype: str
     """
     return label_case(heading)
 
@@ -312,9 +384,7 @@ def label_case(text: str) -> str:
     :func:`heading_case` and :func:`~threetears.evals.analysis.report.parts.charting.measure_words` all take it.
 
     :param text: The words.
-    :ptype text: str
     :return: The label.
-    :rtype: str
     """
     return text[:1].upper() + text[1:]
 
@@ -330,9 +400,7 @@ def heading_case(heading: str) -> str:
     one token, or opens on an identifier, is a name and keeps its case as written.
 
     :param heading: The heading, as declared.
-    :ptype heading: str
     :return: The heading.
-    :rtype: str
     """
     return label_case(heading) if _PLAIN_LEAD.match(heading) else heading
 
@@ -354,9 +422,7 @@ def table_label(text: str) -> str:
     as written. The cell keeps its words as its value, which a program reads and looks a row up by.
 
     :param text: The cell's words.
-    :ptype text: str
     :return: The words printed.
-    :rtype: str
     """
     if text == CASES_READING:
         return label_case(text)
@@ -369,11 +435,8 @@ def given_name(identifier: str, declared: str | None = None) -> str:
     a program reads each by its id.
 
     :param identifier: The id.
-    :ptype identifier: str
     :param declared: Its declared display name, or None for none.
-    :ptype declared: str | None
     :return: The name.
-    :rtype: str
     """
     return declared or humanize("dimension", identifier)
 
@@ -383,11 +446,8 @@ def stratum_name(stratum: str, declared: str | None = None) -> str:
     print alike each print as their id (:func:`stratum_names`).
 
     :param stratum: The stratum's id.
-    :ptype stratum: str
     :param declared: Its declared display name, or None for none.
-    :ptype declared: str | None
     :return: The name.
-    :rtype: str
     """
     return given_name(stratum, declared)
 
@@ -397,11 +457,8 @@ def aspect_stratum_key(aspect: str, stratum: str) -> str:
     figure keys take there (``aspects.<aspect>.strata.<id>``). A stratum every aspect names alike is named by its id.
 
     :param aspect: The aspect's id.
-    :ptype aspect: str
     :param stratum: The stratum's id.
-    :ptype stratum: str
     :return: The key.
-    :rtype: str
     """
     return f"aspects.{aspect}.strata.{stratum}"
 
@@ -412,11 +469,8 @@ def stratum_names(strata: Iterable[str], declared: Mapping[str, str | None] | No
     itself, so a reader never sees one stratum where the cases declare two.
 
     :param strata: The strata's ids.
-    :ptype strata: Iterable[str]
     :param declared: Each stratum's declared display name, by id, where it declares one.
-    :ptype declared: Mapping[str, str | None] | None
     :return: Each id's printed name.
-    :rtype: dict[str, str]
     """
     named = {stratum: stratum_name(stratum, (declared or {}).get(stratum)) for stratum in dict.fromkeys(strata)}
     counts: dict[str, int] = {}
@@ -439,9 +493,7 @@ def reading_verb(heading: str) -> str:
     that is not the pass rate.
 
     :param heading: The reading, as the page heads it.
-    :ptype heading: str
     :return: The verb.
-    :rtype: str
     """
     return _READING_VERBS.get(heading, _MET)
 
@@ -451,11 +503,8 @@ def one_figure_each(measures: Iterable[str], *, read: Iterable[str] = ()) -> lis
     accuracy is read the match is not listed under a second name.
 
     :param measures: Measure keys, in order.
-    :ptype measures: Iterable[str]
     :param read: Every measure the page reads elsewhere, whose accuracy names the match where ``measures`` lacks it.
-    :ptype read: Iterable[str]
     :return: The keys, in order, the match left out where the accuracy is read.
-    :rtype: list[str]
     """
     held = list(measures)
     if ACCURACY_MEASURE not in held and ACCURACY_MEASURE not in set(read):
@@ -478,11 +527,8 @@ def arm_tags(variant_keys: Sequence[str], control: str | None) -> dict[str, str]
     an arm alike and colours it by its tag.
 
     :param variant_keys: The arms, in the page's order.
-    :ptype variant_keys: Sequence[str]
     :param control: The control's variant key; None where there is none.
-    :ptype control: str | None
     :return: Variant key -> tag, for every arm given.
-    :rtype: dict[str, str]
     """
     tags: dict[str, str] = {}
     place = 0
@@ -516,18 +562,12 @@ def campaign_arm_tags(
     and colour one arm alike (the review's P40); an arm one aspect lacks shifts no other arm's tag.
 
     :param bundles: Each aspect's bundle, in the campaign's order.
-    :ptype bundles: Iterable[AnalysisContextBundle]
     :param control: The campaign's control's variant key; None where there is none.
-    :ptype control: str | None
     :param arms: The campaign's arms' variant keys, in its declared order; none for a page with no campaign.
-    :ptype arms: Iterable[str]
     :param also: Arms to tag after the others, where they are not among them.
-    :ptype also: Iterable[str]
     :param label_of: Each variant key's arm, where several keys name one arm (the campaign bundle's ``label_of``), so
         keys of one arm share its tag; None where each key is its own arm.
-    :ptype label_of: Callable[[str], str] | None
     :return: Variant key -> tag.
-    :rtype: dict[str, str]
     """
     held = list(bundles)
     listed = dict.fromkeys(
@@ -580,9 +620,7 @@ def text_levers(levels: Iterable[Mapping[str, object]]) -> frozenset[str]:
     nothing on it; an empty ``temperature`` is the provider's default, which ``no temperature`` would misstate.
 
     :param levels: Each arm's levels, lever to display.
-    :ptype levels: Iterable[Mapping[str, object]]
     :return: The text levers.
-    :rtype: frozenset[str]
     """
     return frozenset(
         axis
@@ -634,18 +672,12 @@ def _spelled_reader_name(
     Where no level reads otherwise, ``name`` is printed as it is.
 
     :param name: The name the page would print (:func:`printed_arm_labels`).
-    :ptype name: str
     :param spelling: How code spelled the arm (:attr:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.
         arm_spellings`).
-    :ptype spelling: ArmSpelling
     :param levels: The arm's levels, whole, by lever id.
-    :ptype levels: Mapping[str, object]
     :param text: The campaign's text levers.
-    :ptype text: Collection[str]
     :param declared: Each lever's stored reader name, by id (:func:`~threetears.evals.analysis.style.lever_reader_name`).
-    :ptype declared: Mapping[str, str] | None
     :return: The name a reader is shown.
-    :rtype: str
     """
     parts: list[str] = []
     cut = moved = False
@@ -682,15 +714,10 @@ def reader_arm_name(
 
     :param name: The name as the page would print it (a frozen label through
         :func:`~threetears.evals.analysis.style.arm_display_name`).
-    :ptype name: str
     :param levels: The levels the name may be spelled from, lever to display.
-    :ptype levels: Mapping[str, object]
     :param text: The campaign's text levers.
-    :ptype text: Collection[str]
     :param declared: Each lever's stored reader name, by id (:func:`~threetears.evals.analysis.style.lever_reader_name`).
-    :ptype declared: Mapping[str, str] | None
     :return: The name a reader is shown.
-    :rtype: str
     """
     held = _TELL_APART.fullmatch(name)
     base, apart = (held["name"], held["apart"] or "") if held is not None else (name, "")
@@ -716,13 +743,9 @@ def told_apart(names: Mapping[str, str], tags: Mapping[str, str], read: Collecti
     ``Extractor instructions (B)``), the tag the page prints that arm by; keys of one arm share a tag, and are one arm.
 
     :param names: Each arm's name, by key (a variant key, or a report input's arm id).
-    :ptype names: Mapping[str, str]
     :param tags: Each arm's tag on the page, by the same key.
-    :ptype tags: Mapping[str, str]
     :param read: The keys whose names :func:`reader_arm_name` rewrote; only they are told apart, the rest as they are.
-    :ptype read: Collection[str]
     :return: The names.
-    :rtype: dict[str, str]
     """
     worn: dict[str, set[str | None]] = {}
     for key, name in names.items():
@@ -743,12 +766,9 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
     snapshot's id is its content's digest).
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: CampaignBundle
     :param tags: Each arm's tag on the surface, by variant key: the code page's (:func:`campaign_arm_tags`), or the
         document page's (:func:`input_arm_tags`) for a surface that prints the document's words beside code's.
-    :ptype tags: Mapping[str, str]
     :return: Variant key -> the name a reader is shown.
-    :rtype: dict[str, str]
     """
     printed = printed_arm_labels(bundle)
     given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
@@ -782,9 +802,7 @@ def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
     campaign listing) tags an arm as the document does.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: CampaignBundle
     :return: Variant key -> tag.
-    :rtype: dict[str, str]
     """
     control = bundle.control()
     return campaign_arm_tags(
@@ -802,11 +820,8 @@ def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[Campaig
     fingerprint, are not touched.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: CampaignBundle
     :param tags: Each arm's letter tag on the page, by variant key.
-    :ptype tags: Mapping[str, str]
     :return: The arms, in the bundle's order.
-    :rtype: list[CampaignArm]
     """
     printed, reader, named = printed_arm_labels(bundle), reader_arm_labels(bundle, tags), named_arm_labels(bundle)
     arms = []
@@ -829,6 +844,11 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "BAR_DECISION_WORDS",
+    "decided_words",
+    "evidence_sentence",
+    "estimate_sentence",
+    "standing_words",
+    "standing_side",
     "CASES_READING",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",

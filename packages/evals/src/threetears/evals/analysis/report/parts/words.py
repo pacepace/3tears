@@ -534,9 +534,7 @@ def change_words(direction: str) -> str:
     """A change's direction as a chart note says it (GENERATOR §3): ``worse``, ``better``, or ``cannot tell apart``.
 
     :param direction: ``worse``, ``better``, or empty where the interval crosses zero.
-    :ptype direction: str
     :return: The words.
-    :rtype: str
     """
     return _CHANGE_WORDS[direction]
 
@@ -553,11 +551,8 @@ def reading_words(direction: str, within: bool | None) -> str:
     declared (``Worse, within margin``).
 
     :param direction: ``worse``, ``better``, or empty where the interval crosses zero.
-    :ptype direction: str
     :param within: Whether the reading is within its margin; None where no margin is declared.
-    :ptype within: bool | None
     :return: The words.
-    :rtype: str
     """
     said = _READING_WORDS[direction]
     return said if within is None else f"{said}, {_MARGIN_WORDS[within]}"

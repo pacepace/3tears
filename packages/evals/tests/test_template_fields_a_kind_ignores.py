@@ -21,7 +21,6 @@ import pytest
 from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import (
-    TEMPLATE_FIELDS,
     LaunchableKind,
     LaunchHost,
     SeedCorpus,
@@ -31,6 +30,7 @@ from threetears.evals.run import (
     seed_eval_definitions,
     update_template,
 )
+from threetears.evals.run.launch import TEMPLATE_FIELDS
 from threetears.evals.run.authoring import refuse_ignored_template_fields
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS

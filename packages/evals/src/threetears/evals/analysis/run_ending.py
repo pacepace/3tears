@@ -80,9 +80,7 @@ class StoppedShort:
         <reason>``, the reason on one line and left off where the run's record gives none.
 
         :param who: Names a run as the surface names it (``the run``, an arm's name).
-        :ptype who: Callable[[RunEnding], str]
         :return: The sentences, in the endings' order.
-        :rtype: list[str]
         """
         return [
             f"{who(ending)} {ending.how}, so there is no verdict"
@@ -95,9 +93,7 @@ class StoppedShort:
         only the 4 result(s) recorded before it failed``.
 
         :param results: How many results the readings cover, where the surface counts them; None leaves the count out.
-        :ptype results: int | None
         :return: The clause.
-        :rtype: str
         """
         said = {ending.recorded for ending in self.endings}
         recorded = said.pop() if len(said) == 1 else "recorded before it stopped"
@@ -110,7 +106,6 @@ class StoppedShort:
         counted beside every finished run's, so the sentence says so and how to read a verdict.
 
         :return: The sentence.
-        :rtype: str
         """
         live = all(ending.status in ("running", "pending") for ending in self.endings)
         partial = "recorded so far" if live else "recorded before the stop"
@@ -124,9 +119,7 @@ def stopped_short(endings: Iterable[RunEnding]) -> StoppedShort | None:
     """Whether a reading over these runs may open with a verdict: None when it may, else what stopped it.
 
     :param endings: Every member run's ending; a run that finished is handed in like any other.
-    :ptype endings: Iterable[RunEnding]
     :return: None when every run reached ``completed``; else the unfinished runs, which the reading opens on.
-    :rtype: StoppedShort | None
     """
     short = tuple(ending for ending in endings if ending.status != _FINISHED)
     return StoppedShort(short) if short else None

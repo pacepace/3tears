@@ -25,7 +25,7 @@ from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG
 from threetears.evals.ops import CampaignLine, JudgeConfigListing
-from threetears.evals.schema import aspect_label_for
+from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.models import JudgeConfig
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design

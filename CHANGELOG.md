@@ -6,6 +6,169 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
+
+**Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on
+the launch or sweep holding it; a foreground `await_job` interrupted; a cancel asked on the record from
+another process) starts no further cell and lets the cells in flight finish and record, each within its own deadline;
+the run then ends `cancelled` where it left a cell unstarted, and a take-up runs only those, or `completed` where every
+cell had already started when the cancel landed (the run is whole). A second cancel, from any process,
+or a second Ctrl+C, cuts the cells still running, recorded `cancelled`, and a take-up runs them again. Before, the
+first cancel cut, and a cut cell drawn afresh leans a comparison where one arm's wrong answers are its slow ones: a
+null simulation of the engine (`test_engine_take_up_null.py`) drew 13% false separations over three planned looks
+with every interrupt cutting, where the reading's own rate is 4.5%. A process shutdown and a run fenced off its lease
+still cut at once. One rule serves every holder of runs (`kernel.offload.drain_then_cut`), the quick path's included,
+and the job manager reads a run's first cancel as a drain (`EvalJobManager.cancel_job`; `cut_job` cuts at once).
+
+**Added:** a row a take-up writes over a cut or unanswered row records what it replaced
+(`EvalResult.written_over`: `cut` or `unanswered`; core minor 15.23), so the count of cells that ran again
+(`redrawn_cells`) still counts a cell the take-up wrote over. Every comparison family, an engine campaign's included,
+now says that count where any cell ran again, in the one sentence that says it (`redrawn_sentence`); before, only a
+quick-path family did. The sentence says each cell as it stands: one still to run again "runs again when it is
+continued"; one a take-up ran again "ran again when its run was taken up"; one a later launch of a quick comparison
+answered "ran again when the comparison was continued", where it said "runs again" of every cell. `redrawn_cells`
+returns `RedrawnCells` (pending, taken up and continued, each with its cut ones) in place of a pair. Rows a take-up
+wrote over before this build carry no `written_over`, so an engine family over runs taken up before it counts fewer
+cells run again than did, or none, and does not say the count is short.
+
+**For hosts:** a first Ctrl+C, or a first `job_cancel`, now finishes the running cells before the run stops, so a
+cancel no longer lands within one renewal interval: it lands within one renewal interval plus the longest deadline of a
+cell in flight (the run's `cell_timeout_s`, 600 s by default). Size a cancel's poll by that, or cancel again to stop at
+once (`docs/serving.md`, "A cancel drains, then cuts"). `kernel.job_leases.request_job_cancel` returns the request it
+wrote (its `cancel_requested_at`), or None, where it returned a bool. Two
+cancels of a launch or a sweep that land before its job has heard the first are one cancel. `written_over` is left out
+of a row that replaced nothing, so such rows are stored as before; a build before this one reads a row carrying it
+under its newer-minor tolerance and ignores the field, which is correct (the row is the cell's one answer) and only
+misses the count. Roll forward in any order; a rollback loses nothing but that count on rows taken up meanwhile.
+
+### evals: an arm answered by two models reads no cost across aspects where only one of them was priced
+
+**Fixed:** a campaign's figures across aspects read an arm's cost per reply on an aspect off its scoreboard, which
+pools every model that answered it. Where the arm was answered by two models (or read under two definitions of a host
+measure) and only one of its cells there was priced, that pooled cost was taken as the arm's. It now reads no cost on
+that aspect, as its pass rate there already did, and the cost across aspects is withheld, naming the aspect.
+
+**For hosts:** a campaign page or report input that printed such an arm's cost across aspects (the equal-weight row
+and the cost/quality chart) prints none for it now, and says which aspect it lacks. Nothing stored moves.
+
+### evals: what only the package's tests called is deleted or made private
+
+**Removed:** names that no production code calls, whose only callers were the package's own tests:
+`run.resume.resume_run` (the `job_resume` action takes a run up through `take_up_run`, which now carries its
+description), `analysis.service.analysis_report` (reading one stored analysis by its id over the bundles frozen with
+it, which no door offered; `campaign_report` and `report_read` read a campaign's report) with its store port,
+`kernel.usage_capture.resolve_result_usage` with `ResolvedUsage` (on the `kernel` root until now; `MIGRATIONS.toml`
+records it), `gen.variation_gen.price_variations`, `schema.versioning.DURABLE_ADDRESSING_FIELDS`,
+`schema.judge_attribution.judges_sharing_a_candidate_model`, the `campaign_aggregate` wrapper and the report
+document reads' store protocol (the reads take `EvalStorage`). Twenty-eight names used only inside their own module
+are made private; the tests reach what they do through the module's public
+functions. Two sentences that said a run judged on a candidate's model is disclosed on every surface now say what
+happens: the run records it among its judges.
+
+**For hosts:** nothing to do. No root a host imports from loses a name its production code imports, and no stored or
+served shape moves.
+
+### evals: provisional names the package uses across its own modules leave the public roots too
+
+**Removed:** 240 more provisional root spellings (of 237 names) leave the public roots (`MIGRATIONS.toml` records
+the 201 a release shipped). Like the names before them, no declared name reaches them, no host's production code
+imports them, and no shipped example or page uses them; the package's own modules use each, and now import it from the
+module defining it, where it stays, unrenamed. Kept on their roots: what the package's own modules import through a
+root (`ops.frontier_text` and `ops.out_of_run_spend_text`, which the action catalogue reaches `analysis` through), the
+names the toy host imports, the names the shipped completion client (`providers`) imports, which reaches the engine
+only through the roots, `schema.extract_paths` and its result, which the reference page teaches, each leased job kind, the open vocabularies' registries, every type a name that stays
+reaches, and the names the recorded host's tests import. No stored or served shape moves.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so does every one its tests import that resolved before.
+
+### evals: provisional names nothing reaches leave the public roots
+
+**Removed:** 88 provisional names leave the public roots (`MIGRATIONS.toml` records the 87 a release shipped). Each
+is reached by no declared name's signature, field, base, raised error or docstring, is imported by no host's
+production code, and is used by no shipped example or page and by no module but the one defining it. Twelve that
+nothing called are deleted (`run.cancel_run`, whose work `job_cancel` does, `run.get_judge_config`,
+`run.get_rubric_dim`, `run.list_runs_disclosing`, `schema.JSON_OBJECT_RESPONSE_FORMAT`,
+`analysis.significance_disclosure`, `analysis.difference_was_declared_at_launch`, `analysis.metric_help`,
+`analysis.SCOPED_METRICS_HELP`, and the three job-id helpers `ops.action_job_id`, `ops.judge_temperature_job_id`
+and `ops.second_judge_job_id`); each of the rest stays in the module defining it. No stored or served shape moves,
+and no wire name: an action's parameters and results, and every stored document class, count as reached.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so do the two that its tests import from among the candidates (`kernel.INCOMPLETE_STOP_REASONS`,
+`kernel.host.UNSEATED_LEVEL`), which stay.
+
+### evals: a second Ctrl+C on a quick comparison is raised as itself, and the comparison is filed wherever it lands
+
+**Fixed:** a quick comparison interrupted twice in a terminal raises the `KeyboardInterrupt` itself once its campaign
+is filed, chained from the first cancel, where before it raised that first cancel: under `asyncio.run` the person sees
+`KeyboardInterrupt` as before, and a host not under `asyncio.run`'s handler now gets the interrupt rather than a
+cancel it might read as its own. The campaign is filed wherever the second interrupt lands: with the loop idle
+awaiting I/O, or inside a cell running on the loop thread (a CPU-busy candidate), it leaves the loop and
+`asyncio.run` cancels every task, and before this fix that cancel ended the comparison's waits and nothing was filed,
+so running it again re-ran every cell. The cells cut are recorded `cancelled`, counted, and run again in a
+continuation, the cell the interrupt landed in among them (see the engine entry below). **For hosts:** a host that
+awaits a quick comparison directly in its own coroutine, and catches `asyncio.CancelledError` there after a second
+interrupt, now gets `KeyboardInterrupt` at that `await` (its `__cause__` the first cancel); catch it to treat it as the
+person's stop. A host that runs the comparison as a task of its own (`create_task`, `gather`, a `TaskGroup`) gets it
+from its event loop's `run_until_complete` or `run_forever` instead, since asyncio raises a `KeyboardInterrupt` out
+of the loop from the task it ends.
+
+### evals: an engine run records a cell a Ctrl+C lands in as cut, then lets the interrupt go
+
+**Changed:** in every engine run, not only the quick path's, a `KeyboardInterrupt` raised in a cell's own step (a
+Ctrl+C landing while candidate code or the cell's scoring runs on the loop thread) records that cell as a cancel does:
+a row of termination `cancelled` carrying what the cell had spent, which the run's cost cap, metered-call ledger and
+summaries count; its log line and `infra_error` say "interrupted (Ctrl+C)" where a cancel's say "cancelled with its
+run". Then the interrupt is raised, whatever that accounting meets: a failure of it (an unexpected store error, say)
+is recorded with `contain()` at error level and the `KeyboardInterrupt` still leaves the cell, and a cancel held the
+same way is raised in the same way. Before, the cell recorded no row. Take-up is unchanged: `runs_again` runs a
+`cancelled` row's cell again, as it ran a cell with no row, and the row replacing it carries the cut row's spend as
+`superseded_spend_usd`. The interrupt waits for the cell's save before it leaves, with no bound of its own: a store
+write that hangs holds it, and a further Ctrl+C then leaves at once (under `asyncio.run`, one more is needed for its
+shutdown, which waits on the cell). **For hosts:** a host reading a run's rows after a Ctrl+C now finds a `cancelled`
+row for the cell the interrupt landed in, where it found none; no stored shape changes, and a build before this one
+reads such a row as the `cancelled` row a cancel writes.
+
+**Changed:** the count of a quick comparison's cells that recorded no answer and run again is one count
+(`analysis.bundle.trials.redrawn_cells`), which the print and the page both say: it now includes the launch that
+prints it, so the two agree, and it counts cells, each once, where it counted rows (a cell cut in two launches was
+two). Its sentence (`comparisons.redrawn_sentence`) keys its verb on the cut count ("2 of them were cut", "1 of them
+was cut", "it was cut") and names what it counts as it is: "cut while running, by an interrupt or a shutdown", where it
+said "cut by a second interrupt".
+### evals: a small comparison gets a fair read: where the arm stands, how strongly, and when it is decided
+
+**Changed:** a comparison an `Eval` runs leads on the estimate, its interval and the direction, and grades its
+evidence every time, at any number of cases. Its first line reads `Accuracy: v2 ahead of v1, undecided. Over 8
+paired cases, v2 is 29 points ahead of v1. The interval allows v2 to be as much as 24 points worse or 60 better. The
+evidence that v2 is better is moderate (3.6).`, never "the evidence cannot tell v2 and v1 apart". The evidence is the
+e-value the bet holds now (`stats.bet_evidence`, new): weak below 3, moderate from 3, strong from 10
+(`stats.EVIDENCE_STEPS`, new; words by `style.evidence_grade`, new, the one owner), and chance alone reaches 10 at
+most one time in ten however often it is read. With a question asked, the question is decided on its first grader's
+reading alone, at α = 0.05, by the bet staked nine tenths toward the better side it asks about
+(`stats.DECLARED_DIRECTION_SHARE`, new; `bounded_separation_p(..., toward=)`, new): it decides "better" once that
+capital reaches 20 and "worse" only once the other side's reaches 200, and its interval is at 90%, each end a 95%
+bound. Every other reading is secondary, shown with its change, interval and evidence and decided on nothing. With no
+question asked the read stays two-sided, corrected by Holm across measures. The mixture's ten stakes are weighted in
+proportion to their size, so a few cases can grow it: eight cases all won now decide (they read p 0.041 under a
+correction that held them to 0.025 before), and from six they can. A one-check eval's pass rate is that check, so it is
+tested once, not twice. A money scale's zero end on a page reads at its cells' places (`$0.000`). The case for each
+choice, and the simulations behind it: `.prawduct/smalln-report.md`.
+
+**For hosts:** a stored analysis of a quick-path comparison frozen by this build carries `evidence_better`,
+`evidence_worse` and the family's `primary`, which a build from before it refuses by name: upgrade every reader of
+stored analyses before any writer, and after a rollback regenerate an analysis this build froze. No engine campaign's
+bundle carries them, so its fingerprints and pages do not move. A quick comparison's verdicts move: a secondary
+reading of a question reads `not_separated` where it may have separated before, and its `p_adjusted` is `None`. **A
+CI gate on a quick comparison with a question fails as a regression only on the question's own reading** (its first
+grader): a second check's drop no longer fails `gate()`, so make the reading you gate on the first grader, or a
+guardrail. Ask a gate with a margin (`Eval(question=..., margin=...)`): its bet leans toward worse, and a regression
+decides once the evidence that the arm is worse reaches about 22; a question whether the arm does better needs about
+200 to call it worse. A question that names no range on its first grader reads it untested, and decides nothing else.
+A question, control or margin set after the first result (`Result.against(..., question=...)`) reads the even hedge
+and says so. A decided reading says when it was decided (`decided_at_cases`, `decided_evidence`), and its interval is
+read on the capital now, so it always holds the estimate; `ComparisonFamily.lean` says which side the question leans.
+
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
 **Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its

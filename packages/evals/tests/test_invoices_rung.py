@@ -24,12 +24,9 @@ import pytest
 
 from threetears.evals import Eval, Result
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, campaign_report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.quick.continuation import UNKEPT_SENTENCE
@@ -69,8 +66,9 @@ CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encodi
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better."
+    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
+    "was right on 90 for v1 and 89 for v2."
 )
 
 
@@ -149,22 +147,23 @@ async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_t
 
 
 async def test_3b_a_margin_lets_total_read_equivalent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """compare.py's runs with a 20-point margin on total: v2's interval there (23 points either side) is wider than it."""
+    """compare.py's runs with a 20-point margin on total. The question is decided on its own reading, currency's
+    accuracy, alone; total is a secondary reading, shown with its interval against the margin (13 points either
+    side, at the 90% the question's family reads at) and decided on nothing, so it reads no verdict of equivalence
+    however tight its interval."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("margin.py"), "margin", monkeypatch)
 
     result = await module.within_margin.run(store=":memory:")
     (total,) = result.contrasts("total")
-    # Its level, 1 − 0.05/6, reads to two significant figures of the chance it misses (owner ruling, 2026-11-14).
-    assert (total["outcome"], total["interval"]) == ("not_separated", "-23 to +23 pts at 99.17%")
-    # Only the reading with a margin can: the others still cannot tell the arms apart.
+    assert (total["outcome"], total["interval"]) == ("not_separated", "-13 to +13 pts at 90%")
     assert {row["outcome"] for grader in ("accuracy", "number", "due") for row in result.contrasts(grader)} == {
         "not_separated"
     }
     assert (
-        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the "
-        "observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that "
-        "small | 30 paired |"
+        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a "
+        "secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of "
+        "±20 pts on Total score, which does not show the true difference is that small | 30 paired |"
     ) in campaign_report_markdown(result.page).splitlines()
 
 

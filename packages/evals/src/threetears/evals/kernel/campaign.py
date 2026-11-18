@@ -113,9 +113,7 @@ def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
     """The tier a verdict resting on these evidence rows stands on: the weakest among them.
 
     :param rows: Per evidence row, in any order: ``None`` for a measure, the row's judged tier for a judged score.
-    :ptype rows: list[JudgedEvidenceTier | None]
     :return: ``none`` for no rows; the weakest judged tier when any row is judged; otherwise ``mechanical``.
-    :rtype: EvidenceTier
     """
     if not rows:
         return "none"
@@ -397,9 +395,7 @@ class EvalCampaign(DurableDocumentModel):
         """The aspect labelled ``label``, or None when the campaign has none.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The aspect.
-        :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if aspect.label == label), None)
 
@@ -407,9 +403,7 @@ class EvalCampaign(DurableDocumentModel):
         """The aspect holding ``run_id``, or None when no aspect does.
 
         :param run_id: The run.
-        :ptype run_id: str
         :return: The aspect.
-        :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if run_id in aspect.run_ids), None)
 
@@ -423,10 +417,8 @@ def derive_window(run_created_ats: list[str]) -> CampaignWindow | None:
     lexicographic min/max is a chronological one.
 
     :param run_created_ats: The member runs' ``created_at`` values.
-    :ptype run_created_ats: list[str]
     :return: A :class:`CampaignWindow`, or ``None`` when the list is empty — a campaign
         with no (resolvable) runs has no window.
-    :rtype: CampaignWindow | None
     """
     if not run_created_ats:
         return None
@@ -754,7 +746,6 @@ class VariantIndexEntry(EvalDocumentModel):
         every arm of a one-key tool-config sweep reads alike.
 
         :return: Lever name → level, sorted by name.
-        :rtype: dict[str, SweepableValue]
         """
         named = {name: level for name, level in self.levers.items() if name not in self.folded}
         named.update(self.swept)
@@ -778,7 +769,6 @@ class VariantIndexEntry(EvalDocumentModel):
         either way.
 
         :return: The validated entry.
-        :rtype: VariantIndexEntry
         :raises ValueError: The levels digest to some other key, an entry declaring its levels
             unavailable carries levers anyway, or an entry folds a lever it does not carry.
         """
@@ -852,9 +842,7 @@ class CampaignDeclaration(EvalDocumentModel):
         """Snapshot what ``campaign`` declares now.
 
         :param campaign: The campaign.
-        :ptype campaign: EvalCampaign
         :return: Its declaration.
-        :rtype: CampaignDeclaration
         """
         return cls(
             question=campaign.question,
@@ -1046,9 +1034,7 @@ class EvalAnalysis(EvalDocumentModel):
         """The aspect of this analysis with ``label``.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The aspect.
-        :rtype: AspectAnalysis
         :raises KeyError: No aspect of this analysis has that label.
         """
         for aspect in self.aspects:
@@ -1064,7 +1050,6 @@ class EvalAnalysis(EvalDocumentModel):
         A retired memo is held as stored, never read, so nothing in it is checked against its resolutions.
 
         :return: This analysis, unchanged.
-        :rtype: EvalAnalysis
         :raises ValueError: An aspect appears twice, not exactly one of ``document``, ``report_plan_id`` and
             ``report_doc_id`` is set, or an analysis with no memo holds resolutions.
         """
@@ -1086,9 +1071,7 @@ def report_plan_id(analysis_id: str) -> str:
     """The id of the report plan an analysis was written as: one plan per analysis, found from the analysis alone.
 
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :return: Its plan's id.
-    :rtype: str
     """
     return f"{analysis_id}:report-plan"
 
@@ -1161,7 +1144,6 @@ class EvalReportPlan(EvalDocumentModel):
         """Refuse a plan whose id is not the one its analysis derives.
 
         :return: This plan, unchanged.
-        :rtype: EvalReportPlan
         :raises ValueError: ``id`` is not ``report_plan_id(analysis_id)``.
         """
         if self.id != report_plan_id(self.analysis_id):
@@ -1314,7 +1296,6 @@ class EvalAnalysisAttempt(CoreDocumentModel):
         """Refuse an attempt whose analysis link or error disagrees with its outcome.
 
         :return: This attempt, unchanged.
-        :rtype: EvalAnalysisAttempt
         :raises ValueError: A stored attempt names no analysis or carries an error, an ended unstored one names an
             analysis or carries no error, a running one names either, or a refused one records no refusal.
         """
@@ -1485,17 +1466,11 @@ def ended_sweep_lifetimes(
     and closes it here. Lifetimes whose last holding has already ended are returned as they are.
 
     :param lifetimes: The sweep's lifetimes.
-    :ptype lifetimes: list[SweepLifetime]
     :param outcome: How it ended.
-    :ptype outcome: SweepOutcome
     :param at: When.
-    :ptype at: str
     :param detail: Why, when it did not complete.
-    :ptype detail: str | None
     :param lost: The loss, when it was lost.
-    :ptype lost: JobLoss | None
     :return: The lifetimes, the last one closed when it was open.
-    :rtype: list[SweepLifetime]
     """
     if not lifetimes or lifetimes[-1].outcome != "running":
         return list(lifetimes)

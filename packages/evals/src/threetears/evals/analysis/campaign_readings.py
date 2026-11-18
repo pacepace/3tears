@@ -119,7 +119,6 @@ __all__ = [
     "MeasureReading",
     "PairReading",
     "ShownReading",
-    "campaign_aggregate",
     "campaign_kind",
     "campaign_readings",
     "PASSED_READING",
@@ -474,9 +473,7 @@ class BarStatus(EvalDocumentModel):
         declared display name.
 
         :param measure: What the page calls the bar's measure.
-        :ptype measure: str
         :return: The sentence.
-        :rtype: str
         """
         return _bar_reason(self.arm_label, self.status, measure, _BAR_STATES[self.decision][1])
 
@@ -638,9 +635,7 @@ class CampaignAggregate(EvalDocumentModel):
         """One arm's figures, by its variant key; None for an arm the aggregate does not hold.
 
         :param variant_key: The arm's variant key.
-        :ptype variant_key: str
         :return: Its figures, or None.
-        :rtype: ArmAggregate | None
         """
         return next((arm for arm in self.arms if arm.arm == variant_key), None)
 
@@ -700,7 +695,7 @@ class CampaignReadings(EvalDocumentModel):
     aggregate: CampaignAggregate | None = Field(
         default=None,
         description=(
-            "A change's or a choice's figures across every aspect, each aspect weighed alike (`campaign_aggregate`). "
+            "A change's or a choice's figures across every aspect, each aspect weighed alike. "
             "None for a measurement, and on readings frozen before the aggregate was read."
         ),
     )
@@ -721,9 +716,7 @@ class CampaignReadings(EvalDocumentModel):
         """Refuse an aspect named twice: a label is what every row and every floor says it was read on.
 
         :param labels: The aspects' labels.
-        :ptype labels: list[str]
         :return: The labels.
-        :rtype: list[str]
         :raises ValueError: A label appears twice.
         """
         if duplicates := sorted({label for label in labels if labels.count(label) > 1}):
@@ -734,7 +727,6 @@ class CampaignReadings(EvalDocumentModel):
         """Every bar an arm misses, in order: what the page opens with, as it does a broken floor.
 
         :return: The missed statuses.
-        :rtype: list[BarStatus]
         """
         return [status for status in self.bars if status.status == "missed"]
 
@@ -742,7 +734,6 @@ class CampaignReadings(EvalDocumentModel):
         """Every floor a candidate breaks, in order: what the page opens with.
 
         :return: The broken statuses.
-        :rtype: list[FloorStatus]
         """
         return [status for status in self.floors if status.status == "broken"]
 
@@ -752,7 +743,6 @@ class CampaignReadings(EvalDocumentModel):
         with (``build_code_only_report(..., arm_labels=...)``), so a fold names the arms as the campaign's table does.
 
         :return: Variant key → label.
-        :rtype: dict[str, str]
         """
         labels = {self.control: self.control_label} if self.control is not None else {}
         labels.update({row.arm: row.arm_label for row in self.readings})
@@ -770,9 +760,7 @@ class CampaignReadings(EvalDocumentModel):
 
         :param names: The name each arm is printed by, by variant key (:func:`~threetears.evals.analysis.report.words.
             printed_arm_labels`); an arm it does not name keeps its label.
-        :ptype names: Mapping[str, str]
         :return: The readings, relabelled; these very readings where no name differs from its label.
-        :rtype: CampaignReadings
         """
         held = self.arm_labels()
         moved = {held[key]: name for key, name in names.items() if key in held and held[key] and held[key] != name}
@@ -800,9 +788,7 @@ class CampaignReadings(EvalDocumentModel):
         """The rows read on one aspect, in candidate order.
 
         :param aspect: The aspect's label.
-        :ptype aspect: str
         :return: Its rows; empty for a label the campaign does not hold.
-        :rtype: list[AspectReading]
         """
         return [reading for reading in self.readings if reading.aspect == aspect]
 
@@ -964,7 +950,6 @@ def _step_down(rows: Sequence[int], shown: Callable[[int, float], bool], alpha: 
     interval never says it was shown.
 
     :return: Each row's decision.
-    :rtype: dict[int, _Decision]
     """
     size = len(rows)
     grid = [1.0 - alpha / k for k in range(1, size + 1)]
@@ -1188,13 +1173,9 @@ def reading_reason(reading: AspectReading, bundle: AnalysisContextBundle, *, con
     ``control_label`` name it (a page's relabelled readings name each by its printed name).
 
     :param reading: The row, as read (relabelled for print or not).
-    :ptype reading: AspectReading
     :param bundle: The evidence of the row's aspect, the bundle the row was read from.
-    :ptype bundle: AnalysisContextBundle
     :param control_label: What the sentence calls the control.
-    :ptype control_label: str
     :return: The reason.
-    :rtype: Said
     :raises ValueError: The bundle reads another aspect, its control did not run, or it holds no pass rate for the
         row's two arms: no row was read from it.
     """
@@ -1333,16 +1314,12 @@ def campaign_readings(
     each arm against each absolute bar the bundle adjudicated.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param bundles: Each aspect's evidence, keyed by its label: one per aspect, each assembled for it.
-    :ptype bundles: Mapping[str, AnalysisContextBundle]
     :param arms: The campaign's arms as read (:func:`~threetears.evals.analysis.campaigns.campaign_arms`: the named,
         then the derived candidates). Required: a change whose candidates are derived from its runs names only its
         control, so the named arms alone would read it as a measurement.
-    :ptype arms: Sequence[CampaignArm]
     :return: The readings, a change's or a choice's with every arm's figures across aspects
-        (:func:`campaign_aggregate`).
-    :rtype: CampaignReadings
+        (``aggregate``).
     :raises RefusedInput: An aspect has no bundle, a bundle is keyed by a label the campaign does not hold, or a bundle
         reads another aspect than the one it is keyed by.
     """
@@ -1749,11 +1726,8 @@ def reading_name(bundle: AnalysisContextBundle, measure: str) -> str:
     reads :func:`~threetears.evals.analysis.style.measure_name_of` instead.
 
     :param bundle: The evidence of the reading's aspect.
-    :ptype bundle: AnalysisContextBundle
     :param measure: The measure's key, as the readings hold it.
-    :ptype measure: str
     :return: Its name.
-    :rtype: str
     """
     if measure == PASSED_READING:
         return "pass rate"
@@ -1894,8 +1868,8 @@ def _aggregated(
     return readings.model_copy(update={"aggregate": _aggregate(readings, bundles, memo)})
 
 
-def campaign_aggregate(
-    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]
+def _aggregate(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
 ) -> CampaignAggregate | None:
     """Every arm's figures across a campaign's aspects, each aspect weighed alike: what each arm passes and what a
     reply costs it, and each change's candidate's change against the control.
@@ -1908,19 +1882,10 @@ def campaign_aggregate(
     figure decides a reading, a floor or a bar.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param bundles: Each aspect's evidence, keyed by its label.
-    :ptype bundles: Mapping[str, AnalysisContextBundle]
+    :param memo: Each pair's floor readings, read once.
     :return: The figures; None for a measurement, and where fewer than two arms were compared on any aspect.
-    :rtype: CampaignAggregate | None
     """
-    return _aggregate(readings, bundles, _Floors())
-
-
-def _aggregate(
-    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
-) -> CampaignAggregate | None:
-    """:func:`campaign_aggregate`, each pair's floor readings read through ``memo``."""
     if readings.kind == "change" and readings.control is not None:
         keys = [readings.control, *dict.fromkeys(row.arm for row in readings.readings)]
     elif readings.kind == "choice":
@@ -2021,9 +1986,11 @@ def _difference_error(first: Sequence[float], second: Sequence[float], *, paired
 
 def _cost_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
     """What a reply costs an arm on an aspect, its scoreboard's cost per reply, and the standard error of its one
-    cell's cost per reply; None where it went unpriced, or ran under several test setups there, or none."""
+    cell's cost per reply; None where it went unpriced, or ran under several test setups there, or none, and where the
+    cells keep the arm apart on a coordinate of its identity (:func:`~threetears.evals.analysis.cells.unread_arms`):
+    its cost pools two models' or two definitions' replies."""
     board = _board(bundle, key)
-    if board is None or board.reply_cost_usd is None:
+    if board is None or unread_arms(bundle.cells, key) or board.reply_cost_usd is None:
         return None
     errors = [
         summary.sem

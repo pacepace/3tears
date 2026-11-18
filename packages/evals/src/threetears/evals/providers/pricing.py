@@ -104,9 +104,7 @@ class ModelRates:
         """The rates a call of ``prompt_tokens`` prompt tokens bills at: these, or ``long_prompt`` past its size.
 
         :param prompt_tokens: The call's whole prompt, cache reads and writes included (or a bound on it).
-        :ptype prompt_tokens: int
         :return: The rates.
-        :rtype: ModelRates
         """
         if self.long_prompt is not None and prompt_tokens > self.long_prompt_tokens:
             return self.long_prompt
@@ -117,11 +115,8 @@ class ModelRates:
         can bill it at (the five-minute cache write), every output token at the output rate.
 
         :param prompt_tokens: A bound on the call's prompt tokens, which also says whether the long-prompt rates apply.
-        :ptype prompt_tokens: int
         :param output_tokens: The call's output cap, thinking included.
-        :ptype output_tokens: int
         :return: The ceiling.
-        :rtype: Decimal
         """
         rates = self.tier_for(prompt_tokens)
         prompt_rate = max(rates.base_input, rates.cache_write_5m, rates.cache_read)
@@ -139,18 +134,12 @@ class ModelRates:
         """What a call cost, from what its reply reports: each share of the prompt at its own rate.
 
         :param input_tokens: Prompt tokens, cache reads and writes included.
-        :ptype input_tokens: int
         :param output_tokens: Output tokens, thinking included.
-        :ptype output_tokens: int
         :param cache_read_tokens: Prompt tokens read from the cache.
-        :ptype cache_read_tokens: int
         :param cache_write_tokens: Prompt tokens written to the cache, both lifetimes.
-        :ptype cache_write_tokens: int
         :param cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
             split it: then every write is priced at the five-minute rate, the only lifetime the client asks for.
-        :ptype cache_write_1h_tokens: int | None
         :return: ``(cost, None)`` in dollars, or ``(None, why)`` when the counts contradict each other.
-        :rtype: tuple[Decimal | None, str | None]
         """
         cached = cache_read_tokens + cache_write_tokens
         fresh = input_tokens - cached
@@ -240,12 +229,9 @@ class Pricer(Protocol):
         """The rates a call on ``model`` sent to ``provider`` is billed at, or ``None`` to leave it to the default.
 
         :param model: The model id the call names.
-        :ptype model: str
         :param provider: Where the call goes.
-        :ptype provider: Provider
         :return: The rates and whether they are guaranteed, or ``None``: the catalogue route then bounds the call (an
             estimate) and prices it (OpenRouter's reported cost, else the catalogue row).
-        :rtype: HostRates | None
         """
         ...
 
@@ -255,18 +241,13 @@ class Pricer(Protocol):
         """What a call on ``model`` cost, from its reply's raw usage block.
 
         :param model: The model id the call named.
-        :ptype model: str
         :param provider: Where it went.
-        :ptype provider: Provider
         :param usage: The reply's ``usage`` object exactly as the wire returned it: OpenRouter's ``cost``, ``is_byok``
             and ``cost_details.upstream_inference_cost``; Anthropic's cache writes split by lifetime under
             ``cache_creation``. :func:`~threetears.evals.providers.wire.usage_counts` reads its token counts as the
             engine does.
-        :ptype usage: Mapping[str, Any]
         :param served_provider: The upstream OpenRouter routed the call to, or ``None`` (any other route).
-        :ptype served_provider: str | None
         :return: The price, or ``usd=None`` with the reason.
-        :rtype: CallPrice
         """
         ...
 
@@ -349,11 +330,8 @@ class AnthropicPublishedRates:
         is ``claude-haiku-4-5``.
 
         :param model: The model id the call names.
-        :ptype model: str
         :param provider: Where the call goes.
-        :ptype provider: Provider
         :return: The rates, guaranteed, or ``None``.
-        :rtype: HostRates | None
         """
         rates = _PUBLISHED.get(_plain(model)) if provider == "anthropic" else None
         return HostRates(rates, guaranteed=True) if rates is not None else None
@@ -364,16 +342,11 @@ class AnthropicPublishedRates:
         """A direct Anthropic call on a listed model, priced share by share from its reply's usage block.
 
         :param model: The model id the call named.
-        :ptype model: str
         :param provider: Where it went.
-        :ptype provider: Provider
         :param usage: The reply's raw ``usage`` object.
-        :ptype usage: Mapping[str, Any]
         :param served_provider: Unread: a direct call has no upstream.
-        :ptype served_provider: str | None
         :return: The price, sourced ``anthropic-published:<date>``; unpriced for a model or route the rates do not
             list, a reply with no token count, or counts that contradict each other.
-        :rtype: CallPrice
         """
         found = self.rates_for(model, provider=provider)
         if found is None:
@@ -396,9 +369,7 @@ class AnthropicPublishedRates:
         """What to do about a direct Anthropic call on ``model``, which the shipped rates do not list.
 
         :param model: The model id.
-        :ptype model: str
         :return: A sentence naming the shipped rates' source and date, the models they list, and the remedies.
-        :rtype: str
         """
         return (
             f"Anthropic's published rates as 3tears-evals ships them (read {_RATES_AS_OF} from {_RATES_SOURCE}) do not "

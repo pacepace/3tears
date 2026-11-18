@@ -41,10 +41,8 @@ from threetears.evals.kernel.host.bars import (
     DEFAULT_PASS_THRESHOLD,
     Bar,
     BarRegistry,
-    PassCriterion,
     PassThreshold,
     load_bar_registry,
-    pass_threshold_label,
     BarProposal,
     BarRegistrationError,
 )
@@ -84,13 +82,11 @@ from threetears.evals.kernel.host.profile import (
     VariantLeverReader,
 )
 from threetears.evals.kernel.host.sweepables import (
-    CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
     RolePins,
     Sweepable,
     SweepableRegistry,
-    served_models_by_score,
     Comparability,
     FamilyMemberTest,
     ProductionDepartureReader,
@@ -105,7 +101,6 @@ from threetears.evals.kernel.host.world import (
     Triggered,
     WorldDimension,
     WorldRegistry,
-    resolve_preconditions,
     Evidence,
     TriggerKind,
     When,
@@ -122,11 +117,10 @@ from threetears.evals.kernel.host.world_conformance import (
     check_world_conformance,
     obligations,
 )
-from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, schema_violations
+from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError
 from threetears.evals.kernel.host.world_seed import SeedRefused, SeedWrite, check_seed, SeedRefusalKind
 
 __all__ = [
-    "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
     "SHARED_CORE",
     "UNSEATED_LEVEL",
@@ -136,10 +130,8 @@ __all__ = [
     "ReplayMiss",
     "Bar",
     "DEFAULT_PASS_THRESHOLD",
-    "PassCriterion",
     "PassThreshold",
     "load_bar_registry",
-    "pass_threshold_label",
     "AttestsPerson",
     "BarProposal",
     "BarRegistrationError",
@@ -197,12 +189,9 @@ __all__ = [
     "WorldDimension",
     "WorldRegistrationError",
     "WorldRegistry",
-    "resolve_preconditions",
     "check_seed",
     "check_world_conformance",
     "default_cell_timeout",
     "freeze",
     "obligations",
-    "schema_violations",
-    "served_models_by_score",
 ]

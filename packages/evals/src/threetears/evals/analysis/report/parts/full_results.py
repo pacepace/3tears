@@ -274,13 +274,9 @@ def _read_by_some(report_input: ReportInput, key: str, figures: Iterable[Stat | 
     stays bare.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :param figures: Each arm's entry in that place; None for an arm with none.
-    :ptype figures: Iterable[Stat | None]
     :return: Whether some arm shows a figure there.
-    :rtype: bool
     """
     return any(_holds(report_input, key, figure) for figure in figures)
 
@@ -712,13 +708,9 @@ def every_table(report_input: ReportInput, look: PageLook, *, forms: PageForms) 
     """Every Full results table the input holds a row of, in this module's order (this module's account).
 
     :param report_input: The report input a report document was written from.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param forms: The page's forms (:meth:`PageForms.of` over the same input), which state every figure.
-    :ptype forms: PageForms
     :return: The tables, each with one row at least.
-    :rtype: list[TableBlock]
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -735,9 +727,7 @@ def laid_out(table: TableBlock) -> TableBlock:
     HTML page and the Markdown both lay it out here, so the two read alike.
 
     :param table: A table :func:`every_table` returned.
-    :ptype table: TableBlock
     :return: The table to lay out.
-    :rtype: TableBlock
     """
     if table.name != "arms_by_measure" or not table.rows:
         return table

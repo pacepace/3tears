@@ -412,23 +412,14 @@ async def estimate_second_judge(
     The same collection, sample, calls and admission :func:`second_judge_work` makes, so ``would_start`` is its answer.
 
     :param host: The host: the run's store and the judge clients.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param judge: The second judge.
-    :ptype judge: SecondJudge
     :param out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
-    :ptype out_of_run_cap_usd: float | None
     :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
-    :ptype sample_fraction: float
     :param seed: The seed the share is drawn with.
-    :ptype seed: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The estimate.
-    :rtype: SecondJudgeEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be asked about (see :func:`second_judge_work`).
     :raises ValueError: The host supplies no completion clients.
@@ -555,31 +546,21 @@ async def second_judge_work(
     calls, one result after another, writing each result's :class:`~threetears.evals.schema.models.SecondJudging` as
     soon as its calls return (so a pass cut off part-way keeps what it paid for), and ends its record with the
     :class:`SecondJudgeReport`. Each call is ledgered under purpose ``second_judge``, stamped with the run: measurement
-    cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in
+    cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.job_work.start_job_work`) or in
     the foreground (:func:`~threetears.evals.run.run_job_work`).
 
     :param host: The host: the run's store, its judge clients, and how a judge call that raised reads.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param judge: The second judge: the model every dim is sent to, the prompts, the temperature.
-    :ptype judge: SecondJudge
     :param out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces
         no out-of-run cap.
-    :ptype out_of_run_cap_usd: float | None
     :param asked_by: The operation asking, recorded on the pass.
-    :ptype asked_by: SecondJudgeAskedBy
     :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``; 1 asks about every
         one, as a drift check does.
-    :ptype sample_fraction: float
     :param seed: The seed the share is drawn with.
-    :ptype seed: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The admitted work; its record is the pass, whose id every entry it records names.
-    :rtype: JobWork[EvalSecondJudgePass]
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run is still running or was not judged; its judging apparatus was not recorded,
         or its judge request settings are not the ones a call sends now; the second judge is the run's own; a
@@ -647,7 +628,6 @@ async def _ask(
     """Make an admitted pass's calls, result by result, recording each result's entry as its calls return.
 
     :return: What was asked, and what it cost apart from the candidate.
-    :rtype: SecondJudgeReport
     """
     collected = prepared.collected
     judged: list[str] = []
@@ -757,7 +737,6 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, entry: SecondJu
 
     :return: True once the entry is stored; False when the result is gone, could not be read, or every write was
         refused or failed.
-    :rtype: bool
     """
     for _ in range(_WRITE_ATTEMPTS):
         try:

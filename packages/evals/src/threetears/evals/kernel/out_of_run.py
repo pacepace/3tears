@@ -114,11 +114,8 @@ def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) 
     """The values a template's stored cases already give ``axis`` — what its generation call asks the model to avoid.
 
     :param axis: The variation axis.
-    :ptype axis: VariationAxis
     :param existing: The template's stored cases in the scope being generated into.
-    :ptype existing: Sequence[EvalTestCase]
     :return: The non-empty values those cases carry for the axis.
-    :rtype: set[str]
     """
     return {tc.variation_params.get(axis.name, "") for tc in existing if tc.variation_params.get(axis.name)}
 
@@ -134,13 +131,9 @@ def plan_variation_calls(
     model avoids them.
 
     :param template: The template whose ``llm`` axes are written.
-    :ptype template: EvalTemplate
     :param n_variations: How many values each axis is asked for.
-    :ptype n_variations: int
     :param existing: The template's stored cases in the scope being generated into.
-    :ptype existing: Sequence[EvalTestCase]
     :return: One planned call per ``llm`` axis, keyed by axis name in declaration order; empty when no axis is ``llm``.
-    :rtype: dict[str, PlannedCall]
     """
     return {
         axis.name: _llm_axis_call(axis, n_variations, existing_axis_values(axis, existing))
@@ -273,13 +266,9 @@ class OutOfRunBudget:
         What a pre-flight asks — a battery checking every template's generation before it launches any.
 
         :param client: The client the calls would be made on.
-        :ptype client: PricedCompletion
         :param purpose: What the calls are for.
-        :ptype purpose: KnownOutOfRunPurpose
         :param calls: The calls, at least one.
-        :ptype calls: Sequence[PlannedCall]
         :return: Each call's ceiling, in order; ``None`` where the client could not say and no cap is enforced.
-        :rtype: list[float | None]
         :raises ValueError: ``calls`` is empty.
         :raises ValidationFailedError: Under an enforced cap, a call the client cannot price, or ceilings that
             together with what is already committed pass the cap.
@@ -326,13 +315,9 @@ class OutOfRunBudget:
         """Price ``calls`` on ``client`` and admit them together, or refuse them together before any is made.
 
         :param client: The client the calls will be made on.
-        :ptype client: PricedCompletion
         :param purpose: What the calls are for.
-        :ptype purpose: KnownOutOfRunPurpose
         :param calls: The calls, at least one.
-        :ptype calls: Sequence[PlannedCall]
         :return: One :class:`AdmittedCall` per call, in order, each to be made through :meth:`generate`.
-        :rtype: list[AdmittedCall]
         :raises ValueError: ``calls`` is empty.
         :raises ValidationFailedError: See :meth:`quote`.
         """
@@ -351,11 +336,8 @@ class OutOfRunBudget:
         """Make one admitted call and write its ledger row, whether it returns or raises.
 
         :param client: The client the call was admitted on — that object.
-        :ptype client: PricedCompletion
         :param admitted: The object :meth:`admit` returned for the call. Each is made once.
-        :ptype admitted: AdmittedCall
         :return: The completion and its ledger row.
-        :rtype: RecordedCompletion
         :raises ValueError: ``admitted`` is not an object this budget admitted and has not made — another budget's,
             one already made, or a copy (its call altered after pricing or not) — or ``client`` is not the
             client it was priced on.
@@ -484,11 +466,8 @@ def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any
     itself and the row of a paid call is always written.
 
     :param admitted: The call, for the log line.
-    :ptype admitted: AdmittedCall
     :param reported: The completion's attributes, by ledger field.
-    :ptype reported: dict[str, Any]
     :return: The attributes to store, plus ``unreadable`` naming any recorded None for that reason.
-    :rtype: dict[str, Any]
     """
     storable: dict[str, Any] = {}
     unreadable: list[str] = []
@@ -520,13 +499,9 @@ def _sent_settings(admitted: AdmittedCall, result: Any, unreadable: list[str]) -
     other attribute the ledger cannot hold is.
 
     :param admitted: The call, for the log line.
-    :ptype admitted: AdmittedCall
     :param result: The call's completion.
-    :ptype result: Any
     :param unreadable: The row's unreadable attributes so far; ``sent_settings`` is appended when it is one.
-    :ptype unreadable: list[str]
     :return: The settings to store, or ``None``.
-    :rtype: ClientRequestSettings | None
     """
     try:
         return sent_settings_of(result)

@@ -29,12 +29,12 @@ from threetears.evals.ops import (
     WriterLimits,
     analysis_estimate,
     format_number,
-    generation_key,
     job_cancel,
     job_poll,
     run_job_id,
     scope_out_of_run_spend,
 )
+from threetears.evals.ops.jobs import generation_key
 from packages.evals.tests.doc_writer_support import FakeAnalystClient
 from packages.evals.tests.ops_support import (
     CALLER,

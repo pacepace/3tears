@@ -355,9 +355,7 @@ def observed_mechanism_key(covariate: str) -> str:
     """Name an observed mechanism for the confound maps.
 
     :param covariate: The covariate's registered name.
-    :ptype covariate: str
     :return: The prefixed key. See :data:`OBSERVED_MECHANISM_PREFIX`.
-    :rtype: str
     """
     return f"{OBSERVED_MECHANISM_PREFIX}{covariate}"
 
@@ -2068,6 +2066,39 @@ class FamilyComparison(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description="The share of the contrast's variance that is the judge's re-score noise, low then high.",
     )
+    evidence_better: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where the mixture bet read the contrast (a quick-path comparison): the graded evidence that the contrast "
+            "arm is better, the e-value its upward bet on the better side holds now (`stats.bet_evidence`). Under no "
+            "difference it ever reaches c at most 1/c of the time. Never a verdict: `verdict` is decided on the "
+            "family's primary alone. None where no bet read the contrast."
+        ),
+    )
+    evidence_worse: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description="The same evidence that the contrast arm is worse. None where no bet read the contrast.",
+    )
+    decided_at_cases: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where the mixture bet decided the contrast (`verdict` improved or regressed): the count of paired cases, "
+            "in the order bet on, at which its capital first reached the level it was decided at. A decision stands "
+            "once made, however the evidence moves after it. None otherwise."
+        ),
+    )
+    decided_evidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description="The evidence on the decided side when it decided, the e-value it had reached then.",
+    )
 
 
 class ComparisonFamily(EvalDocumentModel):
@@ -2146,6 +2177,27 @@ class ComparisonFamily(EvalDocumentModel):
         description="Ordered by reading, name, rig and contrast variant.",
     )
     disclosure: str = Field(min_length=1, description="The sentence a writer quotes about this family's correction.")
+    primary: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "On a quick-path comparison whose question is asked: the one reading the question is decided on, its "
+            "first grader's, tested alone at `alpha` (Holm only across its arms) with the bet staked toward the asked "
+            "direction. Every other comparison in the family is a secondary reading: its estimate, interval and "
+            "evidence are shown, its verdict is not_separated and its `p_adjusted` None, and it decides nothing. None "
+            "where every comparison is corrected together as one family."
+        ),
+    )
+    lean: Literal["better", "worse"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "With a `primary`: the side the question asks about, which the bet deciding it is staked nine tenths "
+            "toward: `better` for a question whether the arm does better, `worse` for one with a margin (a gate: is the "
+            "arm no worse). None reads the even hedge: no question asked, or a question, control or margin set after "
+            "the first result, where a lean picked after the readings were seen would be a second look."
+        ),
+    )
 
 
 #: The measure a cost floor reads per case: the candidate's own spend per reply, the scoreboard's cost per reply.
@@ -2428,11 +2480,8 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     holds one of another shape is regenerated.
 
     :param data: The stored bundle, as a mapping.
-    :ptype data: Mapping[str, Any]
     :param what: What holds it, as a sentence names it (``this analysis``).
-    :ptype what: str
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
-    :ptype remedy: str
     :raises RefusedInput: The bundle's ``schema_version`` is missing, or is not this build's
         (``AnalysisContextBundle.schema_version``'s default); one frozen before :data:`ASPECT_BUNDLE_SHAPE` is refused
         saying it predates a bundle reading one aspect, one frozen before :data:`_NAMES_LEFT_THE_EVIDENCE` saying it
@@ -2460,9 +2509,7 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
     """Whether the aspect's campaign asks a question at all, in time or not.
 
     :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
-    :ptype declared: AspectDeclaration | None
     :return: True when a question is declared and its merit axes are stated (``[]`` reads every axis).
-    :rtype: bool
     """
     return declared is not None and bool(declared.question.strip()) and declared.design.merit_axes is not None
 
@@ -2482,12 +2529,9 @@ def late_criteria(declared: AspectDeclaration | None, first_result_at: str | Non
     declared before them. A time that cannot be ordered is no recorded time.
 
     :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
-    :ptype declared: AspectDeclaration | None
     :param first_result_at: The earliest ``scored_at`` among the aspect's member results (ISO-8601); None while none
         is stored, when no criterion can have come after its readings.
-    :ptype first_result_at: str | None
     :return: The criteria set after the first result or carrying no time; empty when every one came first.
-    :rtype: list[LateCriterion]
     :raises ValueError: ``first_result_at`` is not an ISO-8601 time with an offset.
     """
     if declared is None or first_result_at is None:
@@ -2550,9 +2594,7 @@ def question_axes(declared: AspectDeclaration | None) -> list[MeritAxis] | None:
     """The merit axes the aspect's question asks about, whenever it was asked; None where it is exploratory.
 
     :param declared: What the campaign declared, as the aspect reads it.
-    :ptype declared: AspectDeclaration | None
     :return: The axes, ``[]`` for an unscoped question (every axis); None when no question is asked.
-    :rtype: list[MeritAxis] | None
     """
     if declared is None or not asks_a_question(declared):
         return None
@@ -2580,9 +2622,7 @@ def exploratory_disclosure(declared: AspectDeclaration | None) -> str | None:
     ``merit_axes`` None) the no-axis line. When anything was set is no part of it (:func:`late_criteria`).
 
     :param declared: What the campaign declared, as the aspect reads it, or None when it declared no design.
-    :ptype declared: AspectDeclaration | None
     :return: The disclosure, or None when a question is asked.
-    :rtype: str | None
     """
     if declared is None:
         return NO_DESIGN_EXPLORATORY
@@ -2666,7 +2706,7 @@ class DifferentialExclusion(EvalDocumentModel):
 #: ``Literal`` so a cause a newer build names reads as itself rather than failing the bundle.
 LossCause = str
 
-#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.CandidateFailureCause`:
+#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.result_condition.CandidateFailureCause`:
 #: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
 #: scorer), or a judged dimension scored under the bar (``judged``).
 FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]
@@ -2848,11 +2888,8 @@ class NegativeValues(EvalDocumentModel):
         """The one line a page and a report input state it in.
 
         :param measure_name: What the page calls the measure.
-        :ptype measure_name: str
         :param arm_name: What the page calls the arm.
-        :ptype arm_name: str
         :return: The line, naming the measure and the arm, how many results and what the page did with them.
-        :rtype: str
         """
         what = (
             "1 result recorded a negative value"
@@ -4039,7 +4076,6 @@ class AnalysisContextBundle(EvalDocumentModel):
             or a declared floor reads. A trial's failed checks are not read here: a goal check one failed is in the
             catalog, and what else a trial records as failed (a grader's ``total is False`` on the quick path) is no
             goal check, which its own reading names.
-        :rtype: dict[str, str]
         """
         read = [check for name in self.measure_catalog if (check := goal_check_of(name)) is not None]
         read += [proof.check for proof in self.goal_check_proofs]
@@ -4062,9 +4098,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         from the catalog the bundle froze, never from fingerprinted evidence.
 
         :param measure: The measure's key.
-        :ptype measure: str
         :return: Its reader name, else the key.
-        :rtype: str
         """
         descriptor = self.measure_catalog.get(measure)
         return (descriptor.reader_name if descriptor is not None else None) or measure
@@ -4076,12 +4110,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         prints the names it was frozen with and renaming a level moves no fingerprint.
 
         :param axis_id: The declared axis.
-        :ptype axis_id: str
         :param content_hash: The level's identity.
-        :ptype content_hash: str
         :return: The level's declared display; the hash's first twelve characters where the design declares no such
             level, which a bundle holding the level never lacks.
-        :rtype: str
         """
         for axis in self.declared.design.axes if self.declared is not None else []:
             if axis.axis_id == axis_id:
@@ -4095,9 +4126,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         :func:`~threetears.evals.analysis.style.measure_name`'s ``declared``.
 
         :param measure: Any measure key.
-        :ptype measure: str
         :return: The check's name; None for a measure that is no goal check's.
-        :rtype: str | None
         """
         check = goal_check_of(measure)
         if check is None:
@@ -4126,9 +4155,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         fingerprint is ``v2:`` whatever is asked: nothing stored is rewritten to version 3 on a read.
 
         :param like: A stored fingerprint whose version to answer in; None answers in the newest the bundle can.
-        :ptype like: str | None
         :return: The fingerprint: its version's prefix and a 64-character lowercase hex digest.
-        :rtype: str
         """
         return evidence_digest(self.to_dict(), like=like)
 
@@ -4285,13 +4312,11 @@ _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
 _V2_CELL_MODEL_VERSION: Final[int] = 14
 
 
-def known_fingerprint(fingerprint: str) -> bool:
+def _known_fingerprint(fingerprint: str) -> bool:
     """Whether ``fingerprint`` is of a version this build computes (``v3:`` or ``v2:``).
 
     :param fingerprint: A stored fingerprint.
-    :ptype fingerprint: str
     :return: True when a bundle's fingerprint can be answered in its version.
-    :rtype: bool
     """
     return fingerprint.startswith((EVIDENCE_FINGERPRINT_PREFIX, _V2_PREFIX))
 
@@ -4301,9 +4326,7 @@ def fingerprint_digest(payload: Any) -> str:
     :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve significant figures.
 
     :param payload: The pre-image: a bundle's document less what built it.
-    :ptype payload: Any
     :return: The fingerprint.
-    :rtype: str
     """
     return _V2_PREFIX + identity_digest(payload)
 
@@ -4333,12 +4356,9 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     2026-11-14): the same runs priced by another source, or served by another provider, fingerprint alike.
 
     :param document: A bundle as its stored dict.
-    :ptype document: Mapping[str, Any]
     :param like: A stored fingerprint whose version to answer in; None, or one of a version this build does not
         compute, answers in the newest the document can.
-    :ptype like: str | None
     :return: The fingerprint.
-    :rtype: str
     """
     manifest = document.get("evidence")
     if isinstance(manifest, Mapping) and not (like is not None and like.startswith(_V2_PREFIX)):
@@ -4592,20 +4612,14 @@ class BundleInspection(EvalDocumentModel):
         """Wrap an assembled bundle, computing its fingerprint, the comparison and, on a mismatch, its cause.
 
         :param bundle: The freshly assembled bundle to project.
-        :ptype bundle: AnalysisContextBundle
         :param analysis_id: The analysis the caller addressed, when they addressed one.
-        :ptype analysis_id: str | None
         :param recorded_fingerprint: That analysis's stored ``bundle_fingerprint``.
-        :ptype recorded_fingerprint: str | None
         :param recorded_schema_version: That analysis's stored ``bundle_schema_version``; None when it recorded none.
-        :ptype recorded_schema_version: int | None
         :param recorded_host_declarations_digest: That analysis's stored ``host_declarations_digest``; None when it
             recorded none.
-        :ptype recorded_host_declarations_digest: str | None
         :return: The inspection payload, with ``reproduces_generation`` set exactly when
             a recorded fingerprint was supplied to compare against, and ``mismatch_cause``
             exactly when that comparison is False.
-        :rtype: BundleInspection
         """
         # Like with like: the bundle's fingerprint in the recorded one's version, so a version is never what differs.
         fingerprint = bundle.fingerprint(like=recorded_fingerprint)
@@ -4613,7 +4627,7 @@ class BundleInspection(EvalDocumentModel):
         cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
             assert recorded_fingerprint is not None
-            if not known_fingerprint(recorded_fingerprint):
+            if not _known_fingerprint(recorded_fingerprint):
                 # A version this build does not compute: the package moved, and nothing says the evidence did.
                 cause = "package_shape"
             elif recorded_fingerprint.startswith(FINGERPRINT_PREFIX):
@@ -4695,9 +4709,7 @@ def host_declarations_digest(profile: HostProfile) -> str:
     bar registries, which describe readings rather than partitioning them.
 
     :param profile: The host profile a bundle is assembled under.
-    :ptype profile: HostProfile
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     sweepables = sorted(
         (declared.name, declared.role, declared.indeterminate_when_blank, declared.rig_dimension)
@@ -4792,7 +4804,6 @@ __all__ = [
     "evidence_digest",
     "exploratory_disclosure",
     "fingerprint_digest",
-    "known_fingerprint",
     "host_declarations_digest",
     "late_criteria",
     "observed_mechanism_key",

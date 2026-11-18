@@ -275,7 +275,17 @@ Each job writes its own record, and polling reads it:
 
 A launch is one job, not one per arm: its arms are prepared inside it — where a generating launch
 (`n_variations`) calls its variation writer — and its record names its runs once they start, so an agent polls
-the launch and reads each run with `run_get`. One `job_cancel` of a launch stops every run it started.
+the launch and reads each run with `run_get`. A `job_cancel` of a launch stops every run it started, as the
+[interrupt rule](#a-cancel-drains-then-cuts) says: the first lets the cells running finish, a second cuts them.
+
+<a id="a-cancel-drains-then-cuts"></a>**A cancel drains, then cuts.** The first `job_cancel` of a run, or of the
+launch or sweep holding it, starts no further cell and lets the cells already running finish and record; the run
+then ends `cancelled` where it left a cell unstarted, and `completed` where every cell had started. Each cell is
+bounded by its own deadline (the run's `cell_timeout_s`, 600 s by default), so the job ends within
+one renewal interval plus the longest deadline of a cell in flight: size a cancel's poll, or the wait a UI shows, by
+that, not by the renewal interval alone. A second `job_cancel`, from this process or any other, cuts the cells still
+running at once (each is recorded `cancelled` and a take-up runs it again); so does a second Ctrl+C on a run awaited in
+the foreground. Two cancels of a launch or a sweep landing before its job has heard the first are one cancel.
 
 A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
@@ -299,7 +309,8 @@ whose remedy names `runs_unreadable`: an answer over the runs that happened to r
 another job whose record this build cannot read (a sweep's, a launch's, an analysis attempt's) refuses with
 `UnreadableRecordError` (status 500), naming the record and why. A launch or a sweep
 written lost settles the runs it names with it. A cancel is written on the record
-too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
+too, so `job_cancel` works from any process: the job hears it within one renewal interval and drains, then ends as
+[a cancel drains, then cuts](#a-cancel-drains-then-cuts) says. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
 
@@ -363,8 +374,8 @@ also declare `measure_latency`, which every arm's launch takes and which runs th
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
 question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
-named by `from_run_ids`; its readings read as any others do, and the page names each criterion it sets after the runs' results were stored. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
-the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
+named by `from_run_ids`; its readings read as any others do, and the page names each criterion it sets after the runs' results were stored. Its one job's progress counts the arms launched and finished, and a `job_cancel` stops
+the arms in flight and launches none after them ([the first drains, a second cuts](#a-cancel-drains-then-cuts)). An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
 no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a

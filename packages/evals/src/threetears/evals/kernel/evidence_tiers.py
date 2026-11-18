@@ -49,7 +49,7 @@ claim about the judge, and at 20 results kappa's sampling spread is about 0.2: d
 awarded ``calibrated`` to a judge whose true weighted kappa is 0.5 a third of the time. So a criterion is
 ``met`` only when the agreement's one-sided 95% lower bound reaches its threshold, ``not_met`` only when its
 one-sided 97.5% upper bound is below it, and ``undecided`` when neither — neither a pass nor a miss
-(:func:`criterion_state`). The bounds are a score interval
+(:func:`_criterion_state`). The bounds are a score interval
 (:func:`threetears.evals.analysis.agreement.agreement_interval`), chosen over an analytic standard error and a
 bootstrap, which seeded simulation showed award the tier at the bar far beyond 5% at these sample sizes. A
 criterion that is not yet decided says how many more results it needs (:attr:`TierCriterion.results_needed`),
@@ -78,8 +78,7 @@ another.
 **A tier may be read from a stored judge profile** (#628): where a campaign's own evidence leaves a judge
 ``undetermined`` and a judge campaign recorded a profile of that very judge and criterion
 (:class:`~threetears.evals.kernel.EvalJudgeProfile`) that decides a tier, the entry carries the profile's criteria
-and tier, and names the profile in :attr:`JudgeEvidenceTier.from_profile` — never presented as the campaign's own
-(:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+and tier, and names the profile in :attr:`JudgeEvidenceTier.from_profile` — never presented as the campaign's own.
 
 **Tiers are flagged, not dropped** (PD-13): every judged reading stays on every surface, carrying its
 tier and the two criteria that decided it, so a reader sees how much the number can bear.
@@ -130,7 +129,7 @@ JudgedEvidenceTier = Literal["calibrated", "separation", "incidental", "undeterm
 #: weakest possible value is incidental, and a composite holding a known incidental reading is
 #: incidental whatever the undetermined one turns out to be — while one holding an undetermined
 #: reading beside stronger ones is undetermined, since it could still be incidental.
-JUDGED_TIERS_WEAKEST_FIRST: Final[tuple[JudgedEvidenceTier, ...]] = (
+_JUDGED_TIERS_WEAKEST_FIRST: Final[tuple[JudgedEvidenceTier, ...]] = (
     "incidental",
     "undetermined",
     "separation",
@@ -200,7 +199,7 @@ class TierCriterion(EvalDocumentModel):
 
         :raises ValueError: ``results`` exceeds ``n`` (every result counted is at least one pair); one end of the
             interval without the other, or an interval without an agreement or not containing it; or
-            ``state`` is not the one :func:`criterion_state` derives from the numbers.
+            ``state`` is not the one :func:`_criterion_state` derives from the numbers.
         """
         if self.results > self.n:
             raise ValueError(f"a criterion over {self.n} pairs cannot cover {self.results} results")
@@ -211,7 +210,7 @@ class TierCriterion(EvalDocumentModel):
                 raise ValueError(
                     f"an interval [{self.lower}, {self.upper}] must contain its agreement {self.agreement}"
                 )
-        derived = criterion_state(
+        derived = _criterion_state(
             self.results,
             self.agreement,
             self.interval,
@@ -398,18 +397,14 @@ def agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa:
     read publishes no weighted kappa on pass/fail; reading ``kappa`` there is reading that number.
 
     :param scale: The dimension's scale.
-    :ptype scale: RubricScale
     :param kappa: The unweighted kappa.
-    :ptype kappa: float | None
     :param weighted_kappa: The quadratic-weighted kappa (None on pass/fail).
-    :ptype weighted_kappa: float | None
     :return: The figure, or None when it is undefined.
-    :rtype: float | None
     """
     return weighted_kappa if scale == "ordinal" else kappa
 
 
-def criterion_state(
+def _criterion_state(
     results: int,
     agreement: float | None,
     interval: tuple[float, float] | None,
@@ -420,19 +415,13 @@ def criterion_state(
     """How one criterion reads, decided on the agreement's interval and never on its point estimate.
 
     :param results: The distinct results the agreement covers.
-    :ptype results: int
     :param agreement: The agreement figure, or None when undefined.
-    :ptype agreement: float | None
     :param interval: Its confidence bounds ``(lower, upper)``, or None when there are none.
-    :ptype interval: tuple[float, float] | None
     :param threshold: The agreement asked for (inclusive).
-    :ptype threshold: float
     :param min_results: The fewest distinct results (inclusive).
-    :ptype min_results: int
     :return: ``insufficient`` below the floor, or on an undefined agreement or interval; else ``met`` when the
         lower bound reaches the threshold, ``not_met`` when the upper bound is below it, and ``undecided``
         when the interval straddles it.
-    :rtype: CriterionState
     """
     if results < min_results or agreement is None or interval is None:
         return "insufficient"
@@ -455,7 +444,7 @@ def _criterion(
 ) -> TierCriterion:
     """A criterion held to ``threshold`` over ``min_results``, its state derived from the numbers."""
     return TierCriterion(
-        state=criterion_state(results, agreement, interval, threshold=threshold, min_results=min_results),
+        state=_criterion_state(results, agreement, interval, threshold=threshold, min_results=min_results),
         n=n,
         results=results,
         agreement=agreement,
@@ -494,13 +483,10 @@ def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvid
     """The tier two criteria decide.
 
     :param calibration: The judge's agreement with people.
-    :ptype calibration: TierCriterion
     :param separation: The judge's agreement with itself.
-    :ptype separation: TierCriterion
     :return: ``calibrated`` when calibration is met; else ``separation`` when separation is met; else
         ``incidental`` when both were shown below their bars (``not_met``); else ``undetermined`` — which an
         ``undecided`` criterion leads to, since an interval across the bar shows neither.
-    :rtype: JudgedEvidenceTier
     """
     if calibration.state == "met":
         return "calibrated"
@@ -512,24 +498,21 @@ def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvid
 
 
 def weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier:
-    """What several judged readings can bear together: the weakest of them (see :data:`JUDGED_TIERS_WEAKEST_FIRST`).
+    """What several judged readings can bear together: the weakest of them (see :data:`_JUDGED_TIERS_WEAKEST_FIRST`).
 
     :param tiers: At least one tier.
-    :ptype tiers: list[JudgedEvidenceTier]
     :return: The weakest.
-    :rtype: JudgedEvidenceTier
     :raises ValueError: ``tiers`` is empty — no reading has no tier to compose, and none is not undetermined.
     """
     if not tiers:
         raise ValueError("composing judged tiers needs at least one")
-    return min(tiers, key=JUDGED_TIERS_WEAKEST_FIRST.index)
+    return min(tiers, key=_JUDGED_TIERS_WEAKEST_FIRST.index)
 
 
 __all__ = [
     "JudgeProfileConsulted",
     "CALIBRATION_MIN_AGREEMENT",
     "CALIBRATION_MIN_RESULTS",
-    "JUDGED_TIERS_WEAKEST_FIRST",
     "JUDGED_TIER_RULE",
     "SEPARATION_MIN_AGREEMENT",
     "SEPARATION_MIN_RESULTS",
@@ -541,7 +524,6 @@ __all__ = [
     "TierCriterion",
     "agreement_statistic",
     "calibration_criterion",
-    "criterion_state",
     "separation_criterion",
     "tier_of",
     "weakest_judged_tier",

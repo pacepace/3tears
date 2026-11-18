@@ -374,27 +374,18 @@ def create_campaign(
     declaring nothing is refused without it. An exploratory campaign names no question, arm, floor or margin.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param definition: The campaign, as above.
-    :ptype definition: dict[str, Any]
     :param scope_id: The scope the campaign lives in — the one its member runs live in.
-    :ptype scope_id: str
     :param created_by: Who is creating it, as the calling surface knows them; also who declared what it declares.
-    :ptype created_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param exploratory: True to create the campaign with no design, saying so.
-    :ptype exploratory: bool
     :param aspects_from: The campaigns whose aspects this one adopts, in order: each an id, or an
         :class:`AspectSource` (or its fields) relabelling a campaign's one aspect.
-    :ptype aspects_from: Sequence[str | Mapping[str, Any]]
     :param declared_at: When the caller fixed what this create declares (its own aspects, the arms it names, its
         question, a margin or floor it adds), where that was before now: an eval fixes its design and its control in
         the call that launches its arms, then files them once they have run. ISO-8601 with an offset. None dates them
         now. A server-side keyword, never a field of the ``campaign_create`` action.
-    :ptype declared_at: str | None
     :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition fails validation; names no aspect and adopts none; holds a run
         outside the scope, in two aspects, or of two revisions of one template in one aspect; adopts two aspects under
@@ -541,9 +532,7 @@ def _refuse_an_unsaid_kind(*, declared: bool, exploratory: bool) -> None:
     """Refuse a write that does not say, or contradicts itself about, whether the campaign is declared.
 
     :param declared: Whether any aspect the write leaves declares a design.
-    :ptype declared: bool
     :param exploratory: The caller's assertion that none does.
-    :ptype exploratory: bool
     :raises ValidationFailedError: Neither was said, or both were.
     """
     if declared and exploratory:
@@ -770,13 +759,9 @@ def _hold_relative_terms_to_a_control(
     (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`). The engine never picks one.
 
     :param has_control: Whether the campaign the write leaves names a control arm.
-    :ptype has_control: bool
     :param declared: The aspects the write declares, whose own margins it states.
-    :ptype declared: Sequence[Aspect]
     :param margins: Where else the write states a margin, as a refusal names each.
-    :ptype margins: Sequence[str]
     :param floors: The keys of the floors the write states.
-    :ptype floors: Sequence[str]
     :raises ValidationFailedError: Naming each margin and floor.
     """
     if not has_control:
@@ -998,11 +983,8 @@ def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], s
     partly-wrong request leaves the campaign as the caller last saw it.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param run_ids: The runs to be held.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The campaign's scope.
-    :ptype scope_id: str
     :raises ValidationFailedError: One or more of ``run_ids`` does not resolve in ``scope_id``.
     """
     if not run_ids:
@@ -1025,14 +1007,10 @@ def _gate_aspect(storage: CampaignStore, campaign: EvalCampaign, aspect: Aspect,
     question and the floors on it, as the one question its design is asked under.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign the aspect belongs to: its behavior keys a registered bar, its question and
         floors are what the aspect is asked.
-    :ptype campaign: EvalCampaign
     :param aspect: The declared aspect to check.
-    :ptype aspect: Aspect
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :raises ValidationFailedError: An axis the host will not accept, a bar naming nothing the aspect's results carry,
         looser than the registered incumbent or against its measure's direction, a guardrail margin or a floor on
         nothing the aspect measures, or latency asked about without being under test.
@@ -1073,10 +1051,8 @@ def declarable_axes(profile: HostProfile) -> DeclarableAxes:
     offer drawn from any other registry could promise an axis the gate then refuses.
 
     :param profile: The host whose registry the campaign is declared against.
-    :ptype profile: HostProfile
     :return: The fixed levers, the open families whose members are declarable, and the remedy
         sentence a refused declaration carries.
-    :rtype: DeclarableAxes
     """
     registry = profile.sweepables
     return DeclarableAxes(
@@ -1137,26 +1113,16 @@ def update_campaign(
     and ``clear_control`` clears it. Either needs a declared campaign — as this update leaves it.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: The campaign to amend.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param updates: Partial field map; every key must be updatable.
-    :ptype updates: dict[str, Any]
     :param updated_by: Who is amending it, as the calling surface knows them. Recorded on the declaration when this
         update writes one; it never becomes ``created_by``, since a later editor is not the author.
-    :ptype updated_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param exploratory: True to say the campaign this update leaves declares no design.
-    :ptype exploratory: bool
     :param control_from_run_id: One of the campaign's runs whose variant becomes the control arm, or None.
-    :ptype control_from_run_id: str | None
     :param clear_control: True to clear the control arm.
-    :ptype clear_control: bool
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or an aspect names a template the scope lacks.
     :raises ConflictError: The campaign holds a run, and the update writes the declaration, clears its control, or
         names a control where one is already named (:func:`_refuse_frozen_declaration`).
@@ -1416,13 +1382,9 @@ def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> Eva
     """Load a campaign by id.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: The campaign to load.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The campaign.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
@@ -1445,17 +1407,11 @@ def list_campaigns(
     equality filters; all ``None`` returns every campaign.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param scope_id: The scope to list.
-    :ptype scope_id: str
     :param subject_id: Only campaigns over this subject.
-    :ptype subject_id: str | None
     :param behavior: Only campaigns measuring this behavior.
-    :ptype behavior: str | None
     :param archived: Only archived (``True``) or only active (``False``) campaigns.
-    :ptype archived: bool | None
     :return: The matching campaigns, newest first.
-    :rtype: list[EvalCampaign]
     """
     return storage.list_campaigns(
         scope_id,
@@ -1482,17 +1438,11 @@ def add_runs_to_campaign(
     all-or-nothing. Loads, merges and re-saves here, so a failed persist raises ``StorageError``.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to attach to.
-    :ptype campaign_id: str
     :param scope_id: The scope the campaign and the runs live in.
-    :ptype scope_id: str
     :param run_ids: Run ids to add; already-attached ids are ignored.
-    :ptype run_ids: list[str]
     :param aspect: The aspect every run joins, by label; None routes each by its template.
-    :ptype aspect: str | None
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The aspect is not the campaign's; a run is outside the scope, held by another
         aspect, or of a template no aspect or several aspects are gathered on; or an aspect would hold two revisions
@@ -1625,15 +1575,10 @@ def _departure(storage: CampaignStore, run_id: str, scope_id: str, *, at: str) -
     scored, and the launch group it was launched in (one read of its result keys, one of the run).
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param run_id: The run leaving.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param at: When it leaves.
-    :ptype at: str
     :return: The departure.
-    :rtype: MembershipChange
     """
     run = storage.load_eval_run(run_id, scope_id)
     scored: list[tuple[datetime, str]] = []
@@ -1680,17 +1625,11 @@ def remove_runs_from_campaign(
     the same stack the arm is untouched, and where none does the bundle reports the arm as unobserved.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to detach from.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param run_ids: Run ids to remove; every one must currently be attached.
-    :ptype run_ids: list[str]
     :param aspect: The aspect holding them, by label, or None for wherever each is held.
-    :ptype aspect: str | None
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The aspect is not the campaign's, or an id is not attached (to it).
     :raises StorageError: The updated campaign failed to persist.
@@ -1765,19 +1704,12 @@ def set_campaign_control(
     Naming the control does not re-date the question: when it was asked is not when its control was addressed.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to designate on.
-    :ptype campaign_id: str
     :param scope_id: The scope the campaign and its runs live in.
-    :ptype scope_id: str
     :param run_id: A member run whose variant becomes the control, or None to clear it.
-    :ptype run_id: str | None
     :param set_by: Who is designating, as the calling surface knows them; logged beside the arm.
-    :ptype set_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The persisted campaign — or the campaign untouched when CLEARING a control on one that names none.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ConflictError: The campaign holds a run and already names a control (:func:`_refuse_frozen_declaration`).
     :raises ValidationFailedError: A designation on an exploratory campaign, or ``run_id`` is not a member.
@@ -1899,13 +1831,9 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     """The campaign's arms as a reader reads them: :func:`campaign_arms_spelled`'s arms, without how each was spelled.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param profile: The host whose variant map a run assembled without the launch is read through.
-    :ptype profile: HostProfile
     :return: The named arms, the control first, then the derived candidates.
-    :rtype: list[CampaignArm]
     :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     """
@@ -1937,14 +1865,10 @@ def campaign_arms_spelled(
     ``variant_key``, never by ``arm``, which is the label it was read under.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param profile: The host whose variant map a run assembled without the launch is read through.
-    :ptype profile: HostProfile
     :return: The named arms, the control first, then the derived candidates; and each derived arm's spelling, where
         code spelled it from several levers, by variant key.
-    :rtype: tuple[list[CampaignArm], dict[str, ArmSpelling]]
     :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     """
@@ -2001,13 +1925,9 @@ def _derived_name(
     levels. An arm whose levels are unavailable, or that moved no lever, is named as ``name`` says.
 
     :param entry: The arm's index entry.
-    :ptype entry: VariantIndexEntry
     :param distinguishing: The levers the arms differ on (:func:`~threetears.evals.analysis.arms.distinguishing_axes`).
-    :ptype distinguishing: frozenset[str]
     :param name: Its name as :func:`~threetears.evals.analysis.arms.arm_names` spells it, read only for its digest.
-    :ptype name: str
     :return: The word, and the spelling where several levers spell it.
-    :rtype: tuple[str, ArmSpelling | None]
     """
     shown = next(
         (
@@ -2069,16 +1989,11 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
     arithmetic is the version coupling the map exists to remove.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param scope_id: The campaign's scope, which the run is read in.
-    :ptype scope_id: str
     :param run_id: The run to address; the caller holds it to the campaign's membership.
-    :ptype run_id: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The 64-hex variant key, the lever map it was digested from (None where none reproduces it), and
         the identity version it was computed under.
-    :rtype: _AddressedArm
     :raises ValidationFailedError: The run does not resolve in the campaign's scope.
     :raises LeverCoordinateError: The run recorded no lever map (its host assembled it without the launch),
         and the host's variant map disagrees with its own registry — as assembling a bundle over the

@@ -116,9 +116,7 @@ class WriterSplit(EvalBaseModel):
         """The set a side's cases join.
 
         :param side: The side.
-        :ptype side: WriterSide
         :return: Its set's name.
-        :rtype: str
         """
         return self.held_out if side == "held_out" else self.dev
 
@@ -209,9 +207,7 @@ class WriterCaseState(EvalBaseModel):
         """The receipt of a stored writer case.
 
         :param stored: The stored case, under a template.
-        :ptype stored: EvalTestCase
         :return: Its receipt.
-        :rtype: WriterCaseState
         :raises ValidationFailedError: It carries no writer case, or names no template.
         """
         case = writer_case_of(stored)
@@ -247,9 +243,7 @@ class WriterCaseBank:
         """The live cases of one source: those no operator retired.
 
         :param source_key: The source (:attr:`WriterCase.source_key`).
-        :ptype source_key: str
         :return: Its live cases, in storage order.
-        :rtype: list[tuple[EvalTestCase, WriterCase]]
         """
         return [(stored, case) for stored, case in self.cases if case.source_key == source_key and not stored.archived]
 
@@ -257,9 +251,7 @@ class WriterCaseBank:
         """The side a group was placed on: the side recorded on any of its stored cases, retired ones included.
 
         :param group: The split group.
-        :ptype group: str
         :return: Its side, or ``None`` when no stored case of it was placed.
-        :rtype: WriterSide | None
         :raises ValidationFailedError: Its stored cases record both sides.
         """
         sides = {case.origin.side for _, case in self.cases if case.origin is not None and case.origin.group == group}
@@ -276,9 +268,7 @@ def writer_case_bank(stored: Iterable[EvalTestCase]) -> WriterCaseBank:
 
     :param stored: Every stored case of one template in one scope, in storage order. Cases carrying no writer case are
         skipped; one whose case, or whose frozen snapshot's identity, does not read is unreadable.
-    :ptype stored: Iterable[EvalTestCase]
     :return: The bank.
-    :rtype: WriterCaseBank
     """
     cases: list[tuple[EvalTestCase, WriterCase]] = []
     unreadable: list[tuple[str, str]] = []
@@ -301,11 +291,8 @@ def writer_group_side(group: str, held_out_fraction: float) -> WriterSide:
     """The side a new group is placed on: its name's digest, read as a point in the unit interval, against the share.
 
     :param group: The split group.
-    :ptype group: str
     :param held_out_fraction: The share of groups placed on the held-out side.
-    :ptype held_out_fraction: float
     :return: ``held_out`` when the group's point falls below the share, else ``dev``.
-    :rtype: WriterSide
     """
     point = int(bytes_digest(f"{_SPLIT_DOMAIN}{group}".encode())[:_POINT_DIGITS], 16) / 16**_POINT_DIGITS
     return "held_out" if point < held_out_fraction else "dev"
@@ -518,17 +505,11 @@ async def writer_case_mint(
     latest version lists it already, and refused when the other side's set lists it in any version.
 
     :param host: The host whose store holds the source and receives the case.
-    :ptype host: OpsHost
     :param mint: What to mint.
-    :ptype mint: WriterCaseMint
     :param scope_id: The scope the template, the source and the sets live in.
-    :ptype scope_id: str
     :param created_by: Who mints it, as the host names the caller.
-    :ptype created_by: str
     :param skills: The skills a mint may name to check its notes against, by digest; the shipped skill is always one.
-    :ptype skills: Mapping[str, AnalystSkill]
     :return: The receipt: the case, its side and the set version listing it.
-    :rtype: MintedWriterCase
     :raises NotFoundError: The template, campaign, analysis or snapshot is not in the scope.
     :raises ValidationFailedError: The template is not of the writer kind; the mint names a skill it was not given, or
         a withheld note is not that skill's; the snapshot does not read; a stored case of the template does not read;
@@ -607,17 +588,11 @@ async def writer_case_archive(
     the state and reason the case already carries write nothing. The reason is cleared on restore.
 
     :param host: The host whose store holds the case.
-    :ptype host: OpsHost
     :param test_case_id: The case.
-    :ptype test_case_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :param reason: Why it is retired, in the operator's words; cleared on restore.
-    :ptype reason: str | None
     :return: The case as persisted.
-    :rtype: EvalTestCase
     :raises NotFoundError: No such case in the scope.
     :raises ValidationFailedError: It carries no writer case, or one this build cannot read, or names no template; or
         restoring it would make a second live case of its source.
@@ -653,19 +628,12 @@ def writer_split(
     """Resolve both sets of a split, refusing a case on both sides. Blocking: it reads the store.
 
     :param host: The host whose store holds the sets.
-    :ptype host: OpsHost
     :param template: The writer template the sets list cases of.
-    :ptype template: EvalTemplate
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param split: The split's names.
-    :ptype split: WriterSplit
     :param dev: The dev set's version; ``None`` for its latest.
-    :ptype dev: int | None
     :param held_out: The held-out set's version; ``None`` for its latest.
-    :ptype held_out: int | None
     :return: Both sets with their cases.
-    :rtype: WriterSplitSets
     :raises NotFoundError: A set, or the version named, is not stored.
     :raises ValidationFailedError: A set lists another template's cases or a case that no longer resolves, or a case
         is listed by both.
@@ -711,13 +679,9 @@ def writer_template_create(host: OpsHost, create: WriterTemplateCreate, scope_id
     could never run.
 
     :param host: The launching host, whose registry must launch the writer kind and whose store receives the template.
-    :ptype host: OpsHost
     :param create: What the template is called and measures.
-    :ptype create: WriterTemplateCreate
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The template as written.
-    :rtype: TemplateLine
     :raises ValidationFailedError: The host launches no writer kind.
     :raises ConflictError: A template of that name is already in the scope.
     :raises StorageError: The template could not be written.

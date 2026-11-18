@@ -82,9 +82,7 @@ def editor_rubric(text: str) -> EditorRubric:
 
     :param text: The editor's system text (:meth:`AnalystSkill.editor
         <threetears.evals.analysis.analyst.skill.AnalystSkill.editor>`), or ``editor.md`` itself.
-    :ptype text: str
     :return: The rubric.
-    :rtype: EditorRubric
     :raises ValueError: The text has no rubric section followed by another section, its items are not numbered from
         1 with no gap, or it does not say what each score means in one sentence.
     """
@@ -114,7 +112,6 @@ def shipped_rubric() -> EditorRubric:
     """The rubric of the skill this build ships, read once from its ``editor.md``.
 
     :return: The rubric.
-    :rtype: EditorRubric
     :raises ValueError: The shipped ``editor.md`` states no rubric that reads, which a build must not ship.
     """
     return editor_rubric(load_skill().editor().text)

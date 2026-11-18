@@ -20,10 +20,10 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    campaign_report_markdown,
-    report_markdown,
     variant_key_of_run,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals import Eval, Result
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.quick import as_host
@@ -129,7 +129,7 @@ async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_
     by_reading = {row["reading"]: row for row in rows}
     accuracy = by_reading["Accuracy"]
     assert (accuracy["contrast"], accuracy["control"]) == ("careful", "hasty")
-    assert accuracy["verdict"] == "careful better than hasty"
+    assert accuracy["verdict"] == "careful better than hasty, decided at 9 cases when the evidence reached 42"
     assert accuracy["delta"] == pytest.approx(50.0), "a rate's change, in points"
     assert {row["control"] for row in rows} == {"hasty"}
     assert [row["reading"] for row in _comparisons(comparison).values()] == [row["reading"] for row in rows]

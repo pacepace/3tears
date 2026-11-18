@@ -153,9 +153,7 @@ def control_arm(report_input: ReportInput) -> str | None:
     """The control's id, or None in a report with no control.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The control's id; None when no arm is the control.
-    :rtype: str | None
     """
     return next((arm.id for arm in report_input.arms if arm.role == "control"), None)
 
@@ -164,9 +162,7 @@ def report_kind(report_input: ReportInput) -> ReportKind:
     """What the report is, from its arms: one arm measured, candidates against a control, or a choice among arms.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: ``measurement``, ``change`` or ``choice``.
-    :rtype: ReportKind
     """
     if len({arm.id for arm in report_input.arms}) <= 1:
         return "measurement"
@@ -177,9 +173,7 @@ def comparisons(report_input: ReportInput) -> list[frozenset[str]]:
     """The comparisons the report makes, each as the arms in it: candidates against the control, pairs, or one arm.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Each comparison's arms, in the input's order.
-    :rtype: list[frozenset[str]]
     """
     arms = [arm.id for arm in report_input.arms]
     control = control_arm(report_input)
@@ -203,11 +197,8 @@ def judge_described(report_input: ReportInput, dimension: str) -> bool:
     """Whether the input describes one judged dimension's judge at all: its model, tier or calibration state.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param dimension: The judged dimension, by key.
-    :ptype dimension: str
     :return: True where it states the judge's model, tier or calibration state.
-    :rtype: bool
     """
     judged = report_input.judged.get(dimension)
     return bool(_judge_standing(report_input, dimension)) or (judged is not None and judged.judge_model is not None)
@@ -219,11 +210,8 @@ def stated_uncalibrated(report_input: ReportInput, dimension: str) -> bool:
     caveats and the asked standing share.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param dimension: The judged dimension, by key.
-    :ptype dimension: str
     :return: True where every tier or calibration state it states means no human calibration stands behind it.
-    :rtype: bool
     """
     standing = _judge_standing(report_input, dimension)
     return bool(standing) and standing <= _UNCALIBRATED
@@ -251,9 +239,7 @@ def surviving_options(report_input: ReportInput) -> list[str]:
     """The arms that pass every gate and breach no guardrail (this module's Survivors).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The surviving arms' ids, in the input's arm order.
-    :rtype: list[str]
     """
     breached = {
         str(guardrail.get("arm")) for guardrail in report_input.guardrails if guardrail.get("decision") == "breached"
@@ -268,9 +254,7 @@ def asked_aspects(report_input: ReportInput) -> list[Aspect]:
     """The aspects the campaign's question asks about, in the input's order.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The asked aspects.
-    :rtype: list[Aspect]
     """
     return [aspect for aspect in report_input.aspects if aspect.asked]
 
@@ -317,11 +301,8 @@ def shown_better(report_input: ReportInput, arm: str) -> bool:
     ``incidental``) still counts.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The candidate's id.
-    :ptype arm: str
     :return: True when the evidence shows it better than the control.
-    :rtype: bool
     """
     return bool(_better(report_input, arm).counted)
 
@@ -390,13 +371,9 @@ def floors_not_held(report_input: ReportInput, arm: str, asked: Sequence[Aspect]
     An aspect's floors are those read on it for any candidate; one with none declares no floor.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The candidate's id.
-    :ptype arm: str
     :param asked: The asked aspects.
-    :ptype asked: Sequence[Aspect]
     :return: One clause per floor not held, or per aspect declaring none.
-    :rtype: list[str]
     """
     return _floors_not_held(report_input, arm, asked, _Overrides())
 
@@ -428,9 +405,7 @@ def unsettled_arms(report_input: ReportInput) -> dict[str, tuple[str, ...]]:
     Unsettled past the margin), by its caveat id ``unsettled:<aspect>``, with those candidates.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The candidates left unsettled, in the readings' order, by caveat id in the aspects' order; empty for none.
-    :rtype: dict[str, tuple[str, ...]]
     """
     survivors = set(surviving_options(report_input))
     control = control_arm(report_input)
@@ -482,11 +457,8 @@ def separating_contrasts(report_input: ReportInput, arm: str) -> list[Contrast]:
     answers (a latency aspect's p95) separates a candidate.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The candidate's id.
-    :ptype arm: str
     :return: The separating contrasts; empty for none.
-    :rtype: list[Contrast]
     """
     asked = {aspect.id for aspect in asked_aspects(report_input)}
     return [
@@ -567,9 +539,7 @@ def dominant_options(report_input: ReportInput) -> list[str]:
     Dominance). One means that one dominates; two or more tie on every axis; none means no option dominates.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The dominant survivors' ids, in the input's arm order.
-    :rtype: list[str]
     """
     return _dominant(report_input, surviving_options(report_input), _Overrides())
 
@@ -613,9 +583,7 @@ def weighed_axes(report_input: ReportInput) -> tuple[DecisionAxis, ...]:
     modes :func:`decision_at` reads apply the rule as it stands.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The axes declared, in that order; empty where none is.
-    :rtype: tuple[DecisionAxis, ...]
     """
     found: list[DecisionAxis] = []
     if any(criterion.kind in ("gate", "guardrail") for criterion in report_input.criteria) or report_input.guardrails:
@@ -658,13 +626,9 @@ def decision_at(
     the late-floor check does. Everything else is as the input states it.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param margins: A margin per aspect id, in points.
-    :ptype margins: Mapping[str, float] | None
     :param floors: A margin per floor key, in points.
-    :ptype floors: Mapping[str, float] | None
     :return: The allowed modes and the dominant option at those values.
-    :rtype: DecisionAt
     :raises ValueError: A margin names an aspect the input does not hold, or a floor margin a floor no candidate was
         read on.
     """
@@ -732,9 +696,7 @@ def asked_standing(report_input: ReportInput) -> dict[str, AskedStanding]:
     """Every arm's standing on the asked aspects: the quality axis dominance compares (this module's Dominance).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Each arm's standing, by id, in the input's arm order.
-    :rtype: dict[str, AskedStanding]
     """
     control = control_arm(report_input)
     asked = asked_aspects(report_input)
@@ -832,11 +794,8 @@ def late_immaterial(report_input: ReportInput, late: LateCriterion) -> bool:
     module's Immateriality). A late margin, floor or bar can be swept; any other late criterion is open.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param late: The late criterion.
-    :ptype late: LateCriterion
     :return: True when the decision is the same at every value it could take.
-    :rtype: bool
     """
     base = _declared(report_input)
     if late.criterion == "margin":

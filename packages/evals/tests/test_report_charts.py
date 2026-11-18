@@ -21,14 +21,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import (
-    BarsChart,
-    ChartBlock,
-    DotIntervalChart,
-    ForestChart,
-    RangeBarsChart,
-    report_markdown,
-)
+from threetears.evals.analysis import BarsChart, ChartBlock, DotIntervalChart, ForestChart, RangeBarsChart
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from packages.evals.tests.report_kit_support import report_of
 
 

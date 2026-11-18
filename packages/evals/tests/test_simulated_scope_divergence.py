@@ -266,7 +266,8 @@ class TestTheCarrierIsNamedOnlyWhenShown:
     def _named_share(seed: str, llm_shift: float, tool_shift: float) -> tuple[float, int, dict[str, int]]:
         from fractions import Fraction
 
-        from threetears.evals.analysis import component_carrier, measure_movement
+        from threetears.evals.analysis.bundle.divergence import component_carrier
+        from threetears.evals.analysis.bundle.divergence import measure_movement
         from threetears.evals.kernel.metrics import describe_measure
 
         registry = toyhost_profile().measures

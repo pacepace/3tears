@@ -732,30 +732,19 @@ def settle_cases(
     line; or two arms apart on one measure.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param arms: One arm (against a line) or two (apart), by id.
-    :ptype arms: Sequence[str]
     :param measure: The measure or judged dimension, by key: for two arms, or a hypothetical line.
-    :ptype measure: str | None
     :param criterion: For one arm, the one declared criterion to settle it against; None for every one reading it.
-    :ptype criterion: str | None
     :param line: For one arm, a hypothetical line on ``measure``, in the figure's own units.
-    :ptype line: float | None
     :param against: For one arm, the one margin or floor to settle its reading against: ``margin:<aspect>`` or
         ``floor:<aspect>/<floor>``.
-    :ptype against: str | None
     :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
         (the arm's own distinct cases times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
-    :ptype assumed: Assumed | None
     :param limit: The most rows one page holds.
-    :ptype limit: int
     :param offset: The first row the page holds.
-    :ptype offset: int
     :param bars_as: How the caller reads the declared bars, which each criterion row's ``gates`` says: ``warnings``
         as declared, or ``gates``. The sizes are the same either way.
-    :ptype bars_as: BarsAs
     :return: A page of rows.
-    :rtype: Settle
     :raises RefusedInput: The arms, criterion, line or measure name nothing that can be settled, or no row reads.
     """
     refuse_arms(report_input, arms, (1, 2), "settle_cases")

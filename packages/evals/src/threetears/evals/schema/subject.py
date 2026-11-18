@@ -56,7 +56,6 @@ def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string.
 
     :return: The timestamp.
-    :rtype: str
     """
     return datetime.now(UTC).isoformat()
 
@@ -128,9 +127,7 @@ class SubjectSnapshot(CoreShapeModel):
         be defaulted.
 
         :param value: The submitted key or label.
-        :ptype value: str
         :return: The value, unchanged.
-        :rtype: str
         :raises ValueError: The value is empty after stripping whitespace.
         """
         if not value.strip():
@@ -151,7 +148,6 @@ class SubjectSnapshot(CoreShapeModel):
         maintainer here to change what the key hashes.
 
         :return: Component name → content hash, unordered.
-        :rtype: dict[str, str]
         """
         return {name: value.content_hash for name, value in self.components.items()}
 

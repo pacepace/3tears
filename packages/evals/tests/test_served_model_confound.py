@@ -29,8 +29,8 @@ from threetears.evals.analysis import (
     DisclosureBlock,
     assemble_context_bundle,
     build_code_only_report,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import (
     ControlDeclaration,
     SweptAxis,

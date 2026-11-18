@@ -37,23 +37,22 @@ from threetears.evals.ops import (
     WriterLimits,
     LaunchArguments,
     analyses_list,
-    analysis_archive,
-    analysis_job_id,
     await_job,
-    campaign_archive,
     campaign_create,
     campaigns_list,
     job_cancel,
     job_poll,
-    parse_job_id,
     report_read,
     run_delete,
     run_get,
     run_job_id,
     run_launch,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.jobs import analysis_job_id
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.analysis import judge_agreement
-from threetears.evals.run import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line, summarize_runs
 from threetears.evals.schema.models import BudgetStop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
@@ -130,6 +129,10 @@ async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytes
         while not (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).run_ids:
             await asyncio.sleep(0.01)
 
+    # The first cancel lets the cells in flight finish: held, they keep the launch running. The second cuts them.
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
+    await asyncio.sleep(0.05)
+    assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "running", "the first cancel drains"
     await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
     cancelled = await settled(fixture.host, job.job_id)
 
@@ -137,7 +140,7 @@ async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytes
     assert cancelled.detail is not None and "wrong template" in cancelled.detail
     for run_id in cancelled.run_ids:
         run = await settled(fixture.host, run_job_id(run_id))
-        assert run.state == "cancelled" and run.detail == LAUNCH_CANCEL_REASON
+        assert run.state == "cancelled" and run.detail == "its launch was cancelled"
     assert not gate.is_set()
 
 
@@ -383,7 +386,8 @@ async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_cam
 
 
 async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``job_cancel`` asks the live job to stop; its own boundary writes ``cancelled``, which ``job_poll`` then reads."""
+    """``job_cancel`` asks the live job to stop: a first cancel lets its cells in flight finish, a second cuts them; its
+    own boundary writes ``cancelled``, which ``job_poll`` then reads."""
     gate = asyncio.Event()
     extract = ScriptedExtractionClient.extract
 
@@ -401,6 +405,10 @@ async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(mo
         while (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).status != "running":
             await asyncio.sleep(0.01)
 
+    # The first cancel lets the cell in flight finish: held, it keeps the run running. The second cuts it.
+    await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
+    await asyncio.sleep(0.05)
+    assert (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).state == "running", "the first cancel drains"
     await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
     cancelled = await settled(fixture.host, job_id)
 

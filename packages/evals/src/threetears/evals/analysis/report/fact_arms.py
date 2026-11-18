@@ -34,9 +34,7 @@ def fact_arms(report_input: ReportInput) -> tuple[FactArm, ...]:
     the input's order).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The arms, in the input's order.
-    :rtype: tuple[FactArm, ...]
     """
     control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
     tags = arm_tags([arm.id for arm in report_input.arms], control)

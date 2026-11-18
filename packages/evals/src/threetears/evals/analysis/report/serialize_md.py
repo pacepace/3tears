@@ -57,9 +57,7 @@ def report_markdown(report: Report) -> str:
     """Render a report as Markdown.
 
     :param report: The report.
-    :ptype report: Report
     :return: The Markdown text, ending in a newline.
-    :rtype: str
     """
     # The title first, then the first screen in order: what warns is under the verdict, never above the title.
     lines = [f"# {escaped(one_line(report.title))}"]
@@ -86,9 +84,7 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     fold and the glossary after it as its evidence record where ``doc_trials`` asks for every trial's record.
 
     :param report: The campaign's page.
-    :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
-    :rtype: str
     """
     if report.doc_page is not None:
         # The document's own Checks list defines each check it names: the record's glossary defines only the others.
@@ -304,9 +300,7 @@ def world_count(parts: Sequence[str]) -> str:
     """A case's world state as a record counts it: ``World state: 2 parts (orders, inventory)``.
 
     :param parts: The state's parts' names, in its order.
-    :ptype parts: Sequence[str]
     :return: The count, with the parts named.
-    :rtype: str
     """
     return f"World state: {len(parts)} part{'' if len(parts) == 1 else 's'} ({', '.join(parts)})"
 

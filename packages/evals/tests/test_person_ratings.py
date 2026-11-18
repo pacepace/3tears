@@ -46,7 +46,8 @@ from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standa
 from threetears.evals.analysis import judge_agreement
 from threetears.evals.ops import OpsHost, result_rate_person
 from threetears.evals.kernel import ConflictError, ValidationFailedError
-from threetears.evals.run import judge_case_labels, rate_result
+from threetears.evals.run import rate_result
+from threetears.evals.run.judge_kind import judge_case_labels
 from threetears.evals.schema import CalibrationRating, EvalResult, JudgeEvidence, RubricDim, RubricScore, label_key_of
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host

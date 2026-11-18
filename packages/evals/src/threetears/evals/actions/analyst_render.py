@@ -135,7 +135,6 @@ def analyst_render_actions() -> tuple[Action, ...]:
     """The ``Investigate: blocks`` actions: the catalog of blocks, then one block drawn.
 
     :return: The actions, in the order help lists them.
-    :rtype: tuple[Action, ...]
     """
     snapshot = {"snapshot_id": _EXAMPLE_SNAPSHOT}
     return (

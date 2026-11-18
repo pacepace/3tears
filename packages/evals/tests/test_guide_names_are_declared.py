@@ -32,6 +32,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
+from threetears.evals.actions import eval_catalogue
 from threetears.evals.kernel import METRIC_DESCRIPTORS
 
 from packages.evals.tests.script_loader import load_script
@@ -246,7 +247,12 @@ def test_no_page_names_a_removed_name() -> None:
     """A page that tells a reader to call a removed name hands them an ImportError."""
     removed = removed_names()
     assert removed, "MIGRATIONS.toml records no removed name, so this test says nothing"
-    keep = frozenset(name.rsplit(".", 1)[1] for name in surface.load_snapshot()) | frozenset(METRIC_DESCRIPTORS)
+    # An action's name is its own: a page naming `run_archive` names the action a host calls through the catalogue,
+    # not the Python function of that name, which may leave a root while the action stays.
+    actions = frozenset(action.name for action in eval_catalogue().actions)
+    keep = (
+        frozenset(name.rsplit(".", 1)[1] for name in surface.load_snapshot()) | frozenset(METRIC_DESCRIPTORS) | actions
+    )
     named = {
         f"{name} <- {page.relative_to(PACKAGE)} line {line}"
         for page in PAGES

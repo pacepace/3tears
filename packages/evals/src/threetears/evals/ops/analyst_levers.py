@@ -36,26 +36,16 @@ async def levers_effects(
     changes with another setting.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param setting: Only this setting's effects and interactions; None for every setting the arms vary.
-    :ptype setting: str | None
     :param place: The task, stratum or cell to read the measure within; None for overall.
-    :ptype place: str | None
     :param limit: The most rows (effects, then interactions) one page holds.
-    :ptype limit: int
     :param offset: The first of them the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[LeverEffects], bool] | None
     :return: The settings the arms vary, and a page of effects and interactions.
-    :rtype: LeverEffects
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the measure, place or setting names nothing it holds;
         no setting varies, or no two arms differ in exactly one; or no such pair holds the measure there.

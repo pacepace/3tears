@@ -103,7 +103,6 @@ class ReaderConformanceCase:
         """Run the case over ``sample``.
 
         :param sample: The host's profile and runs.
-        :ptype sample: ReaderSample
         :raises ReaderConformanceFailure: The sample holds no run, or a reader broke the rule; the message
             names the case, the rule and what was observed. Anything else a reader raises propagates
             unchanged.

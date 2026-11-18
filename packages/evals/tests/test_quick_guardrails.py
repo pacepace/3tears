@@ -21,13 +21,11 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import (
-    DisclosureBlock,
-    TableBlock,
-    get_campaign,
-    report_markdown,
-)
-from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
+from threetears.evals.analysis import DisclosureBlock, TableBlock
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.kernel import AspectDesign, GuardrailMargin
+from threetears.evals.kernel.declaration import refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -165,7 +163,9 @@ class TestAScorerGuardrail:
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
-        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and its breach is still named"
+        assert gain["verdict"] == "leaky better than current, decided at 38 cases when the evidence reached 132", (
+            "the breached arm gained, and its breach is still named"
+        )
 
     async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
         comparison = await _compare(graders=[grader(no_leak, guard=NO_LEAK)])

@@ -17,7 +17,6 @@ import pytest
 from threetears.evals.analysis.lenses.cost_estimate import (
     BORROWED_PREDICTION_METHOD,
     COST_BAND_SAFETY_MARGIN,
-    COST_PREDICTION_METHOD,
     CostObservation,
     compute_borrowed_cost,
 )
@@ -118,7 +117,7 @@ def test_a_template_with_no_history_borrows_from_a_matching_sibling_and_says_so(
 
     # Once the new template has priced results of its own, they price it, and nothing is borrowed.
     _ran(storage, new.id, SIBLING_CASES)
-    assert history_launch_pricer(host)(_quote(new.id)).method_id == COST_PREDICTION_METHOD
+    assert history_launch_pricer(host)(_quote(new.id)).method_id == "usage-history"
 
 
 def test_siblings_that_cost_alike_give_a_band_no_nearer_its_centre_than_the_margin_and_say_why():
@@ -158,7 +157,7 @@ def test_a_borrowed_band_is_wider_than_the_band_the_same_results_give_as_the_tem
 
     borrowed, direct = pricer(_quote(new.id)), pricer(_quote(sibling.id))
 
-    assert direct.method_id == COST_PREDICTION_METHOD
+    assert direct.method_id == "usage-history"
     assert borrowed.central_usd == pytest.approx(direct.central_usd), "one point estimate from one set of results"
     assert borrowed.low_usd is not None and direct.low_usd is not None
     assert borrowed.band_high_usd is not None and direct.band_high_usd is not None

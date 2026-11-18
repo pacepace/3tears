@@ -102,7 +102,6 @@ class CassetteMiss(ReplayMiss, LookupError):
         """Name the key the corpus has no recording for.
 
         :param key: What the replay looked up.
-        :ptype key: CassetteKey
         """
         self.key = key
         super().__init__(
@@ -124,7 +123,6 @@ class CassetteExhausted(ReplayMiss, LookupError):
         """Name the ask and how many answers to it were recorded.
 
         :param key: The occurrence the replay looked up, one past the last recorded.
-        :ptype key: CassetteKey
         """
         self.key = key
         self.recorded = key.occurrence
@@ -256,7 +254,6 @@ class DeliveryTicket(Protocol):
         """Record that the work reached the candidate with ``payload``.
 
         :param payload: The delivered payload, of the seam's declared ``payload_type``.
-        :ptype payload: Recordable
         """
         ...  # pragma: no cover — protocol
 
@@ -264,7 +261,6 @@ class DeliveryTicket(Protocol):
         """Record that the work ended in an error and delivered nothing.
 
         :param error: Why it failed, as the kind would report it.
-        :ptype error: str
         """
         ...  # pragma: no cover — protocol
 
@@ -283,9 +279,7 @@ class DeliveryRecorder(Protocol):
 
         :param request: What the candidate asked the tool for — the parameters a replay must repeat to
             be served this recording. JSON-shaped.
-        :ptype request: Mapping[str, Any]
         :return: The ticket to settle when the work ends.
-        :rtype: DeliveryTicket
         """
         ...  # pragma: no cover — protocol
 
@@ -318,9 +312,7 @@ class DeliveryReplay[P: Recordable](Protocol):
         """Take the recording of this request, in place of starting live work.
 
         :param request: What the candidate asked the tool for this time.
-        :ptype request: Mapping[str, Any]
         :return: The recording of the capture's matching ask — the Nth one for the Nth time it is asked.
-        :rtype: ReplayedDelivery[P]
         :raises CassetteMiss: The capture never asked this.
         :raises CassetteExhausted: The capture asked this fewer times than the candidate now has.
         :raises CassetteCorrupt: The recording could not be read back.
@@ -353,7 +345,6 @@ class ActionSeam(Protocol):
         missing from the mapping is refused, because in replay it would run live.
 
         :param wrap: Maps the current tools to the ones the candidate must use from now on.
-        :ptype wrap: ToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -380,7 +371,6 @@ class SyncActionSeam(Protocol):
         back as a proxy whose ``act_sync`` captures or replays.
 
         :param wrap: Maps the current tools to the ones the candidate must use from now on.
-        :ptype wrap: SyncToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -398,7 +388,6 @@ class DeliverySeam(Protocol):
         """Run the tool live, reporting each piece of work to ``recorder`` where it starts and where it ends.
 
         :param recorder: This cell's recorder for this tool.
-        :ptype recorder: DeliveryRecorder
         """
         ...  # pragma: no cover — protocol
 
@@ -411,7 +400,6 @@ class DeliverySeam(Protocol):
         engine knows how many it served and refuses a cell that reports fewer, or reports one live.
 
         :param replay: This cell's replay for this tool.
-        :ptype replay: DeliveryReplay[Any]
         """
         ...  # pragma: no cover — protocol
 
@@ -461,7 +449,6 @@ class CellCassettes(Protocol):
         leaves the candidate as the kind built it.
 
         :param seams: The candidate's seams.
-        :ptype seams: CassetteSeams
         :raises TypeError: ``seams`` is not a :class:`CassetteSeams`, or its action seam is neither an
             :class:`ActionSeam` nor a :class:`SyncActionSeam`.
         :raises ValueError: This cell was already wired; ``seams`` declares no seam at all; its action

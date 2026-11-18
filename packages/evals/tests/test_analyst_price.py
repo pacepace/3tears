@@ -41,7 +41,8 @@ from packages.evals.tests.analyst_support import (
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
-from threetears.evals.actions import Action, MountedTool, analyst_actions, analyst_tools, eval_catalogue
+from threetears.evals.actions import Action, MountedTool, analyst_tools, eval_catalogue
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.analyst import ANALYST_CUT
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.analyst_price import analyst_price_actions

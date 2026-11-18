@@ -15,7 +15,9 @@ from pydantic import Field
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import ProviderRefusedError, StorageError
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
-from threetears.evals.run import EvalActionJob, action_job_work, start_job_work
+from threetears.evals.run import EvalActionJob
+from threetears.evals.run.job_work import action_job_work
+from threetears.evals.run.job_work import start_job_work
 from threetears.evals.schema import JobRefusal
 from threetears.evals.schema.base import EvalBaseModel
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, generate, ops_fixture, OpsFixture, settled

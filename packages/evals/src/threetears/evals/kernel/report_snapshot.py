@@ -59,11 +59,8 @@ def report_snapshot_id(campaign_id: str | None, report_input_digest: str) -> str
     """The id of the snapshot holding one campaign's report input: the same evidence always names the same snapshot.
 
     :param campaign_id: The campaign, or ``None`` for a report input handed over bare.
-    :ptype campaign_id: str | None
     :param report_input_digest: The digest of the report input's JSON (``report_input_document_digest``).
-    :ptype report_input_digest: str
     :return: ``report-snapshot:`` and 32 hex digits of the sha256 of the campaign (``-`` for none) and the digest.
-    :rtype: str
     """
     digest = bytes_digest(f"{campaign_id or '-'}\n{report_input_digest}".encode())
     return _ID_PREFIX + digest[:_ID_DIGITS]

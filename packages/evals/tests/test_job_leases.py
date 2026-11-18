@@ -43,7 +43,6 @@ from threetears.evals.kernel import (
     ANALYSIS_JOB,
     ConflictError,
     RUN_JOB,
-    SHUTDOWN_CAUSE,
     SWEEP_JOB,
     EvalAnalysisAttempt,
     EvalStorage,
@@ -54,13 +53,14 @@ from threetears.evals.kernel import (
     StorageError,
     SweepArmRecord,
     ValidationFailedError,
-    request_job_cancel,
-    require_held,
-    settle_job_record,
 )
+from threetears.evals.kernel.job_leases import request_job_cancel
+from threetears.evals.kernel.job_leases import require_held
+from threetears.evals.kernel.job_leases import settle_job_record
 from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
-from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
+from threetears.evals.ops import LaunchArguments, SweepArguments, sweep_launch
+from threetears.evals.ops.jobs import generation_key
 from threetears.evals.ops import sweeps
 from threetears.evals.run import EvalJobManager, sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
@@ -84,6 +84,10 @@ from packages.evals.tests.off_loop import off_loop
 
 #: The sweep's arms, by their prompt style.
 STYLES = ("terse", "standard", "verbose")
+
+
+#: The cause a record whose process shut down reads lost with.
+_SHUTDOWN = "process shut down"
 
 
 class ZonelessClockStore(InMemoryDocumentStore):
@@ -187,6 +191,11 @@ async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reaso
     run_id = await _running_run(holder.host)
 
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
+    # The first cancel, heard at the holder's next renewal, lets the cells in flight finish: held, they keep the run
+    # running. The second, a later request on the record, is heard too and cuts them.
+    await job_cancel(elsewhere, run_job_id(run_id), TOYHOST_SCOPE, reason="wrong template")
+    await asyncio.sleep(0.3)
+    assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running", "the first drains"
     await job_cancel(elsewhere, run_job_id(run_id), TOYHOST_SCOPE, reason="wrong template")
     ended = await settled(elsewhere, run_job_id(run_id))
 
@@ -373,6 +382,8 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
     written = off_loop(_run, holder, run_id)
     heard.broadcasts.clear()
 
+    # Twice: the first lets the cells in flight finish, the second cuts them.
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
@@ -453,16 +464,18 @@ async def test_a_graceful_shutdown_s_cancelled_cells_write_no_rows_into_the_run_
     await holder.launch.job_manager.shutdown()
 
     run = off_loop(_run, holder, run_id)
-    assert run.lost is not None and run.lost.cause == SHUTDOWN_CAUSE
+    assert run.lost is not None and run.lost.cause == _SHUTDOWN
     assert _results(holder, run_id) == [], "no cancelled row landed in the run written lost"
 
 
 async def test_an_operator_cancel_still_records_the_cells_it_cut_short(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent."""
+    """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent. The
+    first cancel lets the cells in flight finish; the second cuts them."""
     held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
 
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
@@ -717,7 +730,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
 
     for job_id in (generation.job_id, run_job_id(run_id), launch_id):
         status = await job_poll(elsewhere, job_id, TOYHOST_SCOPE)
-        assert (status.state, status.detail) == ("lost", SHUTDOWN_CAUSE), job_id
+        assert (status.state, status.detail) == ("lost", _SHUTDOWN), job_id
     assert off_loop(_attempt, holder, generation.job_id).lease is None, "the lease was released"
     run = off_loop(_run, holder, run_id)
     assert run.lease is None
@@ -726,7 +739,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     assert (run.status, run.completed_at, run.cancellation_reason) == (
         "cancelled",
         store.at.isoformat(),
-        f"lost: {SHUTDOWN_CAUSE}",
+        f"lost: {_SHUTDOWN}",
     )
     assert heard.ends == [] and heard.broadcasts == []
 
@@ -932,6 +945,10 @@ async def test_a_sweep_another_process_runs_is_cancelled_from_there(monkeypatch:
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _first_arm_running(elsewhere, job.job_id)
 
+    # The first cancel lets the arm's cells in flight finish: held, they keep it running. The second, a later request
+    # on the record, cuts them. Each is heard at the holder's next renewal, a third of the lease.
+    await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE)
+    await asyncio.sleep(2.0)
     await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE)
     ended = await settled(elsewhere, job.job_id)
 
@@ -986,6 +1003,9 @@ async def test_an_interleaved_sweep_cancelled_part_way_stops_every_arm_it_starte
     (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _every_arm_running(holder, job.job_id)
 
+    # The first cancel lets the cells in flight finish: held, they keep the arms running. The second cuts them.
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE)
+    await asyncio.sleep(0.05)
     await job_cancel(holder, job.job_id, TOYHOST_SCOPE)
     ended = await settled(holder, job.job_id)
 
@@ -1730,7 +1750,7 @@ async def test_a_lease_asked_for_during_a_shutdown_is_refused_naming_it_and_held
         with pytest.raises(ConflictError, match="shutting down") as refused:
             leases.hold(RUN_JOB, "run-late", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
 
-        assert f"({SHUTDOWN_CAUSE})" in refused.value.message and "run-late" in refused.value.message
+        assert f"({_SHUTDOWN})" in refused.value.message and "run-late" in refused.value.message
         assert not leases.holds("run-late"), "nothing was held"
         assert await shutting == [], "the hung loss is not among those written"
         assert not leases.holds("run-late"), "the shutdown ended holding nothing"

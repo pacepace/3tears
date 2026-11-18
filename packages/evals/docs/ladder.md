@@ -313,9 +313,10 @@ compare = Eval(
   against it on every reading: the difference (delta), its interval, and a verdict.
 - **`question=`** is the one sentence the comparison answers, asked before any reading is seen. Its measure is the
   first grader, here `currency` (the classifier's accuracy): the printed first line and the page lead on it, and the
-  page quotes the question under its title. Asked alone it is a superiority question ("does v2 do better?"), so no
-  margin is filed and v2's pass rate reads shown better, shown worse or that the evidence cannot tell the two apart,
-  against zero. A question of "no worse than v1" writes its own margin, in the measure's units:
+  page quotes the question under its title. Asked alone it is a superiority question ("does v2 do better?"): the
+  question is decided on that one reading, with the bet staked toward "better", and every other reading is shown with
+  its change, its interval and its evidence and decides nothing. A question of "no worse than v1" writes its own
+  margin, in the measure's units:
   `Eval(question=..., margin=0.05)` is 5 points. Leave the question out and the readings are leads: the page says
   "Exploratory comparison." once and leads on the same first grader.
 - **`name=`** names the comparison: run it again under the same name, into the same store and scope, and it continues
@@ -328,7 +329,7 @@ compare = Eval(
 What it printed (made at `max_tokens=8192`), first lines and errors:
 
 ```text
-compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.
+compare: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -338,17 +339,19 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ```
 
-Because the question was asked before the readings were seen, each reading is an answer, set without ", a lead". v2's
-pass rate is 16.7 points above v1's, and still the evidence cannot tell the two apart: its interval reaches below zero.
-That never means they are the same.
+Because the question was asked before the readings were seen, its reading is the answer, set without ", a lead". The
+line says where v2 stands on it (a point behind), how far the interval lets it be either way, and how strong the
+evidence is (weak), and that it is undecided: "undecided" never means the two are the same.
 
-**The lesson: a report that cannot decide says so, rather than declaring a winner.** v2 read every invoice number it
-answered where v1 missed six of the ten noisy ones, and still the evidence cannot tell v2 and v1 apart: on 30 invoices
-the corrected interval on that gain reaches below zero. One v2 trial failed on malformed JSON from the model, and it
+**The lesson: a small test still gets a fair read, and decides only when the evidence clears the bar.** Every reading
+is read at once: v2's Number score is 17 points ahead of v1's, its interval -1 to +38 points, a secondary reading
+shown with its evidence and decided on nothing, since the question asked about currency. The evidence is graded weak
+below 3, moderate from 3 and strong from 10; chance alone reaches 10 at most one time in ten, however often it is read.
+A decision needs the bet on the asked side to reach 20. One v2 trial failed on malformed JSON from the model, and it
 counts against v2, stated, never excluded: a model's unusable answer is the candidate's failure.
 [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict.
 
-**Adding cases and reading again.** When the evidence cannot tell the arms apart, add invoices to the end of
+**Adding cases and reading again.** When a reading is undecided, add invoices to the end of
 `invoices.jsonl` and run `compare.py` again, as often as you like, with nothing declared first. The line under the
 first line says what that allows:
 
@@ -359,9 +362,9 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
   ran, and only the ones you added run. The print says so, last: `Continues the comparison run before under this
   name: ...`. Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no count
-  of cases declared ahead: a mixture of fixed betting fractions over the cases in an order fixed before any answer. A
-  reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
-  error it states.
+  of cases declared ahead: a mixture of fixed betting fractions, weighted toward the larger ones so a few cases can
+  grow it, over the cases in an order fixed before any answer. A reading after you add cases is the same bet read
+  later, so stopping when it first decides keeps the error it states.
 - **What starts a new comparison.** Change an arm's name, model or levers, the control, a grader's name or what it
   declares (its range, direction, margin or guard), a judge's model or criteria, the question or its margin, or the
   repeats, or edit, move or remove an invoice already run, and every case runs again as a new comparison; the print
@@ -387,7 +390,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
   the cases run so far, each time, so re-reading them as cases are added is not covered.
 
-## Rung 3b: a margin, so a reading can be equivalent
+## Rung 3b: a margin on a reading the question does not decide
 
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
 
@@ -398,12 +401,14 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 
 - **`grader("total", margin=0.20)`** is the `total` field, graded with a margin: the largest difference too small to
   act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough": the whole
-  interval sits inside it. Every grader is higher-is-better, so no direction is stated.
+  interval sits inside it. Only the question's reading is decided, so `total` here, a secondary reading, shows its
+  interval against the margin and decides nothing; a margin on the question's own reading is what can read
+  equivalent. Every grader is higher-is-better, so no direction is stated.
 
 What its report said of `total`:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 **The lesson: a margin comes from the decision, and equivalence costs cases.** The margin is the largest difference
@@ -411,9 +416,9 @@ that would not change what you do, fixed before the readings from what the decis
 every total before it is paid, so a prompt worse on `total` by less than 20 points would still ship on its other
 fields. It is never read off the interval a run produced: a margin chosen to fit the readings it judges is criterion
 selection ([Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects)), and it makes
-"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` only to 23
-points either side, wider than this margin, so they cannot show equivalence even at a margin this wide. A decision
-that needs a 5-point margin needs many more invoices, and with too few the reading is "cannot tell apart", never
+"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 13 points
+either side, inside this margin, and a question asked of `total` could read equivalent on them; a decision
+that needs a 5-point margin needs many more invoices, and with too few the reading is undecided, never
 equivalent.
 [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question needs.
 
@@ -437,7 +442,7 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 What the recording printed, first lines, errors and the last line, which says why it exits 4:
 
 ```text
-invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -446,7 +451,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -457,10 +462,10 @@ guardrail's row, and the trials' census:
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.**
+**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
-| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -13 to +43 pts | cannot tell apart | 30 paired |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -1 to +38 pts | v2 ahead of v1, undecided (a secondary reading, which the question leaves open) | 30 paired |
 | No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
@@ -495,6 +500,12 @@ if __name__ == "__main__":
 - **`result.gate()`** fails a CI step on a regression, a breach, or a guardrail not shown held. Here the guardrail is
   undecided, so `cd examples/3-invoices && python ci.py` exits 4. `python -m threetears.evals gate` is the same gate
   over a stored campaign ([Serving](serving.md#gate)).
+- **Only the question's own reading can fail it as a regression.** With a question asked, the first grader's reading
+  is decided and every other reading is shown and decided on nothing, so a second check's drop never fails the gate:
+  make the reading you gate on the first grader, or a guardrail. Ask the gate as one with a margin
+  (`Eval(question="Is v2 no worse than v1?", margin=0.05)`) and its bet leans toward worse: a regression decides once
+  the evidence that v2 is worse reaches about 22, where a question asking whether v2 does better leans the other way
+  and needs about 200 to call it worse.
 
 ## Rung 3e: two levers at once
 

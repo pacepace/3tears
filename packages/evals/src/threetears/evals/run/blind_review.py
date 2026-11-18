@@ -42,11 +42,8 @@ def answer_score(label: str, scale: RubricScale) -> int | None:
     ordinal scale; None for anything else. A labels file and a model's reply are read by it alike.
 
     :param label: The answer, trimmed and lower-cased by the caller.
-    :ptype label: str
     :param scale: The criterion's scale.
-    :ptype scale: RubricScale
     :return: The score, or None where the answer is not one the scale holds.
-    :rtype: int | None
     """
     if scale == "pass_fail":
         return _PASS_FAIL.get(label)
@@ -163,11 +160,8 @@ def plan_review(sheet: BlindSheet, items: Collection[str] | None = None) -> dict
     only what was admitted.
 
     :param sheet: The blinded view of a read.
-    :ptype sheet: BlindSheet
     :param items: The items to plan; None for every item.
-    :ptype items: Collection[str] | None
     :return: Each item's call: the prompt pair and the strict reply shape it asks for.
-    :rtype: dict[str, PlannedCall]
     """
     return {
         item.item: PlannedCall(
@@ -204,21 +198,14 @@ async def answer_sheet(
     stops the reading, said the same way. Either way what was answered is returned.
 
     :param sheet: The blinded view of a read.
-    :ptype sheet: BlindSheet
     :param client: The reviewer's client, which names its model and prices its calls where it can.
-    :ptype client: PricedCompletion
     :param budget: The ledger the calls are admitted against and written to.
-    :ptype budget: OutOfRunBudget
     :param admitted: Each item's admitted call, by item: an item with none is not asked. An item answered before is
         left out by the caller.
-    :ptype admitted: Mapping[str, AdmittedCall]
     :param reused: How many items the caller read from answers recorded earlier, for the reading to state.
-    :ptype reused: int
     :param stop: Why the reading stops before the next call, from the priced spend so far and the unpriced calls;
         None asks every admitted call.
-    :ptype stop: Callable[[float, int], str | None] | None
     :return: An answer per item asked, in order (a skip where the reply could not be used), and the reading.
-    :rtype: tuple[list[BlindAnswer], BlindReview]
     """
     model = client.model_name
     answers: list[BlindAnswer] = []

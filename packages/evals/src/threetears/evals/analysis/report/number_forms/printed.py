@@ -144,9 +144,7 @@ class PreferenceShares:
         answer and the strip's marks read one text.
 
         :param value: One of the three.
-        :ptype value: float
         :return: Its text.
-        :rtype: str
         """
         return self.share_percent(value).removesuffix(PERCENT)
 
@@ -158,9 +156,7 @@ class PreferenceShares:
         whole, ``0%``: a share of none states no precision.
 
         :param value: One of the three.
-        :ptype value: float
         :return: Its text.
-        :rtype: str
         """
         return policy_percent(value, self.places)
 
@@ -170,9 +166,7 @@ class PreferenceShares:
         The two share columns of a row are always one kind.
 
         :param value: One of the shares.
-        :ptype value: float
         :return: The cell.
-        :rtype: TableCell
         """
         text = self.share_text(value)
         return TableCell(value=value, value_text=text) if self.places == 0 else TableCell(value=text)

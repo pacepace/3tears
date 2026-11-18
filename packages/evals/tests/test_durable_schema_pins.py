@@ -38,7 +38,6 @@ from threetears.evals.schema import versioning
 from threetears.evals.schema.base import CoreDocumentModel
 from threetears.evals.schema.versioning import (
     CORE_DOC_TYPES,
-    DURABLE_ADDRESSING_FIELDS,
     DURABLE_BASELINE_VERSION,
     DURABLE_DOC_TYPES,
     DURABLE_SCHEMA_MINOR,
@@ -209,9 +208,9 @@ def test_a_change_to_a_shape_the_core_embeds_too_moves_a_durable_pin() -> None:
 
 
 def test_the_durable_addressing_fields_are_pinned_and_are_fields() -> None:
-    assert dict(DURABLE_ADDRESSING_FIELDS) == PINNED_DURABLE_ADDRESSING_FIELDS
+    assert set(PINNED_DURABLE_ADDRESSING_FIELDS) == DURABLE_DOC_TYPES
     for doc_type, model in _durable_models().items():
-        missing = DURABLE_ADDRESSING_FIELDS[doc_type] - set(model.model_fields)
+        missing = PINNED_DURABLE_ADDRESSING_FIELDS[doc_type] - set(model.model_fields)
         assert not missing, f"{model.__name__} has no field {sorted(missing)} the store addresses it by"
 
 

@@ -24,7 +24,8 @@ from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import (
     reproducible_cases,
 )
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import CASES_DIR
-from threetears.evals.harness import WriterCaseFile, read_writer_cases
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.schema.hashing import identity_json
 

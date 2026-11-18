@@ -233,9 +233,7 @@ def _kit_format(spec: str) -> Callable[[float], str]:
     value in it, as the kit's ``namedFmt`` does, so a drawn tick or note reads as the kit draws it.
 
     :param spec: The format, as a chart's data names it.
-    :ptype spec: str
     :return: The value's text.
-    :rtype: Callable[[float], str]
     :raises ValueError: ``spec`` is not a format the kit names.
     """
     match = _FORMAT_SPEC.fullmatch(spec)
@@ -2072,9 +2070,7 @@ def chart_drawing(block: ChartBlock) -> str | None:
     static drawing and the kit's pick each shade and bucket from the same values.
 
     :param block: The chart.
-    :ptype block: ChartBlock
     :return: The drawing's markup, or None.
-    :rtype: str | None
     """
     kit = block.kit_chart()
     if kit is None or kit[0] not in DRAWERS:

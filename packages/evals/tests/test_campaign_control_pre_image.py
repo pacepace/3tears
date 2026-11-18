@@ -34,12 +34,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.analysis import (
-    TableBlock,
-    aspect_view,
-    assemble_context_bundle,
-    variant_key_of_run,
-)
+from threetears.evals.analysis import TableBlock, assemble_context_bundle, variant_key_of_run
+from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.cells import variant_of_cell_ref

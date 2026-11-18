@@ -1,8 +1,8 @@
-"""Rung 3b: a margin, so a reading can come out equivalent: the one verdict that says "good enough".
+"""Rung 3b: a margin on total, a reading the question does not decide, so it is shown against its margin.
 
 compare.py's two prompts, with a margin on total, fixed before any reading from what the decision is for: a person
 checks every total before it is paid, so a prompt worse on total by under 20 points would still ship on its other
-fields. Thirty invoices can show equivalence only at a margin this wide; a tighter one needs more cases. Replays
+fields. Total is a secondary reading here: only a margin on the question's own reading can read equivalent. Replays
 ``recordings/invoices.jsonl``, as compare.py does. As recorded on deepseek/deepseek-v4-flash: 180 calls, $0.0105
 (the recording's own cost_usd fields, summed).
 """

@@ -58,7 +58,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle
+from threetears.evals.analysis import AnalysisContextBundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.bundle.schema import evidence_digest
 
 __all__ = ["FROM_SHAPE", "TO_SHAPE", "main", "migrate", "moved_paths"]

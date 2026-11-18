@@ -98,9 +98,7 @@ def _pass_total(items: int) -> int:
     rounded up (the module docstring), so 11 for the shipped seven.
 
     :param items: The rubric's item count.
-    :ptype items: int
     :return: The pass total.
-    :rtype: int
     """
     return math.ceil(_PASS_SHARE * items * _TOP_SCORE)
 
@@ -119,9 +117,7 @@ def editor_session(round: int) -> str:
     """The name of the editor's session for a round, which its tally entries and recorded turns are kept under.
 
     :param round: The round reviewed.
-    :ptype round: int
     :return: ``editor-<round>``.
-    :rtype: str
     """
     return f"editor-{round}"
 
@@ -165,7 +161,6 @@ class RubricScore:
         """The item as JSON.
 
         :return: ``{"n", "name", "score", "reason"}``.
-        :rtype: dict[str, Any]
         """
         return {"n": self.n, "name": self.name, "score": self.score, "reason": self.reason}
 
@@ -236,7 +231,6 @@ class Review:
 
         :return: ``{"round", "items", "findings", "resolved", "total", "passes", "must_fix", "blocking"}``,
             ``blocking`` the ids of the findings that block (:attr:`blocking`).
-        :rtype: dict[str, Any]
         """
         return {
             "round": self.round,
@@ -302,34 +296,21 @@ async def review_report(
     The parameters are everything the editor is given; none carries the analyst's session (the module docstring).
 
     :param doc: The document, which passed validity and the invariants.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :param round: The round reviewed: the analyst's round that submitted the document.
-    :ptype round: int
     :param snapshot: The snapshot's id, which every tool call names.
-    :ptype snapshot: str
     :param earlier: The previous round's findings; empty in round 1.
-    :ptype earlier: Sequence[ReportFinding]
     :param model: The model id the client sends to.
-    :ptype model: str
     :param client: The client this round's session goes through (``turn_session(editor_session(round), ...)``).
-    :ptype client: ToolTurnClient
     :param mount: The ``evals_analyst`` tool on the editor's cut, bound to its host and caller.
-    :ptype mount: ToolMount
     :param skill: The editor's system text (``load_skill().editor()``), whose rubric its answers are read against.
-    :ptype skill: SkillText
     :param tally: The report's tally.
-    :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns).
-    :ptype budget: ReportBudget
     :param limits: What the round is held to; :class:`EditorLimits`' defaults when ``None``.
-    :ptype limits: EditorLimits | None
     :return: How the round ended, with its session as a stored value. A failure of the client is the ``failed``
         ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in
         the tally. So is a failure the package's own code raised in the round, carried as its ``defect`` (an internal
         error, never described as the client's).
-    :rtype: EditorOutcome
     :raises ValueError: ``skill`` states no rubric that reads; refused before anything is sent (and before the report's
         first turn by the kind's preparation and ``write_report``).
     """
@@ -438,11 +419,8 @@ def computed_facts(doc: ReportDoc, report_input: ReportInput) -> str:
     """The facts code computes from the snapshot about a document, as the editor reads them: one line each.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: Its snapshot's report input.
-    :ptype report_input: ReportInput
     :return: The facts, one ``- [kind] path: fact`` line each, or ``- none``.
-    :rtype: str
     """
     facts = editor_facts(doc, report_input)
     if not facts:
@@ -495,17 +473,11 @@ def _read_review(
     """The review an editor's answer holds: its last fenced JSON block, read against the session's rubric.
 
     :param text: The answer's text.
-    :ptype text: str
     :param rubric: The rubric of the editor text the session started from.
-    :ptype rubric: EditorRubric
     :param claims: The claim ids of the document reviewed, which a finding may name.
-    :ptype claims: frozenset[str]
     :param round: The round reviewed.
-    :ptype round: int
     :param earlier: The previous review's findings, which each finding continues or the review resolves.
-    :ptype earlier: Sequence[ReportFinding]
     :return: The review, or every fault that keeps it from being read.
-    :rtype: Review | tuple[str, ...]
     """
     blocks = [match["body"] for match in _FENCE.finditer(text)]
     if not blocks:

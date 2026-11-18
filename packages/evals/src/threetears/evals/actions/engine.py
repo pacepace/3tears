@@ -96,12 +96,9 @@ from threetears.evals.ops import (
     UndescribableArmsListing,
     analyses_list,
     analyses_undescribable,
-    analysis_archive,
-    analysis_delete,
     analysis_estimate,
     analysis_generate,
     bars_propose,
-    campaign_archive,
     campaign_create,
     campaign_record,
     campaign_runs_add,
@@ -132,12 +129,10 @@ from threetears.evals.ops import (
     result_rate,
     result_rate_person,
     results_list,
-    run_archive,
     run_label,
     run_delete,
     run_get,
     run_launch,
-    runs_bisect,
     runs_compare,
     runs_list,
     runs_unreadable,
@@ -147,15 +142,20 @@ from threetears.evals.ops import (
     scope_out_of_run_spend,
     scope_pivot,
     templates_list,
-    bar_proposals_text,
-    estimate_text,
     frontier_text,
-    history_text,
     out_of_run_spend_text,
-    pivot_text,
-    runs_bisected_text,
-    runs_compared_text,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.analysis import analysis_delete
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.runs import run_archive
+from threetears.evals.ops.lenses import runs_bisect
+from threetears.evals.ops.analysis import bar_proposals_text
+from threetears.evals.ops.lenses import estimate_text
+from threetears.evals.ops.lenses import history_text
+from threetears.evals.ops.lenses import pivot_text
+from threetears.evals.ops.lenses import runs_bisected_text
+from threetears.evals.ops.lenses import runs_compared_text
 from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
@@ -767,7 +767,6 @@ class WriterCaseMintParams(EvalBaseModel):
         """The operation's arguments, refused as the operation refuses them (one source; two set names).
 
         :return: The mint.
-        :rtype: WriterCaseMint
         :raises ValidationFailedError: No source or several are named, or one name is given for both sets.
         """
         try:
@@ -2093,11 +2092,10 @@ ANALYSE = "Analyse and report"
 CURATE = "Curate"
 
 
-def engine_actions() -> tuple[Action, ...]:
+def _engine_actions() -> tuple[Action, ...]:
     """The engine's actions, in the order help lists them.
 
     :return: The actions.
-    :rtype: tuple[Action, ...]
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
@@ -3466,12 +3464,10 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
 
     :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
         rendered like the engine's.
-    :ptype host_actions: tuple[Action, ...]
     :return: The catalogue.
-    :rtype: ActionCatalogue
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
-    return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)
+    return ActionCatalogue((*_engine_actions(), *analyst_actions())).extended(host_actions)
 
 
-__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "engine_actions", "eval_catalogue"]
+__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "eval_catalogue"]

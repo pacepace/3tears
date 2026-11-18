@@ -22,10 +22,8 @@ and live here:
 * **scoring** — how the result participates in aggregates, off the error taxonomy.
 
 The fourth, **per-role capture** (were the rows observed whole, cut short by a deadline, or
-never made?), deliberately stays with :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`, which
-already owns it and returns it with its own provenance. Re-carrying it here would create
-exactly the second copy this module exists to remove — a surface wanting it calls that
-resolver, and both of them read the same stored ``termination``.
+never made?), is not carried here: a surface showing one result's spend reads its stored rows and the same
+stored ``termination`` this reads.
 
 **A fourth thing this returns is prose.** ``disclosure`` is the canonical sentence for
 whatever a reader must not miss. It is here rather than at the surfaces because three
@@ -134,8 +132,7 @@ CandidateFailureCause = Literal["model_failed", "turn_budget", "output_cap"]
 class ResultCondition(EvalBaseModel):
     """The condition one result is in, on every axis that is a property of the result.
 
-    Returned as a value and never assigned back onto the result — the same rule
-    :class:`~threetears.evals.kernel.usage_capture.ResolvedUsage` holds, and for the same reason:
+    Returned as a value and never assigned back onto the result, because
     two of these three axes are derived, and writing a derivation into the document would
     make it indistinguishable from an observation the next time the document is saved.
     ``termination`` is the exception that proves it — it is stored precisely because it
@@ -158,9 +155,7 @@ class ResultCondition(EvalBaseModel):
         """Read a judging state handed back under an earlier spelling as the one it became.
 
         :param value: The judging state as given.
-        :ptype value: object
         :return: Its current spelling.
-        :rtype: object
         """
         return _JUDGING_RENAMED.get(value, value) if isinstance(value, str) else value
 
@@ -181,9 +176,7 @@ def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
     it, as it does the cap.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The cause, or ``None``.
-    :rtype: CandidateFailureCause | None
     """
     if result.candidate_error:
         return "model_failed"
@@ -254,9 +247,7 @@ def delivered_a_turn(result: ResultView) -> bool:
     generator call that returned), and a conversing kind through its stamped turn records.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: True when the result's time and spend describe a turn the candidate took.
-    :rtype: bool
     """
     if harness_faulted(result):
         return False
@@ -297,10 +288,8 @@ def counted_goal_verdicts(result: ResultView) -> list[tuple[GoalView, bool]] | N
     - Otherwise each check counts as it evaluated.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: ``(outcome, counted_passed)`` per check in stored order, or ``None`` when the result is
         excluded from every rate.
-    :rtype: list[tuple[GoalView, bool]] | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -326,11 +315,8 @@ def counted_score(result: ResultView, score: ScoreView) -> int | None:
     - Otherwise the score counts as judged.
 
     :param result: The result the score sits on.
-    :ptype result: ResultView
     :param score: One of its rubric scores, or its transcript or outcome axis.
-    :ptype score: ScoreView
     :return: The counted score on the score's own scale, or ``None`` when it enters no measure.
-    :rtype: int | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -344,10 +330,8 @@ def counted_rubric_scores(result: ResultView) -> list[tuple[ScoreView, int]] | N
     """Each judged rubric dim on ``result`` paired with what it counts as (:func:`counted_score`).
 
     :param result: The result.
-    :ptype result: ResultView
     :return: ``(score, counted)`` per judged dim in stored order, or ``None`` when the result is in no
         per-dimension measure (a harness fault).
-    :rtype: list[tuple[ScoreView, int]] | None
     """
     if classify_result(result) is ResultOutcome.INFRA_EXCLUDE:
         return None
@@ -522,7 +506,7 @@ JUDGE_CANNOT_TELL_OUTCOME = "judge_cannot_tell"
 
 def runs_again(result: ResultView) -> bool:
     """Whether a stored row's cell runs again when its run, or the comparison it belongs to, is continued: the one rule
-    the engine's take-up (:func:`~threetears.evals.run.resume.resume_run`) and the quick path's continuation
+    the engine's take-up (:func:`~threetears.evals.run.resume.take_up_run`) and the quick path's continuation
     (:mod:`threetears.evals.quick.continuation`) both read.
 
     A row cut short by a cancel (termination ``cancelled``: an attempt a shutdown or a second interrupt abandoned), one
@@ -532,9 +516,7 @@ def runs_again(result: ResultView) -> bool:
     its cell is done.
 
     :param result: The stored row.
-    :ptype result: ResultView
     :return: Whether its cell runs again.
-    :rtype: bool
     """
     return result.termination == "cancelled" or result.account_refused or result.model_unserved
 
@@ -553,9 +535,7 @@ def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The cause, or ``None`` when the result counts.
-    :rtype: ExclusionCause | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -581,13 +561,11 @@ def judge_truncated_dims(result: ResultView) -> list[str]:
     An entry is read only for a dim that carries no score while ``judge_error`` is set
     (:class:`~threetears.evals.schema.models.JudgeCutShort`): an older build that re-judged the dim wrote its score,
     or cleared the error, without touching the field, so an entry beside either is stale. Only a reply out of room
-    counts (:data:`~threetears.evals.schema.models.OUT_OF_ROOM_STOP_REASONS`): one the provider filtered or failed is
+    counts (a ``max_tokens`` or ``truncated`` stop): one the provider filtered or failed is
     recorded on the entry and stays a fault of the rig.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The dims, sorted; empty when none, or when ``judge_error`` is unset.
-    :rtype: list[str]
     """
     if result.judge_error is None or not result.judge_cut_short:
         return []
@@ -605,7 +583,6 @@ def judged_on_every_dim(result: ResultView) -> bool:
     reserved transcript/outcome axes are in neither whole-trial measure.
 
     :param result: The result.
-    :ptype result: ResultView
 
 
     **A boundary dim is not one of them.** pass^k and the composite read capability dims alone
@@ -614,7 +591,6 @@ def judged_on_every_dim(result: ResultView) -> bool:
     move the capability pillar.
 
     :return: ``False`` when the judge answered it could not tell on at least one capability rubric dim.
-    :rtype: bool
     """
     boundary = set(result.judge_cannot_tell_boundary)
     return not any(dim not in RESERVED_DIM_IDS and dim not in boundary for dim in result.judge_cannot_tell)
@@ -652,9 +628,7 @@ def resolve_result_condition(result: EvalResult) -> ResultCondition:
 
     :param result: The result to resolve. Pure function of the stored record: no joins, no
         run lookup, no I/O — so an aggregate can call it per row.
-    :ptype result: EvalResult
     :return: The resolved condition, including the canonical ``disclosure`` line.
-    :rtype: ResultCondition
     """
     judging = _classify_judging(result)
     scoring = classify_result(result)

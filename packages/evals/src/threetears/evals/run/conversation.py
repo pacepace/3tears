@@ -69,21 +69,14 @@ async def drive_conversation(
     kind decides how its candidate perceives it. A conversation of world rounds alone runs no simulator call.
 
     :param driver: A fresh driver over the template's ``conversation`` block.
-    :ptype driver: TurnDriver
     :param candidate_turn: The candidate's answer to one round, handed that round's delivered utterances.
-    :ptype candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]]
     :param post_user_turn: Delivers one simulated utterance into the candidate's world.
-    :ptype post_user_turn: Callable[[SimulatorTurn], Awaitable[None]]
     :param llm: The simulator-role client, for utterances and ``llm_decided`` picks alike. Every call it makes goes
         through ``sink``, which counts what it cost.
-    :ptype llm: SimulatorLLM
     :param sink: The cell's sink, which counts what every simulator call cost (see the module docstring).
-    :ptype sink: CellSink
     :param world: The cell's world session, which fires each world round's dimension; required when the
         conversation declares world rounds.
-    :ptype world: WorldSession | None
     :return: Why the conversation stopped: ``max_turns`` or ``user_done``.
-    :rtype: ConversationStopCause
     :raises ValueError: ``driver`` has already taken a turn; this drives a conversation from its start. Or the
         conversation declares world rounds and no world session was handed in to fire them.
     """

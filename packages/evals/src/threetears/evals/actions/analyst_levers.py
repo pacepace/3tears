@@ -72,7 +72,6 @@ def analyst_levers_actions() -> tuple[Action, ...]:
     """The ``Investigate: analyses`` action that reads what each setting the arms vary does to a measure.
 
     :return: ``levers_effects``.
-    :rtype: tuple[Action, ...]
     """
     return (
         Action(

@@ -41,7 +41,7 @@ document names and ``drop_derived`` sweeps, and no document; the writing loop ra
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
+from typing import Any, Final, Literal, NamedTuple
 
 from pydantic import ValidationError
 
@@ -66,7 +66,6 @@ from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.storage import EvalStorage
 
 __all__ = [
-    "ReportDocReads",
     "StoredReportPage",
     "doc_verdicts",
     "doc_verdicts_and_page",
@@ -79,27 +78,6 @@ __all__ = [
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
 _GENERATION_FORMAT: Final = 2
-
-
-class ReportDocReads(Protocol):
-    """The two reads a stored report document is read back through: its record, then the snapshot it was written from.
-
-    The consumer's port of :func:`read_report_doc` and :func:`stored_headline`, and of a reader laying out a stored
-    analysis as its document's page (``analysis_report``). Structural, so a host's own storage satisfies it by having
-    the methods: :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are positional-only.
-
-    **Provisional:** this protocol may change before it is declared part of the host contract.
-    """
-
-    def load_report_doc(self, report_id: str, scope_id: str, /) -> EvalReportDoc | None:
-        """One report document within a scope, or ``None``; raises ``ValidationError`` for one this build cannot
-        read."""
-        ...
-
-    def load_report_snapshot(self, snapshot_id: str, scope_id: str, /) -> EvalReportSnapshot | None:
-        """One report snapshot within a scope, or ``None``; raises ``ValidationError`` for one this build cannot
-        read."""
-        ...
 
 
 #: Which check a strict build's refusal is reported under, by the field it names: the first prefix it starts with.
@@ -125,16 +103,11 @@ def doc_verdicts(
     """Every verdict against a document on its snapshot: validity's and the invariants', over the strict page too.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :param findings: The editor's findings the page prints in Method; none for a draft.
-    :ptype findings: Sequence[ReportFinding]
     :param made: The page's made line; empty for a draft.
-    :ptype made: str
     :return: The verdicts, in check order; empty for a document that may be stored. A strict build's refusal is the
         last verdict, under the check its field belongs to.
-    :rtype: list[DocVerdict]
     """
     verdicts, _page = doc_verdicts_and_page(doc, report_input, findings=findings, made=made)
     return verdicts
@@ -146,16 +119,11 @@ def doc_verdicts_and_page(
     """:func:`doc_verdicts`, with the strict page it built, so a caller that reads the page builds it once.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :param findings: The editor's findings the page prints in Method; none for a draft.
-    :ptype findings: Sequence[ReportFinding]
     :param made: The page's made line; empty for a draft.
-    :ptype made: str
     :return: The verdicts, as :func:`doc_verdicts` returns them, and the strict page, or ``None`` where it does not
         build (its refusal is then the last verdict).
-    :rtype: tuple[list[DocVerdict], DocPage | None]
     """
     try:
         page = build(doc, report_input, strict=True, findings=findings, made=made)
@@ -184,20 +152,13 @@ def generation_record(
 
     :param report_doc_id: The id the report is stored under, which names each session's document; ``None`` for a
         report that is not stored, whose record holds each session inline.
-    :ptype report_doc_id: str | None
     :param model: The model id the report was written with.
-    :ptype model: str
     :param tally: The writing loop's tally (``Tally.to_json()``), whose transcript digests and turns are each session's.
-    :ptype tally: Mapping[str, Any]
     :param skill: The digest of each system text the sessions started from, by role, and the skill's own.
-    :ptype skill: Mapping[str, str]
     :param reviews: Every review, in round order, as code scored it.
-    :ptype reviews: Sequence[Mapping[str, Any]]
     :param sessions: Each session's JSON (its ``to_json()``), by name: the analyst's and each review round's.
-    :ptype sessions: Mapping[str, Mapping[str, Any]]
     :return: ``{"format", "model", "skill", "tally", "reviews", "sessions"}``, ``sessions`` by name ``{"digest",
         "turns", "ref"}``; with no ``report_doc_id``, ``ref`` is ``None`` and the session is held under ``session``.
-    :rtype: dict[str, Any]
     """
     return {
         "format": _GENERATION_FORMAT,
@@ -235,9 +196,7 @@ def made_line(record: EvalReportDoc) -> str:
     admitted turns on prices the host's pricer does not guarantee says its budget was checked against estimates.
 
     :param record: The stored document, its ``generation`` as :func:`generation_record` wrote it.
-    :ptype record: EvalReportDoc
     :return: The line.
-    :rtype: str
     :raises ValueError: A generation record of another format, or one missing what the line reads.
     """
     generation: Mapping[str, Any] = record.generation  # Any: the record's JSON, read by its keys below
@@ -291,32 +250,19 @@ def store_report_doc(
     """Store a report document and its sessions, after checking it again on the page as it will be read. Blocking.
 
     :param storage: Where it is stored.
-    :ptype storage: EvalStorage
     :param report_doc_id: The id it is stored under, which the generation record's refs name.
-    :ptype report_doc_id: str
     :param scope_id: The scope it is stored in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot it was written from.
-    :ptype snapshot_id: str
     :param campaign_id: The snapshot's campaign, or ``None`` for a bare report input.
-    :ptype campaign_id: str | None
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param ending: How the writing loop ended.
-    :ptype ending: Literal["stored", "stored_with_findings", "over_budget"]
     :param findings: The editor's findings left unresolved, which the page prints in Method.
-    :ptype findings: Sequence[ReportFinding]
     :param generation: The generation record (:func:`generation_record` with ``report_doc_id``), naming each session
         by ref.
-    :ptype generation: Mapping[str, Any]
     :param sessions: Each session's JSON, by name: exactly the sessions the record names.
-    :ptype sessions: Mapping[str, Mapping[str, Any]]
     :param created_by: Who asked for the report, as the host named the caller.
-    :ptype created_by: str
     :return: The stored record.
-    :rtype: EvalReportDoc
     :raises ValueError: The document has a verdict on its page as it will be read, each listed; or the record's
         sessions are not the ones handed in, each by the ref this report gives it. Nothing is stored.
     :raises ConflictError: A document or session is already stored under its id (see ``EvalStorage.save_report_doc``).
@@ -394,7 +340,6 @@ class StoredReportPage(NamedTuple):
         :return: ``{"id", "snapshot_id", "created_at", "ending", "draft", "doc", "findings", "made", "generation"}``,
             ``draft`` the record's (:attr:`~threetears.evals.kernel.report_doc.EvalReportDoc.draft`), the generation
             record as stored (each session by ``{digest, turns, ref}``).
-        :rtype: dict[str, Any]
         """
         record = self.record
         return {
@@ -416,22 +361,17 @@ def _unread(report_doc_id: str, why: str) -> RefusedInput:
 
 
 def read_report_doc(
-    storage: ReportDocReads, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
+    storage: EvalStorage, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
 ) -> StoredReportPage:
     """A stored report document read back as its page, on its own snapshot (the module docstring's read). Blocking.
 
     :param storage: Where the document and its snapshot are stored.
-    :ptype storage: ReportDocReads
     :param report_doc_id: The document's id.
-    :ptype report_doc_id: str
     :param scope_id: The scope it is stored in.
-    :ptype scope_id: str
     :param campaign_id: The campaign the document must have been written for, checked as soon as its record loads and
         before anything else is read; ``None`` checks none. A record that does not validate cannot be attributed to a
         campaign, so it is refused as unread whatever this names.
-    :ptype campaign_id: str | None
     :return: The document, its page, its snapshot and its made line.
-    :rtype: StoredReportPage
     :raises NotFoundError: No report document is stored under the id in the scope, or the one stored was written for
         another campaign than ``campaign_id``.
     :raises RefusedInput: The document is one this version no longer reads: its record does not validate (its version,
@@ -473,7 +413,7 @@ def read_report_doc(
     return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)
 
 
-def stored_headline(storage: ReportDocReads, record: EvalReportDoc) -> str:
+def stored_headline(storage: EvalStorage, record: EvalReportDoc) -> str:
     """A stored document's headline as its page prints it, without building the page. Blocking.
 
     Its figure keys are written out on the document's own snapshot by the page's reading rule
@@ -482,12 +422,9 @@ def stored_headline(storage: ReportDocReads, record: EvalReportDoc) -> str:
     is not read.
 
     :param storage: Where the document's snapshot is stored.
-    :ptype storage: ReportDocReads
     :param record: The stored document, as :meth:`~threetears.evals.kernel.storage.EvalStorage.load_report_doc` read
         it.
-    :ptype record: EvalReportDoc
     :return: The headline, every key written out.
-    :rtype: str
     :raises RefusedInput: The headline holds a key and its snapshot is gone or no longer reads as this version's
         report input; its remedy is the one regenerate line, as :func:`read_report_doc`'s is.
     """
@@ -505,11 +442,3 @@ def stored_headline(storage: ReportDocReads, record: EvalReportDoc) -> str:
     except RefusedInput as refused:
         raise _unread(record.id, f"was written from a snapshot that no longer reads: {refused.fault}") from refused
     return written_prose(headline, report_input)
-
-
-if TYPE_CHECKING:
-
-    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
-        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
-        reads: ReportDocReads = storage
-        del reads

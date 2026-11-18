@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import list_campaigns
+from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import scope_history
 from threetears.evals.analysis import summarize_run

@@ -11,14 +11,9 @@ from dataclasses import replace
 
 import pytest
 
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    CampaignReadings,
-    build_code_only_report,
-    build_campaign_report,
-    campaign_readings,
-    campaign_report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, build_code_only_report, campaign_readings
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.campaign_readings import AggregateFigure, reading_name
 from threetears.evals.analysis.bundle.schema import FamilyComparison
 from threetears.evals.analysis.stats import difference_interval

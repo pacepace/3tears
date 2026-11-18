@@ -181,11 +181,8 @@ def pooled_figures(report_input: ReportInput, key: str) -> dict[str, PooledFigur
     uncorrected.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :return: Each pooled arm's figure, by arm id; empty where no slice holds the key.
-    :rtype: dict[str, PooledFigure]
     """
     slices = _pool_slices(report_input, key)
     shares = [share for _, share, _ in slices]
@@ -390,11 +387,8 @@ def gain_axis(report_input: ReportInput, key: str) -> GainAxis:
     (:func:`pooled_figures`). A judged dimension is read higher is better.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :return: The axis.
-    :rtype: GainAxis
     :raises UnresolvableReference: The key names no measure or judged dimension the input holds, or a measure that
         states no direction.
     """
@@ -739,13 +733,9 @@ class PriceFrontier:
         """The key of one field of the move from ``first`` to ``second`` on this frontier's basis.
 
         :param first: The option moved from.
-        :ptype first: str
         :param second: The option moved to.
-        :ptype second: str
         :param field: The price field.
-        :ptype field: str
         :return: ``price.<first>.<second>.<gain>.<field>``, within its slice where it is read within one.
-        :rtype: str
         """
         prefix = f"{self.within}." if self.within else ""
         return f"{prefix}price.{first}.{second}.{self.gain_key}.{field}"
@@ -829,16 +819,11 @@ def price_frontier(
     net value at a price ``p`` is ``p`` times its position less its cost.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param gain_key: The gain axis: a measure with a direction, or a judged dimension, by key.
-    :ptype gain_key: str
     :param within: The one slice to price within, as its key family's word and its id (a cell by ``<row>.<column>``);
         None overall.
-    :ptype within: tuple[SliceKind, str] | None
     :param admit: Options priced although a gate or guardrail removes them: a what-if, never a recommendation.
-    :ptype admit: Sequence[str]
     :return: The frontier.
-    :rtype: PriceFrontier
     :raises UnresolvableReference: The gain key names no measure or judged dimension, or one stating no direction.
     """
     if within is None:

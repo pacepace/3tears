@@ -106,16 +106,11 @@ def judge_family_check(
     about each arm's pages: a model the host cannot place is admitted with the check recorded as not made.
 
     :param candidate_model: The writer, by the id its launch names.
-    :ptype candidate_model: str
     :param judge_model: The scoring judge, by the id its launch names.
-    :ptype judge_model: str
     :param model_family: The host's reading of a model's family.
-    :ptype model_family: ModelFamily
     :param role: What ``candidate_model`` is to the page, as the check names it: ``writer``, or ``editor`` for an arm
         whose editor runs on a model of its own.
-    :ptype role: str
     :return: The check as made: both families when the host placed both, else which model it could not place.
-    :rtype: str
     :raises ValidationFailedError: The host placed both in one family.
     """
     writer, judge = model_family(candidate_model), model_family(judge_model)
@@ -176,15 +171,10 @@ def admit_writer_launch(
     skill, its model, the scoring judge and its family, then the cases (the module docstring).
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param stored: The template's stored cases in the request's scope, read when the launch names no case set.
-    :ptype stored: Sequence[EvalTestCase]
     :param skills: The skill versions the launch may run, by digest, beside the shipped one.
-    :ptype skills: Mapping[str, AnalystSkill]
     :param model_family: The host's reading of a model's family.
-    :ptype model_family: ModelFamily
     :return: What the arm resolved to.
-    :rtype: WriterAdmitted
     :raises ValidationFailedError: The template asks for what a writer cannot honour or has no rubric; the arm's skill
         was not given; the arm names no model or no judge; the judge is of the writer's family, or of the editor's
         the arm names; or a case is missing, unreadable, carries no writer case or is retired.
@@ -217,13 +207,9 @@ def plan_writer_arm(host: EvalHost, request: LaunchRequest, admitted: WriterAdmi
     """A writer arm's plan: its admitted cases on its model, scored on the page by its judge, with no simulator.
 
     :param host: The host, where the judge configs are read.
-    :ptype host: EvalHost
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param admitted: What :func:`admit_writer_launch` resolved of it.
-    :ptype admitted: WriterAdmitted
     :return: The plan.
-    :rtype: ArmPlan
     :raises ValidationFailedError: Anything :func:`~threetears.evals.run.plan_judge` refuses.
     """
     return ArmPlan(
@@ -247,16 +233,11 @@ def writer_launch_deadline(
 
     :param request: The arm, whose template's rubric the judge scores and whose settings say how many judge calls a
         cell makes at once.
-    :ptype request: LaunchRequest
     :param admitted: What the arm resolved to; its revisions bound the report's rounds.
-    :ptype admitted: WriterAdmitted
     :param budget: Each report's budget; its turn cap bounds the report's turns.
-    :ptype budget: ReportBudget
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :return: The cell deadline in seconds
         (:func:`~threetears.evals.ops.report_writer.writer_kind.writer_cell_timeout_s`).
-    :rtype: float
     """
     return writer_cell_timeout_s(
         WriterLimits(revisions=admitted.overlays.revisions),

@@ -103,7 +103,6 @@ class WireSettings:
         """These settings as a completion's ``sent_settings``, or ``None`` when they name no output cap.
 
         :return: The settings value; the temperature is not part of it (a completion reports it as ``temperature``).
-        :rtype: ClientRequestSettings | None
         """
         if self.max_tokens is None:
             return None
@@ -127,11 +126,8 @@ def wire_settings_for(settings: ClientRequestSettings, temperature: float | None
     enforcement; a client whose calls differ (one without a reply format) replaces it per call.
 
     :param settings: The request settings the client is asked for.
-    :ptype settings: ClientRequestSettings
     :param temperature: The temperature it is asked for, or ``None`` for none.
-    :ptype temperature: float | None
     :return: The asked settings, every field as ``settings`` holds it.
-    :rtype: WireSettings
     """
     return WireSettings(
         max_tokens=settings.max_tokens,
@@ -184,9 +180,7 @@ class SettingFacts:
         """These facts, each unknown one taken from ``lower``; refused words from both.
 
         :param lower: The facts of a source below this one.
-        :ptype lower: SettingFacts
         :return: The combined facts.
-        :rtype: SettingFacts
         """
         return SettingFacts(
             accepts_temperature=_first(self.accepts_temperature, lower.accepts_temperature),
@@ -220,13 +214,9 @@ def _closest_word(word: str, on: Sequence[str], off: bool) -> str | None:
     is what such a model does by default, rather than an off switch nobody asked for.
 
     :param word: The word asked for, on :data:`EFFORT_LADDER`.
-    :ptype word: str
     :param on: The accepted words that reason (every one but ``none``).
-    :ptype on: Sequence[str]
     :param off: Whether reasoning can be switched off (``none`` is accepted).
-    :ptype off: bool
     :return: The word to send, the lower of two equally close; ``None`` for no reasoning parameter.
-    :rtype: str | None
     """
     if word == "none":
         if off:
@@ -359,13 +349,9 @@ def closest_settings(
       requests under ``require_parameters``; the request then carries the format unenforced.
 
     :param asked: What the client was asked for, ``strict_output`` being the call's own.
-    :ptype asked: WireSettings
     :param facts: What is known of the model.
-    :ptype facts: SettingFacts
     :param provider_family: The request shape the client speaks.
-    :ptype provider_family: ProviderFamily
     :return: The settings the request carries, and one sentence per setting that moved, for a log.
-    :rtype: tuple[WireSettings, tuple[str, ...]]
     :raises ValueError: ``asked`` carries a reasoning budget not below its ``max_tokens``, naming both.
     """
     budget_asked = asked.reasoning_max_tokens
@@ -413,11 +399,8 @@ def reasons(effort: str | None, budget: int | None) -> bool:
     """Whether a request with this reasoning word and budget reasons: a budget, or a word other than ``none``.
 
     :param effort: The effort word the request carries, or ``None``.
-    :ptype effort: str | None
     :param budget: The reasoning budget it carries, or ``None``.
-    :ptype budget: int | None
     :return: Whether it reasons.
-    :rtype: bool
     """
     return budget is not None or effort not in (None, "none")
 
@@ -435,11 +418,8 @@ def anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str
     word itself is always the request's ``output_config.effort`` (except ``none``), which a client sets beside this.
 
     :param sent: What the request carries (:func:`closest_settings`' answer).
-    :ptype sent: WireSettings
     :param facts: What was known of the model when it was chosen.
-    :ptype facts: SettingFacts
     :return: The request's ``thinking`` object, or ``None`` when the request carries none.
-    :rtype: dict[str, str | int] | None
     """
     if sent.reasoning_max_tokens is not None:
         return {"type": "enabled", "budget_tokens": sent.reasoning_max_tokens}

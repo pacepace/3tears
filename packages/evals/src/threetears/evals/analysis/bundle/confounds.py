@@ -86,9 +86,7 @@ def _world_confound_reason(matters: str) -> str:
     """Compose one world dimension's confound reason: the engine's clause, then the host's why.
 
     :param matters: The dimension's required ``matters`` prose.
-    :ptype matters: str
     :return: The reason a confound catalog renders for it.
-    :rtype: str
     """
     return f"{_WORLD_PLACEMENT_CONFOUND}. What this dimension is: {matters}"
 
@@ -118,10 +116,8 @@ def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
     whichever host's declarations it was first built from and scan every other host against them.
 
     :param profile: The host whose apparatus and world declarations the reasons come from.
-    :ptype profile: HostProfile
     :return: ``{dimension: reason}`` for every apparatus sweepable the host declares, plus every
         world dimension under :func:`world_dimension_key`.
-    :rtype: dict[str, str]
     """
     reasons = {
         declared.name: declared.confounds
@@ -170,25 +166,18 @@ def uncontrolled_dimensions(
     consumer never has to read prose to find out which of the three cases it is looking at.
 
     :param lever: The lever being compared (excluded from its own confound list).
-    :ptype lever: str
     :param cohort_run_ids: Every run in the cohort under comparison.
-    :ptype cohort_run_ids: list[str]
     :param lever_levels: The full lever → level → run-ids map.
-    :ptype lever_levels: dict[str, dict[str, list[str]]]
     :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
-    :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :param folds: The campaign's :class:`SurfaceFolds`. A resolved surface that varied only because
         its swept members did is the lever under comparison (or its sibling members) seen a
         second time, so it is not named — and likewise a surface a fixed knob is written into,
         where it held one level within each of the knob's. One whose residual or surface could
         not be read is named as ``undecided``, because whether anything besides the swept knob
         moved is exactly what no run recorded.
-    :ptype folds: SurfaceFolds
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The swept levers that varied within the cohort (sorted), then the apparatus
         dimensions that varied or could not be decided (in declaration order).
-    :rtype: list[Confound]
     """
     cohort = set(cohort_run_ids)
     confounds: list[Confound] = []
@@ -226,15 +215,11 @@ def apparatus_confounds(
     about which run set it was asked over.
 
     :param cohort_run_ids: The runs under comparison.
-    :ptype cohort_run_ids: Collection[str]
     :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`.
-    :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: One entry per dimension that varied or is undecided, **sorted by dimension**. A
         dimension that held still is absent — that absence is the claim, so it is only ever
         made about runs that recorded a value.
-    :rtype: list[Confound]
 
     **Sorted rather than emitted in declaration order, because this list is fingerprinted.**
     ``apparatus_confounds`` and every ``coverage[].confounded_by`` are lists, ``to_dict()``
@@ -272,14 +257,11 @@ def confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
     bare name with no reason attached, which is the one thing this catalog exists to prevent.
 
     :param bundle: The assembled bundle, with coverage and divergences already populated.
-    :ptype bundle: AnalysisContextBundle
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: ``{dimension: why}`` for every dimension named anywhere in the bundle's confound
         lists. A swept lever's reason is generic by design — a campaign sweeping a lever
         already believes it moves the numbers, which is what makes it a lever. An observed
         mechanism's reason is the engine's own, registered beside its threshold.
-    :rtype: dict[str, str]
     """
     catalog: dict[str, str] = {}
     apparatus_reasons = _apparatus_confound_reasons(profile=profile)

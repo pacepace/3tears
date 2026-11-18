@@ -23,7 +23,7 @@ from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.analysis.report.words import stratum_names
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals import Eval
-from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop

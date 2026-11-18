@@ -15,7 +15,7 @@ worker thread waits for its answer.
   The engine copies its context onto the executor thread
   (:func:`~threetears.evals.kernel.offload.run_blocking`); the bridge carries it on into the task.
 - **A call on a loop thread is refused**, before anything is scheduled
-  (:func:`~threetears.evals.schema.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
+  (:func:`~threetears.evals.schema.store_port.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
   never returns, and waiting from another loop's thread stalls that loop for the round trip.
 - **A loop that is not running is named**, rather than waited on: a call scheduled on a stopped loop never
   starts, and its caller would wait forever.
@@ -83,9 +83,7 @@ class AsyncStoreBridge:
         """Bridge ``store``, whose calls run on ``loop``.
 
         :param store: The async store.
-        :ptype store: AsyncDocumentStore
         :param loop: The loop its calls run on.
-        :ptype loop: asyncio.AbstractEventLoop
         """
         self.store = store
         self.loop = loop
@@ -94,9 +92,7 @@ class AsyncStoreBridge:
         """Run the coroutine ``make`` builds as a task on :attr:`loop`, in the caller's context, and wait for it.
 
         :param make: Builds the store call's coroutine; called on the loop, inside the task.
-        :ptype make: Callable[[], Coroutine[Any, Any, T]]
         :return: What the coroutine returned.
-        :rtype: T
         :raises StoreCalledOnEventLoop: The calling thread is running an event loop.
         :raises RuntimeError: :attr:`loop` is not running, so the call would never start.
         :raises concurrent.futures.CancelledError: The task was cancelled on its loop before it answered.
@@ -360,13 +356,10 @@ def bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoo
     arrive off that loop.
 
     :param store: The async adapter.
-    :ptype store: AsyncDocumentStore
     :param loop: The loop its calls run on.
-    :ptype loop: asyncio.AbstractEventLoop
     :return: The bridge: one that offers :class:`~threetears.evals.schema.StoreClock` exactly when ``store`` offers
         :class:`~threetears.evals.schema.AsyncStoreClock`, and :class:`~threetears.evals.schema.ResultReadings`
         exactly when it offers :class:`~threetears.evals.schema.AsyncResultReadings`.
-    :rtype: AsyncStoreBridge
     :raises TypeError: ``store`` has a ``now`` that is not a coroutine function: an async store's clock is awaited,
         and a synchronous one would be the calling process's time passed off as the database's. Or it offers the
         readings with a ``grouped`` that is not a coroutine function, or an ``iter_narrowed`` that is one (it gives an

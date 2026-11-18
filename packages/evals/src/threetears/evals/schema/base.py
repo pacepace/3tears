@@ -124,9 +124,7 @@ def _verbatim_json_object(value: Any) -> dict[str, JsonValue]:
     """Validate an opaque JSON object without trimming it, refusing what no store can hold as written.
 
     :param value: The payload as its owner built it.
-    :ptype value: Any
     :return: The payload, every key and string as written.
-    :rtype: dict[str, JsonValue]
     :raises ValueError: A value that is not JSON, or a lone surrogate, which no UTF-8 store can encode.
     """
     validated = _VERBATIM_JSON_OBJECT.validate_python(value)
@@ -182,11 +180,8 @@ class EvalBaseModel(BaseModel):
         ``UnicodeEncodeError`` during JSON serialization.
 
         :param indent: Indentation level for pretty printing (None for compact)
-        :ptype indent: int | None
         :param exclude_none: If True, exclude fields with None values
-        :ptype exclude_none: bool
         :return: JSON string representation
-        :rtype: str
         """
         try:
             return self.model_dump_json(indent=indent, exclude_none=exclude_none)
@@ -202,9 +197,7 @@ class EvalBaseModel(BaseModel):
         """Deserialize from JSON string.
 
         :param json_str: JSON string to parse
-        :ptype json_str: str
         :return: Model instance
-        :rtype: Self
         :raises ValidationError: If JSON is invalid or fails validation
         """
         return cls.model_validate_json(json_str)
@@ -225,13 +218,9 @@ class EvalBaseModel(BaseModel):
         Serializes enums to their values for JSON compatibility.
 
         :param exclude_none: If True, exclude fields with None values
-        :ptype exclude_none: bool
         :param exclude_unset: If True, exclude fields that were not explicitly set
-        :ptype exclude_unset: bool
         :param by_alias: If True, use field aliases as keys
-        :ptype by_alias: bool
         :return: Dictionary representation with JSON-compatible types
-        :rtype: dict[str, Any]
         """
         return self.model_dump(
             mode="json",  # Serialize enums to values, datetimes to strings, etc.
@@ -245,9 +234,7 @@ class EvalBaseModel(BaseModel):
         """Create instance from dictionary.
 
         :param data: Dictionary with field values
-        :ptype data: dict[str, Any]
         :return: Model instance
-        :rtype: Self
 
 
         This is the stored read: every load path in the engine goes through it, and it is as strict as
@@ -282,9 +269,7 @@ class EvalDocumentModel(EvalBaseModel):
         """Remove this model's computed-field keys from the input, silently, on every path.
 
         :param data: The input under validation; only a mapping is touched.
-        :ptype data: Any
         :return: The input without computed-field keys.
-        :rtype: Any
         """
         return without_computed_field_echo(cls, data)
 
@@ -297,11 +282,8 @@ def without_computed_field_echo(model: type[BaseModel], data: Any) -> Any:
     other unknown key is still refused by the model's own ``extra="forbid"``.
 
     :param model: The model under validation.
-    :ptype model: type[BaseModel]
     :param data: The input under validation; only a mapping is touched.
-    :ptype data: Any
     :return: The input without computed-field keys.
-    :rtype: Any
     """
     derived = model.model_computed_fields
     if not derived or not isinstance(data, Mapping) or not any(key in derived for key in data):
@@ -345,9 +327,7 @@ def _fields_holding_shapes(model: type[BaseModel]) -> tuple[str, ...]:
     """The fields of ``model`` whose declared type can hold a model, which a write walks for kept fields.
 
     :param model: A model class.
-    :ptype model: type[BaseModel]
     :return: The names, in declaration order.
-    :rtype: tuple[str, ...]
     """
 
     def holds_a_model(annotation: Any) -> bool:
@@ -390,14 +370,10 @@ class CoreShapeModel(BaseModel):
         """On a newer minor's stored read, validate what this class declares and keep the rest on the instance.
 
         :param data: The input under validation; only a mapping, on a newer minor's stored read, is split.
-        :ptype data: Any
         :param handler: The class's own validation.
-        :ptype handler: ValidatorFunctionWrapHandler
         :param info: The validation's context, which says whether this is that read.
-        :ptype info: ValidationInfo
         :return: The validated instance, marked with the minor it was read at and carrying the fields it does not
             declare (none, often).
-        :rtype: Any
         """
         minor = _newer_minor_read(info)
         if minor is None or not isinstance(data, Mapping):
@@ -427,9 +403,7 @@ class CoreShapeModel(BaseModel):
         equal shapes have equal declared fields, so equal hashes.
 
         :param other: What this shape is compared with.
-        :ptype other: object
         :return: Whether the two hold the same thing; ``NotImplemented`` for an object that is not a model.
-        :rtype: bool
         """
         if not isinstance(other, BaseModel):
             return NotImplemented
@@ -465,15 +439,11 @@ class CoreShapeModel(BaseModel):
         """Put back into ``shape``'s dump what a newer minor's read kept on it and on every shape below it.
 
         :param shape: A shape, and ``dumped`` its dump.
-        :ptype shape: CoreShapeModel
         :param dumped: The mapping ``to_dict`` dumped ``shape`` to, written into in place.
-        :ptype dumped: dict[str, Any]
         :param minors: Collects the minor of every shape a newer minor's read marked, so the document is stamped no
             older than anything it carries — a kept field, or a value of an open vocabulary this build does not
             know.
-        :ptype minors: list[int]
         :param by_alias: Whether the dump is keyed by alias.
-        :ptype by_alias: bool
         """
         kept = shape._newer_minor_fields
         if kept is not None:
@@ -533,9 +503,7 @@ def _built_at_this_minor(space: VersionSpace) -> AfterValidator:
     kept. Anything else is a construction or a payload naming a minor this build did not write.
 
     :param space: The version space whose minor the field holds.
-    :ptype space: VersionSpace
     :return: An ``AfterValidator`` for ``Annotated[StrictInt, ...]``.
-    :rtype: AfterValidator
     """
 
     def at_this_minor(minor: int, info: ValidationInfo) -> int:
@@ -566,11 +534,8 @@ def known_unless_newer_minor(vocabulary: str, known: tuple[str, ...]) -> AfterVa
     it, which makes it drift or a typo.
 
     :param vocabulary: What a value names, for the refusal (``"usage role"``).
-    :ptype vocabulary: str
     :param known: The values this build knows, in the order its readers list them.
-    :ptype known: tuple[str, ...]
     :return: An ``AfterValidator`` for ``Annotated[str, ...]``.
-    :rtype: AfterValidator
     """
 
     def known_or_newer(value: str, info: ValidationInfo) -> str:
@@ -623,10 +588,8 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         """Read a stored core document: upgraded to the current major first, and kept whole at a newer minor.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: Model instance, at the current core major. Its ``schema_minor`` is this build's, or the newer minor
             the document was written at, whose fields this build does not know it keeps.
-        :rtype: Self
         :raises ValidationError: The document's version or minor is not one this build reads, or the upgraded
             document fails validation.
         """
@@ -686,13 +649,9 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         takes its kept fields with it: they described the shape that was replaced.
 
         :param exclude_none: If True, exclude declared fields with None values
-        :ptype exclude_none: bool
         :param exclude_unset: If True, exclude declared fields that were not explicitly set
-        :ptype exclude_unset: bool
         :param by_alias: If True, use field aliases as keys
-        :ptype by_alias: bool
         :return: Dictionary representation with JSON-compatible types
-        :rtype: dict[str, Any]
         :raises ValueError: A kept field sits in a value whose dump does not mirror it, so it cannot be written
             back where it was read.
         """
@@ -713,11 +672,8 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         (\uD800-\uDFFF) are replaced with U+FFFD, as the base does.
 
         :param indent: Indentation level for pretty printing (None for compact)
-        :ptype indent: int | None
         :param exclude_none: If True, exclude fields with None values
-        :ptype exclude_none: bool
         :return: JSON string representation
-        :rtype: str
         :raises ValueError: The document, or a shape it carries, holds fields a newer minor's stored read kept.
         """
         if self._shape_holds_kept_fields(self):
@@ -737,9 +693,7 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         document is read with :meth:`from_dict`.
 
         :param json_str: JSON string to parse
-        :ptype json_str: str
         :return: Model instance
-        :rtype: Self
         :raises ValidationError: If the JSON is invalid or fails validation
         """
         return cls.model_validate_json(json_str)
