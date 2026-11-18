@@ -9,4 +9,4 @@ The design team went through a sample of real notifications (names changed) and 
 should get on the channel it was sent to. They are in `data/signed_off.jsonl`: the message `body`, its `channel`, and
 the `approved` preview.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

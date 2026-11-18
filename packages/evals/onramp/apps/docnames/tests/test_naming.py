@@ -8,6 +8,10 @@ class SlugTests(unittest.TestCase):
     def test_words_are_lower_case_and_hyphenated(self):
         self.assertEqual(slug("Spring Menu Costings"), "spring-menu-costings")
 
+    def test_accents_keep_their_base_letter(self):
+        self.assertEqual(slug("Café terrace lease"), "cafe-terrace-lease")
+        self.assertEqual(slug("Jalapeño salsa"), "jalapeno-salsa")
+
     def test_punctuation_separates_words(self):
         self.assertEqual(slug("Health & Safety policy (rev. 7)"), "health-safety-policy-rev-7")
         self.assertEqual(slug("Wine list 2025/26"), "wine-list-2025-26")

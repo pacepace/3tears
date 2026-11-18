@@ -10,4 +10,4 @@ the facts a reader of the email has to come away with (`data/key_facts.jsonl`: t
 a phrase as the report words it). A digest is only as good as the share of those facts it carries; three sentences
 cannot always carry all of them.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

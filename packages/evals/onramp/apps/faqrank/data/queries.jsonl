@@ -3,7 +3,7 @@
 {"id": "q-03", "query": "password reset link expired"}
 {"id": "q-04", "query": "2fa"}
 {"id": "q-05", "query": "not getting 2fa codes"}
-{"id": "q-06", "query": "verification code never arrives, what now?"}
+{"id": "q-06", "query": "verification code never arrives"}
 {"id": "q-07", "query": "login with google"}
 {"id": "q-08", "query": "okta"}
 {"id": "q-09", "query": "sso?"}

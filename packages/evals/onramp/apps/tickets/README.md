@@ -9,4 +9,4 @@ We are switching off the old helpdesk at the end of the month. `data/export.json
 tickets: each ticket's events, and the status and reopen count the old desk showed for it (`old_desk`). Replaying a
 ticket's events should land where the old desk had it.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

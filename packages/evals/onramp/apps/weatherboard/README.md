@@ -10,4 +10,4 @@ the logger recorded beside it, to a tenth of a degree. Since the board rounds to
 never be more than half a degree from the logger's Celsius. `data/readings_2026-01-19.jsonl` is a day of readings
 from the three old stations, as the board receives them.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

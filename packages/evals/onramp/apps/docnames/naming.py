@@ -3,8 +3,9 @@
 ``stored_name(title, uploaded, extension)`` gives the name, for example ``2026-03-04-spring-menu-costings.pdf``:
 
 - the upload date, ``YYYY-MM-DD``, then the title's slug, then the extension in lower case;
-- the slug is the title in lower case ASCII: accented letters keep their base letter (``é`` is ``e``, ``ñ`` is ``n``),
-  and any other character that is not a letter or a digit separates words;
+- the slug is the title in lower case ASCII: accented letters keep their base letter (``é`` is ``e``, ``ñ`` is ``n``);
+- apostrophes are dropped, so a word keeps together: ``Chef's notes`` is ``chefs-notes``, ``Don't`` is ``dont``;
+- any other character that is not a letter or a digit separates words;
 - words are joined by single hyphens, with none at either end;
 - a slug longer than :data:`MAX_SLUG` characters is cut back to the last whole word that fits;
 - a title with nothing left after all that is ``untitled``.
@@ -24,7 +25,7 @@ _SEPARATORS = re.compile(r"[^a-z0-9]+")
 
 def slug(title: str) -> str:
     """A title as the slug part of a stored name."""
-    folded = unicodedata.normalize("NFC", title).encode("ascii", "ignore").decode("ascii")
+    folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
     words = [word for word in _SEPARATORS.split(folded.lower()) if word]
     text = "-".join(words)
     if len(text) > MAX_SLUG:

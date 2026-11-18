@@ -10,4 +10,4 @@ team marked which articles help and how much (`data/judgments.jsonl`): 3 answers
 1 is of some use, and an article not listed is no use for that query. A good ranking puts the 3s first and gets the
 useful articles into the top five; the team reads results the way a customer does, so the first place matters most.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

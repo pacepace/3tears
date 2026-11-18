@@ -8,4 +8,4 @@ The courier bills us once a month. `data/courier_invoice.jsonl` is February's in
 courier weighed it, where it went, whether it was signed for, and what they charged (`charged_pence`). The desk quotes
 customers before the parcel goes, so our quote for a consignment should come to what the courier then charges for it.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.
