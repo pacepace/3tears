@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 from pydantic import SecretStr
 
@@ -21,10 +23,17 @@ def test_is_frozen() -> None:
         config.prefix = "elsewhere"  # type: ignore[misc]
 
 
-@pytest.mark.parametrize("field", ["retention_daily", "retention_weekly", "retention_monthly"])
-def test_retention_must_be_at_least_one(field: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "build"),
+    [
+        ("retention_daily", lambda: BackupConfig(passphrase=SecretStr("pw"), retention_daily=0)),
+        ("retention_weekly", lambda: BackupConfig(passphrase=SecretStr("pw"), retention_weekly=0)),
+        ("retention_monthly", lambda: BackupConfig(passphrase=SecretStr("pw"), retention_monthly=0)),
+    ],
+)
+def test_retention_must_be_at_least_one(field: str, build: Callable[[], BackupConfig]) -> None:
     with pytest.raises(ValueError, match=field):
-        BackupConfig(passphrase=SecretStr("pw"), **{field: 0})
+        build()
 
 
 def test_empty_passphrase_rejected() -> None:

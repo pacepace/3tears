@@ -31,7 +31,7 @@ import asyncio
 import os
 import signal
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 
 from threetears.observe import cancel_and_wait, contain, get_logger
 
@@ -103,7 +103,7 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
 
 async def stream_stdout(
     argv: list[str], *, env: Mapping[str, str] | None = None, timeout: float | None = None
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes]:
     """Run ``argv`` and yield its stdout in chunks; raise on a non-zero exit or timeout.
 
     :param argv: the command and its arguments.
@@ -217,7 +217,7 @@ async def pipe_through(
     *,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes]:
     """Run ``argv``, stream ``source`` into its stdin, and yield its stdout; raise on failure.
 
     The two directions run concurrently, so a tool that writes while it reads (``pg_restore -f -``

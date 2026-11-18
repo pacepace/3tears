@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### backup: `stream_stdout` and `pipe_through` answer an `AsyncGenerator`
+
+`threetears.backup.stream_stdout` and `pipe_through` are typed `AsyncGenerator[bytes]` (they always were async
+generators), so a caller that stops early can `aclose()` one, the call that kills the child, with no ignore. Nothing
+changes at run time.
+
 ### registry: `CallProxy.start` takes a `CallProxyTransport`, `ToolCallClient` a `ProxyCallRequester`
 
 `CallProxy.start(nc)` takes `threetears.registry.proxy.CallProxyTransport` (the call subscription, `request_raw`,

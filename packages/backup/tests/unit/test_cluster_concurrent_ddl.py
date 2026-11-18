@@ -13,6 +13,7 @@ failure. The dump subprocess is the only thing faked, as in ``test_cluster_snaps
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -83,17 +84,11 @@ class _ScriptedDumps:
 
 
 @pytest.fixture
-def scripted() -> Iterator[_ScriptedDumps]:
+def scripted(monkeypatch: pytest.MonkeyPatch) -> Iterator[_ScriptedDumps]:
     dumps = _ScriptedDumps([])
-    original_drivers = drivers_module.stream_stdout
-    original_cluster = cluster_module.stream_stdout
-    drivers_module.stream_stdout = dumps.stream_stdout
-    cluster_module.stream_stdout = dumps.stream_stdout
-    try:
-        yield dumps
-    finally:
-        drivers_module.stream_stdout = original_drivers
-        cluster_module.stream_stdout = original_cluster
+    monkeypatch.setattr(drivers_module, "stream_stdout", dumps.stream_stdout)
+    monkeypatch.setattr(cluster_module, "stream_stdout", dumps.stream_stdout)
+    yield dumps
 
 
 async def _run(tmp_path: Any, connection: _Connection, *, retries: int = 3) -> BackupManifest:
@@ -149,7 +144,7 @@ class TestTheBackoffDoubles:
         async def _sleep(seconds: float) -> None:
             slept.append(seconds)
 
-        monkeypatch.setattr(cluster_module.asyncio, "sleep", _sleep)
+        monkeypatch.setattr(asyncio, "sleep", _sleep)
 
         await _run(tmp_path, _Connection(), retries=3)
 

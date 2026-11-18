@@ -108,7 +108,7 @@ class _RecordingConnection:
 
 
 @pytest.fixture
-def dump_argv() -> Iterator[list[list[str]]]:
+def dump_argv(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[list[str]]]:
     """capture every dump argv instead of launching a dump tool.
 
     :yield: the argv of each subprocess the backup would have run
@@ -124,15 +124,9 @@ def dump_argv() -> Iterator[list[list[str]]]:
 
         return chunks()
 
-    original_drivers = drivers_module.stream_stdout
-    original_cluster = cluster_module.stream_stdout
-    drivers_module.stream_stdout = fake_stream_stdout
-    cluster_module.stream_stdout = fake_stream_stdout
-    try:
-        yield captured
-    finally:
-        drivers_module.stream_stdout = original_drivers
-        cluster_module.stream_stdout = original_cluster
+    monkeypatch.setattr(drivers_module, "stream_stdout", fake_stream_stdout)
+    monkeypatch.setattr(cluster_module, "stream_stdout", fake_stream_stdout)
+    yield captured
 
 
 async def _run_backup(tmp_path: Any, connection: _RecordingConnection) -> BackupManifest:

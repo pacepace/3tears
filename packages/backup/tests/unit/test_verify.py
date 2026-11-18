@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+import asyncio
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from uuid import UUID
 from typing import Any
@@ -35,7 +36,7 @@ class _FailingEngine:
         raise RuntimeError("restore blew up")
 
 
-def _provisioner(lifecycle: list[str], *, dsn: str = _TEMP_DSN):
+def _provisioner(lifecycle: list[str], *, dsn: str = _TEMP_DSN) -> Callable[[], AbstractAsyncContextManager[str]]:
     @asynccontextmanager
     async def provision() -> AsyncIterator[str]:
         lifecycle.append("enter")
@@ -211,7 +212,7 @@ async def test_a_drop_that_times_out_is_retried(monkeypatch: pytest.MonkeyPatch)
     """Yugabyte's timeout means "still reaping", not "cannot drop"."""
     log: list[str] = []
     admin = _FlakyAdmin(log, fail_drops=2)
-    monkeypatch.setattr(verify_mod.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     async def connect(dsn: str) -> _FlakyAdmin:
         return admin
@@ -229,7 +230,7 @@ async def test_a_drop_that_never_succeeds_does_not_raise(monkeypatch: pytest.Mon
     """Cleanup failure must not fail a verification whose body already succeeded."""
     log: list[str] = []
     admin = _FlakyAdmin(log, fail_drops=99)
-    monkeypatch.setattr(verify_mod.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     async def connect(dsn: str) -> _FlakyAdmin:
         return admin
@@ -249,7 +250,7 @@ async def test_a_failing_drop_does_not_mask_the_body_s_own_error(monkeypatch: py
     """
     log: list[str] = []
     admin = _FlakyAdmin(log, fail_drops=99)
-    monkeypatch.setattr(verify_mod.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     async def connect(dsn: str) -> _FlakyAdmin:
         return admin
