@@ -47,18 +47,13 @@ from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from threetears.evals import Eval
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    CampaignBundle,
-    assemble_campaign_bundle,
-    build_campaign_report,
-    build_code_only_report,
-    campaign_report,
-    campaign_report_markdown,
-    campaign_stopped_short,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, build_code_only_report, campaign_report, report_html
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.service import campaign_stopped_short
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import analysis_lead, build_code_only_report_in_forms
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html

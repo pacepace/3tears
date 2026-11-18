@@ -109,18 +109,12 @@ def criterion_reads(
     criterion, with its status there (this module's account).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm's id.
-    :ptype arm: str
     :param task: The one task to read in, by id; None to read wherever each criterion reads.
-    :ptype task: str | None
     :param cell: The one target-matrix cell to read in, by id; None to read wherever each criterion reads.
-    :ptype cell: str | None
     :param criterion: The one gate or guardrail to read, by id; None for every one.
-    :ptype criterion: str | None
     :return: Each place's read, in the criteria's order and each criterion's places' order; a criterion read at no
         place is one ``unknown`` read with no task and no cell.
-    :rtype: tuple[CriterionRead, ...]
     :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not
         hold.
     """
@@ -161,13 +155,9 @@ def gate_status(report_input: ReportInput, arm: str, *, task: str | None = None)
     (:func:`~threetears.evals.analysis.per_input.kept_for`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm's id.
-    :ptype arm: str
     :param task: The one task to read in, by id; None to read wherever each criterion reads.
-    :ptype task: str | None
     :return: ``fail``, ``borderline`` or ``pass``.
-    :rtype: GateStatus
     :raises ValueError: The input holds no such task.
     """
 

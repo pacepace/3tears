@@ -44,7 +44,6 @@ from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
-    DEFAULT_FAIL_ON,
     ConfusionCount,
     GateResult,
     LabelStatistics,
@@ -55,11 +54,12 @@ from threetears.evals.analysis import (
     Report,
     TableBlock,
     campaign_report,
-    campaign_report_markdown,
     create_campaign,
-    get_campaign,
     variant_key_of_run,
 )
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.kernel import (
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
@@ -68,8 +68,8 @@ from threetears.evals.kernel import (
     GuardrailMargin,
     GuardrailReadings,
     confusion_cell,
-    confusion_of,
 )
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
 from threetears.evals.schema import BlindReadReport, CalibrationRating, CompletionClient, EvalResult
 from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
@@ -79,7 +79,7 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
+from threetears.evals.analysis.bundle.comparisons import LATE_QUESTION_SENTENCE, REREAD_SENTENCE, read_by_bet
 from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -172,9 +172,7 @@ def _shown_arm_name(arm: str) -> str:
     nor in the order the variant sorts its levers in. An arm named plainly is printed as named.
 
     :param arm: The arm, by its key in the eval's runners.
-    :ptype arm: str
     :return: Its name as a reader is shown it.
-    :rtype: str
     """
     pairs = coordinates(arm)
     if pairs is None:
@@ -338,9 +336,7 @@ class Result:
         """Every result of one arm: each case's answer on each repeat, its grades, and why it failed or was excluded.
 
         :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
-        :ptype arm: str | None
         :return: The arm's results, as :meth:`~threetears.evals.analysis.summary.EvalSummary.results` reads them.
-        :rtype: list[CaseResult]
         :raises ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
         """
         return self._arm(arm).results()
@@ -349,9 +345,7 @@ class Result:
         """The results one arm missed, each saying why.
 
         :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
-        :ptype arm: str | None
         :return: The arm's misses, as :meth:`~threetears.evals.analysis.summary.EvalSummary.misses` reads them.
-        :rtype: list[CaseResult]
         :raises ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
         """
         return self._arm(arm).misses()
@@ -384,11 +378,8 @@ class Result:
         counted the same way, over the same results, from each answer's label in that field.
 
         :param grader: The field, by name; ``None`` for the classifier.
-        :ptype grader: str | None
         :param arm: The arm, by name; ``None`` for the one arm of a result that has one.
-        :ptype arm: str | None
         :return: The confusion matrix, by expected then predicted label, and each label's statistics, by label.
-        :rtype: tuple[list[ConfusionCount], list[LabelStatistics]]
         :raises ValueError: No field grader of that name (or none at all), or an arm the result does not have.
         """
         summary = self._arm(arm)
@@ -445,13 +436,9 @@ class Result:
 
         :param model: The reviewer: a model id, a :class:`~threetears.evals.providers.Model`, or any completion
             client that names its model.
-        :ptype model: str | CompletionClient
         :param max_cost_usd: The most the eval may spend, these calls included; ``None`` for no cap.
-        :ptype max_cost_usd: float | None
         :param kept: The file its answers are kept in and read back from; ``None`` keeps none.
-        :ptype kept: str | os.PathLike[str] | None
         :return: The result, its blind read carrying the model's answers beside any already there.
-        :rtype: Result
         :raises ValueError: A client naming no model, or an unjudged result or one with no judged answer to read.
         """
         judge = self.judge
@@ -561,9 +548,7 @@ class Result:
         stopped.
 
         :param full: Every arm's whole summary and the whole report, Methods included, as Markdown.
-        :ptype full: bool
         :return: The text.
-        :rtype: str
         """
         # Every arm's total in one form, the page's for its test costs (plain dollars to two significant figures), and
         # every role's share of one in another.
@@ -812,11 +797,14 @@ class Result:
         (:func:`~threetears.evals.analysis.bundle.comparisons.read_by_bet`) and its runs are kept in a store a later run
         continues it from; where they were kept in memory, that running it again is a new comparison
         (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`), which is what the page's sentence, said of a
-        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read."""
+        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read. A question set after the
+        results (:data:`~threetears.evals.analysis.bundle.comparisons.LATE_QUESTION_SENTENCE`) says so first, as the
+        page's disclosure does: its bet leans no way."""
         families = self.report.bundle.multiple_comparisons.families
         if not any(read_by_bet(family) for family in families):
             return []
-        return [UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
+        late = [LATE_QUESTION_SENTENCE] if any(f.primary is not None and f.lean is None for f in families) else []
+        return [*late, UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 
     def _stopped_lines(self) -> list[str]:
         """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's
@@ -893,13 +881,11 @@ class Result:
         judged answers to read blind.
 
         :param out_dir: The directory; created when missing.
-        :ptype out_dir: Path | str
         :return: Each file written, by role, as :meth:`~threetears.evals.analysis.CampaignReport.write` names them
             (``html``, ``markdown``, ``json``, ``bundle:<aspect>``), and, for a judged eval, ``blind_read`` (a
             self-contained page: the judged answers in one seeded random order, no arm, run or judge score on it, to
             answer from the top and save as the labels ``Judge(labels=...)`` reads back) and ``blind_read_csv`` (the
             same order as rows, for a spreadsheet).
-        :rtype: dict[str, Path]
         """
         written = self.page.write(out_dir)
         for role, name in (("blind_read", BLIND_READ_HTML), ("blind_read_csv", BLIND_READ_CSV)):
@@ -945,7 +931,6 @@ class Result:
 
         :param reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
             (``"Accuracy"``); ``None`` keeps every row.
-        :ptype reading: str | None
         :return: One row per arm and reading, keyed ``arm`` (the arm tested, by its key in :attr:`arms`: the name
             you gave it), ``measure_id`` (the key of the measure read, to cite or filter
             on), ``question`` (in the words it was asked), ``reading`` (the measure as the report heads it),
@@ -956,7 +941,6 @@ class Result:
             over the campaign's family), ``verdict`` (in words, printed from ``outcome``) and ``outcome`` (the
             typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
             code branches on); empty when the report tested nothing.
-        :rtype: list[dict[str, Any]]
         """
         rows = contrast_rows(self.report.bundle, forms=self._aspect_forms(), arm_labels=self.arm_labels or None)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
@@ -977,11 +961,8 @@ class Result:
 
         :param reading: Only the verdicts on this reading, by its key (``"accuracy"``) or as the report heads it
             (``"Accuracy"``); ``None`` keeps every one.
-        :ptype reading: str | None
         :param kind: Only ``"contrast"``, ``"guardrail"`` or ``"bar"`` verdicts; ``None`` keeps every kind.
-        :ptype kind: VerdictKind | None
         :return: The verdicts, guardrails first, then bars, then contrasts, each in its table's row order.
-        :rtype: list[Verdict]
         """
         return [
             verdict
@@ -993,15 +974,12 @@ class Result:
     def gate(self, fail_on: Iterable[str] = DEFAULT_FAIL_ON, *, readings: Iterable[str] | None = None) -> GateResult:
         """Gate a build on this comparison's verdicts, as ``python -m threetears.evals gate`` does on a campaign.
 
-        :param fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
-            :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
+        :param fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.gate.GATE_TOKENS`). The default,
+            :data:`~threetears.evals.analysis.gate.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
             guardrail and an undecided guardrail.
-        :ptype fail_on: Iterable[str]
         :param readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
-        :ptype readings: Iterable[str] | None
         :return: The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was
             decided and none failed, ``undecided`` otherwise — never a pass.
-        :rtype: GateResult
         :raises ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
         """
         return gate_verdicts(self.report.verdicts, fail_on=fail_on, readings=readings)
@@ -1014,16 +992,13 @@ class Result:
         ``STRATUM_MIN_CASES`` (10) cases marked too few to read alone, then one row per reading.
 
         :param arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
-        :ptype arm: str | None
         :param reading: Only the rows on this reading, as the report heads it (``"Accuracy"``), or ``"cases"``;
             ``None`` keeps every row.
-        :ptype reading: str | None
         :return: One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
             the report names it), ``reading``, ``all`` (the figure over every case) and ``strata`` (the figure
             over each stratum's cases alone, by stratum: its declared name, else its id (``edge_case``), as the
             case declared it, never the name the page prints (``edge case``); the cases declaring none under
             ``"(no stratum)"``; a stratum the arm has no case in is absent); empty when no case declares a stratum.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
@@ -1069,14 +1044,12 @@ class Result:
         margin, ``breached`` when it is shown worse by more, and ``undecided`` otherwise, which is never safe.
 
         :param arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
-        :ptype arm: str | None
         :return: One row per guardrail and arm, keyed ``arm`` (the arm checked, by its key in :attr:`arms`),
             ``measure_id`` (the guardrail's key: a scorer's name or a judged dimension's), ``outcome`` (``held``,
             ``breached`` or ``undecided``), ``contrast`` (the arm, as the report names it), and the table's other
             columns: ``guardrail`` (as the report heads it), ``control_mean`` and ``arm_mean``, ``cases``,
             ``delta`` (arm minus control), ``interval`` (on the delta), ``margin`` and ``decision`` (the outcome in
             words, with why when undecided); empty when no reading is a guardrail or no control resolved.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: ``arm`` names no arm.
         """
         if arm is not None:
@@ -1110,10 +1083,8 @@ class Result:
         ``undecided`` is not known to be safe, which says nothing either way about whether it is.
 
         :param arm: The arm, by its key in :attr:`arms`.
-        :ptype arm: str
         :return: The guardrails the arm breached, those it is undecided on, and those it held, each by key; all empty
             for the control, which no guardrail is checked against itself, and when no reading is a guardrail.
-        :rtype: ArmGuardrails
         :raises ValueError: ``arm`` names no arm.
         """
         _refuse_an_unknown_arm(self.arms, arm)
@@ -1145,18 +1116,12 @@ class Result:
 
         :param control: The arm to test every other against, by name; this result's own control reads the same arms
             again.
-        :ptype control: str
         :param name: The new campaign's name; ``None`` names it after this one and the new control.
-        :ptype name: str | None
         :param created_by: Who the campaign and its control are recorded as created by.
-        :ptype created_by: str
         :param question: The question the new campaign asks; ``None`` asks this result's own, with its margin.
-        :ptype question: str | None
         :param margin: The question's margin, in the measure's units, as :class:`~threetears.evals.Eval`'s ``margin``;
             ``None`` keeps this result's own where no new question is given, and declares none with a new one.
-        :ptype margin: float | None
         :return: A result over the same arms and runs, against ``control``.
-        :rtype: Result
         :raises ValueError: ``control`` names no arm; a blank question; a margin outside 0 to 1, or with no question
             to read it under.
         :raises ValidationFailedError: The host refuses the campaign's declaration.
@@ -1232,9 +1197,7 @@ def refuse_an_unusable_margin(margin: float | None, question: str | None) -> Non
     to read it under.
 
     :param margin: The margin, in the measure's units (a share of 0 to 1); ``None`` declares none.
-    :ptype margin: float | None
     :param question: The question it would be read under; ``None`` asks none.
-    :ptype question: str | None
     :raises ValueError: Naming what is wrong with it.
     """
     if margin is None:
@@ -1470,7 +1433,6 @@ def read_blind(
 
     :return: The read's close over the labels (the read with its report, and the readings the print states), and the
         people's labels that are not on its draw; ``(None, ())`` with no judge or no judged answer to show.
-    :rtype: tuple[BlindClose | None, tuple[CalibrationRating, ...]]
     :raises ValueError: A labels file with a missing column, or a label not on its dimension's scale.
     """
     if judge is None:
@@ -1528,15 +1490,10 @@ def blind_reading(
     judge's agreement with people. The read itself stays the engine's.
 
     :param judge: The eval's judge, or ``None``.
-    :ptype judge: Judge | None
     :param closed: The run's blind read's close over its labels, or ``None`` where there is no judged answer to show.
-    :ptype closed: BlindClose | None
     :param arms: Each arm's summary, by name: an arm is printed by the name every surface prints it by.
-    :ptype arms: Mapping[str, EvalSummary]
     :param kept: The file a model reviewer's answers are kept in, or ``None``.
-    :ptype kept: Path | None
     :return: The result's ``blind_read``, ``blind_read_files``, ``judge_read`` and ``calibrations``.
-    :rtype: dict[str, Any]
     """
     if judge is None:
         return {"blind_read": None, "blind_read_files": {}, "judge_read": (), "calibrations": ()}
@@ -1571,9 +1528,7 @@ def calibrations_of(closed: BlindClose | None) -> tuple[JudgeCalibration, ...]:
     A model's answers are never here: this is agreement with people.
 
     :param closed: The close, or ``None``.
-    :ptype closed: BlindClose | None
     :return: One per dimension a person's label pairs with.
-    :rtype: tuple[JudgeCalibration, ...]
     """
     if closed is None:
         return ()
@@ -1605,11 +1560,8 @@ def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Resul
     the store has none, as it has no blind read.
 
     :param result: The result.
-    :ptype result: Result
     :param examples: How the judge graded its examples, or ``None`` where it has none.
-    :ptype examples: JudgeExamples | None
     :return: The result, its page with the line.
-    :rtype: Result
     """
     if examples is None:
         return result

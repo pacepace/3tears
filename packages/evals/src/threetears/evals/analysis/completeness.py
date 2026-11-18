@@ -60,10 +60,8 @@ def completeness_disclosure(completeness: RunCompleteness | None) -> str | None:
     reasons a cell went missing rather than a balancing identity.
 
     :param completeness: The run's stored record, or ``None``.
-    :ptype completeness: RunCompleteness | None
     :return: The disclosure, rendered verbatim by every surface, or ``None`` when
         there is nothing a reader needs warning about.
-    :rtype: str | None
     """
     if completeness is None or not completeness.degraded:
         return None
@@ -107,13 +105,11 @@ def degraded_run_disclosures(runs: Iterable[EvalRun]) -> dict[str, str]:
     a completed-but-short run reached all three aggregators by default.
 
     :param runs: The runs behind an answer. Order is irrelevant; keying is by id.
-    :ptype runs: Iterable[EvalRun]
     :return: ``run_id -> disclosure`` for each degraded run, omitting every run that
         delivered its whole matrix and every run carrying no completeness record
         (a record's absence is not evidence of a shortfall — see
         :func:`completeness_disclosure`). Empty means nothing needs disclosing,
         so a caller can use emptiness as the predicate rather than re-deriving it.
-    :rtype: dict[str, str]
     """
     return {run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None}
 
@@ -134,9 +130,7 @@ def bundle_stopped_short(bundle: AnalysisContextBundle) -> StoppedShort | None:
     record says it ended (``RunSummary.ended_because``; none on a bundle assembled before that was carried).
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: None when every member run completed; else the unfinished runs, in the bundle's order.
-    :rtype: StoppedShort | None
     """
     reasons = {summary.run_id: summary.ended_because for summary in bundle.run_summaries}
     return stopped_short(
@@ -153,11 +147,8 @@ def _unfinished_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], st
     the bundle reads one arm; a run the realized design places in no arm by its id.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
     :return: The sentences.
-    :rtype: list[str]
     """
     short = bundle_stopped_short(bundle)
     if short is None:
@@ -183,11 +174,8 @@ def unfinished_opening(bundle: AnalysisContextBundle, arm: Callable[[str], str])
     (:meth:`~threetears.evals.analysis.run_ending.StoppedShort.pooled`).
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
     :return: What stopped the runs, then the whole opening; None when every run completed.
-    :rtype: tuple[str, str] | None
     """
     short = bundle_stopped_short(bundle)
     if short is None:
@@ -208,9 +196,7 @@ def lost_share(board: ArmScoreboard) -> float:
     """The share of an arm's trials lost to the test setup; 0 for an arm that ran none.
 
     :param board: The arm's scoreboard.
-    :ptype board: ArmScoreboard
     :return: The share, 0 to 1.
-    :rtype: float
     """
     return sum(board.lost.values()) / board.ran if board.ran else 0.0
 
@@ -220,9 +206,7 @@ def setup_failed(bundle: AnalysisContextBundle) -> bool:
     or two arms' shares differ by more than that.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: True when the run measured its setup rather than the models.
-    :rtype: bool
     """
     shares = [lost_share(board) for board in bundle.scoreboard if board.ran]
     return bool(shares) and (max(shares) > SETUP_GATE_SHARE or max(shares) - min(shares) > SETUP_GATE_SHARE)
@@ -234,9 +218,7 @@ def gate_rule(bundle: AnalysisContextBundle) -> GateRule | None:
     when it can be read (one arm, or enough cases), or when no trial ran, which is nothing to read rather than a gate.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: The rule, or None.
-    :rtype: GateRule | None
     """
     boards = bundle.scoreboard
     if boards and setup_failed(bundle):

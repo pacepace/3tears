@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.campaign_title import campaign_title, declared_title
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops import analyses_list, report_read

@@ -223,7 +223,6 @@ def test_the_engine_models_are_on_the_engine_base():
     from threetears.evals.kernel.metrics import MetricDescriptor
     from threetears.evals.schema.models import EvalRun
     from threetears.evals.kernel.result_condition import ResultCondition
-    from threetears.evals.kernel.usage_capture import ResolvedUsage
 
     for cls in (
         DerivedContextIdentity,
@@ -231,7 +230,6 @@ def test_the_engine_models_are_on_the_engine_base():
         EvalRun,
         ScoreRecord,
         ResultCondition,
-        ResolvedUsage,
         Report,
     ):
         assert issubclass(cls, EvalBaseModel), f"{cls.__name__} is not on the eval base"

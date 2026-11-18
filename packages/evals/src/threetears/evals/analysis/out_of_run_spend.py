@@ -55,9 +55,7 @@ class OutOfRunSpendTotals(EvalBaseModel):
         """Sum ``rows``.
 
         :param rows: Ledger rows.
-        :ptype rows: Sequence[OutOfRunSpend]
         :return: Their totals.
-        :rtype: OutOfRunSpendTotals
         """
         return cls(
             n_calls=sum(_calls(row) for row in rows),
@@ -135,17 +133,11 @@ def scope_out_of_run_spend(
     """What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param scope_id: The scope to read.
-    :ptype scope_id: str
     :param purpose: Only calls made for this purpose (``variation``, ``proposer`` or ``analysis``).
-    :ptype purpose: KnownOutOfRunPurpose | None
     :param launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
-    :ptype launch_group_id: str | None
     :param template_id: Only calls made for this template.
-    :ptype template_id: str | None
     :return: The report.
-    :rtype: OutOfRunSpendReport
     """
     rows = host.storage.query_out_of_run_spend(
         scope_id, purpose=purpose, launch_group_id=launch_group_id, template_id=template_id
@@ -192,9 +184,7 @@ def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
     """The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
 
     :param report: What :func:`scope_out_of_run_spend` returned.
-    :ptype report: OutOfRunSpendReport
     :return: The text.
-    :rtype: str
     """
     narrowed = ", ".join(
         f"{name} {value}"

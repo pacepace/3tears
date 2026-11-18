@@ -24,16 +24,10 @@ import pytest
 from threetears.evals import Eval, Result, grader
 from threetears.evals.storage import InMemoryDocumentStore
 
-from threetears.evals.analysis import (
-    DEFAULT_FAIL_ON,
-    GATE_TOKENS,
-    TableBlock,
-    Verdict,
-    create_campaign,
-    gate_verdicts,
-    parse_fail_on,
-    verdict_token,
-)
+from threetears.evals.analysis import TableBlock, Verdict, create_campaign, gate_verdicts
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.gate import GATE_TOKENS
+from threetears.evals.analysis.gate import parse_fail_on
 from threetears.evals.quick import (
     EXIT_GATE_FAILED,
     EXIT_OK,
@@ -93,12 +87,15 @@ class TestTheReportCarriesTypedVerdicts:
         comparison = await _compare({"current": 0, "worse": 30, "same": 0})
         table = next(b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "comparisons")
         typed = comparison.verdicts(kind="contrast")
-        # Each cell is its verdict's words; an undecided one's cell is the short form, since the row names both arms.
+        # Each cell is its verdict's words; an undecided one the bet read says where the arm stands, in the cell too.
         assert [(verdict.arm, verdict.words) for verdict in typed] == [
-            ("same", "the evidence cannot tell same and current apart"),
-            ("worse", "worse worse than current"),
+            ("same", "same level with current, undecided"),
+            ("worse", "worse worse than current, decided at 13 cases when the evidence reached 132"),
         ]
-        assert [row["verdict"] for row in table.values()] == ["cannot tell apart", "worse worse than current"]
+        assert [row["verdict"] for row in table.values()] == [
+            "same level with current, undecided",
+            "worse worse than current, decided at 13 cases when the evidence reached 132",
+        ]
         by_arm = {verdict.arm: verdict for verdict in typed}
         assert (by_arm["worse"].outcome, by_arm["worse"].reason) == ("regressed", "separated")
         assert by_arm["same"].outcome in ("not_separated", "untested")
@@ -108,7 +105,9 @@ class TestTheReportCarriesTypedVerdicts:
     async def test_contrasts_rows_carry_the_typed_outcome_beside_the_words(self) -> None:
         comparison = await _compare({"current": 0, "worse": 30})
         (row,) = comparison.contrasts("correct")
-        assert row["outcome"] == "regressed" and row["verdict"] == "worse worse than current"
+        assert row["outcome"] == "regressed" and row["verdict"] == (
+            "worse worse than current, decided at 11 cases when the evidence reached 42"
+        )
         assert comparison.verdicts("Correct score") == comparison.verdicts("correct")
         assert comparison.verdicts("correct", kind="guardrail") == []
 
@@ -155,9 +154,13 @@ class TestTheGate:
 
     def test_every_bar_outcome_short_of_a_decision_counts_as_an_undecided_bar(self) -> None:
         for outcome in ("undecided", "no_interval", "no_data"):
-            assert verdict_token(_verdict("bar", outcome)) == "undecided-bar"
-        assert verdict_token(_verdict("bar", "missed", reason="interval_misses")) == "missed"
-        assert verdict_token(_verdict("contrast", "improved")) is None
+            short = [_verdict("bar", outcome)]
+            assert gate_verdicts(short, fail_on=["undecided-bar"]).outcome == "failed"
+            assert gate_verdicts(short, fail_on=["missed"]).outcome == "undecided"
+        missed = [_verdict("bar", "missed", reason="interval_misses")]
+        assert gate_verdicts(missed, fail_on=["missed"]).outcome == "failed"
+        assert gate_verdicts(missed, fail_on=["undecided-bar"]).outcome == "passed"
+        assert gate_verdicts([_verdict("contrast", "improved")], fail_on=list(GATE_TOKENS)).outcome == "passed"
 
     def test_a_reading_filter_gates_only_those_readings_and_refuses_an_unknown_one(self) -> None:
         verdicts = [_verdict("contrast", "regressed", name="cost", heading="Cost"), _verdict("contrast", "improved")]

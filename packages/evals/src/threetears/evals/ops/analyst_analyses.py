@@ -60,24 +60,15 @@ async def options_dominance(
     """Which options survive the gates, which dominates on the decision's axes, and what extra axes say beside them.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param axes: Extra measures or judged dimensions to compare the survivors on, descriptively.
-    :ptype axes: Sequence[str]
     :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``, as the caller chose.
-    :ptype bars_as: BarsAs
     :param limit: The most options one page holds.
-    :ptype limit: int
     :param offset: The first option the page holds, in the input's arm order.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[Dominance], bool] | None
     :return: The survivors, the options removed, the dominant ones, the extra axes and code's call, a page of options.
-    :rtype: Dominance
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or an axis names nothing it holds.
     """
@@ -107,28 +98,17 @@ async def decision_sensitivity(
     """How code's call moves as one declared criterion moves: where each arm's status flips, and the call between.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param parameter: ``margin:<aspect>``, ``floor:<aspect>/<floor>`` or ``threshold:<criterion>``.
-    :ptype parameter: str
     :param range_low: Where the sweep starts; omitted, zero for a margin or floor, no lower end for a threshold.
-    :ptype range_low: float | None
     :param range_high: Where it ends; omitted, no upper end.
-    :ptype range_high: float | None
     :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``, as the caller chose.
-    :ptype bars_as: BarsAs
     :param limit: The most flips one page lists.
-    :ptype limit: int
     :param offset: The first flip the page lists.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[Sensitivity], bool] | None
     :return: The segments, a page of flips, and whether the call holds across the range.
-    :rtype: Sensitivity
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, the parameter names nothing it holds, or the range is
         not one.
@@ -169,28 +149,17 @@ async def measure_breakdown(
     """A measure slice by slice: each candidate against the control in each stratum, task or cell. Exploratory.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param arm: The one candidate to show; None for every candidate.
-    :ptype arm: str | None
     :param slice_by: ``stratum``, ``task`` or ``cell``.
-    :ptype slice_by: SliceBy
     :param aspect: For strata, only those slicing this aspect's cases.
-    :ptype aspect: str | None
     :param limit: The most slices one page holds.
-    :ptype limit: int
     :param offset: The first slice the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[Breakdown], bool] | None
     :return: A page of slices, and where each candidate's loss sits most.
-    :rtype: Breakdown
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read or has no control, or the arguments name nothing it
         holds.
@@ -224,26 +193,16 @@ async def arms_compare(
     """Two arms compared on one measure, overall and in each slice holding both, with an interval on the difference.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param arms: The two arms, by id: every difference is the first minus the second.
-    :ptype arms: Sequence[str]
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param assumed_cases: A what-if: the cases each slice stating no count is read as holding, or ``share``.
-    :ptype assumed_cases: int | str | None
     :param limit: The most places one page holds.
-    :ptype limit: int
     :param offset: The first place the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[ArmsComparison], bool] | None
     :return: A page of places, overall first.
-    :rtype: ArmsComparison
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; not two distinct arms; a measure the two do not both
         hold; or no spread to read an interval from.
@@ -280,35 +239,21 @@ async def settle_cases(
     floor, or a hypothetical line; or two arms apart on one measure.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param arms: One arm (against a line) or two (apart), by id.
-    :ptype arms: Sequence[str]
     :param measure_key: The measure: for two arms, or a hypothetical line.
-    :ptype measure_key: str | None
     :param criterion_id: For one arm, the one declared criterion to settle it against.
-    :ptype criterion_id: str | None
     :param hypothetical_line: For one arm, a line on the measure the snapshot does not declare, in its own units.
-    :ptype hypothetical_line: float | None
     :param against: For one arm, the one margin or floor to settle it against: ``margin:<aspect>`` or
         ``floor:<aspect>/<floor>``.
-    :ptype against: str | None
     :param assumed_cases: A what-if: the cases each slice stating no count is read as holding, or ``share``.
-    :ptype assumed_cases: Assumed | None
     :param bars_as: How the caller reads the declared bars, which each criterion row says: ``warnings`` or ``gates``.
-    :ptype bars_as: BarsAs
     :param limit: The most rows one page holds.
-    :ptype limit: int
     :param offset: The first row the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[Settle], bool] | None
     :return: A page of rows.
-    :rtype: Settle
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or the arguments name nothing that can be settled.
     """

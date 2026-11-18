@@ -25,12 +25,9 @@ def reported_price_source(provider: str, *, from_rate_table: bool) -> str:
     a counted volume moves the moment the operator edits it.
 
     :param provider: The provider the call was made to.
-    :ptype provider: str
     :param from_rate_table: Whether the figure came from an operator-declared rate rather than
         from the provider's own report.
-    :ptype from_rate_table: bool
     :return: A provenance string, e.g. ``"search_api:configured_rate"`` or ``"search_api:reported"``.
-    :rtype: str
     """
     return f"{provider}:configured_rate" if from_rate_table else f"{provider}:reported"
 
@@ -70,10 +67,8 @@ class ExternalRateTable:
         default standing in for a rate nobody set.
 
         :param spend: The contribution to price.
-        :ptype spend: ExternalSpend
         :return: The dollar figure, or ``None`` when the provider reported none and no rate was
             declared for its unit.
-        :rtype: float | None
         """
         if spend.money is not None:
             return spend.money

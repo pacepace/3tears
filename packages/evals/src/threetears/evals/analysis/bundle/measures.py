@@ -118,12 +118,9 @@ def _percentile(sorted_values: list[float], q: float) -> float | None:
     the tail. The median is unchanged by the switch: type 8 and linear interpolation place it alike.
 
     :param sorted_values: Ascending-sorted values, at least one element.
-    :ptype sorted_values: list[float]
     :param q: Quantile in (0, 1) — NOT 0-100.
-    :ptype q: float
     :return: The estimate, or ``None`` for ``p05``/``p95`` below 13 observations, where no estimate is
         median-unbiased; ``max`` beside it is then the worst case seen, under its own name.
-    :rtype: float | None
     """
     return median_unbiased_quantile(sorted_values, q)
 
@@ -385,11 +382,8 @@ def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[ResultView])
     """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
 
     :param runs: The member runs.
-    :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Iterable[ResultView]
     :return: One reading per check.
-    :rtype: list[GoalCheckProofReading]
     """
     graded: dict[str, list[str]] = {}
     for result in results:
@@ -489,9 +483,7 @@ def failures_as_misses(results_by_run: dict[str, list[ResultView]]) -> dict[str,
     Copied, never written back: what the kind stored is untouched.
 
     :param results_by_run: Each run's stored results.
-    :ptype results_by_run: dict[str, list[ResultView]]
     :return: The same results, each such failure replaced by a copy carrying ``match`` False.
-    :rtype: dict[str, list[ResultView]]
     """
     classified_cases = {
         result.test_case_id for members in results_by_run.values() for result in members if classifies(result)
@@ -565,9 +557,7 @@ def _accuracy_leaves(result: ResultView) -> Iterator[tuple[str, float | str, boo
     kind that classifies nothing, and yields nothing: an accuracy for it would be invented.
 
     :param result: The observation.
-    :ptype result: ResultView
     :yield: ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
-    :rtype: Iterator[tuple[str, float | str, bool, str, str]]
     """
     matched = result.host_measures.get(MATCH_MEASURE)
     if isinstance(matched, bool):
@@ -585,10 +575,8 @@ def _candidate_output_throughput(result: ResultView) -> float | None:
     rate, and zero would read as a provider that produced nothing.
 
     :param result: The observation.
-    :ptype result: ResultView
     :return: Tokens per second, or None when the candidate's output tokens or a non-zero ``llm_ms``
         is missing.
-    :rtype: float | None
     """
     llm_ms = result.latency.llm_ms if result.latency is not None else None
     counted = [
@@ -615,14 +603,11 @@ def _withheld_derived(results: list[ResultView], reported: Collection[str]) -> l
     ``absent_scopes`` is the right place for.
 
     :param results: The results the collection was built from.
-    :ptype results: list[ResultView]
     :param reported: Measure names the walk successfully summarised.
-    :ptype reported: Collection[str]
     :return: Entries of the form ``name (reason)``, empty when nothing was withheld. The
         reason is carried only when every withholding result gave the SAME one —
         otherwise the name alone, since a single reason chosen from several would be a
         claim about results it does not describe.
-    :rtype: list[str]
     """
     if "orchestration_ms" in reported:
         return []
@@ -722,9 +707,7 @@ def _undeclarable_host_entries(results: Sequence[ResultView]) -> list[str]:
     beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
 
     :param results: The results the walk read.
-    :ptype results: Sequence[ResultView]
     :return: One entry per dropped key, sorted.
-    :rtype: list[str]
     """
     names = {name for result in results for name in undeclarable_host_measures(result.host_measures)}
     covariates = {name for result in results for name in undeclarable_covariates(result.covariates)}
@@ -748,11 +731,8 @@ def in_population(population: MeasurePopulation, result: ResultView) -> bool:
 
     :param population: The population the measure's summary is computed over
         (:func:`~threetears.evals.kernel.metrics.summary_population`).
-    :ptype population: MeasurePopulation
     :param result: The result.
-    :ptype result: ResultView
     :return: True when the result's observations of the measure count.
-    :rtype: bool
     """
     if population == "delivered":
         return delivered_a_turn(result)
@@ -946,7 +926,6 @@ def measures_walked_once() -> Iterator[None]:
     computed. Re-entered, the outer context's memo is shared; it is dropped on exit, an exception's included.
 
     :return: A context manager; used as a decorator, one context per call.
-    :rtype: Iterator[None]
     """
     if _WALK_MEMO.get() is not None:
         yield
@@ -1035,13 +1014,9 @@ def pool_measures(
     measure's values or its mean (:func:`pooled_means`) reads them here and builds no summary.
 
     :param results: Every result in scope, faulted and failed ones included.
-    :ptype results: Iterable[ResultView]
     :param profile: The host whose registry describes each name.
-    :ptype profile: HostProfile
     :param undeclared: The population of the surface asking, for a measure that declares none.
-    :ptype undeclared: MeasurePopulation
     :return: The pooled observations, their units and the names left unreported.
-    :rtype: _MeasurePool
     """
     # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
     # observations from 5 cases repeated 3 times, and the two license very different intervals —
@@ -1144,9 +1119,7 @@ def pooled_rates(pool: _MeasurePool) -> dict[str, float]:
     it is kept apart from :func:`pooled_means`: nothing reads a percentile or a spread off it.
 
     :param pool: The pooled observations (:func:`pool_measures`).
-    :ptype pool: _MeasurePool
     :return: ``{name: rate}``.
-    :rtype: dict[str, float]
     """
     return {
         name: _boolean_rate(values)[1]
@@ -1164,9 +1137,7 @@ def pooled_means(pool: _MeasurePool) -> dict[str, float]:
     the collection's own.
 
     :param pool: The pooled observations (:func:`pool_measures`).
-    :ptype pool: _MeasurePool
     :return: ``{name: mean}``.
-    :rtype: dict[str, float]
     """
     means = {
         name: _mean_and_sorted([float(value) for value in values])[0]
@@ -1274,12 +1245,9 @@ def _classifier_label_summaries(
     (``predicted + expected - hits``), which is what its value is computed over.
 
     :param confusion: The ``confusion_cell`` summary.
-    :ptype confusion: MeasureSummary
     :param observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
-    :ptype observations: Sequence[tuple[str, str]]
     :return: The derived summaries, named by :func:`~threetears.evals.kernel.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
-    :rtype: list[MeasureSummary]
     """
     derived: list[MeasureSummary] = []
     for statistics in label_statistics(observations):
@@ -1352,16 +1320,11 @@ def _measure_summary(
     the unclustered forms exactly.
 
     :param descriptor: The measure's registry descriptor, carried onto the summary.
-    :ptype descriptor: MetricDescriptor
     :param values: Its observations, at least one.
-    :ptype values: list[float | str]
     :param cases: Each observation's test case, aligned with ``values``.
-    :ptype cases: list[str]
     :param population: The population those observations were drawn from, stated on the summary.
-    :ptype population: MeasurePopulation
     :return: A categorical summary (counts), a boolean one (rate + interval), a text one (every
         observation listed, nothing aggregated) or a numeric one (distribution + SEM + interval).
-    :rtype: MeasureSummary
     """
     shape: dict[str, Any]
     if descriptor.data_type == "text":
@@ -1439,11 +1402,8 @@ def negative_values_of(
     records carry the value.
 
     :param results_by_arm: Each arm's results, by variant key, over every rig the arm ran.
-    :ptype results_by_arm: Mapping[str, Sequence[ResultView]]
     :param profile: The host whose registry describes each measure.
-    :ptype profile: HostProfile
     :return: One entry per measure and arm with at least one such result, sorted by measure then arm.
-    :rtype: list[NegativeValues]
     """
     found: dict[tuple[str, str], set[str]] = {}
     for variant_key, results in results_by_arm.items():

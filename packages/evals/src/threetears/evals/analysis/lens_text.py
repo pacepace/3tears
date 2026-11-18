@@ -227,15 +227,12 @@ def tier_sentence_in(tier: JudgeEvidenceTier, forms: PageForms) -> str:
     page it is printed on.
 
     :param tier: The tier as decided.
-    :ptype tier: JudgeEvidenceTier
     :param forms: The forms of the page the sentence is printed on, which print its every figure by the lone figure
         rule.
-    :ptype forms: PageForms
     :return: The sentence, naming the judge (its config, when one asked, its temperature and the request settings its
         calls were sent with), the tier and each criterion's
         agreement, pairs and results against its bar — and, for a tier read from a stored judge profile, the profile,
         when and on which cases it was measured, and what the campaign's own evidence read.
-    :rtype: str
     """
     judge = tier.judge_model or "an unnamed judge"
     if tier.judge_config_id is not None:
@@ -315,9 +312,7 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
     forms. A page states it in its own forms, through ``tier_sentence_in``.
 
     :param tier: The tier as decided.
-    :ptype tier: JudgeEvidenceTier
     :return: The sentence (``tier_sentence_in``).
-    :rtype: str
     """
     return tier_sentence_in(tier, PageForms.off_page())
 

@@ -5,7 +5,7 @@ Run from the repository root, with no key set (every rung replays its recordings
     uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases
     uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases --refreeze
 
-The eleven cases, each a :class:`~threetears.evals.harness.WriterCaseFile`:
+The eleven cases, each a :class:`~threetears.evals.harness.writer_cases.WriterCaseFile`:
 
 - **the four ladder campaigns**, rungs 1 to 4: each rung's eval run through the quick path into a store of its own
   in memory, replayed from the recordings beside it, its campaign frozen through its own host. The case's name and
@@ -45,7 +45,7 @@ from typing import Final
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.writer_case_support import SEED
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.ops import OpsHost

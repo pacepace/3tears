@@ -122,7 +122,6 @@ class RegressionSink(Protocol):
         """Deliver one regression.
 
         :param alert: What regressed, on which step, and the verdict behind it.
-        :ptype alert: RegressionAlert
         """
         ...  # pragma: no cover — protocol
 
@@ -186,11 +185,8 @@ class RegressionWatch:
         """Check a run that ended, and deliver each regression found, each on its own.
 
         :param run_id: The run.
-        :ptype run_id: str
         :param scope_id: Its scope.
-        :ptype scope_id: str
         :param status: The terminal status recorded. Anything but ``completed`` is not a point on the history.
-        :ptype status: str
         """
         if status != "completed":
             return
@@ -243,12 +239,9 @@ class RegressionWatch:
         directly of a run that has already ended.
 
         :param run_id: The run whose step to check.
-        :ptype run_id: str
         :param scope_id: Its scope.
-        :ptype scope_id: str
         :return: One alert per tracked measure and contestant whose step into the run reads ``regressed`` and may
             fire, in the order the measures were named.
-        :rtype: list[RegressionAlert]
         :raises ValidationFailedError: The history was refused: the run's subject alone is past the read tier's
             budget; or, for a judged step, the subject's results its evidence tiers read are past it.
         """

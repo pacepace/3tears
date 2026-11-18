@@ -16,7 +16,8 @@ from __future__ import annotations
 import csv
 import io
 
-from threetears.evals.analysis import SERVED_MODEL_UNRECORDED, ServedModelReading, compare_two_runs
+from threetears.evals.analysis import ServedModelReading, compare_two_runs
+from threetears.evals.analysis.reporting import SERVED_MODEL_UNRECORDED
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, project_score_records
 from threetears.evals.analysis.lenses.pivot import compute_pivot
 from threetears.evals.analysis.lenses.frontier import compute_frontier
@@ -24,7 +25,7 @@ from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.analysis.lenses.export import export_records_csv
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, RoleUsage
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.ops import pivot_text
+from threetears.evals.ops.lenses import pivot_text
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

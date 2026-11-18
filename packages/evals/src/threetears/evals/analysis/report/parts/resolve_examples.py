@@ -119,11 +119,8 @@ def _readable_fields(term: str, text: str) -> list[ExampleField]:
     gives none.
 
     :param term: The field's term, ``Input`` or ``Expected``, which a pair's key follows.
-    :ptype term: str
     :param text: The case's input or expectation, as the example carries it.
-    :ptype text: str
     :return: The fields; none for a text with nothing to say.
-    :rtype: list[ExampleField]
     """
     if not text.lstrip().startswith("{"):
         return [ExampleField(term=term, text=text)] if text.strip() else []

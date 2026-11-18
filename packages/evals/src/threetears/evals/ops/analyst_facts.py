@@ -93,20 +93,13 @@ async def campaign_overview(
     its rows.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param limit: The most rows one page holds.
-    :ptype limit: int
     :param offset: The first row the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[CampaignOverview], bool] | None
     :return: The overview's page.
-    :rtype: CampaignOverview
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
     """
@@ -134,24 +127,15 @@ async def readings_list(
     """A page of each aspect's readings against the control, pair readings, floors and bars.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param aspect_filter: Only this aspect's rows.
-    :ptype aspect_filter: str | None
     :param arm_filter: Only this arm's rows.
-    :ptype arm_filter: str | None
     :param limit: The most rows on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``limit`` rows where none is given.
-    :ptype fits: Callable[[ReadingsListing], bool] | None
     :return: The page.
-    :rtype: ReadingsListing
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or a filter names nothing it holds.
     """
@@ -184,26 +168,16 @@ async def contrasts_list(
     """A page of the corrected contrasts, and the contrast families correcting them.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param arm_filter: Only this arm's contrasts.
-    :ptype arm_filter: str | None
     :param measure_filter: Only the contrasts on this measure or judged dimension.
-    :ptype measure_filter: str | None
     :param aspect_filter: Only the contrasts on this aspect.
-    :ptype aspect_filter: str | None
     :param limit: The most contrasts on the page.
-    :ptype limit: int
     :param offset: The contrasts to skip.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``limit`` contrasts where none is given.
-    :ptype fits: Callable[[ContrastListing], bool] | None
     :return: The page.
-    :rtype: ContrastListing
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or a filter names nothing it holds.
     """
@@ -243,30 +217,18 @@ async def measure_read(
     """A page of one measure's or judged dimension's statistics, by arm or within each stratum, task or cell.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param by: What to read it by.
-    :ptype by: MeasureBy
     :param statistics: The statistics to read; None for every one the snapshot holds on the measure read this way.
-    :ptype statistics: Sequence[MeasureStatistic] | None
     :param aspect_filter: Only this aspect.
-    :ptype aspect_filter: str | None
     :param arm_filter: Only this arm.
-    :ptype arm_filter: str | None
     :param limit: The most rows on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``limit`` rows where none is given.
-    :ptype fits: Callable[[MeasureFigures], bool] | None
     :return: The page.
-    :rtype: MeasureFigures
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the key names no measure; a filter names nothing it
         holds; it holds no slice of that kind, or holds the measure in none; or a statistic or filter does not apply
@@ -309,28 +271,17 @@ async def examples_list(
     """A page of the failed trials the snapshot froze, each with its stored result where the bundle named it.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param arm_filter: Only this arm's examples.
-    :ptype arm_filter: str | None
     :param stratum_filter: Only the examples in this stratum or task.
-    :ptype stratum_filter: str | None
     :param aspect_filter: Only this aspect's examples.
-    :ptype aspect_filter: str | None
     :param outcome_filter: Only the examples of this failure class.
-    :ptype outcome_filter: str | None
     :param limit: The most examples on the page.
-    :ptype limit: int
     :param offset: The examples to skip.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``limit`` examples where none is given.
-    :ptype fits: Callable[[ExampleListing], bool] | None
     :return: The page.
-    :rtype: ExampleListing
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or a filter names nothing it holds.
     """
@@ -374,20 +325,13 @@ async def caveats_list(
     """A page of the caveats the snapshot carries, where each may land, whether it is immaterial, and what it touches.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param limit: The most caveats one page holds.
-    :ptype limit: int
     :param offset: The first caveat the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[CaveatListing], bool] | None
     :return: The caveats' page.
-    :rtype: CaveatListing
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
     """

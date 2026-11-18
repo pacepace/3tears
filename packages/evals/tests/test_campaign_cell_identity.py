@@ -25,9 +25,9 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
     campaign_report,
-    campaign_report_markdown,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING
 from threetears.evals.kernel import ControlDeclaration, EvalStorage, SweptAxis, resolve_variant_identity
 from threetears.evals.kernel.host import MeasureRegistry

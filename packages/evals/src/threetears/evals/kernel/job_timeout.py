@@ -106,9 +106,7 @@ async def default_job_timeout(budget_s: float) -> AsyncIterator[float]:
     concerns, and an engine that assumed them would not install without one.
 
     :param budget_s: Wall-clock ceiling for the body, in seconds.
-    :ptype budget_s: float
     :yield: The budget, so a caller can honour it at an inner layer.
-    :rtype: AsyncIterator[float]
     :raises ValueError: If ``budget_s`` is not positive — on entry, before the body
         runs. See :class:`JobTimeoutFactory` for why the ordering is part of
         the contract rather than an implementation detail.
@@ -133,9 +131,7 @@ def timed_out_detail(timed_out: EvalJobTimeout) -> str:
     """Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
 
     :param timed_out: The budget's firing.
-    :ptype timed_out: EvalJobTimeout
     :return: The record's ``detail`` (an analysis attempt's ``error``).
-    :rtype: str
     """
     named = f"; the host named {timed_out.attribution!r} as running when it fired" if timed_out.attribution else ""
     return (

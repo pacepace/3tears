@@ -36,11 +36,8 @@ class _Kept:
 
         :param key: What the value is, unique among everything kept of one input: the function or class it is read
             through, or a tuple led by that function and naming what the value is read for.
-        :ptype key: Hashable
         :param build: Works the value out of the input; it must be pure in the input.
-        :ptype build: Callable[[], V]
         :return: The value.
-        :rtype: V
         """
         if key in self._values:
             return cast("V", self._values[key])
@@ -84,8 +81,6 @@ def kept_for(report_input: ReportInput) -> _Kept:
     """What is kept of one report input, empty on its first read.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :return: Its kept values.
-    :rtype: _Kept
     """
     return _kept_of(_ByIdentity(id(report_input), weakref.ref(report_input)))

@@ -1,7 +1,7 @@
 """One campaign's closure, exported as the three files a writer case is minted from: the mint's producer.
 
 A host mints a held-out writer case from one of its own campaigns
-(:func:`~threetears.evals.harness.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
+(:func:`~threetears.evals.harness.minting.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
 files. :func:`campaign_export` assembles them, read-only, from the host's store:
 
 - ``documents``: every stored document reachable from the campaign, verbatim as the store returns it (each keeps its
@@ -374,7 +374,6 @@ class CampaignExport(BaseModel):
         """The three files the mint reads, by name: each canonical JSON (sorted keys, no incidental whitespace).
 
         :return: ``documents.json``, ``profile.json`` and ``manifest.json``, each its bytes.
-        :rtype: dict[str, bytes]
         :raises ValueError: This is one page of a paged export, which holds only part of the documents.
         """
         if self.page is not None:
@@ -808,29 +807,20 @@ def campaign_export(
     case is minted from.
 
     :param host: The host whose store holds the campaign, and whose profile its runs were measured under.
-    :ptype host: EvalHost
     :param scope_id: The scope the campaign lives in.
-    :ptype scope_id: str
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param built_by: Provenance: the ``module:callable`` ``host``'s profile (or ``host``) comes from, recorded in the
         profile; ``None`` to name none. The mint never imports it: its operator names the factory (``--host``).
-    :ptype built_by: str | None
     :param paged: Read one page of the export (:class:`CampaignExportPage`) rather than all of it.
-    :ptype paged: bool
     :param after_doc_type: With ``paged``, the previous page's ``next_after_doc_type``; ``None`` for the first page.
-    :ptype after_doc_type: str | None
     :param after_document_id: With ``paged``, the previous page's ``next_after_document_id``.
-    :ptype after_document_id: str | None
     :param max_bytes: The most bytes of canonical JSON (ASCII, so its characters; a decoded document takes several
         times that on the heap) the kept documents may total, counted as they are gathered, a chunk at a time, and
         refused the moment the total passes; ``None``, the default, for no ceiling. The ``campaign_export``
         action passes its host's (:attr:`~threetears.evals.ops.OpsHost.campaign_export_max_bytes`), since it reads the
         whole closure on every page call; a process exporting once passes none.
-    :ptype max_bytes: int | None
     :return: The export: every document in ``(doc_type, id)`` order (one page of them, when paged and more than one
         page's worth), the profile's declaration, the manifest.
-    :rtype: CampaignExport
     :raises NotFoundError: No campaign of that id in the scope.
     :raises ValidationFailedError: ``built_by`` is not ``module:callable``, a cursor is given without ``paged``,
         half of one, or with a type the engine does not store, or the closure passes ``max_bytes``.

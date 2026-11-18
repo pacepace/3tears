@@ -200,11 +200,8 @@ def parse_key(inner: str, span: tuple[int, int] | None = None) -> FigureKey:
     """Split one key's inside into its path and filters, refusing a filter the grammar does not define.
 
     :param inner: The text between the braces, or a bare path (a durable claim's key, a chart reference's key).
-    :ptype inner: str
     :param span: Where the key sits in the text it came from, braces included; None for a key parsed alone.
-    :ptype span: tuple[int, int] | None
     :return: The key.
-    :rtype: FigureKey
     :raises UnresolvableReference: The path is empty, a filter is unknown or repeated, or two filters each choose
         the spelling.
     """
@@ -230,9 +227,7 @@ def keys_in(text: str) -> list[FigureKey]:
     """Every figure key in a piece of report prose, in order.
 
     :param text: Report prose.
-    :ptype text: str
     :return: Each key with its span.
-    :rtype: list[FigureKey]
     :raises UnresolvableReference: The text holds a double brace (the retired figure reference's grammar, never a
         report document's), a brace that opens or closes no key, or a key :func:`parse_key` refuses.
     """
@@ -256,9 +251,7 @@ def is_figure_key(text: str) -> bool:
     that is no family's (an action's name, a model id, a version) is not one.
 
     :param text: A braced key (``{reading.a.change|abs}``) or a bare path.
-    :ptype text: str
     :return: Whether it is a figure key's form.
-    :rtype: bool
     """
     inner = text[1:-1] if text.startswith("{") and text.endswith("}") else text
     try:
@@ -279,11 +272,8 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     """Read one key's path from the report input.
 
     :param key: The path, without braces or filters (``reading.qwen3.8-flash.change``, ``arm:1017``).
-    :ptype key: str
     :param report_input: The report input the plan was written against.
-    :ptype report_input: ReportInput
     :return: The figure the path names.
-    :rtype: Figure
     :raises UnresolvableReference: The path names nothing the input holds (the refusal lists what could come next
         where it stopped matching), reads two ways (naming both), or names a figure the input leaves unstated.
     """
@@ -310,11 +300,8 @@ def held_figure(key: str, report_input: ReportInput) -> Figure | None:
     wrote, which is refused by name (:func:`resolve`).
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The figure, or None.
-    :rtype: Figure | None
     """
     try:
         return resolve(key, report_input)
@@ -431,11 +418,8 @@ def rubric_score(report_input: ReportInput, key: str) -> bool:
     score at two decimals).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The judged dimension's key; any other key is no score.
-    :ptype key: str
     :return: Whether it is a 1–5 score.
-    :rtype: bool
     """
     judged = report_input.judged.get(key)
     if judged is None or judged.scale == "pass_fail":
@@ -459,16 +443,11 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
     the chart reads the scoreboard.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key; a scoreboard figure's name over the scoreboard.
-    :ptype key: str
     :param kind: A contrast's kind (``measure``, ``judged``, ``trial``), where the key is a contrast's; None otherwise.
-    :ptype kind: str | None
     :param source: The chart's source, where ``scoreboard`` makes the key a scoreboard figure; None otherwise.
-    :ptype source: str | None
     :return: ``share``, ``percent``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty (a
         bare number, as every scoreboard count is).
-    :rtype: str
     """
     if source == "scoreboard":
         return _SCOREBOARD_UNITS.get(key, "")
@@ -499,11 +478,8 @@ def held_kind(report_input: ReportInput, key: str) -> str:
     a criterion's kind, whether its threshold is a gate's line or a chart's.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure, judged dimension, scoreboard figure or aspect.
-    :ptype key: str
     :return: ``judged``, ``trial`` or ``measure``.
-    :rtype: str
     """
     if key in report_input.judged and key not in report_input.measures:
         return "judged"
@@ -515,13 +491,9 @@ def is_rubric_score(report_input: ReportInput, key: str, *, kind: str | None = N
     calls ordinal but holds off the scale.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure's or judged dimension's key.
-    :ptype key: str
     :param kind: A contrast's kind where the key is one's; None for a measure's.
-    :ptype kind: str | None
     :return: Whether it is a 1–5 score.
-    :rtype: bool
     """
     return (
         kind != "measure" and figure_unit(report_input, key, kind=kind) == "score" and rubric_score(report_input, key)
@@ -578,11 +550,8 @@ def cost_arms(key: str, report_input: ReportInput) -> list[str]:
     (:class:`Figure`'s ``priced_in_part``), so a surface naming who served each cost reads the arms that note does.
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The arms by id, the ones the key names first, in its order.
-    :rtype: list[str]
     :raises UnresolvableReference: The path names nothing the input holds, reads two ways, or names a figure the
         input leaves unstated.
     """
@@ -771,11 +740,8 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
     names (each insight an analysis mints from a durable claim).
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The report input the plan was written against.
-    :ptype report_input: ReportInput
     :return: What the key is about.
-    :rtype: KeySubjects
     :raises UnresolvableReference: The path does not resolve (:func:`resolve`).
     """
     resolve(key, report_input)
@@ -837,11 +803,8 @@ def key_form(key: str, report_input: ReportInput) -> KeyForm:
     alike; one naming a figure the input leaves unstated still has a form.
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The report input the key is read against.
-    :ptype report_input: ReportInput
     :return: The form.
-    :rtype: KeyForm
     :raises UnresolvableReference: The path names nothing the input holds, or reads two ways.
     """
     if key.startswith(_ARM_PREFIX):
@@ -855,11 +818,8 @@ def figure_filters(figure: Figure, *, forms: PageForms) -> tuple[str, ...]:
     """The filters a figure takes: each filter :func:`format_figure` spells it with, alone, in the grammar's order.
 
     :param figure: What a key resolved to.
-    :ptype figure: Figure
     :param forms: The forms of the page the figure would be printed on (:func:`format_figure`).
-    :ptype forms: PageForms
     :return: The filters; none for an arm or a piece of text.
-    :rtype: tuple[str, ...]
     """
     if figure.kind in ("arm", "text"):
         return ()
@@ -1017,14 +977,10 @@ def format_figure(figure: Figure, filters: Sequence[str] = (), *, forms: PageFor
     (:attr:`Figure.counts`), so a number in words reads as the page's forms print it too.
 
     :param figure: What a key resolved to; not an arm, which :func:`render` names.
-    :ptype figure: Figure
     :param filters: The key's filters, as :func:`parse_key` checked them.
-    :ptype filters: Sequence[str]
     :param forms: The forms of the page the figure is printed on (an off-page reader's own, built from the input it
         reads), which decide a measure's figure's precision.
-    :ptype forms: PageForms
     :return: The figure's text.
-    :rtype: str
     :raises UnresolvableReference: A filter does not suit the figure: a percent of money, points of a count, an
         ``interval`` on a single number, any filter on text.
     :raises ValueError: The figure is an arm.
@@ -1086,16 +1042,12 @@ def render(text: str, arm_names: Mapping[str, str], *, forms: PageForms) -> str:
     """Replace every figure key in report prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
 
     :param text: Report prose.
-    :ptype text: str
     :param arm_names: Each arm's computed short name, by id (GENERATOR §6.1). An arm declaring a short name
         (``Arm.short_name``) prints that instead; one missing from both is named by its alias, else its id.
-    :ptype arm_names: Mapping[str, str]
     :param forms: The forms of the page the prose is printed on (an off-page reader's own), which decide each figure's
         precision (:func:`format_figure`). Each key resolves on the report input they were built from, which they carry,
         so prose never reads one input in another's forms.
-    :ptype forms: PageForms
     :return: The prose with every key written out.
-    :rtype: str
     :raises UnresolvableReference: A key does not parse, resolve or suit its filters.
     :raises ValueError: The forms are a code page's or an off-page surface's, which carry no report input.
     """
@@ -1170,11 +1122,8 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
     made only of digits (an arm ``1017``) is never set aside: prose writes ``{arm:1017}``.
 
     :param text: Report prose.
-    :ptype text: str
     :param report_input: The report input the plan was written against.
-    :ptype report_input: ReportInput
     :return: Each run of typed digits, in order; empty when the prose types none.
-    :rtype: list[tuple[int, int]]
     """
     masked = list(text)
 

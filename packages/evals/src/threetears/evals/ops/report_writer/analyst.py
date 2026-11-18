@@ -151,7 +151,6 @@ class SubmissionFault:
         """The fault as one line of a bounce.
 
         :return: ``- [kind] path: fault``, or ``- [kind] fault`` with no path.
-        :rtype: str
         """
         return f"- [{self.kind}] {self.path}: {self.fault}" if self.path else f"- [{self.kind}] {self.fault}"
 
@@ -196,15 +195,10 @@ class AnalystSession:
         """Wrap a tool session (:meth:`start` and :meth:`resume` build it).
 
         :param session: The tool session the analyst's turns go through.
-        :ptype session: ToolSession
         :param snapshot: The snapshot it reads, by id.
-        :ptype snapshot: str
         :param check: The checker on the snapshot, validity's and the invariants'.
-        :ptype check: InvariantCheck
         :param limits: What its rounds are held to.
-        :ptype limits: AnalystLimits
         :param bounces: The bounces the current round has sent.
-        :ptype bounces: int
         :raises ValueError: An empty snapshot id.
         """
         if not snapshot:
@@ -232,25 +226,15 @@ class AnalystSession:
         """A new analyst session, before its draft.
 
         :param model: The model id the client sends to (``Model.model_name``), which the stored session keeps.
-        :ptype model: str
         :param client: The client its turns go through (``Model.turn_session(ANALYST_SESSION, snapshot=...)``).
-        :ptype client: ToolTurnClient
         :param mount: The ``evals_analyst`` tool on the analyst's cut, bound to its host and caller.
-        :ptype mount: ToolMount
         :param skill: The analyst's system text (``load_skill().analyst(withhold=...)``).
-        :ptype skill: SkillText
         :param snapshot: The frozen snapshot it reads, by id.
-        :ptype snapshot: str
         :param check: The checker on the snapshot, validity's and the invariants'.
-        :ptype check: InvariantCheck
         :param tally: The report's tally.
-        :ptype tally: Tally
         :param budget: The report's budget (dollars, or tokens and turns).
-        :ptype budget: ReportBudget
         :param limits: What its rounds are held to; :class:`AnalystLimits`' defaults when ``None``.
-        :ptype limits: AnalystLimits | None
         :return: The session.
-        :rtype: AnalystSession
         """
         held = limits if limits is not None else AnalystLimits()
         session = ToolSession(
@@ -275,7 +259,6 @@ class AnalystSession:
         """Round 1: send the brief with the snapshot's overview, and run until a submission passes or the round ends.
 
         :return: How the round ended.
-        :rtype: AnalystOutcome
         :raises ValueError: The session has drafted already, or the tool refused the snapshot's overview.
         :raises TurnReplyRefused: The client refused a reply it was paid for; the turn is tallied first.
         """
@@ -294,9 +277,7 @@ class AnalystSession:
         """The next round: send the caller's request (the editor's findings) in the same conversation.
 
         :param request: What the analyst is asked to revise, as the caller words it.
-        :ptype request: str
         :return: How the round ended.
-        :rtype: AnalystOutcome
         :raises ValueError: The session has not drafted yet, or an empty request.
         :raises TurnReplyRefused: The client refused a reply it was paid for; the turn is tallied first.
         """
@@ -387,7 +368,6 @@ class AnalystSession:
 
         :return: ``{"format", "snapshot", "bounces", "limits", "session"}``; ``session`` is the tool session's record
             (:meth:`ToolSession.to_json`).
-        :rtype: dict[str, Any]
         """
         return {
             "format": _FORMAT,
@@ -417,23 +397,14 @@ class AnalystSession:
         """Take a stored analyst session up again, ready for its next round.
 
         :param record: What :meth:`to_json` wrote.
-        :ptype record: Mapping[str, Any]
         :param model: The model id the client sends to, which must be the one the session ran on.
-        :ptype model: str
         :param client: The client its next turns go through.
-        :ptype client: ToolTurnClient
         :param mount: The tool, which re-derives each result body the record dropped.
-        :ptype mount: ToolMount
         :param skill: The analyst's system text, the one the session started with.
-        :ptype skill: SkillText
         :param check: The checker on the snapshot, validity's and the invariants'.
-        :ptype check: InvariantCheck
         :param tally: The tally its next turns are counted in.
-        :ptype tally: Tally
         :param budget: The budget that admits its next turns.
-        :ptype budget: ReportBudget
         :return: The session.
-        :rtype: AnalystSession
         :raises ValueError: A record of another format or out of shape, or one :meth:`ToolSession.from_json` refuses (a
             model, skill text or tool other than the stored one included).
         """
@@ -462,10 +433,8 @@ def _read_submission(text: str) -> ReportDoc | tuple[SubmissionFault, ...]:
     """A submission's document: the one fenced JSON object in ``text``, read as ``report-doc/1``.
 
     :param text: The reply's text.
-    :ptype text: str
     :return: The document, or what keeps it from being read: no fenced block, more than one, a block that is not a
         JSON object (``unparsed``), or one the document's model refuses (``shape``, a fault per field).
-    :rtype: ReportDoc | tuple[SubmissionFault, ...]
     """
     blocks = [match["body"] for match in _FENCE.finditer(text)]
     if len(blocks) != 1:

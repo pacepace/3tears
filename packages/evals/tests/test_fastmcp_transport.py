@@ -21,14 +21,8 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from threetears.evals.actions import (
-    Caller,
-    analyst_tools,
-    catalogue_primer,
-    eval_catalogue,
-    read_only_tools,
-    standard_tools,
-)
+from threetears.evals.actions import Caller, analyst_tools, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template

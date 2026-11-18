@@ -216,7 +216,6 @@ def analyst_facts_actions() -> tuple[Action, ...]:
     """The ``Investigate: facts`` actions: the overview, the readings, contrasts, a measure, examples and caveats.
 
     :return: The actions, in the order help lists them.
-    :rtype: tuple[Action, ...]
     """
     snapshot = {"snapshot_id": _EXAMPLE_SNAPSHOT}
     return (

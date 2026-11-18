@@ -70,13 +70,9 @@ def blind_rates(table: BlindVerdictTable, *, reader: str, judge: str) -> BlindRa
     chance alone then accounts for every agreement.
 
     :param table: A stored table of counts.
-    :ptype table: BlindVerdictTable
     :param reader: How the statements name the side read against (``the reader``, ``people``).
-    :ptype reader: str
     :param judge: How they name the side being checked (``the judge``, ``the reviewer``).
-    :ptype judge: str
     :return: The rates and the statements.
-    :rtype: BlindRates
     """
     one_reader, one_judge = single_verdicts(table)
     cells = pass_fail_counts(table)

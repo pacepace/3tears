@@ -38,15 +38,12 @@ def short_cells(cells: list[Cell], design: AspectDesign | None) -> list[ShortCel
     and pooling more of the others does not repair it.
 
     :param cells: The pooled cells, in coordinate order.
-    :ptype cells: list[Cell]
     :param design: The campaign's declaration, or None.
-    :ptype design: AspectDesign | None
     :return: One entry per short cell, in coordinate order. Empty when nothing was declared — an unstated
         intention cannot be fallen short of — or when every cell met it. A cell with no case count
         has no repetitions to compare and is not listed: its own facts already say its cases were
         unrecorded, which is the honest answer (unknown, not short). The bundle's observations all
         name their case, since ``EvalResult.test_case_id`` is required.
-    :rtype: list[ShortCell]
     """
     intended = design.intended_repetitions if design is not None else None
     if intended is None:
@@ -93,9 +90,7 @@ def cost_unmeasured(results_by_cell: dict[CellKey, list[ResultView]]) -> tuple[l
     spend" would be the wrong reason.
 
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :return: The unmeasured cells in coordinate order, and the sentence — None when there are none.
-    :rtype: tuple[list[CellCoordinate], str | None]
     """
     unmeasured: list[CellCoordinate] = []
     for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
@@ -125,15 +120,11 @@ def contended_latency_cells(
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
 
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param contended_ids: The results whose latency
         :func:`~threetears.evals.analysis.contention.withhold_contended_latency` removed before anything read them.
-    :ptype contended_ids: Collection[str]
     :param declared: The campaign's design declares latency under test, so a run read under concurrency is one it
         cannot read its question from — said, with the remedy, rather than left to a reader to infer.
-    :ptype declared: bool
     :return: The cells in coordinate order, and the sentence — None when nothing was left out.
-    :rtype: tuple[list[CellCoordinate], str | None]
     """
     cells: list[CellCoordinate] = []
     withheld = 0
@@ -156,10 +147,8 @@ def all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None
     reading, and without this the absence reads as "not measured" beside the arms that were.
 
     :param cells: The decision surface's cells, from :func:`cell_measures`.
-    :ptype cells: list[CellFacts]
     :return: The cells in coordinate order, and the sentence
         (:func:`~threetears.evals.kernel.surface.all_failed_sentence`) — None when there are none.
-    :rtype: tuple[list[CellCoordinate], str | None]
     """
     failed = [
         CellCoordinate(variant_key=cell.variant_key, apparatus_class_id=cell.apparatus_class_id)
@@ -175,13 +164,10 @@ def held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> Held
     """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
     :param runs: The resolved member runs.
-    :ptype runs: list[EvalRun]
     :param design: The campaign's declaration, or None.
-    :ptype design: AspectDesign | None
     :return: The reading. Its disclosure is composed from the branches actually taken: a declared apparatus
         the runs contradict, a mix of provenances nobody declared, and an uncontrolled stimulus each
         add their own sentence, and none of them adds one that did not happen.
-    :rtype: HeldFixedReading
     """
     provenance = {run.id: run.apparatus_provenance for run in sorted(runs, key=lambda r: r.id)}
     held_fixed = design.held_fixed if design is not None else None

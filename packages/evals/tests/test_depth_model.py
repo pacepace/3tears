@@ -17,7 +17,8 @@ from fractions import Fraction
 
 import pytest
 
-from threetears.evals.analysis import build_campaign_report, build_code_only_report
+from threetears.evals.analysis import build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.depth import MODEL_ASSUMES, model_pass_hat_k
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock

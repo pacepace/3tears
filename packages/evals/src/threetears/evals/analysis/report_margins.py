@@ -167,9 +167,7 @@ def flip_margin(reading: Reading) -> float | None:
     https://github.com/pacepace/3tears/issues/1142.
 
     :param reading: An arm's reading on an aspect.
-    :ptype reading: Reading
     :return: The flip margin, in points; None where the reading states no interval to read it on.
-    :rtype: float | None
     """
     if reading.within_interval is None:
         return None
@@ -186,14 +184,10 @@ def _corrected_interval(
     the corrected one.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect: The aspect the reading is on.
-    :ptype aspect: Aspect
     :param reading: An arm's reading on that aspect.
-    :ptype reading: Reading
     :return: The interval's two ends in points and its level as the input states it; None where the input holds no
         corrected interval for the reading (no such contrast, an untested one, or an end that is not finite).
-    :rtype: tuple[tuple[float, float], str | None] | None
     """
     for contrast in report_input.contrasts:
         if contrast.kind != "trial" or contrast.arm != reading.arm or contrast.interval is None:
@@ -221,9 +215,7 @@ def criterion_place(criterion: Criterion) -> CriterionPlace:
     one it names), else the arm's overall value. The one reading of ``Criterion.scope``, so every reader agrees.
 
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :return: ``cell``, ``task`` or ``overall``.
-    :rtype: CriterionPlace
     """
     if criterion.scope == "each_cell":  # prose-canary: allow — Criterion.scope is the input's declared enum, not prose
         return "cell"
@@ -237,12 +229,9 @@ def criterion_places(report_input: ReportInput, criterion: Criterion) -> list[tu
     or every cell. An arm that lacks the figure at any of them is not shown to pass it.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :return: Each place as ``(task, cell)``: ``(None, None)`` overall, a task's id, or a cell's id, in the input's
         order; empty where the scope covers no place the input holds.
-    :rtype: list[tuple[str | None, str | None]]
     """
     place = criterion_place(criterion)
     if place == "cell":
@@ -256,9 +245,7 @@ def lead_aspect(report_input: ReportInput) -> str | None:
     """The lead aspect, whose figures the input's by-arm maps hold: the first asked, else the first.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Its id; None where the input holds no aspect.
-    :rtype: str | None
     """
     asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
     return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
@@ -268,11 +255,8 @@ def aspect_of(report_input: ReportInput, aspect_id: str) -> Aspect:
     """One of the input's aspects, by id.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect_id: The aspect's id.
-    :ptype aspect_id: str
     :return: The aspect.
-    :rtype: Aspect
     :raises KeyError: The input holds no aspect of that id; the message names it and the ids the input holds.
     """
     for aspect in report_input.aspects:
@@ -286,11 +270,8 @@ def aspect_board(report_input: ReportInput, aspect_id: str | None) -> Mapping[st
     """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect_id: The aspect, by id; None for the lead aspect's, which the input's scoreboard holds.
-    :ptype aspect_id: str | None
     :return: Each arm's row, by arm; empty on an aspect other than the lead that holds no scoreboard.
-    :rtype: Mapping[str, ScoreboardRow]
     :raises KeyError: The input holds no aspect of that id (:func:`aspect_of`).
     """
     if aspect_id is None:
@@ -306,13 +287,9 @@ def on_aspect(report_input: ReportInput, table: Measure | Judged, aspect_id: str
     ``by_aspect`` entry, which an aspect it was not read on lacks.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param table: The measure or judged dimension.
-    :ptype table: Measure | Judged
     :param aspect_id: The aspect, by id; None for the lead aspect.
-    :ptype aspect_id: str | None
     :return: Each arm's stat, by arm.
-    :rtype: Mapping[str, Stat]
     """
     if aspect_id is None or aspect_id == lead_aspect(report_input):
         return table.per_arm
@@ -324,11 +301,8 @@ def criterion_aspect(report_input: ReportInput, criterion: Criterion) -> str | N
     lead aspect (the first asked, else the first).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :return: The aspect's id; None where the criterion names none and the input holds no aspect.
-    :rtype: str | None
     """
     return criterion.aspect if criterion.aspect is not None else lead_aspect(report_input)
 
@@ -338,11 +312,8 @@ def criterion_other_aspect(report_input: ReportInput, criterion: Criterion) -> s
     lead's.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :return: The aspect's id, or None.
-    :rtype: str | None
     """
     if criterion.aspect is None or criterion.aspect == lead_aspect(report_input):
         return None
@@ -377,18 +348,14 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     """The arm's figures a criterion reads, at its statistic, at each of its places (:func:`criterion_places`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :param arm: The arm's id.
-    :ptype arm: str
     :return: One figure per place the criterion reads it (overall, its task, every task or every cell), each where the
         input states it as a number, with the interval the input states on it; an overall mean that states none, and
         is the plain mean of its target-matrix cells whose every cell states a spread, carries the interval derived
         from theirs, marked ``derived``. A figure that is not a finite number
         (NaN, an infinity) is no figure: it neither meets nor misses a line, so it is left out like a missing one, and
         an arm lacking it is not shown to pass.
-    :rtype: list[CriterionFigure]
     """
     found: list[CriterionFigure] = []
     for task, cell in criterion_places(report_input, criterion):
@@ -452,13 +419,9 @@ def criterion_misses(report_input: ReportInput, criterion: Criterion, arm: str) 
     threshold. A place with no figure is unknown, not missed (:func:`criterion_unknowns`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :param arm: The arm's id.
-    :ptype arm: str
     :return: The places missed on a figure, 0 where none is (a borderline figure clears its line).
-    :rtype: int
     """
     return sum(_gap(criterion, figure.value) < 0 for figure in criterion_figures(report_input, criterion, arm))
 
@@ -468,13 +431,9 @@ def criterion_unknowns(report_input: ReportInput, criterion: Criterion, arm: str
     does not hold is not shown passed, and is not shown missed either).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :param arm: The arm's id.
-    :ptype arm: str
     :return: The places with no finite figure for the arm.
-    :rtype: int
     """
     return len(criterion_places(report_input, criterion)) - len(criterion_figures(report_input, criterion, arm))
 
@@ -484,13 +443,9 @@ def criterion_passes(report_input: ReportInput, criterion: Criterion, arm: str) 
     figure misses.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The declared criterion.
-    :ptype criterion: Criterion
     :param arm: The arm's id.
-    :ptype arm: str
     :return: True where every place the criterion reads holds a figure clearing it.
-    :rtype: bool
     """
     return (
         bool(criterion_places(report_input, criterion))
@@ -504,9 +459,7 @@ def surviving_arms(report_input: ReportInput) -> list[str]:
     pipeline read: the options that survive (this module's account, GENERATOR §3).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Their ids, in the input's arm order.
-    :rtype: list[str]
     """
     return [arm.id for arm in report_input.arms if _missed_gates(report_input, arm.id) == 0]
 
@@ -517,9 +470,7 @@ def undecided_arms(report_input: ReportInput) -> list[str]:
     place it reads (or reads at no place the input holds).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Their ids, in the input's arm order.
-    :rtype: list[str]
     """
     breached = {str(read.get("arm")) for read in report_input.guardrails if read.get("decision") == "breached"}
     gating = [criterion for criterion in report_input.criteria if criterion.kind in _GATING]
@@ -609,9 +560,7 @@ def margins(report_input: ReportInput) -> list[Margin]:
     """Every margin that could change the call alone, in this module's order.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Criteria in the input's order, then readings, then floors.
-    :rtype: list[Margin]
     """
     missed = {arm.id: _missed_gates(report_input, arm.id) for arm in report_input.arms}
     surviving = {arm for arm, count in missed.items() if count == 0}
@@ -624,9 +573,7 @@ def weakest_margin(report_input: ReportInput) -> Margin | None:
     """The weakest margin: the one whose gap is smallest relative to its line, the first on a tie.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The weakest margin; None when the input reads no figure against a criterion, margin or floor.
-    :rtype: Margin | None
     """
     found = margins(report_input)
     if not found:

@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import KIT_CHARTS, ChartBlock, report_html
+from threetears.evals.analysis import ChartBlock, report_html
+from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.schema.hashing import round_floats
 from packages.evals.tests.report_kit_support import (

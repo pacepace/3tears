@@ -100,17 +100,11 @@ class SeedRefused(ValueError):
         """Record the refusal and compose its default sentence.
 
         :param kind: Which question failed.
-        :ptype kind: SeedRefusalKind
         :param namespace: The seed namespace the refused value sits under.
-        :ptype namespace: str
         :param name: The dimension the seed addressed, or None when the namespace itself is refused.
-        :ptype name: str | None
         :param declared: The registry's declaration for ``name``, when it has one.
-        :ptype declared: WorldDimension | None
         :param violations: The schema's sentences, for a ``nonconforming`` refusal.
-        :ptype violations: tuple[str, ...]
         :param attached: The carriers the subject does attach, for an ``unattached`` refusal.
-        :ptype attached: tuple[str, ...]
         """
         self.kind = kind
         self.namespace = namespace
@@ -124,7 +118,6 @@ class SeedRefused(ValueError):
         """The host-neutral refusal, naming the path and what would have to change.
 
         :return: The message.
-        :rtype: str
         """
         if self.kind == "malformed":
             return f"the seed's {self.namespace!r} entry is not a mapping of dimension to value"
@@ -161,14 +154,10 @@ def check_seed(
     """Walk a world seed against the registry: every write it would make, checked, or the first refusal.
 
     :param registry: The world the seed writes into.
-    :ptype registry: WorldRegistry
     :param namespaces: Carrier → (seed key → value), as a template's world seed holds them.
-    :ptype namespaces: Mapping[str, Any]
     :param attached: The carriers this subject attaches, or None where no subject exists yet — at
         authoring, the registry's questions are the only ones there are to ask.
-    :ptype attached: Collection[str] | None
     :return: One :class:`SeedWrite` per seeded value, in the seed's order. Nothing has been written.
-    :rtype: tuple[SeedWrite, ...]
     :raises SeedRefused: The first value the walk cannot write, naming its path. Every registry refusal
         is found before any ``unattached`` one.
     :raises UnsupportedSchemaError: A dimension's schema is outside the honoured subset — a defect in the

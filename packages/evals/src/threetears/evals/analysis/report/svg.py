@@ -31,9 +31,7 @@ def tenth_px(value: float) -> str:
     written through here: the interval glyph's and, through ``chart_svg``, the static page's charts'.
 
     :param value: The coordinate, in px.
-    :ptype value: float
     :return: It to one decimal place.
-    :rtype: str
     """
     return f"{round_figures(value):.1f}"
 
@@ -80,22 +78,14 @@ def interval_glyph_svg(
     numbers, so a hover reads them where the row's cells already print them.
 
     :param value: The figure, in ``unit``.
-    :ptype value: float
     :param low: The interval's low end, in ``unit``.
-    :ptype low: float
     :param high: The interval's high end, in ``unit``.
-    :ptype high: float
     :param unit: The unit the figures are in; empty for none.
-    :ptype unit: str
     :param scale: The track's low and high ends, which hold the interval, the margin and zero where it is drawn.
-    :ptype scale: tuple[float, float]
     :param margin: A declared margin either side of zero, or None.
-    :ptype margin: float | None
     :param said: What the glyph's title states, as the table's cells write its figures; None for the glyph's own
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.glyph_title`), which no page's table states.
-    :ptype said: str | None
     :return: The ``<svg>`` element.
-    :rtype: str
     """
     first, last = scale
     span = (last - first) or 1.0

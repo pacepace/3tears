@@ -22,7 +22,8 @@ import pytest
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals import Eval, Judge
 from threetears.evals.quick import as_host
-from threetears.evals.run import build_judge_service, create_template, get_template, plan_judge, update_template
+from threetears.evals.run import build_judge_service, create_template, plan_judge, update_template
+from threetears.evals.run.authoring import get_template
 from threetears.evals.run.definition_seed import SeedCorpus, seed_eval_definitions
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.schema.models import EvalTemplate, fingerprint_criterion

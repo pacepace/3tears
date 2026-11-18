@@ -168,11 +168,8 @@ def editor_facts(doc: ReportDoc, report_input: ReportInput) -> list[EditorFact]:
     """Every interpretive fact code computes about a report document on its snapshot (this module's facts).
 
     :param doc: The document, as the model accepts it; its validity is not required.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :return: Each fact, kinds in this module's order, then in document order; empty when none holds.
-    :rtype: list[EditorFact]
     """
     arms = {arm.id for arm in report_input.arms}
     recommended = [(f"recommends[{index}]", arm) for index, arm in enumerate(doc.recommends) if arm in arms]

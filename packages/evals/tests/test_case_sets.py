@@ -15,7 +15,8 @@ from pydantic import ValidationError
 
 from threetears.evals.schema import CaseSet, CaseSetRef, EvalRun
 from threetears.evals.kernel import ConflictError, EvalStorage, NotFoundError, ValidationFailedError
-from threetears.evals.ops import LaunchArguments, case_set_mint, case_sets_list, history_text, scope_history
+from threetears.evals.ops import LaunchArguments, case_set_mint, case_sets_list, scope_history
+from threetears.evals.ops.lenses import history_text
 from threetears.evals.ops import CaseSetMint
 from threetears.evals.run import LaunchHost, mint_case_set, start_run
 from threetears.evals.storage import InMemoryDocumentStore

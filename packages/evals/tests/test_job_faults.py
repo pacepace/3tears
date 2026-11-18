@@ -14,7 +14,8 @@ import pytest
 
 from threetears.evals.kernel import SWEEP_JOB, EvalStorage, EvalSweep, SweepArmRecord
 from threetears.evals.kernel.job_leases import write_held_record
-from threetears.evals.schema import JOB_FAULT_MAX_CHARS, JOB_FAULTS_MAX, with_fault
+from threetears.evals.schema import JOB_FAULTS_MAX
+from threetears.evals.schema.job_lease import with_fault
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 
@@ -23,6 +24,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 
 #: Every job record kind: each stored model that declares the lease fields, faults among them.
 _JOB_RECORDS = {doc_type_of(model): model for model in stored_models() if "lease" in model.model_fields}
+
+
+#: The longest one fault entry is kept at.
+_FAULT_MAX_CHARS = 2000
 
 
 def test_every_job_record_kind_keeps_faults() -> None:
@@ -60,7 +65,7 @@ def _sweep(**updates: object) -> EvalSweep:
 
 @pytest.mark.parametrize(
     "faults",
-    [[""], ["x" * (JOB_FAULT_MAX_CHARS + 1)], ["a fault"] * (JOB_FAULTS_MAX + 1)],
+    [[""], ["x" * (_FAULT_MAX_CHARS + 1)], ["a fault"] * (JOB_FAULTS_MAX + 1)],
     ids=["blank", "too long", "too many"],
 )
 def test_a_stored_record_refuses_faults_past_their_caps(faults: list[str]) -> None:
@@ -72,10 +77,10 @@ def test_a_stored_record_refuses_faults_past_their_caps(faults: list[str]) -> No
 def test_a_fault_added_past_the_caps_is_kept_inside_them() -> None:
     full = [f"fault {n}" for n in range(JOB_FAULTS_MAX)]
 
-    kept = with_fault(full, "x" * (JOB_FAULT_MAX_CHARS + 50))
+    kept = with_fault(full, "x" * (_FAULT_MAX_CHARS + 50))
 
     assert len(kept) == JOB_FAULTS_MAX and kept[:-1] == full[:-1], "the earliest are kept"
-    assert len(kept[-1]) == JOB_FAULT_MAX_CHARS and kept[-1].endswith("…"), "the newest takes the last place, cut"
+    assert len(kept[-1]) == _FAULT_MAX_CHARS and kept[-1].endswith("…"), "the newest takes the last place, cut"
     assert full[-1] == f"fault {JOB_FAULTS_MAX - 1}", "the stored list is not changed"
     assert EvalSweep.from_dict(_sweep().to_dict() | {"faults": kept}).faults == kept
     with pytest.raises(ValueError, match="blank"):

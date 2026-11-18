@@ -295,14 +295,10 @@ def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "bor
     a reason's numbers reach a reader as figures.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param arm: The arm's id.
-    :ptype arm: str
     :param status: ``fail`` for the figures it fails on, ``borderline`` for the ones it holds borderline, ``unknown``
         for the places with no figure.
-    :ptype status: Literal["fail", "borderline", "unknown"]
     :return: Each, in the criteria's order.
-    :rtype: list[GateRead]
     """
     return [
         _gate_read(report_input, arm, finding)
@@ -326,11 +322,8 @@ def _read_bars_as(report_input: ReportInput, bars_as: BarsAs) -> ReportInput:
     bar read as a gate for ``gates``. A bar's figures, and every key citing them, read the same either way.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param bars_as: ``warnings`` or ``gates``, as the caller chose.
-    :ptype bars_as: BarsAs
     :return: The input read so.
-    :rtype: ReportInput
     """
     return report_input if bars_as == "warnings" else _read_as_gates(report_input, frozenset({"bar"}))
 
@@ -748,17 +741,11 @@ def dominance(
     standing, to each pair of survivors; ``dominated_with_axes`` adds the extra axes.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param axes: Extra measures or judged dimensions, by key, to compare the survivors on, descriptively.
-    :ptype axes: Sequence[str]
     :param limit: The most options one page holds; None for every one.
-    :ptype limit: int | None
     :param offset: The first option the page holds, in the input's arm order.
-    :ptype offset: int
     :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates``.
-    :ptype bars_as: BarsAs
     :return: The survivors, the options removed and undecided, the dominant ones, the extra axes and code's call.
-    :rtype: Dominance
     :raises RefusedInput: An axis names no measure or judged dimension the input holds.
     """
     report_input = _read_bars_as(report_input, bars_as)
@@ -1652,22 +1639,14 @@ def sensitivity(
     moved). Adjacent pieces with the same call are one segment, so a criterion the call never rests on is one segment.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param parameter: ``margin:<aspect>``, ``floor:<aspect>/<floor>`` or ``threshold:<criterion>``.
-    :ptype parameter: str
     :param range_low: Where the sweep starts; omitted, zero for a margin or a floor, and no lower end for a threshold.
-    :ptype range_low: float | None
     :param range_high: Where the sweep ends; omitted, no upper end.
-    :ptype range_high: float | None
     :param limit: The most flips one page lists.
-    :ptype limit: int
     :param offset: The first flip the page lists.
-    :ptype offset: int
     :param bars_as: How to read the declared bars: ``warnings`` as declared, or ``gates`` (this module's How bars are
         read); a bar's threshold sweeps either way.
-    :ptype bars_as: BarsAs
     :return: The segments, the flips on this page, and whether the call holds across the range.
-    :rtype: Sensitivity
     :raises RefusedInput: The parameter names nothing this input holds, or the range is not one.
     """
     report_input = _read_bars_as(report_input, bars_as)
@@ -1943,21 +1922,13 @@ def breakdown(
     loss each carries (``loss_share``), all descriptive.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param measure: The measure or judged dimension, by key.
-    :ptype measure: str
     :param arm: The one candidate to show; None for every candidate.
-    :ptype arm: str | None
     :param slice_by: ``stratum``, ``task`` or ``cell``.
-    :ptype slice_by: SliceBy
     :param aspect: For strata, only those slicing this aspect's cases.
-    :ptype aspect: str | None
     :param limit: The most slices one page holds.
-    :ptype limit: int
     :param offset: The first slice the page holds.
-    :ptype offset: int
     :return: The slices on this page, and where each candidate's loss sits most.
-    :rtype: Breakdown
     :raises RefusedInput: The input has no control; the arm is no candidate; the measure is none the input holds, or
         no slice holds it; or an aspect is named for tasks or cells.
     """

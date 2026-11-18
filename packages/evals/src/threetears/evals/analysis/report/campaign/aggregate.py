@@ -1,8 +1,7 @@
 """What a campaign's page reads across its aspects, each aspect weighed alike: the scorecard's equal-weight row and
 the cost/quality chart.
 
-Both read the readings' own figures across aspects
-(:func:`~threetears.evals.analysis.campaign_readings.campaign_aggregate`), so the page prints what the JSON states,
+Both read the readings' own figures across aspects (``CampaignReadings.aggregate``), so the page prints what the JSON states,
 weighting included. They are descriptive: nothing here is tested, no figure decides a reading, a floor or a bar, and
 no word says one arm is better.
 
@@ -75,14 +74,10 @@ def equal_weight_figures(
     where its cell prints it. A withheld figure holds no value.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :return: One figure per arm the matrix holds a column for; none on one aspect, for a measurement, or where no
         matrix is laid out.
-    :rtype: dict[str, tuple[AggregateFigure, str]]
     """
     aggregate = _row_aggregate(readings)
     if aggregate is None:
@@ -97,15 +92,10 @@ def aggregate_blocks(
     weighting once in the methods.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The blocks; none for a measurement, or where neither the row nor the chart is laid out.
-    :rtype: list[ReportBlock]
     """
     aggregate = readings.aggregate
     if aggregate is None:

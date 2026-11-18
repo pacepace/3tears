@@ -34,7 +34,6 @@ from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run import rate_result
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema import (
-    OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     CalibrationRating,
     EvalResult,
@@ -47,6 +46,7 @@ from threetears.evals.schema import (
     fingerprint_judged_output,
     label_key_of,
 )
+from threetears.evals.schema.models import OUTCOME_DIM_ID
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE

@@ -15,11 +15,14 @@ import pytest
 
 from threetears.evals import Eval
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
-from threetears.evals.analysis import assemble_context_bundle, build_code_only_report, get_campaign, report_markdown
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import CaseRenamed, case_rename
-from threetears.evals.schema import CaseSet, EvalTestCase, case_set_doc_id
+from threetears.evals.schema import CaseSet, EvalTestCase
+from threetears.evals.schema.models import case_set_doc_id
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop

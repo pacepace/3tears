@@ -285,10 +285,8 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
     Spends nothing and reads nothing but ``answers``, so the same answers always read the same.
 
     :param answers: What :func:`~threetears.evals.run.judge_temperature_work` asked and was answered.
-    :ptype answers: JudgeTemperatureAnswers
     :return: The comparison: per dimension the two settings side by side, per setting every case, whether the two sides
         compare the settings as named, and the case count and spend carried over.
-    :rtype: JudgeTemperatureComparison
     """
     reads: list[TemperatureSettingRead] = []
     cases_by: dict[TemperatureSetting, list[TemperatureCase]] = {}

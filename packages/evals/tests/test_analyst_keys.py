@@ -36,7 +36,8 @@ from packages.evals.tests.analyst_support import (
 )
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
-from threetears.evals.actions import MountedTool, analyst_actions, analyst_tools, eval_catalogue
+from threetears.evals.actions import MountedTool, analyst_tools, eval_catalogue
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.analysis.analyst.keys import KEYS_MOST, figure_keys_check
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure

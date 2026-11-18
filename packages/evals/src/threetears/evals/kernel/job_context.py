@@ -28,7 +28,6 @@ def running_job() -> str | None:
 
     :return: The job's record id as the job manager runs it (a run's id, a task's id), or ``None`` — a transport
         call, a script, anything that is not a job's work.
-    :rtype: str | None
     """
     return _RUNNING_JOB.get()
 
@@ -41,9 +40,7 @@ def job_running(job_id: str) -> Iterator[None]:
     as made by a job. Reset on leaving, however the work ends.
 
     :param job_id: The job's record id.
-    :ptype job_id: str
     :yield: Nothing.
-    :rtype: Iterator[None]
     """
     token = _RUNNING_JOB.set(job_id)
     try:

@@ -60,9 +60,7 @@ class CellExecutor(Protocol):
         """Run every cell exactly once, never more than ``width`` at once.
 
         :param cells: The run's cells, in the order they must start.
-        :ptype cells: Sequence[CellWork]
         :param width: The most that may run at once; at least 1. ``1`` is serial.
-        :ptype width: int
         :raises BaseException: The first exception a cell raised, once every cell in flight has ended.
         """
         ...  # pragma: no cover — protocol
@@ -79,9 +77,7 @@ class InProcessCellExecutor:
         """Run every cell exactly once, never more than ``width`` at once, starting them in order.
 
         :param cells: The run's cells, in the order they must start.
-        :ptype cells: Sequence[CellWork]
         :param width: The most that may run at once; at least 1.
-        :ptype width: int
         :raises ValueError: ``width`` is below 1.
         :raises BaseException: The first exception a cell raised, once every cell in flight has ended.
         """

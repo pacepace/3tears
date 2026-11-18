@@ -76,7 +76,6 @@ class SeedSection:
         """Return the section as the payload a host template model validates.
 
         :return: Every field, by its declared name, with no host types in it.
-        :rtype: dict[str, Any]
         """
         return {
             "section_name": self.section_name,
@@ -96,9 +95,7 @@ class SeedSection:
         """Rebuild a section from :meth:`to_dict`'s payload.
 
         :param data: A payload carrying at least the required fields.
-        :ptype data: dict[str, Any]
         :return: The section.
-        :rtype: SeedSection
         :raises KeyError: When a required field is absent.
         """
         return cls(
@@ -140,7 +137,6 @@ class SeedTemplate:
         :return: The declared fields, with ``sections`` flattened to payload dicts.
             Timestamps and provenance are deliberately absent — a shipped
             constant has neither, and a host fills its own defaults.
-        :rtype: dict[str, Any]
         """
         return {
             "template_name": self.template_name,
@@ -160,9 +156,7 @@ class SeedTemplate:
         replaces is re-emitted as ``SeedTemplate.from_dict({...})``.
 
         :param data: A payload carrying the declared fields.
-        :ptype data: dict[str, Any]
         :return: The template.
-        :rtype: SeedTemplate
         :raises KeyError: When a required field is absent.
         """
         return cls(

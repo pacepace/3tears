@@ -151,13 +151,9 @@ async def snapshot_input(host: OpsHost, scope_id: str, snapshot_id: str) -> Repo
     """The report input a snapshot froze: what every analyst tool reads.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :return: Its report input, checked against its digest and read under this build's model.
-    :rtype: ReportInput
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot, or its input, does not read under this build's model, or the input
         does not digest to the one recorded beside it; the remedy is to freeze again.
@@ -262,17 +258,11 @@ async def report_snapshot_freeze(
     place (``replaced``), so freezing again is the remedy every such refusal names.
 
     :param host: The host whose store holds the campaign and the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param campaign_id: The campaign to freeze; exactly one of it and ``analysis_id``.
-    :ptype campaign_id: str | None
     :param analysis_id: The stored analysis to freeze.
-    :ptype analysis_id: str | None
     :param created_by: Who freezes it, as the host names the caller.
-    :ptype created_by: str
     :return: The snapshot, made or found.
-    :rtype: SnapshotFrozen
     :raises ValidationFailedError: Both or neither of the campaign and the analysis were named, the campaign resolves
         no runs, or the analysis was written over a bundle of a shape this build does not read.
     :raises NotFoundError: No such campaign or analysis in the scope.
@@ -321,13 +311,9 @@ async def report_snapshot_restore(host: OpsHost, scope_id: str, snapshot: EvalRe
     does. Only the scope is the caller's: the snapshot is stored in ``scope_id`` whatever scope it was frozen in.
 
     :param host: The host whose store the analyst tools read.
-    :ptype host: OpsHost
     :param scope_id: The scope to store it in.
-    :ptype scope_id: str
     :param snapshot: The snapshot, as it was frozen.
-    :ptype snapshot: EvalReportSnapshot
     :return: The snapshot, stored or found.
-    :rtype: SnapshotFrozen
     """
     eval_host = host.eval_host
     scoped = snapshot.model_copy(update={"scope_id": scope_id})
@@ -342,13 +328,9 @@ def sized_page[T](compute: Callable[[int], T], limit: int, fits: Callable[[T], b
     caller named the page's size), the page of ``limit`` rows.
 
     :param compute: Builds the page holding at most the rows it is given.
-    :ptype compute: Callable[[int], T]
     :param limit: The most rows the page holds.
-    :ptype limit: int
     :param fits: Whether a page is short enough; ``None`` for a page of ``limit`` rows.
-    :ptype fits: Callable[[T], bool] | None
     :return: The page.
-    :rtype: T
     """
     page = compute(limit)
     if fits is None or fits(page):
@@ -581,24 +563,15 @@ async def report_check(
     the same snapshot always returns the same result.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot the draft was written from.
-    :ptype snapshot_id: str
     :param doc: The draft.
-    :ptype doc: ReportDoc
     :param fits: Whether a result's text is short enough; a result holds the most verdicts, then the most lines, that
         pass, one at least.
-    :ptype fits: Callable[[DraftChecked], bool]
     :param limit: The most lines of the page one result holds.
-    :ptype limit: int
     :param offset: The first line it holds.
-    :ptype offset: int
     :param verdict_offset: The first verdict it holds.
-    :ptype verdict_offset: int
     :return: The verdicts and the page's lines.
-    :rtype: DraftChecked
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
     """
@@ -633,31 +606,18 @@ async def capability_gap(
     Either way this writes one INFO line on the ``threetears.evals.analyst`` logger, for the server's operator.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot the analyst was reading.
-    :ptype snapshot_id: str
     :param need: What the analyst needed and no tool gave, or what looked wrong.
-    :ptype need: str
     :param why: What it needed it for, or why it looks wrong.
-    :ptype why: str
     :param workaround: What it did instead.
-    :ptype workaround: str
     :param claim_ids: The claims of its report the gap touches; empty for none yet.
-    :ptype claim_ids: Sequence[str]
     :param created_by: Who is calling, as the host names them.
-    :ptype created_by: str
     :param kind: ``missing`` (no tool gave it) or ``suspect`` (a result looks wrong).
-    :ptype kind: CallGapKind
     :param figure_keys: The figure keys that show a suspect result.
-    :ptype figure_keys: Sequence[str]
     :param calls: The tool calls that reproduce a suspect result: each action and its other arguments.
-    :ptype calls: Sequence[tuple[str, Mapping[str, Any]]]
     :param kept_by: ``call``, store the gap now; ``write``, the report write the call is part of stores it.
-    :ptype kept_by: Literal["call", "write"]
     :return: The acknowledgement.
-    :rtype: GapNoted
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
     :raises StorageError: The store refused the gap.
@@ -708,14 +668,10 @@ async def analyst_gaps_list(host: OpsHost, scope_id: str, *, since: datetime | N
     issue with its own credentials (:mod:`threetears.evals.analysis.analyst_gaps` says how groups form and rank).
 
     :param host: The host whose store holds the gaps.
-    :ptype host: OpsHost
     :param scope_id: The scope to read.
-    :ptype scope_id: str
     :param since: An aware time: only the records stored at or after it, each read by its own time; ``None`` for every
         record. A group counts, dates and quotes only the records in that window.
-    :ptype since: datetime | None
     :return: The digest.
-    :rtype: GapDigest
     :raises ValueError: ``since`` names no zone, so no instant.
     :raises ValidationFailedError: The window holds more than :data:`GAPS_READ_LIMIT` records: a bounded read
         refuses, naming a later ``since``, rather than reading every record the scope holds.

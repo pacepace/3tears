@@ -425,7 +425,6 @@ class Sweepable:
         digest read, so none can disagree about which inputs split a cell.
 
         :return: True for a rig dimension.
-        :rtype: bool
         """
         return self.role == "apparatus" and self.no_rig_coordinate is None
 
@@ -544,14 +543,12 @@ class SweepableRegistry(HostAttributed):
 
         :param declarations: The inputs, in reporting order. Names are stable — they appear in the
             bisection payload and in the analysis bundle's confound lists.
-        :ptype declarations: Iterable[Sweepable]
         :param roles: The pinned roles — who was held fixed so the candidate is the only thing
             varying. Entries naming the same role are merged in order, which is how a host
             nominates its own dimension into a role the core declared; the flat union is
             :attr:`role_pins`, the set the ``roles_differ`` badge speaks for. Selecting pins
             by name is the one way the name-and-reader pairing can still be broken, so a pin
             naming an undeclared or non-apparatus input is refused here.
-        :ptype roles: Sequence[RolePins]
         :raises RegistrationError: The declaration set is unsound. Every defect is reported at once
             rather than one per construction, so a host fixing them sees the whole list.
         """
@@ -574,7 +571,6 @@ class SweepableRegistry(HostAttributed):
 
         :return: One :class:`RolePins` per role name, pins in declaration order, carrying the phrase
             of the entry that introduced it.
-        :rtype: tuple[RolePins, ...]
         """
         pins_by_role: dict[str, list[str]] = {}
         phrases: dict[str, str] = {}
@@ -601,7 +597,6 @@ class SweepableRegistry(HostAttributed):
         no test in this repository scans for the comment.
 
         :return: One sentence per defect; empty when the declaration set is sound.
-        :rtype: list[str]
         """
         defects: list[str] = []
         seen: set[str] = set()
@@ -653,7 +648,6 @@ class SweepableRegistry(HostAttributed):
         or one a fixed declaration also holds, would have its mechanism decided by whichever was read first.
 
         :return: One sentence per member claimed twice; empty when every claim is unique.
-        :rtype: list[str]
         """
         defects: list[str] = []
         owner: dict[str, str] = {}
@@ -682,7 +676,6 @@ class SweepableRegistry(HostAttributed):
         the host's surface, and only the union can say whether the name it carries is declared.
 
         :return: One sentence per defect; empty when every named surface is sound.
-        :rtype: list[str]
         """
         defects: list[str] = []
         claimed: dict[str, str] = {}
@@ -721,7 +714,6 @@ class SweepableRegistry(HostAttributed):
         """Name every way the pinned-role entries contradict what :class:`RolePins` promises.
 
         :return: One sentence per defect; empty when the role set is sound.
-        :rtype: list[str]
         """
         defects: list[str] = []
         phrases: dict[str, str] = {}
@@ -773,9 +765,7 @@ class SweepableRegistry(HostAttributed):
         """Check the ``no_own_coordinate`` waiver is on a role that could have one.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration is well-formed.
-        :rtype: list[str]
         """
         if declared.no_own_coordinate is None:
             return []
@@ -793,9 +783,7 @@ class SweepableRegistry(HostAttributed):
         """Check a ``no_rig_coordinate`` waiver is on apparatus, says why, and stands without a confound reason.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration is well-formed.
-        :rtype: list[str]
         """
         if declared.no_rig_coordinate is None:
             return []
@@ -821,9 +809,7 @@ class SweepableRegistry(HostAttributed):
         profile's — so :class:`~threetears.evals.kernel.host.profile.HostProfile` checks that half.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration is well-formed.
-        :rtype: list[str]
         """
         defects = SweepableRegistry._member_mechanism_defects(declared)
         if declared.acts_on is None:
@@ -851,9 +837,7 @@ class SweepableRegistry(HostAttributed):
         """Check a ``member_acts_on`` declaration is on an open family and names members it owns.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration is well-formed or carries none.
-        :rtype: list[str]
         """
         if declared.member_acts_on is None:
             return []
@@ -885,9 +869,7 @@ class SweepableRegistry(HostAttributed):
         family names its members through :attr:`Sweepable.member_reader_name`, which only a family may declare.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration names itself.
-        :rtype: list[str]
         """
         defects: list[str] = []
         if declared.reader_name is not None and not declared.reader_name.strip():
@@ -920,9 +902,7 @@ class SweepableRegistry(HostAttributed):
         """Check an open-family declaration is on a role that can have members, and says why.
 
         :param declared: The declaration to check.
-        :ptype declared: Sweepable
         :return: One message per defect, empty when the declaration is well-formed.
-        :rtype: list[str]
         """
         defects: list[str] = []
         if declared.open_family is None:
@@ -981,7 +961,6 @@ class SweepableRegistry(HostAttributed):
         what an apparatus class is keyed by and the confound scans read.
 
         :return: The rig's dimensions.
-        :rtype: tuple[Sweepable, ...]
         """
         return tuple(declared for declared in self._declarations if declared.rig_dimension)
 
@@ -1053,17 +1032,12 @@ class SweepableRegistry(HostAttributed):
         """Read ``surface`` off one run with the ``removed`` member names taken out.
 
         :param surface: A name in :attr:`resolution_surfaces` whose claimant declares a residual reader.
-        :ptype surface: str
         :param run: The run to read.
-        :ptype run: EvalRun
         :param results: That run's results.
-        :ptype results: Sequence[ResultView]
         :param removed: Member names of the family that resolves into ``surface``; for a fixed lever, the lever's
             own name.
-        :ptype removed: frozenset[str]
         :return: Whatever the claimant's :attr:`Sweepable.read_residual` returns — comparable content, or
             ``None`` when this run does not carry the surface.
-        :rtype: Any
         :raises KeyError: Nothing that resolves into ``surface`` declares a residual reader — including a fixed
             lever that declares none, whose fold the runs alone decide.
         """
@@ -1081,12 +1055,10 @@ class SweepableRegistry(HostAttributed):
         test claims nothing — the engine does not guess a host's keyspace.
 
         :param name: A bare dimension name.
-        :ptype name: str
         :return: The first family that claims it, in reporting order, or None. First rather than an
             ambiguity refusal: two families claiming one name is a host defect this registry
             cannot see at registration — the tests are opaque callables — and the run-time
             resolution in :meth:`_resolve` is where an overlap becomes visible and is refused.
-        :rtype: Sweepable | None
         """
         return next(
             (family for family in self.open_families if family.owns_member is not None and family.owns_member(name)),
@@ -1100,9 +1072,7 @@ class SweepableRegistry(HostAttributed):
         label input declared without one, or a name it does not declare at all.
 
         :param name: A lever's name, as a variant's levers key it.
-        :ptype name: str
         :return: Its declared reader name, or None.
-        :rtype: str | None
         :raises RegistrationError: The family claiming ``name`` names it with no words: its ``member_reader_name``
             returned a blank, or no text at all, which would store the axis unnamed and print its id. Refused here,
             where it is called, naming the family and the member, as a declaration without a name is refused where it
@@ -1153,10 +1123,8 @@ class SweepableRegistry(HostAttributed):
         LEVER is the one permitted overlap and is admitted by the first branch either way.
 
         :param name: The axis a campaign wants to declare.
-        :ptype name: str
         :return: None when the name may be declared; otherwise the reason, ending in the remedy
             :attr:`axis_remedy` renders — so a caller that prints this prints one vocabulary.
-        :rtype: str | None
         """
         declared = self._by_name.get(name)
         if declared is not None:
@@ -1192,7 +1160,6 @@ class SweepableRegistry(HostAttributed):
             :attr:`Sweepable.owns_member` is reported as recognising none, because the alternative
             is an author reading "not registered as sweepable" about a member the host does in
             fact sweep and going looking for a declaration that will never exist.
-        :rtype: str
         """
         levers = ", ".join(sorted(self.lever_names)) or "(none)"
         clauses = [f"Declarable axes: {levers}"]
@@ -1234,14 +1201,11 @@ class SweepableRegistry(HostAttributed):
         process cannot see each other's vocabulary.
 
         :param declarations: The host's own inputs.
-        :ptype declarations: Iterable[Sweepable]
         :param roles: Pinned-role entries appended to this registry's. An entry naming a role this
             registry already carries NOMINATES its pins into that role and omits the subject
             phrase; an entry naming a new one INTRODUCES it and must supply the phrase. Both
             are appends — neither can re-word or displace what is already declared.
-        :ptype roles: Sequence[RolePins]
         :return: A new validated registry.
-        :rtype: SweepableRegistry
         :raises RegistrationError: The combined set is unsound.
         """
         return SweepableRegistry(
@@ -1261,9 +1225,7 @@ class SweepableRegistry(HostAttributed):
         exactly as a fixed lever would and every other member reads ``None`` — ``not_declared``.
 
         :param name: A lever name, as the coverage row carries it.
-        :ptype name: str
         :return: The measure's name, or None when nothing declares one.
-        :rtype: str | None
         """
         declared = self._by_name.get(name)
         if declared is not None:
@@ -1291,11 +1253,9 @@ class SweepableRegistry(HostAttributed):
         """Read every declared input off one run.
 
         :param run: The run to read.
-        :ptype run: EvalRun
         :param results: That run's results, for the result-level inputs. Omitting them reads those
             as empty, which is correct for a caller that has no results loaded and wrong to
             interpret as "the run used none".
-        :ptype results: Sequence[ResultView]
         :return: ``{name: value}`` for every declared input, JSON-safe. Set-valued inputs come out
             sorted so element order is never read as a difference. A host that declared nothing
             beyond an empty core gets ``{}`` — a well-formed empty answer, not an exception.
@@ -1303,7 +1263,6 @@ class SweepableRegistry(HostAttributed):
             An :attr:`Sweepable.open_family` declaration contributes its MEMBERS, never itself:
             the family name identifies no knob, so a caller comparing two runs on it would be
             comparing the request rather than the thing that moved.
-        :rtype: dict[str, Any]
         :raises RegistrationError: A family resolved a member name an ``apparatus`` or ``label``
             declaration claims — see :meth:`resolve_levers` for why a fixed LEVER is the one
             overlap that is permitted. It is a declaration defect like any other here, and
@@ -1331,13 +1290,10 @@ class SweepableRegistry(HostAttributed):
         reading makes a silent shadow of the measuring rig true.
 
         :param run: The run to read.
-        :ptype run: EvalRun
         :param results: That run's results, for the result-level inputs.
-        :ptype results: Sequence[ResultView]
         :return: The resolution. Two runs of one host can carry DIFFERENT lever sets — that is what
             "open" means — so a caller comparing them unions the names rather than indexing one
             by the other's.
-        :rtype: ResolvedLevers
         :raises RegistrationError: A family resolved a member name an apparatus or label claims.
         """
         return self._resolve(run, results)[1]
@@ -1351,11 +1307,8 @@ class SweepableRegistry(HostAttributed):
         inexpressible, re-created one layer up.
 
         :param run: The run to read.
-        :ptype run: EvalRun
         :param results: That run's results.
-        :ptype results: Sequence[ResultView]
         :return: ``(every value by name, the lever resolution)``.
-        :rtype: tuple[dict[str, Any], ResolvedLevers]
         :raises RegistrationError: A family resolved a member name an apparatus or label claims.
         """
         values: dict[str, Any] = {}
@@ -1404,11 +1357,8 @@ class SweepableRegistry(HostAttributed):
 
         :param run: The run. Read whole: a listing's copy with its host payload elided would read a
             payload-carried lever as unset, which is "held" — so a caller holding one loads the run.
-        :ptype run: EvalRun
         :param results: That run's results, for the result-level inputs.
-        :ptype results: Sequence[ResultView]
         :return: The footing. ``moved_nothing`` only when every input read was checked.
-        :rtype: ProductionFooting
         :raises ValueError: ``run`` is a listing's copy whose host payload was elided.
         :raises RegistrationError: As :meth:`resolve_levers`.
         """
@@ -1460,13 +1410,10 @@ class SweepableRegistry(HostAttributed):
         :attr:`Sweepable.read` callables.
 
         :param run: The run to read.
-        :ptype run: EvalRun
         :param results: That run's results. ``judge_model`` and ``judge_config_ids`` are observed
             ACROSS results, so omitting them reads each as ``[]`` — which means "nobody
             supplied results", never "no model judged" or "the run used no judge config".
-        :ptype results: Sequence[ResultView]
         :return: ``{name: value}`` for every pinned role, JSON-safe; ``{}`` when this host pins none.
-        :rtype: dict[str, Any]
         """
         return {name: self._by_name[name].read(run, results) for name in self._role_pins}
 
@@ -1478,13 +1425,10 @@ class SweepableRegistry(HostAttributed):
         and would otherwise report agreement that was never observed.
 
         :param name: A declared input name — it selects the ``indeterminate_when_blank`` rule.
-        :ptype name: str
         :param values: One observed value per run.
-        :ptype values: Sequence[Any]
         :return: ``"unknown"`` when at least one arm's value is a blank on an input whose blank means
             "never recorded"; otherwise ``"same"`` when every arm agrees, ``"differs"`` when they
             do not. Fewer than two values is ``"same"`` — there is nothing to disagree with.
-        :rtype: Comparability
         """
         items = list(values)
         if len(items) < 2:
@@ -1501,9 +1445,7 @@ class SweepableRegistry(HostAttributed):
         claim about the same input.
 
         :param name: A declared ``apparatus`` input name.
-        :ptype name: str
         :return: The declaration's :attr:`Sweepable.confounds` prose.
-        :rtype: str
         :raises KeyError: ``name`` is not declared by this host, or is declared with no confound
             reason — which validation makes impossible for an ``apparatus`` input unless it carries
             :attr:`Sweepable.no_rig_coordinate`, and no confound scan asks about one of those.
@@ -1519,9 +1461,7 @@ class SweepableRegistry(HostAttributed):
         """What ``name`` is, in words a reader can act on.
 
         :param name: A declared input name.
-        :ptype name: str
         :return: The declaration's :attr:`Sweepable.reader_prose`.
-        :rtype: str
         :raises KeyError: ``name`` is not declared by this host.
         """
         declared = self._by_name.get(name)
@@ -1538,11 +1478,8 @@ class SweepableRegistry(HostAttributed):
         record is partial. Only the first says the input shaped none of the run's observations.
 
         :param name: A declared input name. A name this host never declared is never unexercised.
-        :ptype name: str
         :param value: The run's reading of it.
-        :ptype value: Any
         :return: True when ``name`` is result-level and ``value`` is an empty list, tuple, set or mapping.
-        :rtype: bool
         """
         declared = self._by_name.get(name)
         return bool(
@@ -1574,11 +1511,8 @@ class SweepableRegistry(HostAttributed):
         campaign that recorded it.
 
         :param name: A declared input name. A name this host never declared is never indeterminate.
-        :ptype name: str
         :param *values: The observed values to judge.
-        :ptype values: Any
         :return: True when the comparison cannot be decided.
-        :rtype: bool
         """
         declared = self._by_name.get(name)
         return bool(declared and declared.indeterminate_when_blank and any(_is_blank(value) for value in values))
@@ -1601,16 +1535,13 @@ def _max_cost_usd(run: EvalRun, _results: Sequence[ResultView]) -> float | str |
     """The spend ceiling in force for a run: the number, :data:`UNCAPPED_SPEND`, or blank.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param _results: Unused: the ceiling is declared on the run.
-    :ptype _results: Sequence[ResultView]
     :return: :data:`UNCAPPED_SPEND` when the run records it ran uncapped, whatever number it also carries,
         since none bound it; else ``max_cost_usd``, which is ``None`` only for a run whose writer
         recorded no ceiling and no origin — the one blank this dimension cannot decide. An origin a newer
         build recorded and this one does not know reads the number too: a new origin never means that
         nothing bound the run (that would be a major, not an open vocabulary's minor), so the number is
         the ceiling, and the run's summary names the origin.
-    :rtype: float | str | None
     """
     if run.max_cost_usd_origin == "uncapped":
         return UNCAPPED_SPEND
@@ -1632,27 +1563,24 @@ def _judge_config_ids(_run: EvalRun, results: Sequence[ResultView]) -> list[str]
     parameter is unused deliberately, not by oversight.
 
     :param _run: Unused — see above.
-    :ptype _run: EvalRun
     :param results: The run's results. An EMPTY sequence is one absence this reader has: the
         caller either holds no results or was handed none, and neither says anything about
         what judged the run. Results of which none was SCORED are the other: nothing judged
         them, so nothing says which configuration would have.
-    :ptype results: Sequence[ResultView]
     :return: Sorted config ids when any result carried one; :data:`NO_JUDGE_CONFIGS` when results were
         scored and none carried a config; ``[]`` when no results were supplied, or none was scored.
         The second blank is what lets a kind that fills no ``judge`` seat omit this dimension: a
         sentinel there would be a recorded level contradicting the seat declaration on every run.
-    :rtype: list[str] | str
     """
     if not results:
         return []
     observed = sorted({config_id for result in results for config_id in result.judge_config_ids.values()})
     if observed:
         return observed
-    return NO_JUDGE_CONFIGS if any(served_models_by_score(result) for result in results) else []
+    return NO_JUDGE_CONFIGS if any(_served_models_by_score(result) for result in results) else []
 
 
-def served_models_by_score(result: ResultView) -> list[str | None]:
+def _served_models_by_score(result: ResultView) -> list[str | None]:
     """Who scored each of one result's stored scores, as the provider named it — ``None`` where it did not.
 
     Every stored score counts: the rubric dims and both dual-score axes. The comparison reader
@@ -1660,9 +1588,7 @@ def served_models_by_score(result: ResultView) -> list[str | None]:
     result has.
 
     :param result: The result to read.
-    :ptype result: ResultView
     :return: One entry per stored score, in rubric-then-axes order; empty when nothing was scored.
-    :rtype: list[str | None]
     """
     axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
     return [score.served_model for score in (*result.rubric_scores, *axes)]
@@ -1685,9 +1611,7 @@ def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[s
     model can move with nothing requested moving, which is this defect.
 
     :param _run: Unused — see above.
-    :ptype _run: EvalRun
     :param results: The run's results. An empty sequence is an absence: the caller holds none.
-    :ptype results: Sequence[ResultView]
     :return: The sorted distinct served models when every stored score names one. ``None`` when ANY
         score names none — the response did not say which model answered — because a
         run whose scorer is partly unobserved cannot be said to match another on the observed part.
@@ -1700,11 +1624,10 @@ def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[s
         reader exists to refuse. The price is that such a pair reads ``unknown`` rather than
         ``differs`` — an understatement, never a contradiction. A single result's read surface
         does name the known part, since it describes rather than matches.
-    :rtype: list[str] | None
     """
     served: set[str] = set()
     for result in results:
-        for model in served_models_by_score(result):
+        for model in _served_models_by_score(result):
             if model is None:
                 return None
             served.add(model)
@@ -1714,14 +1637,12 @@ def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[s
 def _temperatures_by_score(result: ResultView) -> list[str | None]:
     """The temperature each of one result's stored scores was sent at, as a level — ``None`` where it recorded none.
 
-    Over the same scores :func:`served_models_by_score` reads (the rubric dims, then both dual-score axes),
+    Over the same scores :func:`_served_models_by_score` reads (the rubric dims, then both dual-score axes),
     each as a string level so a number and :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE`
     sort and compare as one kind of value.
 
     :param result: The result to read.
-    :ptype result: ResultView
     :return: One entry per stored score, in rubric-then-axes order; empty when nothing was scored.
-    :rtype: list[str | None]
     """
     axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
     return [
@@ -1739,14 +1660,11 @@ def _judge_temperatures(_run: EvalRun, results: Sequence[ResultView]) -> list[st
     none, the model's own default applied), distinct from every number.
 
     :param _run: Unused — the run records the request, not what was sent.
-    :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[ResultView]
     :return: The sorted distinct levels when every stored score recorded one; ``None`` when ANY recorded none — a
         score made outside a judge phase — for the reason
         :func:`_judge_served_models` returns ``None`` on a partial record; ``[]`` when nothing was scored. Both
         blanks read as undecidable, never as agreement.
-    :rtype: list[str] | None
     """
     sent: set[str] = set()
     for result in results:
@@ -1778,13 +1696,10 @@ def _judge_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> list[d
     is a level of its own that only an identical mixture matches.
 
     :param _run: Unused — the run records what it asked, not what was sent.
-    :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[ResultView]
     :return: The distinct levels when every stored score reported what it was sent with; ``None`` when ANY score is
         unverified (its client did not report it), for the reason :func:`_judge_served_models` returns ``None`` on a
         partial record; ``[]`` when nothing was scored. Both blanks read as undecidable, never as agreement.
-    :rtype: list[dict[str, Any]] | None
     """
     sent = []
     for result in results:
@@ -1805,12 +1720,9 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> li
     so it is read as no call, never as one that left its settings unverified.
 
     :param _run: Unused — the run records what it asked, not what was sent.
-    :ptype _run: EvalRun
     :param results: The run's results.
-    :ptype results: Sequence[ResultView]
     :return: The distinct levels when every simulator row reported what its calls were sent with; ``None`` when ANY row
         is unverified; ``[]`` when no simulator call was made. Both blanks read as undecidable, never as agreement.
-    :rtype: list[dict[str, Any]] | None
     """
     sent: list[ClientRequestSettings] = []
     for result in results:
@@ -1832,14 +1744,11 @@ def _judge_dim_divergence(run: EvalRun, _results: Sequence[ResultView]) -> list[
     and moves whenever the pin does.
 
     :param run: The run to read.
-    :ptype run: EvalRun
     :param _results: Unused — divergence is declared on the run.
-    :ptype _results: Sequence[ResultView]
     :return: Sorted ``"dim=model"`` entries for each dim that departed from the pin;
         :data:`NO_JUDGE_DIM_DIVERGENCE` when attribution was recorded and none did; ``None`` when
         the run recorded no attribution, or carries only a reconstruction — an inference must not
         evidence a confound.
-    :rtype: list[str] | str | None
     """
     judges = run.hashable_effective_judges
     if judges is None:
@@ -1853,14 +1762,12 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
 
     :param settings: The run's :class:`~threetears.evals.schema.models.ClientRequestSettings` for a role, or
         ``None``.
-    :ptype settings: Any
     :return: The settings as a plain mapping — ``reasoning_max_tokens: None`` and ``reasoning_effort:
         None`` inside it are a recorded level (no reasoning parameter was sent), so the mapping is
         never blank — or ``None`` when the run carries no stamp. ``strict_output`` appears only when
         True, so a strict stamp reads as a level of its own and every other stamp as its settings alone;
         ``unsent_reasoning_max_tokens`` only when set, so a level recorded before the field existed reads
         as it did.
-    :rtype: dict[str, Any] | None
     """
     if settings is None:
         return None
@@ -1901,11 +1808,8 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[ResultView]) -> bo
     A run its host assembled without a launch says neither, and reads unchecked.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param _results: Unused.
-    :ptype _results: Sequence[ResultView]
     :return: ``True`` moved, ``False`` held, ``None`` cannot say.
-    :rtype: bool | None
     """
     if run.apparatus_provenance == "witnessed":
         return False
@@ -2178,5 +2082,4 @@ __all__ = [
     "SweepableRegistry",
     "SweepableRole",
     "SweepableValue",
-    "served_models_by_score",
 ]

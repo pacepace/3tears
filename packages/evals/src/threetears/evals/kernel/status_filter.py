@@ -86,9 +86,7 @@ def validate_status_filter(status: str | None) -> EvalRunStatus | None:
     :param status: Raw filter from the caller. ``None``, empty, or ``"all"`` (any
         case) all mean every run; anything else must be a status a run can
         actually carry.
-    :ptype status: str | None
     :return: ``None`` to apply no filter at all, else the status to filter on.
-    :rtype: EvalRunStatus | None
     :raises StatusFilterError: The value is neither ``"all"`` nor a member of
         :data:`~threetears.evals.schema.models.RUN_STATUSES`.
     """
@@ -123,9 +121,7 @@ def normalize_status_filter(status: str | None) -> EvalRunStatus | None:
     :param status: Raw filter from the caller. ``None`` or empty means unspecified;
         ``"all"`` (any case) lifts the filter entirely; anything else must be
         a status a run can actually carry.
-    :ptype status: str | None
     :return: ``None`` to group every run, else the status to filter on.
-    :rtype: EvalRunStatus | None
     :raises StatusFilterError: The value is neither ``"all"`` nor a member of
         :data:`~threetears.evals.schema.models.RUN_STATUSES`.
     """

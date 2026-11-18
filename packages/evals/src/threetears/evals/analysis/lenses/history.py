@@ -104,11 +104,11 @@ log = get_logger(__name__)
 # dimension or one check, so there is no single per-run value to plot, while each axis above is
 # one value per result.
 #: The measures `history` can series; any other is refused rather than answered with an empty series.
-HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
+_HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
 
-if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cover - import-time invariant
+if set(_METRIC_GLOSS) != PROJECTED_METRICS | _HISTORY_METRICS:  # pragma: no cover - import-time invariant
     raise RuntimeError(
-        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | HISTORY_METRICS))}"
+        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | _HISTORY_METRICS))}"
     )
 
 
@@ -136,11 +136,9 @@ def _unknown_history_metric(metric: str) -> HistoryError:
     alternatives left the caller to infer that, which reads as "not implemented yet".
 
     :param metric: The measure the caller asked to series.
-    :ptype metric: str
     :return: The refusal, ready to raise.
-    :rtype: HistoryError
     """
-    expected = f"expected one of {_metric_vocabulary(HISTORY_METRICS)}"
+    expected = f"expected one of {_metric_vocabulary(_HISTORY_METRICS)}"
     resolved = resolve_measure_name(metric)
     if resolved in SCOPED_METRICS and resolved != METRIC_SCORE:
         scope_field, scope_noun, _row_noun = SCOPED_METRICS[resolved]
@@ -190,9 +188,7 @@ def _attribution_withheld(descriptor: MetricDescriptor) -> bool:
 
     :param descriptor: The measure the series reports — the AGGREGATE descriptor, since
         that is what a point holds.
-    :ptype descriptor: MetricDescriptor
     :return: Whether a verdict on this measure must decline to attribute the move.
-    :rtype: bool
     """
     return descriptor.transferability_class == "scenario_bound"
 
@@ -205,9 +201,7 @@ def _attribution_disclosure(descriptor: MetricDescriptor) -> str | None:
     :func:`_unknown_history_metric` is shared for its refusal.
 
     :param descriptor: The aggregate descriptor the series reports.
-    :ptype descriptor: MetricDescriptor
     :return: The sentence, or ``None`` when the measure's verdicts carry no such limit.
-    :rtype: str | None
     """
     if not _attribution_withheld(descriptor):
         return None
@@ -485,12 +479,10 @@ class HistoryResult(EvalBaseModel):
 def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
     """Pick the per-result value extractor for a history measure.
 
-    :param metric: A measure in :data:`HISTORY_METRICS`.
-    :ptype metric: str
+    :param metric: A measure in :data:`_HISTORY_METRICS`.
     :return: A callable reading the measure off one result, ``None`` when this result
         did not carry it — a null that the aggregation drops rather than counts as
         zero, so an unmeasured latency never reads as instant.
-    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The metric is not one this surface can series. Unreachable
         when :func:`compute_history` validated first; kept as the honest total answer.
     """
@@ -524,10 +516,8 @@ def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
             """Read one dual-score axis off a result, or ``None`` where it is not a measurement.
 
             :param result: The observation to read.
-            :ptype result: ResultView
             :return: The raw 1-5 score, or ``None`` when the axis was not judged, was
                 mis-stamped, or the cell was an apparatus failure.
-            :rtype: float | None
             """
             # Named attributes rather than a computed one: this pair is read the same way
             # in `project_score_records`, and a `getattr` by string puts a rename of either
@@ -576,9 +566,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[ResultView
     cell the harness faulted is never in it. A ``bool`` counts as 1 or 0.
 
     :param descriptor: The host's descriptor of the measure.
-    :ptype descriptor: MetricDescriptor
     :return: The per-result reader, ``None`` where the result carries no number for the measure.
-    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The measure is not numeric, or declares no direction — a series could not say which
         way a step is a decline.
     """
@@ -614,12 +602,9 @@ def _per_case_means(
     dropped, so a case counts only where it was actually measured.
 
     :param results: One contestant's results within one run.
-    :ptype results: Sequence[ResultView]
     :param value_of: The measure extractor from :func:`_history_value_of`.
-    :ptype value_of: Callable[[ResultView], float | None]
     :return: ``(per_case_mean, n_observations)`` — the per-case means keyed by
         ``test_case_id``, and how many observations carried a value.
-    :rtype: tuple[dict[str, float], int]
     """
     by_case: dict[str, list[float]] = {}
     for result in results:
@@ -642,10 +627,8 @@ def _suite_epoch_key(run: EvalRun) -> str:
     denominator changing, not necessarily the contestant regressing.
 
     :param run: The run whose suite identity to key.
-    :ptype run: EvalRun
     :return: The run's :func:`~threetears.evals.kernel.identity.case_set_fingerprint`, the one comparison of case
         sets every surface makes.
-    :rtype: str
     """
     return case_set_fingerprint(run)
 
@@ -657,9 +640,7 @@ def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, Eval
     holding identical ids — keeps no label: the name would describe only some of its points.
 
     :param points: One series' points, in order, epochs already numbered.
-    :ptype points: list[SeriesPoint]
     :param runs: The series' runs by id.
-    :ptype runs: Mapping[str, EvalRun]
     """
     by_epoch: dict[int, set[CaseSetRef | None]] = {}
     for point in points:
@@ -718,39 +699,29 @@ def compute_history(
     not share. The predicate is the completeness record, never the status.
 
     :param runs: The runs supplying subject identity, suite set, and timestamps.
-    :ptype runs: list[EvalRun]
     :param results: The observations to series.
-    :ptype results: Sequence[ResultView]
-    :param metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
+    :param metric: A measure in :data:`_HISTORY_METRICS`, or the registry name of its
         aggregate as ``list_metrics`` publishes it (``mean_composite`` for
         ``composite``, and so on through
         :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
         numeric, directional measure the host declares (a quick-path scorer's name),
         read off each result's ``host_measures``. Defaults to composite quality.
-    :ptype metric: str
     :param min_absolute_change: Smallest absolute move that counts as a regression,
         in the measure's own unit. ``0.0`` lets significance alone flag.
-    :ptype min_absolute_change: float
     :param min_relative_change: Smallest move relative to the baseline that counts, as
         a fraction. ``0.0`` lets significance alone flag.
-    :ptype min_relative_change: float
     :param subject_id: When set, restrict to this subject; others are counted as
         ``n_filtered_out`` rather than dropped silently.
-    :ptype subject_id: str | None
     :param known_run_ids: Every run id in the corpus, so a result excluded by the
         caller's own run filter is counted filtered-on-request rather than
         unplaceable. See :func:`project_score_records`.
-    :ptype known_run_ids: set[str] | None
     :param archived_run_ids: The corpus run ids the operator has archived, so an
         archival exclusion is counted as ``results_from_archived_runs``
         rather than under the caller's ``status`` filter. See
         :func:`place_results`.
-    :ptype archived_run_ids: set[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`HistoryResult` — one :class:`MeasureSeries` per contestant,
         sorted by subject then model then variant then identity version, plus corpus-level accounting.
-    :rtype: HistoryResult
     :raises HistoryError: ``metric`` is not one this surface can series — refused
         before any row is read, so a typo cannot return an empty series that
         reads like a measure nobody recorded.
@@ -763,8 +734,8 @@ def compute_history(
     # name is the wrong thing to quote back.
     requested = metric
     metric = resolve_measure_name(metric)
-    declared = None if metric in HISTORY_METRICS else profile.measures.get(metric)
-    if metric not in HISTORY_METRICS and declared is None:
+    declared = None if metric in _HISTORY_METRICS else profile.measures.get(metric)
+    if metric not in _HISTORY_METRICS and declared is None:
         raise _unknown_history_metric(requested)
 
     if declared is not None:
@@ -773,7 +744,7 @@ def compute_history(
     else:
         value_of = _history_value_of(metric)
         descriptor = _describe_aggregate(metric, profile=profile)
-    # Every HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
+    # Every _HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
     # asserting an impossible None away.
     direction = descriptor.higher_is_better if descriptor.higher_is_better is not None else True
     # Decided from the descriptor once, before any row is read, so a corpus that yields no
@@ -1005,7 +976,6 @@ def compute_history(
 
 __all__ = [
     "compute_history",
-    "HISTORY_METRICS",
     "HistoryError",
     "HistoryResult",
     "MeasureSeries",

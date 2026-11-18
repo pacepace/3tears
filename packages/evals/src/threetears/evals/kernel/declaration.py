@@ -187,9 +187,7 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
         already supports and every snapshot path already does.
 
         :param values: The authored levels, before validation.
-        :ptype values: Any
         :return: The levels, with any content-authored one replaced by its addressed value.
-        :rtype: Any
         :raises ValueError: A level carries neither ``content_hash`` nor ``content``, so there is
             nothing to identify it by.
         """
@@ -367,13 +365,9 @@ def _date_an_undated_key(data: Any, key: str, version: str) -> Any:
     A key typed by hand states no predicate; the only one it can have been read under is the build accepting it.
 
     :param data: The authored or stored fields, before validation.
-    :ptype data: Any
     :param key: The field holding the variant key.
-    :ptype key: str
     :param version: The field holding the predicate it was computed under.
-    :ptype version: str
     :return: The fields, with ``version`` stamped where ``key`` is set and ``version`` is not.
-    :rtype: Any
     """
     if isinstance(data, Mapping) and data.get(key) is not None and data.get(version) is None:
         return {**data, version: IDENTITY_VERSION}
@@ -489,11 +483,8 @@ def axis_in_question_scope(axis: MeritAxis | None, question_axes: Sequence[Merit
     about which readings a question covers.
 
     :param axis: The reading's merit axis, or None when it serves none.
-    :ptype axis: MeritAxis | None
     :param question_axes: The axes the question names; empty for an unscoped question.
-    :ptype question_axes: Sequence[MeritAxis]
     :return: True when the question covers the reading.
-    :rtype: bool
     """
     return axis is not None and (not question_axes or axis in question_axes)
 
@@ -529,7 +520,6 @@ class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
         """An uncontrolled stimulus must say what that means, or it is a label with no content.
 
         :return: The validated declaration.
-        :rtype: ControlDeclaration
         :raises ValueError: The stimulus is uncontrolled and no reason was given, so a reader learns
             that something varied but not what — which is worse than not asking, because it
             reads as disclosed.
@@ -599,9 +589,7 @@ class ResolvedControl(EvalBaseModel):
         """The key that names the control's arm among ``carried`` — the first of :attr:`variant_keys` one carries.
 
         :param carried: The variant keys the campaign's cells carry.
-        :ptype carried: Collection[str]
         :return: The control's key in this campaign, or None when no cell carries any key that names it.
-        :rtype: str | None
         """
         return next((key for key in self.variant_keys if key in carried), None)
 
@@ -764,7 +752,6 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         """One entry per axis, per measure, per guardrail dimension and per ranked merit axis.
 
         :return: The validated design.
-        :rtype: AspectDesign
         :raises ValueError: One of them appears twice.
         """
         _refuse_repeated_design_entries(self.axes, self.bars, self.guardrail_margins, self.merit_priority)
@@ -775,7 +762,6 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         """Each skipped cell names every declared axis once, at a level that axis declares — or it is refused.
 
         :return: The validated design.
-        :rtype: AspectDesign
         :raises ValueError: A skipped cell names an undeclared axis, leaves one out, or names an undeclared level.
         """
         for cell in self.skipped_cells:
@@ -787,9 +773,7 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         order.
 
         :param cell: The cell.
-        :ptype cell: Mapping[str, str]
         :return: One content hash per declared axis, in the order the axes are declared.
-        :rtype: tuple[str, ...]
         :raises ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
             declare, or one that matches more than one declared level.
         """
@@ -803,10 +787,8 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         """Whether the design left ``cell`` (one content hash per axis, in axis order) out on purpose.
 
         :param cell: The combination.
-        :ptype cell: tuple[str, ...]
         :return: True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre on
             more than one axis.
-        :rtype: bool
         """
         return _skipped_by_design(self.axes, self.skipped_cells, self.crossing, cell)
 
@@ -888,9 +870,7 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         """Stamp this build's identity version beside a key that arrives without one, as a design's control is.
 
         :param data: The authored or stored fields, before validation.
-        :ptype data: Any
         :return: The fields, with ``identity_version`` stamped where it is absent.
-        :rtype: Any
         """
         return _date_an_undated_key(data, "variant_key", "identity_version")
 
@@ -900,9 +880,7 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         """Refuse a key that is not the shape of a variant key: one that is not a digest joins no observation.
 
         :param value: The arm's key.
-        :ptype value: str
         :return: The validated key.
-        :rtype: str
         :raises ValueError: The value is not a 64-character lowercase hex digest.
         """
         if not _is_variant_key(value):
@@ -918,7 +896,6 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
 
         :return: The validated arm.
-        :rtype: CampaignArm
         :raises ValueError: The short name is blank or too long.
         """
         if self.short_name is not None:
@@ -930,7 +907,6 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         """The lever map, under this build's predicate, digests to the arm's key.
 
         :return: The validated arm.
-        :rtype: CampaignArm
         :raises ValueError: The map does not digest to ``variant_key``, so it is some other arm's pre-image and
             re-keying from it would move this arm onto that one.
         """
@@ -953,9 +929,7 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
     one:** the stored key alone (``unrekeyable``), with the disclosure a reader is told when no cell carries it.
 
     :param arm: The control arm, or None for a campaign that declares none.
-    :ptype arm: CampaignArm | None
     :return: The resolved control.
-    :rtype: ResolvedControl
     """
     if arm is None:
         return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
@@ -1003,13 +977,9 @@ def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | N
     question is no name for an aspect, so the label stands beside one.
 
     :param label: The aspect's label.
-    :ptype label: str
     :param short_name: Its declared short name, or None.
-    :ptype short_name: str | None
     :param campaign: The campaign's name, which an engine-given label gives way to; None keeps the label.
-    :ptype campaign: str | None
     :return: The name a page prints.
-    :rtype: str
     """
     if short_name is not None:
         return short_name
@@ -1059,15 +1029,10 @@ def membership_changed(
     """An aspect's membership record with ``joined`` runs joining at ``at`` and the ``left`` departures appended.
 
     :param prior: The aspect's record before the write (:attr:`Aspect.membership`).
-    :ptype prior: Iterable[MembershipChange]
     :param joined: The runs joining it.
-    :ptype joined: Iterable[str]
     :param left: The departures, each already holding what its look is counted by.
-    :ptype left: Iterable[MembershipChange]
     :param at: When the write is made.
-    :ptype at: str
     :return: The record to store: every earlier change, then this write's.
-    :rtype: list[MembershipChange]
     """
     return [
         *prior,
@@ -1172,9 +1137,7 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         """Refuse a label holding ``/``: a floor's key joins its aspect, kind and reading with it.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The label.
-        :rtype: str
         :raises ValueError: The label holds ``/``, so a floor key on it could be read as another aspect's.
         """
         if "/" in label:
@@ -1189,7 +1152,6 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
 
         :return: The validated aspect.
-        :rtype: Aspect
         :raises ValueError: The short name is blank or too long.
         """
         if self.short_name is not None:
@@ -1227,7 +1189,6 @@ class Floor(EvalDocumentModel, CoreShapeModel):
         """Refuse a rate floor whose reading is ``*``, which its key spells for every pass rate.
 
         :return: The validated floor.
-        :rtype: Floor
         :raises ValueError: The clause names the reading ``*``, so its key could not be told from the all-rates floor's.
         """
         if isinstance(self.clause, RateDrop) and self.clause.reading == "*":
@@ -1339,9 +1300,7 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         """Refuse a key that is not the shape of a variant key.
 
         :param value: The decided arm's key.
-        :ptype value: str
         :return: The key.
-        :rtype: str
         :raises ValueError: The value is not a 64-character lowercase hex digest.
         """
         if not _is_variant_key(value):
@@ -1357,9 +1316,7 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         """Refuse a floor named twice: overriding it once is the whole record.
 
         :param keys: The overridden floors' keys.
-        :ptype keys: list[str]
         :return: The keys.
-        :rtype: list[str]
         :raises ValueError: A key appears twice.
         """
         if duplicates := sorted({key for key in keys if keys.count(key) > 1}):
@@ -1372,9 +1329,7 @@ class CampaignCall(EvalDocumentModel, CoreShapeModel):
         """Refuse a bar named twice: overriding it once is the whole record.
 
         :param bars: The overridden bars.
-        :ptype bars: list[OverriddenBar]
         :return: The bars.
-        :rtype: list[OverriddenBar]
         :raises ValueError: An aspect and measure appear twice.
         """
         named = [(bar.aspect, bar.measure) for bar in bars]
@@ -1471,18 +1426,13 @@ def resolve_bar_name(
     run-level statistic such as ``mean_total_ms`` is described and still never lands on a result.
 
     :param name: What the bar names.
-    :ptype name: str
     :param rubric_dimensions: The judged dimensions in play and the scale each is answered on — the
         template's rubric at authoring time, the dimensions the results were scored on at
         adjudication.
-    :ptype rubric_dimensions: Mapping[str, RubricScale]
     :param goal_state_checks: The goal-state check texts in play, on the same two readings.
-    :ptype goal_state_checks: Collection[str]
     :param measures: The host's measure registry, whose declarations join the engine's core.
-    :ptype measures: MeasureRegistry
     :return: A :class:`BarName` when a result can carry the name with a direction, else an
         :class:`UnreadableBarName`.
-    :rtype: BarName | UnreadableBarName
     """
     # A check's published measure name reads as the check itself: the bundle and a report cite a check
     # as `goal_state:<check>`, and a bar declared by that name holds the same check to the threshold.
@@ -1657,11 +1607,8 @@ def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> li
     :func:`~threetears.evals.analysis.floors.floor_readings` gives a rate floor, which reads the same function.
 
     :param template: The campaign's template; None when it names none that could be read.
-    :ptype template: EvalTemplate | None
     :param profile: The host whose measures are read.
-    :ptype profile: HostProfile
     :return: The names, checks first, then dimensions, then measures, each sorted.
-    :rtype: list[str]
     """
     checks = sorted(template.goal_state_checks) if template is not None else []
     dims = (
@@ -1717,11 +1664,8 @@ def name_declared_axes(design: AspectDesign, profile: HostProfile) -> AspectDesi
     (:func:`refuse_an_undeclarable_design`) refuses as no lever of the host's.
 
     :param design: An aspect's design, as its author declared it.
-    :ptype design: AspectDesign
     :param profile: The host whose levers it declares.
-    :ptype profile: HostProfile
     :return: The design, its axes named.
-    :rtype: AspectDesign
     """
     named = [
         axis
@@ -1739,13 +1683,9 @@ def lever_names_of(levers: Iterable[str], designs: Iterable[AspectDesign], profi
     ``lever_names`` and a derived arm's label read.
 
     :param levers: The levers to name, by id; a declared axis is named whether or not it is among them.
-    :ptype levers: Iterable[str]
     :param designs: The declared designs whose axes store names, in the order their names win.
-    :ptype designs: Iterable[AspectDesign]
     :param profile: The host whose lever declarations name the rest.
-    :ptype profile: HostProfile
     :return: Lever id to reader name, sorted by id.
-    :rtype: dict[str, str]
     """
     stored: dict[str, str] = {}
     for design in designs:
@@ -1816,21 +1756,16 @@ def refuse_an_undeclarable_design(
     contract is that the engine does not know whose registry it is holding.
 
     :param design: One aspect's declaration to check.
-    :ptype design: AspectDesign
     :param floors: The floors the campaign declares on that aspect, whose ``RateDrop`` readings are checked; none by
         default.
-    :ptype floors: Sequence[Floor]
     :param behavior: The campaign's behavior, which is the scope a registered bar is keyed under.
-    :ptype behavior: str
     :param template: The campaign's template, whose rubric dimensions and goal-state checks are the
         judged and checked names its results will carry. Required, so no caller can reach
         this gate without deciding which template it is authoring against. ``None`` means the
         campaign has no template the caller could read — none named, or a reference that does
         not resolve — so no name of either kind is known and a bar on one is refused, saying
         that rather than calling the rubric empty.
-    :ptype template: EvalTemplate | None
     :param profile: The host whose levers, measures and bars the declaration is checked against.
-    :ptype profile: HostProfile
     :raises UndeclarableAxisError: An axis the host will not accept — neither a registered lever nor a
         recognised open-family member — naming the
         axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from.

@@ -140,7 +140,6 @@ class ToolMount(Protocol):
         """The JSON schema of the tool's arguments.
 
         :return: The schema.
-        :rtype: dict[str, Any]
         """
         ...
 
@@ -148,9 +147,7 @@ class ToolMount(Protocol):
         """Run one call.
 
         :param arguments: The call's arguments, as the model wrote them.
-        :ptype arguments: Mapping[str, Any]
         :return: What it answered.
-        :rtype: ToolOutcome
         """
         ...
 
@@ -189,7 +186,6 @@ class SessionLimits:
         """The limits as JSON.
 
         :return: Each limit by name.
-        :rtype: dict[str, int]
         """
         return {
             "max_tokens": self.max_tokens,
@@ -204,7 +200,6 @@ class SessionLimits:
         """The server-side clearing every turn carries.
 
         :return: The clearing, from these limits.
-        :rtype: ToolResultClearing
         """
         return ToolResultClearing(
             trigger_input_tokens=self.clear_over_tokens,
@@ -260,7 +255,6 @@ class PackageDefect:
         """The defect in a sentence, as an operator reads it on the job: the type, where, and the last tool call.
 
         :return: The sentence; it carries no exception text, since a defect's text may quote what the model sent.
-        :rtype: str
         """
         through = f" (through {self.package_frame})" if self.package_frame is not None else ""
         call = f"the last tool call was {self.last_call}" if self.last_call is not None else "no tool had been called"
@@ -311,23 +305,14 @@ class ToolSession:
         """Start an empty session.
 
         :param name: The session's name.
-        :ptype name: str
         :param role: The role it writes as.
-        :ptype role: WriterRole
         :param model: The model id the client sends to (``Model.model_name``).
-        :ptype model: str
         :param client: The client its turns go through (``Model.turn_session(name, snapshot=...)``).
-        :ptype client: ToolTurnClient
         :param mount: The tool its model may call.
-        :ptype mount: ToolMount
         :param system: The role's system text.
-        :ptype system: SkillText
         :param tally: The report's tally, which every turn is counted in.
-        :ptype tally: Tally
         :param budget: The report's budget, which admits every turn.
-        :ptype budget: ReportBudget
         :param limits: What every turn is held to; :class:`SessionLimits`' defaults when ``None``.
-        :ptype limits: SessionLimits | None
         :raises ValueError: An empty name or model id.
         """
         if not name:
@@ -400,11 +385,9 @@ class ToolSession:
         """Whether ``error``, raised while the session ran, is the package's defect rather than its client's failure.
 
         :param error: What the session's round raised.
-        :ptype error: Exception
         :return: ``None`` when it is the last failure the client raised (the provider's, a transport's, a reply
             refused after it was paid for, a reply from another model): the caller describes it as the client's.
             Otherwise the defect, naming where it was raised and the session's last tool call.
-        :rtype: PackageDefect | None
         """
         if error is self._client_failure:
             return None
@@ -424,9 +407,7 @@ class ToolSession:
         """Call the session's tool outside a turn (a brief's overview), recorded as its last call like any other.
 
         :param arguments: The call's arguments.
-        :ptype arguments: Mapping[str, Any]
         :return: What the tool answered.
-        :rtype: ToolOutcome
         """
         self._last_call = self._spelled(self._mount.name, arguments)
         return await self._mount.call(arguments)
@@ -449,7 +430,6 @@ class ToolSession:
         """The sha256 of the tool definitions every turn sends.
 
         :return: The digest.
-        :rtype: str
         """
         return canonical_digest([tool.to_json() for tool in self.tools])
 
@@ -457,7 +437,6 @@ class ToolSession:
         """The sha256 of the messages as they now stand.
 
         :return: The digest.
-        :rtype: str
         """
         return canonical_digest([message.to_json() for message in self._messages])
 
@@ -465,9 +444,7 @@ class ToolSession:
         """Start a round with its own call budget: the draft, a revision, an editor's review.
 
         :param round: The round's number, above the current one.
-        :ptype round: int
         :param calls: The most tool calls the round may make.
-        :ptype calls: int
         :raises ValueError: A round not above the current one, or a call budget below 1.
         """
         if round <= self._round:
@@ -480,9 +457,7 @@ class ToolSession:
         """``text`` held to the session's result limit: cut at ``result_chars``, saying so.
 
         :param text: A tool's text, as it answered.
-        :ptype text: str
         :return: The text the model is sent.
-        :rtype: str
         """
         cap = self.limits.result_chars
         if len(text) <= cap:
@@ -497,9 +472,7 @@ class ToolSession:
         """Append a user message and run turns until the model answers without a tool call, or is stopped.
 
         :param content: The message: a text, or its blocks.
-        :ptype content: str | Sequence[TurnBlock]
         :return: Why it stopped.
-        :rtype: SessionStop
         :raises ValueError: No round is open, or a reply came from another model than the session's.
         :raises TurnReplyRefused: The client refused a reply it was paid for; the turn is tallied first.
         """
@@ -673,7 +646,6 @@ class ToolSession:
         :return: ``{"format", "name", "role", "model", "skill_digest", "tools_digest", "limits", "messages",
             "results", "state"}``; each of ``messages`` is that message's JSON text, so no store's key order reaches
             what a resume sends again.
-        :rtype: dict[str, Any]
         """
         dropped = set(self._answered) if self._mount.rederivable else set()
         messages = [
@@ -726,21 +698,13 @@ class ToolSession:
         """Resume a stored session: the same model, system text and tool, its messages, and where its round stood.
 
         :param record: What :meth:`to_json` wrote.
-        :ptype record: Mapping[str, Any]
         :param model: The model id the client sends to, which must be the one the session ran on.
-        :ptype model: str
         :param client: The client its next turns go through.
-        :ptype client: ToolTurnClient
         :param mount: The tool, which re-derives each result body the record dropped.
-        :ptype mount: ToolMount
         :param system: The role's system text, which must be the one the session started with.
-        :ptype system: SkillText
         :param tally: The tally its next turns are counted in.
-        :ptype tally: Tally
         :param budget: The budget that admits its next turns.
-        :ptype budget: ReportBudget
         :return: The session, ready for its next user message.
-        :rtype: ToolSession
         :raises ValueError: A record of another format or out of shape; a model, system text or tool other than the
             stored one; a dropped result body the tool no longer answers the same.
         """

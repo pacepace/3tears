@@ -11,7 +11,7 @@ assembled bundle and the code-only report, since a tier shown anywhere must be t
 
 Mutations that turn this file red (each made in a scratch copy and the file restored from it, 2026-10-06):
 
-- ``criterion_state``: ``>`` for ``>=`` on the agreement, ``<=`` for ``<`` on the pair floor (both caught by
+- the criterion's state: ``>`` for ``>=`` on the agreement, ``<=`` for ``<`` on the pair floor (both caught by
   the at-boundary ``met`` case);
 - ``tier_of``: returning ``incidental`` where it returns ``undetermined``; checking separation before
   calibration;
@@ -50,9 +50,9 @@ from threetears.evals.analysis import (
     judge_agreement,
     judge_evidence_tiers,
     judge_self_agreement,
-    tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.agreement import tier_for_judges
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel.evidence_tiers import (

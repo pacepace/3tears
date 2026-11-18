@@ -16,7 +16,6 @@ from threetears.evals.kernel.usage_capture import (
     maybe_billed_usd,
     production_replicating_cost,
     program_cost,
-    resolve_result_usage,
 )
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.factories import result_capture_defaults
@@ -512,37 +511,6 @@ def test_cost_observed_with_no_tokens_keeps_tokens_unknown():
 
 
 # ---------------------------------------------------------------------------
-# resolve_result_usage — what a read surface should show, decided in one place
-# ---------------------------------------------------------------------------
-
-# The reconstruction these tests once guarded against read `EvalResult.trace`. That field no
-# longer exists — the payload moved to a sibling `EvalTrace` document — so the property is now
-# guaranteed by the type rather than by a resolver branch. A fixture handing `trace=` to
-# `EvalResult` used to be dropped in silence; now it raises, which is a better failure
-# but not a different conclusion — a fixture asserting against a hand-built shape still proves
-# nothing about the producer. A stored document still embedding its payloads is refused on read like
-# any other undeclared key (`test_base.py`'s strict-read tests).
-
-
-def test_captured_rows_are_returned_untouched():
-    captured = [RoleUsage(role="candidate", model="m", prompt_tokens=10, cost_usd=0.5)]
-    resolved = resolve_result_usage(make_eval_result(usage=captured))
-    assert resolved.source == "captured"
-    assert resolved.partial is False
-    assert resolved.usage == captured
-
-
-def test_an_empty_capture_stays_empty():
-    """``usage=[]`` is a live cell that attributed no roles — a factory failure, say.
-
-    It must not be re-read as "nothing is known": the empty list IS the observation.
-    """
-    resolved = resolve_result_usage(make_eval_result(usage=[]))
-    assert resolved.source == "captured"
-    assert resolved.usage == []
-
-
-# ---------------------------------------------------------------------------
 # Substituted deliveries — the disclosure that keeps a prod-cost figure honest
 # ---------------------------------------------------------------------------
 
@@ -592,22 +560,6 @@ def test_a_trace_stripped_result_still_discloses_its_substitution():
         )
         is None
     )
-
-
-def test_the_resolved_view_carries_the_disclosure_on_the_captured_arm():
-    """The captured arm is the live-run arm, and the one a seeded run takes.
-
-    It does not otherwise walk the trace at all, so a disclosure derived only from the
-    trace would be absent exactly where it matters.
-    """
-    result = make_eval_result(
-        usage=[RoleUsage(role="candidate", model="sonnet", cost_usd=0.001)],
-        async_deliveries=_deliveries(substituted=True),
-    )
-    resolved = resolve_result_usage(result)
-
-    assert resolved.source == "captured"
-    assert resolved.substituted_deliveries == 1
 
 
 def test_a_substituted_result_withholds_its_production_cost():

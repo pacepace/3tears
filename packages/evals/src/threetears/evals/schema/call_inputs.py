@@ -33,7 +33,6 @@ def current_call_inputs() -> Mapping[str, Any] | None:
     """The inputs bound around the calling code's model call, or ``None`` where none are.
 
     :return: The inputs, read-only: a JSON object of structured values.
-    :rtype: Mapping[str, Any] | None
     """
     return _CURRENT_INPUTS.get()
 
@@ -48,9 +47,7 @@ def bind_call_inputs(inputs: Mapping[str, Any]) -> Iterator[None]:
 
     :param inputs: What the call is about, as a JSON object: values that move only when what is asked moves, never
         text a presentation change can reword.
-    :ptype inputs: Mapping[str, Any]
     :yield: Nothing.
-    :rtype: Iterator[None]
     """
     token = _CURRENT_INPUTS.set(MappingProxyType(dict(inputs)))
     try:

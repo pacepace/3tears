@@ -218,21 +218,14 @@ def gate_findings(
     its reason.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm's id.
-    :ptype arm: str
     :param task: The one task to check in, by id; None to check wherever each criterion reads.
-    :ptype task: str | None
     :param cell: The one target-matrix cell to check in, by id; None to check wherever each criterion reads.
-    :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
-    :ptype criterion: str | None
     :param forms: The forms of the page the reasons are printed on, built from ``report_input``; None for a check read
         off any page, whose reasons take forms of their own.
-    :ptype forms: PageForms | None
     :return: Each failing, borderline and unknown figure, in the criteria's order and each criterion's places'
         order.
-    :rtype: tuple[GateFinding, ...]
     :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
         or forms built from another input.
     """
@@ -283,20 +276,13 @@ def gate_check(
     module's account).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm's id.
-    :ptype arm: str
     :param task: The one task to check in, by id; None to check wherever each criterion reads.
-    :ptype task: str | None
     :param cell: The one target-matrix cell to check in, by id; None to check wherever each criterion reads.
-    :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
-    :ptype criterion: str | None
     :param forms: The forms of the page the reasons are printed on, built from ``report_input``; None for a check read
         off any page, whose reasons take forms of their own.
-    :ptype forms: PageForms | None
     :return: The arm's status, with a reason per failing (an unknown figure among them) and per borderline figure.
-    :rtype: GateCheck
     :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
         or forms built from another input.
     """
@@ -343,12 +329,9 @@ def task_costs(report_input: ReportInput, task_id: str) -> TaskCosts:
     measure's).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param task_id: The task, by id.
-    :ptype task_id: str
     :return: Each arm's cost per 1,000 (of what it counts) there, by arm, and its measure; empty where the task states
         no cost.
-    :rtype: TaskCosts
     :raises ValueError: The input holds no such task.
     """
     task = next((held for held in report_input.tasks if held.id == task_id), None)
@@ -374,11 +357,8 @@ def routing_picks(report_input: ReportInput, arms: Sequence[str]) -> dict[str, s
     Routing), by task id; a task no costed arm passes has no pick. The first in ``arms`` order wins a tie.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arms: The arms that may be picked, in the order a tie goes by.
-    :ptype arms: Sequence[str]
     :return: Each routable task's pick, by task id.
-    :rtype: dict[str, str]
     """
     cross_cutting = [task.id for task in report_input.tasks if task.cross_cutting]
     eligible = [

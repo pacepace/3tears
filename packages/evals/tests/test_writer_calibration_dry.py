@@ -37,7 +37,8 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.off_loop import off_loop
-from threetears.evals.kernel import judge_case_of, judge_criterion_digest
+from threetears.evals.kernel import judge_case_of
+from threetears.evals.kernel.judge_cases import judge_criterion_digest
 from threetears.evals.ops.report_writer.preference import pair_evidence, preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import (
     EDITOR_ROUNDS_MEASURE,

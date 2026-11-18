@@ -14,7 +14,8 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.schema import RubricScore
-from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, BarRegistry, PassThreshold, pass_threshold_label
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, BarRegistry, PassThreshold
+from threetears.evals.kernel.host.bars import pass_threshold_label
 from threetears.evals.kernel.host.bars import BarRegistrationError
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
 from threetears.evals.schema.models import GoalStateOutcome

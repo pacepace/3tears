@@ -17,11 +17,11 @@ from threetears.evals.analysis import (
     CampaignReadings,
     CampaignReport,
     build_code_only_report,
-    build_campaign_report,
     campaign_readings,
     campaign_report_html,
-    campaign_report_markdown,
 )
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.build import build_code_only_report_in_forms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (

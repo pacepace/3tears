@@ -13,11 +13,11 @@ from threetears.evals.analysis import (
     AnalysisContextBundle,
     CampaignReadings,
     CampaignReport,
-    build_campaign_report,
     build_code_only_report,
     campaign_readings,
-    campaign_report_markdown,
 )
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar, RateDrop
 

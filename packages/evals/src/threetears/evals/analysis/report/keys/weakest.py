@@ -35,11 +35,8 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     aspect's margin or floor by the aspect's reader name.
 
     :param margin: One margin (:mod:`~threetears.evals.analysis.report_margins`).
-    :ptype margin: Margin
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The words ``{weakest.criterion}`` prints.
-    :rtype: str
     """
     if margin.kind == "criterion":
         name = reader_name("criterion", margin.source, report_input)
@@ -66,13 +63,9 @@ def _weakest_interval(report_input: ReportInput, margin: Margin, path: str) -> F
     per-interval level a correction sets (``99.69%``) is no reading text's: Method and the glossary state it.
 
     :param report_input: The report input, whose contrast families say what a corrected interval guarantees together.
-    :ptype report_input: ReportInput
     :param margin: The weakest margin.
-    :ptype margin: Margin
     :param path: The key.
-    :ptype path: str
     :return: What ``{weakest.interval}`` prints.
-    :rtype: Figure
     """
     what = "the level of the interval the weakest margin is read on"
     if margin.kind == "criterion":

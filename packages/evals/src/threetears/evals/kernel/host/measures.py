@@ -92,11 +92,9 @@ class MeasureRegistry(HostAttributed):
         """Validate and store one host's measure catalogue.
 
         :param descriptors: The measures this host can see.
-        :ptype descriptors: Iterable[MetricDescriptor]
         :param families: The host's own measure families, beyond the engine's
             (:data:`~threetears.evals.kernel.metrics.ENGINE_FAMILIES`). A descriptor may name one of
             these or an engine family, and nothing else.
-        :ptype families: Iterable[MeasureFamily]
         :raises MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
         """
         self._init_attribution()
@@ -186,11 +184,8 @@ class MeasureRegistry(HostAttributed):
         """Build a registry from an existing ``{name: descriptor}`` catalogue.
 
         :param catalog: The descriptors, keyed by name.
-        :ptype catalog: Mapping[str, MetricDescriptor]
         :param families: The host's own measure families.
-        :ptype families: Iterable[MeasureFamily]
         :return: A validated registry over the catalogue's values.
-        :rtype: MeasureRegistry
         """
         return cls(catalog.values(), families=families)
 
@@ -220,7 +215,6 @@ class MeasureRegistry(HostAttributed):
         records none pools with nothing.
 
         :return: Measure key to digest, sorted; ``{}`` for a host that declares no measure.
-        :rtype: dict[str, str]
         """
         return measure_definition_digests(self._descriptors)
 
@@ -236,9 +230,7 @@ class MeasureRegistry(HostAttributed):
         latency column is what leaving them unassigned produced.
 
         :param name: A declared measure name.
-        :ptype name: str
         :return: The declared axis, or None when the measure serves none.
-        :rtype: MeritAxis | None
         :raises KeyError: This host declared no such measure.
         """
         return self._require(name).merit_axis

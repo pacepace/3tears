@@ -292,28 +292,18 @@ def block_render(
     """The block a page would draw of ``query`` as a ``block_kind``, as its values table (this module's account).
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param block_kind: The kind of block.
-    :ptype block_kind: str
     :param query: What it reads.
-    :ptype query: ChartQuery
     :param reference: The reference line to draw (``margin``, ``floor``, ``budget``, ``no_preference``); None for none.
-    :ptype reference: str | None
     :param emphasis: The one arm, stratum or task it stresses, by id; empty for none.
-    :ptype emphasis: str
     :param title: Its title, figure keys allowed; empty for none.
-    :ptype title: str
     :param limit: The most values-table rows on this page; a page of long cells stops sooner, its ``next_offset``
         naming where the next starts.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :param fits: Whether a page is short enough, as the tool writes it: the page holds the most rows within ``limit``
         that pass it (one at least). None sizes a page by its cells' characters (:data:`_PAGE_CHARS`), for a caller
         that writes no text.
-    :ptype fits: Callable[[RenderedBlock], bool] | None
     :return: The block.
-    :rtype: RenderedBlock
     :raises RefusedInput: The block cannot be drawn on this input, naming every fault at the parameter it sits at.
     """
     try:
@@ -459,9 +449,7 @@ def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[s
     tenth, and a rate at its measure's tenth (``78.0%``) never drops to the whole percent a column rule would pick.
 
     :param block: The drawn block: a chart, or a table.
-    :ptype block: ChartBlock | TableBlock
     :return: ``(columns, rows)``: the headers, and each row's cells as text.
-    :rtype: tuple[list[str], list[list[str]]]
     """
     if isinstance(block, ChartBlock):
         return block.values_table()
@@ -477,11 +465,8 @@ def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
     """Every block the snapshot can be shown by (this module's account).
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :return: The catalog.
-    :rtype: BlockCatalog
     """
     sources: tuple[str, ...] = get_args(ChartQuery.model_fields["source"].annotation)
     return BlockCatalog(

@@ -20,6 +20,7 @@ Pinned:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -306,6 +307,11 @@ async def test_a_sweep_an_operator_cancelled_or_its_own_budget_stopped_is_taken_
     ).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
     await until(lambda: gate.held >= 1)
+    # The first cancel lets the cells in flight finish: held, they keep the arm running. The second, a request written
+    # later by the store's clock (a request is known by when it was written), cuts them.
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="shipping a fix")
+    await asyncio.sleep(0.05)
+    store.at += timedelta(milliseconds=1)
     await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="shipping a fix")
     assert (await settled(holder, job.job_id)).state == "cancelled"
     gate.set()

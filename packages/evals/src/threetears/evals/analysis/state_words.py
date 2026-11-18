@@ -235,11 +235,8 @@ def state_word(vocabulary: str, word: str) -> StateWord:
     """What an earlier word means.
 
     :param vocabulary: The closed set or field the word belongs to, by its name in code.
-    :ptype vocabulary: str
     :param word: The word.
-    :ptype word: str
     :return: Its row.
-    :rtype: StateWord
     :raises KeyError: If the table holds no such word: a word nobody mapped is refused, never read as counted.
     """
     return _BY_WORD[vocabulary, word]

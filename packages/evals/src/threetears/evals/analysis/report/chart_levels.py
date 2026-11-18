@@ -33,9 +33,7 @@ def _chart_level(block: ChartBlock) -> str | None:
     level, a scatter drawing no whisker, a chart whose panels carry levels of their own.
 
     :param block: The chart.
-    :ptype block: ChartBlock
     :return: The level, or None.
-    :rtype: str | None
     """
     if block.data is None:
         return block.level if block.chart == "cost_quality" and block.level and block.points else None
@@ -59,11 +57,8 @@ def _marked_head(level: str, main: str) -> str:
     (``95% unpaired``, ``95% (adjusted for 3 comparisons)``) is marked by the gloss its head keeps.
 
     :param level: The chart's level.
-    :ptype level: str
     :param main: The page's main level.
-    :ptype main: str
     :return: The head.
-    :rtype: str
     """
     figure, main_figure = level.split(" ", 1)[0], main.split(" ", 1)[0]
     return level_head(level) if figure == main_figure else f"{level_head(level)}, not {main_figure}"
@@ -74,10 +69,8 @@ def levels_said[T](blocks: Sequence[T]) -> list[T]:
     which is the order a reader meets them; every other block as it is.
 
     :param blocks: The page's blocks, in reading order.
-    :ptype blocks: Sequence[T]
     :return: The blocks, each chart's ``level_head`` set where the rule moves it from the level's own head, which a
         chart whose head the rule leaves as it is keeps unset.
-    :rtype: list[T]
     """
     levels = [_chart_level(block) if isinstance(block, ChartBlock) else None for block in blocks]
     counted = Counter(level for level in levels if level is not None)

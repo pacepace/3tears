@@ -25,8 +25,8 @@ from threetears.evals.analysis import (
     TableBlock,
     campaign_report,
     campaign_report_html,
-    campaign_report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.ops import report_read
 from threetears.evals import Eval, Result

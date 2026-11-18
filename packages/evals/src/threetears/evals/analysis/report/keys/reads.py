@@ -478,9 +478,7 @@ def pass_rate_measure(report_input: ReportInput) -> tuple[str, str]:
     read from (:func:`_passing`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The measure's key and kind.
-    :rtype: tuple[str, str]
     """
     return (TRIAL_PASS_NAME, "trial") if _counts_passes(report_input) else ("pass_rate", "measure")
 
@@ -490,9 +488,7 @@ def cost_measure(report_input: ReportInput) -> tuple[str, str] | None:
     the page's cost is read from (:func:`cost_basis`); None where it is read from the scoreboard, or none states it.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The measure's key and kind, or None.
-    :rtype: tuple[str, str] | None
     """
     source = cost_basis(report_input).source
     return (source, "measure") if source in report_input.measures else None
@@ -507,10 +503,8 @@ def cost_basis(report_input: ReportInput) -> CostBasis:
     """What the page's cost (``cost_per_1k.<arm>``) is per, read from the source it is read from.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The noun (``replies`` from the scoreboard or a dollar-per-reply measure; a per-count measure's label's
         noun; empty where unstated, or where the input states no cost) and the source.
-    :rtype: CostBasis
     """
     source, _costs = cost_source(report_input)
     if source == SCOREBOARD_COST:
@@ -525,9 +519,7 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     head naming the count (:meth:`~threetears.evals.analysis.report.cost_unit.MoneyRuler.words`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The ruler.
-    :rtype: MoneyRuler
     """
     return money_ruler(
         costs_per_thousand(report_input).values(),
@@ -543,13 +535,9 @@ def criterion_ruler(report_input: ReportInput, criterion: Criterion, line: Figur
     1,000 of what it counts at least, never a per-1,000 mark.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion: The criterion, on a money measure.
-    :ptype criterion: Criterion
     :param line: Its threshold's figure (``criteria.<id>.threshold``).
-    :ptype line: Figure
     :return: The ruler, and the count its measure's own unit is per.
-    :rtype: tuple[MoneyRuler, int]
     """
     own = _SCALE_COUNTS[line.scale]
     measure = report_input.measures.get(criterion.measure)
@@ -568,11 +556,8 @@ def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) 
     figures, and neither does an aspect that does not carry the source: none, which a table prints as a dash.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect_id: The aspect, by id; None for the lead aspect.
-    :ptype aspect_id: str | None
     :return: Each arm's cost per 1,000, by arm; empty where the aspect holds none.
-    :rtype: dict[str, float]
     """
     if aspect_id is None or aspect_id == lead_aspect(report_input):
         return costs_per_thousand(report_input)
@@ -598,13 +583,9 @@ def cost_in_measure_unit(report_input: ReportInput, measure_key: str, per_thousa
     measure holds no figure for can be read in the measure's own column.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param measure_key: The dollar measure, by key.
-    :ptype measure_key: str
     :param per_thousand: A cost per 1,000.
-    :ptype per_thousand: float
     :return: The cost as a mean of that measure.
-    :rtype: float
     :raises KeyError: The key names no dollar measure.
     """
     return per_thousand / PER_THOUSAND_FACTORS[report_input.measures[measure_key].unit or ""]
@@ -957,11 +938,8 @@ def held_means(report_input: ReportInput, key: str) -> list[float]:
     A money ruler over the amounts a chart's changes compare, a rate's scale and a rubric's bounds all read this set.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :return: The means, as stored.
-    :rtype: list[float]
     """
     return [float(stat.mean) for stat in held_stats(report_input, key) if stat.mean is not None]
 
@@ -971,11 +949,8 @@ def held_stats(report_input: ReportInput, key: str) -> list[Stat]:
     and cell. The one walk of them (:func:`held_means` reads their means).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :return: The rows, as stored.
-    :rtype: list[Stat]
     """
     stats: list[Stat] = []
     for table in (report_input.measures, report_input.judged):

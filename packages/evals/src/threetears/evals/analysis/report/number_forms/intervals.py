@@ -32,13 +32,9 @@ def interval_level(level: str, family: ContrastFamily | None, looks: Looks | Non
     family's size: a family of one's level is the one each look reads at under the plan, corrected for its looks.
 
     :param level: The level as the input states it (``99.69%``).
-    :ptype level: str
     :param family: The contrast family the interval belongs to, or None.
-    :ptype family: ContrastFamily | None
     :param looks: The looks of the family's aspect; None for none.
-    :ptype looks: Looks | None
     :return: The level's words.
-    :rtype: str
     """
     stated = level.strip()
     if family is None or family.level != level:
@@ -63,9 +59,7 @@ def level_text(stated: str) -> str:
     percent's digits as stated.
 
     :param stated: The level as the input states it.
-    :ptype stated: str
     :return: Its text.
-    :rtype: str
     """
     found = _STATED_PERCENT.fullmatch(stated.strip())
     return policy_level(float(found[1])) if found is not None else stated.strip()
@@ -75,13 +69,9 @@ def _interval_words(low: float, high: float, drawn: Quantity) -> str:
     """An interval in a tooltip: its two ends by the package's number rule, joined as prose joins them.
 
     :param low: Its low end, in display units.
-    :ptype low: float
     :param high: Its high end, in display units.
-    :ptype high: float
     :param drawn: The quantity drawn.
-    :ptype drawn: Quantity
     :return: The words (``-10.8 to -3.4``).
-    :rtype: str
     """
     return interval_beside(figure_text(low, drawn), figure_text(high, drawn))
 
@@ -91,9 +81,7 @@ def _count_text(count: float) -> str:
     (``1,234``), so a count reads alike on a chart and in the prose beside it.
 
     :param count: The count.
-    :ptype count: float
     :return: The text.
-    :rtype: str
     """
     return spell_count(round(count))
 
