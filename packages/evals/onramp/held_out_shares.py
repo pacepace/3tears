@@ -33,6 +33,10 @@ HERE = Path(__file__).resolve().parent
 HELD_OUT = HERE / "held-out.jsonl"
 #: How close weatherboard's board must be to the logger's Celsius, as its README states.
 TOLERANCE_C = 0.5
+#: How close moodscore's score must be to its panel's mean rating, as its README states.
+TOLERANCE_MOOD = 0.25
+#: passcheck's bands, weakest first.
+BANDS = ("weak", "fair", "good", "strong")
 
 
 @dataclass(frozen=True)
@@ -205,6 +209,115 @@ def statements(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
     )
 
 
+def reorder(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    path = root / "data" / "stock_review.jsonl"
+    rows = _rows(path)
+
+    def off(module: ModuleType) -> int:
+        sheet = module.order_sheet(module.load_lines(path))
+        return sum(
+            (point, order) != (r["sheet_reorder_point"], r["sheet_order"])
+            for (_, point, order), r in zip(sheet, rows, strict=True)
+        )
+
+    return Reach(
+        off(app), len(rows), off(twin), "stock lines whose reorder point or order is not the buyer's spreadsheet's"
+    )
+
+
+def standups(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "series.jsonl")
+
+    def wrong(module: ModuleType) -> list[bool]:
+        return [module.invites(module.Series.from_json(r)) != r["old_calendar"] for r in rows]
+
+    meetings = sum(
+        got != want
+        for r in rows
+        for got, want in zip(app.invites(app.Series.from_json(r)), r["old_calendar"], strict=True)
+    )
+    return Reach(
+        sum(wrong(app)),
+        len(rows),
+        sum(wrong(twin)),
+        f"recurring series whose invites are not the old calendar's ({meetings} meetings an hour out)",
+    )
+
+
+def postal(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "order_addresses.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.label_lines(r["address"]) != r["courier_label"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "order addresses whose label lines are not the courier's")
+
+
+def passcheck(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "reviewed.jsonl")
+
+    def shown(module: ModuleType, row: dict[str, Any]) -> int:  # Any: a reviewed-sample row
+        return BANDS.index(module.rate(row["password"], row["username"]).band) - BANDS.index(row["team_band"])
+
+    stronger = sum(shown(app, r) > 0 for r in rows)
+    weak_through = sum(r["team_band"] == "weak" and shown(app, r) > 0 for r in rows)
+    return Reach(
+        sum(shown(app, r) != 0 for r in rows),
+        len(rows),
+        sum(shown(twin, r) != 0 for r in rows),
+        f"sample passwords shown in a band other than the security team's ({stronger} shown stronger; "
+        f"{weak_through} weak ones let through)",
+    )
+
+
+def moodscore(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "rated_reviews.jsonl")
+
+    def gaps(module: ModuleType) -> list[float]:
+        return [abs(module.score(r["text"]) - r["panel"]) for r in rows]
+
+    means = [sum(gaps(module)) / len(rows) for module in (app, twin)]
+    return Reach(
+        sum(gap > TOLERANCE_MOOD + 1e-9 for gap in gaps(app)),
+        len(rows),
+        sum(gap > TOLERANCE_MOOD + 1e-9 for gap in gaps(twin)),
+        f"rated reviews scored more than 0.25 from the panel's mean (mean distance {means[0]:.3f} against "
+        f"{means[1]:.3f})",
+    )
+
+
+def logtally(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "dashboard.jsonl")
+
+    def off(module: ModuleType) -> int:
+        days = {r["day"]: module.tally_file(root / "data" / "logs" / f"access-{r['day']}.log") for r in rows}
+        found = [days[r["day"]].pages.get(r["page"]) for r in rows]
+        return sum(
+            ((stats.hits, stats.bytes) if stats is not None else (0, 0)) != (r["hits"], r["bytes"])
+            for stats, r in zip(found, rows, strict=True)
+        )
+
+    return Reach(off(app), len(rows), off(twin), "day and page figures whose hits or bytes are not the dashboard's")
+
+
+def shelfprice(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "shelf_audit.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.unit_price(r["price"], r["size"]).label != r["audited_label"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "audited lines whose unit-price label is not the signed-off one")
+
+
+def loyalty(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "till_export.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.points_for(module.basket_lines(r), r["tier"]).total != r["points_awarded"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "October baskets awarded other points than the old till's")
+
+
 #: Each held-out app's module, and how its reach is measured.
 SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] = {
     "parcelrate": ("rates", parcelrate),
@@ -215,6 +328,14 @@ SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] =
     "faqrank": ("search", faqrank),
     "digest": ("digest", digest),
     "statements": ("importer", statements),
+    "reorder": ("stockroom", reorder),
+    "standups": ("recur", standups),
+    "postal": ("address", postal),
+    "passcheck": ("strength", passcheck),
+    "moodscore": ("sentiment", moodscore),
+    "logtally": ("tally", logtally),
+    "shelfprice": ("unitprice", shelfprice),
+    "loyalty": ("points", loyalty),
 }
 
 

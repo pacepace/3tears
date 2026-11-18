@@ -18,7 +18,9 @@ defect reaches more than a fifth of the cases and fewer than all, and the app's 
 `python -m unittest discover tests`, run from the app's directory as a trial would, on the app and on its twin.
 
 Graded apps, whose outputs need a graded judgement rather than an exact match: `weatherboard` (a tolerance),
-`faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries).
+`faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries), `passcheck`
+(a score read as ordered bands, where showing a password stronger than it is is the error that matters), `moodscore`
+(a score within a tolerance of a panel's mean rating).
 
 ## parcelrate: pricing, a wrong boundary
 
@@ -138,4 +140,120 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
   ```diff
   -DAY_FIRST = False
   +DAY_FIRST = True
+  ```
+
+## reorder: stock control, integer division where a fraction was meant
+
+- **Defect.** `stockroom.daily_demand` divides units sold by the window's days with `//`, so daily demand loses its
+  fraction (30 sold in 28 days is 1 a day, 27 is 0). Every reorder point and order built on it comes out low; a line
+  whose sales divide exactly by its window, or that sold nothing, is unaffected.
+- **Where.** `apps/reorder/stockroom.py`, `daily_demand`, its last line.
+- **Share.** 34 of 44 stock lines (77%) get a reorder point or an order other than the buyer's spreadsheet's
+  (`data/stock_review.jsonl`, `sheet_reorder_point` and `sheet_order`); 34 are off on the reorder point and 17 on the
+  order.
+- **Twin diff.**
+  ```diff
+  -    return sold // days
+  +    return sold / days
+  ```
+
+## standups: calendar recurrence, the clock change
+
+- **Defect.** `recur._stepped` steps a series forward in UTC and converts each meeting back to London time, so a
+  series that crosses a clock change keeps its UTC time and moves an hour on the office clock (a 09:30 stand-up
+  becomes 10:30 after the clocks go forward). The module docstring and the README say a meeting keeps its wall-clock
+  time. A series that stays inside one season is right.
+- **Where.** `apps/standups/recur.py`, `_stepped`, the `yield` line.
+- **Share.** 20 of 32 recurring series (62%) send invites other than the old calendar's (`data/series.jsonl`,
+  `old_calendar`); 170 of the 492 meetings are an hour out.
+- **Twin diff.**
+  ```diff
+  -        yield (first.astimezone(timezone.utc) + step * n).astimezone(LONDON)
+  +        yield first + step * n
+  ```
+
+## postal: address normalisation, a greedy pattern
+
+- **Defect.** `address._FLAT` reads a flat's number with a greedy `(.+),`, so it runs to the last comma before the
+  postcode rather than the first: `Flat 2, 14 Mill Ln, Leeds` gives the line `FLAT 2, 14 MILL LN`, with the street
+  folded into the flat line and its street type not spelt out. Addresses with no flat or unit are right.
+- **Where.** `apps/postal/address.py`, `_FLAT`.
+- **Share.** 19 of 44 order addresses (43%) get label lines other than the courier's (`data/order_addresses.jsonl`,
+  `courier_label`): every address with a flat or unit, since each has a street and town after it.
+- **Twin diff.**
+  ```diff
+  -_FLAT = re.compile(r"^\s*(flat|apartment|apt|unit)\.?\s+(.+),\s*", re.IGNORECASE)
+  +_FLAT = re.compile(r"^\s*(flat|apartment|apt|unit)\.?\s+(.+?),\s*", re.IGNORECASE)
+  ```
+
+## passcheck: password strength, case-sensitive matching (graded)
+
+- **Defect.** `strength.rate` looks for the common words in the password as typed, while the list is in lower case,
+  so a common word with a capital in it (`Summer2026!`, `LONDON2012games`) escapes the 25-point penalty and the
+  password shows a band stronger. The docstring and the README say the match ignores case.
+- **Where.** `apps/passcheck/strength.py`, `rate`, the line that sets `found`.
+- **Share.** 20 of 44 sample passwords (45%) show a band other than the security team's (`data/reviewed.jsonl`,
+  `team_band`), all of them stronger than the team rated; 2 that the team rated weak get past the form.
+- **Twin diff.**
+  ```diff
+  -    found = sorted(word for word in _COMMON_WORDS if word in password)
+  +    found = sorted(word for word in _COMMON_WORDS if word in password.lower())
+  ```
+
+## moodscore: rule-based sentiment, a negation window not closed (graded, with a tolerance)
+
+- **Defect.** After a negator turns round a sentiment word, `sentiment.raw_score` counts the window down by one
+  instead of closing it, so a second sentiment word close behind is turned round too: `no complaints great food`
+  reads `great` as negative. The docstring says a negator turns round one word only. A review whose negator has no
+  second sentiment word in reach, or a clause break before it, is unaffected.
+- **Where.** `apps/moodscore/sentiment.py`, `raw_score`, the line after `weight = -NEGATED * weight`.
+- **Share.** 15 of 49 rated reviews (31%) score more than 0.25 from the panel's mean rating
+  (`data/rated_reviews.jsonl`, `panel`), the tolerance the README states; the mean distance from the panel is 0.261 on
+  the app and 0.060 on the twin.
+- **Twin diff.**
+  ```diff
+  -            negation -= 1
+  +            negation = 0
+  ```
+
+## logtally: log aggregation, an empty size field mishandled
+
+- **Defect.** The log-line pattern takes the size only as digits, so a line logged with `-` for its size (a `304`, a
+  `204`, a `HEAD`) does not match: it is counted as unparsed and its hit is lost. The docstring says such a line is a
+  hit of 0 bytes. Pages that had no bodiless answer that day are right.
+- **Where.** `apps/logtally/tally.py`, `_LINE`, the status-and-size line.
+- **Share.** 18 of 55 day-and-page figures (33%) have hits other than the hosting dashboard's (`data/dashboard.jsonl`);
+  the bytes stay right, since a bodiless answer sends none.
+- **Twin diff.**
+  ```diff
+  -    r"(?P<status>\d{3}) (?P<size>\d+) "
+  +    r"(?P<status>\d{3}) (?P<size>\d+|-) "
+  ```
+
+## shelfprice: unit prices, a decimal comma read as a thousands separator
+
+- **Defect.** `unitprice._number` drops a comma from a pack size, so a continental supplier's `0,75 l` is read as
+  75 litres and `1,5 kg` as 15 kg, and the unit price comes out far too low. The docstring and the README say a comma
+  is a decimal mark. Sizes written with a point are right.
+- **Where.** `apps/shelfprice/unitprice.py`, `_number`.
+- **Share.** 11 of 40 audited lines (28%) get a unit-price label other than the one the shop manager signed off
+  (`data/shelf_audit.jsonl`, `audited_label`): every size written with a comma.
+- **Twin diff.**
+  ```diff
+  -    return Decimal(text.replace(",", ""))
+  +    return Decimal(text.replace(",", "."))
+  ```
+
+## loyalty: points accrual, an inverted comparison on one branch
+
+- **Defect.** The bronze branch of `points._tier_bonus` gives the 25 bonus points when the eligible spend is at most
+  £60, where the rule is at least £60: bronze baskets under £60 get the bonus and those over it do not. The gold and
+  silver branches are right, and so is a bronze basket of exactly £60.
+- **Where.** `apps/loyalty/points.py`, `_tier_bonus`, the bronze branch.
+- **Share.** 15 of 42 October baskets (36%) are awarded points other than the old till's (`data/till_export.jsonl`,
+  `points_awarded`): every bronze basket.
+- **Twin diff.**
+  ```diff
+  -        return BRONZE_BONUS if spend <= BRONZE_BONUS_FROM else 0
+  +        return BRONZE_BONUS if spend >= BRONZE_BONUS_FROM else 0
   ```
