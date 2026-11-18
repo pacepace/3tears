@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: Arrow rows matched by a key without Acero (`threetears.core.arrow_keys`)
+
+**Added:** `threetears.core.arrow_keys` -- `key_codes`, `rows_named` (a left semi join's rows), `rows_not_named`
+(a left anti join's), `distinct_keys` (a `group_by`'s keys) and `last_rows` (the last row of each key) -- matches
+Arrow rows by a key of several columns in Arrow's hash kernels: each column dictionary-encoded, the codes combined
+into one int64 a key, then `is_in` or `np.unique`. Moved from reports (`aibots_reports.pod.arrow_keys`, SG1
+2026-11-18). Why: `Table.join`, `Table.group_by` and `Table.filter` given an expression each run an Acero plan whose
+answer is `DeclarationToTable`'s, which can be a null table with an OK status (Arrow 25.0.1); pyarrow's `Table` over
+it segfaults on first use (reports' loop_timing run of 2026-11-18 04:40). `rows_named` on a 28k-row part against
+382 keys of six columns: 0.53 ms on the calling thread (Acero's join 0.48 ms on Arrow's pool). Needs the `arrow`
+extra. **Fixed:** `DuckDBBackend.storage_arrow` keeps the last row of each key by `last_rows`, no longer a
+`group_by`. **Enforcement:** `tests/enforcement/test_no_acero_tables.py` refuses an Acero plan for a table in any
+package's source (`Table.join` with `keys=`/`join_type=`, `join_asof`, `group_by`, `pc.field`, `pyarrow.acero`).
+
 ### nats, core, agent-audit: `NatsClientLike.ping`; `request_audit_anonymization` takes a `RawRequester`
 
 **Added:** `NatsClientLike` carries `ping(*, timeout=2.0) -> bool`, the health probe's round trip `NatsClient` already
