@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -146,6 +146,10 @@ class _Store:
 
     async def get(self, name: str) -> bytes:
         return self.objects[name]
+
+    async def require_room(self, objects: Sequence[tuple[str, int]]) -> int:
+        """no bound: the room a checkpoint asks for is always there."""
+        return sum(size for _, size in objects)
 
     async def list_names(self, *, prefix: str = "") -> list[str]:
         return [n for n in self.objects if n.startswith(prefix)]

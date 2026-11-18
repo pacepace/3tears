@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, nats: a copy's checkpoint asks for its whole room before its first part
+
+**Fixed:** `CopyCheckpoints.write` put its parts one by one, each asking the Object Store for its own room, so a
+checkpoint too big for the store was refused part way, after some of its parts were written, and those parts were then
+retired; the next write met the same. A write now reads and encodes all its new parts before it puts the first,
+holding them encoded (zstd Arrow IPC) until put, and asks `NatsObjectStore.require_room` once for them all:
+`ObjectStoreFullError` up front, nothing written. The copy is still read once a write (read twice, once to measure and
+once to put, every write would read and encode its rows twice); the cost is the new parts held at once, a whole
+write's (a cold start's) the size the checkpoint adds to the store. **Added:**
+`NatsObjectStore.require_room(objects: Sequence[tuple[str, int]]) -> int` refuses several puts the store has no room
+for together (one `STREAM.INFO`) and answers the bytes they add as the server counts them. The store a
+`CopyCheckpoints` is given must answer `require_room` (a test's in-memory store too: reports'
+`tests/pod/snapshot_doubles.Store` at its re-pin). **Removed:** `threetears.nats.object_store.stored_bytes_of_put`
+is private (`_stored_bytes_of_put`): no consumer called it (reports never puts an export of its own; the ledger entry
+saying it would was stale), and `require_room` is its front door.
+
 ### core: Arrow rows matched by a key without Acero (`threetears.core.arrow_keys`)
 
 **Added:** `threetears.core.arrow_keys` -- `key_codes`, `rows_named` (a left semi join's rows), `rows_not_named`

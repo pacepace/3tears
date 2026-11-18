@@ -448,6 +448,10 @@ class _Store:
     async def get(self, name: str) -> bytes:
         return self.objects[name]
 
+    async def require_room(self, objects: Sequence[tuple[str, int]]) -> int:
+        """no bound: the room a checkpoint asks for is always there."""
+        return sum(size for _, size in objects)
+
     async def list_names(self, *, prefix: str = "") -> list[str]:
         return [n for n in self.objects if n.startswith(prefix)]
 

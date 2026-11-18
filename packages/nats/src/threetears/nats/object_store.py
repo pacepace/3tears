@@ -80,7 +80,6 @@ __all__ = [
     "NatsObjectStore",
     "ObjectInfo",
     "object_store_stream_name",
-    "stored_bytes_of_put",
 ]
 
 log = get_logger(__name__)
@@ -143,12 +142,16 @@ _DIGEST_PREFIX: Final[str] = "SHA-256="
 #: ``memStoreMsgSize``/``fileStoreMsgSize``: the sequence, the timestamp and the lengths)
 _STORED_MESSAGE_OVERHEAD: Final = 16
 
-#: the bytes the metadata's JSON may grow by past the estimate :func:`stored_bytes_of_put` makes without it: its
+#: the bytes the metadata's JSON may grow by past the estimate :func:`_stored_bytes_of_put` makes without it: its
 #: digest, sizes, write time and options (a record runs to about 300 bytes, the name aside)
 _META_ALLOWANCE: Final = 512
 
 
-def stored_bytes_of_put(bucket: str, name: str, size: int, *, chunks: int, nuid_length: int) -> int:
+#: the length of an object's chunk token: :meth:`NatsObjectStore.put` names its chunks by a UUIDv7's hex
+_NUID_LENGTH: Final = 32
+
+
+def _stored_bytes_of_put(bucket: str, name: str, size: int, *, chunks: int, nuid_length: int) -> int:
     """the bytes a stream holds after a put of ``size`` bytes in ``chunks`` chunks: what the put asks room for.
 
     Each message is counted as nats-server counts it -- its subject, its headers and its payload, plus
@@ -562,7 +565,7 @@ class NatsObjectStore:
         # that met the full store holds its own (cobalt prod, 2026-11-01). Writers racing past this check meet the
         # server's own refusal, as before
         await self._require_room(
-            name, stored_bytes_of_put(self._full_name, name, len(data), chunks=len(pieces), nuid_length=len(nuid))
+            name, _stored_bytes_of_put(self._full_name, name, len(data), chunks=len(pieces), nuid_length=len(nuid))
         )
         for piece in pieces:
             await self._publish(js, chunk_subject, piece, headers=None, name=name)
@@ -591,13 +594,42 @@ class NatsObjectStore:
         )
         return _public_info(record)
 
-    async def _require_room(self, name: str, needed: int) -> None:
+    async def require_room(self, objects: Sequence[tuple[str, int]]) -> int:
+        """refuse several puts the store has no room for together, before any of them writes anything (one
+        ``STREAM.INFO``): a writer of many objects that must land together (a copy's checkpoint, its parts) asks
+        once for them all, rather than meeting a full store part way and deleting what it wrote. Each put still asks
+        for its own room as it writes; writers racing past this check meet that, or the server's own refusal.
+
+        :param objects: each object's name and its bytes
+        :ptype objects: Sequence[tuple[str, int]]
+        :return: the bytes the puts add to the stream, as the server counts them (each put's estimate, which never
+            falls short of the server's count)
+        :rtype: int
+        :raises ValueError: when a name is outside :data:`OBJECT_NAME_GRAMMAR`, or a size is negative
+        :raises ObjectStoreFullError: when what the stream holds and the puts together pass its ``max_bytes``,
+            naming the first object
+        :raises ObjectStoreError: when the stream cannot be read
+        """
+        needed = 0
+        for name, size in objects:
+            _check_name(name)
+            if size < 0:
+                raise ValueError(f"object {name!r} cannot hold {size} bytes")
+            chunks = -(-size // self._chunk_bytes)
+            needed += _stored_bytes_of_put(self._full_name, name, size, chunks=chunks, nuid_length=_NUID_LENGTH)
+        if objects:
+            await self._require_room(objects[0][0], needed, objects=len(objects))
+        return needed
+
+    async def _require_room(self, name: str, needed: int, *, objects: int = 1) -> None:
         """refuse a put the store has no room for, before it writes anything (one ``STREAM.INFO``).
 
         :param name: the object, for the error
         :ptype name: str
-        :param needed: the bytes the put adds (:func:`stored_bytes_of_put`)
+        :param needed: the bytes the put adds (:func:`_stored_bytes_of_put`)
         :ptype needed: int
+        :param objects: how many objects ``needed`` counts, ``name`` the first of them
+        :ptype objects: int
         :return: nothing
         :rtype: None
         :raises ObjectStoreFullError: when what the stream holds and ``needed`` pass its ``max_bytes``
@@ -612,8 +644,9 @@ class NatsObjectStore:
         held = int(info.state.bytes or 0)
         # a bound of 0 or -1 is none: the stream takes whatever the server has room for
         if bound > 0 and held + needed > bound:
+            more = f" and {objects - 1} more objects" if objects > 1 else ""
             raise ObjectStoreFullError(
-                f"object store {self._full_name} is full: writing {name!r} ({needed} bytes stored) would pass its "
+                f"object store {self._full_name} is full: writing {name!r}{more} ({needed} bytes stored) would pass its "
                 f"max_bytes ({held} of {bound} held); nothing was written. retire objects no longer served, or raise "
                 "the bucket's bound",
                 bucket=self._full_name,
