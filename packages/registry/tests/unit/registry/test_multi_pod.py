@@ -508,7 +508,8 @@ class TestMultiPodFailover:
         The tool exists and has endpoints; none of them took this call, so it never ran and a retry
         is safe. TOOL_UNAVAILABLE here reads as "no such tool" (the hub answers it with 404), which
         is how a scheduled caller on cobalt prod was told a tool did not exist during a pod restart
-        (2026-10-31). TOOL_NOT_READY is the retryable answer (503).
+        (2026-10-31). TOOL_RESTARTING is the retryable answer (503), a code of its own so a timed caller retries it
+        in seconds rather than at its next interval, as it would TOOL_NOT_READY's "still loading".
         """
         catalog = ToolCatalog()
         entry = _make_catalog_entry(
@@ -532,7 +533,7 @@ class TestMultiPodFailover:
         assert nc.request_raw.await_count == 2
         published = nc.publish_reply.call_args.kwargs["message"]
         assert published.success is False
-        assert published.error_code == "TOOL_NOT_READY"
+        assert published.error_code == "TOOL_RESTARTING"
 
     @pytest.mark.asyncio
     async def test_timeout_does_not_fail_over(self) -> None:

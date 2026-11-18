@@ -300,8 +300,8 @@ class TestWhenTheWaiterCannotOpen:
 
         assert nats.order == ["open-waiter"]  # the call was never forwarded
         assert nats.replies[0].success is False
-        # the call never ran, so the caller is told to retry rather than that the tool is gone
-        assert nats.replies[0].error_code == "TOOL_NOT_READY"
+        # the call never ran, so the caller is told to retry shortly rather than that the tool is gone
+        assert nats.replies[0].error_code == "TOOL_RESTARTING"
 
 
 class TestWhenTheOtherEndDoesNotPlayAlong:
@@ -311,14 +311,14 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
 
         unlike the synchronous path -- where a timeout might mean "the pod is running your tool", so
         retrying risks a double execution -- the pod had only to acknowledge before starting work.
-        silence there means it is not there, and the call did not run: TOOL_NOT_READY, never the
+        silence there means it is not there, and the call did not run: TOOL_RESTARTING, never the
         TOOL_UNAVAILABLE the hub serves as "no such tool".
         """
         catalog = await _registered_catalog(_LONG)
         nats = _Nats(accept=RequestError("no responders available"))
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, make_authed_request())
 
-        assert nats.replies[0].error_code == "TOOL_NOT_READY"
+        assert nats.replies[0].error_code == "TOOL_RESTARTING"
 
     @pytest.mark.asyncio
     async def test_an_unacknowledged_call_fails_over_to_a_sibling_pod(self) -> None:
@@ -336,7 +336,8 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
 
         cobalt prod, 2026-10-31: two replicas of one tool pod shared one endpoint, neither
         acknowledged within the accept window, and the caller was answered TOOL_UNAVAILABLE, which
-        the hub serves as 404. The call never started, so it is safe to retry: TOOL_NOT_READY.
+        the hub serves as 404. The call never started, so it is safe to retry shortly: TOOL_RESTARTING (its own code
+        since the post-election plan's item 7, so a timed caller retries it in seconds, not at its next interval).
         """
         catalog = await _registered_catalog(_LONG, pods=("pod-1", "pod-2"))
         nats = _Nats(accept=TimeoutError("accept window elapsed"))
@@ -344,7 +345,7 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
 
         assert len(nats.request_raw_calls) == 2
         assert nats.replies[0].success is False
-        assert nats.replies[0].error_code == "TOOL_NOT_READY"
+        assert nats.replies[0].error_code == "TOOL_RESTARTING"
 
     @pytest.mark.asyncio
     async def test_a_pod_that_refuses_the_subject_is_not_retried_elsewhere(self) -> None:
@@ -577,7 +578,7 @@ class TestDeliveringToTheAgent:
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, self._long_request(result_subject=subject))
 
         assert len(nats.published) == 1
-        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_NOT_READY"
+        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_RESTARTING"
 
     @pytest.mark.asyncio
     async def test_a_spend_denial_travels_the_delivery_route_too(self) -> None:

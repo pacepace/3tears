@@ -184,8 +184,10 @@ class JobFireResult:
     :ivar retry_after_seconds: on a ``'failed'`` result, ask the engine to run
         the same fire once more after this many seconds (capped by the
         engine's own ceiling), for a failure that a moment fixes (a
-        tool whose pods are being replaced; the hub's scheduled tool call asks
-        it on ``TOOL_UNAVAILABLE``). The retry runs off the tick, which goes on
+        tool whose pod is restarting; the hub's scheduled tool call asks it on
+        the registry's ``TOOL_RESTARTING``, a call no endpoint took, and on
+        ``TOOL_UNAVAILABLE``, a registry replica whose copies are not yet
+        routable). The retry runs off the tick, which goes on
         to its other due fires. The second result is final, whatever it asks.
         ``None`` (the default) records the failure at once.
     """
