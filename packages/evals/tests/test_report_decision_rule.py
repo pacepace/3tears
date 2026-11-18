@@ -369,15 +369,23 @@ async def test_a_floor_beside_a_contrast_not_separated_says_why_once_under_the_f
 # --- a floor reads the bounded interval, at the nominal level, on every rate it reads ----------------------------
 
 
-def _passing(passes: Sequence[int], cost: float) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
-    """A runner that answers case ``i`` right on its first ``passes[i]`` repeats and wrong after, each at ``cost``."""
+def _passing(
+    passes: Sequence[int], cost: float, spread: float = 0.0
+) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
+    """A runner that answers case ``i`` right on its first ``passes[i]`` repeats and wrong after, each at ``cost`` plus
+    ``spread`` times ``i`` mod 3."""
     calls: Counter[str] = Counter()
 
     async def run(case: Mapping[str, Any]) -> Answer:
         calls[case["text"]] += 1
-        right = calls[case["text"]] <= passes[int(case["text"].rsplit(" ", 1)[1])]
+        index = int(case["text"].rsplit(" ", 1)[1])
+        right = calls[case["text"]] <= passes[index]
         return Answer(
-            case["label"] if right else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=cost
+            case["label"] if right else "skipped",
+            model="m",
+            input_tokens=100,
+            output_tokens=10,
+            cost_usd=cost + spread * (index % 3),
         )
 
     return run
@@ -408,17 +416,26 @@ async def _assembled(comparison: Result, floors: Sequence[DecisionClause]) -> An
 
 
 async def _ruled(
-    control_passes: Sequence[int], candidate_passes: Sequence[int], floors: Sequence[DecisionClause] = G2_FLOORS
+    control_passes: Sequence[int],
+    candidate_passes: Sequence[int],
+    floors: Sequence[DecisionClause] = G2_FLOORS,
+    *,
+    spread: float = 0.0,
 ) -> tuple[AnalysisContextBundle, str, str]:
     """Two arms over ``len(control_passes)`` cases × 3 repeats, each passing its cases' counts, with G2's floors.
 
     The floors are on the campaign before its bundle is assembled, so its family is one a floor can read: the label
-    check's pass rate (compared as ``accuracy``) and the overall pass rate, which every asked question's family holds.
+    check's pass rate (compared as ``accuracy``), which is the overall pass rate case for case, the eval having one
+    label, so the family holds it once. With ``spread`` each reply's cost varies from case to case, and the family
+    holds the cost too.
     """
     cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(len(control_passes))]
-    # Each arm at one cost per reply: a gap with no spread on a measure with no declared range, which no test reads, so
-    # the family is the two rates alone.
-    arms = {"production": _passing(control_passes, 0.0031), "candidate": _passing(candidate_passes, 0.0021)}
+    # Each arm at one cost per reply unless ``spread``: a gap with no spread on a measure with no declared range, which
+    # no test reads, so the family is the rate alone.
+    arms = {
+        "production": _passing(control_passes, 0.0031, spread),
+        "candidate": _passing(candidate_passes, 0.0021, spread),
+    }
     comparison = await Eval(cases, arms, ["label"], k=3, name="ruled").run(store=":memory:")
     bundle = await _assembled(comparison, floors)
     assert bundle.design.control_arm is not None
@@ -435,32 +452,37 @@ def _rate_floor(bundle: AnalysisContextBundle, control: str, candidate: str) -> 
     return verdict.outcome, _words(verdict.reason)
 
 
-async def test_the_overall_pass_rate_joins_the_family_when_the_aspect_declares_a_margin() -> None:
+async def test_the_overall_pass_rate_joins_the_family_when_the_aspect_declares_a_margin_once_as_its_one_label() -> None:
     bundle, control, candidate = await _ruled([0] * 7, [3] * 7)
     (family,) = bundle.multiple_comparisons.families
     assert family.aspect == bundle.aspect, "the question was asked before the run: the family is the aspect's"
-    (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
-    assert passed.name == "passed"
+    # An eval of one label passes a trial exactly where the label matched: its pass rate is the label's accuracy case
+    # for case, one hypothesis, so the family reads it once, as the accuracy.
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (passed,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
     # The case is the unit: seven cases a side, each the share of its three trials that passed.
     assert (passed.control.n_cases, passed.contrast.n_cases) == (7, 7)
     assert (passed.control.mean, passed.contrast.mean) == (0.0, 1.0)
-    # It is one of the family's corrected comparisons, beside the label check's (as accuracy).
     tested = {
         (comparison.reading, comparison.name) for comparison in family.comparisons if comparison.p_raw is not None
     }
-    assert tested == {("trial", "passed"), ("measure", "accuracy")}
-    assert family.family_size == 2
+    assert tested == {("measure", "accuracy")}
+    assert family.family_size == 1
     assert passed.bounded_interval is not None and passed.case_values is not None
 
 
 async def test_an_asked_aspect_with_no_margin_compares_the_overall_pass_rate() -> None:
-    """Owner, 2026-11-06: a superiority question asks its pass rate, so its family holds it, margin or none."""
+    """Owner, 2026-11-06: a superiority question asks its pass rate, so its family holds it, margin or none: here once,
+    as the one label's accuracy, which it is case for case."""
     bundle, _, _ = await _ruled([0] * 7, [3] * 7, floors=(RateDrop(max_points=10, reading="match"),))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
-    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
-    assert family.family_size == 2 and (compared.verdict, compared.delta) == ("improved", 1.0)
-    assert compared.p_raw is not None and compared.p_adjusted == pytest.approx(2 * compared.p_raw)
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
+    # Seven cases a side, every one moved from failing to passing: on 0 to 1 the bounded test reads it, at α.
+    assert family.family_size == 1 and (compared.verdict, compared.delta) == ("improved", 1.0)
+    assert compared.basis == "bounded"
+    assert compared.p_raw is not None and compared.p_adjusted == pytest.approx(compared.p_raw)
 
 
 async def test_seven_cases_with_the_bounded_interval_inside_the_margin_hold_the_rate_floor() -> None:
@@ -505,8 +527,9 @@ async def test_a_rate_both_arms_pass_on_every_trial_says_it_cannot_separate_them
 async def test_a_floor_reads_its_interval_at_the_nominal_level_never_the_family_s() -> None:
     """A floor is read intersection-union, each at its own nominal level: the family's Bonferroni level would make a
     warning fire less often for every reading the family adds. Its interval is computed again from the comparison's
-    per-case values at 95%, so it is narrower than the family's bounded interval, never the same."""
-    bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
+    per-case values at 95%, so it is narrower than the family's bounded interval, never the same. A cost that varies
+    from case to case puts a second comparison in the family beside the label's accuracy."""
+    bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7, spread=0.0001)
     (family,) = bundle.multiple_comparisons.families
     assert family.interval_level is not None and family.interval_level > INTERVAL_LEVEL
     (check,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
@@ -533,7 +556,7 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
         for comparison in family.comparisons
         if comparison.name == "accuracy"
     ]
-    assert check.basis == "t" and check.case_values is not None
+    assert check.basis == "bounded" and check.case_values is not None
     (family,) = bundle.multiple_comparisons.families
     assert family.interval_level is not None
     t_interval = difference_interval(

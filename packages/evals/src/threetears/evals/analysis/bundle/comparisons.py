@@ -8,7 +8,7 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -29,6 +29,7 @@ from threetears.evals.analysis.stats import (
     bet_decided_at,
     bet_evidence,
     bounded_difference_interval,
+    bounded_mean_p,
     bounded_separation_p,
     composite_significance,
     contrast_cases,
@@ -44,6 +45,7 @@ from threetears.evals.analysis.stats import (
     no_spread_p,
     paired_equivalence,
     pairing_correlation,
+    SeparationTest as SeparationReading,
     separation_test,
 )
 from threetears.evals.kernel.campaign import ReadingKind
@@ -66,17 +68,21 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
     MeritAxis,
     MetricDescriptor,
     classifier_label_of,
     describe_reported_measure,
     describe_rubric_dim,
+    goal_check_measure,
     is_latency_measure,
     materiality,
     reads_as_rate,
     summary_population,
 )
 from threetears.evals.kernel.result_reading import ResultView
+from threetears.evals.kernel.scoring import capability_scores
 from threetears.evals.schema.models import (
     RubricScale,
     rubric_dim_scale,
@@ -463,6 +469,9 @@ class _Tested(NamedTuple):
     #: Why no test ran, in the shared reading states' closed set of reasons, where none ran; a family decided on its
     #: primary states it on a primary it cannot decide.
     untested_state: StateOf | None = None
+    #: Whether the p is the engine's bounded test on 0 to 1 (:func:`_fixed_count_test`), which its family re-reads with
+    #: its stakes tuned to the level each interval is read at.
+    tuned: bool = False
 
 
 def _compare(
@@ -481,11 +490,13 @@ def _compare(
     """Test one contrast against the control on one reading, before correction.
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
-    design a fixed case set exists for — else the unpaired test over each side's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
-    the bounded test on the declared range every other surface reads that gap by
-    (:func:`~threetears.evals.analysis.stats.separation_test`), so one concept has one answer. With no range
-    such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
+    design a fixed case set exists for — else unpaired over each side's per-case values. **A reading on the range 0 to
+    1 is read by the bounded test by betting, whatever its spread** (:func:`_fixed_count_test`, the bet its bounded
+    interval is drawn by), which holds α at every n for every distribution on the range: a t-test on pass/fail values
+    does not (on fair coin pairs at 40 cases it separated 5.28% of the time at α). **Any other reading keeps the t-test**
+    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where its values have no spread the bounded
+    test on its declared range (:func:`~threetears.evals.analysis.stats.separation_test`). With no range such a gap is
+    ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
     delta are all over the cases the test read, and each side says how many of its own it left out, so the
     figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
     margin also runs the paired equivalence test (TOST) against it.
@@ -517,13 +528,13 @@ def _compare(
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
     bet = _bet_samples(control_values, contrast_values, value_range, places) if paired else None
-    # The separation test every surface reads a gap by (:func:`separation_test`): the t-test's where the values
-    # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
-    # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
-    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a quick-path
-    # comparison the mixture bet reads a paired reading on its range whatever its spread, in its committed order.
+    # On a quick-path comparison the mixture bet reads a paired reading on its declared range, in its committed order.
+    # Elsewhere, a reading on 0 to 1 is read by the bounded test whatever its spread (:func:`_fixed_count_test`; its family
+    # tunes its stakes to the level its interval is read at), and any
+    # other by the t-test where its values have spread and the bounded test on its range where they have none; with no
+    # range a gap with no spread is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597).
     separation = (
-        separation_test(a, b, paired=paired, value_range=value_range)
+        _fixed_count_test(a, b, paired=paired, value_range=value_range)
         if bet is None
         else separation_test(*bet, paired=True, value_range=value_range, mixture=True)
     )
@@ -630,7 +641,14 @@ def _compare(
             better, worse = (up, down) if higher_is_better else (down, up)
             comparison = comparison.model_copy(update={"evidence_better": better, "evidence_worse": worse})
     return _Tested(
-        comparison, p_raw, equivalence_p_raw, (a, b), value_range, bet_samples=bet, untested_state=untested_state
+        comparison,
+        p_raw,
+        equivalence_p_raw,
+        (a, b),
+        value_range,
+        bet_samples=bet,
+        untested_state=untested_state,
+        tuned=bet is None and separation.basis == "bounded" and _reads_0_to_1(a, b, value_range),
     )
 
 
@@ -641,6 +659,106 @@ _TOO_FEW_COMPLETE = (
     "fewer than two cases at the head of its order have every arm and repeat recorded, and the bet reads them in that "
     "order, so there is nothing to read yet"
 )
+
+
+def _reads_0_to_1(a: Sequence[float], b: Sequence[float], value_range: tuple[float, float] | None) -> bool:
+    """Whether a contrast is a reading on the range 0 to 1 with every value inside it, which the engine reads by the
+    bounded test whatever its spread (:func:`_fixed_count_test`)."""
+    return (
+        value_range is not None
+        and tuple(value_range) == _TRIAL_PASS_RANGE
+        and all(0 <= exact_decimal(v) <= 1 for v in (*a, *b))
+    )
+
+
+def _fixed_count_test(
+    a: Sequence[float],
+    b: Sequence[float],
+    *,
+    paired: bool,
+    value_range: tuple[float, float] | None,
+    alpha: float = SIGNIFICANCE_ALPHA,
+) -> SeparationReading:
+    """The test a contrast is read by at the count it has, where no committed order lets a bet be read again as cases
+    are added: an engine campaign's, at a fixed count or at each look of a plan.
+
+    **A reading on the range 0 to 1, every value inside it, is read by the bounded test by betting, whatever the
+    spread**: a pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on 0 to 1. It is
+    the bet the engine's bounded interval is drawn by (:func:`~threetears.evals.analysis.stats.bounded_separation_p`
+    with no mixture): paired, a bet on the differences in the order fixed by their count alone
+    (:func:`~threetears.evals.analysis.stats.bet_order`), each stake tuned to that count and to ``alpha``; unpaired,
+    the inversion of the unpaired bounded interval, at the cut between the two arms' bounds
+    (:func:`_unpaired_bounded_p`). Its stakes are set from the values before each one, so under the
+    null its capital is a nonnegative supermartingale, and by Ville's inequality its p holds α at every n for every
+    distribution on the range, whatever level its stakes were tuned to. On pass/fail pairs it holds where the paired
+    t-test erred above α (5.28% on fair coin pairs at 40 cases). A family re-reads it with its stakes tuned to the
+    level each of its intervals is read at (:func:`_corrected_family`), so the interval excludes zero exactly where
+    the p clears that level.
+
+    **Any other reading keeps the separation test every other surface reads a gap by**
+    (:func:`~threetears.evals.analysis.stats.separation_test`): the t-test where the values have spread, and the bounded
+    test on its declared range where they have none. That is a reading on a wider declared range (a 1 to 5 judged
+    scale), on none (cost, latency, a count), or with a value outside its range, which bounds nothing then.
+
+    :param alpha: The two-sided level the bet's stakes are tuned to; the p is valid whatever it is.
+    """
+    tested = separation_test(a, b, paired=paired, value_range=value_range)
+    if not _reads_0_to_1(a, b, value_range) or tested.basis == "identical":
+        return tested
+    p = (
+        bounded_separation_p(a, b, paired=True, value_range=_TRIAL_PASS_RANGE, alpha=alpha)
+        if paired
+        else _unpaired_bounded_p(a, b, alpha)
+    )
+    return tested if p is None else tested._replace(p=p, basis="bounded", refusal=None)
+
+
+#: Bisection steps over the cut between two unpaired means (:func:`_unpaired_bounded_p`).
+_CUT_STEPS = 40
+
+
+def _unpaired_bounded_p(a: Sequence[float], b: Sequence[float], alpha: float) -> float | None:
+    """The two-sided p of the bounded test between two unpaired samples on 0 to 1, read at the cut the engine's
+    unpaired bounded interval reads (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`): each arm's
+    mean bounded on its own by the bet with stakes tuned to ``alpha``/4, as that interval's ends are.
+
+    One direction (``mean(b) > mean(a)``) is shown at a cut ``c`` where the bet rejects ``mean(a) ≥ c`` and the bet
+    rejects ``mean(b) ≤ c``; its p is twice the least, over every cut, of the larger of the two. Under a null with
+    ``mean(b) ≤ mean(a)`` every cut has one of the two true, and each bet's p only falls as its null moves away from the
+    truth, so that least is at least the smaller of the two bets' p's at the true means, each valid: the direction's p
+    holds its level. The two-sided p is twice the smaller direction's. The interval at ``1 − alpha`` excludes zero only
+    where some cut lies between one arm's upper end and the other's lower end, each at ``alpha``/4, so the p is then
+    below ``alpha``: a contrast never reads not separated beside an interval that excludes zero.
+
+    :return: The p, in ``[0, 1]``; None with fewer than two values a side.
+    """
+    if len(a) < 2 or len(b) < 2:
+        return None
+    level = alpha / 4.0
+
+    def direction(lower: Sequence[float], upper: Sequence[float]) -> float:
+        negated = [-exact_decimal(v) for v in lower]
+
+        def below(cut: float) -> float:  # the bet against mean(lower) >= cut
+            return bounded_mean_p(negated, -cut, (-1.0, 0.0), alpha=level)
+
+        def above(cut: float) -> float:  # the bet against mean(upper) <= cut
+            return bounded_mean_p(upper, cut, (0.0, 1.0), alpha=level)
+
+        # ``below`` falls and ``above`` rises as the cut rises: the larger of the two is least where they cross.
+        low, high = 0.0, 1.0
+        least = min(max(below(cut), above(cut)) for cut in (low, high))
+        for _ in range(_CUT_STEPS):
+            middle = (low + high) / 2.0
+            left, right = below(middle), above(middle)
+            least = min(least, max(left, right))
+            if left > right:
+                low = middle
+            else:
+                high = middle
+        return min(1.0, 2.0 * least)
+
+    return min(1.0, 2.0 * min(direction(a, b), direction(b, a)))
 
 
 def _bet_samples(
@@ -1110,6 +1228,19 @@ def _primary_disclosure(
     return f"{sentence} {REREAD_SENTENCE}"
 
 
+def _tuned_to(one: _Tested, level: float) -> _Tested:
+    """``one``, its bounded test's p read again with its stakes tuned to ``level`` (:func:`_fixed_count_test`)."""
+    control_sample, contrast_sample = one.samples
+    separation = _fixed_count_test(
+        control_sample,
+        contrast_sample,
+        paired=one.comparison.test == "paired",
+        value_range=one.value_range,
+        alpha=level,
+    )
+    return one._replace(p_raw=separation.p, comparison=one.comparison.model_copy(update={"p_raw": separation.p}))
+
+
 def _corrected_family(
     aspect: str | None,
     axes: list[MeritAxis],
@@ -1150,8 +1281,10 @@ def _corrected_family(
     **A rate is drawn on its bounded interval** (:func:`_is_rate`): its ``interval`` is its ``bounded_interval``, and
     a separation needs that interval to exclude zero. A rate is read by one method everywhere: a campaign's reading of
     the pass rate and a floor are the bounded test's on the same per-case shares, so at a looser level either nests
-    inside the contrast's, and the two part only by level, never by method. The p's stay the t test's, so no other
-    comparison's adjusted p moves; the rule only removes separations, so the family's error stays at α.
+    inside the contrast's, and the two part only by level, never by method. Its p is the bounded test's, as every
+    reading on 0 to 1 is (:func:`_fixed_count_test`), read by the bet its interval is drawn by with its stakes tuned
+    to the interval's level, so the interval excludes zero exactly where the p clears α/m; the interval rule only
+    removes separations, so the family's error stays at α.
 
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
     :param axes: The question's merit axes.
@@ -1180,6 +1313,12 @@ def _corrected_family(
     planned = looks if looks is not None and looks > 1 else None
     alpha = looks_alpha(planned)
     family_size = sum(1 for one in tested if one.p_raw is not None)
+    # An engine reading on 0 to 1 is read again by its bounded test with its stakes tuned to the level each of the
+    # family's intervals is read at, α/m (α/(L m) under a plan of L looks): the interval is that bet's inversion, so it
+    # excludes zero exactly where this p clears α/m, and then Holm's adjusted p, at most m times it, clears α. A
+    # contrast never reads not separated beside an interval that excludes zero.
+    if family_size:
+        tested = [_tuned_to(one, alpha / family_size) if one.tuned and one.p_raw is not None else one for one in tested]
     n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
     raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
     # Which raw p each one is: a bet's, or another test's. A bet comparison's adjusted p holds every other p at 1.
@@ -1251,7 +1390,7 @@ def _corrected_family(
                     value_range=one.value_range,
                 )
             )
-            # A rate's separation needs its bounded interval to exist and exclude zero; its p stays the t test's. A bet's
+            # A rate's separation needs its bounded interval to exist and exclude zero, as well as its p. A bet's
             # separation is checked against the bet's running reading, which stays where it once excluded zero.
             checked = running if one.bet_samples is not None else interval
             permits = interval_permits_separation(checked) and (checked is not None or not one.rate)
@@ -1335,21 +1474,65 @@ def _question_lean(
     return "worse" if declared.margin is not None else "better"
 
 
+def _one_check(members: Iterable[ResultView], catalog: Mapping[str, MetricDescriptor]) -> str | None:
+    """The one check every trial of ``members`` is graded on, by the measure its pass rate is read under (a classifier's
+    label by its accuracy, which reads the label's matches one for one); None where any trial is graded on anything
+    beside or instead of it (another check, a judged dimension or a judge), or on nothing at all.
+
+    Read off what each trial is graded on, as :func:`~threetears.evals.kernel.scoring.failed_checks` and
+    :func:`~threetears.evals.kernel.scoring.has_pass_criterion` read it, never off how any trial came out: whether the
+    overall pass rate is that check is settled before an outcome is seen, so reading the two once never picks a family
+    by the data it then tests.
+    """
+    names: set[str] = set()
+    for result in members:
+        if (
+            result.judge_model is not None
+            or capability_scores(result)
+            or set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+        ):
+            return None
+        names.update(goal_check_measure(check.expression) for check in result.goal_state_outcomes)
+        names.update(
+            name
+            for name in result.host_measures
+            if name == MATCH_MEASURE or ((descriptor := catalog.get(name)) is not None and descriptor.is_check)
+        )
+        if len(names) > 1:
+            return None
+    if not names:
+        return None
+    (name,) = names
+    return ACCURACY_MEASURE if name == MATCH_MEASURE else name
+
+
 def _repeats_a_reading(
+    check: str | None,
     readings: Mapping[tuple[ComparisonReading, str], bool],
-    values: Mapping[CellKey, Mapping[tuple[ComparisonReading, str], Mapping[str, float]]],
-    pair: tuple[CellKey, CellKey],
+    pair: tuple[Mapping[tuple[ComparisonReading, str], Mapping[str, float]], ...],
     sides: tuple[Mapping[str, float], Mapping[str, float]],
+    range_of: Callable[[tuple[ComparisonReading, str]], tuple[float, float] | None],
 ) -> bool:
-    """Whether another reading of the family holds exactly these per-case values on both sides of ``pair``: the
-    overall pass rate of an eval whose one check is its pass rate, which tested again would be one hypothesis counted
-    twice."""
-    control_key, contrast_key = pair
-    return any(
-        reading[0] != "trial"
-        and values[control_key].get(reading) == sides[0]
-        and values[contrast_key].get(reading) == sides[1]
-        for reading in readings
+    """Whether the overall pass rate of a pair is a reading the family already tests: the pair's one ``check``
+    (:func:`_one_check`), in the family, higher better, on the pass rate's range, and holding exactly the pass rate's
+    per-case values on both sides. An eval of one check passes a trial exactly where the check holds, so its pass rate
+    is that check case for case: tested again it would be one hypothesis counted twice, which halves the level of each
+    under Holm. Where a trial is graded on anything else, or a trial was lost or failed with no check recorded, the
+    two differ and both are read.
+
+    :param check: The one check both cells' trials are graded on, or None.
+    :param readings: The family's readings, each with its better direction.
+    :param pair: The control's and the contrast's per-case values, by reading.
+    :param sides: The pass rate's per-case values, the control's and the contrast's.
+    :param range_of: The range each reading's per-case values lie on.
+    """
+    if check is None:
+        return False
+    reading: tuple[ComparisonReading, str] = ("measure", check)
+    return (
+        readings.get(reading) is True
+        and range_of(reading) == _TRIAL_PASS_RANGE
+        and all(by_reading.get(reading) == side for by_reading, side in zip(pair, sides, strict=True))
     )
 
 
@@ -1392,7 +1575,9 @@ def multiple_comparisons(
     **The overall pass rate joins the question's family whenever a question is asked**, with a margin (how far the
     pass rate may fall) or with none (a superiority question, its drop read against zero): either way the pass rate is
     a hypothesis the question asks and its family grows by one, every adjusted p in it moving with it, so a gate and a
-    campaign's verdicts read the question's pass rate as its page does. It never joins the exploratory family, whose
+    campaign's verdicts read the question's pass rate as its page does. Where every trial of a pair is graded on one
+    check alone, and that check is in the family, the pass rate is that check case for case: the two are one
+    hypothesis, the check carries it, and the pass rate is not tested again on that pair (:func:`_repeats_a_reading`). It never joins the exploratory family, whose
     size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_counts`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
@@ -1491,6 +1676,14 @@ def multiple_comparisons(
     }
     # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
     judged_ranges = {judged.name: judged.value_range for judged in measures_judged if judged.value_range is not None}
+
+    def range_of(reading: tuple[ComparisonReading, str]) -> tuple[float, float] | None:
+        """The range a family reading's per-case values lie on."""
+        kind, name = reading
+        if kind == "measure":
+            return _measure_range(catalog[name])
+        return _TRIAL_PASS_RANGE if kind == "trial" else judged_ranges.get(name)
+
     families = []
     for family_aspect, axes in scopes:
         readings = _family_readings(axes, catalog, measures_judged)
@@ -1506,14 +1699,15 @@ def multiple_comparisons(
                 if reading[0] == "trial" and not (control_values and contrast_values):
                     # A side with no usable graded trial has no pass rate; the scoreboard says why, not a contrast.
                     continue
-                if (
-                    reading[0] == "trial"
-                    and reread_order is not None
-                    and _repeats_a_reading(
-                        readings, values, (control_key, contrast_key), (control_values, contrast_values)
-                    )
+                if reading[0] == "trial" and _repeats_a_reading(
+                    _one_check([*results_by_cell[control_key], *results_by_cell[contrast_key]], catalog),
+                    readings,
+                    (values[control_key], values[contrast_key]),
+                    (control_values, contrast_values),
+                    range_of,
                 ):
-                    # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once.
+                    # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once,
+                    # on the quick path and the engine alike.
                     continue
                 threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
@@ -1523,13 +1717,7 @@ def multiple_comparisons(
                     (contrast_key, contrast_values),
                     threshold=threshold,
                     margin_source=margin_source,
-                    value_range=(
-                        _measure_range(catalog[reading[1]])
-                        if reading[0] == "measure"
-                        else _TRIAL_PASS_RANGE
-                        if reading[0] == "trial"
-                        else judged_ranges.get(reading[1])
-                    ),
+                    value_range=range_of(reading),
                     no_turn=tuple(
                         side
                         for side, key in (("control", control_key), ("arm", contrast_key))

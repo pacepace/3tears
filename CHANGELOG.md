@@ -6,6 +6,60 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an engine campaign reads a reading on 0 to 1 by the bounded test, and an eval of one check holds its check once
+
+**Changed:** an engine campaign's comparison family (a fixed count, or each look of a plan at α/L) reads every reading
+on the range 0 to 1 (the overall pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on
+0 to 1) by the bounded test by betting, whatever its spread: the fixed-n plug-in bet its bounded interval was already
+drawn by (`bounded_separation_p` with no mixture), its stakes tuned to the level each of the family's intervals is read
+at (α/m, or α/(L m) under a plan of L looks), paired over the shared cases or, unpaired, at the cut between the two
+arms' bounds. Its p and its interval are one bet's, so a contrast never reads "cannot tell apart" beside an interval
+that excludes zero. `basis` reads `bounded`. Before, such a reading's p was the paired t test's, which errs above α on
+pass/fail answers: computed exactly on two fair coins, 5.28% at 40 cases read at α, and 4.49% over three looks at α/3.
+**Why the bounded test holds α:** each stake is set from the values before it, so under no difference its capital is a
+nonnegative supermartingale started at 1, and by Ville's inequality it ever reaches 1/α at most α of the time, at
+every count and for every distribution on the range. Unpaired, the test is its interval's own inversion: a direction
+separates where some cut lies above one arm's upper bound and below the other's lower bound, each arm's mean bounded by
+the bet at α/4; under no difference one of each cut's two nulls is true, so the same inequality, applied to each arm,
+holds α. **What is shown, and how, on pass/fail values:** paired, every sequence of up to twelve pairs is enumerated
+exactly, and from 10 to 100 pairs, at a fixed count and over three looks at α/3, the rate is certified by seeded
+simulation (the statistics certificate's `engine.null.*` paired claims); unpaired, every pair of sequences of up to ten
+cases a side is enumerated exactly, and from 6 to 96 cases a side, arms equal in size and not, at a fixed count and over
+three looks at α/3, certified by seeded simulation (`engine.null.unpaired.*`). Each simulated claim asserts its
+Clopper-Pearson upper bound at most α; past the enumerated sizes the rate is not walked out exactly, since the
+plug-in's stakes follow the running variance. Other values on 0 to 1 rest on Ville's inequality alone. The
+enumerations are `tests/test_engine_fixed_count_bounded.py`. A reading on any other range (a 1-5 judged scale) or on none (cost, latency, a count)
+keeps the t test where its values have spread.
+
+**Changed:** where every trial of a contrast is graded on one check alone (a classifier's one label included, read as
+its accuracy) and that check is in the family, the overall pass rate is that check case for case, so the family holds
+it once, as the check: the pass rate is no longer tested beside it, on the engine as on the quick path. Holm reads that
+check at α where it read the two at α/2 each. Whether a trial is graded on one check is read off what it was graded
+on, never off how it came out. An eval graded on several checks or on a judged dimension keeps its pass rate in the
+family.
+
+**For hosts:** engine campaigns over pass/fail measures, and over grades on 0 to 1, now read by the bounded test.
+Readings shift when a campaign is read again, with no run changed, and **separations can be lost as well as gained**.
+On a rate (a pass rate, a check's, a pass/fail judgment) a separation needed the bounded interval before too, so the
+change only adds separations there: its p and its interval are now one bet's, and an eval of one check reads its check
+at the family's full level (seven cases out of seven moved from failing to passing read p ≈ 0.022). A local
+enumeration of pass/fail pairs (8 to 60 cases) found separations added in about 6% of one-check configurations and 1%
+of others, and none lost. A grade or other score on 0 to 1 that is no rate was read by the t test and its interval, so
+it can lose a separation, even at large counts: a field accuracy 4.3 points better over 190 cases, which the t test
+called better, reads "cannot tell apart"; the bounded test needs more cases than the t test claimed to on a small
+difference (forty cases where one arm alone passed ten and the other two read p ≈ 0.12 where the t test read 0.019).
+An eval of one check loses its separate pass-rate row; a margin's
+worst case on such an eval is read on the reading's own interval, there being no pass-rate contrast to read. No stored
+shape changes: a bundle is assembled from the runs when read. **A written report is not flagged by this change even
+where its verdicts would now read otherwise:** an analysis recorded over a `v3:` aspect or `v4:` campaign fingerprint,
+which hash the evidence alone, still reproduces its generation; one recorded under an older fingerprint (`v2:` aspect,
+`v3:` campaign), which hashes the readings, reads as not reproducing it (`evidence`). Re-read any campaign whose written
+report you rely on (free, no model call), compare its verdicts with the report's, and regenerate the report (a paid
+writer call) only where a verdict differs. Discodon's campaign 01a1dc0f, whose written report reads "No candidate
+improved" and whose recorded decision "Keep 1017" stands as made, is such a campaign: re-read, a candidate could newly
+read better or worse on a rate (most likely where an eval has one check or one label), and a 0-1 score could lose a
+separation; nothing else it reads moves.
+
 ### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
 
 **Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on

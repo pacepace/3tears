@@ -3,11 +3,12 @@
 A rate is a reading whose per-case value is a share on 0 to 1: the overall pass rate, a check's or a goal check's pass
 rate, a classifier's accuracy, and a judged dimension scored pass or fail. A campaign's reading of the pass rate is the
 bounded test's on the same per-case shares, so the contrast is drawn by the same method and the reading's interval, at
-its looser level, sits inside the contrast's. The p's stay the t test's, so every adjusted p in the family is Holm's
-over the raw t p's whatever the intervals are, and a measure that is no rate keeps its t interval.
+its looser level, sits inside the contrast's. A rate's p is the bounded test's too, as every reading on 0 to 1 is on
+the engine, and a measure that is no rate keeps its t interval and, off 0 to 1, its t p.
 
 The change below drops from eight passing cases of twenty to one, one trial per case: the paired t interval at the
-family's level excludes zero, the bounded one does not, so the rate is not separated.
+family's level excludes zero, the bounded one does not, and the bounded test's p is not under α, so the rate is not
+separated and has no withheld separation to explain.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -16,12 +17,10 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``_is_rate``: reading a judged dimension as a rate whatever its scale, so the ordinal one loses its t interval.
 - ``reads_as_rate``: dropping the check branch (``is_check``), so a measure declared ``pass_fail`` is drawn on its t
   interval.
-- ``_corrected_family``: leaving out the reason a withheld separation gives, so a p under alpha reads not separated
-  with nothing said.
-- ``_contrast_reason``: dropping that reason from a verdict whose margin was tested, so the report says nothing.
+- ``_fixed_count_test``: reading a rate's p by the t test again, so the drop's adjusted p falls under α.
 
-A rate whose adjusted p is under alpha while its bounded interval reaches zero says why it is not separated, and the
-report's verdict carries that reason.
+A rate the bounded test does not separate gives no reason of a withheld separation, on the bundle or in the report's
+verdict: a withheld separation is one whose adjusted p is under α while its interval reaches zero.
 """
 
 from __future__ import annotations
@@ -112,7 +111,7 @@ def test_a_rate_contrast_is_drawn_on_its_bounded_interval_at_the_family_s_level(
         *comparison.case_values, paired=True, value_range=(0.0, 1.0), confidence=family.interval_level
     )
     assert comparison.interval == comparison.bounded_interval == bounded
-    assert comparison.basis == "t", "the p is still the t test's; only the interval it is drawn on is bounded"
+    assert comparison.basis == "bounded", "the p is the bounded test's, as the interval it is drawn on is"
 
 
 def test_a_rate_the_t_interval_separates_and_the_bounded_one_does_not_is_not_separated(drop: Shape) -> None:
@@ -122,22 +121,25 @@ def test_a_rate_the_t_interval_separates_and_the_bounded_one_does_not_is_not_sep
 
     t = _t_interval(comparison, family.interval_level)
     assert t is not None and t[1] < 0.0, "the t interval excludes zero"
-    assert comparison.p_adjusted is not None and comparison.p_adjusted < family.alpha, "and the adjusted p is under α"
-    assert comparison.interval[0] < 0.0 <= comparison.interval[1], "but the bounded interval reaches zero"
+    assert comparison.case_values is not None
+    t_p = composite_significance(*comparison.case_values, paired=True)[2]
+    assert t_p is not None and t_p * family.family_size < family.alpha, "and the t test's p, corrected, is under α"
+    assert comparison.p_adjusted is not None and comparison.p_adjusted >= family.alpha, "the bounded test's is not"
+    assert comparison.interval[0] < 0.0 <= comparison.interval[1], "and the bounded interval reaches zero"
     assert comparison.verdict == "not_separated"
     assert comparison.interval_basis == "bounded"
 
 
-def test_a_rate_its_bounded_interval_withholds_says_why(drop: Shape) -> None:
+def test_a_rate_the_bounded_test_does_not_separate_gives_no_withheld_separation_s_reason(drop: Shape) -> None:
     bundle = drop.bundles["billing"]
     comparison = _one(_family(bundle), "trial", "passed")
     assert comparison.verdict == "not_separated"
+    assert comparison.p_adjusted is not None and comparison.p_adjusted >= _family(bundle).alpha
 
-    reason = comparison.not_separated_reason
-    assert reason is not None and "bounded interval" in reason and "reaches zero" in reason
+    assert comparison.not_separated_reason is None, "no separation was withheld: the p did not separate"
     report = build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00Z")
     (verdict,) = [v for v in report.verdicts if v.kind == "contrast" and (v.reading, v.name) == ("trial", "passed")]
-    assert verdict.reason_detail == reason, "the report's verdict carries the reason the comparison gives"
+    assert verdict.reason_detail is None, "nor does the report's verdict say one was"
 
 
 def test_every_rate_in_the_family_follows_its_bounded_interval(drop: Shape) -> None:
@@ -234,7 +236,7 @@ _PASS_FAIL = MetricDescriptor(
 _FULL = {"control-model": (3, 2, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3), "contrast-model": (1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1)}
 
 #: One repeat a case over twenty: the control answers six in full and the contrast one of them, so the paired t test
-#: separates the two and the bounded interval does not.
+#: would separate the two and the bounded test does not.
 _FULL_DROP = {"control-model": (1,) * 6 + (0,) * 14, "contrast-model": (1,) + (0,) * 19}
 
 
@@ -294,19 +296,22 @@ def pass_fail() -> AnalysisContextBundle:
 def test_a_measure_declared_pass_fail_is_a_rate_drawn_on_its_bounded_interval(pass_fail: AnalysisContextBundle) -> None:
     comparison = _one(_family(pass_fail), "measure", "answered_in_full")
 
-    assert comparison.p_adjusted is not None and comparison.basis == "t"
+    assert comparison.p_adjusted is not None and comparison.basis == "bounded"
     assert comparison.interval is not None and comparison.interval == comparison.bounded_interval
     assert comparison.interval_basis == "bounded"
 
 
-def test_a_rate_with_a_margin_its_bounded_interval_withholds_says_why_beside_its_margin() -> None:
+def test_a_rate_with_a_margin_the_bounded_test_does_not_separate_reads_not_inside_its_margin() -> None:
     bundle = _pass_fail_bundle(_FULL_DROP, 1, margin=0.1)
     comparison = _one(_family(bundle), "measure", "answered_in_full")
-    assert comparison.p_adjusted is not None and comparison.p_adjusted < _family(bundle).alpha
+    assert comparison.case_values is not None
+    t_p = composite_significance(*comparison.case_values, paired=True)[2]
+    assert t_p is not None and t_p < _family(bundle).alpha, "the t test would have separated the drop"
+    assert comparison.p_adjusted is not None and comparison.p_adjusted >= _family(bundle).alpha
     assert comparison.equivalence_p_adjusted is not None, "the margin is tested"
-    assert comparison.verdict == "not_separated" and comparison.not_separated_reason is not None
+    assert comparison.verdict == "not_separated" and comparison.not_separated_reason is None
 
     report = build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00Z")
     (verdict,) = [v for v in report.verdicts if v.kind == "contrast" and v.name == "answered_in_full"]
     assert verdict.reason == "not_inside_margin"
-    assert verdict.reason_detail == comparison.not_separated_reason
+    assert verdict.reason_detail is None

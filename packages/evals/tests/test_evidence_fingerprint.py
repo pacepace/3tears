@@ -618,8 +618,13 @@ def _pinned_v2() -> dict[str, dict[str, list[str]]]:
 #: The campaigns whose evidence a version 2 fingerprint was stored over and is still what it was. ``courierhost`` is
 #: left out, and its entry in ``fingerprints_v2.json`` kept as the build before version 3 stored it, never re-taken:
 #: its fixture's upgrade step now attests the definitions its runs ran under (#1187), so its evidence moved, and no
-#: earlier build ever recorded a version 2 fingerprint over the evidence it holds now.
-_V2_UNMOVED: Final = tuple(name for name in WITH_BUNDLES if name != "courierhost")
+#: earlier build ever recorded a version 2 fingerprint over the evidence it holds now. ``scaled`` and
+#: ``scaled_two_aspects`` are left out too (owner, approved as for #1187), their entries kept as stored: a version 2
+#: fingerprint hashes the bundle's readings, and the engine now reads their pass/fail and 0 to 1 readings by the bounded
+#: test and an eval of one check once (#1269, #1270), so their stored version 2 fingerprints no longer reproduce
+#: (:func:`test_a_version_2_fingerprint_over_readings_the_engine_now_reads_otherwise_reads_as_not_reproducing`).
+_V2_READINGS_MOVED: Final = ("scaled", "scaled_two_aspects")
+_V2_UNMOVED: Final = tuple(name for name in WITH_BUNDLES if name != "courierhost" and name not in _V2_READINGS_MOVED)
 
 
 @pytest.mark.parametrize("name", _V2_UNMOVED)
@@ -639,6 +644,26 @@ def test_a_fingerprint_stored_under_version_2_is_reproduced_through_like(name: s
         stored = pinned[aspect.aspect]
         assert aspect.fingerprint(like=stored[0]) in stored, (name, aspect.aspect)
         assert aspect.fingerprint(like=stored[0]).startswith("v2:")
+        assert aspect.fingerprint().startswith("v3:")
+
+
+@pytest.mark.parametrize("name", _V2_READINGS_MOVED)
+def test_a_version_2_fingerprint_over_readings_the_engine_now_reads_otherwise_reads_as_not_reproducing(
+    name: str,
+) -> None:
+    """What the CHANGELOG tells a host: an analysis recorded under a ``v2:`` aspect fingerprint over a campaign whose
+    readings the engine now reads otherwise does not reproduce, asked in its own version; its ``v3:`` fingerprint,
+    over the evidence alone, is untouched by a change of statistic."""
+    read = subject(name)
+    pinned = _pinned_v2()[name]
+
+    aspects = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id).aspects
+
+    assert sorted(aspect.aspect for aspect in aspects) == sorted(pinned)
+    for aspect in aspects:
+        stored = pinned[aspect.aspect]
+        assert aspect.fingerprint(like=stored[0]).startswith("v2:")
+        assert aspect.fingerprint(like=stored[0]) not in stored, (name, aspect.aspect, "still reproduces")
         assert aspect.fingerprint().startswith("v3:")
 
 

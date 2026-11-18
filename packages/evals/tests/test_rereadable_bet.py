@@ -658,7 +658,9 @@ async def test_a_host_s_campaign_over_quick_runs_reads_as_an_engine_campaign_at_
         assert (family.look_alpha if family.look_alpha is not None else family.alpha) == pytest.approx(alpha)
         assert not read_by_bet(family) and REREAD_SENTENCE not in family.disclosure
         (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
-        assert paired.basis == "t"
+        # On 0 to 1 the engine reads it by the bounded test at the count it has, never the bet read again in the
+        # quick path's committed order, whose graded evidence it would carry.
+        assert paired.basis == "bounded" and paired.evidence_better is None and paired.evidence_worse is None
 
 
 # --- a run that stopped, run again --------------------------------------------------------------------------------

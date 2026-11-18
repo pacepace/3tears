@@ -378,7 +378,9 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
     # The campaign's page folds this page, and names each arm by the campaign's label for it.
-    assert by_reading["Field accuracy"] == "1024tok better than control"
+    # Field accuracy, a score on 0 to 1, is read by the bounded test: every document 0.13 higher over twelve cannot show
+    # its mean moved there (p ≈ 0.53), where the t test read the float residue of one shift as a spread (p ≈ 0).
+    assert by_reading["Field accuracy"] == "cannot tell apart"
     assert by_reading["Turn time"] == "1024tok worse than control (lower is better)"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text

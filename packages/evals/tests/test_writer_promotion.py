@@ -34,8 +34,10 @@ from threetears.evals.ops.report_writer.writer_contract import (
 )
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 
-#: A candidate shown more accurate and shown worse on cost and time.
-_TRADE: dict[str, Any] = {"cost_usd": 0.03, "total_ms": 1400.0, "field_accuracy": 0.91, "layout_fidelity": None}
+#: A candidate shown more accurate and shown worse on cost and time. Its accuracy rises by 0.21 on every document, as
+#: ``BETTER``'s does: field accuracy lies on 0 to 1, where the engine reads it by the bounded test, and twelve documents
+#: show a rise that large (one of 0.13 they do not).
+_TRADE: dict[str, Any] = {"cost_usd": 0.03, "total_ms": 1400.0, "field_accuracy": 0.99, "layout_fidelity": None}
 
 
 def _writer(
@@ -86,7 +88,9 @@ def test_a_candidate_shown_better_on_every_reading_waits_on_the_primary_reading_
 def test_a_candidate_shown_worse_on_a_reading_is_kept_out_however_much_better_it_is_on_another() -> None:
     read = _read(_TRADE)
     assert read.decision == "keep", read.why
-    assert {"improved", "regressed"} <= {verdict.outcome for verdict in read.verdicts}
+    outcomes = {(verdict.name, verdict.outcome) for verdict in read.verdicts if verdict.kind == "contrast"}
+    assert ("field_accuracy", "improved") in outcomes, outcomes
+    assert {"improved", "regressed"} <= {outcome for _, outcome in outcomes}
 
 
 def test_a_reading_left_undecided_beside_every_other_reading_improved_is_undecided_with_no_primary() -> None:
