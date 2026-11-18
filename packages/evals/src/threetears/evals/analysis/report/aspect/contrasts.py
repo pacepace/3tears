@@ -294,8 +294,10 @@ def contrast_advice(
             action = advice_words("switch", verdict.arm, verdict.control)
             if low is None:
                 return action
-            side = standing_side(low, higher_is_better=True)
-            caveat = advice_worst_words(side, verdict.arm, verdict.control, size(comparison, abs(low)), allowed=allowed)
+            worst = size(comparison, abs(low))
+            # A low end that prints as no change at all reads level, never "0 points behind".
+            side = "level" if worst.split(" ")[0] in ("0", "$0") else standing_side(low, higher_is_better=True)
+            caveat = advice_worst_words(side, verdict.arm, verdict.control, worst, allowed=allowed)
             return f"{action} {caveat}"
         action = advice_words("keep", verdict.arm, verdict.control)
         if past and low is not None:
@@ -313,7 +315,7 @@ def contrast_advice(
             verdict.arm,
             grade=evidence_grade(evidence),
             figure=page.multiple(min(evidence, _EVIDENCE_SHOWN_TO)).text,
-            bar=page.count(round(bar)).text,
+            bar=page.declared(bar).text,
             hard=bar / max(1, advised) >= EVIDENCE_STEPS[1],
         )
         return f"{action} {caveat}"

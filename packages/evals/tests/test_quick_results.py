@@ -537,10 +537,16 @@ _FIGURES = re.compile(
 )
 
 
+def _proof_line(result: Result) -> str:
+    """The print's verdict line: its first line, or its second where the first is the advice said above it."""
+    lines = result.render().splitlines()
+    return lines[1] if lines[0].startswith(f"{result.name}: Advice: ") else lines[0]
+
+
 def _decided(result: Result) -> str:
-    """The print's first line with the figures after each decision left out: what the line decides. Each decision
+    """The print's verdict line with the figures after each decision left out: what the line decides. Each decision
     states its figures, so the line holds some."""
-    line = result.render().splitlines()[0]
+    line = _proof_line(result)
     assert _FIGURES.search(line), line
     return _FIGURES.sub("", line)
 
@@ -592,7 +598,7 @@ async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() ->
     assert cost["outcome"] == "improved"
     (guarded,) = result.guardrails("cheap")
     # No reading leads, so no figures follow a decision: what the evidence leaves undecided, then the cost.
-    assert result.render().splitlines()[0] == (
+    assert _proof_line(result) == (
         f"{result.name}: Exploratory: the evidence cannot tell cheap and dear apart on every reading but cost; "
         f"{_worded([cost])}. cheap may do worse than dear on the {guarded['guardrail']} guardrail."
     )
@@ -668,7 +674,7 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     ).run(store=":memory:", scope=SCOPE)
     (first,) = result.contrasts("resolved")
     prefix = "" if question is not None else "Exploratory: "
-    assert result.render().splitlines()[0].startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
+    assert _proof_line(result).startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
     (verdict,) = [
         verdict
         for verdict in result.page.aspects[0].report.verdicts
@@ -678,7 +684,10 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
     asked = question is not None
     # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
+    # The lead opens on what to do, then the result.
     said = bold[0].strip("*")
+    assert said.startswith("Advice: ")
+    said = said[said.index(f"{verdict.heading}: ") :]
     assert _FIGURES.search(said) and _FIGURES.sub("", said) == f"{verdict.heading}: {verdict.words}."
     assert bold[1].startswith("**cheap may do worse than dear on the No leak score guardrail")
     assert ("Exploratory comparison." in page.splitlines()) is not asked

@@ -611,7 +611,7 @@ def led_sentences(
     :param also: What else the evidence tells apart, said after the last arm's decision, before its figures.
     :return: One decision per arm, each with its closing stop and its figures after it.
     """
-    led = _led(bundle, verdicts, order)
+    led = led_verdicts(bundle, verdicts, order)
     said = []
     for index, verdict in enumerate(led):
         decision = (
@@ -638,7 +638,7 @@ def graded_contrast(bundle: AnalysisContextBundle, verdict: Verdict) -> bool:
     )
 
 
-def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
+def led_verdicts(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
     """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
     contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
     lead = _lead_measure(bundle, (verdict.name for verdict in contrasts), order)
@@ -718,7 +718,7 @@ def verdict_line(
     rule: VerdictRule = "declared" if declared_question else "exploratory"
     prefix = "" if declared_question else "Exploratory: "
     if verdicts:
-        if led := _led(bundle, verdicts, order):
+        if led := led_verdicts(bundle, verdicts, order):
             others = _also(bundle, verdicts, {verdict.heading for verdict in led})
             result = " ".join(led_sentences(bundle, verdicts, order, asked=declared_question, evidence=evidence))
             text = " ".join(
@@ -1255,6 +1255,7 @@ __all__ = [
     "guardrail_name",
     "interval_words",
     "led_sentences",
+    "led_verdicts",
     "loss_words",
     "measured_nothing",
     "unfinished_line",

@@ -796,10 +796,10 @@ class Result:
         return f"{self.name}: {self._verdict().text}"
 
     def _advice_line(self) -> list[str]:
-        """The print's opening line, above the verdict line: what to do (:attr:`VerdictLine.advice`, the page's verdict
-        block's first sentences); empty where there is no advice to say."""
+        """The print's opening line, above the verdict line: the eval's name, then what to do (:attr:`VerdictLine.advice`,
+        the page's verdict block's first sentences); empty where there is no advice to say."""
         advice = self._verdict().advice
-        return [advice] if advice else []
+        return [f"{self.name}: {advice}"] if advice else []
 
     def _reread_line(self) -> list[str]:
         """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are

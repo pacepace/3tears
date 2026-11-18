@@ -18,6 +18,7 @@ import pytest
 
 from threetears.evals import Eval
 from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.words import NO_ADVICE_SENTENCE
 from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, advice_path
 from threetears.evals.analysis.style import ADVICE_PROMISE, ADVICE_TERM, GLOSSARY, LATE_UNDO_SENTENCE
 
@@ -129,7 +130,7 @@ _HALF = [0, 1, 0, 1, 0, 1, 0, 1, 1, 0]
 def test_all_wins_opens_on_switch_and_its_proof_below_it() -> None:
     result = asyncio.run(_eval([0] * 8, [1] * 8, "all-wins", question=_QUESTION).run(store=":memory:"))
     first, second = result.render().splitlines()[:2]
-    assert first == "Advice: switch to v2. At worst it is 21 points ahead of v1."
+    assert first == "all-wins: Advice: switch to v2. At worst it is 21 points ahead of v1."
     assert second.startswith("all-wins: Passed score: v2 better than v1, decided at 6 cases when the evidence reached")
     assert [row["advice"] for row in result.contrasts()] == ["switch"]
 
@@ -138,10 +139,10 @@ def test_moderate_evidence_switches_where_easy_and_keeps_where_hard_to_undo() ->
     ahead = [1, 1, 1, 1, 1, 1, 0, 1, 1, 1]
     easy = asyncio.run(_eval(_HALF, ahead, "moderate", question=_QUESTION).run(store=":memory:"))
     hard = asyncio.run(_eval(_HALF, ahead, "moderate-hard", question=_QUESTION, undo="hard").run(store=":memory:"))
-    assert easy.render().splitlines()[0] == "Advice: switch to v2. At worst it is 11 points behind v1."
+    assert easy.render().splitlines()[0] == "moderate: Advice: switch to v2. At worst it is 11 points behind v1."
     assert hard.render().splitlines()[0] == (
-        "Advice: keep v1. v2 is ahead, but a switch that is hard to undo needs evidence of 10 and this is moderate "
-        "(7.8)."
+        "moderate-hard: Advice: keep v1. v2 is ahead, but a switch that is hard to undo needs evidence of 10 and this "
+        "is moderate (7.8)."
     )
     # The proof line says it is not yet proven, and what proving it needs.
     proof = easy.render().splitlines()[1]
@@ -153,7 +154,7 @@ def test_a_level_arm_keeps_the_control_and_never_says_there_is_not_enough_to_say
     level = [1, 0, 0, 1, 0, 1, 1, 0, 1, 0]
     result = asyncio.run(_eval(_HALF, level, "level", question=_QUESTION).run(store=":memory:"))
     first = result.render().splitlines()[0]
-    assert first == "Advice: keep v1. v2 is level with it."
+    assert first == "level: Advice: keep v1. v2 is level with it."
     assert "not enough" not in result.render()
 
 
@@ -163,7 +164,7 @@ def test_a_gate_reads_its_advice_against_its_margin_and_says_the_one_caveat() ->
         _eval(same, same, "gate", question="Is v2 no worse than v1?", margin=0.05).run(store=":memory:")
     )
     assert result.render().splitlines()[0] == (
-        "Advice: switch to v2. At worst it is 10 points behind v1, past the 5 points you allow."
+        "gate: Advice: switch to v2. At worst it is 10 points behind v1, past the 5 points you allow."
     )
 
 
@@ -185,8 +186,8 @@ def test_an_undo_declared_after_the_results_reads_the_default_and_says_so() -> N
         return first.render(), again.render()
 
     before, after = asyncio.run(read())
-    assert before.splitlines()[0].startswith("Advice: keep v1.")
-    assert after.splitlines()[0] == "Advice: switch to v2. At worst it is 11 points behind v1."
+    assert before.splitlines()[0].startswith("late: Advice: keep v1.")
+    assert after.splitlines()[0] == "late, against v1: Advice: switch to v2. At worst it is 11 points behind v1."
     assert LATE_UNDO_SENTENCE in after.splitlines()
 
 
@@ -218,3 +219,19 @@ def test_a_comparison_continued_with_another_undo_is_a_new_comparison(tmp_path: 
         return again.render()
 
     assert "how hard the switch is to undo changed" in asyncio.run(twice())
+
+
+def test_an_engine_campaign_gives_no_advice_and_says_why() -> None:
+    """The same runs filed by an operator are an engine campaign, read once at a fixed count, which keeps no running
+    evidence: its first line says there is no advice and why, and leads on the proof under it; its rows carry none."""
+    cases = [_HALF * 2, [1, 1, 1, 1, 1, 1, 0, 1, 1, 1] * 2]
+
+    async def engine() -> tuple[list[str], list[Any]]:
+        quick = await _eval(*cases, "engine", question=_QUESTION).run(store=":memory:")
+        filed = await quick.against("v1", created_by="an operator")
+        return filed.render().splitlines()[:2], [row["advice"] for row in filed.contrasts()]
+
+    (first, proof), advice = asyncio.run(engine())
+    assert first == f"engine, against v1: {NO_ADVICE_SENTENCE}"
+    assert proof.startswith("engine, against v1: Passed score: v2 better than v1.")
+    assert advice == [None]

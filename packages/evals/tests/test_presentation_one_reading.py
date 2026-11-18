@@ -78,6 +78,7 @@ class _Surfaces:
     first_line: str
     exit_line: str | None
     exit_code: int
+    advice: str | None = None
 
 
 def _said(blocks: list[ReportBlock], source: str, section: str | None = None) -> list[DisclosureBlock]:
@@ -102,13 +103,17 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
             result = asyncio.run(runnable.run(store=":memory:"))
         (lead,) = _said(result.page.blocks, "verdict", "answer")
         (verdict,) = _said(result.report.blocks, "verdict", "header")
+        printed = str(result).splitlines()
+        # A comparison's print opens on its advice, the proof's line under it; one arm's, on its count.
+        advised = printed[0].startswith(f"{result.name}: Advice: ")
         replayed[name] = _Surfaces(
             result=result,
             lead=lead.text,
             verdict=verdict.text,
-            first_line=str(result).splitlines()[0],
+            first_line=printed[1] if advised else printed[0],
             exit_line=result.why_failed(),
             exit_code=result.exit_code(),
+            advice=printed[0] if advised else None,
         )
     yield replayed
 
@@ -118,10 +123,13 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 
 #: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
-    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "Accuracy: v2 behind v1, not yet proven. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
     "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
     "was right on 90 for v1 and 89 for v2."
 )
+
+#: What to do on rung 3's result, said above it on the print, the aspect's page and the campaign's.
+_RUNG_3_ADVICE = "Advice: keep v1. v2 is behind it."
 
 #: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
 _RUNG_3_GUARDRAIL = "v2 may do worse than v1 on the No invented total score guardrail."
@@ -131,10 +139,12 @@ def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_n
     rungs: dict[str, _Surfaces],
 ) -> None:
     rung = rungs["rung3"]
-    # The page leads with the result; the guardrail is its warning, one line down.
-    assert rung.lead == _RUNG_3_LEAD
-    # The aspect page and the print say the same sentences, then what the guardrail means for the decision.
-    assert rung.verdict == f"{_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    # The page leads with what to do, then the result; the guardrail is its warning, one line down.
+    assert rung.lead == f"{_RUNG_3_ADVICE} {_RUNG_3_LEAD}"
+    # The aspect page and the print say the same sentences, then what the guardrail means for the decision; the print
+    # says the advice on its own line above them.
+    assert rung.verdict == f"{_RUNG_3_ADVICE} {_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    assert rung.advice == f"invoices: {_RUNG_3_ADVICE}"
     assert rung.first_line == f"invoices: {_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
     # The exit line opens with the result, then why the gate failed, on the guardrail by the same name.
     assert rung.exit_code == 4
@@ -169,7 +179,7 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
         assert found is not None, name
         line = found.group(1)
         bold = [re.sub(r"<[^>]+>", "", said) for said in re.findall(r"<strong>(.*?)</strong>", line, re.S)]
-        assert bold == ["Accuracy: v2 behind v1, undecided"], (name, line)
+        assert bold == ["Accuracy: v2 behind v1, not yet proven"], (name, line)
         regular = re.sub(r"<strong>.*?</strong>", "", line, flags=re.S)
         assert "Of 90 trials each" in regular and "interval allows v2" in regular, (name, line)
         links = re.findall(r"<a\b[^>]*>(.*?)</a>", line)
@@ -327,7 +337,10 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
     assert column.term == "verdict"
     cells = {row["verdict"].text.split(";")[0] for row in contrasts.rows}
-    assert cells and all(cell.startswith("v2 ") and "undecided" in cell for cell in cells), cells
+    # The question's own reading, which its bet can still decide, says it is not yet proven; the rest are undecided.
+    assert cells and all(
+        cell.startswith("v2 ") and ("undecided" in cell or "not yet proven" in cell) for cell in cells
+    ), cells
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
     assert html.count('<dt id="g-cannot-tell-apart">') == 1

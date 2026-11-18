@@ -69,10 +69,15 @@ READING WHAT COMES BACK
 The first line printed is the answer. Rung 1 prints:
   emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: double-charge,
     refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more.
-A comparison's first line: where v2 stands, and how strong the evidence is. Rung 3a prints:
-  compare: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The
+A comparison's first line is what to do; its second, what is proven: where v2 stands, and how strong
+  the evidence is. Rung 3a prints:
+  compare: Advice: keep v1. v2 is behind it.
+  compare: Accuracy: v2 behind v1, not yet proven. Over 30 paired cases, v2 is 1 point behind v1. The
     interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse
     is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
+  The advice switches once the evidence for v2 reaches moderate (3; strong, 10, with undo="hard"), while
+  v2 is ahead: if v2 is not really better it says switch at most 1 time in 3 (1 in 10), however often
+  anyone looks. Code reads it as Result.contrasts()'s "advice"; gate() reads only the proof.
 Run again into its store with cases appended, a comparison continues (only new cases run) and its
   pass-rate and ranged-score verdicts keep their error at every reading; a runner or grader is known
   by its name (a judge by model and criteria), not its code: rename the eval to compare an edit.

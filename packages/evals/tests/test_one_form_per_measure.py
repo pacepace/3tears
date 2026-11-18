@@ -66,7 +66,8 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
 
     # The quick line and the code page's lead say the estimate and the interval's ends in words, at the page's digits.
     said = "careful is 50 points ahead of hasty. The interval puts careful between 5 and 84 points better"
-    assert said in result.render().splitlines()[0]
+    # The verdict line, under the advice the print opens on.
+    assert said in result.render().splitlines()[1]
     assert said in campaign_report_markdown(result.page)
     (program,) = result.contrasts()
     assert program["change"].startswith(f"{change} ({interval} at ")

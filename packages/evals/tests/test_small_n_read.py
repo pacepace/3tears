@@ -199,12 +199,13 @@ def _primary(result: Result) -> Any:
 
 
 @pytest.mark.parametrize(
-    ("k", "v1", "v2", "line"),
+    ("k", "v1", "v2", "advice", "line"),
     [
         (
             1,
             [0] * 8,
             [1] * 8,
+            "smalln: Advice: switch to v2. At worst it is 21 points ahead of v1.",
             "smalln: Passed score: v2 better than v1, decided at 6 cases when the evidence reached 24. Now, over 8 "
             "paired cases, v2 is 100 points ahead of v1. The interval puts v2 between 21 and 100 points better. The "
             "evidence that v2 is better is strong (74). Of 8 trials each, Passed score was met on 0 for v1 and 8 for v2.",
@@ -213,29 +214,33 @@ def _primary(result: Result) -> Any:
             3,
             [1, 0, 1, 2, 0, 1, 2, 1],
             [3, 1, 2, 2, 1, 3, 1, 2],
-            "smalln: Passed score: v2 ahead of v1, undecided. Over 8 paired cases, v2 is 29 points ahead of v1. The "
-            "interval allows v2 to be as much as 24 points worse or 60 better. The evidence that v2 is better is "
-            "moderate (3.6). Of 24 trials each, Passed score was met on 8 for v1 and 15 for v2.",
+            "smalln: Advice: switch to v2. At worst it is 24 points behind v1.",
+            "smalln: Passed score: v2 ahead of v1, not yet proven. Over 8 paired cases, v2 is 29 points ahead of v1. "
+            "The interval allows v2 to be as much as 24 points worse or 60 better. The evidence that v2 is better is "
+            "moderate (3.6); proving it needs 22. Of 24 trials each, Passed score was met on 8 for v1 and 15 for v2.",
         ),
         (
             3,
             [1, 2, 1, 0, 2, 1, 1, 0],
             [2, 1, 1, 1, 2, 0, 2, 0],
-            "smalln: Passed score: v2 ahead of v1, undecided. Over 8 paired cases, v2 is 4 points ahead of v1. The "
+            "smalln: Advice: keep v1. v2 is ahead, but a switch needs evidence of 3 and this is weak (1.1).",
+            "smalln: Passed score: v2 ahead of v1, not yet proven. Over 8 paired cases, v2 is 4 points ahead of v1. The "
             "interval allows v2 to be as much as 39 points worse or 44 better. The evidence that v2 is better is weak "
-            "(1.1). Of 24 trials each, Passed score was met on 8 for v1 and 9 for v2.",
+            "(1.1); proving it needs 22. Of 24 trials each, Passed score was met on 8 for v1 and 9 for v2.",
         ),
     ],
     ids=["all-wins", "about-0.3", "none"],
 )
 async def test_eight_cases_lead_on_where_v2_stands_its_estimate_its_interval_and_its_evidence(
-    k: int, v1: list[int], v2: list[int], line: str
+    k: int, v1: list[int], v2: list[int], advice: str, line: str
 ) -> None:
-    """At eight cases the first line leads on where v2 stands, the estimate, the interval and the graded evidence, and
-    never says the evidence cannot tell the arms apart; all wins decide. Behind it, one family decided on the question's
-    first grader alone, at α, its interval at 90%, and no second reading of the same check."""
+    """At eight cases the first line is the advice, and the proof under it leads on where v2 stands, the estimate, the
+    interval and the graded evidence, and never says the evidence cannot tell the arms apart; all wins decide. Behind
+    it, one family decided on the question's first grader alone, at α, its interval at 90%, and no second reading of
+    the same check."""
     result = await _tallied_result(k, v1, v2)
-    printed = str(result).splitlines()[0]
+    said, printed = str(result).splitlines()[:2]
+    assert said == advice
     assert printed == line
     assert "cannot tell" not in printed
     family = _family(result)
@@ -247,7 +252,7 @@ async def test_eight_cases_lead_on_where_v2_stands_its_estimate_its_interval_and
 async def test_with_no_question_the_read_stays_two_sided_and_still_leads_on_the_estimate() -> None:
     """With no question asked nothing is declared: the even hedge at α, its interval at 95%, and the same lead."""
     result = await _tallied_result(3, [1, 0, 1, 2, 0, 1, 2, 1], [3, 1, 2, 2, 1, 3, 1, 2], question=None)
-    printed = str(result).splitlines()[0]
+    printed = str(result).splitlines()[1]
     assert printed.startswith("smalln: Exploratory: Passed score: v2 ahead of v1, undecided. Over 8 paired cases")
     family = _family(result)
     assert family.primary is None and family.interval_level == pytest.approx(0.95)
@@ -348,9 +353,10 @@ async def test_a_gate_question_leans_toward_worse_so_a_regression_past_its_margi
     ).run(store=":memory:")
     family = _family(result)
     assert family.lean == "worse" and _primary(result).verdict == "regressed"
+    assert str(result).splitlines()[0].startswith("gate: Advice: keep v1.")
     assert (
         str(result)
-        .splitlines()[0]
+        .splitlines()[1]
         .startswith(
             "gate: Passed score: v2 worse than v1, decided at 13 cases when the evidence reached 24. Now, over 30 paired "
             "cases, v2 is 30 points behind v1."
@@ -412,7 +418,7 @@ async def test_a_decision_says_when_it_was_made_and_where_the_arm_stands_now() -
     assert primary.verdict == "improved" and primary.decided_at_cases == 6
     assert primary.interval is not None and primary.delta is not None
     assert primary.interval[0] <= primary.delta <= primary.interval[1]
-    printed = str(result).splitlines()[0]
+    printed = str(result).splitlines()[1]
     assert printed.startswith(
         "fade: Passed score: v2 better than v1, decided at 6 cases when the evidence reached 24. Now"
     )
