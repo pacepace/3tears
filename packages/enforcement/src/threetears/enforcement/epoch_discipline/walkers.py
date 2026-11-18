@@ -82,9 +82,11 @@ _SQL_CALLS: Final[frozenset[str]] = frozenset(
 #: ``COPY (query) TO STDOUT``, a read of the query's rows (a change-note restore's keyed notes, L1 2026-11-15)
 _COPY_CALLS: Final[frozenset[str]] = frozenset({"copy_records_to_table", "copy_to_table"})
 
-#: backend bulk-write methods, distinctive by name wherever they are called.
+#: backend bulk-write methods, distinctive by name wherever they are called. ``delete_prefixes`` is a store's delete of
+#: whole key prefixes: called anywhere but the collection's own (``SchemaBackedCollection.delete_prefixes``, which
+#: settles the prefixes when the caller's transaction ends), no pod learns the rows went
 _BACKEND_BULK_WRITES: Final[frozenset[str]] = frozenset(
-    {"truncate", "load_files", "copy_many", "upsert_many", "delete_many", "upsert_ordered"}
+    {"truncate", "load_files", "copy_many", "upsert_many", "delete_many", "delete_prefixes", "upsert_ordered"}
 )
 
 #: backend row writes, counted only on a receiver that names a backend or L3.

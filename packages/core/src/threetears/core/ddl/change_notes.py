@@ -59,6 +59,8 @@ __all__ = [
     "inexact_note_columns",
     "note_function_name",
     "note_reach_text",
+    "prefix_write_mark_sql",
+    "prefix_write_restore_sql",
     "slot_max_age",
     "note_table",
     "note_trigger_sql",
@@ -174,6 +176,11 @@ NOTE_WHOLE_SETTING: Final = "threetears.note_whole"
 #: ``TRUNCATE``, which runs alone, sets it for the session and clears it after. Unset or empty: the note names none
 NOTE_REACH_SETTING: Final = "threetears.note_reach"
 
+#: the transaction-local setting, this and a table's oid, that says the table's whole-table note of the transaction
+#: was written: a whole-marked write notes a table once a transaction (:func:`_whole_function_sql`, which spells it
+#: out in its plpgsql)
+_NOTED_WHOLE_GUARD: Final = "threetears.noted_whole_"
+
 #: the rows a transaction copies from which it is marked whole (:data:`NOTE_WHOLE_SETTING`): one note for the
 #: table rather than one a row. The notes name at most this many rows a table to the write-mark reconciler
 #: (more are advanced with their keys unknown), so a note a row past it costs a write each and names nothing.
@@ -206,6 +213,43 @@ def note_reach_text(*, prefixes: Sequence[Mapping[str, Any]] | None = None, reas
     if reason is not None:
         return json.dumps({"reason": reason}, separators=(",", ":"))
     return ""
+
+
+def prefix_write_mark_sql() -> str:
+    """the statement that marks the next statements of a caller's transaction whole, naming key prefixes as their
+    reach, and answers what it replaced: a delete of some key prefixes then leaves ONE note of the table naming them,
+    never a note a row (:meth:`~threetears.core.backends.sql.SqlL3Backend.delete_prefixes`).
+
+    ``$1`` :data:`NOTE_WHOLE_SETTING`, ``$2`` :data:`NOTE_REACH_SETTING`, ``$3`` the reach (:func:`note_reach_text`),
+    ``$4`` the table as its statements name it. The table's own whole-note guard is cleared too, so the delete writes
+    its note even when an earlier whole write of the transaction noted the table. It answers one row: ``whole``,
+    ``reach`` and ``noted`` (each setting's value before, NULL when unset) and ``guard`` (the guard's name), for
+    :func:`prefix_write_restore_sql`, run right after the delete. The values are read in a subquery of their own
+    (``OFFSET 0``), before the select list's ``set_config`` calls run.
+
+    :return: the SELECT
+    :rtype: str
+    """
+    guard = f"'{_NOTED_WHOLE_GUARD}' || $4::regclass::oid::text"
+    return (
+        "SELECT prior.whole, prior.reach, prior.noted, prior.guard, "
+        "set_config($1, '1', true), set_config($2, $3, true), set_config(prior.guard, '', true) "
+        "FROM (SELECT current_setting($1, true) AS whole, current_setting($2, true) AS reach, "
+        f"current_setting({guard}, true) AS noted, {guard} AS guard OFFSET 0) AS prior"
+    )
+
+
+def prefix_write_restore_sql() -> str:
+    """the statement that puts back what :func:`prefix_write_mark_sql` replaced, right after the delete it marked, so
+    a later write of the transaction (another table's rows) is noted as before: ``$1`` :data:`NOTE_WHOLE_SETTING`,
+    ``$2`` its value before, ``$3`` :data:`NOTE_REACH_SETTING`, ``$4`` its value before, ``$5`` the table's guard,
+    ``$6`` its value before (each ``''`` where it was unset). The delete's own note was written by then: a statement's
+    triggers fire before it returns.
+
+    :return: the SELECT
+    :rtype: str
+    """
+    return "SELECT set_config($1, $2, true), set_config($3, $4, true), set_config($5, $6, true)"
 
 
 def slot_max_age(fence: timedelta) -> timedelta:

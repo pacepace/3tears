@@ -56,6 +56,7 @@ __all__ = [
     "LoadResult",
     "LoadingStore",
     "OrderedDurableStore",
+    "PrefixDeletingStore",
     "RawL3Pool",
     "RowcountUnreadableError",
     "TruncatingStore",
@@ -889,6 +890,37 @@ class BulkDeletingStore(Protocol):
             backend's own. A failing delete fails that transaction whole
         :ptype conn: Any
         :return: keys named (a key no row holds is not an error)
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class PrefixDeletingStore(Protocol):
+    """A durable store that deletes every row of some primary-key prefixes of one table, on the caller's transaction,
+    in statements whose count does not grow with the rows the prefixes hold.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_prefixes` deletes
+    through. No row is read back: the change it makes is recorded by its prefixes (a whole-table change narrowed to
+    them), never key by key. No method takes SQL.
+    """
+
+    async def delete_prefixes(
+        self,
+        table: str,
+        prefixes: Sequence[Mapping[str, Any]],
+        *,
+        conn: Any,
+    ) -> int:
+        """Delete every row of ``table`` whose key leads with one of ``prefixes``; return how many rows went.
+
+        :param table: the table; its schema registered with the store
+        :ptype table: str
+        :param prefixes: each prefix, the key's leading columns and their values, already checked to lead the key
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :param conn: the caller's transaction handle the delete binds to; a failing delete fails it whole
+        :ptype conn: Any
+        :return: the rows deleted
         :rtype: int
         """
         ...
