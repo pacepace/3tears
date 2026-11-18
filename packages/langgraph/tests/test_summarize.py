@@ -18,8 +18,9 @@ import logging
 from typing import Any
 
 import pytest
-from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 from threetears.langgraph import SummarizationFailedError as ExportedSummarizationFailedError
 from threetears.langgraph.summarize import (
@@ -162,7 +163,7 @@ async def test_custom_prompt_is_accepted() -> None:
 class _MultipartModel(BaseChatModel):
     """A chat model that answers with multipart content and records the prompt it was sent."""
 
-    reply_parts: list[Any] = []
+    reply_parts: list[str | dict[str, Any]] = []
     received: list[list[BaseMessage]] = []
 
     @property
@@ -172,12 +173,26 @@ class _MultipartModel(BaseChatModel):
     def _generate(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - unused
         raise NotImplementedError
 
-    async def ainvoke(self, messages: Any, *args: Any, **kwargs: Any) -> AIMessage:
-        self.received.append(list(messages))
+    async def ainvoke(
+        self,
+        input: LanguageModelInput,
+        config: RunnableConfig | None = None,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        assert isinstance(input, list), "the summarizer sends a message list"
+        sent = [message for message in input if isinstance(message, BaseMessage)]
+        assert len(sent) == len(input), "the summarizer sends messages only"
+        self.received.append(sent)
         return AIMessage(content=self.reply_parts)
 
 
-_MULTIPART = [{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "x"}}, "world"]
+_MULTIPART: list[str | dict[str, Any]] = [
+    {"type": "text", "text": "hello"},
+    {"type": "image_url", "image_url": {"url": "x"}},
+    "world",
+]
 
 
 async def test_message_text_handles_multipart_content() -> None:

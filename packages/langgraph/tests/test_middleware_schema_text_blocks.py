@@ -53,6 +53,7 @@ def _block(columns: list[dict[str, Any]]) -> str:
     out = asyncio.run(run())
     assert isinstance(out, ExtendedModelResponse)
     assert out.command is not None
+    assert out.command.update is not None
     block = out.command.update["metadata"]["documented_schema_block"]
     assert isinstance(block, str)
     return block

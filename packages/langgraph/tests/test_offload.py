@@ -16,7 +16,6 @@ covers the framework half of Path-1 / 2a:
 from __future__ import annotations
 
 import dataclasses
-from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -26,6 +25,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphBubbleUp
+from langgraph.prebuilt import ToolRuntime
 from threetears.langgraph.middleware_offload import ToolResultOffloadMiddleware
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
@@ -191,6 +191,11 @@ def _make_handler(tool_map: dict[str, Any], config: RunnableConfig) -> Any:
     return _handler
 
 
+def _no_stream(chunk: Any) -> None:
+    """the stream writer of a run that streams nothing."""
+    _ = chunk
+
+
 async def _run_seam(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """drive :class:`ToolResultOffloadMiddleware` over the last AI message's tool calls.
 
@@ -209,7 +214,14 @@ async def _run_seam(state: dict[str, Any], config: RunnableConfig) -> dict[str, 
             tool_call=call,
             tool=tool_map.get(call["name"]),
             state=state,
-            runtime=SimpleNamespace(config=config),
+            runtime=ToolRuntime(
+                state=state,
+                context=None,
+                config=config,
+                stream_writer=_no_stream,
+                tool_call_id=call["id"],
+                store=None,
+            ),
         )
         result = await middleware.awrap_tool_call(request, _make_handler(tool_map, config))
         messages.append(result)

@@ -19,6 +19,9 @@ import pytest
 
 from prometheus_client import REGISTRY
 
+from packages.langgraph.tests.checkpoint_support import make_checkpoint
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import Checkpoint
 from threetears.langgraph.checkpoint import (
     CheckpointPurgeIncompleteError,
     ThreeTierCheckpointSaver,
@@ -31,22 +34,15 @@ _UNSCOPED = CheckpointScope.unscoped(reason="tests pin the un-tenanted keyspace"
 _BUCKET = "checkpoints"
 
 
-def _checkpoint(checkpoint_id: str) -> dict[str, Any]:
+def _checkpoint(checkpoint_id: str) -> Checkpoint:
     """a minimal LangGraph checkpoint carrying ``checkpoint_id``.
 
     :param checkpoint_id: the checkpoint's id
     :ptype checkpoint_id: str
     :return: the checkpoint mapping
-    :rtype: dict[str, Any]
+    :rtype: Checkpoint
     """
-    return {
-        "id": checkpoint_id,
-        "ts": "2026-10-23T06:06:55Z",
-        "channel_values": {},
-        "channel_versions": {},
-        "versions_seen": {},
-        "pending_sends": [],
-    }
+    return make_checkpoint(checkpoint_id, ts="2026-10-23T06:06:55Z")
 
 
 def _make_executor() -> Any:
@@ -316,7 +312,7 @@ class TestAnOversizedBlobIsNotCached:
         assert l2.puts == []
         warnings = [r for r in caplog.records if "over the cache's value limit" in r.getMessage()]
         assert len(warnings) == 1
-        assert (warnings[0].size_bytes, warnings[0].max_value_bytes) == (11, 10)
+        assert (vars(warnings[0])["size_bytes"], vars(warnings[0])["max_value_bytes"]) == (11, 10)
 
     async def test_a_blob_at_the_limit_is_cached(self) -> None:
         l2 = _LimitedL2Cache(limit=10)
@@ -338,7 +334,7 @@ class TestAnOversizedBlobIsNotCached:
         """through aput: the newer checkpoint is in L3, so L2 must not still answer with the older one."""
         l2 = _LimitedL2Cache(limit=None)
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
-        config = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
         await saver.aput(config, _checkpoint("cp-1"), {}, {})
         assert "t-1" in l2.store
 
@@ -458,7 +454,7 @@ class TestARefillCannotReplaceANewerCheckpoint:
         executor = _make_executor()
         writer = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
         reader = ThreeTierCheckpointSaver(executor=executor, l1_cache=reader_l1, l2_cache=l2, scope=_UNSCOPED)
-        config = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
         older_row = _row(reader, "cp-1")
 
         async def _query_then_a_newer_write_lands(*_args: object) -> dict[str, Any]:
@@ -562,7 +558,7 @@ def _contained(site: str, exc_type: str) -> float:
 class TestAFencedCacheThatFails:
     """a fenced cache's failed revision read or failed refill degrades; neither fails the read."""
 
-    _CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+    _CONFIG: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
 
     async def test_a_failed_revision_read_is_answered_from_l3_and_counted(self) -> None:
         l2 = _RevisionDictL2Cache()
@@ -601,7 +597,7 @@ class TestAFencedCacheThatFails:
 class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
     """an outage's bypass ends with the next write that lands; a purge's bypass does not."""
 
-    _CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+    _CONFIG: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
 
     async def test_an_outage_bypasses_the_key_and_the_next_landed_put_lifts_it(self) -> None:
         l2 = _DictL2Cache()
@@ -680,7 +676,7 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
                 await saver.l2_put(f"t-{n}", "", b"cp")
 
         full = [r for r in caplog.records if "write bypass is full" in r.getMessage()]
-        assert len(full) == 1 and full[0].l2_key == "t-0" and full[0].limit == limit
+        assert len(full) == 1 and vars(full[0])["l2_key"] == "t-0" and vars(full[0])["limit"] == limit
         await saver.aget_tuple({"configurable": {"thread_id": "t-0", "checkpoint_ns": ""}})
         await saver.aget_tuple({"configurable": {"thread_id": f"t-{limit}", "checkpoint_ns": ""}})
         assert l2.gets == ["t-0"], "the oldest key was dropped from the bypass; the newest is still on it"
@@ -705,7 +701,7 @@ class TestACacheThatCannotFence:
             ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_DictL2Cache(), scope=_UNSCOPED)
 
         said = [r for r in caplog.records if "cannot fence a refill" in r.getMessage()]
-        assert len(said) == 1 and said[0].l2_cache == "_DictL2Cache"
+        assert len(said) == 1 and vars(said[0])["l2_cache"] == "_DictL2Cache"
 
     def test_a_cache_that_can_fence_is_not_mentioned(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO):

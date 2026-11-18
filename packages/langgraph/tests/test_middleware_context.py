@@ -110,7 +110,9 @@ class TestFold:
         assert isinstance(out.content, list)
         assert out.content[-1] == {"type": "text", "text": "ctx"}
         # the pre-existing cache_control part is preserved untouched
-        assert out.content[0]["cache_control"] == {"type": "ephemeral"}
+        first = out.content[0]
+        assert isinstance(first, dict)
+        assert first["cache_control"] == {"type": "ephemeral"}
 
 
 class TestMiddleware:

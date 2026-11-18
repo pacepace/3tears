@@ -9,7 +9,7 @@ import pytest
 _LANGGRAPH_SRC = Path(__file__).resolve().parents[2] / "src" / "threetears" / "langgraph"
 
 
-def _python_files():
+def _python_files() -> list[Path]:
     return sorted(_LANGGRAPH_SRC.rglob("*.py"))
 
 

@@ -18,8 +18,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langgraph.checkpoint.base import WRITES_IDX_MAP
+from langgraph.checkpoint.base import WRITES_IDX_MAP, CheckpointMetadata
 from prometheus_client import REGISTRY
+from packages.langgraph.tests.checkpoint_support import make_checkpoint
+from langchain_core.runnables import RunnableConfig
 from threetears.langgraph.checkpoint import (
     CheckpointCacheError,
     ThreeTierCheckpointSaver,
@@ -107,8 +109,8 @@ class TestCacheSerializationHelpers:
 
     def test_roundtrip(self) -> None:
         saver = self._make_saver()
-        checkpoint = {"id": "cp-123", "ts": "2026-01-01", "channel_values": {}}
-        metadata = {"source": "loop", "step": 1}
+        checkpoint = make_checkpoint("cp-123", ts="2026-01-01")
+        metadata: CheckpointMetadata = {"source": "loop", "step": 1}
         parent_id = "cp-122"
         pending = [("task-1", "messages", {"content": "hello"})]
 
@@ -122,8 +124,8 @@ class TestCacheSerializationHelpers:
 
     def test_roundtrip_no_parent(self) -> None:
         saver = self._make_saver()
-        checkpoint = {"id": "cp-1", "ts": "2026-01-01", "channel_values": {}}
-        metadata = {}
+        checkpoint = make_checkpoint("cp-1", ts="2026-01-01")
+        metadata: CheckpointMetadata = {}
 
         blob = saver.serialize_checkpoint_tuple(checkpoint, metadata, None, [])
         result = saver.deserialize_checkpoint_tuple(blob)
@@ -189,7 +191,7 @@ class TestCrashRecoveryWritesDegrade:
     """
 
     _LOGGER = "threetears.langgraph.checkpoint"
-    _CONFIG = {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "c-1"}}
+    _CONFIG: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "c-1"}}
 
     async def testaput_writes_degrades_and_reports_the_loss(self, caplog: pytest.LogCaptureFixture) -> None:
         """the warning is the ENTIRE detection surface for a lost write, so pin it.
@@ -209,16 +211,19 @@ class TestCrashRecoveryWritesDegrade:
         assert len(records) == 1
         record = records[0]
         assert record.levelno == logging.WARNING
-        assert record.thread_id == "t-1"
-        assert record.checkpoint_ns == ""
-        assert record.checkpoint_id == "c-1"
-        assert record.task_id == "task-1"
-        assert record.write_count == 1
+        extra = vars(record)
+        assert extra["thread_id"] == "t-1"
+        assert extra["checkpoint_ns"] == ""
+        assert extra["checkpoint_id"] == "c-1"
+        assert extra["task_id"] == "task-1"
+        assert extra["write_count"] == 1
         # the timeout itself, not merely the fact of one
         assert record.exc_info is not None
 
     @pytest.mark.parametrize("channel", sorted(WRITES_IDX_MAP))
-    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog: pytest.LogCaptureFixture) -> None:
+    async def testaput_writes_reraises_for_a_control_channel(
+        self, channel: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """losing a control write silently changes what the run DOES."""
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
@@ -232,7 +237,7 @@ class TestCrashRecoveryWritesDegrade:
         # them -- so the re-raise branch logs before it re-raises
         records = [r for r in caplog.records if "control-channel" in r.getMessage()]
         assert len(records) == 1
-        assert records[0].control_channels == [channel]
+        assert vars(records[0])["control_channels"] == [channel]
 
     async def testaput_writes_reraises_when_a_control_write_shares_the_set(self) -> None:
         """a set cannot be half-degraded, so one control write makes it must-persist."""
@@ -249,7 +254,7 @@ class TestCrashRecoveryWritesDegrade:
             )
 
     @pytest.mark.parametrize("config", [{}, {"configurable": None}, {"configurable": {}}])
-    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config) -> None:
+    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config: Any) -> None:
         """the ids are read defensively, so the guard covers the likeliest bad shapes.
 
         Subscripting them ahead of the ``try`` made "degrades, never raises"
@@ -433,7 +438,7 @@ class TestCrashRecoveryWritesDegrade:
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         class _Unserializable:
-            def __reduce__(self) -> None:
+            def __reduce__(self) -> str | tuple[Any, ...]:
                 raise TypeError("cannot serialize this")
 
         with pytest.raises(TypeError, match="not msgpack serializable"):
@@ -498,7 +503,7 @@ def _contained(site: str) -> float:
 class TestCacheReadFailureFallsThrough:
     """a cache read that fails reads the durable store, recorded as a miss caused by an error."""
 
-    _CONFIG = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
+    _CONFIG: RunnableConfig = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
 
     @staticmethod
     def _l3_row(saver: ThreeTierCheckpointSaver) -> dict[str, Any]:
@@ -607,7 +612,7 @@ class TestSyncMethodsRaise:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
-            saver.put({"configurable": {"thread_id": "t1"}}, {}, {}, {})
+            saver.put({"configurable": {"thread_id": "t1"}}, make_checkpoint("cp-1"), {}, {})
 
     def test_put_writes_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
@@ -630,16 +635,9 @@ class TestProtocolFlow:
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
-        checkpoint = {
-            "id": "cp-1",
-            "ts": "2026-01-01T00:00:00Z",
-            "channel_values": {},
-            "channel_versions": {},
-            "versions_seen": {},
-            "pending_sends": [],
-        }
-        config = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
-        metadata = {"source": "input", "step": 0}
+        checkpoint = make_checkpoint("cp-1", ts="2026-01-01T00:00:00Z")
+        config: RunnableConfig = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
+        metadata: CheckpointMetadata = {"source": "input", "step": 0}
 
         result = await saver.aput(config, checkpoint, metadata, {})
 
@@ -679,15 +677,8 @@ class TestProtocolFlow:
         flush = AsyncMock(return_value=3)
         saver = ThreeTierCheckpointSaver(executor=executor, flush_callback=flush, scope=_UNSCOPED)
 
-        checkpoint = {
-            "id": "cp-1",
-            "ts": "2026-01-01T00:00:00Z",
-            "channel_values": {},
-            "channel_versions": {},
-            "versions_seen": {},
-            "pending_sends": [],
-        }
-        config = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
+        checkpoint = make_checkpoint("cp-1", ts="2026-01-01T00:00:00Z")
+        config: RunnableConfig = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
 
         await saver.aput(config, checkpoint, {}, {})
 
@@ -753,15 +744,8 @@ class TestAsyncpgPoolAdapter:
 
         saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool), scope=_UNSCOPED)
 
-        checkpoint = {
-            "id": "cp-1",
-            "ts": "2026-01-01T00:00:00Z",
-            "channel_values": {},
-            "channel_versions": {},
-            "versions_seen": {},
-            "pending_sends": [],
-        }
-        config = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
+        checkpoint = make_checkpoint("cp-1", ts="2026-01-01T00:00:00Z")
+        config: RunnableConfig = {"configurable": {"thread_id": "thread-1", "checkpoint_ns": ""}}
 
         result = await saver.aput(config, checkpoint, {}, {})
         assert result["configurable"]["checkpoint_id"] == "cp-1"

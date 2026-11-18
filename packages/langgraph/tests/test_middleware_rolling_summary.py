@@ -18,9 +18,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from langchain.agents.middleware import ModelRequest
+from langchain.agents.middleware import AgentState, ModelRequest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
@@ -82,16 +82,16 @@ def _a(i: int, text: str = "general kenobi") -> AIMessage:
     return AIMessage(content=text, id=f"m{i}")
 
 
-def _history(n: int) -> list[BaseMessage]:
+def _history(n: int) -> list[AnyMessage]:
     """``n`` alternating human/assistant messages ending on a human one (a turn's start)."""
-    out: list[BaseMessage] = []
+    out: list[AnyMessage] = []
     for i in range(n):
         out.append(_h(i) if (n - 1 - i) % 2 == 0 else _a(i))
     return out
 
 
 async def _run(
-    middleware: RollingSummaryMiddleware, messages: list[BaseMessage]
+    middleware: RollingSummaryMiddleware, messages: list[AnyMessage]
 ) -> tuple[list[BaseMessage], ModelRequest]:
     seen: dict[str, Any] = {}
 
@@ -142,7 +142,7 @@ async def test_the_summary_call_is_hidden_from_the_stream_and_billed_as_summariz
 
 async def test_a_second_fold_includes_the_prior_summary_and_only_newer_messages() -> None:
     # Distinct contents, so the transcript shows exactly which messages were folded.
-    history: list[BaseMessage] = [
+    history: list[AnyMessage] = [
         (_h(i, f"human-{i:02d}") if i % 2 == 0 else _a(i, f"assistant-{i:02d}")) for i in range(9)
     ]
     store = _FakeSummaryStore(SummaryState(text="EARLIER", through_id="m2", through_count=3))
@@ -181,7 +181,7 @@ async def test_a_cursor_missing_from_history_falls_back_to_the_whole_window() ->
 
 
 async def test_id_less_messages_fall_back_to_the_count_cursor() -> None:
-    history: list[BaseMessage] = [HumanMessage(content="a"), AIMessage(content="b"), HumanMessage(content="c")]
+    history: list[AnyMessage] = [HumanMessage(content="a"), AIMessage(content="b"), HumanMessage(content="c")]
     store = _FakeSummaryStore(SummaryState(text="EARLIER", through_id=None, through_count=2))
     sent, _ = await _run(_middleware(store, _Summarizer(), budget=1000), history)
     assert sent[1:] == history[2:]
@@ -199,7 +199,7 @@ async def test_a_lost_compare_and_swap_uses_the_winners_summary_without_summariz
 
 async def test_the_kept_tail_never_starts_with_an_orphaned_tool_result() -> None:
     long = "x" * 30
-    history: list[BaseMessage] = [
+    history: list[AnyMessage] = [
         _h(0, long),
         AIMessage(content="call", id="m1", tool_calls=[{"name": "t", "args": {}, "id": "c1"}]),
         ToolMessage(content="tool output", tool_call_id="c1", id="m2"),
@@ -216,7 +216,7 @@ async def test_the_kept_tail_never_starts_with_an_orphaned_tool_result() -> None
 
 async def test_a_leading_system_message_stays_at_the_head() -> None:
     store, model = _FakeSummaryStore(), _Summarizer()
-    history: list[BaseMessage] = [SystemMessage(content="be brief", id="sys"), *_history(7)]
+    history: list[AnyMessage] = [SystemMessage(content="be brief", id="sys"), *_history(7)]
     sent, _ = await _run(_middleware(store, model, budget=40), history)
     assert isinstance(sent[0], SystemMessage) and sent[0].content == "be brief"
     assert "SUMMARY 1" in str(sent[1].content)
@@ -304,10 +304,16 @@ async def test_an_empty_summary_is_never_stored() -> None:
 
 
 async def test_a_count_cursor_at_or_past_the_window_keeps_the_newest_message() -> None:
-    history: list[BaseMessage] = [HumanMessage(content="a"), AIMessage(content="b"), HumanMessage(content="c NEW")]
+    history: list[AnyMessage] = [HumanMessage(content="a"), AIMessage(content="b"), HumanMessage(content="c NEW")]
     store = _FakeSummaryStore(SummaryState(text="EARLIER", through_id=None, through_count=10))
     sent, _ = await _run(_middleware(store, _Summarizer(), budget=1000), history)
     assert sent[1:] == history, "a cursor past the window means the history was trimmed; all of it is new"
+
+
+class _ThreadState(AgentState[Any]):
+    """the agent state of an app that resolves its summary store by thread."""
+
+    thread: str
 
 
 async def test_a_store_can_be_resolved_per_call() -> None:
@@ -315,7 +321,10 @@ async def test_a_store_can_be_resolved_per_call() -> None:
     stores = {"t1": _FakeSummaryStore(), "t2": _FakeSummaryStore()}
 
     def store_for(request: ModelRequest) -> SummaryStore | None:
-        return stores[request.state["thread"]]
+        # the app's own state key, which AgentState does not declare, so it is read off the plain dict
+        thread = dict(request.state)["thread"]
+        assert isinstance(thread, str)
+        return stores[thread]
 
     middleware = RollingSummaryMiddleware(_Summarizer(), store_for=store_for, token_budget=40, count_tokens=_chars)
     for thread in ("t1", "t2"):
@@ -326,7 +335,9 @@ async def test_a_store_can_be_resolved_per_call() -> None:
             return SimpleNamespace(result=[AIMessage(content="ok")])
 
         request = ModelRequest(
-            model=cast("BaseChatModel", _Summarizer()), messages=_history(7), state={"thread": thread}
+            model=cast("BaseChatModel", _Summarizer()),
+            messages=_history(7),
+            state=_ThreadState(messages=[], thread=thread),
         )
         await middleware.awrap_model_call(request, handler)
     assert len(stores["t1"].saves) == 1 and len(stores["t2"].saves) == 1

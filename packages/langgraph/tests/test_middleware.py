@@ -100,7 +100,9 @@ class TestAnnotateForCache:
         assert isinstance(out, SystemMessage)
         # structured (list) content is the cache_control-carrying form
         assert isinstance(out.content, list)
-        assert out.content[-1]["cache_control"] == {"type": "ephemeral"}
+        last = out.content[-1]
+        assert isinstance(last, dict)
+        assert last["cache_control"] == {"type": "ephemeral"}
 
     def test_noop_for_non_caching_model(self) -> None:
         original = SystemMessage(content="sys")
@@ -178,7 +180,9 @@ class TestStampCacheUsage:
             },
         )
         _stamp_through_the_middleware([ai])
-        assert isinstance(ai.usage_metadata["cache_usage"], dict)
+        assert ai.usage_metadata is not None
+        # the middleware stamps a key UsageMetadata does not declare, so it is read off the plain dict
+        assert isinstance(dict(ai.usage_metadata)["cache_usage"], dict)
 
     def test_handles_empty_result_without_error(self) -> None:
         _stamp_through_the_middleware([])
