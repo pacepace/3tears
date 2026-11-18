@@ -171,12 +171,12 @@ class TestNoHardcodedTimeouts:
                                 f"Source timeout from config instead."
                             )
 
-            for j, default in enumerate(node.args.kw_defaults):
-                if default is None:
+            for j, kw_default in enumerate(node.args.kw_defaults):
+                if kw_default is None:
                     continue
                 kwarg = node.args.kwonlyargs[j]
                 if _is_timeout_name(kwarg.arg):
-                    val = _get_numeric_value(default)
+                    val = _get_numeric_value(kw_default)
                     if val is not None:
                         violations.append(
                             f"  line {node.lineno}: {node.name}() param '{kwarg.arg}' "
@@ -222,7 +222,7 @@ class TestNoHardcodedTimeouts:
                 val = _get_numeric_value(value)
                 if val is not None:
                     violations.append(
-                        f"  line {node.lineno}: {target.id} = {val} -- "
+                        f"  line {target.lineno}: {target.id} = {val} -- "
                         f"hardcoded timeout constant. "
                         f"Source from config instead."
                     )

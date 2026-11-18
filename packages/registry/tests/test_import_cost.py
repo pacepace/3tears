@@ -57,6 +57,8 @@ def _agent_tools_imports(tree: ast.Module) -> list[tuple[int, str]]:
     """
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
         names: list[str] = []
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names]

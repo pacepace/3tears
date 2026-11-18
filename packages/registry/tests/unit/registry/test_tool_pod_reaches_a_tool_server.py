@@ -29,6 +29,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 import pytest
+from pydantic import BaseModel
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 from threetears.agent.tools.base_tool import CONFLICT, MCPToolDefinition, TearsTool, ToolResult
@@ -175,7 +176,7 @@ class _ProxyNats:
         await self._server.handle_call(
             IncomingMessage(data=payload, reply_subject="_INBOX.proxy", subject=subject.path)
         )
-        reply = self._pod_nats.replies[before]
+        reply: BaseModel = self._pod_nats.replies[before]
         return reply.model_dump_json().encode("utf-8")
 
     async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
@@ -279,7 +280,7 @@ async def _composed[T: TearsTool](*, with_signer: bool, tool: T) -> tuple[ToolCa
     holder_key = Ed25519PrivateKey.generate()
     token = _pod_token(hub_priv, pod_id=pod_id, holder_key=holder_key, customer_claim=PLATFORM_CUSTOMER_SENTINEL)
     client = ToolCallClient(
-        _CallerNats(proxy, proxy_nats),  # type: ignore[arg-type]
+        _CallerNats(proxy, proxy_nats),
         principal_id=pod_id,
         identity_token=lambda: token,
         pop_signer=_Signer(holder_key),
@@ -426,7 +427,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
         caller = uuid7()
         token = _pod_token(hub_priv, pod_id=caller, holder_key=caller_key, customer_claim=PLATFORM_CUSTOMER_SENTINEL)
         client = ToolCallClient(
-            _CallerNats(proxy, hop, conversation_id=conversation),  # type: ignore[arg-type]
+            _CallerNats(proxy, hop, conversation_id=conversation),
             principal_id=caller,
             identity_token=lambda: token,
             pop_signer=_Signer(caller_key),

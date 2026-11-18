@@ -182,7 +182,7 @@ class _Registry:
         :return: the answer
         :rtype: DiscoverResponse
         """
-        return await self.nc.request(
+        response: DiscoverResponse = await self.nc.request(
             subject=Subjects.tools_discover(),
             message=DiscoverRequest(
                 agent_id=requester, tool_manifest=[DiscoverToolEntry(name=_TOOL, version=_VERSION)]
@@ -190,6 +190,7 @@ class _Registry:
             response_type=DiscoverResponse,
             timeout=timedelta(seconds=5),
         )
+        return response
 
 
 @contextlib.asynccontextmanager
@@ -282,12 +283,13 @@ async def _register_raw(nc: NatsClient, pod_id: str, token: str | None, descript
         ],
         bootstrap_token=token,
     )
-    return await nc.request(
+    response: RegistrationResponse = await nc.request(
         subject=Subjects.tools_register(),
         message=manifest,
         response_type=RegistrationResponse,
         timeout=timedelta(seconds=10),
     )
+    return response
 
 
 def _descriptions(registry: _Registry, pod_id: str) -> list[str]:

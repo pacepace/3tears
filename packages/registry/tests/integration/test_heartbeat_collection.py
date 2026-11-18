@@ -25,6 +25,7 @@ so an in-process NATS bus mock suffices for L2 + invalidation.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -39,6 +40,7 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.core.testing.kv import FakeKvBucket
+from threetears.nats import Subject, SubscriptionHandle
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,14 @@ class _InMemoryKvBucket(FakeKvBucket):
         :rtype: None
         """
         super().__init__(bucket_name="collections")
+
+
+@dataclass
+class _Handle:
+    """the subscription handle :meth:`InMemoryNatsBus.subscribe_typed` hands back."""
+
+    subject: Subject
+    is_closed: bool = False
 
 
 class InMemoryNatsBus:
@@ -106,9 +116,14 @@ class InMemoryNatsBus:
         queue: Any = None,  # noqa: ARG002
         max_in_flight: Any = None,  # noqa: ARG002
         deadletter_on_failure: bool = True,  # noqa: ARG002
-    ) -> None:
+    ) -> _Handle:
         subject_str = str(subject)
         self._subscribers.setdefault(subject_str, []).append((cb, message_type))
+        return _Handle(subject)
+
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """end ``sub``: its subject's subscribers are dropped."""
+        self._subscribers.pop(str(sub.subject), None)
 
 
 def _make_pod(

@@ -13,7 +13,7 @@ import json
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid7
 
 from threetears.core.wire import TolerantWireModel
@@ -47,9 +47,11 @@ from threetears.nats import (
     NatsClientError,
     PublishError,
     RequestError,
+    RawMessageCallback,
     RequestTimeoutError,
     Subject,
     Subjects,
+    SubscriptionHandle,
     reply_subject_is_owned_by_agent,
     reply_subject_prefix_for_agent,
     requires_async_result,
@@ -82,7 +84,6 @@ _RESULT_DELIVERY_RETRY_SECONDS = 2.0
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_guard import ReplayLedger
     from threetears.core.security import DelegatedTokenSigner, ProxyAssertionSigner
-    from threetears.nats import NatsClient, Subscription
 
 __all__ = [
     "CallProxy",
@@ -289,6 +290,60 @@ class _CallRoute:
         self.context: CallContext | None = None
 
 
+class ProxyResultWaiter(Protocol):
+    """what the proxy uses of a durable result waiter: one answer awaited, then closed.
+
+    :class:`~threetears.nats.JetStreamResultWaiter` is one.
+    """
+
+    async def wait(self, *, timeout: timedelta) -> bytes:
+        """the one answer, within ``timeout``."""
+        ...
+
+    async def close(self) -> None:
+        """give up the waiter's consumer."""
+        ...
+
+
+class CallProxyTransport(Protocol):
+    """what :class:`CallProxy` uses of its NATS client: the call subscription, the forward to a tool pod, the
+    replies, and the durable result path. :class:`~threetears.nats.NatsClient` satisfies it, and so does an
+    in-memory test double.
+    """
+
+    async def subscribe(
+        self,
+        *,
+        subject: Subject | str | None = None,
+        cb: RawMessageCallback | None = None,
+        queue: str | None = None,
+    ) -> SubscriptionHandle:
+        """subscribe ``cb`` to ``subject`` in ``queue``."""
+        ...
+
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """end a subscription."""
+        ...
+
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+        """send raw bytes and await the raw reply."""
+        ...
+
+    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
+        """answer a request's reply subject with a model."""
+        ...
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        """publish a durable result."""
+        ...
+
+    async def jetstream_result_waiter(
+        self, *, subject: Subject, stream: str, wait_budget: timedelta
+    ) -> ProxyResultWaiter:
+        """open a waiter for the one answer on ``subject``."""
+        ...
+
+
 class CallProxy:
     """proxies tool calls from callers -- agents, tool pods, the hub -- to tool pods.
 
@@ -427,8 +482,8 @@ class CallProxy:
         pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
         self._pop_replay_guard = pop_replay_guard
         self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
-        self._nc: "NatsClient | None" = None
-        self._sub: "Subscription | None" = None
+        self._nc: CallProxyTransport | None = None
+        self._sub: SubscriptionHandle | None = None
         self._active_tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -447,7 +502,7 @@ class CallProxy:
         """
         return self._sub is not None
 
-    async def start(self, nc: "NatsClient") -> None:
+    async def start(self, nc: CallProxyTransport) -> None:
         """start listening for tool call requests.
 
         DQ-B7 queue-group note: ``queue="registry"`` makes
@@ -462,8 +517,8 @@ class CallProxy:
         call, that call creates it and is refused as a replay it is not. binding here puts the
         creation time before any proof this replica can receive.
 
-        :param nc: connected canonical NATS wrapper client
-        :ptype nc: NatsClient
+        :param nc: connected canonical NATS wrapper client, or anything with the surface the proxy uses
+        :ptype nc: CallProxyTransport
         :return: nothing
         :rtype: None
         :raises threetears.nats.KvError: when the pop nonce bucket cannot be opened

@@ -48,11 +48,14 @@ from threetears.agent.acl import (
     RoleAssignmentCollection,
     RoleCollection,
 )
+
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats import NatsClient
 from threetears.registry.auth import (
     AllowAllAuthorizer,
     DenyAllAuthorizer,
+    EndpointUsageEmitter,
 )
 from threetears.registry.l1_cache import (
     REGISTRY_L1_TABLE_NAMES,
@@ -255,6 +258,7 @@ class TestBuildRegistryRbacStack:
             identity_token=_identity_token_provider(),
         )
         pool = stack.registry.get_l3_pool("namespaces")
+        assert isinstance(pool, SqlL3Backend)  # the registry wraps the proxy pool as its SQL store
         assert pool.agent_id == str(REGISTRY_SERVICE_SENTINEL_AGENT_ID)
 
 
@@ -677,7 +681,7 @@ class TestRegistryServerUsageEmitterFactory:
         emitter = MagicMock()
         seen: list[object] = []
 
-        async def factory(client: object) -> object:
+        async def factory(client: NatsClient) -> EndpointUsageEmitter | None:
             seen.append(client)
             return emitter
 
@@ -821,6 +825,7 @@ class TestTheProviderIsForwardedByReferenceNotByValue:
             identity_token=lambda: held["token"],
         )
         pool = stack.registry.get_l3_pool("namespaces")
+        assert isinstance(pool, SqlL3Backend)  # the registry wraps the proxy pool as its SQL store
         assert pool.forwarded_identity_token() == "first.token"
         held["token"] = "re-minted.token"
         assert pool.forwarded_identity_token() == "re-minted.token"

@@ -29,6 +29,8 @@ from threetears.core.security import (
     sign_identity_token,
     verify_door_request,
 )
+
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.security.identity_token import IdentityClaims
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.registry.auth import AllowAllAuthorizer, ProvingRegistryIdentity
@@ -136,6 +138,7 @@ async def test_the_rbac_pool_proves_its_token_at_the_l3_door() -> None:
         pop_key=lambda: PopKey(_REGISTRY_KEY),
     )
     pool = stack.registry.get_l3_pool("namespaces")
+    assert isinstance(pool, SqlL3Backend)  # the registry wraps the proxy pool as its SQL store
     await pool.fetch("SELECT 1")
     call = nc.request_raw.await_args_list[-1]
     sent = json.loads(call.kwargs["payload"])
@@ -153,7 +156,9 @@ async def test_the_rbac_pool_without_a_key_sends_the_token_alone() -> None:
         l1_backend=create_registry_l1_backend(),
         identity_token=lambda: "host.minted.token",
     )
-    await stack.registry.get_l3_pool("namespaces").fetch("SELECT 1")
+    pool = stack.registry.get_l3_pool("namespaces")
+    assert isinstance(pool, SqlL3Backend)  # the registry wraps the proxy pool as its SQL store
+    await pool.fetch("SELECT 1")
     sent = json.loads(nc.request_raw.await_args_list[-1].kwargs["payload"])
     assert DOOR_PROOF_FIELD not in sent
     assert sent["identity_token"] == "host.minted.token"

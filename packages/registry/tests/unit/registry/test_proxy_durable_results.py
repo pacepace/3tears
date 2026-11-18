@@ -41,7 +41,6 @@ from threetears.nats import (
 from threetears.registry.auth import INSUFFICIENT_CREDITS, DenyAllLimitGuard, LimitDecision
 from threetears.nats.errors import PublishTimeoutError
 from threetears.observe import get_context
-from threetears.registry import proxy as proxy_module
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
@@ -76,7 +75,7 @@ class _UnreachableLimitGuard:
 class _Waiter:
     """a result waiter that yields a scripted outcome."""
 
-    def __init__(self, outcome: Any, subject: Subject) -> None:
+    def __init__(self, outcome: bytes | BaseException, subject: Subject) -> None:
         self._outcome = outcome
         self.subject = subject
         self.closed = False
@@ -97,8 +96,8 @@ class _Nats:
     def __init__(
         self,
         *,
-        accept: Any = None,
-        delivered: Any = b"",
+        accept: bytes | BaseException | None = None,
+        delivered: bytes | BaseException = b"",
     ) -> None:
         self._accept = accept
         self._delivered = delivered
@@ -642,7 +641,7 @@ class TestADeliveryFailure:
 
     @pytest.mark.asyncio
     async def test_a_refused_publish_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(proxy_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         catalog = await _registered_catalog(_LONG)
         nats = _NatsWhoseDeliveryFails(PublishError("broker unreachable"), PublishTimeoutError("no ack"))
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, self._long_request())

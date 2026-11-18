@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### registry: `CallProxy.start` takes a `CallProxyTransport`, `ToolCallClient` a `ProxyCallRequester`
+
+`CallProxy.start(nc)` takes `threetears.registry.proxy.CallProxyTransport` (the call subscription, `request_raw`,
+`publish_reply`, `jetstream_publish`, `jetstream_result_waiter`, whose waiter is a `ProxyResultWaiter`) and
+`ToolCallClient(nats_client, ...)` takes `threetears.registry.client.ProxyCallRequester` (its one typed `request`),
+instead of the whole `NatsClient`, which satisfies both. In-memory doubles now type-check with no ignore. Nothing
+changes at run time.
+
 ### epoch: `EpochClient` takes a `KvPublisher`, `EpochListener` a `TypedSubscriber`
 
 `EpochClient(pool, nats_client)` takes a `threetears.nats.KvPublisher` (it opens the epoch KV bucket and publishes

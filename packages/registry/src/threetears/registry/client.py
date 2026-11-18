@@ -65,7 +65,7 @@ from threetears.registry.config import PLATFORM_DEFAULT_CALL_TIMEOUT
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient
+    from threetears.nats.subjects import Subject
 
 __all__ = [
     "CALL_TIMEOUT_MARGIN_SECONDS",
@@ -97,6 +97,24 @@ CALL_TIMEOUT_MARGIN_SECONDS: float = 10.0
 #: :func:`threetears.registry.config.get_call_timeout` so the two cannot drift
 #: into the wrong order.
 DEFAULT_CALL_TIMEOUT_SECONDS: float = PLATFORM_DEFAULT_CALL_TIMEOUT + CALL_TIMEOUT_MARGIN_SECONDS
+
+
+class ProxyCallRequester(Protocol):
+    """the one call the client makes of its NATS client: a typed request to the registry's call subject.
+
+    :class:`~threetears.nats.NatsClient` satisfies it, and so does a scripted test double.
+    """
+
+    async def request(
+        self,
+        *,
+        subject: Subject,
+        message: ProxyCallRequest,
+        response_type: type[ProxyCallResponse],
+        timeout: timedelta,
+    ) -> ProxyCallResponse:
+        """send ``message`` and return the registry's typed reply."""
+        ...
 
 
 class PopSignerProtocol(Protocol):
@@ -172,7 +190,7 @@ class ToolCallClient:
     identical subject from the identical source.
 
     :param nats_client: the connected canonical NATS wrapper client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: ProxyCallRequester
     :param principal_id: this process's principal id, the ``sub`` the hub
         minted its token for; a tool pod's ``tool_pods.id``. carried on the
         envelope because the registry refuses a request whose context names no
@@ -193,7 +211,7 @@ class ToolCallClient:
 
     def __init__(
         self,
-        nats_client: NatsClient,
+        nats_client: ProxyCallRequester,
         *,
         principal_id: UUID,
         identity_token: Callable[[], str | None],
@@ -202,8 +220,8 @@ class ToolCallClient:
     ) -> None:
         """bind the transport, the principal, the identity provider, the signer and the deadline.
 
-        :param nats_client: the connected canonical NATS wrapper client
-        :ptype nats_client: NatsClient
+        :param nats_client: the connected canonical NATS wrapper client, or anything that makes its typed request
+        :ptype nats_client: ProxyCallRequester
         :param principal_id: this process's principal id
         :ptype principal_id: UUID
         :param identity_token: zero-arg provider returning the current token

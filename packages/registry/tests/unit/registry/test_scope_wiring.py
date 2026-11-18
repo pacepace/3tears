@@ -199,7 +199,7 @@ class TestTheCollectionsBucketIsOpenedEagerly:
         through in seconds -- so a bind that fails because the declaring identity has not run yet
         must be waited out in-process rather than by dying.
         """
-        monkeypatch.setattr(server_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=[KvError("bucket not found"), MagicMock()])
         server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
@@ -211,7 +211,7 @@ class TestTheCollectionsBucketIsOpenedEagerly:
     @pytest.mark.asyncio
     async def test_an_exhausted_budget_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a bounded retry that ended in silence would be the swallow this call exists to avoid."""
-        monkeypatch.setattr(server_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
         server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())

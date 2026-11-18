@@ -19,13 +19,16 @@ response content are in hand.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from prometheus_client import REGISTRY
+from pydantic import BaseModel
 from threetears.core.tool_wire import CallContext
 
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.nats import IncomingMessage, Subject, SubscriptionHandle, set_default_namespace
 from threetears.registry.auth import (
     INSUFFICIENT_CREDITS,
     LIMIT_EXCEEDED,
@@ -34,7 +37,7 @@ from threetears.registry.auth import (
     LimitDecision,
 )
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.proxy import ProxyCallResponse
+from threetears.registry.proxy import ProxyCallResponse, ProxyResultWaiter
 
 from .copy_entries import uniform_entry
 
@@ -153,11 +156,31 @@ class _StubNats:
         self.request_raw_calls.append(kwargs)
         return self._reply_bytes
 
-    async def subscribe(self, **kwargs: Any) -> None:
-        return None
+    async def subscribe(self, **kwargs: Any) -> SubscriptionHandle:
+        return _Handle(kwargs["subject"])
 
-    async def publish_reply(self, *, reply_subject: str, message: ProxyCallResponse) -> None:
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        del sub
+
+    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
+        assert isinstance(message, ProxyCallResponse), f"the guard answers with a call response, not {message!r}"
         self.published.append(message)
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        raise AssertionError("a limit-guarded call answers on its reply subject, never a durable result")
+
+    async def jetstream_result_waiter(
+        self, *, subject: Subject, stream: str, wait_budget: timedelta
+    ) -> ProxyResultWaiter:
+        raise AssertionError("a limit-guarded call answers on its reply subject, never a durable result")
+
+
+@dataclass
+class _Handle:
+    """the subscription :meth:`_StubNats.subscribe` hands back."""
+
+    subject: Subject
+    is_closed: bool = False
 
 
 async def _dispatch(proxy: Any, request: Any) -> None:

@@ -854,8 +854,9 @@ class TestToolCatalogAvailability:
         marked = catalog.mark_pod_endpoints_available("pod-A")
 
         assert marked == ["tool.shared@1.0"]
-        assert entry.get_endpoint("pod-A").status == "available"
-        assert entry.get_endpoint("pod-B").status == "unavailable"
+        pod_a, pod_b = entry.get_endpoint("pod-A"), entry.get_endpoint("pod-B")
+        assert pod_a is not None and pod_a.status == "available"
+        assert pod_b is not None and pod_b.status == "unavailable"
 
 
 # -- KV persistence tests --

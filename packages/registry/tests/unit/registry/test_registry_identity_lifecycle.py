@@ -100,6 +100,7 @@ class TestOneIdentityPerProcess:
         identity_factory.assert_awaited_once_with(nc)
         for factory in (rbac_factory, pod_factory, limit_factory, usage_factory):
             factory.assert_awaited_once_with(nc, identity.token)
+            assert factory.await_args is not None
             provider = factory.await_args.args[1]
             # the BOUND method, not the token it returns today: a re-mint must reach the backend.
             assert provider.__self__ is identity
