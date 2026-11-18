@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### epoch: `EpochClient` takes a `KvPublisher`, `EpochListener` a `TypedSubscriber`
+
+`EpochClient(pool, nats_client)` takes a `threetears.nats.KvPublisher` (it opens the epoch KV bucket and publishes
+bumps) and `EpochListener(nats_client, epoch_client)` a `threetears.nats.TypedSubscriber` (it subscribes typed
+callbacks), instead of the whole `NatsClient`, which satisfies both. The in-memory `FakeNatsClient` now type-checks
+as either with no ignore. Nothing changes at run time.
+
 ### nats: the hub requests take a `RawRequester`
 
 `ask_hub`, `report_cache_index_moved`, `declare_pod_object_store` and `retire_pod_objects` take a

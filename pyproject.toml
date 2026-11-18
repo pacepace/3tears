@@ -696,6 +696,7 @@ module = [
     "packages.datasources.tests.unit.test_partitioned_export",
     "packages.datasources.tests.unit.test_query_arrow",
     "packages.datasources.tests.unit.test_query_client",
+    "packages.epoch.tests.integration.test_change_notes_live",
 ]
 disable_error_code = ["import-untyped"]
 

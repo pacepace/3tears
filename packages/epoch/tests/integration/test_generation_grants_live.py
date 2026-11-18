@@ -147,7 +147,6 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
     :return: the connected client
     :rtype: NatsClient
     """
-    extra = {} if inbox_prefix is None else {"inbox_prefix": inbox_prefix}
     return await NatsClient.connect(
         nats_url=uri,
         nats_subject_namespace=_NS,
@@ -155,7 +154,7 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
         user=user,
         password=password,
         startup_timeout=timedelta(seconds=10),
-        **extra,
+        inbox_prefix=inbox_prefix,
     )
 
 

@@ -27,9 +27,9 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
-from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import (
     NO_L2,
@@ -56,6 +56,7 @@ from threetears.epoch import (
 )
 from threetears.nats import KvError, set_default_namespace
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
+from packages.core.tests.durable_support import NoL3
 
 _TABLE = "group_members"
 _OTHER = "role_assignments"
@@ -82,15 +83,6 @@ def _metadata() -> MetaData:
             info={L1_EVICTION_INFO: TEST_L1_KEEP},
         )
     return metadata
-
-
-class _NoL3(DurableStore):
-    """a durable L3 with no ``transaction()``: it satisfies ``DurableStore``, so the registry does not wrap it as SQL.
-
-    this test is not about L3. a bare ``object()`` here was wrapped in ``SqlL3Backend``, whose ``transaction()``
-    calls ``.acquire()``; the flush took its atomic-batch path, failed, and fell back to per-entity writes through
-    a broad ``except``. this goes to the per-entity writes directly, which is what the test means.
-    """
 
 
 class _Row(BaseEntity):
@@ -179,10 +171,12 @@ class _Lossy(FakeNatsClient):
         super().__init__()
         self.deaf = False
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         if self.deaf:
             return
-        await super().publish(subject=subject, message=message, reply_to=reply_to)
+        await super().publish(*args, subject=subject, message=message, reply_to=reply_to)
 
 
 class _Pod:
@@ -193,13 +187,13 @@ class _Pod:
         l1.initialize(_metadata())
         self.bus = bus
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope=scope)
         self.source = EpochGenerationSource(bus)
         self.registry.set_generation_source(self.source)
         self.reader = EpochGenerationReader(bus)
 
     async def listen(self) -> None:
-        await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
+        await self.registry.start_invalidation_listener(self.bus)
 
     async def follow(self, *tables: str) -> None:
         """follow the tables and take each one's first mark, as a pod's first pass does."""
@@ -454,11 +448,13 @@ class TestOneCommitIsOneAdvance:
         lost: list[str] = []
         deliver = FakeNatsClient.publish
 
-        async def lose_one(*, subject: Any, message: Any, reply_to: Any = None) -> None:
+        async def lose_one(
+            *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+        ) -> None:
             if isinstance(message, CacheInvalidationMessage) and message.ids == ["m3"]:
                 lost.append(message.ids[0])
                 return
-            await deliver(bus, subject=subject, message=message, reply_to=reply_to)
+            await deliver(bus, *args, subject=subject, message=message, reply_to=reply_to)
 
         bus.publish = lose_one  # type: ignore[method-assign]
         conn = _Conn()

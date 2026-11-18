@@ -238,7 +238,7 @@ class TestTheDeclarationMatchesTheClassifier:
         :rtype: None
         """
         both = [(name, why) for name, _marker, why in _DURABLE_FAMILIES]
-        both += list(_EPHEMERAL_FAMILIES)
+        both += [(name, why) for name, why in _EPHEMERAL_FAMILIES]
 
         assert len(both) == len(_DURABLE_FAMILIES) + len(_EPHEMERAL_FAMILIES)
         for name, why in both:

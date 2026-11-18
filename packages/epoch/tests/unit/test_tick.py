@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch.client import EpochClient
-from threetears.epoch.listener import EpochListener
+from threetears.epoch.listener import BumpCallback, EpochListener
 from threetears.epoch.tick import catchup_tick
 from threetears.nats.subjects import Subject
 
@@ -39,12 +39,12 @@ class _ScriptedListener(EpochListener):
     members this function actually depends on be driven directly.
     """
 
-    def __init__(self, nats: Any, results: dict[str, Any]) -> None:
+    def __init__(self, nats: Any, results: dict[str, int | Exception]) -> None:
         super().__init__(nats, EpochClient(MagicMock(), nats))
         self._results = results
         self.polled: list[str] = []
 
-    async def catch_up(self, subject: Subject, on_bump: Any) -> int:
+    async def catch_up(self, subject: Subject, on_bump: BumpCallback) -> int:
         """answer the script for ``subject``, recording that it was polled."""
         self.polled.append(subject.path)
         outcome = self._results[subject.path]

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
-from threetears.nats import NatsClient
+from threetears.nats import TypedSubscriber
 from threetears.nats.errors import SubscribeError
 from threetears.nats.subjects import Subject
 from threetears.observe import contain, get_logger
@@ -81,18 +81,19 @@ class EpochListener:
     (subscribers prime via :meth:`EpochClient.current` on cold start
     so the first incoming broadcast matches what was already loaded).
 
-    :param nats_client: connected typed NATS wrapper for subscribes
-    :ptype nats_client: NatsClient
+    :param nats_client: connected typed NATS wrapper for subscribes: the typed-subscribe slice
+        (:class:`~threetears.nats.NatsClient` is one, and so is the in-memory double)
+    :ptype nats_client: TypedSubscriber
     :param epoch_client: companion :class:`EpochClient` used for
         cold-start last-seen priming
     :ptype epoch_client: EpochClient
     """
 
-    def __init__(self, nats_client: NatsClient, epoch_client: EpochClient) -> None:
+    def __init__(self, nats_client: TypedSubscriber, epoch_client: EpochClient) -> None:
         """capture clients; no I/O.
 
-        :param nats_client: connected NatsClient
-        :ptype nats_client: NatsClient
+        :param nats_client: connected client that subscribes typed callbacks
+        :ptype nats_client: TypedSubscriber
         :param epoch_client: companion :class:`EpochClient` for
             cold-start priming
         :ptype epoch_client: EpochClient

@@ -51,7 +51,7 @@ async def _replica(bus: FakeNatsClient) -> VersionedAnswers:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     answers = VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name=_TABLE)
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     return answers
 
 
@@ -83,7 +83,7 @@ class TestTheCatchUpPassReadsL2KeptTablesFromL2:
         await registry.stop_invalidation_listener()
         await writer.answer("v2", "page", _text, order=2)
         await writer.retire_older_than(2)
-        await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+        await registry.start_invalidation_listener(bus)
         assert await generation_catchup_tick(registry, reader) == 2
         given = await follower.answer_with_outcome("v1", "page", _text, order=1)
         assert given.outcome is AnswerOutcome.RETIRED, "the follower answered a retired version from its L1"
@@ -122,7 +122,7 @@ class TestTheTablesAreFollowedByTheirKeysWithNoPass:
             await registry.stop_invalidation_listener()  # the follower misses every broadcast after this
             await writer.answer("v2", "page", _text, order=2)
             await writer.retire_older_than(2)
-            await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+            await registry.start_invalidation_listener(bus)
 
             async def retired() -> bool:
                 given = await follower.answer_with_outcome("v1", "page", _text, order=1)

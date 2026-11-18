@@ -52,7 +52,7 @@ from typing import Any, Final, Protocol
 from threetears.core.coordination.distributed_counter import DistributedCounter
 from threetears.core.keyed import read_row, read_value
 from threetears.epoch.wire import EpochBumpMessage
-from threetears.nats import NatsClient
+from threetears.nats import KvPublisher
 from threetears.nats.errors import PublishError
 from threetears.nats.kv import KvBucketLike
 from threetears.nats.subjects import Subject
@@ -343,17 +343,18 @@ class EpochClient:
         the durable subject family -- every other epoch counts in NATS KV
         and never touches it.
     :ptype pool: PoolLike
-    :param nats_client: connected typed NATS wrapper for broadcast
-    :ptype nats_client: NatsClient
+    :param nats_client: connected typed NATS wrapper for broadcast: the slice that opens the epoch KV bucket and
+        publishes bumps (:class:`~threetears.nats.NatsClient` is one, and so is the in-memory double)
+    :ptype nats_client: KvPublisher
     """
 
-    def __init__(self, pool: PoolLike, nats_client: NatsClient) -> None:
+    def __init__(self, pool: PoolLike, nats_client: KvPublisher) -> None:
         """capture pool + nats client; no I/O.
 
         :param pool: postgres pool implementing :class:`PoolLike`
         :ptype pool: PoolLike
-        :param nats_client: connected NatsClient
-        :ptype nats_client: NatsClient
+        :param nats_client: connected client that opens KV buckets and publishes
+        :ptype nats_client: KvPublisher
         :return: nothing
         :rtype: None
         """

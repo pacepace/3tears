@@ -33,10 +33,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
+from pydantic import BaseModel
 from prometheus_client import REGISTRY
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
-from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import (
     WRITE_GENERATION,
@@ -54,7 +54,7 @@ from threetears.core.collections.epoch_change import (
     changed_row_runs,
     walk_by_count,
 )
-from threetears.core.collections.generation import L2_WRITE_GENERATION
+from threetears.core.collections.generation import L2_WRITE_GENERATION, WriteGenerationDeclaration
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
@@ -71,6 +71,7 @@ from threetears.epoch import (
 )
 from threetears.nats import set_default_namespace
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from packages.core.tests.durable_support import NoL3
 
 
 async def _restore(
@@ -110,10 +111,6 @@ def _metadata() -> MetaData:
     return metadata
 
 
-class _NoL3(DurableStore):
-    """a durable L3 the registry does not wrap as SQL; the rows live in the collection's shared dict."""
-
-
 class _Row(BaseEntity):
     primary_key_field = "id"
 
@@ -122,7 +119,7 @@ class _Members(BaseCollection[_Row]):
     """a switched-on three-tier collection over an L3 dict every pod of the test shares."""
 
     datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
-    write_generation = WRITE_GENERATION
+    write_generation: ClassVar[WriteGenerationDeclaration] = WRITE_GENERATION
     invalidation_columns: ClassVar[tuple[str, ...]] = ("member_id",)
 
     def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]]) -> None:
@@ -186,10 +183,12 @@ class _Lossy(FakeNatsClient):
         super().__init__()
         self.deaf = False
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         if self.deaf:
             return
-        await super().publish(subject=subject, message=message, reply_to=reply_to)
+        await super().publish(*args, subject=subject, message=message, reply_to=reply_to)
 
 
 class _Pod:
@@ -200,7 +199,7 @@ class _Pod:
         l1.initialize(_metadata())
         self.bus = bus
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=scope)  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope=scope)
         self.source = (
             EpochGenerationSource(bus) if retention is None else EpochGenerationSource(bus, change_retention=retention)
         )
@@ -238,7 +237,7 @@ async def _two_pods(bus: _Lossy) -> tuple[_Members, _Pod, _Members]:
     rows: dict[str, dict[str, Any]] = {}
     writer, follower = _Pod(bus, scope="writer"), _Pod(bus, scope="follower")
     writing, reading = _Members(writer.registry, rows), _Members(follower.registry, rows)
-    await follower.registry.start_invalidation_listener(follower.bus)  # type: ignore[arg-type]
+    await follower.registry.start_invalidation_listener(follower.bus)
     await _save(writing, "seed", "nobody")
     follower.registry.follow_generation(_TABLE)
     await follower.tick()
@@ -398,7 +397,7 @@ class TestFirstSight:
         await bus.kv_bucket(name="epochs")  # the hub declared the bucket; nothing has written the table
         follower.registry.follow_generation(_TABLE)
         await follower.tick()
-        await follower.registry.start_invalidation_listener(follower.bus)  # type: ignore[arg-type]
+        await follower.registry.start_invalidation_listener(follower.bus)
         await _save(writing, "m1", "ada")
         assert await _member_id(reading, "m1") == "ada"
         await follower.tick()

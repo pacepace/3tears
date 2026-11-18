@@ -1164,6 +1164,7 @@ class TestAFollowerOnADirectPoolReadsTheNotesItself:
         token = await reader.read(table)
         assert token is not None
         record = await reader.change(table, token)
+        assert record is not None
         assert record.keys_unknown and record.noted_between is not None
         for _ in range(2):
             await registry.catch_up_generation(table, await reader.read(table), changes=reader)

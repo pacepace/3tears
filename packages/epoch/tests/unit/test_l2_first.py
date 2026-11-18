@@ -20,14 +20,13 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table
 
-from threetears.core.backends.protocol import DurableStore
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import NO_L2, WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_notes import NotedChange
@@ -54,6 +53,7 @@ from threetears.epoch import (
 )
 from threetears.nats import set_default_namespace
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from packages.core.tests.durable_support import NoL3
 
 
 async def _restore(
@@ -89,31 +89,6 @@ def _metadata(table: str) -> MetaData:
         info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
-
-
-class _NoL3(DurableStore):
-    """a durable L3 the registry does not wrap as SQL; the rows live in the test's dict, so nothing reads it."""
-
-    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
-        raise AssertionError("the test's rows live in its dict")
-
-    async def upsert(
-        self,
-        table: str,
-        row: Mapping[str, Any],
-        *,
-        pk: Sequence[str] | None = None,
-        on_conflict: str = "update",
-        cas: datetime | None = None,
-        conn: Any = None,
-    ) -> int:
-        raise AssertionError("the test's rows live in its dict")
-
-    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
-        raise AssertionError("the test's rows live in its dict")
-
-    async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-        raise AssertionError("the test's rows live in its dict")
 
 
 class _UniqueViolation(Exception):
@@ -226,7 +201,7 @@ class _Pod:
         l1.initialize(_metadata(_FEED))
         self.bus = bus
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=_NoL3(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=NoL3(), kv_key_scope=_SCOPE)
         # every process of a deployment running the change-note keeper: the keeper alone starts a lost log
         self.source = EpochGenerationSource(
             bus,
@@ -263,7 +238,7 @@ class _Fleet:
         """start the log (the keeper's first sight), seed L2 from the empty L3 and start the follower following."""
         await self.worker.source.start_log()
         await self.refiller.run_pass()
-        await self.follower.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
+        await self.follower.registry.start_invalidation_listener(self.bus)
         self.follower.registry.follow_generation(_TABLE)
         self.follower.registry.follow_generation(_FEED)
         await self.follower.tick()
@@ -550,7 +525,7 @@ class TestWithoutL2:
         l1 = SQLiteBackend(db_name=f"l2_first_{uuid.uuid4().hex[:8]}")
         l1.initialize(_metadata(_TABLE))
         registry = CollectionRegistry()
-        registry.configure(l1_backend=l1, l3_pool=_NoL3())  # type: ignore[arg-type]
+        registry.configure(l1_backend=l1, l3_pool=NoL3())
         l3 = _L3()
         collection = _Results(registry, l3, nats_client=NO_L2)
         await _save(collection, "precinct-1", "10")

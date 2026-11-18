@@ -8,7 +8,7 @@ the :meth:`echo` per-message-echo path.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,7 +27,7 @@ def _subject(path: str = "app.capabilities.epoch") -> Subject:
     wildcard EPOCH subject, so a "point" wildcard here is the shape the next consumer
     would copy.
     """
-    kind = "pattern" if "*" in path or path.endswith(">") else "point"
+    kind: Literal["point", "pattern"] = "pattern" if "*" in path or path.endswith(">") else "point"
     return Subject(path=path, kind=kind)
 
 

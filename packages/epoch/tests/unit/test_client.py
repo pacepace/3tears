@@ -651,7 +651,7 @@ class TestCachedVersions:
         tokens = subject.path.split(".")
         # the subject's own shape with its datasource and layer segments wildcarded
         pattern = Subject(
-            path=".".join("*" if token in ("ds1", "parcels") else token for token in tokens), kind="wildcard"
+            path=".".join("*" if token in ("ds1", "parcels") else token for token in tokens), kind="pattern"
         )
         client, _listener, _nats = await _following(pool, pattern)
 
@@ -668,7 +668,7 @@ class TestCachedVersions:
         pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
         subject = _durable_subject("parcels")
         # one token short of the subject: the broker would not deliver it
-        pattern = Subject(path=".".join(["*"] * (len(subject.path.split(".")) - 1)), kind="wildcard")
+        pattern = Subject(path=".".join(["*"] * (len(subject.path.split(".")) - 1)), kind="pattern")
         client, _listener, _nats = await _following(pool, pattern)
 
         await client.versions(subject, cached=True)
@@ -680,7 +680,7 @@ class TestCachedVersions:
     async def test_a_full_wildcard_follows_everything_below_it(self) -> None:
         pool = _versions_pool({"epoch": 3, "previous_epoch": 2})
         subject = _durable_subject("parcels")
-        pattern = Subject(path=f"{subject.path.split('.')[0]}.>", kind="wildcard")
+        pattern = Subject(path=f"{subject.path.split('.')[0]}.>", kind="pattern")
         client, _listener, _nats = await _following(pool, pattern)
 
         await client.versions(subject, cached=True)
@@ -787,7 +787,7 @@ class TestCachedVersions:
             {"epoch": 4, "previous_epoch": 3},
         )
         moved, steady = _durable_subject("parcels"), _durable_subject("roads")
-        pattern = Subject(path=f"{moved.path.split('.')[0]}.>", kind="wildcard")
+        pattern = Subject(path=f"{moved.path.split('.')[0]}.>", kind="pattern")
         client, listener, _nats = await _following(pool, pattern)
         await client.versions(moved, cached=True)
         await client.versions(steady, cached=True)
