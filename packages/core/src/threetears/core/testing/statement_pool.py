@@ -24,6 +24,8 @@ from typing import Any
 
 from threetears.core.backends.protocol import RawL3Pool
 
+__all__ = ["StatementPool"]
+
 
 class StatementPool(RawL3Pool):
     """a :class:`RawL3Pool` with no table behind it: a statement no subclass answers raises."""

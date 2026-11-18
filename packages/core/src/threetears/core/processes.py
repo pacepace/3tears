@@ -41,7 +41,7 @@ from typing import Final
 
 from threetears.observe import get_logger
 
-__all__ = ["WORKER_START", "exit_with_parent", "start_worker_server"]
+__all__ = ["exit_with_parent", "start_worker_server"]
 
 log = get_logger(__name__)
 
@@ -49,7 +49,7 @@ log = get_logger(__name__)
 _INTERVAL: Final[float] = 1.0
 
 #: how every pool's workers start: forked by multiprocessing's fork server, never by the serving process
-WORKER_START: Final = "forkserver"
+_WORKER_START: Final = "forkserver"
 
 #: whether this process already watches its parent
 _watching = threading.Event()
@@ -127,10 +127,10 @@ def start_worker_server(preload: Sequence[str] = ()) -> multiprocessing.context.
 
     :param preload: modules the server imports as it starts, so every worker it forks holds them
     :ptype preload: Sequence[str]
-    :return: the context every pool's workers start in (:data:`WORKER_START`)
+    :return: the context every pool's workers start in (:data:`_WORKER_START`)
     :rtype: multiprocessing.context.BaseContext
     """
-    context = multiprocessing.get_context(WORKER_START)
+    context = multiprocessing.get_context(_WORKER_START)
     wanted = frozenset(preload)
     with _server_lock:
         if not _server_preload:

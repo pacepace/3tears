@@ -319,7 +319,9 @@ class TestAToolInAGraphRunsInTheCallsScope:
         conversation, user = uuid7(), uuid7()
         seen: list[tuple[UUID, UUID]] = []
         tool = to_langchain_tool(ContextRecallTool(), context_factory=self._factory(seen))
-        config: RunnableConfig = {"configurable": {"call_context": CallContext(conversation_id=conversation, user_id=user)}}
+        config: RunnableConfig = {
+            "configurable": {"call_context": CallContext(conversation_id=conversation, user_id=user)}
+        }
 
         message = await tool.ainvoke(
             {"type": "tool_call", "id": "r1", "name": tool.name, "args": {"context_id": "abc"}}, config

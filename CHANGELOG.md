@@ -60,8 +60,8 @@ quote alone, so commentary between two empty quotes is no longer failed as a lea
 
 ### core: CPU-clock timing helpers in `threetears.core.testing.calibrate`
 
-**Added:** `cpu_seconds`, `thread_cpu_seconds`, `CpuStopwatch` and `best_cpu_seconds` (the fastest of
-`BEST_OF_RUNS` awaits, each from a collected heap, the warm-up discarded), beside the wall-clock
+**Added:** `thread_cpu_seconds`, `CpuStopwatch` and `best_cpu_seconds` (the fastest of five awaits, each
+from a collected heap, the warm-up discarded; by default on the whole process's CPU clock), beside the wall-clock
 `best_seconds_interleaved`: a bound on an operation's own cost is a bound on CPU, not on how busy the machine is.
 Moved from survey's `tests/support/cpu_budget.py`.
 

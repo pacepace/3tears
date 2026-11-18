@@ -34,14 +34,12 @@ from typing import Any, Self
 from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
 
 __all__ = [
-    "BEST_OF_RUNS",
     "CpuStopwatch",
     "best_cpu_seconds",
     "best_seconds_interleaved",
     "budget_problem",
     "plain_copy_seconds",
     "plain_keyed_delete_seconds",
-    "cpu_seconds",
     "thread_cpu_seconds",
 ]
 
@@ -155,10 +153,10 @@ async def best_seconds_interleaved(
 
 #: runs :func:`best_cpu_seconds` takes by default: enough that one collection or one stalled slice cannot be the best,
 #: few enough that a millisecond operation stays a fast test
-BEST_OF_RUNS = 5
+_BEST_OF_RUNS = 5
 
 
-def cpu_seconds() -> float:
+def _cpu_seconds() -> float:
     """the CPU this process has spent, across all its threads, in seconds.
 
     :return: process CPU seconds since an arbitrary fixed point
@@ -171,7 +169,7 @@ def thread_cpu_seconds() -> float:
     """the CPU the calling thread alone has spent, in seconds.
 
     For an operation that runs wholly on the caller's thread: nothing another thread of the process does is counted.
-    An operation that hands work to another thread is under-counted by it; time that with :func:`cpu_seconds`.
+    An operation that hands work to another thread is under-counted by it; time that with :func:`_cpu_seconds`.
 
     :return: this thread's CPU seconds since an arbitrary fixed point
     :rtype: float
@@ -203,7 +201,7 @@ class CpuStopwatch:
         return self.seconds * 1000
 
     def __enter__(self) -> Self:
-        self._start = cpu_seconds()
+        self._start = _cpu_seconds()
         return self
 
     def __exit__(
@@ -212,13 +210,13 @@ class CpuStopwatch:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.seconds = cpu_seconds() - self._start
+        self.seconds = _cpu_seconds() - self._start
 
 
 async def best_cpu_seconds(
     operation: Callable[[], Awaitable[object]],
-    runs: int = BEST_OF_RUNS,
-    clock: Callable[[], float] = cpu_seconds,
+    runs: int = _BEST_OF_RUNS,
+    clock: Callable[[], float] = _cpu_seconds,
 ) -> float:
     """the CPU the fastest of ``runs`` awaits of ``operation()`` spent, each from a collected heap.
 
@@ -231,7 +229,7 @@ async def best_cpu_seconds(
     :ptype operation: Callable[[], Awaitable[object]]
     :param runs: how many timed runs
     :ptype runs: int
-    :param clock: the CPU clock: :func:`cpu_seconds` (every thread of the process, the default) or
+    :param clock: the CPU clock: :func:`_cpu_seconds` (every thread of the process, the default) or
         :func:`thread_cpu_seconds` (the calling thread only)
     :ptype clock: Callable[[], float]
     :return: the fastest run's CPU seconds on ``clock``

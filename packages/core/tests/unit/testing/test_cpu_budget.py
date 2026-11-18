@@ -7,11 +7,13 @@ a slow run cannot fail it, a slow code path still does), not this machine's spee
 
 from __future__ import annotations
 
+import time
+
 import threading
 
 import pytest
 
-from threetears.core.testing.calibrate import CpuStopwatch, best_cpu_seconds, cpu_seconds, thread_cpu_seconds
+from threetears.core.testing.calibrate import CpuStopwatch, best_cpu_seconds, thread_cpu_seconds
 
 
 class _ScriptedOperation:
@@ -74,13 +76,13 @@ class TestThreadCpuSeconds:
             for i in range(3_000_000):
                 total += i
 
-        process_began = cpu_seconds()
+        process_began = time.process_time()
         began = thread_cpu_seconds()
         worker = threading.Thread(target=burn)
         worker.start()
         worker.join()
         spent = thread_cpu_seconds() - began
-        process_spent = cpu_seconds() - process_began
+        process_spent = time.process_time() - process_began
 
         # the worker spends on the order of 100ms, which the process clock sees; this thread only started and joined it
         assert process_spent > 0.03, f"the worker spent only {process_spent * 1000:.1f}ms, too little to tell"
