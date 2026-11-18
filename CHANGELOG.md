@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `exit_with_parent` watches the process that started the worker, not the parent it finds later
+
+**Fixed:** `threetears.core.processes.exit_with_parent` read the worker's parent when it ran, after the start had
+imported the worker's modules (1.6 s in the hub's read worker). A parent killed in that window left the worker adopted
+by init, which the watch then took for its parent: the worker never exited (the hub's
+`test_workers_exit_with_their_parent`, red 4 of 4 alone; hub 580f6e079 worked around it). Given no `serving`, the
+watch now names the process that started the worker by the pid multiprocessing handed over at the start
+(`multiprocessing.parent_process()`): the parent of a spawned worker, the serving process of one the fork server forked
+(which watched the server before, and so outlived a killed serving process unless `serving` was passed). A process
+multiprocessing did not start watches its parent, as before. The hub's own `serving=` workaround can stay or go.
+
 ### core: `SchemaBackedCollection.delete_prefixes` deletes whole key prefixes at a cost the rows held do not set
 
 **Added:** `SchemaBackedCollection.delete_prefixes(prefixes, *, conn) -> int` deletes every row of some key prefixes

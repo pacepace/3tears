@@ -22,7 +22,11 @@ A daemon thread compares :func:`os.getppid` with the parent the worker started u
 :func:`os._exit` when it changes (the orphan is adopted by another process). A worker the fork server forked has the
 server for its parent, and the server lives while any worker it forked does (each holds the server's liveness pipe):
 watching its parent alone, such a worker outlived its killed serving process for ever. Given ``serving``, the thread
-watches that process too and exits once it is gone; the server, its last worker gone, exits after it. It runs on every
+watches that process too and exits once it is gone; the server, its last worker gone, exits after it. Not given, it
+is the process that started the worker (``multiprocessing.parent_process()``: the serving process for a worker the
+server forked, the parent for a spawned one), named by the pid handed over at the start rather than read as the
+parent when the watch begins: a parent killed while the worker still imported its modules has left it adopted by
+init by then, and a watch of that parent never ends. It runs on every
 platform. Linux's ``prctl(PR_SET_PDEATHSIG)`` is not used: it fires when the *thread* that spawned the worker exits,
 and a pool spawns its workers from whichever thread submits first (often a short-lived one), so it would kill healthy
 workers.
@@ -103,7 +107,8 @@ def exit_with_parent(interval: float = _INTERVAL, serving: int | None = None) ->
     :param interval: seconds between looks at the parent
     :ptype interval: float
     :param serving: the serving process this worker works for, when its parent is another (the fork server); None
-        to watch the parent alone
+        for the process that started this one (``multiprocessing.parent_process()``), or the parent alone for a
+        process multiprocessing did not start
     :ptype serving: int | None
     :return: nothing
     :rtype: None
@@ -112,6 +117,13 @@ def exit_with_parent(interval: float = _INTERVAL, serving: int | None = None) ->
         return
     _watching.set()
     parent = os.getppid()
+    # the process that started this one, by the pid multiprocessing handed over at the start, never read as the
+    # parent here: this runs after the start imported the worker's modules (1.6 s in the hub's read worker), and a
+    # spawner killed meanwhile left this process adopted by init, which a watch of the parent begun now waited on
+    # for ever (hub 580f6e079, red 4 of 4, 2026-11-18). For a worker the fork server forked it is the serving process
+    spawner = multiprocessing.parent_process()
+    if serving is None and spawner is not None:
+        serving = spawner.pid
     watched = None if serving == parent else serving
     threading.Thread(target=_watch, args=(parent, watched, interval), name="exit-with-parent", daemon=True).start()
 
