@@ -334,3 +334,22 @@ async def test_a_caller_aliasing_its_listed_table_still_sees_its_customer(pg_poo
         rows = await conn.fetch(f"SELECT {alias}.customer_id FROM listed_things {alias} WHERE {fragment}", *params)
 
     assert {row["customer_id"] for row in rows} == {customer_a}
+
+
+async def test_a_grant_on_any_namespace_of_a_customer_is_membership_in_it(pg_pool: asyncpg.Pool) -> None:
+    """a role acting on the namespace it is bound to opens that namespace's customer for every listed type.
+
+    deliberate, and relied on: an agent granted a datasource reader on one datasource namespace is
+    answered from that customer's knowledge. what the role check removes is only the grant that
+    acts nowhere at its namespace; the per-customer reach of a real namespace grant is unchanged.
+    """
+    customer_a, customer_b = uuid.uuid4(), uuid.uuid4()
+    async with pg_pool.acquire() as conn:
+        await _things(conn, customer_a, customer_b)
+        datasource_namespace = await _namespace(conn, customer_a, "datasource")
+        datasource_reader = await _role(conn, {"datasource": ["datasource.read"]})
+        holder = await _holder(conn, datasource_reader, scope_type="namespace", scope_namespace_id=datasource_namespace)
+        sees, customer_set = await _visible(conn, holder), await _customer_set(conn, holder)
+
+    assert sees == {customer_a}
+    assert customer_set == (False, {customer_a})
