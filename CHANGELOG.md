@@ -69,6 +69,12 @@ run time.
 Both classes satisfy them. `TargetCircuit(probe_pacer=, blocked_attempts=)` and `RobotsGate(delay_pacer=)` are typed
 by them instead of the concrete classes, so a test's pacer or counter type-checks with no cast or ignore. Nothing
 changes at run time.
+### core: `threetears.core.testing.statement_pool.StatementPool`, a raw L3 pool double
+
+`StatementPool` is a `RawL3Pool` with no table behind it: a test subclasses it and overrides the statements it answers
+(`fetch` / `fetchrow` / `execute`), and any other statement, or `acquire`, raises `NotImplementedError` naming it. A
+registry's `configure(l3_pool=...)` and a collection's `l3_pool` take it where they take an asyncpg pool, so a test's
+recording pool type-checks without a cast. The agent/memory and agent/skills unit tests' hand-made pools are built on it.
 
 ### datasources: `export_partitions` is typed as the generator it is; the column hash takes any column rows
 

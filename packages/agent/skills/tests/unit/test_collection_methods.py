@@ -23,6 +23,7 @@ from uuid import UUID
 import pytest
 from uuid_utils import uuid7
 
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
@@ -255,7 +256,7 @@ class TestCollectionClassAttributes:
         assert AgentSkillInvocationCollection.partition_column == "agent_id"
 
 
-class _RecordingPool:
+class _RecordingPool(StatementPool):
     """Minimal asyncpg-pool stand-in recording ``execute`` calls.
 
     Returns a fixed command-tag so ``save_to_store`` can exercise the

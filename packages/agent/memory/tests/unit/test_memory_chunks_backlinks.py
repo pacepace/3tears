@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.entities import MemoryChunkEntity
 from threetears.core.collections.registry import CollectionRegistry
@@ -172,7 +173,7 @@ class TestMemoryChunkCollectionSchema:
 # -- Search results carry the backlinks -----------------------------------------
 
 
-class _ChunkSearchPool:
+class _ChunkSearchPool(StatementPool):
     """L3 pool stand-in answering a chunk hybrid search's vector and keyword legs."""
 
     def __init__(self, vector_rows: list[dict[str, Any]], fts_rows: list[dict[str, Any]]) -> None:

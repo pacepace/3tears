@@ -26,6 +26,8 @@ from packages.agent.skills.tests.unit.skill_fakes import (
     FakeRegistry,
     FakeSkillsCollection,
 )
+from langchain_core.tools import StructuredTool
+from threetears.agent.skills.entities import AgentSkillEntity
 from threetears.agent.skills.tools import (
     SkillEligibleTool,
     SkillToolIntrospect,
@@ -850,8 +852,10 @@ class TestSkillReportOutcome:
         assert coll.rows[(agent_id, skill_id)]["failure_count"] == 1
         assert coll.rows[(agent_id, skill_id)]["success_count"] == 0
         # the outcome's note is kept in its own column; ``notes`` keeps the (absent) invoke reason
-        assert inv.latest()["outcome_notes"] == "target host unreachable"
-        assert inv.latest()["notes"] is None
+        latest = inv.latest()
+        assert latest is not None
+        assert latest["outcome_notes"] == "target host unreachable"
+        assert latest["notes"] is None
 
     async def test_no_marker_leak_in_output(self) -> None:
         """The whole point of a tool over a text marker: no [SUCCESS]/[FAILED] leaks."""
@@ -1065,14 +1069,8 @@ class TestSkillIntrospect:
         """failure injection: both lookups raise; the model must not be told the skill does not exist."""
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = FakeSkillsCollection()
-
-        async def _down(**_: Any) -> Any:
-            raise ConnectionError("pg: password=hunter2")
-
-        coll.find_by_name_for_user = _down  # type: ignore[method-assign]
-        reg = FakeRegistry()
-        reg.get_tool_introspect = _down  # type: ignore[method-assign]
+        coll = _DownSkills()
+        reg = _DownRegistry()
         [tool] = load_skill_introspect_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -1086,15 +1084,33 @@ class TestSkillIntrospect:
         assert "hunter2" not in out, "the exception message reached the model"
 
 
+#: a database error whose text holds a credential, which must never reach the model
+_DOWN = "pg: password=hunter2"
+
+
+class _DownSkills(FakeSkillsCollection):
+    """skills whose name lookup fails: the database is down."""
+
+    async def find_by_name_for_user(self, agent_id: UUID, user_id: UUID, name: str) -> AgentSkillEntity | None:
+        raise ConnectionError(_DOWN)
+
+
+class _DownRegistry(FakeRegistry):
+    """a registry whose reads fail: its database is down."""
+
+    async def list_skill_eligible_tools(self, *, actor_user_id: UUID, actor_agent_id: UUID) -> list[SkillEligibleTool]:
+        raise ConnectionError(_DOWN)
+
+    async def get_tool_introspect(
+        self, *, actor_user_id: UUID, actor_agent_id: UUID, mcp_name: str
+    ) -> SkillToolIntrospect | None:
+        raise ConnectionError(_DOWN)
+
+
 class TestAgentFacingTextCarriesTheTypeNotTheMessage:
     async def test_a_failed_tool_list_names_the_type_and_keeps_the_message_out(self) -> None:
         """failure injection: the registry's database is down and its error text holds a credential."""
-
-        async def _down(**_: Any) -> Any:
-            raise ConnectionError("pg: password=hunter2")
-
-        reg = FakeRegistry()
-        reg.list_skill_eligible_tools = _down  # type: ignore[method-assign]
+        reg = _DownRegistry()
         [tool] = load_skill_list_tool(
             agent_id=_new_uuid(), user_id=_new_uuid(), skills_collection=FakeSkillsCollection(), registry=reg
         )
@@ -1261,6 +1277,8 @@ class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
         coll = FakeSkillsCollection()
         reg = FakeRegistry(permitted_tools={"loki.query"})
         [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        # the coroutine itself, past the schema that no longer offers ``tool``
+        assert isinstance(create, StructuredTool) and create.coroutine is not None
         out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})
         assert out == f"[TOOL ERROR] skill_create: {TOOL_SKILLS_NOT_OFFERED}"
         assert coll.rows == {}

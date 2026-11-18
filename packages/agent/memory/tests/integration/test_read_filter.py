@@ -23,7 +23,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypedDict
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -76,6 +76,20 @@ _FILTERED: list[tuple[ReadFilter, frozenset[str]]] = [
 ]
 
 
+class _Owner(TypedDict):
+    """the owner every read names."""
+
+    agent_id: uuid.UUID
+    user_id: uuid.UUID
+
+
+class _Window(TypedDict):
+    """a date window holding every row."""
+
+    date_after: datetime
+    date_before: datetime
+
+
 @dataclass
 class World:
     """one owner's three memories, their passages and files, and the collections over them."""
@@ -103,11 +117,11 @@ class World:
         return {back[uuid.UUID(str(i))] for i in ids}
 
     @property
-    def owner(self) -> dict[str, uuid.UUID]:
+    def owner(self) -> _Owner:
         return {"agent_id": self.agent, "user_id": self.user}
 
     @property
-    def window(self) -> dict[str, datetime]:
+    def window(self) -> _Window:
         now = datetime.now(UTC)
         return {"date_after": now - timedelta(days=1), "date_before": now + timedelta(days=1)}
 
@@ -120,7 +134,7 @@ async def expect_filtered(world: World, read: Callable[[], Awaitable[set[str]]])
     assert await read() == LABELS, "a filter answering None"
     for read_filter, readable in _FILTERED:
         world.use(read_filter)
-        assert await read() == readable, read_filter.__name__
+        assert await read() == readable, repr(read_filter)
 
 
 @pytest.fixture
@@ -563,7 +577,7 @@ class TestTheFilterIsAskedOnEveryRead:
 
         # each task runs in its own copy of the context, concurrently, over the one collection
         results = await asyncio.gather(read_as("hide"), read_as("secret"), read_as(None))
-        assert results == [{"keep", "secret"}, {"keep", "hide"}, set(LABELS)]
+        assert list(results) == [{"keep", "secret"}, {"keep", "hide"}, set(LABELS)]
 
 
 class TestMemoryKeep:

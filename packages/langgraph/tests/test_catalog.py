@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphBubbleUp
+from langgraph.prebuilt import ToolRuntime
 
 from threetears.langgraph.middleware_catalog import ObjectCatalogMiddleware
 from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
@@ -154,6 +155,11 @@ def _make_handler(tool_map: dict[str, Any], config: RunnableConfig) -> Any:
     return _handler
 
 
+def _no_stream(chunk: Any) -> None:
+    """the stream writer of a run that streams nothing."""
+    _ = chunk
+
+
 async def _run_seam(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """Drive :class:`ObjectCatalogMiddleware` over the last AI message's tool calls.
 
@@ -172,7 +178,14 @@ async def _run_seam(state: dict[str, Any], config: RunnableConfig) -> dict[str, 
             tool_call=call,
             tool=tool_map.get(call["name"]),
             state=state,
-            runtime=SimpleNamespace(config=config),
+            runtime=ToolRuntime(
+                state=state,
+                context=None,
+                config=config,
+                stream_writer=_no_stream,
+                tool_call_id=call["id"],
+                store=None,
+            ),
         )
         result = await middleware.awrap_tool_call(request, _make_handler(tool_map, config))
         messages.append(result)

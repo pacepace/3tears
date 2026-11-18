@@ -19,6 +19,9 @@ from typing import Any
 import asyncpg
 import pytest
 
+from packages.langgraph.tests.checkpoint_support import make_checkpoint
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import Checkpoint
 from threetears.core.data.migrations import MigrationRunner
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
@@ -229,7 +232,7 @@ async def nc(nats_container: str) -> AsyncIterator[NatsClient]:
         yield client
 
 
-def _checkpoint(checkpoint_id: str, value: str = "small") -> dict[str, Any]:
+def _checkpoint(checkpoint_id: str, value: str = "small") -> Checkpoint:
     """a LangGraph checkpoint carrying ``value`` in one channel.
 
     :param checkpoint_id: the checkpoint's id
@@ -237,19 +240,12 @@ def _checkpoint(checkpoint_id: str, value: str = "small") -> dict[str, Any]:
     :param value: the channel's value; its size sets the blob's
     :ptype value: str
     :return: the checkpoint mapping
-    :rtype: dict[str, Any]
+    :rtype: Checkpoint
     """
-    return {
-        "id": checkpoint_id,
-        "ts": "2026-10-23T06:06:55Z",
-        "channel_values": {"state": value},
-        "channel_versions": {},
-        "versions_seen": {},
-        "pending_sends": [],
-    }
+    return make_checkpoint(checkpoint_id, ts="2026-10-23T06:06:55Z", channel_values={"state": value})
 
 
-_CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+_CONFIG: RunnableConfig = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
 
 
 @pytest.mark.parametrize("cache", [NatsCheckpointL2Cache, _PlainL2Cache], ids=["shipped-adapter", "put-refused"])

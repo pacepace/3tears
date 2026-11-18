@@ -526,7 +526,7 @@ class TestSkillInvokeIntegration:
             registry=registry,
         )
 
-        active: dict[str, Any] = {"id": None}
+        active: dict[str, UUID | None] = {"id": None}
 
         def _probe() -> UUID | None:
             return active["id"]
@@ -587,7 +587,7 @@ class TestSkillReportOutcomeIntegration:
             registry=registry,
         )
 
-        active: dict[str, Any] = {"id": None}
+        active: dict[str, UUID | None] = {"id": None}
 
         def _probe() -> UUID | None:
             return active["id"]

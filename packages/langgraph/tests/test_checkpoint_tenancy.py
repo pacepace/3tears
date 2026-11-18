@@ -35,6 +35,8 @@ from uuid import UUID
 
 import pytest
 
+from langgraph.checkpoint.base import Checkpoint
+from packages.langgraph.tests.checkpoint_support import make_checkpoint
 from threetears.langgraph.checkpoint import (
     CheckpointCacheError,
     CheckpointPurgeIncompleteError,
@@ -62,14 +64,7 @@ _FROM_CONFIG = CheckpointScope.from_config()
 
 _DEFAULT_CONFIG_KEY = "customer_id"
 
-_CHECKPOINT: dict[str, Any] = {
-    "id": "cp-1",
-    "ts": "2026-01-01T00:00:00Z",
-    "channel_values": {},
-    "channel_versions": {},
-    "versions_seen": {},
-    "pending_sends": [],
-}
+_CHECKPOINT: Checkpoint = make_checkpoint("cp-1", ts="2026-01-01T00:00:00Z")
 
 
 def _make_executor() -> Any:
@@ -97,11 +92,12 @@ def _no_statement_reached_the_executor(executor: Any) -> bool:
     :return: True when no execute/fetch/fetchrow call was made
     :rtype: bool
     """
-    return (
+    untouched: bool = (
         executor.execute.await_args_list == []
         and executor.fetch.await_args_list == []
         and executor.fetchrow.await_args_list == []
     )
+    return untouched
 
 
 class _DictL2Cache(CheckpointL2Cache):
@@ -955,7 +951,7 @@ class TestPrefixCacheCapability:
         l1.get.return_value = None
         cache = _DeleteDown()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=cache, scope=_UNSCOPED)
-        bundle = saver.serialize_checkpoint_tuple({"id": "erased", "channel_values": {}}, {}, None, [])
+        bundle = saver.serialize_checkpoint_tuple(make_checkpoint("erased"), {}, None, [])
         await saver.l2_put("t-1", "", bundle)
 
         with pytest.raises(

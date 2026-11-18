@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid7
 
@@ -13,8 +14,12 @@ from threetears.core.testing import entity_collection_stub
 from threetears.agent.memory.entities import MemoryConsolidationEntity, MemoryEntity
 
 
+#: the stand-in collection and the L1 rows it holds, keyed by the row's memory id
+_MockCollection = tuple[MagicMock, dict[str, dict[str, object]]]
+
+
 @pytest.fixture
-def mock_collection():
+def mock_collection() -> _MockCollection:
     """Mock collection with in-memory L1 cache simulation."""
     cache: dict[str, dict[str, object]] = {}
     coll = MagicMock()
@@ -48,7 +53,7 @@ def mock_collection():
     return coll, cache
 
 
-def _sample_data() -> dict:
+def _sample_data() -> dict[str, Any]:
     return {
         "memory_id": uuid7(),
         "user_id": uuid7(),
@@ -102,7 +107,7 @@ class TestMemoryEntityWithoutCollection:
 
 
 class TestMemoryEntityWithCollection:
-    def test_create_writes_to_l1(self, mock_collection: tuple) -> None:
+    def test_create_writes_to_l1(self, mock_collection: _MockCollection) -> None:
         coll, cache = mock_collection
         data = _sample_data()
         mid = str(data["memory_id"])
@@ -113,7 +118,7 @@ class TestMemoryEntityWithCollection:
         assert mid in cache
         assert entity.content == "User prefers dark mode"
 
-    def test_setattr_tracks_changes(self, mock_collection: tuple) -> None:
+    def test_setattr_tracks_changes(self, mock_collection: _MockCollection) -> None:
         coll, cache = mock_collection
         data = _sample_data()
 
@@ -124,7 +129,7 @@ class TestMemoryEntityWithCollection:
         assert entity.content == "Updated content"
         coll.set_field_sync.assert_called_with(data["memory_id"], "content", "Updated content")
 
-    def test_property_setters(self, mock_collection: tuple) -> None:
+    def test_property_setters(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=False, collection=coll)
@@ -157,7 +162,7 @@ class TestMemoryEntityWithCollection:
         assert entity.date_deleted == now
         assert entity.date_updated == now
 
-    def test_get_changes_for_existing(self, mock_collection: tuple) -> None:
+    def test_get_changes_for_existing(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=False, collection=coll)
@@ -168,7 +173,7 @@ class TestMemoryEntityWithCollection:
         assert changes == {"content": "changed"}
         assert "user_id" not in changes
 
-    def test_mark_clean_resets_state(self, mock_collection: tuple) -> None:
+    def test_mark_clean_resets_state(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=True, collection=coll)
@@ -180,7 +185,7 @@ class TestMemoryEntityWithCollection:
         assert entity.is_new is False
         assert entity.get_changes() == {}
 
-    async def test_save_delegates_to_collection(self, mock_collection: tuple) -> None:
+    async def test_save_delegates_to_collection(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=True, collection=coll)
@@ -195,7 +200,7 @@ class TestMemoryEntityWithCollection:
         with pytest.raises(RuntimeError, match="Cannot save entity without collection"):
             await entity.save()
 
-    def test_repr(self, mock_collection: tuple) -> None:
+    def test_repr(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=True, collection=coll)
@@ -289,7 +294,7 @@ class TestMemoryEntitySalienceSubstrate:
         data["superseded_by"] = gist
         assert MemoryEntity(data).superseded_by == gist
 
-    def test_salience_setter_tracks_change(self, mock_collection: tuple) -> None:
+    def test_salience_setter_tracks_change(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=False, collection=coll)
@@ -327,7 +332,7 @@ class TestMemoryEntityTags:
         data["tags"] = '["identity"]'
         assert MemoryEntity(data).tags == ["identity"]
 
-    def test_tags_setter_tracks_change(self, mock_collection: tuple) -> None:
+    def test_tags_setter_tracks_change(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         entity = MemoryEntity(_sample_data(), is_new=False, collection=coll)
 
@@ -337,7 +342,7 @@ class TestMemoryEntityTags:
         assert entity.get_changes()["tags"] == ["persona"]
 
 
-def _consolidation_data() -> dict:
+def _consolidation_data() -> dict[str, Any]:
     return {
         "agent_id": uuid7(),
         "consolidated_memory_id": uuid7(),

@@ -540,9 +540,11 @@ class TestCacheCoherence:
                 calls.append(entity_id)
                 await original(entity_id)
 
-            async def _spy_many(entity_ids: Sequence[Any]) -> None:
+            async def _spy_many(
+                entity_ids: Sequence[Any], *, rows: Sequence[dict[str, Any] | None] | None = None
+            ) -> None:
                 calls.extend(entity_ids)
-                await original_many(entity_ids)
+                await original_many(entity_ids, rows=rows)
 
             coll.invalidate_cache = _spy  # type: ignore[method-assign]
             coll.invalidate_cache_many = _spy_many  # type: ignore[method-assign]

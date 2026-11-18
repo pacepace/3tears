@@ -6,6 +6,7 @@ test module's private ones.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -34,7 +35,7 @@ def vec_sql(seed: float) -> str:
     return "[" + ",".join([str(seed)] * DIM) + "]"
 
 
-class StubEmbeddings:
+class StubEmbeddings(Embeddings):
     """embedder returning a fixed gist vector (distinct from source vectors)."""
 
     def __init__(self, gist_vector: list[float]) -> None:

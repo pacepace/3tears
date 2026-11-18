@@ -249,7 +249,8 @@ async def test_find_by_chunk_indexes_gives_the_hand_written_rows(conn: asyncpg.C
     wanted = [0, 3, 6, 9, 12, 30]
 
     async def helper(c: Any) -> list[dict[str, Any]]:
-        return await collection(MemoryChunkCollection, c).find_by_chunk_indexes(
+        chunks: MemoryChunkCollection = collection(MemoryChunkCollection, c)
+        return await chunks.find_by_chunk_indexes(
             memory, user_id=USER, agent_id=agent, customer_id=CUSTOMER, chunk_indexes=wanted
         )
 

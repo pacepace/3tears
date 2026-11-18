@@ -13,6 +13,7 @@ real Postgres L3, so the eviction is the production one.
 
 from __future__ import annotations
 
+from langchain_core.embeddings import Embeddings
 import json
 import uuid
 from typing import Any
@@ -43,8 +44,15 @@ _AGENT_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _CUSTOMER_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 
-class _Embedding:
+class _Embedding(Embeddings):
     """a fixed 1024-dim vector, the width of the pgvector column."""
+
+    def embed_query(self, text: str) -> list[float]:
+        _ = text
+        return [0.1] * 1024
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * 1024 for _ in texts]
 
     async def aembed_query(self, text: str) -> list[float]:
         _ = text

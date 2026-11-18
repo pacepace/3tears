@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 from uuid import uuid7
 
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MediaContentCollection, MemoriesCollection
 from threetears.agent.memory.entities import MemoryEntity
@@ -17,8 +19,12 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing import entity_collection_stub
 
 
+#: the stand-in collection and the L1 rows it holds, keyed by the normalized pk tuple
+_MockCollection = tuple[MagicMock, dict[tuple[Any, ...], dict[str, Any]]]
+
+
 @pytest.fixture()
-def mock_collection():
+def mock_collection() -> _MockCollection:
     """Collection stub declaring the ``memories`` composite pk shape.
 
     ``memories`` is partitioned on ``agent_id`` with composite pk
@@ -30,7 +36,7 @@ def mock_collection():
     return entity_collection_stub(("agent_id", "memory_id"))
 
 
-def _sample_data() -> dict:
+def _sample_data() -> dict[str, Any]:
     """Build sample memory data dict with scoping fields."""
     return {
         "memory_id": uuid7(),
@@ -81,7 +87,7 @@ class TestMemoryEntityAgentId:
 
         assert entity.agent_id == new_agent
 
-    def test_agent_id_setter_with_collection(self, mock_collection: tuple) -> None:
+    def test_agent_id_setter_with_collection(self, mock_collection: _MockCollection) -> None:
         coll, cache = mock_collection
         data = _sample_data()
         # a new entity lives in L1, so its setters write through, addressed by the composite key.
@@ -142,7 +148,7 @@ class TestMemoryEntityCustomerId:
 
         assert entity.customer_id == new_customer
 
-    def test_customer_id_setter_with_collection(self, mock_collection: tuple) -> None:
+    def test_customer_id_setter_with_collection(self, mock_collection: _MockCollection) -> None:
         coll, cache = mock_collection
         data = _sample_data()
         # a new entity lives in L1, so its setters write through, addressed by the composite key.
@@ -196,7 +202,7 @@ class TestMemoryEntityScopingCoexistence:
         assert entity.customer_id == new_customer
         assert entity.user_id == new_user
 
-    def test_changes_track_scope_fields(self, mock_collection: tuple) -> None:
+    def test_changes_track_scope_fields(self, mock_collection: _MockCollection) -> None:
         coll, _ = mock_collection
         data = _sample_data()
         entity = MemoryEntity(data, is_new=False, collection=coll)
@@ -211,7 +217,7 @@ class TestMemoryEntityScopingCoexistence:
         assert changes["customer_id"] == new_customer
 
 
-class _RecordingPool:
+class _RecordingPool(StatementPool):
     """L3 pool stand-in that records every statement and its parameters, returning no rows."""
 
     def __init__(self) -> None:

@@ -128,6 +128,7 @@ def _block(tables: list[Any], *, budget: int | None = None) -> str:
     )
     assert isinstance(out, ExtendedModelResponse)
     assert out.command is not None
+    assert out.command.update is not None
     block = out.command.update["metadata"]["documented_schema_block"]
     assert isinstance(block, str)
     return block
@@ -201,6 +202,7 @@ class TestInjection:
         assert "`imperatives` block" in content
         assert "# Documented schema" not in content
         assert out.command is not None
+        assert out.command.update is not None
         assert out.command.update["metadata"]["documented_schema_block"] == ""
 
     def test_a_failed_schema_read_says_so_rather_than_reading_as_no_documented_tables(self) -> None:
@@ -217,6 +219,7 @@ class TestInjection:
         assert "does not mean they have no documented tables" in content
         assert "`datasource.sales.schema`, `datasource.ops.schema`" in content
         assert out.command is not None
+        assert out.command.update is not None
         metadata = out.command.update["metadata"]
         assert metadata["documented_schema_block"] == "", "the notice is not stored as documentation"
         assert metadata["documented_schema_unread"] == "RuntimeError"
@@ -228,6 +231,7 @@ class TestInjection:
             {"schema_priming_integration": _StubIntegration(["ds-1"], [_TABLE])},
         )
         assert isinstance(out, ExtendedModelResponse) and out.command is not None
+        assert out.command.update is not None
         assert out.command.update["metadata"]["documented_schema_unread"] == ""
 
 

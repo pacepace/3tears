@@ -7,7 +7,6 @@ own quiet answer. These pin the one refusal that replaced them.
 
 from __future__ import annotations
 
-from typing import Any
 
 import pytest
 from langchain_core.embeddings import Embeddings
@@ -25,7 +24,7 @@ class _Array(list[float]):
 class _Scripted(Embeddings):
     """answers what it is given, or raises it."""
 
-    def __init__(self, query: Any, documents: Any) -> None:
+    def __init__(self, query: list[float] | Exception, documents: list[list[float]] | Exception) -> None:
         self._query = query
         self._documents = documents
         self.sent: list[list[str]] = []

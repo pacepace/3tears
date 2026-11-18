@@ -13,6 +13,8 @@ Pure-pydantic surface (no FastAPI, no Collection, no LLM). These assert:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -333,7 +335,7 @@ class TestToolCallFields:
         assert req.arguments == {"q": 1}
 
     def test_response_defaults_and_values(self) -> None:
-        base = {
+        base: dict[str, Any] = {
             "skill_id": "s",
             "agent_id": "a",
             "user_id": "u",

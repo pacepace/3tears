@@ -35,7 +35,9 @@ from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.kv import FakeSubscription
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.nats import SubscriptionHandle, TypedSubscriber
 
 
 pytestmark = pytest.mark.integration
@@ -132,7 +134,7 @@ class _InMemoryKvBucket:
         return existed or revision is None
 
 
-class _InMemoryNatsBus:
+class _InMemoryNatsBus(TypedSubscriber):
     """typed-wrapper NATS stand-in with KV bucket + typed pub/sub.
 
     mirrors the stand-in used in
@@ -178,9 +180,19 @@ class _InMemoryNatsBus:
         queue: Any = None,  # noqa: ARG002
         max_in_flight: Any = None,  # noqa: ARG002
         deadletter_on_failure: bool = True,  # noqa: ARG002
-    ) -> None:
-        subject_str = str(subject)
-        self._subs.setdefault(subject_str, []).append((cb, message_type))
+    ) -> FakeSubscription:
+        entry: tuple[Any, Any] = (cb, message_type)
+        self._subs.setdefault(str(subject), []).append(entry)
+        return FakeSubscription(subject=subject, entry=entry)
+
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """drop the one subscription this handle names: two pods share this bus and stop independently."""
+        if not isinstance(sub, FakeSubscription) or sub.is_closed:
+            return
+        sub.mark_closed()
+        entries = self._subs.get(str(sub.subject), [])
+        if sub.entry in entries:
+            entries.remove(sub.entry)
 
 
 def _build_pod(

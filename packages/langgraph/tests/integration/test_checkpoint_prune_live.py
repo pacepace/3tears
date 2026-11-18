@@ -27,6 +27,9 @@ from langgraph.channels.delta import DeltaChannel
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+from packages.langgraph.tests.checkpoint_support import make_checkpoint
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import Checkpoint
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.testing.plans import on_yugabyte
 from threetears.langgraph.checkpoint import (
@@ -111,7 +114,7 @@ async def database(db_container: str) -> AsyncIterator[_Database]:
         await conn.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
         register_langgraph(runner)
-        await runner.apply_for_agent_schema(_MigrationStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(_MigrationStore(conn))
     finally:
         await conn.close()
     pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, server_settings={"search_path": schema})
@@ -293,7 +296,7 @@ def _graph(saver: ThreeTierCheckpointSaver) -> Any:
     return parent.compile(checkpointer=saver)
 
 
-async def _paused_thread(graph: Any, thread: str) -> dict[str, Any]:
+async def _paused_thread(graph: Any, thread: str) -> RunnableConfig:
     """two complete turns, then a third that pauses inside the subgraph.
 
     :param graph: the compiled graph
@@ -301,9 +304,9 @@ async def _paused_thread(graph: Any, thread: str) -> dict[str, Any]:
     :param thread: the thread id
     :ptype thread: str
     :return: the thread's config
-    :rtype: dict[str, Any]
+    :rtype: RunnableConfig
     """
-    config: dict[str, Any] = {"configurable": {"thread_id": thread}}
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
     await graph.ainvoke({"log": ["turn-1"], "ask": False}, config)
     await graph.ainvoke({"log": ["turn-2"], "ask": False}, config)
     await graph.ainvoke({"log": ["turn-3"], "ask": True}, config)
@@ -463,7 +466,7 @@ class TestDeltaChannelHistoryIsKept:
         builder.add_edge(START, "note")
         builder.add_edge("note", END)
         graph = builder.compile(checkpointer=saver)
-        config: dict[str, Any] = {"configurable": {"thread_id": "t-delta"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t-delta"}}
         await graph.ainvoke({"log": ["one"]}, config)
         await graph.ainvoke({"log": ["two"]}, config)
         state_before = (await graph.aget_state(config)).values
@@ -556,7 +559,7 @@ class TestCustomerScope:
         assert result.checkpoints_deleted == 2
 
 
-def _checkpoint(checkpoint_id: str, value: str = "state") -> dict[str, Any]:
+def _checkpoint(checkpoint_id: str, value: str = "state") -> Checkpoint:
     """a LangGraph checkpoint carrying ``value`` in one channel.
 
     :param checkpoint_id: the checkpoint's id
@@ -564,17 +567,9 @@ def _checkpoint(checkpoint_id: str, value: str = "state") -> dict[str, Any]:
     :param value: the channel's value
     :ptype value: str
     :return: the checkpoint mapping
-    :rtype: dict[str, Any]
+    :rtype: Checkpoint
     """
-    return {
-        "id": checkpoint_id,
-        "v": 4,
-        "ts": "2026-11-13T00:00:00Z",
-        "channel_values": {"state": value},
-        "channel_versions": {},
-        "versions_seen": {},
-        "pending_sends": [],
-    }
+    return make_checkpoint(checkpoint_id, ts="2026-11-13T00:00:00Z", channel_values={"state": value})
 
 
 class TestCaches:
@@ -588,7 +583,7 @@ class TestCaches:
         """
         for ns in ("", "inner"):
             for n in (1, 2, 3):
-                config = {"configurable": {"thread_id": "t-cache", "checkpoint_ns": ns}}
+                config: RunnableConfig = {"configurable": {"thread_id": "t-cache", "checkpoint_ns": ns}}
                 stored = await saver.aput(config, _checkpoint(f"cp-{n}", f"{ns}-{n}"), {}, {})
                 await saver.aput_writes(stored, [("state", f"{ns}-write-{n}")], f"task-{n}")
 
@@ -597,7 +592,7 @@ class TestCaches:
         saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED, l1_cache=l1, l2_cache=l2, l2_bucket=_BUCKET)
         await self._seed(saver)
         # an L1 that missed another pod's writes, and an L2 holding an older bundle: both name pruned checkpoints
-        stale = saver.serialize_checkpoint_tuple(_checkpoint("cp-1", "stale"), {}, None, [])  # type: ignore[arg-type]
+        stale = saver.serialize_checkpoint_tuple(_checkpoint("cp-1", "stale"), {}, None, [])
         l1.store[("t-cache", "")] = stale
         l2.store["t-cache.inner"] = stale
 
@@ -606,14 +601,16 @@ class TestCaches:
         assert l1.store == {}
         assert l2.store == {}
         for ns in ("", "inner"):
-            config = {"configurable": {"thread_id": "t-cache", "checkpoint_ns": ns}}
-            pinned = {"configurable": {"thread_id": "t-cache", "checkpoint_ns": ns, "checkpoint_id": "cp-1"}}
-            kept = await saver.aget_tuple(config)  # type: ignore[arg-type]
+            config: RunnableConfig = {"configurable": {"thread_id": "t-cache", "checkpoint_ns": ns}}
+            pinned: RunnableConfig = {
+                "configurable": {"thread_id": "t-cache", "checkpoint_ns": ns, "checkpoint_id": "cp-1"}
+            }
+            kept = await saver.aget_tuple(config)
             assert kept is not None
             assert kept.checkpoint["id"] == "cp-3"
             assert kept.checkpoint["channel_values"] == {"state": f"{ns}-3"}
             assert [write[2] for write in kept.pending_writes or []] == [f"{ns}-write-3"]
-            assert await saver.aget_tuple(pinned) is None  # type: ignore[arg-type]
+            assert await saver.aget_tuple(pinned) is None
         # the read refilled L1 with the kept checkpoint, which the next read is served from
         cached = saver.deserialize_checkpoint_tuple(l1.store[("t-cache", "")])
         assert cached["checkpoint"]["id"] == "cp-3"
@@ -631,7 +628,7 @@ class TestCaches:
         # until a retry lands, this saver reads the thread from L3: L2 still holds a bundle
         l1.store.clear()
         l2.store["t-cache"] = saver.serialize_checkpoint_tuple(
-            _checkpoint("cp-1", "stale"),  # type: ignore[arg-type]
+            _checkpoint("cp-1", "stale"),
             {},
             None,
             [],
@@ -665,7 +662,7 @@ async def _seed_estate(executor: AsyncpgPoolAdapter) -> ThreeTierCheckpointSaver
     layout = {("owned-a", ""): 4, ("owned-a", "inner"): 3, ("owned-b", ""): 1, ("gone", ""): 2}
     for (thread, ns), count in layout.items():
         for n in range(1, count + 1):
-            config = {"configurable": {"thread_id": thread, "checkpoint_ns": ns}}
+            config: RunnableConfig = {"configurable": {"thread_id": thread, "checkpoint_ns": ns}}
             stored = await saver.aput(config, _checkpoint(f"cp-{n}", "x" * 500 * n), {}, {})
             await saver.aput_writes(stored, [("state", "w" * 300 * n)], f"task-{n}")
     await executor.execute("CREATE TABLE owned (thread_id text PRIMARY KEY)")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID, uuid4
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,7 @@ from threetears.agent.memory.events import (
     MemoryRetrievedEvent,
     default_memory_created_dispatcher,
 )
+from threetears.agent.memory.entities import MemoryEntity
 from threetears.langgraph.events import default_registry
 
 
@@ -63,30 +65,31 @@ class TestMemoryEventDefaults:
             MemoryCreatedEvent()  # type: ignore[call-arg]
 
 
-class _StubMemoryEntity:
-    """duck-typed stand-in for :class:`MemoryEntity` carrying the
-    attribute surface the dispatcher reads.
+_PROBE_MEMORY_ID = UUID("00000000-0000-0000-0000-000000000099")
 
-    avoids constructing a full :class:`MemoryEntity` (which requires a
-    composite-pk ``_id`` and BaseEntity wiring) since the dispatcher
-    only reads ``user_id`` / ``memory_id`` / ``conversation_id`` /
-    ``type_memory`` / ``content`` by attribute.
+
+def _memory(*, type_memory: str, content: str | None, memory_id: UUID | None = None) -> MemoryEntity:
+    """a real :class:`MemoryEntity` holding the row a test names, with no collection behind it.
+
+    :param type_memory: memory type classification
+    :ptype type_memory: str
+    :param content: memory content; None for a row that has none
+    :ptype content: str | None
+    :param memory_id: memory id; a fresh one when omitted
+    :ptype memory_id: UUID | None
+    :return: the entity
+    :rtype: MemoryEntity
     """
-
-    def __init__(
-        self,
-        *,
-        user_id: Any,
-        memory_id: Any,
-        conversation_id: Any,
-        type_memory: str,
-        content: str | None = None,
-    ) -> None:
-        self.user_id = user_id
-        self.memory_id = memory_id
-        self.conversation_id = conversation_id
-        self.type_memory = type_memory
-        self.content = content
+    return MemoryEntity(
+        {
+            "agent_id": uuid4(),
+            "memory_id": memory_id if memory_id is not None else uuid4(),
+            "user_id": uuid4(),
+            "conversation_id": uuid4(),
+            "type_memory": type_memory,
+            "content": content,
+        }
+    )
 
 
 class TestDefaultMemoryCreatedDispatcher:
@@ -111,12 +114,7 @@ class TestDefaultMemoryCreatedDispatcher:
         through verbatim, and ``content_preview`` is the leading slice
         of ``content``.
         """
-        from uuid import uuid4
-
-        entity = _StubMemoryEntity(
-            user_id=uuid4(),
-            memory_id=uuid4(),
-            conversation_id=uuid4(),
+        entity = _memory(
             type_memory="topical_context",
             content="The user prefers Python over Rust for prototypes.",
         )
@@ -161,10 +159,7 @@ class TestDefaultMemoryCreatedDispatcher:
             new=_fake_dispatch,
         ):
             await default_memory_created_dispatcher(
-                _StubMemoryEntity(
-                    user_id="u-1",
-                    memory_id="m-1",
-                    conversation_id="c-1",
+                _memory(
                     type_memory="fact",
                     content=long_content,
                 ),
@@ -192,10 +187,7 @@ class TestDefaultMemoryCreatedDispatcher:
             new=_fake_dispatch,
         ):
             await default_memory_created_dispatcher(
-                _StubMemoryEntity(
-                    user_id="u-1",
-                    memory_id="m-1",
-                    conversation_id="c-1",
+                _memory(
                     type_memory="preference",
                     content=None,
                 ),
@@ -235,17 +227,15 @@ class TestDefaultMemoryCreatedDispatcher:
         ):
             # Should NOT raise.
             await default_memory_created_dispatcher(
-                _StubMemoryEntity(
-                    user_id="u-99",
-                    memory_id="m-99",
-                    conversation_id="c-99",
+                _memory(
+                    memory_id=_PROBE_MEMORY_ID,
                     type_memory="fact",
                     content="probe",
                 ),
             )
 
         assert any(
-            "memory_created event dropped" in record.message and "memory_id=m-99" in record.message
+            "memory_created event dropped" in record.message and f"memory_id={_PROBE_MEMORY_ID}" in record.message
             for record in caplog.records
         ), f"expected a DEBUG log line naming the dropped memory_id; got {[r.message for r in caplog.records]!r}"
 
@@ -270,10 +260,7 @@ class TestDefaultMemoryCreatedDispatcher:
         ):
             with pytest.raises(ValueError, match="schema regression"):
                 await default_memory_created_dispatcher(
-                    _StubMemoryEntity(
-                        user_id="u-1",
-                        memory_id="m-1",
-                        conversation_id="c-1",
+                    _memory(
                         type_memory="fact",
                         content="probe",
                     ),

@@ -7,12 +7,20 @@ module's private helpers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from threetears.agent.skills.collections import OutcomeRecorded
-from threetears.core.keyed import BoundedCount, KeyPage
+from threetears.agent.skills.collections import (
+    AgentSkillCollection,
+    AgentSkillInvocationCollection,
+    InvocationPage,
+    OutcomeRecorded,
+)
+from threetears.agent.skills.types import OutcomeSource, SkillOutcome
+from threetears.core.entities.base import BaseEntity
+from threetears.core.keyed import BoundedCount
 from threetears.agent.skills.entities import (
     AgentSkillEntity,
     AgentSkillInvocationEntity,
@@ -25,29 +33,27 @@ from threetears.agent.skills.tools import (
 __all__ = ["FakeInvocationsCollection", "FakeRegistry", "FakeSkillsCollection"]
 
 
-# parity-with: threetears.agent.skills.collections.AgentSkillCollection
-# parity-exempt: AgentSkillCollection subset for the tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts/invalidate_cache and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
-class FakeSkillsCollection:
-    """In-memory stand-in for the public surface of :class:`AgentSkillCollection`.
+class FakeSkillsCollection(AgentSkillCollection):
+    """The production :class:`AgentSkillCollection` holding its rows in memory.
 
-    Implements the slice the tool factories call: ``create`` /
-    ``save_entity`` / ``get`` / ``delete`` / ``find_by_name_for_user``
-    / ``list_for_user`` / ``count_for_user``. Constructs entities with
-    ``collection=None`` so the cache-write path in
-    :meth:`BaseEntity.__init__` falls back to transient dict storage
-    -- no L1 / L2 / L3 wiring needed for unit tests.
+    Built without registry, config, pool or cache; overrides the slice the tool factories call:
+    ``create`` / ``save_entity`` / ``get`` / ``delete`` / ``find_by_name_for_user`` /
+    ``list_for_user`` / ``count_for_user`` / ``increment_outcome_counts``. Constructs entities
+    with ``collection=None`` so the cache-write path in :meth:`BaseEntity.__init__` falls back
+    to transient dict storage -- no L1 / L2 / L3 wiring needed for unit tests.
     """
 
     def __init__(self) -> None:
+        """build the fake without the production wiring: no registry, config, pool or L1 table."""
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
 
     def create(self, data: dict[str, Any]) -> AgentSkillEntity:
         return AgentSkillEntity(dict(data), is_new=True, collection=None)
 
-    async def save_entity(self, entity: Any, **kwargs: Any) -> int:
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
+        _ = conn
         data = entity.to_dict()
         self.rows[(data["agent_id"], data["skill_id"])] = dict(data)
-        return 1
 
     async def get(self, entity_id: Any) -> AgentSkillEntity | None:
         agent_id, skill_id = entity_id
@@ -82,7 +88,7 @@ class FakeSkillsCollection:
         user_id: UUID,
         *,
         enabled_only: bool = True,
-        tag_filter: Any = None,
+        tag_filter: Sequence[str] | None = None,
         query: str | None = None,
         limit: int = 20,
     ) -> list[AgentSkillEntity]:
@@ -110,7 +116,7 @@ class FakeSkillsCollection:
         user_id: UUID,
         *,
         enabled_only: bool = True,
-        tag_filter: Any = None,
+        tag_filter: Sequence[str] | None = None,
         query: str | None = None,
     ) -> int:
         needle = (query or "").lower().strip() if query else None
@@ -135,7 +141,7 @@ class FakeSkillsCollection:
         self,
         agent_id: UUID,
         skill_id: UUID,
-        outcome: str,
+        outcome: SkillOutcome,
     ) -> None:
         row = self.rows.get((agent_id, skill_id))
         if row is None:
@@ -149,12 +155,16 @@ class FakeSkillsCollection:
             raise ValueError(f"increment_outcome_counts: outcome must be 'success' or 'failure'; got {outcome!r}")
 
 
-# parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
-# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome + skill_history unit coverage; the tools call only create/save_entity/record/list_for_conversation/list_for_skill/count_for_skill/count_for_skill_at_most/set_outcome/record_outcome so the cache/persistence methods on the production class are out of scope; record_outcome's one-transaction write is covered on real Postgres in tests/integration/test_tools_e2e.py
-class FakeInvocationsCollection:
-    """In-memory stand-in for :class:`AgentSkillInvocationCollection`."""
+class FakeInvocationsCollection(AgentSkillInvocationCollection):
+    """The production :class:`AgentSkillInvocationCollection` holding its rows in memory.
+
+    Built without registry, config, pool or cache; overrides the slice skill_invoke,
+    skill_report_outcome and skill_history call. record_outcome's one-transaction write is
+    covered on real Postgres in tests/integration/test_tools_e2e.py.
+    """
 
     def __init__(self, skills: FakeSkillsCollection | None = None) -> None:
+        """build the fake without the production wiring, moving ``skills``' counts on a recorded outcome."""
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
         #: the skills whose counts a recorded outcome moves, as the production statement does
         self.skills = skills
@@ -162,10 +172,10 @@ class FakeInvocationsCollection:
     def create(self, data: dict[str, Any]) -> AgentSkillInvocationEntity:
         return AgentSkillInvocationEntity(dict(data), is_new=True, collection=None)
 
-    async def save_entity(self, entity: Any, **kwargs: Any) -> int:
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
+        _ = conn
         data = entity.to_dict()
         self.rows[(data["agent_id"], data["invocation_id"])] = dict(data)
-        return 1
 
     async def record(
         self,
@@ -194,8 +204,8 @@ class FakeInvocationsCollection:
         agent_id: UUID,
         invocation_id: UUID,
         *,
-        outcome: str,
-        source: str,
+        outcome: SkillOutcome,
+        source: OutcomeSource,
     ) -> None:
         row = self.rows.get((agent_id, invocation_id))
         if row is None:
@@ -209,8 +219,8 @@ class FakeInvocationsCollection:
         invocation_id: UUID,
         *,
         skill_id: UUID,
-        outcome: str,
-        source: str,
+        outcome: SkillOutcome,
+        source: OutcomeSource,
         notes: str | None = None,
     ) -> OutcomeRecorded:
         """The production rule in memory: a use counts once; a flip moves one count to the other side."""
@@ -230,7 +240,9 @@ class FakeInvocationsCollection:
                 target["last_failure_at"] = datetime.now(UTC)
         return OutcomeRecorded(found=True, previous=was, previous_notes=was_notes, counted=counted)
 
-    def _uses(self, agent_id: UUID, skill_id: UUID, outcome_filter: str | None) -> list[AgentSkillInvocationEntity]:
+    def _uses(
+        self, agent_id: UUID, skill_id: UUID, outcome_filter: SkillOutcome | None
+    ) -> list[AgentSkillInvocationEntity]:
         matches = [
             AgentSkillInvocationEntity(dict(row), is_new=False, collection=None)
             for row in self.rows.values()
@@ -248,16 +260,18 @@ class FakeInvocationsCollection:
         *,
         limit: int = 20,
         cursor: str | None = None,
-        outcome_filter: str | None = None,
-    ) -> KeyPage:
+        outcome_filter: SkillOutcome | None = None,
+    ) -> InvocationPage:
         # the cursor is the last row's key here: opaque to the tool, as the real one is
         matches = self._uses(agent_id, skill_id, outcome_filter)
         start = 0 if cursor is None else 1 + [str(e.invocation_id) for e in matches].index(cursor)
         rows = matches[start : start + limit]
         more = start + limit < len(matches)
-        return KeyPage(rows=rows, next_cursor=str(rows[-1].invocation_id) if more and rows else None)
+        return InvocationPage(rows=rows, next_cursor=str(rows[-1].invocation_id) if more and rows else None)
 
-    async def count_for_skill(self, agent_id: UUID, skill_id: UUID, *, outcome_filter: str | None = None) -> int:
+    async def count_for_skill(
+        self, agent_id: UUID, skill_id: UUID, *, outcome_filter: SkillOutcome | None = None
+    ) -> int:
         return len(self._uses(agent_id, skill_id, outcome_filter))
 
     async def count_for_skill_at_most(self, agent_id: UUID, skill_id: UUID, *, at_most: int) -> BoundedCount:

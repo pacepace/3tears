@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
@@ -356,14 +357,14 @@ def _graph(saver: ThreeTierCheckpointSaver, *, pause: bool = False) -> Any:
     return builder.compile(checkpointer=saver)
 
 
-def _turn(content: str = _CONTENT) -> dict[str, Any]:
+def _turn(content: str = _CONTENT) -> ChatState:
     """
     one channel turn as the SDK hands it to the graph.
 
     :param content: the message text
     :ptype content: str
     :return: the graph input
-    :rtype: dict[str, Any]
+    :rtype: ChatState
     """
     return {
         "messages": [HumanMessage(content=content, name=_NAME)],
@@ -377,12 +378,12 @@ def _turn(content: str = _CONTENT) -> dict[str, Any]:
     }
 
 
-def _config(thread: str = _THREAD) -> dict[str, Any]:
+def _config(thread: str = _THREAD) -> RunnableConfig:
     """
     :param thread: thread id
     :ptype thread: str
     :return: the run config for it
-    :rtype: dict[str, Any]
+    :rtype: RunnableConfig
     """
     return {"configurable": {"thread_id": thread}}
 

@@ -20,7 +20,15 @@ from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddlewar
 from langchain.agents.middleware.types import AgentState, ExtendedModelResponse
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    AnyMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -288,7 +296,7 @@ def _every_call_answered_in_order(messages: Sequence[BaseMessage]) -> bool:
         if open_ids:
             return False
         if isinstance(message, AIMessage):
-            open_ids = [c["id"] for c in message.tool_calls]
+            open_ids = [c["id"] for c in message.tool_calls if c["id"] is not None]
     return not open_ids
 
 
@@ -596,7 +604,7 @@ async def test_the_window_tiers_nudge_and_force_by_the_prompts_share_of_the_wind
     )
     messages = await _turn(model, budget)
 
-    kinds = []
+    kinds: list[str | None] = []
     for i, call in enumerate(model.calls):
         last = _last_seen(call)
         if call["told"]:
@@ -746,7 +754,7 @@ async def test_a_failing_retry_still_ends_the_turn_with_the_fallback() -> None:
 
 
 def _request(state: dict[str, Any] | None = None) -> ModelRequest:
-    history: list[BaseMessage] = [HumanMessage(content="hi")]
+    history: list[AnyMessage] = [HumanMessage(content="hi")]
     return ModelRequest(
         model=cast("BaseChatModel", _scripted(_looping())),
         messages=history,

@@ -9,6 +9,7 @@ ancestor) does NOT false-positive.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,7 +22,7 @@ from threetears.agent.memory.collections import (
 
 def _sources_of_from_map(
     edges: dict[UUID, list[UUID]],
-):
+) -> Callable[[UUID], Awaitable[list[UUID]]]:
     """build an async ``sources_of`` lookup over a static edge map.
 
     :param edges: consolidated_memory_id -> its source ids

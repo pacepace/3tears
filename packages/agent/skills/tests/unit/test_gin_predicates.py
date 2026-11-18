@@ -13,6 +13,7 @@ from uuid import UUID
 
 from uuid_utils import uuid7
 
+from threetears.core.testing.statement_pool import StatementPool
 from threetears.agent.skills.collections import AgentSkillCollection
 
 
@@ -21,7 +22,7 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-class _SqlRecorder:
+class _SqlRecorder(StatementPool):
     """asyncpg-pool stand-in that records the SQL of ``fetch`` and ``fetchval`` and returns nothing."""
 
     def __init__(self) -> None:

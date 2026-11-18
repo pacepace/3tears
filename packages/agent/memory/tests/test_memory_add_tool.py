@@ -7,6 +7,7 @@ build a registry-bound collection around an in-memory mock pool.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -55,7 +56,7 @@ class _StubContext:
         self.correlation_id = correlation_id
 
 
-def _resolver():
+def _resolver() -> _StubContext:
     """return a :class:`_StubContext` carrying the test ids.
 
     :return: stub call context
@@ -71,7 +72,7 @@ def _resolver():
 _EMBEDDING_DIM = 768
 
 
-def _make_pool():
+def _make_pool() -> AsyncMock:
     """build a simple asyncpg-shape mock pool."""
     pool = AsyncMock()
     pool.fetch.return_value = []
@@ -81,7 +82,7 @@ def _make_pool():
     return pool
 
 
-def _make_embedding_provider():
+def _make_embedding_provider() -> AsyncMock:
     """build a stub LangChain ``Embeddings``."""
     provider = AsyncMock()
     provider.aembed_query.return_value = [0.1] * _EMBEDDING_DIM
@@ -218,7 +219,7 @@ class TestLoadAddMemoryTool:
         }
         pool = _make_pool()
 
-        async def _fetch(query: str, *args):
+        async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
             # find_similar_for_dedup returns rows with the cosine score
             return [
                 {
@@ -229,7 +230,7 @@ class TestLoadAddMemoryTool:
                 }
             ]
 
-        async def _fetchrow(query: str, *args):
+        async def _fetchrow(query: str, *args: Any) -> dict[str, Any] | None:
             # composite-pk fetch: SQL is ``WHERE agent_id = $1 AND memory_id = $2``
             # so ``args`` is ``(agent_id, memory_id)``.
             if len(args) >= 2 and str(args[1]) == str(existing_id):
@@ -268,7 +269,7 @@ class TestLoadAddMemoryTool:
     ) -> None:
         pool = _make_pool()
 
-        async def _fetch(query: str, *args):
+        async def _fetch(query: str, *args: Any) -> list[dict[str, Any]]:
             return [
                 {
                     "memory_id": uuid4(),

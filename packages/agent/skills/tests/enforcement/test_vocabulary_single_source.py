@@ -97,6 +97,8 @@ def _inline_literals(tree: ast.Module) -> list[tuple[int, str]]:
     """
     hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
+        if not isinstance(node, ast.expr):
+            continue
         values = _string_literal_values(node)
         if values is not None:
             hits.append((node.lineno, ast.unparse(node)))
