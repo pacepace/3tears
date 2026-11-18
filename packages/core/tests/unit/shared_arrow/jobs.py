@@ -136,6 +136,35 @@ def process_id(context: JobContext) -> int:
     return os.getpid()
 
 
+def process_and_parent(context: JobContext) -> tuple[int, int]:
+    """the worker's process id and its parent's (the fork server's, for a pool's worker).
+
+    :return: the ids
+    :rtype: tuple[int, int]
+    """
+    return os.getpid(), os.getppid()
+
+
+def note_start(context: JobContext, started: str, name: str) -> None:
+    """append ``name`` to the file ``started`` as the job starts: the order jobs were given their workers.
+
+    :return: nothing
+    :rtype: None
+    """
+    with open(started, "a", encoding="utf-8") as noted:
+        noted.write(f"{name}\n")
+
+
+def note_start_then_wait(context: JobContext, started: str, name: str, signals: str) -> None:
+    """:func:`note_start`, then hold the worker until the test's go.
+
+    :return: nothing
+    :rtype: None
+    """
+    note_start(context, started, name)
+    _wait_for(Path(signals) / "go")
+
+
 def grow(context: JobContext, nbytes: int) -> int:
     """keep ``nbytes`` of private memory past the job, touched, and answer the worker's process id.
 
