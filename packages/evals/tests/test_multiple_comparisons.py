@@ -231,19 +231,19 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         family = _family(_bundle([BORDERLINE, *[NOISE] * 9]))
 
         # Ten judged readings and the question's pass rate (the contrast fails seven cases' trials the control
-        # passes; on 0 to 1, so read by the bounded test, p ≈ 0.048), which ranks second behind the borderline
-        # reading, so the borderline reading's step is the first of eleven and the pass rate's the second.
+        # passes; on 0 to 1, so read by the bounded test tuned to the family's α/11, p ≈ 0.022), which ranks first, so
+        # the borderline reading's step is the tenth of eleven.
         assert family.family_size == 11
         assert len(family.comparisons) == 11 and family.n_untested == 0
         borderline = next(c for c in family.comparisons if c.name == "extraction.d0")
         assert borderline.test == "paired" and borderline.p_raw is not None and borderline.p_adjusted is not None
         assert borderline.p_raw < 0.05, "the raw p alone would have called this a separation"
         assert borderline.p_adjusted >= 0.05
-        assert borderline.p_adjusted == pytest.approx(min(1.0, 11 * borderline.p_raw))
+        assert borderline.p_adjusted == pytest.approx(min(1.0, 10 * borderline.p_raw))
         assert borderline.verdict == "not_separated"
         passed = _pass_rate(family)
-        assert passed.basis == "bounded" and passed.p_raw is not None and passed.p_raw > borderline.p_raw
-        assert passed.p_adjusted == pytest.approx(min(1.0, 10 * passed.p_raw))
+        assert passed.basis == "bounded" and passed.p_raw is not None and passed.p_raw < borderline.p_raw
+        assert passed.p_adjusted == pytest.approx(min(1.0, 11 * passed.p_raw))
         assert "11 comparisons" in family.disclosure and "Holm" in family.disclosure
 
     def test_the_same_reading_alone_is_a_separation_so_the_family_made_the_difference(self) -> None:
