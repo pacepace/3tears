@@ -135,6 +135,8 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "reset": "an operator's reset: empties the whole table; reads and returns no row",
     "clear_partition": "a bulk delete of key prefixes; must reach every row of them whatever the filter says",
     "load_files": "a bulk load of files the caller supplies into the table; it returns a count, no stored row",
+    "delete_prefixes": "a bulk delete of key prefixes in one statement; must reach every row of them whatever the filter says",
+    "settle_prefixes": "settles L1 and the copy for prefixes a delete removed; reads and returns no row",
     "delete_l2_entry": "drops one L2 cache entry by key; touches no stored row",
     "invalidate_cache": "evicts one key from the cache tiers; returns nothing",
     "invalidate_cache_many": "evicts many keys from the cache tiers; returns nothing",
