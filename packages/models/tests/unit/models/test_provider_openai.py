@@ -200,7 +200,7 @@ class TestOpenAIWrapperStreaming:
                 del serialized, messages
                 self.start_seen += 1
 
-            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **_: Any) -> None:
                 if token:
                     self.token_seen += 1
 

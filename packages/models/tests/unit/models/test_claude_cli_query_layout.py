@@ -24,7 +24,7 @@ import pytest
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # noqa: E402
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage  # noqa: E402
 
 from .claude_cli_recorder import sent_to_cli  # noqa: E402
 
@@ -104,11 +104,11 @@ def _prior_turns() -> list[AIMessage | HumanMessage | ToolMessage]:
 _LATEST = "What did I ask you about first, and what did you find?"
 
 
-def _convert(messages: list) -> tuple[str, str | None]:
+def _convert(messages: list[BaseMessage]) -> tuple[str, str | None]:
     """the query and the system prompt the CLI receives for one call carrying ``messages``.
 
     :param messages: the round
-    :ptype messages: list
+    :ptype messages: list[BaseMessage]
     :return: ``(query, system_prompt)``
     :rtype: tuple[str, str | None]
     """
@@ -196,7 +196,7 @@ class TestARoundThatEndsWithThePersonsMessage:
 class TestAToolRound:
     """A round that ends with tool results: the person's latest message is still the request."""
 
-    def _round(self) -> list:
+    def _round(self) -> list[BaseMessage]:
         return [
             _system_with_untrusted_tail(),
             HumanMessage(content="Hello"),

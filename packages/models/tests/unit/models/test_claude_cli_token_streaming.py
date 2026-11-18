@@ -15,6 +15,8 @@ subprocess.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
 
@@ -84,18 +86,20 @@ class _FakeSDKClient:
     async def query(self, prompt: str) -> None:
         self.queried_prompt = prompt
 
-    async def receive_response(self):
+    async def receive_response(self) -> AsyncIterator[Any]:
         for msg in self._messages:
             yield msg
 
 
-def _model_streaming(messages: list[Any]):
+@contextmanager
+def _model_streaming(messages: list[Any]) -> Iterator[None]:
     """Build a subscription chat model wired to replay ``messages`` from the fake SDK client."""
 
     def _client_factory(*, options: Any = None) -> _FakeSDKClient:
         return _FakeSDKClient(messages, options=options)
 
-    return patch("claude_agent_sdk.ClaudeSDKClient", side_effect=_client_factory)
+    with patch("claude_agent_sdk.ClaudeSDKClient", side_effect=_client_factory):
+        yield
 
 
 async def _collect_chunks(messages: list[Any]) -> list[Any]:

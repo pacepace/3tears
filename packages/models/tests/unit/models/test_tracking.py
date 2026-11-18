@@ -92,14 +92,14 @@ class TestLlmPurpose:
 
     def test_values(self) -> None:
         """LlmPurpose contains all expected members with correct values."""
-        assert LlmPurpose.CHAT == "chat"
-        assert LlmPurpose.TOOL_SELECTION == "tool_selection"
-        assert LlmPurpose.EMBEDDING == "embedding"
-        assert LlmPurpose.TRANSCRIPTION == "transcription"
-        assert LlmPurpose.IMAGE_GENERATION == "image_generation"
-        assert LlmPurpose.SUMMARIZATION == "summarization"
-        assert LlmPurpose.EXTRACTION == "extraction"
-        assert LlmPurpose.UTILITY == "utility"
+        assert LlmPurpose.CHAT.value == "chat"
+        assert LlmPurpose.TOOL_SELECTION.value == "tool_selection"
+        assert LlmPurpose.EMBEDDING.value == "embedding"
+        assert LlmPurpose.TRANSCRIPTION.value == "transcription"
+        assert LlmPurpose.IMAGE_GENERATION.value == "image_generation"
+        assert LlmPurpose.SUMMARIZATION.value == "summarization"
+        assert LlmPurpose.EXTRACTION.value == "extraction"
+        assert LlmPurpose.UTILITY.value == "utility"
 
     def test_member_count(self) -> None:
         """LlmPurpose has exactly eight members."""

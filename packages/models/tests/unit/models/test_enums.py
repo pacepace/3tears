@@ -16,12 +16,12 @@ class TestModelType:
 
     def test_model_type_values(self) -> None:
         """ModelType contains all expected members with correct values."""
-        assert ModelType.CHAT == "chat"
-        assert ModelType.EMBEDDING == "embedding"
-        assert ModelType.TRANSCRIPTION == "transcription"
-        assert ModelType.IMAGE_GENERATION == "image_generation"
-        assert ModelType.SPEECH == "speech"
-        assert ModelType.RERANKING == "reranking"
+        assert ModelType.CHAT.value == "chat"
+        assert ModelType.EMBEDDING.value == "embedding"
+        assert ModelType.TRANSCRIPTION.value == "transcription"
+        assert ModelType.IMAGE_GENERATION.value == "image_generation"
+        assert ModelType.SPEECH.value == "speech"
+        assert ModelType.RERANKING.value == "reranking"
 
     def test_model_type_member_count(self) -> None:
         """ModelType has exactly six members."""
@@ -29,8 +29,10 @@ class TestModelType:
 
     def test_model_type_string_comparison(self) -> None:
         """ModelType members compare equal to their string values."""
-        assert ModelType.CHAT == "chat"
-        assert "embedding" == ModelType.EMBEDDING
+        text: str = "chat"
+        assert ModelType.CHAT == text
+        other: str = "embedding"
+        assert other == ModelType.EMBEDDING
 
     def test_model_type_is_string_instance(self) -> None:
         """ModelType members are string instances."""
@@ -49,9 +51,9 @@ class TestModelStatus:
 
     def test_model_status_values(self) -> None:
         """ModelStatus contains all expected members with correct values."""
-        assert ModelStatus.ACTIVE == "active"
-        assert ModelStatus.DEPRECATED == "deprecated"
-        assert ModelStatus.DISABLED == "disabled"
+        assert ModelStatus.ACTIVE.value == "active"
+        assert ModelStatus.DEPRECATED.value == "deprecated"
+        assert ModelStatus.DISABLED.value == "disabled"
 
     def test_model_status_member_count(self) -> None:
         """ModelStatus has exactly three members."""
@@ -59,8 +61,10 @@ class TestModelStatus:
 
     def test_model_status_string_comparison(self) -> None:
         """ModelStatus members compare equal to their string values."""
-        assert ModelStatus.ACTIVE == "active"
-        assert "deprecated" == ModelStatus.DEPRECATED
+        text: str = "active"
+        assert ModelStatus.ACTIVE == text
+        other: str = "deprecated"
+        assert other == ModelStatus.DEPRECATED
 
     def test_model_status_is_string_instance(self) -> None:
         """ModelStatus members are string instances."""
@@ -77,9 +81,9 @@ class TestModelTier:
 
     def test_model_tier_values(self) -> None:
         """ModelTier contains all expected members with correct values."""
-        assert ModelTier.SMALL == "small"
-        assert ModelTier.MEDIUM == "medium"
-        assert ModelTier.LARGE == "large"
+        assert ModelTier.SMALL.value == "small"
+        assert ModelTier.MEDIUM.value == "medium"
+        assert ModelTier.LARGE.value == "large"
 
     def test_model_tier_member_count(self) -> None:
         """ModelTier has exactly three members."""
@@ -87,8 +91,10 @@ class TestModelTier:
 
     def test_model_tier_string_comparison(self) -> None:
         """ModelTier members compare equal to their string values."""
-        assert ModelTier.SMALL == "small"
-        assert "large" == ModelTier.LARGE
+        text: str = "small"
+        assert ModelTier.SMALL == text
+        other: str = "large"
+        assert other == ModelTier.LARGE
 
     def test_model_tier_is_string_instance(self) -> None:
         """ModelTier members are string instances."""

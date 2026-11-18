@@ -11,7 +11,7 @@ probe nor be counted as the provider's verdict.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
 from typing import Any
 
@@ -23,6 +23,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from threetears.models.circuit_breaker import (
     DEFAULT_PROBE_TIMEOUT_SECONDS,
     CircuitBreaker,
+    CircuitBreakerCallback,
     CircuitBreakerRegistry,
     CircuitOpenError,
     CircuitState,
@@ -38,15 +39,18 @@ class _Clock:
 
 
 def _limited() -> Exception:
-    return type("TooManyRequests", (Exception,), {"status_code": 429})()
+    error: Exception = type("TooManyRequests", (Exception,), {"status_code": 429})()
+    return error
 
 
 def _not_found() -> Exception:
-    return type("NotFound", (Exception,), {"status_code": 404})()
+    error: Exception = type("NotFound", (Exception,), {"status_code": 404})()
+    return error
 
 
 def _server_error() -> Exception:
-    return type("ServerError", (Exception,), {"status_code": 502})()
+    error: Exception = type("ServerError", (Exception,), {"status_code": 502})()
+    return error
 
 
 def _registry(clock: _Clock, *, probe_timeout_seconds: float = 120.0) -> CircuitBreakerRegistry:
@@ -55,18 +59,18 @@ def _registry(clock: _Clock, *, probe_timeout_seconds: float = 120.0) -> Circuit
     )
 
 
-def _open_the_provider(callback, clock: _Clock) -> None:  # noqa: ANN001 - a callback handler
+def _open_the_provider(callback: CircuitBreakerCallback, clock: _Clock) -> None:
     for _ in range(2):
         callback.on_llm_error(_server_error())
     clock.now += 31.0
 
 
-def _callback(registry: CircuitBreakerRegistry):  # noqa: ANN202 - a callback handler
+def _callback(registry: CircuitBreakerRegistry) -> CircuitBreakerCallback:
     provider = registry.get("openrouter", credential="k")
     return provider.make_callback(rate_limit=registry.get("openrouter", credential="k", model="m"))
 
 
-def _open_the_rate_limit(callback, clock: _Clock) -> None:  # noqa: ANN001 - a callback handler
+def _open_the_rate_limit(callback: CircuitBreakerCallback, clock: _Clock) -> None:
     for _ in range(2):
         callback.on_llm_error(_limited())
     clock.now += 31.0
@@ -295,6 +299,7 @@ class TestACancelledCallIsNoVerdict:
         stream = GenericFakeChatModel(messages=iter([AIMessage(content="one two three")])).astream(
             "hi", config={"callbacks": [callback]}
         )
+        assert isinstance(stream, AsyncGenerator), "astream is an async generator, which is what closing it early needs"
         async with aclosing(stream):
             async for _chunk in stream:
                 break

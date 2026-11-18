@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
-from langchain_core.messages import HumanMessage  # noqa: E402
+from langchain_core.messages import BaseMessage, HumanMessage  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 from threetears.models.factory import create_chat_model  # noqa: E402
@@ -26,7 +26,7 @@ from .claude_cli_recorder import TOKEN, pooled_launch, sent_to_cli, subscription
 
 _RETRIES_ENV = "CLAUDE_CODE_MAX_RETRIES"
 _OUTPUT_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-_MESSAGES = [HumanMessage(content="hi")]
+_MESSAGES: list[BaseMessage] = [HumanMessage(content="hi")]
 
 
 def _through_the_factory(**provider_kwargs: Any) -> Any:

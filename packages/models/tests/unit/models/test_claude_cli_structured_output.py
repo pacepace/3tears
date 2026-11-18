@@ -13,7 +13,7 @@ at ``--max-turns 1`` with ``--json-schema``: the model's prose, a ``StructuredOu
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import patch
@@ -84,7 +84,7 @@ class _FakeSDKClient:
 
 
 @contextmanager
-def _no_real_sdk_calls():
+def _no_real_sdk_calls() -> Iterator[None]:
     with (
         patch("claude_agent_sdk.ClaudeSDKClient", _FakeSDKClient),
         patch("langchain_claude_code.claude_chat_model.ClaudeSDKClient", _FakeSDKClient),

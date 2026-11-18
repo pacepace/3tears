@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### models: `make_callback` answers its concrete callback; `attach_callbacks` takes a `RunnableBinding`
+
+`CircuitBreaker.make_callback` returns a `CircuitBreakerCallback` and `UsageTracker.make_callback` a
+`UsageTrackingCallback` (both `BaseCallbackHandler`s, as before), so a caller sees their optional `run_id`.
+`attach_callbacks(model)` is typed `BaseChatModel | RunnableBinding`, the binding it always handled. Nothing changes
+at run time.
+
 ### nats: `PipeTransport` hands back a `SubscriptionHandle`; `PipeOwnerTransport`, what `serve_pipe` uses
 
 `PipeTransport.subscribe` returns, and `unsubscribe` takes, a `threetears.nats.SubscriptionHandle` rather than the

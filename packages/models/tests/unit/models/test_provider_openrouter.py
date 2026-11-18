@@ -411,7 +411,9 @@ class TestNameTranslatingChatOpenRouter:
         finally:
             ChatOpenRouter.agenerate = original  # type: ignore[method-assign]
 
-        name = result.generations[0][0].message.tool_calls[0]["name"]
+        generation = result.generations[0][0]
+        assert isinstance(generation, ChatGeneration) and isinstance(generation.message, AIMessage)
+        name = generation.message.tool_calls[0]["name"]
         assert name == "threetears.calculator"
 
     @pytest.mark.asyncio
@@ -719,7 +721,7 @@ class TestNameTranslatingChatOpenRouter:
                 del serialized, messages
                 self.start_seen += 1
 
-            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **_: Any) -> None:
                 if token:
                     self.token_seen += 1
 
@@ -898,18 +900,16 @@ class TestForwardTranslateInput:
         assert forward_translate_input("hi") == "hi"
 
     def test_translates_list_of_messages(self) -> None:
-        original = [
-            SystemMessage(content="sys"),
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {}, "id": "c1"}],
-            ),
-        ]
+        asked = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {}, "id": "c1"}],
+        )
+        original = [SystemMessage(content="sys"), asked]
         out = forward_translate_input(original)
         assert out is not original
         assert out[1].tool_calls[0]["name"] == "threetears_web_search"
         # caller's list + messages untouched
-        assert original[1].tool_calls[0]["name"] == "threetears.web_search"
+        assert asked.tool_calls[0]["name"] == "threetears.web_search"
 
     def test_returns_same_list_when_no_translation(self) -> None:
         original = [SystemMessage(content="sys"), HumanMessage(content="hi")]

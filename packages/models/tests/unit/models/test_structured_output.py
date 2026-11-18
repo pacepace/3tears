@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from anthropic import transform_schema
+from pydantic import SecretStr
 
 from threetears.models.providers import (
     StructuredOutputError,
@@ -178,7 +179,7 @@ class TestOpenAiStructuredOutputKwargs:
         """
         from langchain_openai import ChatOpenAI
 
-        model = ChatOpenAI(model="gpt-4o", api_key="sk-test")
+        model = ChatOpenAI(model="gpt-4o", api_key=SecretStr("sk-test"))
         kwargs = openai_structured_output_kwargs(_SAMPLE_SCHEMA, name="answer")
 
         payload = model.bind(**kwargs).kwargs

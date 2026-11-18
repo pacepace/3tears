@@ -103,7 +103,7 @@ def test_threads_first_isolating_one_credential_at_once_share_one_root(monkeypat
     made: list[str] = []
 
     def slow_mkdtemp(*args: Any, **kwargs: Any) -> str:
-        path = real_mkdtemp(*args, **kwargs)
+        path: str = real_mkdtemp(*args, **kwargs)
         made.append(path)
         time.sleep(0.05)
         return path

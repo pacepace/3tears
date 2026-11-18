@@ -276,6 +276,7 @@ async def test_a_call_that_can_only_answer_in_its_schema_gets_the_turns_the_retr
     assert options.max_turns == 6, "five attempts, and one turn more, whatever the caller asked for"
     assert options.env["MAX_STRUCTURED_OUTPUT_RETRIES"] == "5", "the CLI's attempt cap is pinned, not inherited"
     assert isinstance(message, AIMessage)
+    assert isinstance(message.content, str), "a structured answer is its JSON text"
     assert json.loads(message.content) == _ANSWER, "the answer is the accepted attempt"
     assert message.tool_calls == [], "a StructuredOutput call is never handed back as a tool call"
     assert message.response_metadata["is_error"] is False, "a call answered after a retry reported an error"
@@ -586,6 +587,7 @@ async def _settled(structured_output: Any, schema: dict[str, Any] | None = None)
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
         bound = model.bind(**structured_output_kwargs("anthropic", _NOTE_SCHEMA if schema is None else schema))
         message = await bound.ainvoke([HumanMessage(content="write the note")])
+    assert isinstance(message.content, str), "a structured answer is its JSON text"
     return json.loads(message.content)
 
 
@@ -697,6 +699,7 @@ class TestTheCallsSyntaxOnTheRealPath:
             bound = model.bind(**structured_output_kwargs("anthropic", _NOTE_SCHEMA))
             message = await bound.ainvoke([HumanMessage(content="write the note")])
 
+        assert isinstance(message.content, str), "a structured answer is its JSON text"
         assert json.loads(message.content) == {"note": "Heat is on.", "facts": ["16.1°C"]}
 
     async def test_a_streamed_call_answers_without_the_calls_syntax(self) -> None:

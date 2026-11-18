@@ -934,7 +934,7 @@ class UsageTracker:
         tier: ModelTier | None = None,
         cost_per_input_token: Decimal | None = None,
         cost_per_output_token: Decimal | None = None,
-    ) -> BaseCallbackHandler:
+    ) -> UsageTrackingCallback:
         """builds a LangChain callback that records usage on every ``on_llm_end``.
 
         :param model_name: identifier of model used
@@ -950,7 +950,7 @@ class UsageTracker:
         :param cost_per_output_token: USD per output token (used to derive cost_usd)
         :ptype cost_per_output_token: Decimal | None
         :return: callback handler suitable for ``model.with_config(callbacks=[...])``
-        :rtype: BaseCallbackHandler
+        :rtype: UsageTrackingCallback
         """
         return UsageTrackingCallback(
             tracker=self,

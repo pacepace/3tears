@@ -25,7 +25,6 @@ from threetears.interfaces.media import (
     GENERATION_SOURCE_USED,
     GeneratedImage,
 )
-from threetears.models.providers.image import comfyui as comfyui_module
 from threetears.models.providers.image.a1111 import A1111ImageProvider
 from threetears.models.providers.image.comfyui import ComfyUIImageProvider
 from threetears.models.providers.image.huggingface import HuggingFaceImageProvider
@@ -327,7 +326,7 @@ class TestComfyUIOptions:
 
     async def test_nothing_asked_sends_the_default_workflow_with_a_drawn_seed(self, serve: Any) -> None:
         service = serve("comfyui", _comfyui)
-        with patch.object(comfyui_module.secrets, "randbelow", return_value=4242):
+        with patch("threetears.models.providers.image.comfyui.secrets.randbelow", return_value=4242):
             result = await ComfyUIImageProvider(poll_interval=0.0).generate("a mountain")
         # the workflow sent before size and seed existed, written out, with only the seed now drawn
         expected = {
@@ -386,7 +385,7 @@ class TestComfyUIOptions:
 
     async def test_a_seed_the_server_refuses_is_named_and_not_sent(self, serve: Any) -> None:
         service = serve("comfyui", _comfyui)
-        with patch.object(comfyui_module.secrets, "randbelow", return_value=31):
+        with patch("threetears.models.providers.image.comfyui.secrets.randbelow", return_value=31):
             result = await ComfyUIImageProvider(poll_interval=0.0).generate("a mountain", seed=-5)
         assert service.json_body()["prompt"]["3"]["inputs"]["seed"] == 31
         assert result.metadata is not None

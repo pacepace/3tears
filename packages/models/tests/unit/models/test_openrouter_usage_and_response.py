@@ -24,8 +24,9 @@ from typing import Any
 
 import httpx
 import pytest
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage
 from langchain_openrouter import ChatOpenRouter
+from pydantic import SecretStr
 
 from threetears.models.providers.openrouter import create_openrouter_chat
 
@@ -222,7 +223,7 @@ def _model(wire: _Wire, *, deadline: bool = True) -> Any:
     return model
 
 
-async def _ask(model: Any, how: str, question: str) -> BaseMessage:
+async def _ask(model: Any, how: str, question: str) -> AIMessage:
     """one ask on ``model`` by ``how``; the final message (a stream aggregated).
 
     :param model: the chat model
@@ -232,7 +233,7 @@ async def _ask(model: Any, how: str, question: str) -> BaseMessage:
     :param question: the question, which picks the wire's reply
     :ptype question: str
     :return: the answer
-    :rtype: BaseMessage
+    :rtype: AIMessage
     """
     if how == "ainvoke":
         answer: Any = await model.ainvoke(question)
@@ -246,7 +247,7 @@ async def _ask(model: Any, how: str, question: str) -> BaseMessage:
         answer = None
         for chunk in model.stream(question):
             answer = chunk if answer is None else answer + chunk
-    assert isinstance(answer, BaseMessage)
+    assert isinstance(answer, AIMessage)
     return answer
 
 
@@ -354,7 +355,12 @@ class TestLangChainsOwnMetadataIsUnchanged:
     @staticmethod
     def _plain(wire: _Wire) -> ChatOpenRouter:
         return ChatOpenRouter(
-            model=_MODEL, api_key="sk-or-test", client=_sdk(wire), max_retries=0, app_title=None, app_url=None
+            model=_MODEL,
+            api_key=SecretStr("sk-or-test"),
+            client=_sdk(wire),
+            max_retries=0,
+            app_title=None,
+            app_url=None,
         )
 
     @pytest.mark.parametrize("how", ["astream", "ainvoke", "stream", "invoke"])

@@ -182,6 +182,7 @@ async def _one_call(
                 async for chunk in bound.astream(messages):
                     merged = chunk if merged is None else merged + chunk
                 content = merged.content
+            assert isinstance(content, str), "a structured answer is its JSON text"
             jsonschema.validate(json.loads(content), schema)
         except Exception as exc:  # noqa: BLE001 -- every failure is collected and reported together
             failure = f"call {number} ({name}): {type(exc).__name__}: {exc}"

@@ -56,16 +56,16 @@ def _summed(chunks: list[AIMessageChunk]) -> AIMessageChunk:
     return total
 
 
-def _names_anywhere(message: AIMessage) -> list[Any]:
+def _names_anywhere(message: AIMessage) -> list[str | None]:
     """every tool name a message carries, in any field a consumer could read one from.
 
     :param message: a finished message or a chunk
     :ptype message: AIMessage
     :return: the names, from ``tool_calls``, ``invalid_tool_calls``, ``tool_call_chunks`` and
         content blocks
-    :rtype: list[Any]
+    :rtype: list[str | None]
     """
-    names = [call.get("name") for call in message.tool_calls]
+    names: list[str | None] = [call.get("name") for call in message.tool_calls]
     names += [call.get("name") for call in message.invalid_tool_calls]
     names += [call.get("name") for call in getattr(message, "tool_call_chunks", None) or []]
     if isinstance(message.content, list):
@@ -342,7 +342,7 @@ class TestEventsAndCallbacksSeeNoJunkCall:
         seen: list[Any] = []
 
         class _Recorder(AsyncCallbackHandler):
-            async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
                 seen.append(kwargs["chunk"].message)
 
         model = openai_model(_junk_split_across_deltas())
@@ -361,7 +361,7 @@ class TestEventsAndCallbacksSeeNoJunkCall:
         tokens: list[Any] = []
 
         class _Recorder(AsyncCallbackHandler):
-            async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
                 tokens.append(kwargs["chunk"].message)
 
         wire = _junk_split_across_deltas()
@@ -383,7 +383,7 @@ class TestEventsAndCallbacksSeeNoJunkCall:
         seen: list[Any] = []
 
         class _Recorder(BaseCallbackHandler):
-            def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
                 seen.append(kwargs["chunk"].message)
 
         wire = _anthropic_junk_answer()

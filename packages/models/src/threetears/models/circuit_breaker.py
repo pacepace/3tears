@@ -438,7 +438,7 @@ class CircuitBreaker:
                 extra=self._log_extra(),
             )
 
-    def make_callback(self, *, rate_limit: CircuitBreaker | None = None) -> BaseCallbackHandler:
+    def make_callback(self, *, rate_limit: CircuitBreaker | None = None) -> CircuitBreakerCallback:
         """builds a LangChain callback that drives this breaker, and the model's own for its rate limits.
 
         the callback short-circuits ``on_llm_start`` by calling :meth:`check`
@@ -450,7 +450,7 @@ class CircuitBreaker:
             ``model=``); ``None`` counts a rate limit against this breaker
         :ptype rate_limit: CircuitBreaker | None
         :return: callback handler suitable for ``model.with_config(callbacks=[...])``
-        :rtype: BaseCallbackHandler
+        :rtype: CircuitBreakerCallback
         """
         return CircuitBreakerCallback(self, rate_limit=rate_limit)
 

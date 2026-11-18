@@ -25,6 +25,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.runnables import RunnableBinding
 
 from threetears.models import (
     LlmPurpose,
@@ -38,6 +39,18 @@ from threetears.models import (
     usage_scope,
 )
 from threetears.models.tracking import UsageAuditSink, extract_usage
+
+
+class _RecordingTracker(UsageTracker):
+    """a tracker that keeps what it is asked to record, in place of exporting it."""
+
+    def __init__(self, *, audit_sink: UsageAuditSink | None = None) -> None:
+        super().__init__(audit_sink=audit_sink)
+        self.recorded: list[UsageRecord] = []
+
+    def record(self, usage: UsageRecord) -> None:
+        """keep ``usage``."""
+        self.recorded.append(usage)
 
 
 class _Sink(UsageAuditSink):
@@ -144,9 +157,8 @@ def _result(*messages: AIMessage) -> LLMResult:
 
 def test_every_generation_is_counted_and_cache_tokens_are_read() -> None:
     sink = _Sink()
-    tracker = UsageTracker(audit_sink=sink)
-    recorded: list[UsageRecord] = []
-    tracker.record = recorded.append  # type: ignore[method-assign]
+    tracker = _RecordingTracker(audit_sink=sink)
+    recorded = tracker.recorded
     callback = tracker.make_callback(model_name="fake", provider_name="fake")
     cached = {**_USAGE, "input_token_details": {"cache_read": 4, "cache_creation": 2}}
     callback.on_llm_end(_result(_reply(usage=cached), _reply(usage=_USAGE)), run_id=uuid4())
@@ -156,9 +168,8 @@ def test_every_generation_is_counted_and_cache_tokens_are_read() -> None:
 
 
 def test_no_usage_and_no_text_is_unavailable() -> None:
-    tracker = UsageTracker()
-    recorded: list[UsageRecord] = []
-    tracker.record = recorded.append  # type: ignore[method-assign]
+    tracker = _RecordingTracker()
+    recorded = tracker.recorded
     tracker.make_callback(model_name="fake", provider_name="fake").on_llm_end(_result(_reply("")), run_id=uuid4())
     assert recorded[0].token_source == "unavailable"
     assert (recorded[0].input_tokens, recorded[0].output_tokens) == (0, 0)
@@ -200,12 +211,10 @@ async def test_attach_callbacks_adds_to_a_factory_built_model_and_keeps_its_own(
 
 
 def test_factory_models_use_the_default_tracker_unless_given_one() -> None:
-    default = UsageTracker()
-    explicit = UsageTracker()
-    to_default: list[UsageRecord] = []
-    to_explicit: list[UsageRecord] = []
-    default.record = to_default.append  # type: ignore[method-assign]
-    explicit.record = to_explicit.append  # type: ignore[method-assign]
+    default = _RecordingTracker()
+    explicit = _RecordingTracker()
+    to_default = default.recorded
+    to_explicit = explicit.recorded
     try:
         set_default_usage_tracker(default)
         built = create_chat_model("gpt-4o-mini", api_key="sk-test", provider="openai")
@@ -233,9 +242,8 @@ def _end_one_call(model: Any) -> None:
 
 
 def test_uuid_metadata_is_parsed_and_junk_is_ignored() -> None:
-    tracker = UsageTracker()
-    recorded: list[UsageRecord] = []
-    tracker.record = recorded.append  # type: ignore[method-assign]
+    tracker = _RecordingTracker()
+    recorded = tracker.recorded
     callback = tracker.make_callback(model_name="fake", provider_name="fake")
     run = uuid4()
     user = uuid4()
@@ -274,9 +282,8 @@ async def test_records_reach_a_sink_bound_to_the_running_loop() -> None:
 
 
 def test_openai_shaped_usage_reads_its_cache_tokens() -> None:
-    tracker = UsageTracker()
-    recorded: list[UsageRecord] = []
-    tracker.record = recorded.append  # type: ignore[method-assign]
+    tracker = _RecordingTracker()
+    recorded = tracker.recorded
     result = LLMResult(
         generations=[[ChatGeneration(message=_reply())]],
         llm_output={
@@ -325,9 +332,8 @@ def test_a_scope_accepts_a_uuid_given_as_a_string() -> None:
 
 
 def test_the_scope_is_taken_when_the_call_starts() -> None:
-    tracker = UsageTracker()
-    recorded: list[UsageRecord] = []
-    tracker.record = recorded.append  # type: ignore[method-assign]
+    tracker = _RecordingTracker()
+    recorded = tracker.recorded
     callback = tracker.make_callback(model_name="fake", provider_name="fake")
     run, customer = uuid4(), uuid4()
     with usage_scope(customer_id=customer):
@@ -367,6 +373,7 @@ async def test_attach_keeps_callbacks_held_by_a_callback_manager() -> None:
     model = GenericFakeChatModel(messages=iter([_reply(usage=_USAGE)])).with_config(
         callbacks=AsyncCallbackManager(handlers=[first])
     )
+    assert isinstance(model, RunnableBinding), "with_config binds the model"
     await attach_callbacks(model, second).ainvoke([HumanMessage(content="hi")])
     assert (first.ends, second.ends) == (1, 1)
 

@@ -17,6 +17,7 @@ pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock  # noqa: E402
+from langchain_core.messages import AIMessageChunk  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 
@@ -70,7 +71,11 @@ class TestNoJunkCallIsHandedBack:
     async def test_astream(self, junk_name: str) -> None:
         junk = ToolUseBlock(id="toolu_junk", name=junk_name, input={"query": "x"})
         with recording_cli(answer=_asks_for(junk, _VALID)):
-            chunks = [chunk async for chunk in subscription_model().bind_tools([DottedTool()]).astream("hi")]
+            streamed = [chunk async for chunk in subscription_model().bind_tools([DottedTool()]).astream("hi")]
+        chunks: list[AIMessageChunk] = []
+        for chunk in streamed:
+            assert isinstance(chunk, AIMessageChunk), "a stream yields message chunks"
+            chunks.append(chunk)
         total = chunks[0]
         for chunk in chunks[1:]:
             total = total + chunk

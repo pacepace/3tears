@@ -84,7 +84,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic 529 overloaded error produces retry message."""
         try:
             from anthropic import APIStatusError
-            from httpx import Request, Response
+            from httpx2 import Request, Response
         except ImportError:
             return
 
@@ -109,7 +109,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic 429 rate limit error produces retry message."""
         try:
             from anthropic import APIStatusError
-            from httpx import Request, Response
+            from httpx2 import Request, Response
         except ImportError:
             return
 
@@ -132,7 +132,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic 500 server error produces retry message."""
         try:
             from anthropic import APIStatusError
-            from httpx import Request, Response
+            from httpx2 import Request, Response
         except ImportError:
             return
 
@@ -155,7 +155,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic 401 auth error suggests contacting administrator."""
         try:
             from anthropic import APIStatusError
-            from httpx import Request, Response
+            from httpx2 import Request, Response
         except ImportError:
             return
 
@@ -177,7 +177,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic timeout error produces retry message."""
         try:
             from anthropic import APITimeoutError
-            from httpx import Request
+            from httpx2 import Request
         except ImportError:
             return
 
@@ -193,7 +193,7 @@ class TestAnthropicErrorTranslation:
         """Anthropic connection error produces connectivity message."""
         try:
             from anthropic import APIConnectionError
-            from httpx import Request
+            from httpx2 import Request
         except ImportError:
             return
 

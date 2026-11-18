@@ -7,10 +7,17 @@ import time
 import pytest
 
 from threetears.models.circuit_breaker import (
+    CircuitBreaker,
     CircuitBreakerRegistry,
     CircuitOpenError,
     CircuitState,
 )
+
+
+def _state(breaker: CircuitBreaker) -> CircuitState:
+    """the breaker's state as it is now: read through a call, so mypy keeps no narrowing from an earlier assert
+    across the calls that change it."""
+    return breaker.state
 
 
 class TestCircuitBreakerIntegration:
@@ -24,12 +31,12 @@ class TestCircuitBreakerIntegration:
         # normal operations
         breaker.check()
         breaker.record_success()
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
         # failures trip the breaker
         for _ in range(3):
             breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
         # verify fast-fail
         with pytest.raises(CircuitOpenError):
@@ -38,11 +45,11 @@ class TestCircuitBreakerIntegration:
         # wait for recovery
         time.sleep(0.06)
         breaker.check()
-        assert breaker.state == CircuitState.HALF_OPEN
+        assert _state(breaker) == CircuitState.HALF_OPEN
 
         # probe success
         breaker.record_success()
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
     def test_circuit_breaker_probe_failure_reopens(self) -> None:
         """HALF_OPEN to OPEN on probe failure."""
@@ -52,16 +59,16 @@ class TestCircuitBreakerIntegration:
         # trip the breaker
         breaker.record_failure()
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
         # wait for recovery window
         time.sleep(0.06)
         breaker.check()
-        assert breaker.state == CircuitState.HALF_OPEN
+        assert _state(breaker) == CircuitState.HALF_OPEN
 
         # probe failure reopens
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
     def test_registry_reset_recovers_provider(self) -> None:
         """manual reset brings provider back online."""
@@ -70,19 +77,19 @@ class TestCircuitBreakerIntegration:
 
         # trip the breaker
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
         with pytest.raises(CircuitOpenError):
             breaker.check()
 
         # manual reset
         registry.reset("anthropic")
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
         # verify request flows again
         breaker.check()
         breaker.record_success()
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
     def test_multiple_providers_independent_state(self) -> None:
         """breakers for different providers operate independently."""
@@ -93,13 +100,13 @@ class TestCircuitBreakerIntegration:
         # trip anthropic breaker
         anthropic_breaker.record_failure()
         anthropic_breaker.record_failure()
-        assert anthropic_breaker.state == CircuitState.OPEN
+        assert _state(anthropic_breaker) == CircuitState.OPEN
 
         # openai breaker unaffected
-        assert openai_breaker.state == CircuitState.CLOSED
+        assert _state(openai_breaker) == CircuitState.CLOSED
         openai_breaker.check()
         openai_breaker.record_success()
-        assert openai_breaker.state == CircuitState.CLOSED
+        assert _state(openai_breaker) == CircuitState.CLOSED
 
     def test_status_reflects_all_provider_states(self) -> None:
         """registry status snapshot reflects current state of all breakers."""

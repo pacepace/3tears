@@ -18,7 +18,7 @@ one.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -255,10 +255,10 @@ def call_tool(build: Callable[[], Runnable[Any, Any]], name: str, arguments: dic
     return asyncio.run(answer())
 
 
-def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Awaitable[Any]:
+def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Coroutine[Any, Any, Any]:
     """a ``tools/call`` on an in-process MCP server's own handler, as the SDK's reader task runs it.
 
-    an awaitable rather than a result, so a test can run it in a context of its choosing
+    a coroutine rather than a result, so a test can run it in a context of its choosing
     (``asyncio.create_task(..., context=...)``). mcp 1.x keys handlers by request type and wraps
     the answer in a ``ServerResult``; 2.x keys them by method, calls them with ``(ctx, params)``
     and returns the result itself. both answer the ``CallToolResult``.
@@ -269,15 +269,19 @@ def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Awaitable
     :ptype name: str
     :param arguments: the call's arguments
     :ptype arguments: dict[str, Any]
-    :return: an awaitable answering the ``CallToolResult``
-    :rtype: Awaitable[Any]
+    :return: a coroutine answering the ``CallToolResult``
+    :rtype: Coroutine[Any, Any, Any]
     """
     from mcp.types import CallToolRequest, CallToolRequestParams  # noqa: PLC0415
 
     params = CallToolRequestParams(name=name, arguments=arguments)
     if hasattr(server, "get_request_handler"):
-        result: Awaitable[Any] = server.get_request_handler("tools/call").handler(None, params)
-        return result
+        direct = server.get_request_handler("tools/call").handler
+
+        async def answered() -> Any:
+            return await direct(None, params)
+
+        return answered()
     handler = server.request_handlers[CallToolRequest]
 
     async def unwrapped() -> Any:

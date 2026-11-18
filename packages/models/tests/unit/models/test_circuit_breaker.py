@@ -19,6 +19,12 @@ from threetears.models.circuit_breaker import (
 )
 
 
+def _state(breaker: CircuitBreaker) -> CircuitState:
+    """the breaker's state as it is now: read through a call, so mypy keeps no narrowing from an earlier assert
+    across the calls that change it."""
+    return breaker.state
+
+
 class TestCircuitState:
     """tests for CircuitState enum."""
 
@@ -28,9 +34,9 @@ class TestCircuitState:
 
     def test_circuit_state_values(self) -> None:
         """CircuitState contains CLOSED, OPEN, and HALF_OPEN with correct values."""
-        assert CircuitState.CLOSED == "closed"
-        assert CircuitState.OPEN == "open"
-        assert CircuitState.HALF_OPEN == "half_open"
+        assert CircuitState.CLOSED.value == "closed"
+        assert CircuitState.OPEN.value == "open"
+        assert CircuitState.HALF_OPEN.value == "half_open"
 
     def test_circuit_state_member_count(self) -> None:
         """CircuitState has exactly three members."""
@@ -64,7 +70,7 @@ class TestCircuitBreaker:
     def test_initial_state_is_closed(self) -> None:
         """new circuit breaker starts in CLOSED state."""
         cb = CircuitBreaker("test-provider")
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_check_passes_when_closed(self) -> None:
         """check does not raise when circuit is CLOSED."""
@@ -76,7 +82,7 @@ class TestCircuitBreaker:
         cb = CircuitBreaker("test-provider", failure_threshold=2)
         cb.record_failure()
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with pytest.raises(CircuitOpenError) as exc_info:
             cb.check()
@@ -87,20 +93,20 @@ class TestCircuitBreaker:
         cb = CircuitBreaker("test-provider", failure_threshold=2, recovery_timeout_seconds=10.0)
         cb.record_failure()
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
             cb.last_failure_time = 1000.0
             cb.check()
 
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
 
     def test_check_open_error_has_remaining_seconds(self) -> None:
         """CircuitOpenError includes remaining seconds until timeout."""
         cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=30.0)
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with pytest.raises(CircuitOpenError) as exc_info:
             cb.check()
@@ -114,80 +120,80 @@ class TestCircuitBreaker:
         cb.record_success()
         # should not open after one more failure since count was reset
         cb.record_failure()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_success_transitions_half_open_to_closed(self) -> None:
         """record_success transitions HALF_OPEN back to CLOSED."""
         cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=10.0)
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
             cb.last_failure_time = 1000.0
             cb.check()
 
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
         cb.record_success()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_single_failure_stays_closed(self) -> None:
         """single failure does not open circuit with default threshold."""
         cb = CircuitBreaker("test-provider", failure_threshold=5)
         cb.record_failure()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_threshold_failures_opens_circuit(self) -> None:
         """reaching failure threshold opens circuit."""
         cb = CircuitBreaker("test-provider", failure_threshold=3)
         cb.record_failure()
         cb.record_failure()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
     def test_failure_in_half_open_reopens(self) -> None:
         """failure in HALF_OPEN state transitions immediately to OPEN."""
         cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=10.0)
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
             cb.last_failure_time = 1000.0
             cb.check()
 
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
     def test_full_cycle_closed_open_halfopen_closed(self) -> None:
         """circuit transitions through full lifecycle: CLOSED -> OPEN -> HALF_OPEN -> CLOSED."""
         cb = CircuitBreaker("test-provider", failure_threshold=2, recovery_timeout_seconds=10.0)
 
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
         cb.record_failure()
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
             cb.last_failure_time = 1000.0
             cb.check()
 
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
 
         cb.record_success()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_reset_returns_to_closed(self) -> None:
         """reset forces circuit back to CLOSED regardless of current state."""
         cb = CircuitBreaker("test-provider", failure_threshold=1)
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
         cb.reset()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
 
     def test_concurrent_failures(self) -> None:
         """multiple threads can record failures without corruption."""
@@ -206,7 +212,7 @@ class TestCircuitBreaker:
             t.join()
 
         assert cb.failure_count == 100
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
 
 class TestCircuitBreakerRegistry:
@@ -217,7 +223,7 @@ class TestCircuitBreakerRegistry:
         registry = CircuitBreakerRegistry()
         breaker = registry.get("anthropic")
         assert isinstance(breaker, CircuitBreaker)
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
     def test_get_returns_same_breaker(self) -> None:
         """second get for same provider returns same instance."""
@@ -238,9 +244,9 @@ class TestCircuitBreakerRegistry:
         registry = CircuitBreakerRegistry(failure_threshold=1)
         breaker = registry.get("anthropic")
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
         registry.reset("anthropic")
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
     def test_reset_unknown_provider(self) -> None:
         """reset for unknown provider does not raise."""
@@ -277,7 +283,7 @@ class TestCircuitBreakerHalfOpenProbe:
     def test_half_open_admits_only_one_probe(self) -> None:
         """the first request probes; concurrent requests are fast-failed."""
         cb = self._half_open_breaker()
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
         # a second concurrent request while the probe is in flight is rejected. "Concurrent"
         # is the same moment the probe was admitted: a probe out longer than the recovery
         # timeout is taken as lost and replaced (test_a_probe_is_never_stranded.py).
@@ -290,7 +296,7 @@ class TestCircuitBreakerHalfOpenProbe:
         """a successful probe closes the circuit and clears the probe gate."""
         cb = self._half_open_breaker()
         cb.record_success()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
         cb.check()  # closed: passes freely, no lingering probe gate
 
     def test_probe_failure_reopens_and_clears_gate(self) -> None:
@@ -299,10 +305,10 @@ class TestCircuitBreakerHalfOpenProbe:
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 2000.0
             cb.record_failure()  # probe failed -> OPEN, gate cleared
-            assert cb.state == CircuitState.OPEN
+            assert _state(cb) == CircuitState.OPEN
             mock_time.monotonic.return_value = 2000.0 + 11.0
             cb.check()  # fresh single probe admitted
-            assert cb.state == CircuitState.HALF_OPEN
+            assert _state(cb) == CircuitState.HALF_OPEN
             with pytest.raises(CircuitOpenError):
                 cb.check()  # gate holds again
 
@@ -356,7 +362,7 @@ class TestRestore:
             seconds_until_probe_permitted=30.0,
             recovery_timeout_seconds=60.0,
         )
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
         with pytest.raises(CircuitOpenError) as exc:
             cb.check()
         assert exc.value.remaining_seconds == pytest.approx(30.0, abs=1.0)
@@ -371,7 +377,7 @@ class TestRestore:
             recovery_timeout_seconds=60.0,
         )
         cb.check()  # does not raise: this request IS the probe
-        assert cb.state == CircuitState.HALF_OPEN
+        assert _state(cb) == CircuitState.HALF_OPEN
 
     def test_a_restored_breaker_trips_on_the_next_failure_past_the_threshold(self) -> None:
         """the threshold rule is applied to the RESTORED count, not to a fresh zero.
@@ -381,21 +387,21 @@ class TestRestore:
         to prevent.
         """
         cb = CircuitBreaker.restore("deepseek", state=CircuitState.CLOSED, failure_count=2, failure_threshold=3)
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
         assert cb.failure_count == 3
 
     def test_a_restored_half_open_breaker_closes_on_a_successful_probe(self) -> None:
         cb = CircuitBreaker.restore("deepseek", state=CircuitState.HALF_OPEN, failure_count=4)
         cb.record_success()
-        assert cb.state == CircuitState.CLOSED
+        assert _state(cb) == CircuitState.CLOSED
         assert cb.failure_count == 0
 
     def test_a_restored_half_open_breaker_reopens_on_a_failed_probe(self) -> None:
         cb = CircuitBreaker.restore("deepseek", state=CircuitState.HALF_OPEN, failure_count=4)
         cb.record_failure()
-        assert cb.state == CircuitState.OPEN
+        assert _state(cb) == CircuitState.OPEN
 
     def test_no_probe_is_treated_as_in_flight_on_a_restored_breaker(self) -> None:
         """an in-flight probe belongs to the process that issued it.

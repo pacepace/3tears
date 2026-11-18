@@ -38,6 +38,12 @@ from threetears.models.tracking import (
 )
 
 
+def _state(breaker: CircuitBreaker) -> CircuitState:
+    """the breaker's state as it is now: read through a call, so mypy keeps no narrowing from an earlier assert
+    across the calls that change it."""
+    return breaker.state
+
+
 class _InMemorySpanExporter(SpanExporter):
     """in-memory span exporter for assertion in tests."""
 
@@ -303,7 +309,7 @@ class TestCircuitBreakerCallback:
         """callback raises :class:`CircuitOpenError` when the breaker is open."""
         breaker = CircuitBreaker("anthropic", failure_threshold=1, recovery_timeout_seconds=60)
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
         callback = breaker.make_callback()
         with pytest.raises(CircuitOpenError):
@@ -313,14 +319,14 @@ class TestCircuitBreakerCallback:
         """``on_llm_end`` returns the breaker to ``CLOSED`` from ``HALF_OPEN``."""
         breaker = CircuitBreaker("anthropic", failure_threshold=1, recovery_timeout_seconds=0)
         breaker.record_failure()
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
         breaker.check()  # transitions to HALF_OPEN since timeout=0
-        assert breaker.state == CircuitState.HALF_OPEN
+        assert _state(breaker) == CircuitState.HALF_OPEN
 
         callback = breaker.make_callback()
         callback.on_llm_end(MagicMock(), run_id=None)
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
 
     def test_on_llm_error_records_failure(self) -> None:
         """``on_llm_error`` increments failure count via :meth:`record_failure`."""
@@ -328,7 +334,7 @@ class TestCircuitBreakerCallback:
         callback = breaker.make_callback()
         callback.on_llm_error(RuntimeError("boom"), run_id=None)
         callback.on_llm_error(RuntimeError("boom"), run_id=None)
-        assert breaker.state == CircuitState.OPEN
+        assert _state(breaker) == CircuitState.OPEN
 
     def test_on_llm_error_ignores_circuit_open_error(self) -> None:
         """``CircuitOpenError`` is not counted as a provider failure."""
@@ -336,5 +342,5 @@ class TestCircuitBreakerCallback:
         callback = breaker.make_callback()
         # this is what the callback's own on_llm_start raises -- swallow it.
         callback.on_llm_error(CircuitOpenError("anthropic", 30.0), run_id=None)
-        assert breaker.state == CircuitState.CLOSED
+        assert _state(breaker) == CircuitState.CLOSED
         assert breaker.failure_count == 0

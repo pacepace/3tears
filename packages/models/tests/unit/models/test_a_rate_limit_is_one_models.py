@@ -8,18 +8,25 @@ is still the provider's.
 from __future__ import annotations
 
 import pytest
+from langchain_core.runnables import RunnableBinding
 
-from threetears.models.circuit_breaker import CircuitBreakerRegistry, CircuitOpenError, CircuitState
+from threetears.models.circuit_breaker import (
+    CircuitBreakerCallback,
+    CircuitBreakerRegistry,
+    CircuitOpenError,
+    CircuitState,
+)
 from threetears.models.errors import ModelRateLimitError, is_rate_limit
 
 
-def _callback(registry: CircuitBreakerRegistry, model: str):  # noqa: ANN202 - a callback handler
+def _callback(registry: CircuitBreakerRegistry, model: str) -> CircuitBreakerCallback:
     provider = registry.get("openrouter", credential="k")
     return provider.make_callback(rate_limit=registry.get("openrouter", credential="k", model=model))
 
 
 def _limited() -> Exception:
-    return type("TooManyRequests", (Exception,), {"status_code": 429})()
+    error: Exception = type("TooManyRequests", (Exception,), {"status_code": 429})()
+    return error
 
 
 class TestWhatIsARateLimit:
@@ -88,7 +95,10 @@ class TestTheFactoryGivesEachModelItsOwn:
 
         def _breaker_callback(model_id: str) -> CircuitBreakerCallback:
             model = factory.create_chat_model(model_id=model_id, api_key=key, provider="openrouter")
-            return next(c for c in model.config["callbacks"] if isinstance(c, CircuitBreakerCallback))
+            assert isinstance(model, RunnableBinding), "the factory binds its callbacks to the model"
+            callbacks = model.config["callbacks"]
+            assert isinstance(callbacks, list), "the factory binds its callbacks as a list"
+            return next(c for c in callbacks if isinstance(c, CircuitBreakerCallback))
 
         flash, sonnet = _breaker_callback("deepseek/deepseek-v4.1-flash"), _breaker_callback("anthropic/claude")
         # the shared registry's threshold

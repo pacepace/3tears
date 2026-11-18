@@ -81,7 +81,8 @@ class _FakeClient:
             self.sent.append({"session_id": session_id, **message})
 
     async def receive_response(self) -> Any:
-        for message in ():
+        nothing: tuple[Any, ...] = ()
+        for message in nothing:
             yield message
 
 
@@ -945,7 +946,12 @@ class TestTheOrphanSweep:
         elsewhere = self._marked_child(f"{dead}:0:in-a-container")
         local = self._marked_child(f"{dead}:0:orphaned")
         killed: list[int] = []
-        monkeypatch.setattr(claude_cli_pool, "kill_process_tree", lambda pid, **_: killed.append(pid) or 1)
+
+        def _kill(pid: int, **_: object) -> int:
+            killed.append(pid)
+            return 1
+
+        monkeypatch.setattr(claude_cli_pool, "kill_process_tree", _kill)
         try:
             sweep_orphaned_claude_clis(grace_seconds=1.0, elsewhere=lambda pid: pid != local.pid)
             assert killed == [local.pid], (
@@ -1863,7 +1869,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
         assert 5002 not in known
         if isinstance(failure, Exception):
             assert any(
-                "Could not stop a Claude CLI" in record.getMessage() and record.extra_data["pid"] == 5001
+                "Could not stop a Claude CLI" in record.getMessage() and record.__dict__["extra_data"]["pid"] == 5001
                 for record in caplog.records
             ), "a CLI that could not be stopped must be named in the log"
 
@@ -2046,12 +2052,13 @@ class TestTheLearnedPromptsAreBounded:
 
     async def test_a_call_that_falls_back_leaves_no_prompts(self) -> None:
         pool = _pool(max_sessions=1, per_key=1)
-        other_key = {"permission_mode": "other key"}
         async with pool.checkout(Options(system_prompt="held"), token=TOKEN, tool_server=None):
             with pytest.raises(ClaudeCliPoolExhausted):
-                async with pool.checkout(Options(system_prompt="other", **other_key), token=TOKEN, tool_server=None):
+                async with pool.checkout(
+                    Options(system_prompt="other", permission_mode="other key"), token=TOKEN, tool_server=None
+                ):
                     pass
-        later = await _call(pool, Options(system_prompt="third", **other_key))
+        later = await _call(pool, Options(system_prompt="third", permission_mode="other key"))
         assert later.options.agents == {agent_name("third"): "third"}, (
             "the call that ran on its own CLI left its prompt behind"
         )

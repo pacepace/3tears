@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import httpx
+import httpx2
 from anthropic import APIConnectionError, APIStatusError, APITimeoutError
 
 from threetears.models.errors import friendly_api_error, identify_provider
 
 
-def _make_request() -> httpx.Request:
-    """creates mock httpx request for exception constructors."""
-    return httpx.Request("POST", "https://api.anthropic.com")
+def _make_request() -> httpx2.Request:
+    """creates mock httpx2 request (the transport anthropic is built on) for exception constructors."""
+    return httpx2.Request("POST", "https://api.anthropic.com")
 
 
 def _make_status_error(
@@ -19,7 +19,7 @@ def _make_status_error(
     body: object | None = None,
 ) -> APIStatusError:
     """creates APIStatusError with given status code and body."""
-    response = httpx.Response(status_code, request=_make_request())
+    response = httpx2.Response(status_code, request=_make_request())
     return APIStatusError(message, response=response, body=body)
 
 

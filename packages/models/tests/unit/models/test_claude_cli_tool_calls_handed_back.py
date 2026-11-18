@@ -15,7 +15,7 @@ per-test script); what it returns is what the bundled CLI was measured to send a
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypedDict
 from unittest.mock import patch
@@ -66,7 +66,7 @@ def _tripwire_init(self: Any, *_args: Any, **_kwargs: Any) -> None:
 
 
 @contextmanager
-def _no_real_sdk_calls():
+def _no_real_sdk_calls() -> Iterator[None]:
     """Patch EVERY binding of ``ClaudeSDKClient`` a call through this backend can reach, so a bug
     in this fix can never accidentally place a real, billed Claude Agent SDK call -- MUST stay
     active for the full duration of any code that might call ``.ainvoke()``/``.astream()``, not
@@ -111,7 +111,7 @@ class _FakeSDKClient:
     returning the tool-use blocks it would.
     """
 
-    script: Callable[[str], "list[Any] | AsyncIterator[Any]"] | None = None
+    script: Callable[[str], Awaitable[list[Any]]] | None = None
     prompts: list[str] = []
     options: list[Any] = []
 
@@ -209,7 +209,7 @@ def _fresh_script() -> Any:
     yield
 
 
-def _replies(*scripted: list[Any]) -> Callable[[str], Any]:
+def _replies(*scripted: list[Any]) -> Callable[[str], Awaitable[list[Any]]]:
     queue = list(scripted)
 
     async def script(prompt: str) -> list[Any]:

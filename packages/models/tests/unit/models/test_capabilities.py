@@ -371,17 +371,16 @@ class TestCapabilityOverride:
     """
 
     @pytest.fixture(autouse=True)
-    def _clean_overrides(self) -> None:
+    def _clean_overrides(self) -> Iterator[None]:
         """ensure no leftover overrides bleed between tests."""
         clear_capability_overrides()
         yield
         clear_capability_overrides()
 
-    def _registered(self, model_id: str, **overrides: object) -> ModelCapabilities:
+    def _registered(self, model_id: str) -> ModelCapabilities:
         """register a baseline ModelCapabilities under ``model_id`` and return it.
 
-        keeps the test fixture concise by burying the required-fields
-        boilerplate and routing test-specific values through ``**overrides``.
+        keeps the test fixture concise by burying the required-fields boilerplate.
         """
         caps = ModelCapabilities(
             model_name=model_id,
@@ -394,7 +393,6 @@ class TestCapabilityOverride:
             supports_vision=True,
             cost_per_input_token=Decimal("0.000003"),
             cost_per_output_token=Decimal("0.000015"),
-            **overrides,
         )
         register_capabilities(model_id, caps)
         return caps

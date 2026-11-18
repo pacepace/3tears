@@ -176,7 +176,7 @@ class UsageAccumulator(BaseCallbackHandler):
         self._prompts.pop(run_id, None)
 
 
-def attach_callbacks(model: BaseChatModel, *handlers: BaseCallbackHandler) -> BaseChatModel:
+def attach_callbacks(model: BaseChatModel | RunnableBinding[Any, Any], *handlers: BaseCallbackHandler) -> BaseChatModel:
     """``model`` with ``handlers`` added to the callbacks it already carries.
 
     works on the ``RunnableBinding`` ``create_chat_model`` returns -- whose tracker and breaker
@@ -185,7 +185,7 @@ def attach_callbacks(model: BaseChatModel, *handlers: BaseCallbackHandler) -> Ba
     them, which is why this exists.)
 
     :param model: a chat model, bound or bare
-    :ptype model: BaseChatModel
+    :ptype model: BaseChatModel | RunnableBinding[Any, Any]
     :param handlers: the callbacks to add
     :ptype handlers: BaseCallbackHandler
     :return: the model with every callback attached

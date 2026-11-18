@@ -77,6 +77,7 @@ class TestCreateAnthropicChat:
     def test_model_name_propagated(self) -> None:
         """factory forwards model_name to ``ChatAnthropic``."""
         model = create_anthropic_chat(DEFAULT_FAST_MODEL, "sk-test")
+        assert isinstance(model, ChatAnthropic)
         assert model.model == DEFAULT_FAST_MODEL
 
     def test_strips_v1_suffix_from_base_url(self) -> None:
@@ -86,6 +87,7 @@ class TestCreateAnthropicChat:
             "sk-test",
             base_url="https://api.anthropic.com/v1",
         )
+        assert isinstance(model, ChatAnthropic)
         assert model.anthropic_api_url == "https://api.anthropic.com"
 
     def test_strips_v1_slash_suffix(self) -> None:
@@ -95,11 +97,13 @@ class TestCreateAnthropicChat:
             "sk-test",
             base_url="https://api.anthropic.com/v1/",
         )
+        assert isinstance(model, ChatAnthropic)
         assert model.anthropic_api_url == "https://api.anthropic.com"
 
     def test_no_base_url_means_default(self) -> None:
         """omitting base_url leaves ``ChatAnthropic`` to apply its default."""
         model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        assert isinstance(model, ChatAnthropic)
         # ChatAnthropic defaults the URL itself; just verify it is not None.
         assert model.anthropic_api_url is not None
 
@@ -236,7 +240,8 @@ class TestAnthropicWrapperStreaming:
         tokens: list[str] = []
 
         class _Recorder(AsyncCallbackHandler):
-            async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **kwargs: Any) -> None:
+                assert isinstance(token, str), "a text block streams text tokens"
                 tokens.append(token)
 
         wire = AnthropicMessagesWire(blocks=[TextBlock(["a", "b", "c"])])
@@ -292,7 +297,7 @@ class TestAnthropicWrapperStreaming:
                 del serialized, messages
                 self.start_seen += 1
 
-            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+            async def on_llm_new_token(self, token: str | list[str | dict[str, Any]], **_: Any) -> None:
                 if token:
                     self.token_seen += 1
 
@@ -437,21 +442,18 @@ class TestAnthropicForwardTranslation:
     async def test_astream_forward_translates_outbound_dotted_names(self) -> None:
         """``astream`` sends the wire (underscored) name; the caller's message
         keeps the canonical dotted name."""
-        outbound = [
-            SystemMessage(content="sys"),
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
-            ),
-            ToolMessage(content="hit", tool_call_id="c1"),
-        ]
+        asked = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+        )
+        outbound = [SystemMessage(content="sys"), asked, ToolMessage(content="hit", tool_call_id="c1")]
         wire = AnthropicMessagesWire()
         with wire.serve() as url:
             async for _ in anthropic_model(url).astream(outbound):
                 pass
 
         assert wire.sent_tool_use_names() == ["threetears_web_search"]
-        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
+        assert asked.tool_calls[0]["name"] == "threetears.web_search"
 
     @pytest.mark.asyncio
     async def test_agenerate_forward_translates_outbound_dotted_names(self) -> None:
@@ -460,21 +462,18 @@ class TestAnthropicForwardTranslation:
         Through ``agenerate``, which does not forward-translate itself, so the
         name on the wire is the one ``_agenerate`` sent.
         """
-        outbound = [
-            HumanMessage(content="search"),
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
-            ),
-            ToolMessage(content="hit", tool_call_id="c1"),
-        ]
+        asked = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+        )
+        outbound = [HumanMessage(content="search"), asked, ToolMessage(content="hit", tool_call_id="c1")]
         wire = AnthropicMessagesWire()
         with wire.serve() as url:
             await anthropic_model(url).agenerate([outbound])
 
         assert "stream" not in wire.bodies[-1] or wire.bodies[-1]["stream"] is False
         assert wire.sent_tool_use_names() == ["threetears_web_search"]
-        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
+        assert asked.tool_calls[0]["name"] == "threetears.web_search"
 
 
 class TestAnthropicToolChoice:

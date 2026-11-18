@@ -176,6 +176,7 @@ class TestMergeChunks:
                         "args": "{partial",
                         "id": "call_1",
                         "error": "JSONDecodeError",
+                        "type": "invalid_tool_call",
                     }
                 ],
             ),

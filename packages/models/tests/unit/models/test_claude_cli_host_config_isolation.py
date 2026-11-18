@@ -29,6 +29,7 @@ import pytest
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
+from claude_agent_sdk import ClaudeAgentOptions
 from langchain_core.messages import HumanMessage
 
 from .claude_cli_recorder import sent_to_cli, subscription_model
@@ -37,13 +38,16 @@ _TOKEN_A = "sk-ant-oat01-faketokenfortest-aaaa"
 _TOKEN_B = "sk-ant-oat01-faketokenfortest-bbbb"
 
 
-def _options(token: str = _TOKEN_A, *, call_kwargs: dict[str, object] | None = None, **model_kwargs: object):
+def _options(
+    token: str = _TOKEN_A, *, call_kwargs: dict[str, object] | None = None, **model_kwargs: object
+) -> ClaudeAgentOptions:
     """the options the CLI is launched with for one call of a model built with ``model_kwargs``."""
-    return sent_to_cli(
+    options: ClaudeAgentOptions = sent_to_cli(
         [HumanMessage(content="hi")],
         build=lambda: subscription_model(token, **model_kwargs),
         **(call_kwargs or {}),
     ).options
+    return options
 
 
 class TestHostConfigIsolation:
@@ -66,7 +70,9 @@ class TestHostConfigIsolation:
         assert not (cwd / "CLAUDE.md").exists()
 
     def test_a_caller_that_names_its_own_working_directory_keeps_it(self, tmp_path: Path) -> None:
-        assert Path(_options(cwd=str(tmp_path)).cwd) == tmp_path
+        cwd = _options(cwd=str(tmp_path)).cwd
+        assert cwd is not None
+        assert Path(cwd) == tmp_path
 
     def test_sessions_are_not_written_to_disk(self) -> None:
         extra = _options().extra_args

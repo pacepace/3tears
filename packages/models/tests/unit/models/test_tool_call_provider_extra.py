@@ -19,6 +19,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from threetears.models.providers import TOOL_CALL_PROVIDER_EXTRA_KEY
 
@@ -358,9 +359,9 @@ def _vanilla_body(history: list[Any]) -> dict[str, Any]:
     """
     wire = ChatCompletionsWire()
     transport = httpx.MockTransport(wire.handle)
-    ChatOpenAI(model="gpt-4o", api_key="sk-test", max_retries=0, http_client=httpx.Client(transport=transport)).invoke(
-        history
-    )
+    ChatOpenAI(
+        model="gpt-4o", api_key=SecretStr("sk-test"), max_retries=0, http_client=httpx.Client(transport=transport)
+    ).invoke(history)
     return wire.bodies[-1]
 
 

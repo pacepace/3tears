@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
+from claude_agent_sdk import ClaudeAgentOptions
 from langchain_core.messages import HumanMessage
 
 from threetears.models import DEFAULT_CHAT_MODEL
@@ -22,21 +23,24 @@ from threetears.models import DEFAULT_CHAT_MODEL
 from .claude_cli_recorder import TOKEN, sent_to_cli, subscription_model
 
 
-def _launched_with(**model_kwargs: object) -> object:
+def _launched_with(**model_kwargs: str | list[str]) -> ClaudeAgentOptions:
     """the options the CLI is launched with for one call of a model built with ``model_kwargs``."""
-    return sent_to_cli([HumanMessage(content="hi")], build=lambda: subscription_model(**model_kwargs)).options
+    options: ClaudeAgentOptions = sent_to_cli(
+        [HumanMessage(content="hi")], build=lambda: subscription_model(TOKEN, **model_kwargs)
+    ).options
+    return options
 
 
 class TestBuiltinToolsDefaultDeny:
     def test_default_disables_every_builtin_tool(self) -> None:
-        assert _launched_with().tools == []  # type: ignore[attr-defined]
+        assert _launched_with().tools == []
 
     def test_caller_can_explicitly_opt_a_builtin_back_in(self) -> None:
-        assert _launched_with(tools=["WebSearch"]).tools == ["WebSearch"]  # type: ignore[attr-defined]
+        assert _launched_with(tools=["WebSearch"]).tools == ["WebSearch"]
 
     def test_an_unrelated_kwarg_does_not_reopen_builtin_tools(self) -> None:
         """Passing some other forwarded kwarg must not accidentally clear the default-deny."""
-        assert _launched_with(permission_mode="default").tools == []  # type: ignore[attr-defined]
+        assert _launched_with(permission_mode="default").tools == []
 
     def test_bare_constructor_kwarg_on_the_base_class_would_have_been_silently_dropped(self) -> None:
         """Regression guard for the bug caught before this landed: ClaudeCodeChatModel's own
@@ -46,7 +50,8 @@ class TestBuiltinToolsDefaultDeny:
         from langchain_claude_code import ClaudeCodeChatModel
 
         def base() -> ClaudeCodeChatModel:
-            return ClaudeCodeChatModel(model=DEFAULT_CHAT_MODEL, oauth_token=TOKEN, tools=[])
+            # validated as the constructor validates its keywords, so the undeclared ``tools`` meets the same config
+            return ClaudeCodeChatModel.model_validate({"model": DEFAULT_CHAT_MODEL, "oauth_token": TOKEN, "tools": []})
 
         assert not hasattr(base(), "tools")
         assert sent_to_cli([HumanMessage(content="hi")], build=base).options.tools is None

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 
 from threetears.models.tool_name_validation import (
@@ -137,7 +140,7 @@ class TestValidateToolName:
 
     def test_valid_name_returns_none(self) -> None:
         """a valid name returns ``None`` without raising."""
-        assert validate_tool_name("threetears.calculator") is None
+        validate_tool_name("threetears.calculator")
 
     def test_invalid_name_raises_tool_name_validation_error(self) -> None:
         """an invalid name raises :class:`ToolNameValidationError`."""
@@ -257,7 +260,8 @@ class TestFilterInvalidToolCalls:
 
     def test_non_dict_entry_is_rejected(self) -> None:
         """a non-dict entry has no name to dispatch and is not a fragment."""
-        call = "not-a-dict"
-        kept, rejected = filter_invalid_tool_calls([call])  # type: ignore[list-item]
+        # as it arrives off the wire: whatever the provider's JSON held, whatever the list's type says
+        calls: list[dict[str, Any]] = json.loads('["not-a-dict"]')
+        kept, rejected = filter_invalid_tool_calls(calls)
         assert kept == []
-        assert rejected == [call]
+        assert rejected == calls

@@ -152,6 +152,11 @@ async def _ask(answer: str, *, deadline_s: int | None) -> tuple[Any, list[bool]]
 _WIRE_FORMAT_KEYS = {"object", "logprobs"}
 
 
+def _without_wire_format(meta: dict[str, Any]) -> dict[str, Any]:
+    """``meta`` without the keys that name the wire format."""
+    return {k: v for k, v in meta.items() if k not in _WIRE_FORMAT_KEYS}
+
+
 class TestTheStreamedAnswerIsTheSameAnswer:
     @pytest.mark.parametrize("answer", ["plain", "tool call"])
     async def test_the_message_matches_the_one_the_json_path_returned(self, answer: str) -> None:
@@ -165,8 +170,7 @@ class TestTheStreamedAnswerIsTheSameAnswer:
         assert after.usage_metadata == before.usage_metadata
         assert after.response_metadata["provider"] == _SERVED_BY
         assert after.response_metadata["finish_reason"] == before.response_metadata["finish_reason"]
-        strip = lambda meta: {k: v for k, v in meta.items() if k not in _WIRE_FORMAT_KEYS}  # noqa: E731
-        assert strip(after.response_metadata) == strip(before.response_metadata)
+        assert _without_wire_format(after.response_metadata) == _without_wire_format(before.response_metadata)
 
     async def test_a_structured_answer_parses_the_same(self) -> None:
         before, _ = await _ask("structured", deadline_s=None)
