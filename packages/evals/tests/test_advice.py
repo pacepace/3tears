@@ -20,7 +20,7 @@ from threetears.evals import Eval
 from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.report.words import NO_ADVICE_SENTENCE
 from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, advice_path
-from threetears.evals.analysis.style import ADVICE_PROMISE, ADVICE_TERM, GLOSSARY, LATE_UNDO_SENTENCE
+from threetears.evals.analysis.style import GLOSSARY, LATE_UNDO_SENTENCE
 
 from packages.evals.tests import advice_nulls
 
@@ -39,12 +39,12 @@ def test_the_bars_are_the_evidence_words_own_steps() -> None:
     assert (ADVICE_BARS["easy"], ADVICE_BARS["hard"]) == EVIDENCE_STEPS
 
 
-def test_the_promise_is_stated_once_and_defined_in_the_glossary() -> None:
-    assert ADVICE_PROMISE == (
-        "However often anyone looks, if the candidate is not really better the advice says switch at most one time in "
-        "three, or one time in ten for a switch declared hard to undo."
+def test_the_promise_is_said_where_the_advice_is_defined() -> None:
+    assert GLOSSARY["advice"] == (
+        "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
+        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better at most "
+        "one time in three (one in ten), however often anyone looks."
     )
-    assert "one time in three (one in ten)" in GLOSSARY[ADVICE_TERM]
 
 
 def test_all_wins_switch_once_the_evidence_reaches_each_bar() -> None:

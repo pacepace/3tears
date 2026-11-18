@@ -573,16 +573,6 @@ CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b
 #: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
 EVIDENCE_TERM = "evidence"
 
-#: The glossary's term for the advice a comparison's first line gives beside its proof, which that line links.
-ADVICE_TERM = "advice"
-
-#: The one promise the advice keeps (:func:`~threetears.evals.analysis.stats.advice_path`), as every surface states
-#: it: in the glossary, the docs and the advice's disclosure.
-ADVICE_PROMISE = (
-    "However often anyone looks, if the candidate is not really better the advice says switch at most one time in "
-    "three, or one time in ten for a switch declared hard to undo."
-)
-
 #: What a quick-path comparison whose switch was declared hard to undo after its first result says, in its family's
 #: disclosure: the advice reads the default bar, since a bar chosen once the evidence was seen is a second look.
 LATE_UNDO_SENTENCE = (
@@ -666,7 +656,8 @@ GLOSSARY: dict[str, str] = {
     ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
     EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
-    ADVICE_TERM: (
+    # The promise the advice keeps (stats.advice_path), said with what it is.
+    "advice": (
         "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
         "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better at most "
         "one time in three (one in ten), however often anyone looks."
@@ -922,8 +913,6 @@ __all__ = [
     "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
-    "ADVICE_PROMISE",
-    "ADVICE_TERM",
     "EVIDENCE_TERM",
     "LATE_UNDO_SENTENCE",
     "CANNOT_TELL_APART_PHRASE",

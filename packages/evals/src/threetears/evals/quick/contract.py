@@ -407,8 +407,7 @@ class Eval:
             question a non-inferiority one, its pass rate reading no worse than the margin, shown worse or neither.
             Needs ``question``; ``None`` declares none, and the package never assumes one.
         :param undo: How hard switching to a candidate would be to undo, declared with the question before anything
-            runs. The first line advises what to do on the first grader's reading, beside what is proven (:data:`~threetears.evals.analysis.style.
-            ADVICE_PROMISE`): ``"easy"`` (the default: a prompt, a model, a config a revert undoes) switches at
+            runs. The first line advises what to do on the first grader's reading, beside what is proven (the glossary's "advice"): ``"easy"`` (the default: a prompt, a model, a config a revert undoes) switches at
             moderate evidence, ``"hard"`` (a migration, a published claim) at strong.
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
