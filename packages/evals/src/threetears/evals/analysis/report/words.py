@@ -224,17 +224,119 @@ def standing_side(delta: float | None, *, higher_is_better: bool) -> _StandingSi
     return "ahead" if (delta > 0) == higher_is_better else "behind"
 
 
-def standing_words(side: _StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
-    """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``.
+#: Where an arm stands on a question's primary that its bet has not yet decided, which the bet can still decide: what the
+#: proof line says beside the advice above it, never "undecided", which beside an advice to switch reads as "nobody knows
+#: what to do". Filled by :func:`standing_words`.
+_UNPROVEN_WORDS = worded(
+    {
+        "ahead": "{arm} ahead of {control}{better_end}, not yet proven",
+        "behind": "{arm} behind {control}{better_end}, not yet proven",
+        "level": "{arm} level with {control}, not yet proven",
+    },
+    _StandingSide,
+    "an unproven standing",
+)
+
+
+def standing_words(
+    side: _StandingSide, arm: str, control: str, *, higher_is_better: bool = True, provable: bool = False
+) -> str:
+    """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``; on a question's primary, which the bet
+    can still decide (``provable``), ``v2 ahead of v1, not yet proven``.
 
     :param side: Where the arm stands (:func:`standing_side`).
     :param arm: The arm read against the control, as the page names it.
     :param control: The control, as the page names it.
     :param higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
+    :param provable: Whether the contrast is a question's primary, which its bet decides once its evidence clears the
+        proof's bar.
     :return: The words.
     """
     better_end = "" if higher_is_better else LOWER_IS_BETTER
-    return _STANDING_WORDS[side].format(arm=arm, control=control, better_end=better_end)
+    table = _UNPROVEN_WORDS if provable else _STANDING_WORDS
+    return table[side].format(arm=arm, control=control, better_end=better_end)
+
+
+def proof_bar_words(figure: str) -> str:
+    """What a question's undecided primary needs to be proven, said after its evidence's sentence, the figure in the
+    page's form on the scale the evidence is printed on: ``; proving it needs 22``.
+
+    :param figure: The evidence the proof's bar comes to, in the page's form.
+    :return: The clause, opening on its semicolon.
+    """
+    return f"; proving it needs {figure}"
+
+
+#: What the advice line does, by its value (``FamilyComparison.advice``). Filled by :func:`advice_words`.
+_ADVICE_ACTIONS = worded(
+    {"switch": "Advice: switch to {arm}.", "keep": "Advice: keep {control}."},
+    Literal["switch", "keep"],
+    "an advice",
+)
+
+
+def advice_words(advice: Literal["switch", "keep"], arm: str, control: str) -> str:
+    """The advice line's action, the one owner of it: ``Advice: switch to v2.`` or ``Advice: keep v1.``
+
+    :param advice: What the advice says.
+    :param arm: The arm it advises switching to, as the page names it.
+    :param control: The control it advises keeping, as the page names it.
+    :return: The sentence, with its closing stop.
+    """
+    return _ADVICE_ACTIONS[advice].format(arm=arm, control=control)
+
+
+def advice_worst_words(
+    side: _StandingSide, arm: str, control: str, size: str, *, allowed: str | None = None, keep: bool = False
+) -> str:
+    """The advice line's one caveat where its interval matters most: how far the arm could be behind the control at
+    worst (the interval's low end), or the gain the low end still holds where it is above zero: ``At worst it is 25
+    points behind v1.``, ``At worst it is 21 points ahead of v1.``; past a question's margin, ``..., past the 5 points
+    you allow.``; advising keep, ``v2 could be up to 16 points behind v1, past the 5 points you allow.``
+
+    :param side: Which side of the control the low end lies on (:func:`standing_side` of it).
+    :param arm: The arm, as the page names it.
+    :param control: The control, as the page names it.
+    :param size: The low end's size in the page's form, its unit with it; unread where ``side`` is level.
+    :param allowed: The question's margin in the page's form, where the low end lies past it.
+    :param keep: Whether the advice keeps the control, so the caveat is why.
+    :return: The sentence, with its closing stop.
+    """
+    past = f", past the {allowed} you allow" if allowed is not None else ""
+    if keep:
+        return f"{arm} could be up to {size} behind {control}{past}."
+    if side == "level":
+        return f"At worst it is level with {control}."
+    return f"At worst it is {size} {'ahead of' if side == 'ahead' else 'behind'} {control}{past}."
+
+
+def advice_held_words(side: _StandingSide, arm: str, *, grade: str, figure: str, bar: str, hard: bool) -> str:
+    """The advice line's one caveat where it keeps the control: where the arm stands, and, where it is ahead, the bar a
+    switch needs beside the evidence it holds: ``v2 is ahead, but a switch needs evidence of 3 and this is weak
+    (1.4).``; ``v2 is level with it.``; ``v2 is behind it.``
+
+    :param side: Where the arm stands (:func:`standing_side`).
+    :param arm: The arm, as the page names it.
+    :param grade: Its evidence's grade's word (:func:`~threetears.evals.analysis.style.evidence_grade`).
+    :param figure: Its evidence, in the page's form.
+    :param bar: The bar the advice switches at, in the page's form.
+    :param hard: Whether the switch was declared hard to undo, so the bar is said to be that switch's.
+    :return: The sentence, with its closing stop.
+    """
+    if side == "level":
+        return f"{arm} is level with it."
+    if side == "behind":
+        return f"{arm} is behind it."
+    which = "a switch that is hard to undo" if hard else "a switch"
+    return f"{arm} is ahead, but {which} needs evidence of {bar} and this is {grade} ({figure})."
+
+
+#: What an engine comparison's first line says in place of advice: its test is read once, at a fixed count, by a bet
+#: whose stakes are tuned to that count, and keeps no running evidence an advice could be read off with its promise.
+NO_ADVICE_SENTENCE = (
+    "No advice: this comparison's test is read once at a fixed count, which keeps no running evidence to advise on, "
+    "so read what is proven."
+)
 
 
 def estimate_sentence(side: _StandingSide, arm: str, control: str, *, cases: int, size: str, now: bool = False) -> str:
@@ -844,7 +946,12 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "BAR_DECISION_WORDS",
+    "NO_ADVICE_SENTENCE",
+    "advice_held_words",
+    "advice_words",
+    "advice_worst_words",
     "decided_words",
+    "proof_bar_words",
     "evidence_sentence",
     "estimate_sentence",
     "standing_words",

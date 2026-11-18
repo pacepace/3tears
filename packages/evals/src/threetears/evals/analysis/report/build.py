@@ -46,6 +46,7 @@ from threetears.evals.analysis.report.aspect.common import (
 )
 from threetears.evals.analysis.report.aspect.contrasts import (
     aspect_verdict,
+    contrast_advice,
     contrast_evidence,
     contrast_rows,
     contrast_verdicts,
@@ -321,7 +322,7 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
             arm_labels=readings.arm_labels(),
             # The aspect's page's forms, over its campaign's set of each measure, as the page itself reads them.
             forms=PageForms.of_aspects(campaign.aspects, readings)[aspect.aspect],
-        ).text
+        ).advised
     return AnalysisLead(caveats=caveats, verdict=verdict, stopped=bool(stopped))
 
 
@@ -381,6 +382,7 @@ def _page(
         verdicts=[*guardrails_read, *contrasts_read],
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),
+        advice=contrast_advice(bundle, forms=forms),
     )
     blocks: list[ReportBlock] = [
         # Under the title: the question and the arms, the verdict, then what warns and each report-wide caveat once.
@@ -388,10 +390,11 @@ def _page(
         DisclosureBlock(
             section="header",
             source="verdict",
-            text=verdict.text,
+            # What to do first, then what is proven.
+            text=verdict.advised,
             tone=DisclosureBlock.verdict_tone(verdict.rule),
             # Code's own decisions: bold falls away where a host's name would cut a code span, never refusing the page.
-            emphasis=DisclosureBlock.code_emphasis(verdict.text, verdict.decisions),
+            emphasis=DisclosureBlock.code_emphasis(verdict.advised, verdict.decisions),
             # A verdict that offers leads links the word that says why they are not decisions: the exploratory rule's
             # line, and the too-small rule's where no question was declared, which is when it leads "Exploratory:".
             term=(

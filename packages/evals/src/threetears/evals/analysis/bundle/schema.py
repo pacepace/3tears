@@ -2099,6 +2099,18 @@ class FamilyComparison(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description="The evidence on the decided side when it decided, the e-value it had reached then.",
     )
+    advice: Literal["switch", "keep"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "On a family's primary the bet read: what to do, beside the proof `verdict`. `switch` once the evidence that "
+            "the contrast arm is better (no worse than the margin, on a question with one) has reached the family's "
+            "`advice_bar` at some count, in the order bet on, while the arm is still ahead (within the margin) and the "
+            "evidence against it has not reached the bar now (`stats.advice_path`); `keep` otherwise. If the arm is "
+            "not really better, it reads `switch` at most one time in `advice_bar`, however often it is read. None "
+            "where no advice is read: a secondary reading, or a contrast no bet read (an engine campaign's)."
+        ),
+    )
 
 
 class ComparisonFamily(EvalDocumentModel):
@@ -2196,6 +2208,17 @@ class ComparisonFamily(EvalDocumentModel):
             "toward: `better` for a question whether the arm does better, `worse` for one with a margin (a gate: is the "
             "arm no worse). None reads the even hedge: no question asked, or a question, control or margin set after "
             "the first result, where a lean picked after the readings were seen would be a second look."
+        ),
+    )
+    advice_bar: float | None = Field(
+        default=None,
+        gt=1.0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "With a `primary` the bet read: the evidence its advice switches at (`stats.ADVICE_BARS`): 3 where the "
+            "switch is easy to undo (the default), 10 where it was declared hard to undo before the results, each "
+            "times the arms read against the control. A switch that was declared hard to undo after the results "
+            "reads the default, and `disclosure` says so. None where no advice is read."
         ),
     )
 

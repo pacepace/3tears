@@ -358,6 +358,9 @@ class VerdictLine:
         the bet read is not one: it says where the arm stands and how strong the evidence is (``graded``).
     :ivar graded: Whether a decision ``text`` says leaves a contrast the bet read undecided, so its words say where the
         arm stands and grade the evidence, and a page links the evidence's definition.
+    :ivar advice: What to do, said above ``text`` (the proof) on every first screen: the advice line over the led
+        contrasts (:func:`~threetears.evals.analysis.report.aspect.contrasts.contrast_advice`); empty where there is
+        none to say.
     """
 
     rule: VerdictRule
@@ -366,6 +369,13 @@ class VerdictLine:
     decisions: tuple[str, ...] = ()
     undecided: bool = False
     graded: bool = False
+    advice: str = ""
+
+    @property
+    def advised(self) -> str:
+        """The first screen's opening: the advice, then the proof, as the page's verdict block and the print say them;
+        ``text`` alone where there is no advice."""
+        return f"{self.advice} {self.text}" if self.advice else self.text
 
     def __post_init__(self) -> None:
         if not self.lead:
@@ -643,6 +653,7 @@ def verdict_line(
     verdicts: Sequence[Verdict] = (),
     order: Sequence[str] = (),
     evidence: Callable[[Verdict], str | None] | None = None,
+    advice: Callable[[Sequence[Verdict]], str | None] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -656,6 +667,8 @@ def verdict_line(
         comparison's line leads on the first of (:func:`_lead_measure`).
     :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
         says the decision alone.
+    :param advice: The advice over the lead verdicts, said above the line (:attr:`VerdictLine.advice`); None, or one
+        that says none, leaves the line without.
     :return: The rule and its sentences.
     """
     boards = bundle.scoreboard
@@ -724,6 +737,7 @@ def verdict_line(
                     verdict.outcome == "not_separated" and not graded_contrast(bundle, verdict) for verdict in led
                 ),
                 graded=any(verdict.outcome == "not_separated" and graded_contrast(bundle, verdict) for verdict in led),
+                advice=(advice(led) or "") if advice is not None else "",
             )
     said = (
         _told_apart(bundle, verdicts, asked=declared_question)

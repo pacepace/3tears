@@ -39,6 +39,7 @@ from collections.abc import Collection, Hashable, Mapping, Sequence
 from fractions import Fraction
 from functools import lru_cache
 from statistics import NormalDist
+from types import MappingProxyType
 from typing import Final, Literal, NamedTuple
 
 from threetears.evals.kernel.surface import GuardrailDecision
@@ -2090,6 +2091,70 @@ def bet_evidence(
     return math.exp(up), math.exp(down)
 
 
+def advice_path(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    value_range: tuple[float, float],
+    bar: float,
+    margin: float = 0.0,
+) -> list[bool] | None:
+    """Whether the advice says switch from ``a`` to ``b`` after each pair, over paired samples read in the order given.
+
+    The advice says switch once the upward evidence against a mean difference of ``-margin`` (the mixture of
+    :func:`_mixture_log_path` on the differences, as :func:`bet_evidence` reads it at a margin of 0) has *reached*
+    ``bar`` at some count so far, as a decision stands from where its capital reached 1/α; and it withdraws while ``b``
+    is no longer ahead of ``a`` less the margin, or while the downward evidence against that same difference has
+    reached ``bar`` now. Read off the path, a reader who looks once gets the advice a reader who looked after every pair
+    would have got.
+
+    **Its promise.** Under any mean difference at or below ``-margin`` the upward mixture is a nonnegative
+    supermartingale started at 1, so its running maximum reaches ``bar`` at most ``1/bar`` of the time, at every count,
+    for every distribution on the range (Ville's inequality): the advice says switch to a ``b`` that is not better
+    (worse by more than the margin) at most one time in ``bar``, however often it is read. Nothing bounds how often it
+    keeps a ``b`` that is better: that is the price of the promise.
+
+    :param sample_a: The control's per-case values, in the order bet on.
+    :param sample_b: The arm's, aligned with ``sample_a``, the side whose rising mean the advice switches to.
+    :param value_range: The reading's declared inclusive bounds.
+    :param bar: The evidence the advice switches at (:data:`ADVICE_BARS`, times the arms read).
+    :param margin: How far below ``a`` the declared question lets ``b`` fall, in the reading's units; 0 for a question
+        that asks whether ``b`` does better.
+    :return: The advice after each pair (True for switch), in order; None with fewer than two pairs, samples of
+        different lengths, a value outside the declared range, or a margin as wide as the range.
+    :raises ValueError: ``bar`` is not above 1, or ``margin`` is negative.
+    """
+    if bar <= 1.0:
+        raise ValueError(f"an advice bar is evidence above 1, which a fair bet holds at the start, not {bar}")
+    if margin < 0.0:
+        raise ValueError(f"a margin is how far the arm may fall below the control, never below 0, not {margin}")
+    a = [exact_decimal(v) for v in sample_a]
+    b = [exact_decimal(v) for v in sample_b]
+    if len(a) < 2 or len(a) != len(b):
+        return None
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= v <= high for v in (*a, *b)):
+        return None
+    width = float(high - low)
+    if margin >= width:
+        return None
+    diffs = [y - x for x, y in zip(a, b)]
+    scaled = _scaled_to_unit(diffs, (-width, width), ordered=True)
+    # The null difference -margin, rescaled onto [0, 1] as the differences are.
+    null = (width - margin) / (2.0 * width)
+    up = _mixture_log_path(scaled, null)
+    down = _mixture_log_path([1.0 - z for z in scaled], 1.0 - null)
+    threshold = math.log(bar)
+    advice, reached, total = [], -math.inf, Fraction(0)
+    floor = -exact_decimal(margin)
+    for index, (u, d, diff) in enumerate(zip(up, down, diffs)):
+        reached = max(reached, u)
+        total += diff
+        ahead = total / (index + 1) > floor
+        advice.append(reached >= threshold and ahead and d < threshold)
+    return advice
+
+
 def bet_decided_at(
     sample_a: Sequence[float | Fraction],
     sample_b: Sequence[float | Fraction],
@@ -2286,6 +2351,15 @@ DECLARED_DIRECTION_SHARE = 0.9
 #: 1995). Under no difference an e-value ever reaches ``c`` at most ``1/c`` of the time (Ville's inequality), so chance
 #: alone reads strong at most one time in ten, however often it is read.
 EVIDENCE_STEPS = (3.0, 10.0)
+
+#: The evidence the advice switches at (:func:`advice_path`), by how easy the switch is to undo: the evidence words' own
+#: steps, so the bars never drift from the grades a reader sees. ``easy`` (the default) switches at moderate evidence and
+#: says switch to an arm that is not better at most one time in three, however often it is read; ``hard`` at strong, at
+#: most one time in ten. With several arms read against one control the bar is this times their count, so the chance any
+#: arm that is not better is advised stays the same (the mean of their e-values is an e-value).
+ADVICE_BARS: Mapping[Literal["easy", "hard"], float] = MappingProxyType(
+    {"easy": EVIDENCE_STEPS[0], "hard": EVIDENCE_STEPS[1]}
+)
 
 
 def _log_add_exp(a: float, b: float) -> float:
@@ -3372,6 +3446,7 @@ __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "DECLARED_DIRECTION_SHARE",
     "DETECTABLE_POWER",
+    "ADVICE_BARS",
     "EVIDENCE_STEPS",
     "EQUIVALENCE_NEEDS_RANGE",
     "EQUIVALENCE_TEST_NAME",
@@ -3398,6 +3473,7 @@ __all__ = [
     "SignificanceResult",
     "VarianceComponents",
     "bar_seed",
+    "advice_path",
     "bet_decided_at",
     "bet_evidence",
     "bounded_mean_p",

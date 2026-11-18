@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError, field_validator
 
@@ -260,6 +260,13 @@ class AspectDefinition(EvalBaseModel):
         ),
     )
     margin: float | None = Field(default=None, gt=0.0, lt=100.0, allow_inf_nan=False, description=_MARGIN_DESCRIPTION)
+    undo: Literal["hard"] | None = Field(
+        default=None,
+        description=(
+            "`hard` where switching to a candidate would be hard to undo, which raises the evidence the advice switches "
+            "at from moderate to strong (`Aspect.undo`). Omitted, it is easy to undo."
+        ),
+    )
     design: AspectDesign | None = Field(
         default=None,
         description="What the aspect sets out to vary and hold itself to. Omitted, the aspect is exploratory.",
@@ -688,6 +695,7 @@ def _declared_aspect(
         short_name=defined.short_name,
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
+        undo=defined.undo,
         design=defined.design,
         run_ids=list(dict.fromkeys(defined.run_ids)),
         declared_at=at if declares else None,

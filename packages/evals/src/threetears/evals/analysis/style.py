@@ -573,6 +573,23 @@ CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b
 #: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
 EVIDENCE_TERM = "evidence"
 
+#: The glossary's term for the advice a comparison's first line gives beside its proof, which that line links.
+ADVICE_TERM = "advice"
+
+#: The one promise the advice keeps (:func:`~threetears.evals.analysis.stats.advice_path`), as every surface states
+#: it: in the glossary, the docs and the advice's disclosure.
+ADVICE_PROMISE = (
+    "However often anyone looks, if the candidate is not really better the advice says switch at most one time in "
+    "three, or one time in ten for a switch declared hard to undo."
+)
+
+#: What a quick-path comparison whose switch was declared hard to undo after its first result says, in its family's
+#: disclosure: the advice reads the default bar, since a bar chosen once the evidence was seen is a second look.
+LATE_UNDO_SENTENCE = (
+    "The switch was declared hard to undo after these results were in, so the advice reads the default bar of "
+    "moderate evidence."
+)
+
 #: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
 #: :data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS` weak, from it moderate, from the second strong.
 _EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
@@ -649,6 +666,11 @@ GLOSSARY: dict[str, str] = {
     ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
     EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
+    ADVICE_TERM: (
+        "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
+        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better at most "
+        "one time in three (one in ten), however often anyone looks."
+    ),
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
     "depth": "How many times an arm ran each case: the fewest, the median and the most.",
@@ -900,7 +922,10 @@ __all__ = [
     "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
+    "ADVICE_PROMISE",
+    "ADVICE_TERM",
     "EVIDENCE_TERM",
+    "LATE_UNDO_SENTENCE",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "CHECK_LINK_TITLE",

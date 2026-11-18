@@ -14,6 +14,7 @@ time a view is taken every campaign holds its aspects, and the view reads them a
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from pydantic import Field
 
@@ -82,6 +83,14 @@ class AspectDeclaration(EvalDocumentModel):
     )
     declared_at: str | None = Field(description="When this aspect's design was declared (ISO-8601).")
     declared_by: str = Field(description="Who declared the campaign; empty when unrecorded.")
+    undo: Literal["hard"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How hard switching to a candidate is to undo (`Aspect.undo`), declared with the question at `asked_at`: "
+            "`hard` reads the advice at strong evidence. None = easy to undo, the default."
+        ),
+    )
     unread_without_control: str | None = Field(
         default=None,
         description=(
@@ -191,6 +200,7 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
             declared_at=aspect.declared_at,
             declared_by=campaign.declared_by,
             unread_without_control=unread,
+            undo=aspect.undo,
         )
     )
     return AspectView(

@@ -60,7 +60,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
 from threetears.evals.analysis.bundle.trials import RedrawnCells
@@ -109,6 +109,8 @@ class EarlierComparison:
     :ivar design: What its campaign declared that a continuation must declare alike: the graders in order, the
         guardrails' margins, latency under test and the question, as JSON.
     :ivar margin: The question's margin, a share of 0 to 1; ``None`` declares none.
+    :ivar undo: How hard the question declared switching to be to undo (``Aspect.undo``): ``easy`` where it declared
+        none.
     :ivar unrun: The cases of :attr:`case_ids` that no arm ran (a launch stopped or was cancelled before it reached
         them), in that order.
     :ivar unfinished: The cases of :attr:`case_ids` missing a cell on some arm, at some repeat, in that order: the
@@ -130,6 +132,7 @@ class EarlierComparison:
     arms: Mapping[tuple[str | None, str, str], EarlierArm]
     design: str
     margin: float | None
+    undo: Literal["easy", "hard"] = "easy"
     unrun: tuple[str, ...] = ()
     unfinished: tuple[str, ...] = ()
     incomplete: int = 0
@@ -286,6 +289,7 @@ def earlier_comparison(
             campaign.question or None,
         ),
         margin=None if aspect.margin is None else aspect.margin / 100,
+        undo="hard" if aspect.undo == "hard" else "easy",
         unrun=tuple(case for case in case_lists[0] if case not in ran),
         unfinished=unfinished,
         incomplete=sum(1 for case in unfinished if case in ran),
