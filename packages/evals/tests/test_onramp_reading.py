@@ -221,7 +221,8 @@ def test_the_committed_plan_states_its_arms_tiers_check_and_k_and_its_apps_are_h
     assert sorted((plan.primary, *plan.secondary)) == sorted(CHECKS)
     assert plan.registries == (HELD_OUT.name,) and not plan.placeholders()
     held_out = [case["app"] for case in registry([HELD_OUT])]
-    assert list(plan.apps) == held_out, "every held-out app, in held-out.jsonl's order"
+    second = load_plan(PLANS / "held-out-2.toml")
+    assert [*plan.apps, *second.apps] == held_out, "held-out-1 then held-out-2: every held-out app, in its order"
     assert not {case["app"] for case in registry()} & set(plan.apps), "no held-out app is in the development set"
 
 
@@ -372,3 +373,24 @@ def test_a_run_may_continue_another_only_on_the_same_builds_tier_k_check_and_que
     ):
         refused = continuation_refusal(earlier, {**later, **changed})
         assert refused is not None and said in refused, (changed, refused)
+
+
+def test_held_out_2_continues_held_out_1_on_every_term_of_the_comparison_with_eight_new_apps() -> None:
+    first, second = load_plan(PLANS / "held-out-1.toml"), load_plan(PLANS / "held-out-2.toml")
+    assert second.continues is not None and first.continues is None
+    assert (second.continues.run, second.continues.plan_commit) == ("20261118T062749Z", "0941140d8")
+
+    def described(plan: Plan, apps: list[str]) -> dict[str, Any]:
+        return {
+            "arms": {arm.name: {"commit": arm.ref} for arm in plan.arms},
+            "tiers": {name: {"model": TIERS[name].model_id} for name in plan.tiers},
+            "k": plan.k,
+            "primary": plan.primary,
+            "question": plan.question,
+            "apps": apps,
+        }
+
+    assert continuation_refusal(described(first, list(first.apps)), described(second, list(second.apps))) is None
+    held_out = [case["app"] for case in registry([HELD_OUT])]
+    assert list(second.apps) == held_out[24:32] and len(second.apps) == 8 and not second.placeholders()
+    assert second.registries == (HELD_OUT.name,) and list(second.tiers) == ["cheap"]

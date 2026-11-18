@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "change.py"}
+{"tool": "read", "path": "data/till_log.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom change import change_for, load_drawer\n\ndef give_change(case):\n    \"\"\"The coins the till pays out for the sale, from a full float.\"\"\"\n    return {\"change\": change_for(case[\"total_pence\"], case[\"tendered_pence\"], load_drawer(\"data/float.json\"))}\n\n\ndef as_paid_out(case, out):\n    \"\"\"The change is what the old till paid out.\"\"\"\n    return out[\"change\"] == case[\"change\"]\n\nsales = Eval(\"data/till_log.jsonl\", runner=give_change, grader=[as_paid_out], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_paid_out\", \"pass_rate\": 0.6957, \"finished\": true}"}
