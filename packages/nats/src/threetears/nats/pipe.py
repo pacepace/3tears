@@ -81,7 +81,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, TypeVar
 from threetears.observe import contain, get_logger
 
 from threetears.nats.errors import NatsClientError
-from threetears.nats.forward import forward, serve_owner
+from threetears.nats.forward import ForwardTransport, forward, serve_owner
 from threetears.nats.pipe_wire import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
@@ -103,7 +103,7 @@ from threetears.nats.pipe_wire import (
 from threetears.nats.subjects import Subject
 
 if TYPE_CHECKING:
-    from threetears.nats.client import NatsClient, Subscription
+    from threetears.nats.capabilities import RawRequester, SubscriptionHandle
     from threetears.nats.transport import IncomingMessage, RawMessageCallback
 
 __all__ = [
@@ -121,6 +121,7 @@ __all__ = [
     "PipeRemoteError",
     "PipeSequenceGapError",
     "PipeStream",
+    "PipeOwnerTransport",
     "PipeStreamHandler",
     "PipeTransport",
     "attach_pipe",
@@ -308,7 +309,7 @@ class PipeTransport(Protocol):
         *,
         cb: RawMessageCallback,
         deadletter_on_failure: bool,
-    ) -> Subscription:
+    ) -> SubscriptionHandle:
         """subscribe to a subject with a raw-bytes callback.
 
         :param subject: subject to subscribe on
@@ -318,15 +319,15 @@ class PipeTransport(Protocol):
         :param deadletter_on_failure: whether a raising callback republishes to deadletter
         :ptype deadletter_on_failure: bool
         :return: subscription handle
-        :rtype: Subscription
+        :rtype: SubscriptionHandle
         """
         ...
 
-    async def unsubscribe(self, sub: Subscription) -> None:
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
         """drop a subscription.
 
         :param sub: handle returned by :meth:`subscribe`
-        :ptype sub: Subscription
+        :ptype sub: SubscriptionHandle
         :return: nothing
         :rtype: None
         """
@@ -339,6 +340,15 @@ class PipeTransport(Protocol):
         :rtype: None
         """
         ...
+
+
+class PipeOwnerTransport(ForwardTransport, PipeTransport, Protocol):
+    """what :func:`serve_pipe` uses of a client: the forward surface its attach rides, and the pipe's own.
+
+    :class:`threetears.nats.NatsClient` satisfies it. the owner answers the attach through
+    :func:`threetears.nats.serve_owner` and then runs a :class:`PipeStream` over the same client, so it
+    needs both slices; an in-memory bus carrying both type-checks as one.
+    """
 
 
 PipeStreamHandler = Callable[["PipeStream"], Awaitable[None]]
@@ -428,7 +438,7 @@ class PipeStream:
         self._idle_timeout = idle_timeout
         self._outbound = endpoint.subject("down" if side == "owner" else "up")
         self._inbound = endpoint.subject("up" if side == "owner" else "down")
-        self._sub: Subscription | None = None
+        self._sub: SubscriptionHandle | None = None
 
         # outbound: the monotonic sequence, and the frames the peer has not
         # acknowledged yet (sequence -> body size), oldest first.
@@ -858,7 +868,7 @@ class PipeStream:
 
 
 async def attach_pipe(
-    nats: NatsClient,
+    nats: RawRequester,
     key: str,
     *,
     family: str | None = None,
@@ -873,8 +883,8 @@ async def attach_pipe(
     than as pipe-specific ones. ``credit`` and ``max_chunk`` are what this
     caller can accommodate; the owner may only lower them.
 
-    :param nats: connected :class:`threetears.nats.NatsClient`
-    :ptype nats: NatsClient
+    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`threetears.nats.RawRequester`
+    :ptype nats: RawRequester
     :param key: ownership key the target pod serves
     :ptype key: str
     :param family: forward family, matching the one the owner serves under
@@ -940,7 +950,7 @@ async def open_pipe(nats: PipeTransport, endpoint: PipeEndpoint) -> AsyncIterato
 
 @asynccontextmanager
 async def serve_pipe(
-    nats: NatsClient,
+    nats: PipeOwnerTransport,
     key: str,
     *,
     tool: str,
@@ -967,8 +977,8 @@ async def serve_pipe(
     intended call site: a pod that holds the lease for ``key`` enters this
     context and leaves it the moment it loses ownership.
 
-    :param nats: connected :class:`threetears.nats.NatsClient`
-    :ptype nats: NatsClient
+    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`PipeOwnerTransport`
+    :ptype nats: PipeOwnerTransport
     :param key: ownership key this pod serves
     :ptype key: str
     :param tool: the tool-name NODE this pod owns, in readable form -- ``pentest``,

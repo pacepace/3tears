@@ -42,6 +42,7 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 
 import nats
+from nats.aio.client import Client as NatsPyClient
 import pytest
 
 from threetears.nats import NatsClient, Subjects, forward, serve_owner, set_default_namespace
@@ -157,7 +158,7 @@ async def _connect_raw(
     password: str,
     errors: list[str],
     permissions: PrincipalPermissions | None = None,
-) -> AsyncIterator[nats.NATS]:
+) -> AsyncIterator[NatsPyClient]:
     """connect a raw nats-py client, routing async permission violations into ``errors``.
 
     raw rather than wrapped because the refusal this test turns on is an asynchronous

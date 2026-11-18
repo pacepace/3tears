@@ -68,7 +68,7 @@ from .operator_relay import relay_stream
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from collections.abc import AsyncIterator
 
-    from threetears.nats import NatsClient, PipeStream
+    from threetears.nats import PipeOwnerTransport, PipeStream
 
     from .operator_relay import DisplayEndpoint, DisplayTransport
     from .operator_session import SessionClaim
@@ -90,7 +90,7 @@ class _OperatorWentAway(Exception):
 
 @asynccontextmanager
 async def serve_display(
-    nats: NatsClient,
+    nats: PipeOwnerTransport,
     claim: SessionClaim,
     *,
     owned_node: str,
@@ -113,8 +113,8 @@ async def serve_display(
     :class:`threetears.nats.PipeRemoteError`, which is what tells it to attach again and find the
     pod that does hold the session.
 
-    :param nats: the platform's connected client
-    :ptype nats: NatsClient
+    :param nats: the platform's connected client, or any :class:`threetears.nats.PipeOwnerTransport`
+    :ptype nats: PipeOwnerTransport
     :param claim: this pod's live claim on the session, which decides both the key served and
         whether an attach may be answered
     :ptype claim: SessionClaim

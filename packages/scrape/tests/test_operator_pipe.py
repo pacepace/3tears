@@ -125,7 +125,7 @@ def _where(server: _LoopbackDisplay) -> DisplayEndpoint:
 async def _attach(bus: FakeBus, *, family: str | None = None) -> PipeEndpoint:
     """Attach as the process holding the operator's socket does."""
     return await attach_pipe(
-        bus,  # type: ignore[arg-type]
+        bus,
         _SESSION,
         family=Subjects.hitl_pipe_family(_OWNED_NODE) if family is None else family,
         timeout=timedelta(seconds=5),
@@ -140,9 +140,9 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             endpoint = await _attach(bus)
-            async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
+            async with open_pipe(bus, endpoint) as stream:
                 first = await asyncio.wait_for(stream.receive(), timeout=5)
 
         assert first == _RFB_BANNER, "the display's opening bytes did not arrive intact"
@@ -153,9 +153,9 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             endpoint = await _attach(bus)
-            async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
+            async with open_pipe(bus, endpoint) as stream:
                 await asyncio.wait_for(stream.receive(), timeout=5)
                 await stream.send(_RFB_BANNER)
                 await asyncio.wait_for(display.wrote_to_us.wait(), timeout=5)
@@ -172,7 +172,7 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             with pytest.raises(NoOwnerError):
                 await _attach(bus, family=Subjects.hitl_pipe_family("tools.scrape-zone_beta"))
 
@@ -188,9 +188,9 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             with pytest.raises(NoOwnerError):
-                await attach_pipe(bus, _SESSION, timeout=timedelta(seconds=5))  # type: ignore[arg-type]
+                await attach_pipe(bus, _SESSION, timeout=timedelta(seconds=5))
 
         assert display.connections == 0, "a pod served an attach on the unscoped forward subject"
 
@@ -221,7 +221,7 @@ class TestTheDisplayStreamRidesASubjectThePodIsGranted:
 
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=pod_id, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=pod_id, display=_where(display)):
             served = [str(r.subject) for r in bus.registrations]
 
         assert served, "the pod subscribed nothing at all"
@@ -247,7 +247,7 @@ class TestAPodThatHoldsNoClaimNeverShowsItsDisplay:
         claim.lost.set()
 
         with pytest.raises(RuntimeError, match="not held by this pod"):
-            async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+            async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
                 pytest.fail("a pod served the display of a session it had already lost")
 
         assert not bus.registrations, "a lost session had its display subscribed anyway"
@@ -265,11 +265,11 @@ class TestAPodThatHoldsNoClaimNeverShowsItsDisplay:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             claim.lost.set()
             endpoint = await _attach(bus)
             with pytest.raises(PipeRemoteError) as caught:
-                async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
+                async with open_pipe(bus, endpoint) as stream:
                     await asyncio.wait_for(stream.receive(), timeout=5)
 
         assert caught.value.type_name == "RuntimeError"
@@ -287,9 +287,9 @@ class TestALostClaimEndsALiveStream:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             endpoint = await _attach(bus)
-            async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
+            async with open_pipe(bus, endpoint) as stream:
                 assert await asyncio.wait_for(stream.receive(), timeout=5) == _RFB_BANNER
                 claim.lost.set()
                 ended = await asyncio.wait_for(stream.receive(), timeout=5)
@@ -312,9 +312,9 @@ class TestALostClaimEndsALiveStream:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):
             endpoint = await _attach(bus)
-            async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
+            async with open_pipe(bus, endpoint) as stream:
                 assert await asyncio.wait_for(stream.receive(), timeout=5) == _RFB_BANNER
                 assert not display.disconnected.is_set(), "the display was let go before the claim was lost"
                 claim.lost.set()

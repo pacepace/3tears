@@ -25,6 +25,7 @@ from datetime import timedelta
 from typing import Any
 
 from nats.errors import NoRespondersError
+from threetears.nats import DEFAULT_REQUEST_TIMEOUT
 from threetears.nats.errors import RequestError
 from threetears.nats.capabilities import SubscriptionHandle
 from threetears.nats.subjects import Subject
@@ -123,7 +124,7 @@ class FakeBus:
             if registration.subject.path == subject.path:
                 await registration.cb(IncomingMessage(data=payload, reply_subject=None, subject=subject.path))
 
-    async def request_raw(self, *, subject: Any, payload: bytes, timeout: timedelta) -> bytes:
+    async def request_raw(self, *, subject: Any, payload: bytes, timeout: timedelta = DEFAULT_REQUEST_TIMEOUT) -> bytes:
         """Deliver to exactly one subscriber on *subject* and wait for its reply.
 
         No subscriber raises the same shape the real client does -- a ``RequestError`` whose

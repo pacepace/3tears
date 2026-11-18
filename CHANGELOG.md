@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: `PipeTransport` hands back a `SubscriptionHandle`; `PipeOwnerTransport`, what `serve_pipe` uses
+
+`PipeTransport.subscribe` returns, and `unsubscribe` takes, a `threetears.nats.SubscriptionHandle` rather than the
+client's concrete `Subscription`, as `ForwardTransport`'s do. `threetears.nats.PipeOwnerTransport` is
+`ForwardTransport` plus `PipeTransport`: what `serve_pipe` and scrape's `serve_display` use of a client.
+`attach_pipe` and `forward` take a `RawRequester`, the only call either makes. `NatsClient` satisfies all of them, so an in-memory bus double
+type-checks with no ignore. Nothing changes at run time.
+
 ### nats: `ForwardTransport`, what `forward` and `serve_owner` use of a client
 
 `threetears.nats.ForwardTransport` (`subscribe`, `unsubscribe`, `flush`, `publish_raw_reply`, `request_raw`) is the

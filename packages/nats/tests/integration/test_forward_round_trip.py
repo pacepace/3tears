@@ -20,6 +20,7 @@ import pytest
 
 from threetears.nats import (
     ForwardedHandlerError,
+    ForwardHandler,
     NatsClient,
     NoOwnerError,
     forward,
@@ -113,7 +114,7 @@ async def test_two_owners_queue_group_dispatches_to_exactly_one(nats_container: 
     ):
         handled_by: list[str] = []
 
-        def make_handler(name: str):
+        def make_handler(name: str) -> ForwardHandler:
             async def handler(payload: bytes) -> bytes:
                 handled_by.append(name)
                 return name.encode("utf-8")

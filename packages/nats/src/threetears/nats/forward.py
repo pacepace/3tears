@@ -76,7 +76,7 @@ from threetears.nats.errors import NatsClientError, RequestError
 from threetears.nats.subjects import Subject, Subjects
 
 if TYPE_CHECKING:
-    from threetears.nats.capabilities import SubscriptionHandle
+    from threetears.nats.capabilities import RawRequester, SubscriptionHandle
     from threetears.nats.transport import IncomingMessage, RawMessageCallback
 
 __all__ = [
@@ -96,7 +96,9 @@ log = get_logger(__name__)
 
 @runtime_checkable
 class ForwardTransport(Protocol):
-    """what :func:`forward` and :func:`serve_owner` use of a client, and nothing more.
+    """what :func:`serve_owner` and :func:`forward` use of a client between them, and nothing more.
+
+    :func:`forward` alone needs only ``request_raw`` and takes a :class:`~threetears.nats.capabilities.RawRequester`.
 
     :class:`threetears.nats.NatsClient` satisfies it. it exists for the reason
     :class:`threetears.nats.pipe.PipeTransport` does: a test can carry a request to a subscriber
@@ -127,8 +129,8 @@ class ForwardTransport(Protocol):
         """reply *payload* to a request's reply subject."""
         ...
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
-        """send a request and answer its reply's bytes."""
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes:
+        """send a request and answer its reply's bytes, within ``timeout`` (the client's default when not given)."""
         ...
 
 
@@ -372,7 +374,7 @@ async def serve_owner(
 
 
 async def forward(
-    nats: ForwardTransport,
+    nats: RawRequester,
     key: str,
     payload: bytes,
     *,
@@ -388,8 +390,9 @@ async def forward(
     :class:`ForwardedHandlerError` carrying the original type name +
     message.
 
-    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`ForwardTransport`
-    :ptype nats: ForwardTransport
+    :param nats: a connected :class:`threetears.nats.NatsClient`, or any :class:`threetears.nats.RawRequester`: a
+        forward only sends a request
+    :ptype nats: RawRequester
     :param key: ownership key; mapped to a forward subject via
         :meth:`Subjects.forward`
     :ptype key: str

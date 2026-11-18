@@ -24,7 +24,7 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.nats import Subjects, set_default_namespace
+from threetears.nats import Subject, Subjects, SubscriptionHandle, set_default_namespace
 from threetears.nats.pipe import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
@@ -95,12 +95,23 @@ class _Bus:
 
 # parity-with: threetears.nats.client.Subscription
 class _FakeSubscription:
-    """the handle :class:`_FakePipeTransport.subscribe` hands back."""
+    """the handle :class:`_FakePipeTransport.subscribe` hands back: a :class:`SubscriptionHandle`, as the real one is."""
 
-    def __init__(self, bus: _Bus, subject_path: str) -> None:
+    def __init__(self, bus: _Bus, subject: Subject) -> None:
         self._bus = bus
-        self._subject_path = subject_path
+        self._subject = subject
+        self._subject_path = str(subject)
         self._closed = False
+
+    @property
+    def subject(self) -> Subject:
+        """the subject this subscription holds."""
+        return self._subject
+
+    @property
+    def is_closed(self) -> bool:
+        """whether this subscription has ended."""
+        return self._closed
 
     def mark_closed(self) -> None:
         """record that this subscription is done."""
@@ -138,7 +149,7 @@ class _FakePipeTransport:
 
     async def subscribe(
         self,
-        subject: object,
+        subject: Subject,
         *,
         cb: Callable[[IncomingMessage], Awaitable[None]],
         deadletter_on_failure: bool = True,
@@ -146,10 +157,11 @@ class _FakePipeTransport:
         """register this end's inbound callback on the bus."""
         assert deadletter_on_failure is False, "a byte frame is not deadletterable"
         self._bus.subscribers[str(subject)] = cb
-        return _FakeSubscription(self._bus, str(subject))
+        return _FakeSubscription(self._bus, subject)
 
-    async def unsubscribe(self, sub: _FakeSubscription) -> None:
-        """drop a subscription."""
+    async def unsubscribe(self, sub: SubscriptionHandle) -> None:
+        """drop a subscription this transport handed out."""
+        assert isinstance(sub, _FakeSubscription), "a pipe only gives back the handle its transport made"
         await sub.unsubscribe()
 
     async def flush(self) -> None:
@@ -784,7 +796,9 @@ class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
             **offer,
             **reply_over,
         }
-        await attach_pipe(self._CannedOwner(reply), "k", family="fam", **offer)
+        await attach_pipe(
+            self._CannedOwner(reply), "k", family="fam", credit=offer["credit"], max_chunk=offer["max_chunk"]
+        )
 
     async def test_an_honoured_offer_attaches(self) -> None:
         await self._attach_with_reply()
