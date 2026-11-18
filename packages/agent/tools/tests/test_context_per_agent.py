@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 
@@ -21,7 +22,7 @@ AGENT_B = uuid.UUID("00000000-0000-0000-0000-0000000000b1")
 
 
 @pytest.fixture()
-def collection() -> ContextItemCollection:
+def collection() -> Iterator[ContextItemCollection]:
     l1 = SQLiteBackend(db_name=f"test_ctx_agents_{uuid.uuid4().hex[:8]}")
     l1.initialize(make_context_metadata())
     registry = CollectionRegistry()
@@ -39,8 +40,10 @@ def collection() -> ContextItemCollection:
     l1.reset()
 
 
-def _manager(collection: ContextItemCollection, agent_id: uuid.UUID | None, **kwargs: object) -> ToolContextManager:
-    return ToolContextManager(collection, CONVERSATION, uuid.uuid4(), agent_id=agent_id, **kwargs)  # type: ignore[arg-type]
+def _manager(
+    collection: ContextItemCollection, agent_id: uuid.UUID | None, *, result_limit: int | None = None
+) -> ToolContextManager:
+    return ToolContextManager(collection, CONVERSATION, uuid.uuid4(), agent_id=agent_id, result_limit=result_limit)
 
 
 @pytest.mark.asyncio

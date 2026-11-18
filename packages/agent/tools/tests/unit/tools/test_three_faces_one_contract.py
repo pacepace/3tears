@@ -118,10 +118,14 @@ def _render_mcp_face(rendered: Any) -> dict[str, Any]:
     matters: a dict-shaped result rides BOTH registers.
     """
     payload: dict[str, Any] = dict(rendered.metadata)
-    call_result = mcp_types.CallToolResult(
-        content=[mcp_types.TextContent(type="text", text=json.dumps(payload, default=str, indent=2))],
-        structuredContent=payload,
-        isError=not rendered.success,
+    # built from the wire names, as the server's own ``_call_tool_result`` is: 1.x's fields are those
+    # names and 2.x's take them as aliases, so a validated dict is right on both majors
+    call_result = mcp_types.CallToolResult.model_validate(
+        {
+            "content": [mcp_types.TextContent(type="text", text=json.dumps(payload, default=str, indent=2))],
+            "structuredContent": payload,
+            "isError": not rendered.success,
+        }
     )
     assert call_result.model_dump(by_alias=True)["structuredContent"] is not None
     return dict(call_result.model_dump(by_alias=True)["structuredContent"])

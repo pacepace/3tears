@@ -7,11 +7,18 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from langchain_core.tools import StructuredTool
 from threetears.agent.tools.builtin.analyze_media import (
     AnalyzerConfig,
     create_analyze_media_tool,
 )
-from threetears.agent.tools.protocols import MediaInfo
+from threetears.agent.tools.protocols import (
+    MediaInfo,
+    ReferenceVisionProvider,
+    TextProvider,
+    TranscriptionProvider,
+    VisionProvider,
+)
 from threetears.interfaces.media import MediaSizeLimitExceeded
 
 # ---------------------------------------------------------------------------
@@ -38,9 +45,9 @@ class FakeReferenceVisionProvider:
 
     def __init__(self, response: str = "A referenced square."):
         self.response = response
-        self.analyze_ref_calls: list[tuple[list, str]] = []
+        self.analyze_ref_calls: list[tuple[list[UUID], str]] = []
 
-    async def analyze_ref(self, object_ids: list, prompt: str) -> str:
+    async def analyze_ref(self, object_ids: list[UUID], prompt: str) -> str:
         self.analyze_ref_calls.append((list(object_ids), prompt))
         return self.response
 
@@ -162,9 +169,9 @@ def _small_jpeg() -> bytes:
 
 def _make_tool(
     storage: FakeMediaStorage,
-    vision: FakeVisionProvider | None = None,
-    text: FakeTextProvider | None = None,
-    transcription: FakeTranscriptionProvider | None = None,
+    vision: VisionProvider | ReferenceVisionProvider | None = None,
+    text: TextProvider | None = None,
+    transcription: TranscriptionProvider | None = None,
     user_id: UUID | None = None,
     analyzer_name: str = "TestVision",
     categories: set[str] | None = None,
@@ -172,7 +179,7 @@ def _make_tool(
     media_url_fn: Any = None,
     response_suffix: str | None = None,
     markdown: bool | None = None,
-):
+) -> StructuredTool:
     if vision is None:
         vision = FakeVisionProvider()
     if text is None:
@@ -360,7 +367,9 @@ class TestResponseSuffix:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("markdown", "asked"), [(None, "markdown"), (False, "plain sentences")])
-    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(self, markdown, asked) -> None:
+    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(
+        self, markdown: bool | None, asked: str
+    ) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("result")
         mid = uuid4()
@@ -1091,7 +1100,8 @@ class TestTheModelNeedsNoGuessForTheAnalyzer:
         """
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
-        return convert_to_openai_tool(tool)["function"]["parameters"]
+        parameters: dict[str, Any] = convert_to_openai_tool(tool)["function"]["parameters"]
+        return parameters
 
     def test_the_schema_the_model_sees_lists_every_registered_analyzer(self) -> None:
         """the analyzer field carries the registered names as its enum, in registration order."""

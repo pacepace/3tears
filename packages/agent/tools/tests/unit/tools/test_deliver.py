@@ -93,6 +93,7 @@ async def test_delivers_presigned_url_for_owned_object() -> None:
         result = await DeliverObjectTool().execute(object_id=str(_OBJECT))
     assert result.success is True
     assert _URL in result.content
+    assert result.metadata is not None
     assert result.metadata["delivery_url"] == _URL
     assert result.metadata["object_id"] == str(_OBJECT)
     assert result.metadata["size_bytes"] == 42

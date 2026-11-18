@@ -228,6 +228,7 @@ async def test_the_tool_answers_with_the_provider_named_first_and_the_answer_und
 
     assert result.success and result.error is None
     assert result.content.splitlines()[0] == "Answer from brave, 12 sources:"
+    assert result.metadata is not None
     payload = AnswerMetadata.from_metadata(result.metadata[ANSWER_METADATA_KEY])
     assert payload.question == "what is the largest rodent?"
     assert payload.answer is not None and len(payload.answer.sources) == 12
@@ -244,6 +245,7 @@ async def test_a_refusal_is_a_failed_result_carrying_its_failure_record() -> Non
     assert not result.success
     assert result.error == result.content
     assert result.content.startswith("answer failed (auth-failed):")
+    assert result.metadata is not None
     payload = AnswerMetadata.from_metadata(result.metadata[ANSWER_METADATA_KEY])
     assert payload.answer is None
     assert payload.failure is not None and payload.failure.failure_class == "auth-failed"

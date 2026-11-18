@@ -6,6 +6,7 @@ import ast
 import asyncio
 import inspect
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,7 +26,7 @@ from threetears.agent.tools.base_tool import (
 class DummyTool(TearsTool):
     """concrete test subclass of TearsTool."""
 
-    async def execute(self, **kwargs):
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """execute dummy tool.
 
         :param kwargs: ignored

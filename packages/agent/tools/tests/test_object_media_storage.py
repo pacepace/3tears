@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from threetears.agent.tools import object_media_storage as oms
@@ -15,7 +15,7 @@ from threetears.agent.tools.object_media_storage import (
 from threetears.interfaces.media import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
 
 
-def _handle(object_id, mime_type: str = "image/png") -> ObjectHandle:
+def _handle(object_id: UUID, mime_type: str = "image/png") -> ObjectHandle:
     """build a resolved handle for the given id and mime."""
     return ObjectHandle(
         object_id=object_id,
@@ -44,7 +44,7 @@ class TestGetMedia:
         """a resolvable image object yields MediaInfo with category image."""
         mid = uuid4()
 
-        async def _resolve(object_id):
+        async def _resolve(object_id: UUID) -> ObjectHandle:
             return _handle(object_id, "image/png")
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -61,7 +61,7 @@ class TestGetMedia:
     async def test_unresolvable_object_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an object the caller cannot resolve returns None, not an error."""
 
-        async def _resolve(object_id) -> None:
+        async def _resolve(object_id: UUID) -> None:
             raise ConsumeObjectError("no verified customer")
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -75,7 +75,7 @@ class TestDownloadMedia:
         """a resolvable object streams its bytes joined, with its mime."""
         mid = uuid4()
 
-        async def _resolve(object_id):
+        async def _resolve(object_id: UUID) -> ObjectHandle:
             return _handle(object_id, "image/jpeg")
 
         async def _stream(s3_key: str) -> AsyncIterator[bytes]:
@@ -90,7 +90,7 @@ class TestDownloadMedia:
     async def test_unresolvable_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an unresolvable object downloads to None."""
 
-        async def _resolve(object_id) -> None:
+        async def _resolve(object_id: UUID) -> None:
             raise ConsumeObjectError("cross-tenant")
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -107,7 +107,7 @@ class TestBoundedDownload:
         mid = uuid4()
         opened: list[str] = []
 
-        async def _resolve(object_id):
+        async def _resolve(object_id: UUID) -> ObjectHandle:
             return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=11)
 
         async def _stream(s3_key: str) -> AsyncIterator[bytes]:
@@ -127,7 +127,7 @@ class TestBoundedDownload:
         pulled: list[int] = []
         closed: list[bool] = []
 
-        async def _resolve(object_id):
+        async def _resolve(object_id: UUID) -> ObjectHandle:
             return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=0)
 
         async def _stream(s3_key: str) -> AsyncIterator[bytes]:
@@ -149,7 +149,7 @@ class TestBoundedDownload:
     async def test_an_object_at_the_limit_is_read_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the limit is inclusive: exactly max_bytes is not over it."""
 
-        async def _resolve(object_id):
+        async def _resolve(object_id: UUID) -> ObjectHandle:
             return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=4)
 
         async def _stream(s3_key: str) -> AsyncIterator[bytes]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,17 +35,17 @@ class TestContextEnrichmentNode:
     async def test_injects_system_message_when_entities_found(self) -> None:
         """Enrichment injects a SystemMessage with formatted entities."""
 
-        async def searcher(text: str) -> list[dict]:
+        async def searcher(text: str) -> list[dict[str, str]]:
             """Mock searcher returning one entity.
 
             :param text: query text
             :ptype text: str
             :return: list of entity dicts
-            :rtype: list[dict]
+            :rtype: list[dict[str, str]]
             """
             return [{"title": "XSS", "severity": "high"}]
 
-        def formatter(entities: list) -> str:
+        def formatter(entities: list[dict[str, str]]) -> str:
             """Mock formatter.
 
             :param entities: entities to format
@@ -68,7 +69,7 @@ class TestContextEnrichmentNode:
     async def test_skips_when_no_entities(self) -> None:
         """Returns empty messages when searcher finds nothing."""
 
-        async def searcher(text: str) -> list:
+        async def searcher(text: str) -> list[dict[str, str]]:
             """Empty searcher.
 
             :param text: query text
@@ -91,7 +92,7 @@ class TestContextEnrichmentNode:
         """Skips enrichment when no keywords match."""
         called = []
 
-        async def searcher(text: str) -> list:
+        async def searcher(text: str) -> list[dict[str, str]]:
             """Tracking searcher.
 
             :param text: query text
@@ -117,7 +118,7 @@ class TestContextEnrichmentNode:
         """Triggers search when keywords match."""
         called = []
 
-        async def searcher(text: str) -> list:
+        async def searcher(text: str) -> list[dict[str, str]]:
             """Tracking searcher.
 
             :param text: query text
@@ -145,7 +146,7 @@ class TestContextEnrichmentNode:
 
         called = []
 
-        async def searcher(text: str) -> list:
+        async def searcher(text: str) -> list[dict[str, str]]:
             """Tracking searcher.
 
             :param text: query text
@@ -299,8 +300,9 @@ def _structured_message(
     )
 
 
-def _saved_kwargs(mock_cm) -> dict:
-    return mock_cm.save_tool_result.call_args.kwargs
+def _saved_kwargs(mock_cm: MagicMock) -> dict[str, Any]:
+    kwargs: dict[str, Any] = mock_cm.save_tool_result.call_args.kwargs
+    return kwargs
 
 
 class TestTheDefaultSetMatchesWhatIsActuallyBound:

@@ -37,6 +37,7 @@ class TestGeneratedImage:
         )
         assert img.width == 512
         assert img.height == 768
+        assert img.metadata is not None
         assert img.metadata["model"] == "dall-e-3"
 
 

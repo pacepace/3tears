@@ -981,7 +981,9 @@ def test_tool_search_offers_a_family_only_when_the_catalog_has_families() -> Non
     assert grouped.description == (
         plain.description + " Pass family to search one family of tools, or family alone to list it."
     )
-    assert plain.tool_call_schema.model_json_schema()["required"] == ["query"]
+    call_schema = plain.tool_call_schema
+    assert isinstance(call_schema, type) and issubclass(call_schema, BaseModel)
+    assert call_schema.model_json_schema()["required"] == ["query"]
 
 
 def test_the_tools_argument_schema_is_the_public_class_a_consumer_extends() -> None:

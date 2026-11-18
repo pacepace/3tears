@@ -7,6 +7,7 @@ has nothing in it still shows its heading.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -39,7 +40,7 @@ BLANKS = "  \n\t\n"
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_tb_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
@@ -56,7 +57,9 @@ def ctx(l1_backend: SQLiteBackend) -> ToolContextManager:
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     coll = ContextItemCollection(reg, config, nats_client=make_nats_mock())
     coll.l3_pool = FakePool()
-    return ToolContextManager(coll, "00000000-0000-0000-0000-000000000001", "user1")
+    return ToolContextManager(
+        coll, uuid.UUID("00000000-0000-0000-0000-000000000001"), uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+    )
 
 
 def test_an_active_workflow_prompt_indents_every_line_of_a_step(ctx: ToolContextManager) -> None:

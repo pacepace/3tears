@@ -247,7 +247,8 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         )
         server = _server(nc)
         await server.publish_registration(await_reply=True)
-        assert server.owned_namespaces == ("tools.pentest",)
+        first = server.owned_namespaces
+        assert first == ("tools.pentest",)
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest", "tools.threetears")
 

@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -172,7 +173,8 @@ class TestRunAsync:
             await asyncio.sleep(0)  # let bootstrap install handlers
             await asyncio.sleep(0)
             # simulate the signal handler firing (do not raise actual SIGTERM)
-            handler = bootstrap.make_signal_handler(server, "test")
+            # the handler for the server the bootstrap built, as ``run_async`` installs it
+            handler = bootstrap.make_signal_handler(await bootstrap.build_server(), "test")
             handler()
             await run_task
 
@@ -213,7 +215,9 @@ class TestTheCollectionStackRidesTheLifecycle:
         assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
         assert isinstance(server.object_resolution_cache, ObjectResolutionCollection)
 
-    async def test_a_bare_pods_anchor_answers_over_the_real_collection_path(self) -> None:
+    async def test_a_bare_pods_anchor_answers_over_the_real_collection_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """the anchor a pod with no tables is handed actually records and re-reads a birth time.
 
         Driven through the real collection over an in-memory KV rather than a mock, because the
@@ -222,9 +226,9 @@ class TestTheCollectionStackRidesTheLifecycle:
         declares it -- a pod only ever binds it.
         """
         nats = FakeNatsClient()
-        nats.ensure_kv_bucket = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
-        nats.subscribe_typed = AsyncMock(return_value=MagicMock())
-        nats.unsubscribe = AsyncMock()  # type: ignore[method-assign]
+        monkeypatch.setattr(nats, "ensure_kv_bucket", AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(nats, "subscribe_typed", AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(nats, "unsubscribe", AsyncMock())
         await nats.kv_bucket(name="collections", create_if_missing=True)
         server = _FakeToolServer(pod_id=str(uuid.uuid4()))
         server.serve_event.set()
@@ -1337,7 +1341,7 @@ class TestBootSizesTheProcessToItsCpuQuota:
     ) -> None:
         pyarrow = pytest.importorskip("pyarrow")
         sizes: list[int | None] = []
-        real_executor = bootstrap_module.ThreadPoolExecutor
+        real_executor = ThreadPoolExecutor
 
         def _recording_executor(*args: Any, **kwargs: Any) -> Any:
             sizes.append(kwargs.get("max_workers"))

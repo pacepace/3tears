@@ -16,6 +16,8 @@ broadly) gave the appearance of coverage. behavioral coverage of
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from threetears.agent.tools.coercion import coerce_value, normalize_kwargs
 
@@ -112,7 +114,7 @@ def test_coerce_value_object_json_array_string_does_not_become_object() -> None:
 
 
 @pytest.mark.parametrize("declared_type", ["string", "integer", "number", "boolean", None])
-def test_coerce_value_non_complex_types_pass_through(declared_type) -> None:
+def test_coerce_value_non_complex_types_pass_through(declared_type: str | None) -> None:
     """only object and array engage coercion; everything else is untouched."""
     assert coerce_value("[1,2,3]", declared_type) == "[1,2,3]"
     assert coerce_value("", declared_type) == ""
@@ -136,7 +138,7 @@ def test_coerce_value_preserves_falsy_scalars_for_array() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _schema(properties: dict) -> dict:
+def _schema(properties: dict[str, Any]) -> dict[str, Any]:
     return {"type": "object", "properties": properties}
 
 
@@ -218,7 +220,7 @@ def test_normalize_kwargs_malformed_json_does_not_crash() -> None:
 _SCENE = {"type": "object", "properties": {"location": {"type": "string"}}}
 
 
-def _pydantic_shaped(properties: dict) -> dict:
+def _pydantic_shaped(properties: dict[str, Any]) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "$defs": {"Scene": _SCENE}}
 
 

@@ -109,7 +109,8 @@ async def test_a_requested_unit_runs_in_the_background_and_leaves_its_own_result
 
     assert await load.request()
     await _entered(unit)
-    assert load.operation.running and load.operation.state == "running"
+    during = load.operation.state
+    assert load.operation.running and during == "running"
     unit.release.set()
     await load.operation.wait()
 
@@ -660,9 +661,9 @@ async def test_a_request_left_behind_a_dead_holder_is_run_once_its_lease_has_lap
     await load.stop()
 
 
-async def test_a_replica_that_waited_on_a_live_holder_starts_nothing_while_it_runs_or_after_it_took_the_request() -> (
-    None
-):
+async def test_a_replica_that_waited_on_a_live_holder_starts_nothing_while_it_runs_or_after_it_took_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     nats, unit, waiting_unit = FakeNatsClient(), _Unit(held=True), _Unit()
     told: list[str] = []
     holder = _operation(nats, "replica-a", unit)
@@ -679,7 +680,12 @@ async def test_a_replica_that_waited_on_a_live_holder_starts_nothing_while_it_ru
     # many lifetimes of the wait pass while the holder is alive: the waiting replica starts no run
     starts: list[bool] = []
     real_start = waiting.operation.start
-    waiting.operation.start = lambda: starts.append(True) or real_start()  # type: ignore[method-assign]
+
+    def counted_start() -> bool:
+        starts.append(True)
+        return real_start()
+
+    monkeypatch.setattr(waiting.operation, "start", counted_start)
     await asyncio.sleep(0.3)
     assert starts == [] and waiting.operation.last is None
 

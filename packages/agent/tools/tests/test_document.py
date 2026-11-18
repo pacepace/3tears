@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import subprocess
 import sys
@@ -80,7 +82,8 @@ def _blank_pdf() -> bytes:
     doc = fitz.open()
     try:
         doc.new_page()
-        return doc.tobytes()
+        data: bytes = doc.tobytes()
+        return data
     finally:
         doc.close()
 
@@ -98,7 +101,7 @@ def _install_fake_ocr(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any])
 
     fake_pytesseract = ModuleType("pytesseract")
 
-    def fake_image_to_string(image, lang=None, config=None):
+    def fake_image_to_string(image: object, lang: str | None = None, config: str | None = None) -> str:
         captured["image"] = image
         captured["lang"] = lang
         captured["config"] = config
@@ -151,7 +154,7 @@ class _FakePILImage:
     def __init__(self, label: str) -> None:
         self.label = label
 
-    def save(self, buf, format=None) -> None:  # noqa: A002 -- matches PIL.Image.save's own kwarg name
+    def save(self, buf: io.BytesIO, format: str | None = None) -> None:  # noqa: A002 -- matches PIL.Image.save's own kwarg name
         buf.write(f"png-bytes-for-{self.label}".encode())
 
 
@@ -161,7 +164,9 @@ class TestRenderPdfPagesToImages:
 
         fake_pdf2image = ModuleType("pdf2image")
 
-        def fake_convert_from_bytes(pdf_data, *, dpi=None, first_page=None, last_page=None):
+        def fake_convert_from_bytes(
+            pdf_data: bytes, *, dpi: int | None = None, first_page: int | None = None, last_page: int | None = None
+        ) -> list[_FakePILImage]:
             captured["dpi"] = dpi
             captured["first_page"] = first_page
             captured["last_page"] = last_page
@@ -183,7 +188,7 @@ class TestRenderPdfPagesToImages:
         """A render failure used to come back as ``[]``, which reads as a document with no pages."""
         fake_pdf2image = ModuleType("pdf2image")
 
-        def fake_convert_from_bytes(*args, **kwargs) -> None:
+        def fake_convert_from_bytes(*args: object, **kwargs: object) -> None:
             raise RuntimeError("boom")
 
         fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
@@ -219,7 +224,7 @@ class TestRenderPdfPagesToImages:
 
         # parity-exempt: one-method stub of PIL's third-party Image whose save() fails, for one page
         class _UnsavableImage:
-            def save(self, buf, format=None) -> None:  # noqa: A002 -- matches PIL.Image.save's own kwarg name
+            def save(self, buf: io.BytesIO, format: str | None = None) -> None:  # noqa: A002 -- matches PIL.Image.save's own kwarg name
                 raise OSError("encoder missing")
 
         fake_pdf2image.convert_from_bytes = lambda *a, **kw: [_FakePILImage("page0"), _UnsavableImage()]  # type: ignore[attr-defined]
@@ -233,7 +238,9 @@ class TestRenderPdfPagesToImages:
 
         fake_pdf2image = ModuleType("pdf2image")
 
-        def fake_convert_from_bytes(pdf_data, *, dpi=None, first_page=None, last_page=None):
+        def fake_convert_from_bytes(
+            pdf_data: bytes, *, dpi: int | None = None, first_page: int | None = None, last_page: int | None = None
+        ) -> list[_FakePILImage]:
             captured["last_page"] = last_page
             return []
 
@@ -398,12 +405,12 @@ class TestParseCsv:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """it used to be wrapped as a parse failure, which the tool answered as an unreadable document."""
-        from threetears.agent.tools import document as document_module
 
         def _broken(*args: Any, **kwargs: Any) -> None:
             raise TypeError("a bug in the read")
 
-        monkeypatch.setattr(document_module.csv, "reader", _broken)
+        # the parser reads through the ``csv`` module itself, the one patched here
+        monkeypatch.setattr(csv, "reader", _broken)
         with pytest.raises(TypeError, match="a bug in the read"):
             await parse_document(b"A,B\n1,2\n", "text/csv")
 
@@ -545,12 +552,12 @@ class TestParseDocumentTool:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """it used to be contained and answered as invalid base64, blaming the model."""
-        from threetears.agent.tools import document as document_module
 
         def _broken(data: object) -> bytes:
             raise TypeError("a bug in the decode")
 
-        monkeypatch.setattr(document_module.base64, "b64decode", _broken)
+        # the tool decodes through the ``base64`` module itself, the one patched here
+        monkeypatch.setattr(base64, "b64decode", _broken)
         tool = self._create()
         with pytest.raises(TypeError, match="a bug in the decode"):
             await tool.ainvoke({"content_base64": "aGVsbG8=", "filename": "test.txt"})
@@ -832,7 +839,7 @@ class TestMergeWrappedTableRows:
         )
 
     async def test_none_cells_are_treated_the_same_as_empty_strings(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        rows = [
+        rows: list[list[Any]] = [
             ["Date", "Company", "Notes"],
             ["1/1/2026", "Acme Corp", "first part"],
             [None, None, "second part"],
