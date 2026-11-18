@@ -42,7 +42,7 @@ from threetears.evals.analysis.report.words import (
 )
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.report.parts.words import reading_words
-from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
+from threetears.evals.analysis.style import CANNOT_TELL_APART, EVIDENCE_TERM, cannot_tell_apart, lint_prose
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 from threetears.evals.analysis.style import measure_name_of
@@ -118,8 +118,9 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 
 #: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better."
+    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
+    "was right on 90 for v1 and 89 for v2."
 )
 
 #: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
@@ -157,8 +158,8 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
 ) -> None:
     """Production, 0.94: the code page's three-line lead was bold throughout, then repeated its linked phrase as a
     bracketed "(cannot tell apart)". On the campaign page and the aspect page the decision alone is bold, the figures
-    it rests on (``Of 90 trials each``) and the guardrail are regular, and the line holds one glossary link: the
-    undecided reading, in its sentence form."""
+    it rests on (``Of 90 trials each``) and the guardrail are regular, and the line holds one glossary link: the graded
+    evidence the bet holds, where its sentence says it."""
     rung = rungs["rung3"]
     for name, page in (
         ("campaign", campaign_report_html(rung.result.page)),
@@ -168,11 +169,11 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
         assert found is not None, name
         line = found.group(1)
         bold = [re.sub(r"<[^>]+>", "", said) for said in re.findall(r"<strong>(.*?)</strong>", line, re.S)]
-        assert bold == ["Accuracy: the evidence cannot tell v2 and v1 apart"], (name, line)
+        assert bold == ["Accuracy: v2 behind v1, undecided"], (name, line)
         regular = re.sub(r"<strong>.*?</strong>", "", line, flags=re.S)
         assert "Of 90 trials each" in regular and "interval allows v2" in regular, (name, line)
         links = re.findall(r"<a\b[^>]*>(.*?)</a>", line)
-        assert links == ["cannot tell v2 and v1 apart"], (name, links)
+        assert links == ["evidence"], (name, links)
 
 
 def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs: dict[str, _Surfaces]) -> None:
@@ -182,19 +183,19 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
     lead = rung.lead
     # The figure is the measure's, in its own verb: the scoreboard's "passed" (73 and 88) is the pass rate's alone.
     assert f"Of 90 trials each, Accuracy {reading_verb('Accuracy')} on 90 for v1 and 89 for v2." in lead
-    assert "as much as 24 points worse or 22 better" in lead
+    assert "as much as 14 points worse or 12 better" in lead
     # No level the first screen leaves unexplained, no subject but an arm, no count of cases to settle without a margin.
     assert "%" not in lead and " It " not in lead and "settle" not in lead
     (contrasts,) = [
         block for block in rung.result.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
     ]
     (row,) = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
-    assert (row["interval"].text, row["cases"].text) == ("-24 to +22 pts", "30 paired")
+    assert (row["interval"].text, row["cases"].text) == ("-14 to +12 pts", "30 paired")
     assert lint_prose(lead) == []
-    # The lead links the phrase's one definition at its first use, in the header, before any table says it.
+    # The lead links the graded evidence's one definition at its first use, in the header, before any table says it.
     html = campaign_report_html(rung.result.page)
     header = html[: html.index("</header>")]
-    assert f'title="{escape(GLOSSARY[CANNOT_TELL_APART])}"' in header
+    assert f'title="{escape(GLOSSARY[EVIDENCE_TERM])}"' in header
 
 
 def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_the_control() -> None:
@@ -229,8 +230,9 @@ def test_a_measure_s_figure_takes_its_own_verb_and_only_the_pass_rate_passes(run
     assert reading_verb("No invented total score") != "passed"
     rung = rungs["rung3"]
     for said in (rung.lead, rung.verdict, rung.first_line, rung.exit_line or ""):
-        figures = said.split("apart. ", 1)[1]
-        assert "Accuracy was right on" in figures and "passed" not in figures.split(" Over ", 1)[0]
+        counts = re.search(r"Of 90 trials each, [^.]*\.", said)
+        assert counts is not None, said
+        assert "Accuracy was right on" in counts.group(0) and "passed" not in counts.group(0)
 
 
 def test_any_other_counted_reading_s_verb_is_neutral_never_a_decision_word_of_the_glossary() -> None:
@@ -318,13 +320,14 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     assert CANNOT_TELL_APART in GLOSSARY and "same" in GLOSSARY[CANNOT_TELL_APART]
     assert not any(_RETIRED.search(words) for words in GLOSSARY.values())
     assert "separated" not in GLOSSARY
-    # A table cell says the short form; its column holds every verdict, so it links the verdict's definition, and
-    # the line that says the undecided reading links the one definition.
+    # A table cell the bet read says where the arm stands, never the short undecided form; its column holds every
+    # verdict, so it links the verdict's definition, and the glossary still defines the undecided reading once.
     report = rungs["rung3"].result.report
     (contrasts,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
     assert column.term == "verdict"
-    assert {row["verdict"].text.split(";")[0] for row in contrasts.rows} == {CANNOT_TELL_APART}
+    cells = {row["verdict"].text.split(";")[0] for row in contrasts.rows}
+    assert cells and all(cell.startswith("v2 ") and "undecided" in cell for cell in cells), cells
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
     assert html.count('<dt id="g-cannot-tell-apart">') == 1

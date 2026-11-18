@@ -84,13 +84,14 @@ from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
 from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.verdict import (
+    graded_contrast,
     led_sentences,
     unfinished_line,
     ungraded_sentence,
     ungraded_sentences,
 )
 from threetears.evals.analysis.report.words import heading_case
-from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.analysis.style import CANNOT_TELL_APART, EVIDENCE_TERM
 from threetears.evals.analysis.completeness import bundle_stopped_short
 
 __all__ = ["build_campaign_report"]
@@ -338,8 +339,10 @@ def _lead_blocks(
     sentences: list[str] = []
     # Each decision the lead says, word for word, which the page sets in bold; the figures after it stay regular.
     decisions: list[str] = []
-    # Whether a decision the lead says leaves arms undecided, read off each decision's own reading.
+    # Whether a decision the lead says leaves arms undecided, read off each decision's own reading; and whether one
+    # leaves a contrast the bet read undecided, whose words grade its evidence.
     undecided = False
+    graded_lead = False
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
@@ -351,14 +354,23 @@ def _lead_blocks(
         # its page was built in.
         figures = contrast_evidence(report.bundle, forms=aspect_forms.get(aspect.label))
         led_undecided: list[bool] = []
+        led_graded: list[bool] = []
 
-        def evidence(verdict: Verdict, figures: Callable[[Verdict], str | None] = figures) -> str | None:
-            # Each led contrast's own reading says whether its sentence leaves the arms undecided.
-            led_undecided.append(verdict.outcome == "not_separated")
+        def evidence(
+            verdict: Verdict,
+            figures: Callable[[Verdict], str | None] = figures,
+            bundle: AnalysisContextBundle = report.bundle,
+        ) -> str | None:
+            # Each led contrast's own reading says whether its sentence leaves the arms undecided; one the bet read
+            # says where the arm stands and grades its evidence instead.
+            graded = verdict.outcome == "not_separated" and graded_contrast(bundle, verdict)
+            led_undecided.append(verdict.outcome == "not_separated" and not graded)
+            led_graded.append(graded)
             return figures(verdict)
 
         if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=evidence):
             undecided = undecided or any(led_undecided)
+            graded_lead = graded_lead or any(led_graded)
             sentences += led
             decisions += [
                 decision.removesuffix(".")
@@ -404,7 +416,7 @@ def _lead_blocks(
     text = " ".join(sentences)
     # Where a decision the lead says leaves arms undecided, its words say the evidence cannot tell them apart, and the
     # lead links that phrase's one definition at its first use.
-    term = CANNOT_TELL_APART if undecided else None
+    term = CANNOT_TELL_APART if undecided else EVIDENCE_TERM if graded_lead else None
     # Code's own decisions: bold falls away where a host's name would cut a code span, never refusing the page.
     emphasis = DisclosureBlock.code_emphasis(text, decisions)
     return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=emphasis)]

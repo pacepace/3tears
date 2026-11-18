@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from threetears.evals.analysis.arms import arm_names
+from threetears.evals.analysis.stats import EVIDENCE_STEPS
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_of
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
@@ -569,6 +570,32 @@ CANNOT_TELL_APART = "cannot tell apart"
 CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b", re.IGNORECASE)
 
 
+#: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
+EVIDENCE_TERM = "evidence"
+
+#: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
+#: :data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS` weak, from it moderate, from the second strong.
+_EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
+
+
+def evidence_grade(evidence: float) -> str:
+    """The word every surface says an e-value's strength in (:data:`_EVIDENCE_GRADES`): ``weak`` below 3,
+    ``moderate`` from 3, ``strong`` from 10 (:data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS`). Never a
+    verdict: a decision is the comparison's ``verdict``, read off the bet's capital at ``1/α``.
+
+    :param evidence: The e-value.
+    :return: The word.
+    """
+    moderate, strong = EVIDENCE_STEPS
+    return (
+        _EVIDENCE_GRADES[2]
+        if evidence >= strong
+        else _EVIDENCE_GRADES[1]
+        if evidence >= moderate
+        else _EVIDENCE_GRADES[0]
+    )
+
+
 def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
     """The undecided reading as a sentence says it, each arm by name and the control last: ``the evidence cannot tell
     v2 and v1 apart``; with several arms ``the evidence cannot tell v2 or v3 apart from v1``.
@@ -621,6 +648,7 @@ GLOSSARY: dict[str, str] = {
         "means the two are the same."
     ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
+    EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
     "depth": "How many times an arm ran each case: the fewest, the median and the most.",
@@ -872,6 +900,7 @@ __all__ = [
     "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
+    "EVIDENCE_TERM",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "CHECK_LINK_TITLE",
@@ -886,6 +915,7 @@ __all__ = [
     "arm_display_name",
     "arm_name",
     "cannot_tell_apart",
+    "evidence_grade",
     "check_definition",
     "check_held",
     "check_names",

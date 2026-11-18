@@ -569,7 +569,7 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield "READING WHAT COMES BACK"
     yield from _wrapped("The first line printed is the answer. Rung 1 prints:")
     yield from _wrapped(printed_first_line("Rung 1: your own function"), "  ")
-    yield from _wrapped("A comparison's first line says whether the evidence tells the arms apart. Rung 3a prints:")
+    yield from _wrapped("A comparison's first line: where v2 stands, and how strong the evidence is. Rung 3a prints:")
     yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
     yield from _wrapped(
         "Run again into its store with cases appended, a comparison continues (only new cases run) and its pass-rate "

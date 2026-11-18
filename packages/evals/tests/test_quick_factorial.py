@@ -204,9 +204,7 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     assert on_b.name == f"{comparison.name}, against Model b, prompt v1"
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
     assert rows["Model b, prompt v2"]["control"] == "Model b, prompt v1"
-    assert rows["Model b, prompt v2"]["verdict"] == (
-        "the evidence cannot tell Model b, prompt v2 and Model b, prompt v1 apart"
-    )
+    assert rows["Model b, prompt v2"]["verdict"] == "Model b, prompt v2 level with Model b, prompt v1, undecided"
     assert rows["Model a, prompt v1"]["delta"] == pytest.approx(-50.0)
     with pytest.raises(ValueError, match="names no arm"):
         await comparison.against("model=c, prompt=v1")
@@ -220,7 +218,7 @@ async def test_a_one_factor_comparison_is_read_against_another_control_too() -> 
     assert (row["contrast"], row["control"], row["verdict"]) == (
         "hasty",
         "careful",
-        "hasty worse than careful",
+        "hasty worse than careful, decided at 9 cases when the evidence reached 42",
     )
 
 

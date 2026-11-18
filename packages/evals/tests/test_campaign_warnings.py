@@ -255,12 +255,14 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    # The decision, then the figures it rests on, the interval's two ends at one precision, as a set reads. Read by the
-    # quick path's mixture bet in committed order, the interval reaches across zero, so it is said as how far each way
-    # it allows.
+    # The decision, then where same stands, the interval's two ends at one precision, as a set reads, the graded
+    # evidence and the counts it rests on. Read by the quick path's mixture bet in committed order, the interval reaches
+    # across zero, so it is said as how far each way it allows; the evidence is strong, yet with no question asked the
+    # even hedge holds half of it each way, short of a decision.
     assert lead == (
-        f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
-        "Over 30 paired cases, the interval allows same to be as much as 4 points worse or 46 better.**"
+        f"**{right.heading}: {right.words}. Over 30 paired cases, same is 20 points ahead of current. The interval "
+        "allows same to be as much as 2 points worse or 46 better. The evidence that same is better is strong (24). "
+        "Of 30 trials each, Right score was met on 20 for current and 26 for same.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
@@ -332,8 +334,9 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     lead, warning = _bold(result.page)
     assert accuracy.heading == "Accuracy"
     assert lead == (
-        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
-        "same. Over 30 paired cases, the interval allows same to be as much as 4 points worse or 45 better.**"
+        f"**{accuracy.heading}: {accuracy.words}. Over 30 paired cases, same is 20 points ahead of current. The "
+        "interval allows same to be as much as 2 points worse or 46 better. The evidence that same is better is strong "
+        "(24). Of 30 trials each, Accuracy was right on 20 for current and 26 for same.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same may do worse than current on the No secret score guardrail")

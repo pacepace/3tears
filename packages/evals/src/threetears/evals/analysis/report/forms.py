@@ -756,6 +756,36 @@ class PageForms:
             higher_is_better=higher_is_better,
         )
 
+    def ruled_change_size(
+        self,
+        ruler: MeasureRuler,
+        change: float,
+        *,
+        form: MoneyForm | None = None,
+        places: ContrastPlaces | None = None,
+        measure: str = "",
+        kind: _MeasureKind = None,
+    ) -> str:
+        """A change's size as the verdict line's estimate states it (``29``, ``$0.002``, ``0.31 points``): unsigned, in
+        the form :meth:`ruled_allows` states the interval's ends in, so the estimate and its interval read alike.
+
+        :param ruler: The reading's ruler.
+        :param change: The change, as stored.
+        :param form: The form the reading's changes read in on the surface; None for none.
+        :param places: The surface's set's places; None where it holds none.
+        :param measure: The measure or dimension it is a change of; empty for none.
+        :param kind: Its reading.
+        :return: The size.
+        """
+        return self._ruled_size(
+            ruler,
+            change * ruler.factor,
+            form=form,
+            places=self._set_places(places, measure, kind),
+            measure=measure,
+            kind=kind,
+        )
+
     def loss_share(self, share: float) -> Printed:
         """A share of an arm's trials lost (0 to 1), or the share past which loss differs between arms, in percent by
         the lone figure rule (``12.5%``), as the methods' disclosure states it.
@@ -1740,7 +1770,24 @@ class PageForms:
             if cell.margin is not None:
                 said.setdefault(-cell.margin, format_signed(-cell.margin))
                 said.setdefault(cell.margin, plus_signed(format_number(cell.margin), cell.margin))
-        said.setdefault(0.0, with_unit(0.0, MONEY) if is_money(unit) else format_number(0.0))
+        # Zero on a money scale of differences is a change, so it reads at the money cells' own places (``$0.000``
+        # beside ``+$0.025``) as every other end there does; a scale of levels starts at zero whole (``$0``).
+        money_places = max(
+            (
+                len(text.rsplit(".", 1)[1])
+                for cell in cells
+                for text in (cell.low_text, cell.high_text)
+                if text and "." in text
+            ),
+            default=0,
+        )
+        differences = any(cell.zero_line or cell.margin is not None for cell in cells)
+        said.setdefault(
+            0.0,
+            (f"${spell_at(0.0, money_places)}" if money_places and differences else with_unit(0.0, MONEY))
+            if is_money(unit)
+            else format_number(0.0),
+        )
 
         def end(number: float) -> str:
             if number in said:

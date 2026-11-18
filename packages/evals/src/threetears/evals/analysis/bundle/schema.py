@@ -2066,6 +2066,39 @@ class FamilyComparison(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description="The share of the contrast's variance that is the judge's re-score noise, low then high.",
     )
+    evidence_better: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where the mixture bet read the contrast (a quick-path comparison): the graded evidence that the contrast "
+            "arm is better, the e-value its upward bet on the better side holds now (`stats.bet_evidence`). Under no "
+            "difference it ever reaches c at most 1/c of the time. Never a verdict: `verdict` is decided on the "
+            "family's primary alone. None where no bet read the contrast."
+        ),
+    )
+    evidence_worse: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description="The same evidence that the contrast arm is worse. None where no bet read the contrast.",
+    )
+    decided_at_cases: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where the mixture bet decided the contrast (`verdict` improved or regressed): the count of paired cases, "
+            "in the order bet on, at which its capital first reached the level it was decided at. A decision stands "
+            "once made, however the evidence moves after it. None otherwise."
+        ),
+    )
+    decided_evidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        exclude_if=lambda value: value is None,
+        description="The evidence on the decided side when it decided, the e-value it had reached then.",
+    )
 
 
 class ComparisonFamily(EvalDocumentModel):
@@ -2144,6 +2177,27 @@ class ComparisonFamily(EvalDocumentModel):
         description="Ordered by reading, name, rig and contrast variant.",
     )
     disclosure: str = Field(min_length=1, description="The sentence a writer quotes about this family's correction.")
+    primary: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "On a quick-path comparison whose question is asked: the one reading the question is decided on, its "
+            "first grader's, tested alone at `alpha` (Holm only across its arms) with the bet staked toward the asked "
+            "direction. Every other comparison in the family is a secondary reading: its estimate, interval and "
+            "evidence are shown, its verdict is not_separated and its `p_adjusted` None, and it decides nothing. None "
+            "where every comparison is corrected together as one family."
+        ),
+    )
+    lean: Literal["better", "worse"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "With a `primary`: the side the question asks about, which the bet deciding it is staked nine tenths "
+            "toward: `better` for a question whether the arm does better, `worse` for one with a margin (a gate: is the "
+            "arm no worse). None reads the even hedge: no question asked, or a question, control or margin set after "
+            "the first result, where a lean picked after the readings were seen would be a second look."
+        ),
+    )
 
 
 #: The measure a cost floor reads per case: the candidate's own spend per reply, the scoreboard's cost per reply.
