@@ -23,11 +23,11 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
 from threetears.agent.acl import three_scope_visibility_clause
 from threetears.agent.acl.migrations import register as register_acl
+from packages.core.tests.dialect_support import pg_dialect
 from threetears.agent.knowledge import collections as knowledge_collections
 from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
@@ -130,8 +130,8 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         runner = MigrationRunner()
         register_acl(runner)
         register_tools_platform(runner, depends_on=("agent_acl",))
-        await runner.apply_for_platform_schema(_Store(connection))  # type: ignore[arg-type]
-        dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+        await runner.apply_for_platform_schema(_Store(connection))
+        dialect = pg_dialect()
         for declared in (PlaybookEntryCollection.schema, ConceptCollection.schema):
             table = declared.to_sqlalchemy_table(MetaData())
             await connection.execute(str(CreateTable(table).compile(dialect=dialect)))

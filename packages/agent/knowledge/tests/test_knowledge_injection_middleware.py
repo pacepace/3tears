@@ -32,7 +32,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain.agents.middleware.types import ExtendedModelResponse
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from threetears.core.exceptions import DataLayerUnavailableError
@@ -371,6 +371,7 @@ class TestInjection:
         req, _out = _drive(
             KnowledgeInjectionMiddleware(), _request(SystemMessage(content="base")), _configurable(integration)
         )
+        assert req.system_message is not None
         content = req.system_message.content
         assert isinstance(content, str)
         # definitions (concept glossary) before procedures (entries).
@@ -1193,7 +1194,7 @@ class TestTurnQueryText:
             self.queries.append(text)
             return [1.0, 0.0]
 
-    def _embedded_query(self, messages: list[BaseMessage]) -> list[str]:
+    def _embedded_query(self, messages: list[AnyMessage]) -> list[str]:
         embedder = self._RecordingEmbedder()
         _drive(
             KnowledgeInjectionMiddleware(),

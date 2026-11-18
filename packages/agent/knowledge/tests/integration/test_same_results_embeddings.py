@@ -18,9 +18,9 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
+from packages.core.tests.dialect_support import pg_dialect
 from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -75,7 +75,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
             "SELECT n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'vector'"
         )
         await connection.set_type_codec("vector", schema=vector_schema, encoder=str, decoder=str, format="text")
-        dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+        dialect = pg_dialect()
         for declared in (PlaybookEntryCollection.schema, ConceptCollection.schema):
             table = declared.to_sqlalchemy_table(MetaData())
             await connection.execute(str(CreateTable(table).compile(dialect=dialect)))

@@ -16,8 +16,9 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
+from packages.agent.knowledge.tests.proxy_pool_support import ProxyPoolDouble
+from packages.core.tests.dialect_support import pg_dialect
 from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import TableSchema
@@ -104,7 +105,7 @@ async def _create(conn: asyncpg.Connection, schema: TableSchema) -> None:
     # the defaults are the hub's to keep; seeding names every value a NOT NULL column needs
     for column in table.columns:
         column.server_default = None
-    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    dialect = pg_dialect()
     await conn.execute(str(CreateTable(table).compile(dialect=dialect)))
     for index in table.indexes:
         await conn.execute(str(CreateIndex(index).compile(dialect=dialect)))
@@ -145,7 +146,7 @@ async def test_draft_owner_indexes(conn: asyncpg.Connection) -> None:
     assert plan_uses_index(concept_plan, "concepts_draft_owner_idx"), concept_plan.plan
 
 
-class _GrantedPool:
+class _GrantedPool(ProxyPoolDouble):
     """the rbac-read proxy pool a visible listing reads through, its caller's grants answered as ``customers`` (the
     grant tables are not this schema's); every listing statement recorded, unrun.
 
@@ -157,7 +158,8 @@ class _GrantedPool:
         self._customers = customers
         self.asked: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[Any]:
+    async def fetch(self, sql: str, /, *params: Any, customer_scope: Any = None) -> list[Any]:
+        assert customer_scope is not None, "a visible listing reads under its caller's customer scope"
         if "group_members" in sql:
             assert "role_assignments" in sql, sql
             group = uuid.uuid4()

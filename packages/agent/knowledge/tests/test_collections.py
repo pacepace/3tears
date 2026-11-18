@@ -19,6 +19,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.knowledge import Scope, build_table_ref
 
+from packages.agent.knowledge.tests.proxy_pool_support import ProxyPoolDouble
 from threetears.agent.knowledge.collections import (
     ConceptCollection,
     PlaybookEntryCollection,
@@ -35,7 +36,7 @@ def _is_grants_read(sql: str) -> bool:
     return "role_assignments" in sql
 
 
-class _StubPool:
+class _StubPool(ProxyPoolDouble):
     """L3 pool stand-in that records the last query and returns fixed rows: the listing's, or, for a read of the
     bound tables, ``tables``; the caller's grants answer :data:`_NO_GRANTS`."""
 
@@ -47,7 +48,8 @@ class _StubPool:
         self.customer_scope: Any = None
         self.grants_read = 0
 
-    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, /, *params: Any, customer_scope: Any = None) -> list[dict[str, Any]]:
+        assert customer_scope is not None, "a knowledge listing reads under its caller's customer scope"
         if _is_grants_read(sql):
             self.grants_read += 1
             return list(_NO_GRANTS)
@@ -55,6 +57,19 @@ class _StubPool:
         self.params = params
         self.customer_scope = customer_scope
         return list(self._tables if 'FROM "datasource_tables"' in sql else self._rows)
+
+
+def _stub(coll: PlaybookEntryCollection | ConceptCollection) -> _StubPool:
+    """the stub pool ``coll`` reads through."""
+    assert isinstance(coll.l3_pool, _StubPool)
+    return coll.l3_pool
+
+
+def _sql(coll: PlaybookEntryCollection | ConceptCollection) -> str:
+    """the listing statement ``coll`` last sent its stub pool."""
+    sql = _stub(coll).sql
+    assert sql is not None, "the collection sent no listing"
+    return sql
 
 
 def _entries_over(rows: list[dict[str, Any]]) -> PlaybookEntryCollection:
@@ -200,15 +215,15 @@ class TestFetchEmbeddings:
         )
         out = await coll.fetch_embeddings([a, b], customer_scope=uuid7())
         assert out == {a: [1.0, 2.0]}
-        assert coll.l3_pool.sql is not None
-        assert 't."id" = ANY($1' in coll.l3_pool.sql
-        assert f'FROM "{table}"' in coll.l3_pool.sql
+        assert _stub(coll).sql is not None
+        assert 't."id" = ANY($1' in _sql(coll)
+        assert f'FROM "{table}"' in _sql(coll)
 
     async def test_empty_ids_issues_no_query(self) -> None:
         coll = _concepts_over([])
         out = await coll.fetch_embeddings([], customer_scope=uuid7())
         assert out == {}
-        assert coll.l3_pool.sql is None
+        assert _stub(coll).sql is None
 
     async def test_none_pool_returns_empty(self) -> None:
         coll = ConceptCollection.__new__(ConceptCollection)
@@ -237,18 +252,18 @@ class TestPlaybookEntryCollectionSql:
         coll.l3_pool = _StubPool([_entry_row()])
         snaps = await coll.list_visible_to_user(uuid7(), customer_scope=uuid7())
         assert len(snaps) == 1
-        sql = coll.l3_pool.sql
+        sql = _stub(coll).sql
         assert sql is not None
         assert 'FROM "playbook_entries"' in sql
         assert "\"status\" = 'active'" in sql
         assert '"datasource_id" IN' not in sql  # no domain filter without datasource_id
-        assert coll.l3_pool.grants_read == 1  # the caller's customers, read once
+        assert _stub(coll).grants_read == 1  # the caller's customers, read once
 
     async def test_list_visible_adds_datasource_gather(self) -> None:
         coll = PlaybookEntryCollection.__new__(PlaybookEntryCollection)
         coll.l3_pool = _StubPool([])
         await coll.list_visible_to_user(uuid7(), datasource_id=uuid7(), customer_scope=uuid7())
-        assert '"datasource_id" IN' in coll.l3_pool.sql
+        assert '"datasource_id" IN' in _sql(coll)
 
     async def test_list_visible_no_pool_returns_empty(self) -> None:
         coll = PlaybookEntryCollection.__new__(PlaybookEntryCollection)
@@ -273,7 +288,7 @@ class TestPlaybookEntryCollectionSql:
         assert len(drafts) == 1
         assert drafts[0].target == "entry"
         assert drafts[0].turn_count == 3
-        assert "\"status\" = 'draft'" in coll.l3_pool.sql
+        assert "\"status\" = 'draft'" in _sql(coll)
 
 
 class TestConceptCollectionSql:
@@ -286,7 +301,7 @@ class TestConceptCollectionSql:
             datasource_table_id=uuid7(),
             customer_scope=uuid7(),
         )
-        sql = coll.l3_pool.sql
+        sql = _stub(coll).sql
         assert sql is not None
         assert 'FROM "concepts"' in sql
         assert "\"status\" = 'active'" in sql
@@ -336,7 +351,8 @@ class _WriteLandsDuringReadPool:
         self._after = after
         self.fetches = 0
 
-    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, /, *params: Any, customer_scope: Any = None) -> list[dict[str, Any]]:
+        assert customer_scope is not None, "a knowledge listing reads under its caller's customer scope"
         if _is_grants_read(sql):
             return list(_NO_GRANTS)
         self.fetches += 1
