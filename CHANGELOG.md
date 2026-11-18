@@ -45,6 +45,17 @@ changes at run time.
 bumps) and `EpochListener(nats_client, epoch_client)` a `threetears.nats.TypedSubscriber` (it subscribes typed
 callbacks), instead of the whole `NatsClient`, which satisfies both. The in-memory `FakeNatsClient` now type-checks
 as either with no ignore. Nothing changes at run time.
+### core: a claimed result maps its files without a drive flush per file on macOS
+
+`SharedArrowStore.claim` (and every `pin=True` mapping, `MappedSegment`) maps each file through Arrow
+(`pa.memory_map`), its buffers resting on the map and the directory's pin together, in place of CPython's
+`mmap.mmap`, which on macOS calls `fcntl(F_FULLFSYNC)` on every file it maps (bpo-11277). A reports full start's claim
+of one result (2240 files, 1.98 GB) took 8.45-11.2 s that way, 0.49-0.51 s now. The pin is kept exactly as before:
+the directory's lock goes when the segment is closed and the last buffer over its files is freed. Linux (`/dev/shm`)
+flushed nothing on a map, so nothing changes there. Held by `test_shared_arrow_claim_cost.py`: a claim makes no
+Python `mmap` (counted), and a claim of 200 files of 0.9 MB, with another process writing beside it, takes within
+twice mapping them bare (`loop_timing`; 81.6-148x before on macOS, 1.11-1.21x now).
+
 ### core: pool workers forked by a fork server, exiting with the serving process; readers first
 
 **Added:** `threetears.core.processes.start_worker_server(preload=())` starts multiprocessing's fork server and the

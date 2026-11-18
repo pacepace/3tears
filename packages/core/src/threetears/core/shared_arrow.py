@@ -80,7 +80,6 @@ import fcntl
 import functools
 import hashlib
 import json
-import mmap
 import multiprocessing
 import multiprocessing.connection
 import os
@@ -1546,9 +1545,9 @@ class _Pin:
     """a shared lock on a directory, let go when the last mapped file holding it is freed: what keeps a store
     counting a directory's files while any buffer taken from them lives (:class:`MappedTables`, ``pin=True``).
 
-    Each mapped file's finalizer holds this object, so it is freed (and the lock let go) when the mapping holding it
-    is closed and the last buffer over each of its files is freed, whatever thread frees it. It takes no lock of its
-    own: a finalizer may run inside any code, a store's own locked sections included.
+    Each mapped file's holder (:class:`_PinnedMap`) holds this object, so it is freed (and the lock let go) when the
+    mapping holding it is closed and the last buffer over each of its files is freed, whatever thread frees it. It
+    takes no lock of its own: a finalizer may run inside any code, a store's own locked sections included.
 
     :param descriptor: the open lock file holding the shared lock
     :ptype descriptor: int
@@ -1560,19 +1559,37 @@ class _Pin:
         weakref.finalize(self, os.close, descriptor)
 
 
-def _held(_pin: _Pin) -> None:
-    """a mapped file's finalizer: it held ``_pin`` while the file was mapped, and lets it go now.
+class _PinnedMap:
+    """what one pinned file's buffers rest on: the file's whole map and its directory's pin. Every buffer read from the
+    file is a slice of a foreign buffer whose base is this object, so it is freed -- the map unmapped, the pin let
+    go -- only when the last of them is.
 
-    :param _pin: the pin
-    :ptype _pin: _Pin
-    :return: nothing
-    :rtype: None
+    :param whole: the file's whole map (a ``pa.memory_map`` buffer, which keeps the map once its file is closed)
+    :ptype whole: pa.Buffer
+    :param pin: the directory's lock
+    :ptype pin: _Pin
     """
+
+    __slots__ = ("pin", "whole")
+
+    def __init__(self, whole: Any, pin: _Pin) -> None:
+        self.whole = whole
+        self.pin = pin
 
 
 def _map_pinned(path: str, pin: _Pin | None) -> Any:
-    """one Arrow IPC file mapped read-only through a Python ``mmap``, whose buffers keep the map alive: the map, and
-    with it ``pin``, is freed only once no buffer over the file lives (a table, a slice, a cast that shares them).
+    """one Arrow IPC file mapped read-only, whose buffers keep the map alive: the map, and with it ``pin``, is freed
+    only once no buffer over the file lives (a table, a slice, a cast that shares them).
+
+    Mapped by Arrow (``pa.memory_map``), never by Python's ``mmap``: CPython's ``mmap.mmap`` calls
+    ``fcntl(F_FULLFSYNC)`` on every file it maps on macOS (bpo-11277), a flush of the drive's cache each time, ~5 ms a
+    file while another process writes (test_shared_arrow_claim_cost.py: 81-148x mapping bare, 1.1-1.2x now). A reports
+    full start's claim of one result (2240 files, 1.98 GB) took 8.45-11.2 s that way, 7.9 s of it the fsync, where
+    Arrow maps the same files in 0.49-0.51 s (2026-11-17). Linux (``/dev/shm`` in prod) flushes nothing either way:
+    there the two maps are the same ``mmap(PROT_READ, MAP_SHARED)``. The map is taken whole, its file closed at once
+    (the map holds its pages, not a descriptor), and the table read over a foreign buffer resting on the map and the
+    pin together (:class:`_PinnedMap`), so the pin lives exactly as long as the last buffer over the file, as it did
+    with a Python ``mmap`` under a ``py_buffer``.
 
     :param path: the file
     :ptype path: str
@@ -1581,14 +1598,14 @@ def _map_pinned(path: str, pin: _Pin | None) -> Any:
     :return: the file's table
     :rtype: pa.Table
     """
-    descriptor = os.open(path, os.O_RDONLY)
+    mapped = pa.memory_map(path, "r")
     try:
-        region = mmap.mmap(descriptor, 0, access=mmap.ACCESS_READ, trackfd=False)
+        whole = mapped.read_buffer()
     finally:
-        os.close(descriptor)
+        mapped.close()
     if pin is not None:
-        weakref.finalize(region, _held, pin)
-    return ipc.open_file(pa.BufferReader(pa.py_buffer(region))).read_all()
+        whole = pa.foreign_buffer(whole.address, whole.size, base=_PinnedMap(whole, pin))
+    return ipc.open_file(pa.BufferReader(whole)).read_all()
 
 
 class MappedTables:
@@ -1614,8 +1631,8 @@ class MappedTables:
         files
     :ptype reuse: Mapping[Any, pa.Table] | None
     :param pin: hold the directory's shared lock (when it has a lock file) until :meth:`close` AND the last buffer
-        over its files is freed, not only until :meth:`close`; its files are mapped through a Python ``mmap``
-        (:func:`_map_pinned`), zero-copy as ever
+        over its files is freed, not only until :meth:`close`; each file's buffers then rest on its map and the pin
+        together (:func:`_map_pinned`), zero-copy as ever
     :ptype pin: bool
     :ivar name: the directory's name
     :ivar tables: table name -> the mapped table
