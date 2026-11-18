@@ -10,14 +10,20 @@ packages (bumped in lock-step).
 
 **Changed:** an engine campaign's comparison family (a fixed count, or each look of a plan at α/L) reads every reading
 on the range 0 to 1 (the overall pass rate, a check's or a goal check's rate, a pass/fail judgment, a grade declared on
-0 to 1) by the bounded test by betting, whatever its spread: paired, the mixture bet the quick path reads, over the
-pairs in an order fixed by their count; unpaired, the bounded test at a cut between the two means. Its p is that
-test's, and `basis` reads `bounded`. Before, such a reading's p was the paired t test's, which errs above α on
+0 to 1) by the bounded test by betting, whatever its spread: the fixed-n plug-in bet its bounded interval was already
+drawn by (`bounded_separation_p` with no mixture), its stakes tuned to the level each of the family's intervals is read
+at (α/m, or α/(L m) under a plan of L looks), paired over the shared cases or, unpaired, at the cut between the two
+arms' bounds. Its p and its interval are one bet's, so a contrast never reads "cannot tell apart" beside an interval
+that excludes zero. `basis` reads `bounded`. Before, such a reading's p was the paired t test's, which errs above α on
 pass/fail answers: computed exactly on two fair coins, 5.28% at 40 cases read at α, and 4.49% over three looks at α/3.
-The bounded test separates such pairs at 2.85% at 40 cases, at most α at every count from 10 to 100
-(`tests/test_engine_fixed_count_bounded.py`, computed exactly), and the statistics certificate holds the engine's
-null simulations at α, interrupted or not. A reading on any other range (a 1-5 judged scale) or on none (cost,
-latency, a count) keeps the t test where its values have spread.
+**Why the bounded test holds α:** each stake is set from the values before it, so under no difference its capital is a
+nonnegative supermartingale started at 1, and by Ville's inequality it ever reaches 1/α at most α of the time, at
+every count and for every distribution on the range. **What is shown, and how:** every pass/fail sequence of up to
+twelve pairs is enumerated exactly (`tests/test_engine_fixed_count_bounded.py`), and from 10 to 100 pairs, at a fixed
+count and over three looks at α/3, the rate is certified by seeded simulation, each claim's Clopper-Pearson upper bound
+at most α (the statistics certificate's `engine.null.*`): it is not walked out exactly there, since the plug-in's stakes
+follow the running variance. A reading on any other range (a 1-5 judged scale) or on none (cost, latency, a count)
+keeps the t test where its values have spread.
 
 **Changed:** where every trial of a contrast is graded on one check alone (a classifier's one label included, read as
 its accuracy) and that check is in the family, the overall pass rate is that check case for case, so the family holds
@@ -27,22 +33,21 @@ on, never off how it came out. An eval graded on several checks or on a judged d
 family.
 
 **For hosts:** engine campaigns over pass/fail measures, and over grades on 0 to 1, now read by the bounded test.
-Readings shift when a campaign is read again, with no run changed: a p on such a reading is the bounded test's, its
-interval the bounded interval (as a rate's already was), and the bounded test needs more cases to show a small
-difference than the t test claimed to (forty cases where one arm alone passed ten and the other two read p ≈ 0.13
-where the t test read 0.019; a continuous 0-1 score moved two points over twelve cases no longer separates), so some
-separations an engine campaign showed read `not_separated` now. An eval of one check loses its separate pass-rate row
-and reads the check at the family's full level, which can separate a check that the halved level did not; a margin's
+Readings shift when a campaign is read again, with no run changed, and **separations can be lost as well as gained**:
+the bounded test needs more cases than the t test claimed to on a small difference (forty cases where one arm alone
+passed ten and the other two read p ≈ 0.12 where the t test read 0.019), while an eval of one check now reads its
+check at the family's full level, and seven cases out of seven moved from failing to passing read p ≈ 0.022. A
+continuous score on 0 to 1 loses power even at large counts: a field accuracy 4.3 points better over 190 cases, which
+the t test called better, reads "cannot tell apart". An eval of one check loses its separate pass-rate row; a margin's
 worst case on such an eval is read on the reading's own interval, there being no pass-rate contrast to read. No stored
-shape changes: a bundle is assembled from the runs when read. A written analysis recorded over a `v3:` aspect or `v4:`
-campaign fingerprint, which hash the evidence alone, still reproduces its generation; one recorded under an older
-fingerprint (`v2:` aspect, `v3:` campaign), which hashes the readings, reads as not reproducing it (`evidence`), as
-after any change to a statistic. Discodon's recorded decision "Keep 1017" on campaign
-01a1dc0f is a person's call and stays recorded as made; re-read under this build, its comparisons could read
-differently only where it holds a 0-1 reading or an eval of one check, and a local enumeration of pass/fail pairs (8 to
-60 cases) found the change separates where the old reading did not in about 3% of one-check configurations (almost all
-from the family's full level) and under 1% otherwise. Re-read the campaign (no model call) before relying on its
-page again.
+shape changes: a bundle is assembled from the runs when read. **A written report is not flagged by this change even
+where its verdicts would now read otherwise:** an analysis recorded over a `v3:` aspect or `v4:` campaign fingerprint,
+which hash the evidence alone, still reproduces its generation; one recorded under an older fingerprint (`v2:` aspect,
+`v3:` campaign), which hashes the readings, reads as not reproducing it (`evidence`). Re-read any campaign whose written
+report you rely on (free, no model call), compare its verdicts with the report's, and regenerate the report (a paid
+writer call) only where a verdict differs. Discodon's campaign 01a1dc0f, whose written report reads "No candidate
+improved" and whose recorded decision "Keep 1017" stands as made, is such a campaign: re-read, its comparisons could
+read differently only where it holds a 0-1 reading or an eval of one check or one label.
 
 ### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
 
