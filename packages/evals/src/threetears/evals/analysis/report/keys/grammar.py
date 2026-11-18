@@ -332,9 +332,7 @@ def figure_key_grammar(*, forms_of: Callable[[ReportInput], PageForms]) -> str:
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
         PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
         their own, since the forms read the keys' parts.
-    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The section, heading first.
-    :rtype: str
     :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
         plan would share the break, so it fails here.
     """
@@ -357,13 +355,10 @@ def figure_key_index(topic: str, *, forms_of: Callable[[ReportInput], PageForms]
     reference serves it in pages (:func:`figure_key_pages`); the index and the pages together hold every line of it.
 
     :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
-    :ptype topic: str
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
         PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
         their own, since the forms read the keys' parts.
-    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: The index, heading first.
-    :rtype: str
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
     """
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules()]
@@ -386,9 +381,7 @@ def figure_key_pages(*, forms_of: Callable[[ReportInput], PageForms]) -> dict[st
     :param forms_of: How a page's forms are built from a report input (:meth:`~threetears.evals.analysis.report.forms.
         PageForms.of`), which the examples are printed in on the made-up input: the keys read no page's forms of
         their own, since the forms read the keys' parts.
-    :ptype forms_of: Callable[[ReportInput], PageForms]
     :return: Each page, by its group's name, in the order the index lists them (:func:`figure_key_index`).
-    :rtype: dict[str, str]
     :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
     """
     example = _example_input()

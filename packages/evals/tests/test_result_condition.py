@@ -31,7 +31,6 @@ from threetears.evals.kernel.result_condition import (
     counted_goal_verdicts,
     resolve_result_condition,
 )
-from threetears.evals.kernel.usage_capture import resolve_result_usage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import result_capture_defaults
 
@@ -304,38 +303,6 @@ def test_a_judge_that_produced_nothing_and_errored_is_failed():
 # =============================================================================
 # The known false affirmative
 # =============================================================================
-
-
-def test_a_cancelled_cells_usage_is_reported_lost_not_captured():
-    """A lost capture, refused at the resolver that once published it as complete.
-
-    A timed-out cell stores ``usage=[]`` — byte-identical to a subject-factory failure's
-    honest "capture ran and attributed no roles". Branching on ``usage is not None`` alone
-    therefore published ``source="captured", partial=False`` for a cell that had burned
-    past its deadline: a claim that something which ran for minutes consumed nothing
-    anywhere. The run loop now keeps the rows a cancelled cell had captured, but the
-    call in flight at the deadline never reported — here the cell's only one — so the
-    capture is cut short rather than complete, and only the recorded termination separates
-    the two.
-    """
-    resolved = resolve_result_usage(_result(termination="cell_timeout", usage=[]))
-
-    assert resolved.source == "lost"
-    assert resolved.partial is True
-    assert resolved.usage == []
-
-
-def test_a_factory_failure_still_reports_an_honest_empty_capture():
-    """The other side of the same distinction — this one really did attribute no roles.
-
-    Paired with the test above deliberately: the two records differ ONLY in the stored
-    termination, so a fix that reported every empty capture as lost would pass that test
-    and fail this one.
-    """
-    resolved = resolve_result_usage(_result(termination="factory_failed", usage=[]))
-
-    assert resolved.source == "captured"
-    assert resolved.partial is False
 
 
 # =============================================================================

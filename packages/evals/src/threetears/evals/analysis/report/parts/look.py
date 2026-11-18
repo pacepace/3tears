@@ -134,9 +134,7 @@ def arm_token(tag: str | None) -> str | None:
     """An arm's identity colour by its letter tag: the control's ink-gray, a candidate's series colour.
 
     :param tag: The arm's tag (``P`` for the control), or None for an arm the page has not tagged.
-    :ptype tag: str | None
     :return: The kit colour token, or None untagged.
-    :rtype: str | None
     """
     if tag is None:
         return None
@@ -147,9 +145,7 @@ def arm_shape(tag: str | None) -> ChartShape | None:
     """An arm's scatter mark by its letter tag: the control's square, a candidate's shape in order.
 
     :param tag: The arm's tag (``P`` for the control), or None for an arm the page has not tagged.
-    :ptype tag: str | None
     :return: The mark, or None untagged.
-    :rtype: ChartShape | None
     """
     if tag is None:
         return None
@@ -164,9 +160,7 @@ def series_token(place: int) -> str:
     """The kit's series colour at a place in a fixed order (a factor's level by its place), repeating past the fifth.
 
     :param place: The place, from 0.
-    :ptype place: int
     :return: The kit colour token.
-    :rtype: str
     """
     return _SERIES[place % len(_SERIES)]
 
@@ -187,11 +181,8 @@ def cost_axis_format(top: float, *, money: bool) -> str:
     cents and drops them from $100.
 
     :param top: The axis's top, in the cost's unit, above zero.
-    :ptype top: float
     :param money: Whether the cost is money (``usd``) rather than a plain number (``num``).
-    :ptype money: bool
     :return: The format, e.g. ``usd:2`` for an axis to $0.48, ``usd:4`` for one to $0.0048.
-    :rtype: str
     """
     digits = max(0, math.ceil(-math.log10(top / 5)))
     if money:
@@ -244,9 +235,7 @@ class PageLook:
         """One arm's look.
 
         :param arm_id: The arm's id.
-        :ptype arm_id: str
         :return: Its look.
-        :rtype: ArmLook
         :raises KeyError: The input holds no such arm.
         """
         return self.arms[arm_id]
@@ -262,13 +251,9 @@ class PageLook:
         named by that aspect's name of it (:func:`~threetears.evals.analysis.report.words.aspect_stratum_key`).
 
         :param kind: What the id names.
-        :ptype kind: NamedKind
         :param identifier: The id.
-        :ptype identifier: str
         :param aspect: For a stratum, the aspect it is held on; None for one no aspect holds.
-        :ptype aspect: str | None
         :return: The reader name.
-        :rtype: str
         """
         held = self.names.get(kind, {})
         if kind == "stratum" and aspect is not None and (named := held.get(aspect_stratum_key(aspect, identifier))):
@@ -279,9 +264,7 @@ class PageLook:
         """``arm_ids`` in the page's order (:attr:`order`), any the order does not hold after them as given.
 
         :param arm_ids: Arm ids.
-        :ptype arm_ids: Iterable[str]
         :return: The same ids, reordered.
-        :rtype: list[str]
         """
         given = list(dict.fromkeys(arm_ids))
         place = {arm: index for index, arm in enumerate(self.order)}
@@ -293,11 +276,8 @@ def page_look(arms: Sequence[FactArm], *, names: Mapping[str, Mapping[str, str]]
     the facts give it. Its one caller is :func:`~threetears.evals.analysis.report.block_spec.block_look`.
 
     :param arms: Each arm as code's facts tell of it, in the input's order.
-    :ptype arms: Sequence[FactArm]
     :param names: Each id's reader name, by kind, then id.
-    :ptype names: Mapping[str, Mapping[str, str]]
     :return: The look.
-    :rtype: PageLook
     """
     looks = {
         arm.id: ArmLook(
@@ -356,11 +336,8 @@ class Quantity:
         never a second one after it; the label as it is for a total and for any other quantity.
 
         :param label: The label, as the input or the page writes it.
-        :ptype label: str
         :param noun: What the money counts, as a plural noun.
-        :ptype noun: str
         :return: The label.
-        :rtype: str
         """
         if self.unit != MONEY or self.money is None:
             return label
@@ -423,20 +400,15 @@ def quantity(unit: str, values: Sequence[float] = (), *, change: bool = False, p
     :param unit: The figure's unit, as the page reads it: ``share``, ``percent`` (or ``pct``), ``points``, ``usd``,
         ``usd_per_1k``, ``usd_per_1m``, ``ms``, ``s``, ``score``, empty for a bare number, or any other unit, written
         beside the number.
-    :ptype unit: str
     :param values: The drawn values, in display units (after the factor ``quantity(unit).factor`` gives): money's one
         form on the chart is chosen from them (this module's money), and where one is under a cent the quantity draws
         every amount a thousand times over (its factor and ``counted`` say so) in dollars and cents, its ticks and its
         notes alike, never with the per-1,000 mark beside its count; a set of totals under a cent, which counts
         nothing, reads in plain dollars to two significant figures. No other format reads them.
-    :ptype values: Sequence[float]
     :param change: Whether the values are changes (an arm less the control), read signed.
-    :ptype change: bool
     :param places: The decimals its measure reads at on the page, which its format names, so a value the kit writes
         with no text beside it (a host's re-render) reads as the page prints it; None for the unit's own format.
-    :ptype places: int | None
     :return: The quantity.
-    :rtype: Quantity
     """
     drawn = _unplaced(unit, values, change=change)
     return drawn if places is None else _at_places(drawn, places)
@@ -492,11 +464,8 @@ def _in_one_form(drawn: Quantity, values: Iterable[float]) -> Quantity:
     other quantity is returned as it is.
 
     :param drawn: The quantity, as :func:`quantity` makes it without values.
-    :ptype drawn: Quantity
     :param values: Every amount it draws, at its factor.
-    :ptype values: Iterable[float]
     :return: The quantity in one form; what was drawn at ``drawn.factor`` is drawn at the returned one.
-    :rtype: Quantity
     """
     if drawn.unit != MONEY:
         return drawn
@@ -520,13 +489,9 @@ def in_change_form(amounts: Quantity, changes: Iterable[float], widths: Iterable
     unit, as it is.
 
     :param amounts: The quantity the compared amounts are drawn as, in one form.
-    :ptype amounts: Quantity
     :param changes: Every change drawn, at the amounts' factor.
-    :ptype changes: Iterable[float]
     :param widths: The widths of their intervals, at the amounts' factor.
-    :ptype widths: Iterable[float]
     :return: The changes' quantity, signed.
-    :rtype: Quantity
     """
     if amounts.unit != MONEY or amounts.money is None:
         return replace(amounts, change=True, fmt=amounts.fmt if amounts.fmt.startswith("+") else f"+{amounts.fmt}")
@@ -540,15 +505,10 @@ def quantity_of(unit: str, figures: Iterable[float], *, change: bool = False, pl
     (this module's money), drawn a thousand times over where some amount is under a cent.
 
     :param unit: The figures' unit, as :func:`quantity` reads it.
-    :ptype unit: str
     :param figures: Every figure the chart or table column draws in it, in the input's units.
-    :ptype figures: Iterable[float]
     :param change: Whether the figures are changes, read signed.
-    :ptype change: bool
     :param places: The decimals its measure reads at, as :func:`quantity` takes them.
-    :ptype places: int | None
     :return: The quantity; draw each figure at its ``factor``.
-    :rtype: Quantity
     """
     factor = quantity(unit, change=change).factor
     return quantity(unit, [figure * factor for figure in figures], change=change, places=places)
@@ -560,11 +520,8 @@ def figure_text(value: float, drawn: Quantity) -> str:
     one money spelling, as its ticks read it (this module's money).
 
     :param value: The value, in display units.
-    :ptype value: float
     :param drawn: Its quantity.
-    :ptype drawn: Quantity
     :return: The text.
-    :rtype: str
     """
     if drawn.unit == MONEY:
         return _money_text(value, drawn)
@@ -591,11 +548,8 @@ def magnitude_domain(values: Iterable[float], *, rate: bool = False) -> tuple[fl
     the largest; a rate's never past 100.
 
     :param values: Every value and interval end the chart draws, in display units.
-    :ptype values: Iterable[float]
     :param rate: Whether the values are a rate in percent.
-    :ptype rate: bool
     :return: ``(low, high)``.
-    :rtype: tuple[float, float]
     """
     drawn = [value for value in values if math.isfinite(value)]
     top = max(drawn, default=0.0)
@@ -620,9 +574,7 @@ def log_spread(values: Sequence[float]) -> bool:
     ten times.
 
     :param values: Every value and interval end the axis draws, in display units.
-    :ptype values: Sequence[float]
     :return: Whether the axis is logarithmic.
-    :rtype: bool
     """
     drawn = [value for value in values if math.isfinite(value)]
     if len(drawn) < 2 or min(drawn) <= 0:
@@ -634,9 +586,7 @@ def log_domain(values: Sequence[float]) -> tuple[float, float]:
     """A log axis's range: the decade at or under the least value to the decade at or over the largest.
 
     :param values: The values, every one above zero.
-    :ptype values: Sequence[float]
     :return: ``(low, high)``.
-    :rtype: tuple[float, float]
     """
     return 10.0 ** math.floor(math.log10(min(values))), 10.0 ** math.ceil(math.log10(max(values)))
 
@@ -645,9 +595,7 @@ def log_ticks(domain: tuple[float, float]) -> list[float]:
     """A log axis's ticks: each decade in its range, and its 2 and 5 where it spans fewer than three decades.
 
     :param domain: The axis's range, its ends decades (:func:`log_domain`).
-    :ptype domain: tuple[float, float]
     :return: The ticks, low to high.
-    :rtype: list[float]
     """
     low, high = round(math.log10(domain[0])), round(math.log10(domain[1]))
     steps = _LOG_STEPS if high - low < _DECADES_FOR_DECADE_TICKS else _LOG_STEPS[:1]
@@ -669,13 +617,9 @@ def centred_domain(values: Iterable[float], drawn: Quantity, *, centre: float = 
     no-preference point), with room past each end.
 
     :param values: Every value, interval end and reference line drawn, in display units.
-    :ptype values: Iterable[float]
     :param drawn: The quantity drawn.
-    :ptype drawn: Quantity
     :param centre: The value the chart is centred on.
-    :ptype centre: float
     :return: ``(low, high)``.
-    :rtype: tuple[float, float]
     """
     ends = [value for value in values if math.isfinite(value)] + [centre]
     return _padded(min(ends), max(ends), drawn)
@@ -686,11 +630,8 @@ def band_domain(values: Iterable[float], drawn: Quantity) -> tuple[float, float]
     0 to 100.
 
     :param values: Every value and band end drawn, in display units.
-    :ptype values: Iterable[float]
     :param drawn: The quantity drawn.
-    :ptype drawn: Quantity
     :return: ``(low, high)``.
-    :rtype: tuple[float, float]
     """
     ends = [value for value in values if math.isfinite(value)] or [0.0]
     low, high = _padded(min(ends), max(ends), drawn)

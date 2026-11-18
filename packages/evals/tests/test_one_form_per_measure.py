@@ -28,7 +28,9 @@ from packages.evals.tests.test_quick_comparison import CASES, careful, hasty
 from packages.evals.tests.test_quick_guardrails import ARMS, NO_LEAK, correct, no_leak
 from packages.evals.tests.test_quick_guardrails import CASES as GUARDED_CASES
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import TableBlock, assemble_campaign_bundle, campaign_report_markdown
+from threetears.evals.analysis import TableBlock
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.forms import PageForms
@@ -52,7 +54,7 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
     ]
     change, interval = row["change"].text, row["interval"].text
     # careful against hasty, 100% against 50% of 16 paired cases: whole points, which the interval's width sets.
-    assert (change, interval) == ("+50 pts", "+2 to +83 pts")
+    assert (change, interval) == ("+50 pts", "+5 to +84 pts")
 
     held = report_input(off_loop(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE))
     (contrast,) = held.contrasts
@@ -62,8 +64,8 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
     low, high = (float(end) for end in contrast.interval)
     assert written.interval(contrast.measure, low, high, change=True).text == interval
 
-    # The quick line and the code page's lead say the interval's ends in words, at the page's digits.
-    said = "the interval puts careful between 2 and 83 points better"
+    # The quick line and the code page's lead say the estimate and the interval's ends in words, at the page's digits.
+    said = "careful is 50 points ahead of hasty. The interval puts careful between 5 and 84 points better"
     assert said in result.render().splitlines()[0]
     assert said in campaign_report_markdown(result.page)
     (program,) = result.contrasts()

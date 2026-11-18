@@ -43,11 +43,8 @@ class EvalCellTimeout(Exception):
         """Record the breached budget, the time spent under it, and the host's attribution.
 
         :param budget_s: The budget that was breached, in seconds.
-        :ptype budget_s: float
         :param elapsed_s: Wall-clock seconds spent before it fired.
-        :ptype elapsed_s: float
         :param attribution: The host's name for what was innermost, or ``None``.
-        :ptype attribution: str | None
         """
         super().__init__(
             f"cell exceeded its {round_half_even(budget_s, 0)}s budget after {round_half_even(elapsed_s, 0)}s"
@@ -86,9 +83,7 @@ async def default_cell_timeout(budget_s: float) -> AsyncIterator[float]:
     nesting and no attribution, because those are a host's concerns.
 
     :param budget_s: Wall-clock ceiling for the cell, in seconds.
-    :ptype budget_s: float
     :yield: The budget.
-    :rtype: AsyncIterator[float]
     :raises ValueError: If ``budget_s`` is not positive — on entry, before the body runs.
     :raises EvalCellTimeout: If the body outlives the budget.
     """

@@ -82,9 +82,7 @@ def _token_count_unreported(row: UsageView) -> bool:
     answered, so no token was spent to report.
 
     :param row: One usage row.
-    :ptype row: UsageView
     :return: ``True`` when the row's prompt or completion count is missing from the sums.
-    :rtype: bool
     """
     if row.role == "external" or row.answers_nothing:
         return False
@@ -126,9 +124,7 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     billed refusal's dollars are no turn's spend, and averaged in they made a refusing configuration cheap.
 
     :param run_results: The run's results.
-    :ptype run_results: list[ResultView]
     :return: One float per turn that measured a production-replicating cost, in input order.
-    :rtype: list[float]
     """
     measured: list[float] = []
     for result in run_results:
@@ -160,18 +156,13 @@ def digest_run(
     """Digest one run + its results into a :class:`RunSummary`.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[ResultView]
     :param reportable: The levers the campaign's coverage map names — see
         :func:`_reportable_levers`. ``config`` is narrowed to these so the two surfaces
         cannot name different levers for one campaign, and so a contestant property nobody
         swept does not arrive as a config value the generator reads as a departure.
-    :ptype reportable: set[str]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The summary.
-    :rtype: RunSummary
     """
     effective = {
         lever: eff for lever, eff in effective_config(run, run_results, profile=profile).items() if lever in reportable
@@ -211,11 +202,8 @@ def _run_apparatus(run: EvalRun, run_results: list[ResultView]) -> RunApparatus 
     None where it recorded nothing past a serial run that pinned and declared nothing (``RunApparatus.recorded``).
 
     :param run: The run.
-    :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[ResultView]
     :return: The apparatus, or None.
-    :rtype: RunApparatus | None
     """
     modes = Counter(str(mode) for result in run_results if (mode := result.covariates.get(EXECUTION_MODE)) is not None)
     apparatus = RunApparatus(

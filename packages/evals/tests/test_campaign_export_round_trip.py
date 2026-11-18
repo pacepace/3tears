@@ -29,7 +29,7 @@ from packages.evals.tests.fixtures.writer_cases.export_writer_cases import FROZE
 from packages.evals.tests.hot_path_support import campaign_id_of, courierhost_from
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, judged_as_launched, ops_fixture
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.harness.__main__ import main
 from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops import OpsHost, campaign_export

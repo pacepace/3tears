@@ -227,15 +227,10 @@ def _in_one_form(
     money is drawn per. Changes of any other unit are returned as they are.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param keys: The measures the changes are on.
-    :ptype keys: Sequence[str]
     :param changes: The changes, drawn at ``drawn``.
-    :ptype changes: list[_Change]
     :param drawn: Their unit's change quantity, as :func:`quantity` makes it.
-    :ptype drawn: Quantity
     :return: The changes and their quantity.
-    :rtype: tuple[list[_Change], Quantity]
     """
     report_input, forms = context.report_input, context.forms
     money = _money_keys(context, keys)
@@ -317,13 +312,9 @@ def higher_is_better(report_input: ReportInput, key: str, *, kind: str | None = 
     dimension up, a measure as it declares, else as the one direction its criteria give; None where nothing says.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :param kind: A contrast's kind, where the key is a contrast's; None otherwise.
-    :ptype kind: str | None
     :return: True where higher is better, False where lower is, None where the input does not say.
-    :rtype: bool | None
     """
     if kind == "trial":
         return True
@@ -1034,9 +1025,7 @@ def narrow_notes(context: ChartContext) -> tuple[str, ...]:
     (:func:`compare_basis`). Empty where no row is marked.
 
     :param context: The chart being resolved, over the compare source.
-    :ptype context: ChartContext
     :return: The note, or none.
-    :rtype: tuple[str, ...]
     """
     nested: dict[str, str] = {}
     stated: dict[str, None] = {}
@@ -1073,13 +1062,9 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     family names a method); the independent reading is the analysis's own words, which name neither.
 
     :param context: The chart being resolved, over the compare source.
-    :ptype context: ChartContext
     :param row: One ``arms_compare`` row.
-    :ptype row: ComparisonRow
     :param key: The measure it reads.
-    :ptype key: str
     :return: The words; empty where the row reads no interval.
-    :rtype: str
     """
     if row.basis is None:
         return ""
@@ -1120,13 +1105,9 @@ def setting_value(context: ChartContext, setting: str, arm: str) -> str | None:
     (``1``, never ``1.0``); None where the arm states none.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param setting: The setting, by id.
-    :ptype setting: str
     :param arm: The arm, by id.
-    :ptype arm: str
     :return: The value as a reader reads it, or None.
-    :rtype: str | None
     """
     report_input = context.report_input
     value = arm_settings(report_input).get(arm, {}).get(setting)
@@ -1147,11 +1128,8 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
     own: two effects differ in where they start or where they end, and two interactions in a move.
 
     :param context: The chart being resolved, over the levers source.
-    :ptype context: ChartContext
     :param row: One ``lever_effects`` row.
-    :ptype row: EffectRow | InteractionRow
     :return: ``(label, short label, group)``.
-    :rtype: tuple[str, str, str]
     """
     arms = lever_arms(row, context.report_input)
     names = context.report_input.lever_names

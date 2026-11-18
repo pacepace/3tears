@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis import MIN_CASES, frontier_text
+from threetears.evals.analysis import MIN_CASES
+from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.lenses.frontier import FrontierResult, compute_frontier
 from threetears.evals.analysis.reads import frontier
 from threetears.evals.kernel import EvalStorage

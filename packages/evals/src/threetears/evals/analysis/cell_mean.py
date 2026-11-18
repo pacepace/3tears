@@ -226,13 +226,9 @@ def cell_mean_interval(report_input: ReportInput, key: str, arm: str) -> CellMea
     from the cells' own (this module's design note).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The overall's measure or judged dimension, by key: its lead aspect's figure, the by-arm map's.
-    :ptype key: str
     :param arm: The arm's id.
-    :ptype arm: str
     :return: The overall figure, its standard error and the level its interval is at.
-    :rtype: CellMeanInterval
     :raises NoCellMean: The figure does not qualify, or a cell gives it no interval; the message says why. A figure
         that fits the cells' case-weighted mean as well qualifies, its standard error the wider reading's.
     """

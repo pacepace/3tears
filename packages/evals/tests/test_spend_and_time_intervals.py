@@ -16,12 +16,8 @@ from collections.abc import Mapping
 
 import pytest
 
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    assemble_context_bundle,
-    build_code_only_report,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.stats import SKEWED_INTERVAL_WITHHELD, SMALL_N_BAND_FLOOR, observed_mean_interval
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry

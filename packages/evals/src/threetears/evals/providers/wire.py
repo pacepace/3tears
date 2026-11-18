@@ -119,9 +119,7 @@ def fallback_key_variables(variable: str) -> tuple[str, ...]:
     The list is a comma list of other variables' names, blank entries skipped; unset, it is empty.
 
     :param variable: The key's own variable (``ANTHROPIC_API_KEY``).
-    :ptype variable: str
     :return: The fallback variables' names, in the order they are tried.
-    :rtype: tuple[str, ...]
     :raises ValueError: An entry that is no variable name, the list naming ``variable`` itself or one variable twice,
         or an entry the environment does not set. Each refusal names entries by their position alone: an operator who
         pastes a spare key in place of its variable's name must never see it printed, whatever the key looks like.
@@ -204,9 +202,7 @@ def declared_facts(model_id: str) -> SettingFacts:
     thinking budget is (``reasoning_budget``), and whether thinking can be disabled (``reasoning_disable``).
 
     :param model_id: The model id.
-    :ptype model_id: str
     :return: The facts; every one the table does not declare unknown.
-    :rtype: SettingFacts
     """
     plain = model_id.lower()
     facts = SettingFacts()
@@ -235,9 +231,7 @@ class Directive:
         """Whether the call asks for enforcement: a strict schema, and on OpenRouter any schema.
 
         :param provider: The provider.
-        :ptype provider: Provider
         :return: Whether the request is asked enforced.
-        :rtype: bool
         """
         if provider == "openrouter":
             return self.kind == "json_schema"
@@ -249,9 +243,7 @@ def directive_of(response_format: Mapping[str, Any] | None) -> Directive:  # Any
 
     :param response_format: ``None``, ``{"type": "json_object"}``, or ``{"type": "json_schema", "json_schema":
         {"name", "strict", "schema"}}``.
-    :ptype response_format: Mapping[str, Any] | None
     :return: The directive.
-    :rtype: Directive
     :raises ValueError: Any other directive, or a ``json_schema`` one without its schema.
     """
     if response_format is None:
@@ -283,25 +275,15 @@ def request_body(
     """The request body that carries ``sent`` for a call with ``directive``.
 
     :param provider: The provider.
-    :ptype provider: Provider
     :param model: The model id.
-    :ptype model: str
     :param system: The system message; an empty one is not sent.
-    :ptype system: str
     :param user: The one user message.
-    :ptype user: str
     :param sent: The settings the request carries (:func:`~threetears.evals.negotiation.closest_settings`).
-    :ptype sent: WireSettings
     :param facts: What was known of the model when they were chosen.
-    :ptype facts: SettingFacts
     :param directive: The call's reply format.
-    :ptype directive: Directive
     :param direct_openai: The endpoint is OpenAI's own, which takes ``max_completion_tokens``.
-    :ptype direct_openai: bool
     :param json_mode: On OpenRouter, whether the model may be sent JSON mode when a schema cannot be enforced.
-    :ptype json_mode: bool
     :return: The JSON body.
-    :rtype: dict[str, Any]
     :raises ValueError: ``sent`` carries a reasoning budget the provider cannot take as built: one at or above
         Anthropic's ``max_tokens`` (naming both), or one on OpenAI's chat completions, which have no budget
         parameter. :func:`~threetears.evals.negotiation.closest_settings` never chooses either; refused here
@@ -433,15 +415,10 @@ def in_body_error(
     """The error a body carries in place of a reply (OpenRouter answers some failures with a 200), or ``None``.
 
     :param provider: The provider that answered.
-    :ptype provider: Provider
     :param status: The HTTP status, the error's status when the body names no code.
-    :ptype status: int
     :param body: The parsed JSON body.
-    :ptype body: Mapping[str, Any]
     :param attempts: How many times the call was sent, this answer's attempt included.
-    :ptype attempts: int
     :return: The error, its status the code the body named; ``None`` when the body carries no error.
-    :rtype: ProviderError | None
     """
     if not isinstance(body.get("error"), Mapping):
         return None
@@ -454,15 +431,10 @@ def read_reply(provider: Provider, model: str, status: int, body: Mapping[str, A
     """A successful reply's members.
 
     :param provider: The provider that answered.
-    :ptype provider: Provider
     :param model: The model id the request named.
-    :ptype model: str
     :param status: The HTTP status, for an error the body carries in place of a reply.
-    :ptype status: int
     :param body: The parsed JSON body.
-    :ptype body: Mapping[str, Any]
     :return: The reply.
-    :rtype: Reply
     :raises ProviderError: The body carries an error in place of a reply (OpenRouter answers some failures with a 200),
         or no choice.
     """
@@ -568,11 +540,8 @@ def usage_counts(provider: Provider, usage: Mapping[str, Any]) -> UsageCounts:  
     which already holds the cached share, and a write is never split.
 
     :param provider: The provider whose shape ``usage`` is in.
-    :ptype provider: Provider
     :param usage: The reply's ``usage`` object, as the wire returned it.
-    :ptype usage: Mapping[str, Any]
     :return: The counts.
-    :rtype: UsageCounts
     """
     if provider == "anthropic":
         fresh = _count(usage.get("input_tokens"))
@@ -611,9 +580,7 @@ def reported_cost(usage: Mapping[str, Any]) -> tuple[float | None, str | None, s
     ``cost`` is the whole price or the fee alone, so it is unpriced. A reply with no cost is unpriced, never ``0``.
 
     :param usage: The reply's ``usage`` object.
-    :ptype usage: Mapping[str, Any]
     :return: ``(cost, price_source, None)``, or ``(None, None, why)``.
-    :rtype: tuple[float | None, str | None, str | None]
     """
     cost = usage.get("cost")
     if not isinstance(cost, int | float) or isinstance(cost, bool):
@@ -665,11 +632,8 @@ def turn_settings_refusal(model: str, sent: WireSettings) -> str | None:
     as a :class:`~threetears.evals.providers.ProviderError` that is not resent.
 
     :param model: The model id.
-    :ptype model: str
     :param sent: The model's settings.
-    :ptype sent: WireSettings
     :return: The refusal, or ``None``.
-    :rtype: str | None
     """
     if sent.temperature is not None:
         return (
@@ -715,30 +679,20 @@ def turn_body(
     (:func:`~threetears.evals.negotiation.anthropic_thinking`); a tool turn sends no temperature.
 
     :param model: The model id.
-    :ptype model: str
     :param system: The system prompt; an empty one is not sent.
-    :ptype system: str
     :param messages: The conversation, oldest first.
-    :ptype messages: Sequence[TurnMessage]
     :param tools: The tools the model may call.
-    :ptype tools: Sequence[TurnToolSpec]
     :param max_tokens: The turn's output cap.
-    :ptype max_tokens: int
     :param sent: The model's reasoning settings: an effort word or a thinking budget.
-    :ptype sent: WireSettings
     :param facts: What is known of the model.
-    :ptype facts: SettingFacts
     :param clearing: Old tool results the provider clears itself, sent as ``context_management`` (its beta header
         is the sender's to add); ``None`` sends none.
-    :ptype clearing: ToolResultClearing | None
     :param binding: The check the provider runs on replayed thinking blocks, sent as ``thinking.block_binding`` (its
         beta header is the sender's to add) where the body carries adaptive or budgeted thinking. A model that cannot
         turn thinking off thinks adaptively when sent none, so it is sent adaptive thinking to carry the binding. A
         body with thinking disabled sends none, nor does one with no thinking on a model that may then not think.
         ``None`` sends none.
-    :ptype binding: ThinkingBinding | None
     :return: The JSON body.
-    :rtype: dict[str, Any]
     :raises ValueError: No messages; a thinking block in a user message; a last message holding only thinking, where no
         breakpoint can go; an output cap that is not a positive count; or a thinking budget not below it, naming both.
     """
@@ -814,11 +768,8 @@ def read_turn(status: int, body: Mapping[str, Any]) -> TurnRead:  # Any: JSON
     """A tool turn's reply blocks, stop reason and cache counts; its other counts are :func:`read_reply`'s.
 
     :param status: The HTTP status, which an unreadable reply's error carries.
-    :ptype status: int
     :param body: The parsed JSON body.
-    :ptype body: Mapping[str, Any]
     :return: What the reply says.
-    :rtype: TurnRead
     :raises ProviderError: The reply carries no content list, or a block a tool turn does not read.
     """
     blocks = body.get("content")

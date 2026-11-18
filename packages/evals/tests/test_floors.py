@@ -27,10 +27,10 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    get_campaign,
     report_html,
-    report_markdown,
 )
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import (
     NO_AXIS_EXPLORATORY,
     NO_QUESTION_EXPLORATORY,

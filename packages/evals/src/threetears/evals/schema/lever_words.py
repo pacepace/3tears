@@ -21,8 +21,6 @@ def lever_id_words(lever: str) -> str:
     itself where nothing else is left.
 
     :param lever: The lever, by id.
-    :ptype lever: str
     :return: Its id in words.
-    :rtype: str
     """
     return re.sub(r"[_.]+", " ", " ".join(lever.split())).strip() or lever

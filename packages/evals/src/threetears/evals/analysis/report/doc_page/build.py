@@ -194,11 +194,8 @@ def written_prose(text: str, report_input: ReportInput) -> str:
     key that no longer resolves prints ``—``, never its braces.
 
     :param text: The prose, as the document holds it (its keys unresolved).
-    :ptype text: str
     :param report_input: The report input of the snapshot the document was written from.
-    :ptype report_input: ReportInput
     :return: The prose with every key written out.
-    :rtype: str
     """
     # One piece of prose is read off its page, which is never built here (a listing prints a headline alone), so it
     # reads in forms of its own, built from its input as its page builds them.
@@ -646,19 +643,12 @@ def build(
     """Build the page a report document draws (this module's account).
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from, which its keys and blocks read.
-    :ptype report_input: ReportInput
     :param strict: Refuse what does not resolve or draw (generation); False reads a stored document, degrading.
-    :ptype strict: bool
     :param findings: The editor's findings left unresolved, which Method prints; none by default.
-    :ptype findings: Sequence[ReportFinding]
     :param made: How the page was made, in one line, for its foot; empty for none.
-    :ptype made: str
     :param draft: Whether the page is a draft, its editor's review not cleared, which its first line then says.
-    :ptype draft: bool
     :return: The page.
-    :rtype: DocPage
     :raises UnresolvableReference: Strict, and a figure key does not resolve, a block does not complete or draw, a
         caveat checked immaterial is not one code proves so, a caveat is neither code's nor the analyst's, or an arm
         recommended is not the input's; each naming its field path.

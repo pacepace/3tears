@@ -17,11 +17,8 @@ def named_arms(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict
     """Each arm the bundle holds, named as its variant names it, its label the campaign's where it gives one.
 
     :param bundle: One aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param labels: The campaign's label for each arm, by variant key.
-    :ptype labels: Mapping[str, str]
     :return: Each arm's name, by variant key.
-    :rtype: dict[str, ArmName]
     """
     names = {
         key: arm_name(display, declared=bundle.lever_names) for key, display in arm_names(bundle.variant_index).items()
@@ -33,10 +30,7 @@ def floor_of(floors: Sequence[Floor], key: str) -> Floor | None:
     """The floor by its key, among a campaign's floors.
 
     :param floors: The campaign's floors.
-    :ptype floors: Sequence[Floor]
     :param key: The floor's key.
-    :ptype key: str
     :return: The floor; None where none has the key.
-    :rtype: Floor | None
     """
     return next((floor for floor in floors if floor.key == key), None)

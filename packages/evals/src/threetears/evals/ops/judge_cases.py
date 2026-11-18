@@ -79,20 +79,16 @@ class JudgeCasesFreeze(EvalBaseModel):
 def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport:
     """Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
 
-    The template is loaded as every use of one is (:func:`~threetears.evals.run.get_template`), in the caller's
+    The template is loaded as every use of one is (:func:`~threetears.evals.run.authoring.get_template`), in the caller's
     scope, so a template or run of another scope does not resolve.
 
     :param host: The host whose store holds the runs and receives the cases.
-    :ptype host: EvalHost
     :param freeze: What to freeze.
-    :ptype freeze: JudgeCasesFreeze
     :param scope_id: The scope the template and the runs live in, and the cases are stored in.
-    :ptype scope_id: str
     :return: The receipt. Where the template already held cases and the freeze added one, the cases are cases of
         the template's next revision, which the receipt names (``template_id``, ``revision``) with the revision it
         superseded, each carried case's copy and each case set left on the superseded revision: runs before and after
         the write never pool.
-    :rtype: JudgeCaseFreezeReport
     :raises NotFoundError: The template or a run is not in the scope.
     :raises ValidationFailedError: The template is not of the judge kind, it is a revision a later one supersedes, or
         nothing could be frozen (see :func:`~threetears.evals.run.freeze_judge_cases`).
@@ -197,15 +193,10 @@ def judge_case_author(
     A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
     :param host: The host whose store holds both templates and receives the case, and whose check attests the person.
-    :ptype host: EvalHost
     :param case: What to author.
-    :ptype case: JudgeCaseAuthor
     :param scope_id: The scope both templates live in, and the case is stored in.
-    :ptype scope_id: str
     :param collected_by: The calling identity that authors it, as the host resolved it.
-    :ptype collected_by: str
     :return: The receipt, listing the one case.
-    :rtype: JudgeCaseFreezeReport
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person. Nothing is written.
     :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
@@ -300,13 +291,9 @@ def judge_cases_list(host: EvalHost, template_id: str, scope_id: str) -> JudgeCa
     case's corpus name as ``seed_name``) but is not part of this listing; ``cases_rename`` changes it.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param template_id: The judge template.
-    :ptype template_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The listing.
-    :rtype: JudgeCaseListing
     :raises NotFoundError: No template with that id in the scope.
     :raises ValidationFailedError: The template is not of the judge kind.
     """
@@ -369,13 +356,9 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
     has no judge kind.
 
     :param host: The launching host, whose registry must launch the judge kind and whose store receives the template.
-    :ptype host: OpsHost
     :param create: What the template is called and measures.
-    :ptype create: JudgeTemplateCreate
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The template as written.
-    :rtype: TemplateLine
     :raises ValidationFailedError: The host launches no judge kind.
     :raises ConflictError: A template of that name is already in the scope.
     :raises StorageError: The template could not be written.
@@ -411,31 +394,19 @@ def kind_template_create(
     host that launches the kind; the one write both the judge's and the report writer's template creation make.
 
     :param host: The launching host, whose registry must launch ``kind`` and whose store receives the template.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param name: The template's name, unique in the scope.
-    :ptype name: str
     :param intent: What its campaigns measure.
-    :ptype intent: str
     :param kind: The ``candidate_kind`` it declares.
-    :ptype kind: str
     :param what: The kind as a reader names a template of it (``judge``, ``writer``).
-    :ptype what: str
     :param filled_by: How its cases reach it (``freeze``, ``mint``), which the remedy for a taken name says.
-    :ptype filled_by: str
     :param enabled_by: What the host's operator registers and declares to launch the kind, named in the refusal's
         reason; the remedy stays the operator's ask, with none of the host's setup names (no registry, contract or
         ``launchable_*`` name), though a ``meanwhile`` clause may name the actions a caller can take.
-    :ptype enabled_by: str
     :param meanwhile: What a caller can do until the operator does, when anything.
-    :ptype meanwhile: str | None
     :param rubric: The rubric the template is seeded with.
-    :ptype rubric: Sequence[RubricDim]
     :param refuse: A check of the template before it is written, raising what it refuses.
-    :ptype refuse: Callable[[EvalTemplate], None] | None
     :return: The template as written.
-    :rtype: TemplateLine
     :raises ValidationFailedError: The host launches no ``kind``, or ``refuse`` refused the template.
     :raises ConflictError: A template of that name is already in the scope.
     :raises StorageError: The template could not be written.

@@ -83,10 +83,8 @@ def confusion_matrix(cells: Mapping[str, int]) -> list[ConfusionCount]:
     """The confusion matrix of a ``confusion_cell`` measure's counts, ordered by expected then predicted label.
 
     :param cells: Each ``confusion_cell`` value and how many observations carried it.
-    :ptype cells: Mapping[str, int]
     :return: One count per ``(expected, predicted)`` pair. A value that is not a confusion cell
         (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels from it) is in no cell.
-    :rtype: list[ConfusionCount]
     """
     pairs: dict[tuple[str, str], int] = {}
     for cell, count in cells.items():
@@ -107,9 +105,7 @@ def label_statistics(observations: Iterable[tuple[str, str]]) -> list[LabelStati
     :param observations: One ``(confusion_cell value, test case id)`` per observation. A value that is not a
         confusion cell (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels
         from it) is in no count, as in :func:`confusion_matrix`.
-    :ptype observations: Iterable[tuple[str, str]]
     :return: One entry per label.
-    :rtype: list[LabelStatistics]
     """
     classified: list[tuple[str, str, str]] = [
         (labels[0], labels[1], case) for cell, case in observations if (labels := confusion_of(cell)) is not None

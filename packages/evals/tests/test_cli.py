@@ -20,7 +20,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel import default_job_timeout
-from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
+from threetears.evals.analysis import AnalysisContextBundle
+from threetears.evals.analysis.report.aspect.method import NO_ANALYSIS
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact

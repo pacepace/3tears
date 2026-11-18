@@ -3,8 +3,7 @@
 The port is :class:`CompletionClient` — ``async generate(*, system, user, response_format=None)``
 plus a lifecycle — built by the host and handed to the engine; the engine never builds one and
 never names a provider. Beside it sit what a completion hands back (:class:`CompletionResult`) and
-why it stopped (:data:`StopReason`); the one-key wire directive for JSON-object output
-(:data:`JSON_OBJECT_RESPONSE_FORMAT`); and the failure half of the port (:class:`ProviderFailure` /
+why it stopped (:data:`StopReason`); and the failure half of the port (:class:`ProviderFailure` /
 :class:`ProviderFailureDescriber`): the client says what a call returns, and the describer says what
 the engine may know when the call raised. The engine never reads an exception's own text, because
 on an OpenAI-shaped provider ``str(exc)`` is the parsed response envelope, account fields included.
@@ -20,13 +19,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol, Self, get_args
 
 from threetears.evals.schema.models import ClientRequestSettings, StopReason
-
-#: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
-#: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
-#: variation writer, the simulated user) sends that shape as a strict ``json_schema`` directive
-#: (:func:`~threetears.evals.kernel.strict_response_format`). Kept for a host's own calls, and for its client's
-#: translation of the strict directive to a provider that has only JSON mode.
-JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
 
 #: The longest one request capped at ``max_tokens`` output tokens can take on the host's client, in
@@ -176,15 +168,11 @@ class CompletionProtocolDefect(TypeError):
         """Name the completion's type, the member it lacks or fills wrong, and why the engine reads that member.
 
         :param completion: The completion as the client returned it.
-        :ptype completion: object
         :param member: The :class:`CompletionResult` member it does not carry, or the optional member
             (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`) it holds a value of the wrong type in.
-        :ptype member: str
         :param why: What the engine reads the member for, or what is wrong with its value, as a clause.
-        :ptype why: str
         :param optional: ``member`` is an optional member the completion carries with a wrong value, not a protocol
             member it lacks.
-        :ptype optional: bool
         """
         self.completion_type = type(completion).__name__
         self.member = member
@@ -226,9 +214,7 @@ def sent_settings_of(completion: object) -> ClientRequestSettings | None:
     protocol member is.
 
     :param completion: A completion, as a client returned it (or a usage record standing for one).
-    :ptype completion: object
     :return: The settings the request was sent with, or ``None`` when the client does not report them.
-    :rtype: ClientRequestSettings | None
     :raises CompletionProtocolDefect: ``sent_settings`` is present and is neither ``None`` nor a
         :class:`~threetears.evals.schema.ClientRequestSettings`.
     """
@@ -404,13 +390,9 @@ class PricedCompletion(Protocol):
         call under an enforced cap is then refused rather than made, since unknown is not $0.
 
         :param system: The system prompt the call would send.
-        :ptype system: str
         :param user: The user message the call would send.
-        :ptype user: str
         :param response_format: The provider directive the call would send, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The ceiling in dollars, or ``None``.
-        :rtype: float | None
         """
         ...
 
@@ -607,7 +589,6 @@ __all__ = [
     "CompletionProtocolDefect",
     "CompletionResult",
     "FailureOwner",
-    "JSON_OBJECT_RESPONSE_FORMAT",
     "ModelListing",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",

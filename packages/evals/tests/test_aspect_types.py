@@ -2,7 +2,7 @@
 
 The aspect's design is a stored v15 design less what moved to the campaign; an arm is a variant key kept beside its
 pre-image, as a v15 design's control was; a floor's key is derived from its aspect and its
-clause; and a stored campaign reads, through :func:`aspect_views`, as the one aspect it upgrades to.
+clause; and a stored campaign reads, through :func:`aspect_view`, as the one aspect it upgrades to.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import make_aspect_campaign, make_campaign, minimal_aspect_design
-from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_view, aspect_views
+from threetears.evals.analysis import AspectReading, CampaignReadings
+from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
@@ -321,7 +322,7 @@ class TestAspectViews:
     def test_a_stored_campaign_is_one_view_of_its_template_and_runs(self) -> None:
         campaign = make_aspect_campaign(label="tone", template_id="template-1", run_ids=["run-1", "run-2"])
 
-        (view,) = aspect_views(campaign)
+        view = aspect_view(campaign)
 
         assert (view.campaign_id, view.scope_id, view.behavior) == (campaign.id, campaign.scope_id, campaign.behavior)
         assert (view.aspect, view.template_id, view.run_ids) == ("tone", "template-1", ["run-1", "run-2"])

@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -262,10 +262,13 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
   `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
-  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
-  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
-  interval allows v2 to be as much as 24 points worse or 22 better.`, its level the table's header), then what
-  else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
+  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, undecided.`), its change
+  over the paired cases (`Over 30 paired cases, v2 is 1 point behind v1.`), what the interval allows it to be (`The
+  interval allows v2 to be as much as 14 points worse or 12 better.`, its level the table's header), how strong the
+  evidence is (`The evidence that v2 is worse is weak (1.2).`) and what the measure was on each arm, in its own verb
+  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed"); a
+  comparison no bet read says `the evidence cannot tell v2 and v1 apart` and its figures; then what else the
+  evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
   arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No
   invented total score guardrail.` No floor writes this line.
@@ -456,6 +459,43 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ## Reading a comparison
 
+### A small comparison on the quick path
+
+A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first line leads on where the
+candidate stands on the question's reading, by how much, how far the interval lets it be either way, and how strong
+the evidence is, and it says "decided" only when the evidence clears the bar:
+
+- **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
+  to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet
+  on each side), read on the capital now: with a question asked it is at 90%, each end a 95% bound on its own side;
+  with none, at 95% over the family. It holds the true difference at every count at once, and it always holds the
+  estimate. It is not the decision's bet: the decision leans one way, the interval does not.
+- **The evidence is graded, always.** It is the bet's current e-value for the side the arm leans to: weak below 3,
+  moderate from 3, strong from 10. Chance alone reaches 10 at most one time in ten, however often you read it. The
+  other side is named too where its evidence reaches 3, and evidence pointing the other way from the question says so
+  (`The evidence points the other way from the question: that v2 is worse is strong (132).`).
+- **A decision clears a bar, and says when.** The bet is staked nine tenths toward the side the question asks about
+  and a tenth the other way. A question whether v2 does better leans toward better: it decides "better" once the
+  evidence that v2 is better reaches about 22 (its capital at 20, α = 0.05), and "worse" only at about 200. A
+  question with a margin is a gate (is v2 no worse?) and leans toward worse: a regression decides at about 22. Once
+  decided, it stays decided, and the line says when: `v2 better than v1, decided at 6 cases when the evidence reached
+  24. Now, over 68 paired cases, v2 is 3 points ahead of v1.`, then the interval and the evidence as they stand now,
+  which may have fallen.
+- **One reading is decided.** The question's own reading, its first grader's, is tested alone at full α. Every
+  other reading is secondary: its change, interval and evidence are shown, and it decides nothing, so it costs the
+  question nothing, and it cannot fail a gate. A first grader the bet cannot read (a score with no declared range)
+  reads untested, saying why, and nothing else is decided in its place. A pass rate that is the one check's own
+  values is read once, not twice.
+- **A question set after the results leans no way.** A question, control or margin set once results exist
+  (`Result.against(control, question=...)`, a campaign adopting runs) reads the even hedge, and the print and the page
+  say the question came after the results: a lean picked after seeing which arm leads would be a second look.
+- **With no question asked**, nothing is declared: every reading on a merit axis is tested two-sided, corrected
+  together by Holm's method, each a lead.
+- **What a few cases can and cannot do.** Eight cases that all go v2's way decide (the evidence is 74), and from six
+  they can; a moderate effect needs a few dozen to decide. What the evidence is at eight cases is still worth reading.
+
+### The Contrasts table
+
 The Contrasts table (`multiple_comparisons` in the bundle) tests each arm against the control on each reading,
 under one rig. How its columns, and the `Statistics` fold under it, are computed:
 
@@ -488,13 +528,15 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
+the measure's margin`, and, undecided, `v2 ahead of v1, undecided` (or `behind`, or `level with`) where the quick
+path's bet read it, else `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
 verdict line names the reading first (`Accuracy: v2 better than v1`).
 
 | Verdict | Means | Do |
 |---|---|---|
 | better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
+| ahead of, behind or level with, undecided (typed `not_separated`, the quick path's bet) | the change so far, with its interval and graded evidence; the evidence has not cleared the bar, or the reading is secondary and decides nothing (the row says so) | read the interval and the evidence; add cases and run it again, which keeps the error; never read it as a tie |
 | cannot tell apart (typed `not_separated`) | the cases could not tell the arms apart, which never means they are the same, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 
@@ -530,12 +572,12 @@ of cases. Coarse scores need that: a regression that fails one case in ten leave
 of the time, and a t-test, or the exact sign-flip reading of a difference with no spread that the engine
 once used, called such samples equivalent up to three times in four. The price is that equivalence on a small margin
 takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
-on the quick path within 0.25 from 16 shared cases and within 0.1 from 45, and a 1–5 score within 0.5 from 35, when
+on the quick path within 0.25 from 15 shared cases and within 0.1 from 40, and a 1–5 score within 0.5 from 32, when
 it is the only reading the family tests (no valid test could do it in fewer than 11, 29 and 23; the quick path's bet,
 which may be read again as cases are added, pays for that in cases, and a campaign read once at a count fixed ahead
-needs a few fewer). Each further reading in the family raises that: with a second (accuracy from a label's field
-grader, or a cost from `Answer`), a pass rate takes 20 and 53, so a cases file of 48 is too small to show a pass rate
-within 0.1 beside a second reading. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
+needs a few fewer). With no question asked, each further reading in the family raises that: with a second (accuracy
+from a label's field grader, or a cost from `Answer`), a pass rate takes 18 and 48. With a question asked, only the
+question's own reading is tested, so a margin on any other reading shows its interval and reads no verdict. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
 answer in twelve departed from its case's usual one, a pass rate read `equivalent` within 0.25 in 18 of 20
 runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row reads `not_separated`, which
 claims nothing. A measure with a margin and no declared range

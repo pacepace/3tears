@@ -82,12 +82,9 @@ class NotFoundError(EvalServiceError):
         """Build a 404 with a ``"<resource> '<id>' not found"`` message.
 
         :param resource: What kind of record was asked for.
-        :ptype resource: str
         :param resource_id: The id it was asked by.
-        :ptype resource_id: str
         :param remedy: How the caller finds the id of one that exists — required, because a bare "not found" leaves
             its reader nothing to do but ask again (:mod:`threetears.evals.kernel.remedies` holds the engine's).
-        :ptype remedy: str
         """
         self.resource = resource
         self.resource_id = resource_id
@@ -101,10 +98,8 @@ class ConflictError(EvalServiceError):
         """Build a 409 with the given message.
 
         :param message: What the conflict is.
-        :ptype message: str
         :param remedy: What the caller does about it — required: a conflict is a state the caller can always do
             something about, if only read the record again.
-        :ptype remedy: str
         """
         super().__init__(message=message, status_code=409, remedy=remedy)
 
@@ -135,17 +130,11 @@ class ValidationFailedError(EvalServiceError):
         """Build a 422.
 
         :param message: What was wrong with the request.
-        :ptype message: str
         :param details: An optional structured payload.
-        :ptype details: dict[str, Any] | None
         :param remedy: What the caller sends instead, or does first — required, as on every refusal.
-        :ptype remedy: str
         :param parameters: The parameters at fault; none where the raiser cannot pin one.
-        :ptype parameters: Sequence[str]
         :param valid_values: Every value the one parameter at fault accepts here; None where they cannot be listed.
-        :ptype valid_values: Sequence[str] | None
         :param valid_values_from: The action that lists the valid values; None where none does, or they are given.
-        :ptype valid_values_from: str | None
         """
         super().__init__(message=message, status_code=422, details=details or {}, remedy=remedy)
         self.parameters = tuple(parameters)
@@ -157,9 +146,7 @@ class ValidationFailedError(EvalServiceError):
         """The service's refusal of what a lower layer refused: its fault, remedy, parameters and valid values.
 
         :param refused: The lower layer's refusal.
-        :ptype refused: RefusedInput
         :return: The 422 carrying all of it.
-        :rtype: ValidationFailedError
         """
         return cls(
             refused.fault,
@@ -226,14 +213,10 @@ class AdmissionRefusedError(EvalServiceError):
         """Build a 429 naming the ceiling, the current count and the knob that raises it.
 
         :param requested: Runs the launch would admit.
-        :ptype requested: int
         :param admitted: Runs already admitted and unfinished.
-        :ptype admitted: int
         :param limit: The ceiling.
-        :ptype limit: int
         :param limit_name: What an operator sets to change the ceiling — supplied by the host,
             because the engine does not know its host's configuration names.
-        :ptype limit_name: str
         """
         self.requested = requested
         self.admitted = admitted
@@ -291,15 +274,10 @@ class RefusedInput(ValueError):
         """Hold the fault and the remedy apart, and what the raiser knows of the parameters at fault.
 
         :param fault: What was wrong.
-        :ptype fault: str
         :param remedy: What the caller does instead.
-        :ptype remedy: str
         :param parameters: The parameters at fault, by the name the caller set them by; none where it cannot say.
-        :ptype parameters: Sequence[str]
         :param valid_values: Every value the one parameter at fault accepts; None where they cannot be listed.
-        :ptype valid_values: Sequence[str] | None
         :param valid_values_from: The action that lists them; None where none does, or they are given.
-        :ptype valid_values_from: str | None
         :raises ValueError: ``remedy`` is blank.
         """
         if not remedy.strip():

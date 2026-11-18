@@ -32,7 +32,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from threetears.evals.analysis.bundle.caps import (
     MAX_ERROR_CHARS,
@@ -98,13 +98,9 @@ def trial_order(case_id: str, arm_position: int, repeat: int) -> tuple[str, int,
     precedes ``{template}-10``; any other id sorts as its text.
 
     :param case_id: The trial's stored test case id.
-    :ptype case_id: str
     :param arm_position: Its arm's place among the arms as the bundle lists them.
-    :ptype arm_position: int
     :param repeat: Which repeat of the case it is.
-    :ptype repeat: int
     :return: The sort key.
-    :rtype: tuple[str, int, str, int, int]
     """
     numbered = _NUMBERED_ID.fullmatch(case_id)
     if numbered is None:
@@ -125,9 +121,7 @@ def first_recorded_error(error_words: str) -> tuple[str | None, str]:
     itself holds ``; `` is kept whole.
 
     :param error_words: The trial's recorded errors, each under its role, as a trial row joins them.
-    :ptype error_words: str
     :return: The first error's role and words.
-    :rtype: tuple[str | None, str]
     """
     first = _ROLE_BREAK.split(error_words, maxsplit=1)[0]
     for role in ERROR_ROLES:
@@ -192,11 +186,8 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
     """One arm's :class:`PassCount`, read off its census (``board``) and its trials in ``bundle``.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param board: The arm's scoreboard row in it.
-    :ptype board: ArmScoreboard
     :return: The count.
-    :rtype: PassCount
     """
     # Lost trials are kept first where a bundle holds only some trials, so the held ones are the lost ones it has.
     lost = [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
@@ -242,13 +233,9 @@ def read_trial(result: ResultView, *, rubric_threshold: int, catalog: Mapping[st
     """Decide how one trial ended: lost, failed or passed, and why.
 
     :param result: The stored result.
-    :ptype result: ResultView
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass, as pass^k reads it.
-    :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which names each check and says which scorers are pass/fail.
-    :ptype catalog: Mapping[str, MetricDescriptor]
     :return: The trial's reading.
-    :rtype: TrialReading
     """
     checks = _failed_checks(result, catalog)
     below = [score for score in capability_scores(result) if not score.clears(rubric_threshold)]
@@ -303,41 +290,29 @@ def trials_and_census(
     :param results: Every result of the resolved member runs, after the bundle's own rewrites (a classifier's failure
         read as a miss), each as the readers read it: its reading or the result. How each trial ended, the census and
         which trials are kept are read off these.
-    :ptype results: Sequence[ResultView]
     :param arm_order: The arms' variant keys in the order the bundle lists them; an arm absent here is listed after,
         by key.
-    :ptype arm_order: Sequence[str]
     :param strata: Each test case's declared stratum, by case id.
-    :ptype strata: Mapping[str, str | None]
     :param names: The name each test case's author gave it, by case id, for the cases that have one.
-    :ptype names: Mapping[str, str] | None
     :param case_lists: The member runs' frozen case lists (``EvalRun.test_case_ids``), in the bundle's run order: each
         case's place is where it first stands in them, from 1 (:func:`case_places`), carried on its rows
         (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), and whether they differ is
         ``case_lists_differ``. Empty carries no place.
-    :ptype case_lists: Sequence[Sequence[str]]
     :param criteria: Each judged dimension's rubric criterion as the judge was asked it, by dimension name.
-    :ptype criteria: Mapping[str, str]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
-    :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog.
-    :ptype catalog: Mapping[str, MetricDescriptor]
     :param load_judge_evidence: Reads what each named result's judge was handed, by result id, omitting a result with
         none. Called once, with every kept result that records a trace (``EvalResult.has_trace``), so the trials cost
         one read however many are kept; not called when none does.
-    :ptype load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]]
     :param load_results: Reads the named results whole, by id, in one read. Called once, with the kept trials (at most
         :data:`~threetears.evals.analysis.bundle.caps.MAX_TRIALS`), whose rows show the judge's reasons and its "could
         not tell" notes, which a reading leaves out; not called when none is kept. Only those fields of a row are read
         off the whole result, and the bundle's rewrites touch none of them.
-    :ptype load_results: Callable[[Sequence[str]], Sequence[EvalResult]]
     :param rubric_scales: The scale each run's template dims were answered on (``EvalRun.rubric_scales``), by run id:
         what a dim the judge could not tell on is shown on, since that answer carries no score of its own.
-    :ptype rubric_scales: Mapping[str, Mapping[str, RubricScale]]
     :return: The census, the kept rows and how many were left out. The losses by cause and the differential-loss flag
         are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
-    :rtype: TrialsAndCensus
     :raises ConflictError: A kept trial's result was no longer stored when it was read whole (409).
     """
     readings = {result.id: read_trial(result, rubric_threshold=rubric_threshold, catalog=catalog) for result in results}
@@ -391,9 +366,7 @@ def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
     dropped from a later run keeps its number). Never read off a case's id.
 
     :param case_lists: The member runs' ``test_case_ids``, in the bundle's run order.
-    :ptype case_lists: Sequence[Sequence[str]]
     :return: Each case's place, by case id.
-    :rtype: dict[str, int]
     """
     ordered = dict.fromkeys(case for cases in case_lists for case in cases)
     return {case: place for place, case in enumerate(ordered, start=1)}
@@ -410,11 +383,8 @@ def committed_order(seed: str, launches: Sequence[Sequence[str]]) -> list[str]:
     and the case's id, which places a case the same wherever it is first launched: the shuffle is once per case.
 
     :param seed: What the shuffle is keyed on: the case set's id.
-    :ptype seed: str
     :param launches: Each launch's cases, in launch order, each list as its runs hold it.
-    :ptype launches: Sequence[Sequence[str]]
     :return: Every case, each once, in the committed order.
-    :rtype: list[str]
     """
     order: list[str] = []
     held: set[str] = set()
@@ -458,15 +428,10 @@ def bet_places(
     - no plan of looks is in force (``planned_looks``), which reads α/L instead.
 
     :param created_by: Who filed the campaign.
-    :ptype created_by: str
     :param runs: The member runs, in the bundle's run order.
-    :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Sequence[ResultView]
     :param planned_looks: The plan of looks in force, or ``None``.
-    :ptype planned_looks: int | None
     :return: Each case of the complete prefix's place, from 1, by case id, or ``None``.
-    :rtype: dict[str, int] | None
     """
     if (
         planned_looks is not None
@@ -500,19 +465,68 @@ def bet_places(
     return places
 
 
-def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
-    """How many of ``results`` recorded no answer, so their cells run again
-    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut (termination
-    ``cancelled``): what a quick-path comparison's family says of them
-    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), read only where the bet reads it.
+class RedrawnCells(NamedTuple):
+    """The cells of a comparison that recorded no answer on some row, each once, by where each stands: still to run again
+    (``pending``), run again by a take-up of its run (``taken_up``), or run again by a later launch of a continued
+    comparison (``continued``); each with how many of those were cut while they ran. Read by
+    :func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`, in this order.
 
-    :param results: The campaign's results.
-    :ptype results: Sequence[ResultView]
-    :return: The rows that run again, and the cut ones among them.
-    :rtype: tuple[int, int]
+    :ivar pending: Cells with no answer yet, which run again when the comparison is continued or its run taken up.
+    :ivar pending_cut: How many of them were cut while they ran.
+    :ivar taken_up: Cells a take-up ran again, written over their rows (``EvalResult.written_over``).
+    :ivar taken_up_cut: How many of them had been cut while they ran.
+    :ivar continued: Cells a later launch answered, their rows with no answer kept beside.
+    :ivar continued_cut: How many of them had been cut while they ran.
     """
-    again = [result for result in results if runs_again(result)]
-    return len(again), sum(1 for result in again if result.termination == "cancelled")
+
+    pending: int = 0
+    pending_cut: int = 0
+    taken_up: int = 0
+    taken_up_cut: int = 0
+    continued: int = 0
+    continued_cut: int = 0
+
+    @property
+    def any(self) -> bool:
+        """Whether any cell recorded no answer on some row."""
+        return bool(self.pending or self.taken_up or self.continued)
+
+
+def redrawn_cells(results: Sequence[ResultView]) -> RedrawnCells:
+    """How many cells of ``results`` recorded no answer on some row, so they ran or run again
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those were cut while they ran (a row
+    of termination ``cancelled``), each by where it stands (:class:`RedrawnCells`): a running total over every row, each
+    cell counted once however many of its rows recorded nothing. A cell is an arm's case at one repeat, its arm the
+    variant its rows were stamped with. A cell some row still leaves without an answer is pending. A run taken up again
+    writes such a cell's new row over the old one, so the row it wrote says what it replaced
+    (``EvalResult.written_over``: ``cut``, or ``unanswered``), and the cell ran again by a take-up; a cell whose row
+    with no answer is kept beside an answer of a later run ran again when its comparison was continued. Rows a take-up
+    wrote over before ``written_over`` existed carry nothing, so a comparison over runs taken up before it counts fewer
+    cells than ran again. The one count of them, which a quick-path comparison's print and every comparison family on
+    the page and in the bundle say (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
+
+    :param results: Every result of the comparison's runs.
+    :return: The cells, by where each stands.
+    """
+    rows: dict[tuple[str, str, int], list[ResultView]] = {}
+    for result in results:
+        rows.setdefault((result.variant_key, result.test_case_id, result.k_iteration), []).append(result)
+    counts = [0] * 6
+    for cell_rows in rows.values():
+        unanswered = [row for row in cell_rows if runs_again(row)]
+        over = [row.written_over for row in cell_rows if row.written_over is not None]
+        if not unanswered and not over:
+            continue
+        cut = any(row.termination == "cancelled" for row in unanswered) or "cut" in over
+        if len(unanswered) == len(cell_rows):
+            where = 0  # no row answers it yet
+        elif over:
+            where = 2  # a take-up answered it, over its row
+        else:
+            where = 4  # a later launch answered it
+        counts[where] += 1
+        counts[where + 1] += cut
+    return RedrawnCells(*counts)
 
 
 def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
@@ -527,13 +541,9 @@ def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultV
     nothing and is taken up by nothing.
 
     :param created_by: Who filed the campaign.
-    :ptype created_by: str
     :param runs: The member runs, in the bundle's run order.
-    :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Sequence[ResultView]
     :return: The runs taken up, by id.
-    :rtype: frozenset[str]
     """
     if not runs or bet_places(created_by, runs, results, planned_looks=None) is None:
         return frozenset()
@@ -625,9 +635,7 @@ def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
     unrecorded, a row that reported no count included.
 
     :param results: The arm's trials.
-    :ptype results: Sequence[ResultView]
     :return: The pricing; None where no trial recorded a production row of an answered call.
-    :rtype: ArmPricing | None
     """
     rows = [
         row
@@ -666,9 +674,7 @@ def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
     None once one of them did not count its calls, since a share over a partial denominator would overstate.
 
     :param results: The arm's trials.
-    :ptype results: Sequence[ResultView]
     :return: One entry per counting role, the roles in their known order, then any other by name.
-    :rtype: list[RoleUnanswered]
     """
     counting: dict[str, list[UsageView]] = {}
     for result in results:

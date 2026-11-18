@@ -228,9 +228,7 @@ def doc_page_text(page: DocPage) -> str:
     """The whole page as text, every block as its values table, each claim by its id (this module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The text, ending in a newline.
-    :rtype: str
     """
 
     def parts() -> Iterator[list[str]]:
@@ -245,8 +243,6 @@ def above_appendix_text(page: DocPage) -> str:
     module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The text, ending in a newline.
-    :rtype: str
     """
     return _joined(_above(page, editor=False))

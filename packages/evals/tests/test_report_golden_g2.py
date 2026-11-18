@@ -25,7 +25,8 @@ import re
 import pytest
 
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis import DisclosureBlock, Report, report_html, report_markdown
+from threetears.evals.analysis import DisclosureBlock, Report, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.model import FIRST_SCREEN
 from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.g2_support import JUDGE, g2_report

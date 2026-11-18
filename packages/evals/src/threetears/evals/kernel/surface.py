@@ -497,11 +497,8 @@ def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
     their arms after it when only some cells failed.
 
     :param n_all_failed: The cells where no result took a turn, at least one.
-    :ptype n_all_failed: int
     :param n_cells: The cells on the surface.
-    :ptype n_cells: int
     :return: The sentence.
-    :rtype: str
     """
     if n_all_failed == n_cells:
         return (
@@ -551,9 +548,7 @@ def earlier_control_mark(earlier: EarlierControl) -> str:
     control's and only the predicate differs.
 
     :param earlier: The control's cells under the earlier predicate.
-    :ptype earlier: EarlierControl
     :return: The mark.
-    :rtype: str
     """
     return f"the control under identity predicate v{earlier.identity_version}"
 
@@ -898,11 +893,8 @@ class DecisionSurface(EvalDocumentModel):
         key beside it for a reader who needs to cite it.
 
         :param measure_id: The measure's key, or a judged dimension's name.
-        :ptype measure_id: str
         :param reading: ``judged`` for a judged dimension; anything else reads a measure.
-        :ptype reading: str
         :return: The heading.
-        :rtype: str
         """
         if reading == "judged":
             return f"{measure_id} (judged)"

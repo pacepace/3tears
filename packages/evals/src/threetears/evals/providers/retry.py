@@ -83,11 +83,8 @@ class DeclinedRetry:
         """How long to wait before the next attempt, after ``made`` attempts, or ``None`` to send no more.
 
         :param made: Attempts made so far, the first is one.
-        :ptype made: int
         :param retry_after: The answer's ``retry-after`` header, or ``None``.
-        :ptype retry_after: str | None
         :return: Seconds, at most ``max_wait_s``; ``None`` when the provider asked for longer than that.
-        :rtype: float | None
         """
         asked = _seconds(retry_after)
         if asked is not None:

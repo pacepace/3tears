@@ -39,12 +39,9 @@ def refuse_pooled_revisions(
     number), so they are not refused.
 
     :param template_ids: The template each run ran; None for an ad-hoc run, which pools with none of them.
-    :ptype template_ids: Iterable[str | None]
     :param load_template: Reads a template by id, archived or not; None when it no longer resolves, which can say
         nothing about its name and is passed over.
-    :ptype load_template: Callable[[str], EvalTemplate | None]
     :param what: The campaign, as the refusal names it.
-    :ptype what: str
     :raises ValidationFailedError: Naming each template whose runs span revisions, and every revision held.
     """
     # A revision is what a reset writes: a record one past the newest under its name, so two revisions of one template

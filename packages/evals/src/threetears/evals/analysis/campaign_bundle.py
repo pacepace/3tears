@@ -128,7 +128,6 @@ class ArmSpelling(EvalDocumentModel):
         `` (<taken>)``; empty for neither.
 
         :return: The suffix.
-        :rtype: str
         """
         return (f" (arm {self.digest})" if self.digest else "") + (f" ({self.taken})" if self.taken else "")
 
@@ -137,9 +136,7 @@ class ArmSpelling(EvalDocumentModel):
         frozen label.
 
         :param declared: Each lever's stored reader name, by id (``CampaignBundle.lever_names``); None for none.
-        :ptype declared: Mapping[str, str] | None
         :return: The name.
-        :rtype: str
         """
         return lever_spelled(self.levers, self.levels, declared) + self.suffix()
 
@@ -245,7 +242,6 @@ class CampaignBundle(EvalDocumentModel):
         """What the campaign adds over its aspects' bundles, as a stored analysis keeps it.
 
         :return: Every field but the aspects' bundles, which become ``{aspect, fingerprint}`` pairs.
-        :rtype: dict[str, Any]
         """
         frame = self.model_dump(mode="json", exclude={"aspects"})
         frame["aspects"] = [{"aspect": bundle.aspect, "fingerprint": bundle.fingerprint()} for bundle in self.aspects]
@@ -269,9 +265,7 @@ class CampaignBundle(EvalDocumentModel):
 
         :param like: A stored campaign fingerprint whose version to answer in; None answers in the newest the bundle
             can.
-        :ptype like: str | None
         :return: The fingerprint: its version's prefix and a 64-character lowercase hex digest.
-        :rtype: str
         """
         as_stored = like is not None and like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX)
         if not as_stored and all(bundle.evidence is not None for bundle in self.aspects):
@@ -304,11 +298,8 @@ class CampaignBundle(EvalDocumentModel):
         """Refuse a frozen campaign bundle, or frame, of a shape this build does not read.
 
         :param data: The frozen document.
-        :ptype data: Mapping[str, Any]
         :param what: What holds it, as a sentence names it.
-        :ptype what: str
         :param remedy: What to do instead.
-        :ptype remedy: str
         :raises RefusedInput: Its ``schema_version`` is not :data:`CAMPAIGN_BUNDLE_SHAPE` (one frozen at an earlier
             shape is refused saying it was frozen before names left the readings), or it is not a campaign bundle at
             all (one aspect's bundle, frozen before one memo covered a campaign).
@@ -338,13 +329,9 @@ class CampaignBundle(EvalDocumentModel):
         """Read a whole campaign bundle back, refusing any shape but this build's with a remedy.
 
         :param data: A campaign bundle, as ``to_dict`` wrote it (each aspect's bundle whole in its place).
-        :ptype data: Mapping[str, Any]
         :param what: What holds it, as a sentence names it, for the refusal.
-        :ptype what: str
         :param remedy: What to do instead, for the refusal; empty names re-assembling it.
-        :ptype remedy: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: It is not a campaign bundle of this build's shape, or an aspect's bundle is from before
             a bundle read one aspect.
         """
@@ -361,9 +348,7 @@ class CampaignBundle(EvalDocumentModel):
         """Read ``to_json``'s text back, refusing another shape as :meth:`from_dict` does.
 
         :param json_str: The JSON text.
-        :ptype json_str: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: See :meth:`from_dict`.
         """
         return cls.from_dict(json.loads(json_str))
@@ -376,13 +361,9 @@ class CampaignBundle(EvalDocumentModel):
         do not belong together.
 
         :param frame: The frame, as :meth:`frame` wrote it.
-        :ptype frame: Mapping[str, Any]
         :param bundles: The aspects' bundles, in the frame's order.
-        :ptype bundles: Sequence[AnalysisContextBundle]
         :param what: What holds the frame, for the refusal.
-        :ptype what: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: The frame is of another shape.
         :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint, each fingerprint
             compared in the version the frame holds it in.
@@ -413,9 +394,7 @@ class CampaignBundle(EvalDocumentModel):
         """The bundle of the aspect labelled ``label``.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: Its bundle.
-        :rtype: AnalysisContextBundle
         :raises KeyError: No aspect has that label.
         """
         for bundle in self.aspects:
@@ -427,7 +406,6 @@ class CampaignBundle(EvalDocumentModel):
         """Each aspect's decision surface, by label: what every reading on that aspect resolves against.
 
         :return: ``label -> surface``.
-        :rtype: dict[str, DecisionSurface]
         """
         return {bundle.aspect: bundle_decision_surface(bundle) for bundle in self.aspects}
 
@@ -435,7 +413,6 @@ class CampaignBundle(EvalDocumentModel):
         """The aliases the writer names cells by, unique across the campaign (``c1`` … ``cN``).
 
         :return: ``alias -> (aspect, cell_ref)``.
-        :rtype: dict[str, CellAddress]
         """
         return campaign_cell_aliases([(bundle.aspect, bundle.cell_measures) for bundle in self.aspects])
 
@@ -443,9 +420,7 @@ class CampaignBundle(EvalDocumentModel):
         """Resolve the alias a writer named a cell by, or refuse it naming the aliases there are.
 
         :param alias: The cell as the writer named it.
-        :ptype alias: str
         :return: The aspect and the cell's ``cell_ref``.
-        :rtype: CellAddress
         :raises UnresolvableReference: No cell carries that alias.
         """
         aliases = self.cell_aliases()
@@ -463,7 +438,6 @@ class CampaignBundle(EvalDocumentModel):
         A campaign of one aspect names each trial by its bundle's own id.
 
         :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
-        :rtype: dict[str, tuple[str, str]]
         """
         return campaign_trial_ids(
             (bundle.aspect, [trial.trial_id for trial in bundle.trials]) for bundle in self.aspects
@@ -473,9 +447,7 @@ class CampaignBundle(EvalDocumentModel):
         """The aspect and bundle trial a campaign trial id names; None for an id the campaign does not hold.
 
         :param trial_id: The id, as the writer named it.
-        :ptype trial_id: str
         :return: ``(aspect, bundle trial id)``, or None.
-        :rtype: tuple[str, str] | None
         """
         return self.trial_ids().get(trial_id)
 
@@ -497,9 +469,7 @@ class CampaignBundle(EvalDocumentModel):
         """The arm the writer named by ``label``; None for a label no arm carries.
 
         :param label: The arm's label.
-        :ptype label: str
         :return: The arm, or None.
-        :rtype: CampaignArm | None
         """
         return next((arm for arm in self.arms if arm.label == label), None)
 
@@ -507,9 +477,7 @@ class CampaignBundle(EvalDocumentModel):
         """Every variant key that names ``arm``'s cells: its own, and the control's under each predicate.
 
         :param arm: One of this campaign's arms.
-        :ptype arm: CampaignArm
         :return: The keys.
-        :rtype: frozenset[str]
         """
         if arm.role == "control":
             return frozenset({arm.variant_key, *resolve_control_arm(arm).variant_keys})
@@ -523,7 +491,6 @@ class CampaignBundle(EvalDocumentModel):
         aspects that do), and this is every lever any of them names.
 
         :return: Lever id to reader name, sorted by id.
-        :rtype: dict[str, str]
         """
         return dict(
             sorted({lever: name for bundle in self.aspects for lever, name in bundle.lever_names.items()}.items())
@@ -533,9 +500,7 @@ class CampaignBundle(EvalDocumentModel):
         """What a reader calls the arm a variant key names: its arm's label, else the name its levels give it.
 
         :param variant_key: The variant.
-        :ptype variant_key: str
         :return: The label.
-        :rtype: str
         """
         for arm in self.arms:
             if variant_key in self.arm_keys(arm):
@@ -572,9 +537,7 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     The campaign's own name stays here, and :func:`_campaign_digest` leaves it out.
 
     :param frame: The frame.
-    :ptype frame: Mapping[str, Any]
     :return: The frame's evidence.
-    :rtype: dict[str, Any]
     """
     frame = dict(frame)
     if isinstance(arms := frame.get("arms"), list):
@@ -614,19 +577,13 @@ def build_campaign_bundle(
     """Put a campaign's evidence together for its one memo.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param bundles: Each aspect's bundle, in the campaign's aspect order
         (:func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle` per aspect).
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :param arms: The campaign's arms as a reader reads them (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
-    :ptype arms: Sequence[CampaignArm]
     :param readings: Code's readings across the aspects and floors.
-    :ptype readings: CampaignReadings
     :param spellings: How code spelled each derived arm it spelled from several levers, by variant key
         (:func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled`); None for none.
-    :ptype spellings: Mapping[str, ArmSpelling] | None
     :return: The campaign bundle.
-    :rtype: CampaignBundle
     :raises ValueError: The bundles are not the campaign's aspects, in its order.
     """
     expected = [aspect.label for aspect in campaign.aspects]
@@ -656,9 +613,7 @@ def campaign_trial_ids(aspects: Iterable[tuple[str, Sequence[str]]]) -> dict[str
     writer's id back to its trial number them here.
 
     :param aspects: Each aspect's label and its bundle's trial ids, in the campaign's order.
-    :ptype aspects: Iterable[tuple[str, Sequence[str]]]
     :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
-    :rtype: dict[str, tuple[str, str]]
     """
     ids: dict[str, tuple[str, str]] = {}
     for aspect, trials in aspects:

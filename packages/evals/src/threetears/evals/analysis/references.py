@@ -118,9 +118,7 @@ def cell_aliases(cells: Iterable[CellFacts]) -> dict[str, str]:
     every alias to the full ``cell_ref`` before anything is stored.
 
     :param cells: The cells, in the order to number them.
-    :ptype cells: Iterable[CellFacts]
     :return: ``alias -> cell_ref``, in minted order.
-    :rtype: dict[str, str]
     """
     aliases: dict[str, str] = {}
     seen: set[str] = set()
@@ -139,11 +137,8 @@ def cell_of_alias(surface: DecisionSurface, alias: str) -> str:
     all come through here.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param alias: The cell as the writer named it.
-    :ptype alias: str
     :return: The cell's full ``cell_ref``.
-    :rtype: str
     :raises UnresolvableReference: No cell carries that alias.
     """
     aliases = cell_aliases(surface.cells)
@@ -176,9 +171,7 @@ def campaign_cell_aliases(aspects: Sequence[tuple[str, Iterable[CellFacts]]]) ->
     does. The one mint for a campaign: its writer's view and its resolver both read it.
 
     :param aspects: ``(label, cells)`` per aspect, in the campaign's order; each aspect's cells in its bundle's order.
-    :ptype aspects: Sequence[tuple[str, Iterable[CellFacts]]]
     :return: ``alias -> (aspect, cell_ref)``, in minted order.
-    :rtype: dict[str, CellAddress]
     """
     addresses: dict[str, CellAddress] = {}
     for label, cells in aspects:
@@ -191,9 +184,7 @@ def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
     """Key a surface's cells by the ``cell_ref`` a reference carries.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :return: ``cell_ref -> CellFacts`` for every cell.
-    :rtype: dict[str, CellFacts]
     """
     return {cell_ref(cell.variant_key, cell.apparatus_class_id): cell for cell in surface.cells}
 
@@ -202,11 +193,8 @@ def require_cell(surface: DecisionSurface, ref: str) -> CellFacts:
     """Return the cell a reference names, or refuse naming the cells that exist.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param ref: The reference's cell (a ``cell_ref``).
-    :ptype ref: str
     :return: The cell's facts.
-    :rtype: CellFacts
     :raises UnresolvableReference: No cell carries that ref.
     """
     cells = cell_index(surface)
@@ -225,16 +213,11 @@ def resolve_reading(
     """Read one numeric reading off the surface.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param ref: The cell the reference names (a ``cell_ref``).
-    :ptype ref: str
     :param measure_id: The measure (or judged dimension) it names.
-    :ptype measure_id: str
     :param reading: Which of the cell's two namespaces to read — already a :data:`ReadingKind`, because
         every model-authored kind is validated against the authored models before it gets here.
-    :ptype reading: ReadingKind
     :return: The resolved reading.
-    :rtype: ResolvedReading
     :raises UnresolvableReference: The cell, or the reading in it, does not exist; the measure is
         categorical (it has no point estimate); or it has no mean (nothing was scored).
     :raises ValueError: ``reading`` is neither kind — a caller that bypassed the authored models,
@@ -408,7 +391,6 @@ def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, 
     number rule: the row states its unit beside its value.
 
     :return: The dispersion text an evidence row carries.
-    :rtype: str
     """
     if ci_low is None or ci_high is None:
         if n_cases == 1 and n > 1:

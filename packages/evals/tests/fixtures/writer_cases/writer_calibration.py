@@ -69,9 +69,9 @@ from threetears.evals.kernel import (
     AuthoredJudgeCase,
     JudgeKindOverlays,
     VariantConfig,
-    judge_trial_of,
     withhold_failure_detail,
 )
+from threetears.evals.kernel.judge_cases import judge_trial_of
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.report_writer.preference import (
     CasePreference,

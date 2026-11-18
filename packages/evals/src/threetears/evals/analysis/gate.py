@@ -68,13 +68,11 @@ _UNDECIDED_TOKENS: frozenset[GateToken] = frozenset(
 )
 
 
-def verdict_token(verdict: Verdict) -> GateToken | None:
+def _verdict_token(verdict: Verdict) -> GateToken | None:
     """The gate token a verdict counts under, or None for a decided outcome no gate fails on.
 
     :param verdict: The verdict.
-    :ptype verdict: Verdict
     :return: Its token.
-    :rtype: GateToken | None
     """
     return _TOKEN_OF.get((verdict.kind, verdict.outcome))
 
@@ -83,9 +81,7 @@ def parse_fail_on(text: str) -> tuple[GateToken, ...]:
     """A comma-separated ``--fail-on`` list as tokens, refusing one that is no token.
 
     :param text: ``"regressed,breached"``.
-    :ptype text: str
     :return: The tokens, in the order given, each once.
-    :rtype: tuple[GateToken, ...]
     :raises ValueError: A name that is no token, or an empty list.
     """
     names = [name.strip() for name in text.split(",") if name.strip()]
@@ -145,7 +141,6 @@ class GateResult:
         """The gate as a few lines for a terminal: the outcome, then each failure and each undecided verdict.
 
         :return: The text, without a trailing newline.
-        :rtype: str
         """
         named = ", ".join(self.fail_on)
         if not self.gated:
@@ -167,7 +162,6 @@ class GateResult:
         """Why the gate failed, in one line and the report's words: each failing verdict, ``; `` between them.
 
         :return: ``failed on guardrail No invented total score, v2 vs v1: undecided: ...``; None when it did not fail.
-        :rtype: str | None
         """
         if not self.failures:
             return None
@@ -194,14 +188,10 @@ def gate_verdicts(
     """Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
 
     :param verdicts: The verdicts, as a report carries them (:attr:`Report.verdicts`).
-    :ptype verdicts: Sequence[Verdict]
     :param fail_on: The tokens to fail on (:data:`GATE_TOKENS`); the default is :data:`DEFAULT_FAIL_ON`.
-    :ptype fail_on: Iterable[str]
     :param readings: Only the verdicts on these readings, by key (``"accuracy"``) or as the report heads them
         (``"Accuracy"``); ``None`` gates every verdict.
-    :ptype readings: Iterable[str] | None
     :return: The gate's result.
-    :rtype: GateResult
     :raises ValueError: A ``fail_on`` name that is no token, or a ``readings`` name no verdict carries.
     """
     tokens = _refuse_unknown_tokens(fail_on)
@@ -215,9 +205,9 @@ def gate_verdicts(
                 f"{', '.join(sorted({verdict.name for verdict in gated})) or 'none'}"
             )
         gated = [verdict for verdict in gated if verdict.name in wanted or verdict.heading in wanted]
-    failures = [verdict for verdict in gated if verdict_token(verdict) in tokens]
+    failures = [verdict for verdict in gated if _verdict_token(verdict) in tokens]
     undecided = [
-        verdict for verdict in gated if (token := verdict_token(verdict)) in _UNDECIDED_TOKENS and token not in tokens
+        verdict for verdict in gated if (token := _verdict_token(verdict)) in _UNDECIDED_TOKENS and token not in tokens
     ]
     return GateResult(fail_on=tokens, gated=tuple(gated), failures=tuple(failures), undecided=tuple(undecided))
 
@@ -230,5 +220,4 @@ __all__ = [
     "GateToken",
     "gate_verdicts",
     "parse_fail_on",
-    "verdict_token",
 ]

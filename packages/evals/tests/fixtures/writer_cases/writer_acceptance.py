@@ -108,7 +108,9 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.numbers import spell_count
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.harness import Writer, WriterEval, WriterResult
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.ops import OpsHost, job_poll

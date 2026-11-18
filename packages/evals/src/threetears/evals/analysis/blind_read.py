@@ -222,32 +222,19 @@ def draw_blind_read(
     by output, and the order by case.
 
     :param results: The arms' results.
-    :ptype results: Iterable[EvalResult]
     :param evidence: What the judge read of each result, by result id; a result with none here is not shown.
-    :ptype evidence: Mapping[str, JudgeEvidence]
     :param criteria: The criteria asked, as worded.
-    :ptype criteria: Sequence[RubricDim]
     :param arms: One arm (singles), or a control and a candidate (pairs), each naming its runs.
-    :ptype arms: Sequence[BlindArm]
     :param scope_id: The scope the read belongs to.
-    :ptype scope_id: str
     :param created_by: Who drew it.
-    :ptype created_by: str
     :param name: What the read is called.
-    :ptype name: str
     :param seed: The seed.
-    :ptype seed: int
     :param ask: What each item asks; a preference is asked only of pairs.
-    :ptype ask: Sequence[BlindAsk]
     :param campaign_id: The campaign drawn over, where there is one.
-    :ptype campaign_id: str | None
     :param created_at: When it was drawn; None for now.
-    :ptype created_at: str | None
     :param planned_items: The length the preference is read at; None for the whole order up to
         :data:`PLANNED_ITEMS_DEFAULT`. Capped at the order's length.
-    :ptype planned_items: int | None
     :return: The read, with no answers.
-    :rtype: BlindRead
     :raises ValueError: No criterion; no arm or more than two; two arms that are not one control and one candidate;
         or a run named by two arms.
     """
@@ -405,16 +392,12 @@ def blind_sheet(read: BlindRead, *, rater: str | None = None, label_keys: bool =
     """The blinded view of ``read``: what a rater is shown, and nothing else.
 
     :param read: The read.
-    :ptype read: BlindRead
     :param rater: Whose progress to report (``answered`` and ``next``); None reports none.
-    :ptype rater: str | None
     :param label_keys: Whether each output carries its label key (its fingerprint and each criterion's), which a
         labels file needs to pair a label with its output away from the read. A host's door answers by item and slot
         and leaves them out: a fingerprint is also what a judge score carries, so a rater who can read the scores
         could pair it with its arm.
-    :ptype label_keys: bool
     :return: The sheet: no arm, run, result or case id, and no judge score.
-    :rtype: BlindSheet
     """
     answered = {answer.item for answer in read.answers if rater is not None and answer.rater == rater}
     verdicts = [dim.name for dim in read.criteria] if "verdicts" in read.ask else []
@@ -474,13 +457,9 @@ def read_sample(read: BlindRead, rater: str, kind: Maker = "person") -> BlindSam
     to say.
 
     :param read: The read.
-    :ptype read: BlindRead
     :param rater: The rater, as their answers name them.
-    :ptype rater: str
     :param kind: Whether the rater is a person or a model: the two never share a sample, whatever they are named.
-    :ptype kind: Maker
     :return: The sample: ``random`` with its counts, ``selected``, or ``none``.
-    :rtype: BlindSample
     """
     own = [answer for answer in read.answers if (answer.rater, answer.made_by) == (rater, kind)]
     answered = {answer.item for answer in own}
@@ -514,11 +493,8 @@ def exact_sign_test_p(successes: int, trials: int) -> float | None:
     count it rejects at most as often as its level, and usually less.
 
     :param successes: The items one side took.
-    :ptype successes: int
     :param trials: The non-tie items.
-    :ptype trials: int
     :return: The p; None with no trials.
-    :rtype: float | None
     :raises ValueError: ``successes`` outside 0 to ``trials``.
     """
     if not 0 <= successes <= trials:
@@ -536,9 +512,7 @@ def check_answer(read: BlindRead, answer: BlindAnswer) -> None:
     Every door checks an answer here before it keeps one, so a close never meets an answer it cannot read.
 
     :param read: The read.
-    :ptype read: BlindRead
     :param answer: The answer offered.
-    :ptype answer: BlindAnswer
     :raises ValueError: Naming what the read does not ask.
     """
     item = next((each for each in read.items if each.item == answer.item), None)
@@ -615,11 +589,8 @@ def shares_family(reviewer: str, judge_model: str | None) -> bool:
     """Whether two model ids name one provider: the part before the first ``/``, where both have one.
 
     :param reviewer: A reviewer model's id.
-    :ptype reviewer: str
     :param judge_model: The judge's served model, or None where unrecorded.
-    :ptype judge_model: str | None
     :return: Whether the two may share a lean their agreement cannot show.
-    :rtype: bool
     """
     if judge_model is None or "/" not in reviewer or "/" not in judge_model:
         return False
@@ -642,9 +613,7 @@ def pass_fail_counts(table: BlindVerdictTable) -> PassFailCounts | None:
     """The four confusion counts of a pass/fail table; None for a 1-5 one, which has no fixed pass.
 
     :param table: A stored table.
-    :ptype table: BlindVerdictTable
     :return: The counts, or None.
-    :rtype: PassFailCounts | None
     """
     if table.scores != list(SCALES["pass_fail"].scores):
         return None
@@ -656,9 +625,7 @@ def agreed_pairs(table: BlindVerdictTable) -> int:
     """How many pairs the reader and the judge gave the same score.
 
     :param table: A stored table.
-    :ptype table: BlindVerdictTable
     :return: The count on the table's diagonal.
-    :rtype: int
     """
     return sum(table.counts[index][index] for index in range(len(table.scores)))
 
@@ -670,9 +637,7 @@ def single_verdicts(table: BlindVerdictTable) -> tuple[int | None, int | None]:
     any agreement; the counts say what was seen.
 
     :param table: A stored table.
-    :ptype table: BlindVerdictTable
     :return: ``(reader's one score or None, judge's one score or None)``; both None on an empty table.
-    :rtype: tuple[int | None, int | None]
     """
     rows = [score for score, row in zip(table.scores, table.counts, strict=True) if sum(row)]
     columns = [score for index, score in enumerate(table.scores) if sum(row[index] for row in table.counts)]
@@ -1032,9 +997,7 @@ def read_preference(preference: BlindPreference) -> BlindPreference:
     returned as they are.
 
     :param preference: A preference as stored, or as a close built it.
-    :ptype preference: BlindPreference
     :return: The preference with its p and verdict; ``preference`` itself where it has none to compute.
-    :rtype: BlindPreference
     """
     shares = preference.shares
     if shares is None or preference.withheld:
@@ -1137,27 +1100,18 @@ def close_blind_read(
     model served either side was not recorded: an unrecorded model matches nothing, so the guard cannot be passed.
 
     :param read: The read, with its answers.
-    :ptype read: BlindRead
     :param results: The results the answers may rate: every result the read was drawn over.
-    :ptype results: Iterable[EvalResult]
     :param tiers_before: The judge's tiers before these answers; None reads them from ``results`` with no ratings.
-    :ptype tiers_before: Sequence[JudgeEvidenceTier] | None
     :param other_ratings: People's ratings from outside the read (an older labels sheet), which count toward
         agreement as ``selected``: never as a random sample.
-    :ptype other_ratings: Sequence[CalibrationRating]
     :param unread: Answers offered that could not be read against the read, each with why; carried on the report.
-    :ptype unread: Sequence[str]
     :param judge_models: The ids the judge was asked as, beside the served model each score records: a reviewer
         named or served as any of them is the judge's own model.
-    :ptype judge_models: Collection[str]
     :param closed_by: Who closed it; None leaves the read open, its report computed. A read closed before any rater
         answered every planned item is closed early (``BlindRead.closed_early``): an unfinished preference is then
         read once, by the anytime test, where an open read withholds it.
-    :ptype closed_by: str | None
     :param closed_at: When; None for now, where ``closed_by`` is given.
-    :ptype closed_at: str | None
     :return: The read carrying its report, the ratings, and which of them came from a random sample.
-    :rtype: BlindClose
     :raises ValueError: An answer the read does not ask (see :func:`_ratings_of`).
     """
     results = list(results)

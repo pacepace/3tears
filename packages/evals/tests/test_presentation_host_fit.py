@@ -57,8 +57,8 @@ from threetears.evals.analysis import (
     build_code_only_report,
     campaign_report_html,
     report_html,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.report.build import TOO_FEW_CASES

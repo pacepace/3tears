@@ -23,7 +23,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from threetears.evals import Eval
-from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaign_report_markdown
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.campaign_readings import MeasureReading
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart

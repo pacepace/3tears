@@ -6,6 +6,7 @@ the contrasts table and its rows (:func:`contrast_rows`).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import Literal
 
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -53,13 +54,18 @@ from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.verdict import MIN_CASES, VerdictLine, verdict_line
 from threetears.evals.analysis.report.words import (
     comparison_words,
+    decided_words,
     disclosure_words,
+    estimate_sentence,
+    evidence_sentence,
     reading_heading,
     reading_verb,
     reason_words,
+    standing_side,
+    standing_words,
 )
-from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
-from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, EVIDENCE_STEPS, INTERVAL_LEVEL
+from threetears.evals.analysis.style import CANNOT_TELL_APART, evidence_grade
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 from threetears.evals.kernel.surface import DecisionSurface
 
@@ -76,19 +82,14 @@ def aspect_verdict(
     print (:func:`~threetears.evals.analysis.report.verdict.verdict_line`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param measure_order: The aspect's graders' measures, in the order its design lists them.
-    :ptype measure_order: Sequence[str]
     :param arm_labels: The names a surface prints the arms by, by variant key, which replace their variants' names
         (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`, as a listing reads them); None names each
         arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :param forms: The aspect page's forms, over its campaign's set of each measure
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so the line reads every figure as the
         page does; None for an aspect that is its own campaign (its bundle's forms alone).
-    :ptype forms: PageForms | None
     :return: The verdict line.
-    :rtype: VerdictLine
     """
     # The line's verdicts and the figures they rest on are the aspect page's, decided once in the page's forms.
     if forms is None:
@@ -113,14 +114,11 @@ def contrast_evidence(
     sentence carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param forms: The aspect page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), built
         once for the page; None for a verdict line read without its page (a listing's, the quick print's), which
         builds the bundle's own.
-    :ptype forms: PageForms | None
     :return: A verdict's figures, or None where it has no change or interval to state (it is untested, or no
         contrast of the bundle is its).
-    :rtype: Callable[[Verdict], str | None]
     :raises ValueError: ``forms`` were built from another bundle.
     """
     page = forms if forms is not None else PageForms.of_bundle(bundle)
@@ -129,14 +127,17 @@ def contrast_evidence(
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
     tested = {
-        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): comparison
+        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): (comparison, family)
         for family in bundle.multiple_comparisons.families
         for comparison in family.comparisons
     }
 
     def figures(verdict: Verdict) -> str | None:
-        comparison = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
-        if comparison is None or verdict.control is None or comparison.delta is None or comparison.interval is None:
+        found = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
+        if found is None:
+            return None
+        comparison, family = found
+        if verdict.control is None or comparison.delta is None or comparison.interval is None:
             return None
         if comparison.control.mean is None or comparison.contrast.mean is None:
             return None
@@ -165,6 +166,28 @@ def contrast_evidence(
         if _unvaried_means(surface, comparison) is not None:
             # Neither arm varied, so the table draws no interval, and the sentence claims none either.
             allows = "Neither arm varied over these cases, so no interval is drawn on the change."
+        if comparison.evidence_better is not None and comparison.evidence_worse is not None and paired:
+            # A reading the bet read leads on where the arm stands: its estimate, the interval, then the evidence for
+            # each side it is graded on, and the counts it rests on last.
+            side = standing_side(comparison.delta, higher_is_better=comparison.higher_is_better)
+            size = page.ruled_change_size(
+                ruler, comparison.delta, form=form, places=places, measure=comparison.name, kind=comparison.reading
+            )
+            unit = "" if ruler.unit != PERCENT else " point" if size == "1" else " points"
+            # A decision says when it was made, in its words; the estimate after it is where the arm stands now.
+            lead = [
+                estimate_sentence(
+                    side,
+                    verdict.arm,
+                    verdict.control,
+                    cases=comparison.control.n_cases,
+                    size=f"{size}{unit}",
+                    now=comparison.decided_at_cases is not None,
+                ),
+                allows,
+                *_evidence_sentences(comparison, verdict, page, lean=family.lean if family.primary else None),
+            ]
+            return " ".join([*lead, *said])
         if paired:
             said.append(f"Over {comparison.control.n_cases} paired cases, {allows[:1].lower()}{allows[1:]}")
         else:
@@ -172,6 +195,46 @@ def contrast_evidence(
         return " ".join(said)
 
     return figures
+
+
+#: The largest e-value a sentence states as a figure; past it the evidence is said to be over it, since a bet's capital
+#: on a few dozen agreeing cases runs to many digits that say nothing a reader acts on.
+_EVIDENCE_SHOWN_TO = 1000.0
+
+
+def _evidence_sentences(
+    comparison: FamilyComparison, verdict: Verdict, forms: PageForms, *, lean: Literal["better", "worse"] | None = None
+) -> list[str]:
+    """The graded evidence a bet-read contrast holds now: for the side its estimate leans to (better where it is
+    level), then for the other side where it reaches the first grade's step, each in its grade's word
+    (:func:`~threetears.evals.analysis.style.evidence_grade`) and with its e-value. Where the question leans one way
+    (``lean``) and the evidence the estimate leans to points the other, it says so: an interval wholly on that side with
+    strong evidence is never left to read as an answer to the question."""
+    better, worse = comparison.evidence_better, comparison.evidence_worse
+    if better is None or worse is None:
+        return []
+    leaning = (
+        "worse"
+        if standing_side(comparison.delta, higher_is_better=comparison.higher_is_better) == "behind"
+        else "better"
+    )
+    order = (("better", better), ("worse", worse)) if leaning == "better" else (("worse", worse), ("better", better))
+    said = []
+    for index, (side, evidence) in enumerate(order):
+        if index and evidence < EVIDENCE_STEPS[0]:
+            continue
+        shown = min(evidence, _EVIDENCE_SHOWN_TO)
+        figure = forms.multiple(shown).text
+        said.append(
+            evidence_sentence(
+                verdict.arm,
+                "better" if side == "better" else "worse",
+                evidence_grade(evidence),
+                f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure,
+                against_question=lean is not None and side != lean and evidence >= EVIDENCE_STEPS[0],
+            )
+        )
+    return said
 
 
 def _sides_sentence(sides: Sequence[tuple[str, str, str | None, int | None]], heading: str, reading: str) -> str:
@@ -534,7 +597,12 @@ def contrast_verdicts(
                 detail = f"{small} case{'' if small == 1 else 's'}, under the {MIN_CASES} a rate needs"
                 words = f"not tested (n={small})"
             else:
-                words = _contrast_words(comparison, (named, control), margin, heading, ruler, forms)
+                secondary = family.primary is not None and (
+                    comparison.name != family.primary or comparison.reading == "trial"
+                )
+                words = _contrast_words(
+                    comparison, (named, control), margin, heading, ruler, forms, secondary=secondary
+                )
             verdicts.append(
                 Verdict(
                     kind="contrast",
@@ -569,7 +637,19 @@ def _verdict_cell(verdict: Verdict) -> str:
         return verdict.words
     sentence = comparison_words("not_separated", verdict.arm, verdict.control)
     # prose-canary: allow — Verdict.words is the sentence comparison_words rendered, not anything a model wrote
-    return CANNOT_TELL_APART + verdict.words.removeprefix(sentence)
+    rest = verdict.words.removeprefix(sentence)
+    # An undecided contrast the bet read says where the arm stands (:func:`_contrast_words`), which has no short form.
+    return verdict.words if rest == verdict.words else CANNOT_TELL_APART + rest
+
+
+def _decided_when(comparison: FamilyComparison, forms: PageForms) -> str:
+    """When a contrast the bet decided was decided, said after its decision (:func:`decided_words`); empty for any other
+    contrast."""
+    if comparison.decided_at_cases is None or comparison.decided_evidence is None:
+        return ""
+    evidence = comparison.decided_evidence
+    figure = forms.multiple(min(evidence, _EVIDENCE_SHOWN_TO)).text
+    return decided_words(comparison.decided_at_cases, f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure)
 
 
 def _contrast_words(
@@ -579,12 +659,26 @@ def _contrast_words(
     heading: str,
     ruler: MeasureRuler,
     forms: PageForms,
+    *,
+    secondary: bool = False,
 ) -> str:
     """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
-    there is more to say, its margin, materiality."""
+    there is more to say, its margin, materiality. An undecided contrast the bet read, and every secondary reading of a
+    family decided on its primary, says where the arm stands (``v2 ahead of v1, undecided``), never that the evidence
+    cannot tell the arms apart."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
+    undecided_bet = comparison.verdict == "not_separated" and (comparison.evidence_better is not None or secondary)
     return (
-        comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
+        (
+            standing_words(
+                standing_side(comparison.delta, higher_is_better=comparison.higher_is_better),
+                *arms,
+                higher_is_better=comparison.higher_is_better,
+            )
+            if undecided_bet
+            else comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
+            + _decided_when(comparison, forms)
+        )
         + (f" ({reason_words(comparison.untested_reason)})" if comparison.untested_reason else "")
         + (f" ({reason_words(comparison.not_separated_reason)})" if comparison.not_separated_reason else "")
         + (
@@ -832,20 +926,16 @@ def contrast_rows(
     program that wants the measure's own units reads :attr:`Report.verdicts` or the bundle, never these rows.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param forms: The aspect page's forms, over its campaign's set of each measure
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so every row reads as the page does;
         None for an aspect that is its own campaign (its bundle's forms alone).
-    :ptype forms: PageForms | None
     :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
         :func:`aspect_verdict` reads them; None names each arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :return: One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
         ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
         ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
-    :rtype: list[dict[str, CellValue]]
     """
     surface = bundle_decision_surface(bundle)
     # A program's rows read as the aspect's page does, its forms built once for every row.
@@ -934,12 +1024,9 @@ def report_cell_labels(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str
     """Each cell's arm as the page names it, by cell reference: its label, with its test setup where it ran under two.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
         :func:`aspect_verdict` reads them; None names each arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :return: ``cell_ref -> name`` for every cell on the bundle's surface.
-    :rtype: dict[str, str]
     """
     surface = bundle_decision_surface(bundle)
     name = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))

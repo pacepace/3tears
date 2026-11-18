@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals import Eval
-from threetears.evals.analysis import CampaignBundle, assemble_campaign_bundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from packages.evals.tests.off_loop import off_loop
 
 TICKETS = [

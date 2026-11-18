@@ -220,10 +220,8 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
     input with a part changed reads its own.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Late criteria, the judge, confounds, apparatus confounds, short runs, unsettled aspects, latency, then
         unreported observations, each in the input's order.
-    :rtype: list[Caveat]
     """
     return [Caveat(entry.id, entry.kind, entry.reach) for entry in from_legacy(report_input)]
 
@@ -252,10 +250,8 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
     implied raiser (:func:`~threetears.evals.analysis.caveats.implied`), read off the input as it stands.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The judge's, then no control, nothing declared, each gate cleared on a point estimate, each gate cleared
         on a borderline figure, then a pick among many; each once, in that order.
-    :rtype: list[ImpliedCaveat]
     """
     return [_implied(report_input, entry) for entry in implied(report_input, from_legacy(report_input))]
 
@@ -267,9 +263,7 @@ def every_caveat(report_input: ReportInput) -> list[Caveat | ImpliedCaveat]:
     (:func:`~threetears.evals.kernel.report_doc.report_doc_validity`) reads its ids, so the two cannot disagree.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: :func:`report_caveats`, then :func:`implied_caveats`, each in its own order.
-    :rtype: list[Caveat | ImpliedCaveat]
     """
     return [*report_caveats(report_input), *implied_caveats(report_input)]
 
@@ -284,9 +278,7 @@ def caveat_materiality(report_input: ReportInput) -> dict[str, Materiality]:
     ``immaterial``, worded.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Each caveat's materiality, by id, in :func:`report_caveats`' order.
-    :rtype: dict[str, Materiality]
     """
     kinds = dict(_lates(report_input))
     found: dict[str, Materiality] = {}

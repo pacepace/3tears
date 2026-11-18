@@ -336,9 +336,7 @@ def analyst_actions(*, gaps_kept_by: Literal["call", "write"] = "call") -> tuple
     :param gaps_kept_by: Who stores a gap the gap note notes: ``call``, the call itself, for every mount but one;
         ``write``, the report write whose own mount this is, which stores every gap its sessions noted when it ends
         (the module docstring).
-    :ptype gaps_kept_by: Literal["call", "write"]
     :return: The actions, in the order help lists them.
-    :rtype: tuple[Action, ...]
     """
     (freeze, gap) = _snapshot_actions(gaps_kept_by)
     built = (
@@ -361,16 +359,12 @@ def analyst_tools(
     """The one tool carrying the analyst's actions: ``<prefix>_analyst``, cut for the analyst or for its editor.
 
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :param writes: Whether it carries the freeze, the analyst's one write; ``False`` for a host whose agent may only
         read, which then reads snapshots frozen another way, and for a loop that froze the snapshot itself.
-    :ptype writes: bool
     :param role: ``analyst``, every workflow of the cut; or ``editor``, the facts, the analyses and the gap note, with
         no blocks (the editor reads the page it is given) and no freeze, whatever ``writes`` says.
-    :ptype role: Literal["analyst", "editor"]
     :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze; its help serves the figure-key grammar
         as ``topic='figure_keys'``, an index whose pages are ``topic='figure_keys.<group>'``.
-    :rtype: tuple[ToolSpec]
     """
     classes: frozenset[PermissionClass] = frozenset({"read", "write"} if writes else {"read"})
     editor = role == "editor"

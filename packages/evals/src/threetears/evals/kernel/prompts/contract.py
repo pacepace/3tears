@@ -44,7 +44,7 @@ ContractState = Literal["current", "outdated", "undeclared", "unbound"]
 REFUSED_CONTRACT_STATES: frozenset[ContractState] = frozenset({"outdated", "undeclared"})
 
 #: The words a contract line starts with. Hyphenated so no field or action name can be mistaken for it.
-CONTRACT_MARKER = "eval-output-contract:"
+_CONTRACT_MARKER = "eval-output-contract:"
 
 #: Hex digits of the digest a line carries: enough that two contracts never share one, few enough to read.
 FINGERPRINT_LENGTH = 16
@@ -55,7 +55,7 @@ _ANNOTATIONS = frozenset({"description", "title", "examples", "default"})
 #: Keywords whose value maps names to subschemas, so its keys are field or definition names and never keywords.
 _NAMED_SUBSCHEMAS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 
-_LINE = re.compile(rf"^[ \t]*{re.escape(CONTRACT_MARKER)}[ \t]*(\S+)[ \t]+([0-9a-f]+)[ \t]*$", re.MULTILINE)
+_LINE = re.compile(rf"^[ \t]*{re.escape(_CONTRACT_MARKER)}[ \t]*(\S+)[ \t]+([0-9a-f]+)[ \t]*$", re.MULTILINE)
 
 
 def _structure(node: Any, *, names: bool = False) -> Any:
@@ -87,14 +87,10 @@ class OutputContract:
         """The contract a reply of ``schema``'s shape is read by.
 
         :param name: The reply's name.
-        :ptype name: str
         :param schema: The JSON schema the call sends for the reply; its annotations do not count.
-        :ptype schema: Mapping[str, Any]
         :param revision: Bumped by hand when a rule the reply is refused by changes outside the schema, so the prompts
             that teach the old rule are refused with the rest.
-        :ptype revision: int
         :return: The contract.
-        :rtype: OutputContract
         """
         digest = canonical_digest({"name": name, "revision": revision, "schema": _structure(dict(schema))})
         return cls(name=name, fingerprint=digest[:FINGERPRINT_LENGTH])
@@ -102,16 +98,14 @@ class OutputContract:
     @property
     def line(self) -> str:
         """The line a prompt written for this contract carries: what the shipped default ends with."""
-        return f"{CONTRACT_MARKER} {self.name} {self.fingerprint}"
+        return f"{_CONTRACT_MARKER} {self.name} {self.fingerprint}"
 
 
 def declared_contracts(text: str) -> tuple[OutputContract, ...]:
     """Every contract line ``text`` carries, in order.
 
     :param text: A prompt: rendered, a text seed's string, or a template's sections joined.
-    :ptype text: str
     :return: The contracts its lines declare; empty when it carries none.
-    :rtype: tuple[OutputContract, ...]
     """
     return tuple(OutputContract(name=name, fingerprint=digest) for name, digest in _LINE.findall(text))
 
@@ -120,13 +114,10 @@ def contract_state(text: str, contract: OutputContract | None) -> ContractState:
     """How ``text`` reads against ``contract``.
 
     :param text: The prompt as it is stored or rendered.
-    :ptype text: str
     :param contract: The contract the engine reads the prompt's reply by, or ``None`` for a prompt that has none.
-    :ptype contract: OutputContract | None
     :return: ``unbound`` when ``contract`` is ``None``; ``current`` when every line ``text`` carries declares
         ``contract`` and it carries one; ``undeclared`` when it carries none; ``outdated`` otherwise — a line naming
         another fingerprint, or another contract, beside or instead of the current one.
-    :rtype: ContractState
     """
     if contract is None:
         return "unbound"
@@ -140,9 +131,7 @@ def template_text(sections: tuple[SeedSection, ...]) -> str:
     """A sectioned template's text as its contract is read from: every section's literal body, in order.
 
     :param sections: A :class:`~threetears.evals.kernel.prompts.seed.SeedTemplate`'s sections.
-    :ptype sections: tuple[SeedSection, ...]
     :return: The bodies, one per line.
-    :rtype: str
     """
     return "\n".join(section.content_template for section in sections)
 
@@ -180,15 +169,10 @@ class PromptContractError(ConflictError):
         """Build the refusal of ``prompt_type``'s stored copy.
 
         :param prompt_type: The catalogue id of the prompt.
-        :ptype prompt_type: str
         :param state: How the copy read: ``outdated`` or ``undeclared``.
-        :ptype state: ContractState
         :param expected: The contract the engine reads the reply by.
-        :ptype expected: OutputContract
         :param declared: The contracts the copy's lines declare.
-        :ptype declared: tuple[OutputContract, ...]
         :param reset: How an operator of this host resets the slot to the shipped default.
-        :ptype reset: str
         """
         self.prompt_type = prompt_type
         self.state = state
@@ -215,9 +199,7 @@ def require_reset(reset: str) -> str:
     """``reset``, refused when blank: a remedy that names no way to reset the slot leaves the operator nothing to do.
 
     :param reset: The host's words for resetting a prompt slot.
-    :ptype reset: str
     :return: ``reset``, stripped.
-    :rtype: str
     :raises ValueError: ``reset`` is blank.
     """
     if not reset.strip():
@@ -232,14 +214,10 @@ def require_output_contract(prompt_type: str, text: str, contract: OutputContrac
     """Refuse a prompt that was not written for ``contract``.
 
     :param prompt_type: The catalogue id of the prompt, named in the refusal.
-    :ptype prompt_type: str
     :param text: The prompt as the call would send it.
-    :ptype text: str
     :param contract: The contract the call reads its reply by.
-    :ptype contract: OutputContract
     :param reset: How an operator of this host resets the slot to the shipped default, named in the remedy
         (an action or a command).
-    :ptype reset: str
     :raises PromptContractError: ``text`` declares another contract, or none.
     :raises ValueError: ``reset`` is blank.
     """
@@ -252,7 +230,6 @@ def require_output_contract(prompt_type: str, text: str, contract: OutputContrac
 
 
 __all__ = [
-    "CONTRACT_MARKER",
     "REFUSED_CONTRACT_STATES",
     "ContractState",
     "OutputContract",

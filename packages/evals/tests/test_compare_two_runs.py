@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import compare_two_runs
-from threetears.evals.ops import RunsCompared, runs_compared_text
+from threetears.evals.ops import RunsCompared
+from threetears.evals.ops.lenses import runs_compared_text
 from threetears.evals.schema import EvalRun, EvalTemplate, GoalStateOutcome, RubricScore
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.scoring import compute_per_case_composites

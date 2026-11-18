@@ -23,7 +23,8 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, EvalSummary, report_markdown
+from threetears.evals.analysis import DisclosureBlock, EvalSummary
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals import Answer, Eval, Judge, Result
 from threetears.evals.schema import RubricDim, StopReason
 from threetears.evals.quick.one_call import callable_host
@@ -166,7 +167,7 @@ async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_wit
     comparison = await _compare({"baseline": vague, "candidate": helpful}, [_judge(client)])
     (row,) = comparison.contrasts("answer helpful (judged)")
     assert row["arm"] == "candidate" and row["delta"] == pytest.approx(1.5)
-    assert row["verdict"] == "the evidence cannot tell candidate and baseline apart"
+    assert row["verdict"] == "candidate ahead of baseline, undecided"
     runs = [off_loop(get_run, comparison.host.storage, summary.run_id, SCOPE) for summary in comparison.arms.values()]
     assert {run.judge_model for run in runs} == {JUDGE_MODEL}
     assert len({run.template_id for run in runs}) == 1, "one template, so one rubric, for every arm"

@@ -37,11 +37,8 @@ def aspect_name(bundle: AnalysisContextBundle, *, campaign: str | None = None) -
     (:func:`~threetears.evals.kernel.declaration.printed_aspect_name`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param campaign: The campaign's name; None keeps every label.
-    :ptype campaign: str | None
     :return: The aspect's name on the page.
-    :rtype: str
     """
     return printed_aspect_name(bundle.aspect, bundle.short_name, campaign=campaign)
 
@@ -67,12 +64,9 @@ class AspectNames:
         """The names of the aspects ``bundles`` read.
 
         :param bundles: Each aspect's evidence, in the campaign's order.
-        :ptype bundles: Iterable[AnalysisContextBundle]
         :param campaign: The campaign's name, which an engine-given label gives way to (:func:`aspect_name`); None
             keeps every label.
-        :ptype campaign: str | None
         :return: Their names.
-        :rtype: AspectNames
         """
         held = list(bundles)
         labels = [bundle.aspect for bundle in held]
@@ -86,9 +80,7 @@ class AspectNames:
         """What the page calls the aspect labelled ``label``; a label no evidence was given for is printed whole.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: Its name on the page.
-        :rtype: str
         """
         return self.by_label.get(label, label)
 
@@ -97,9 +89,7 @@ class AspectNames:
         aspect's own page; unlinked for an aspect the page has no fold for.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The cell.
-        :rtype: TableCell
         """
         return TableCell(value=self(label), ref=self.folds.get(label))
 
@@ -109,9 +99,7 @@ class AspectNames:
         (``floor_statement``'s ``check_names``); none for an aspect no evidence was given for.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: Each named check's display name, by its expression.
-        :rtype: Mapping[str, str]
         """
         return self.checks.get(label, {})
 
@@ -123,8 +111,6 @@ def legend(names: AspectNames) -> list[tuple[str, str]]:
     an empty legend, and a page prints none.
 
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :return: ``(name, label)`` for each aspect whose name is not its label.
-    :rtype: list[tuple[str, str]]
     """
     return [(name, label) for label, name in names.by_label.items() if name != label]

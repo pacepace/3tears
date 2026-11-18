@@ -162,7 +162,6 @@ def analyst_write_actions() -> tuple[Action, ...]:
     """The ``Investigate: blocks`` action that reads a whole draft: ``report_check``.
 
     :return: ``report_check``.
-    :rtype: tuple[Action, ...]
     """
     return (
         Action(

@@ -81,9 +81,7 @@ def upgrade_campaign_v15(document: Mapping[str, Any]) -> dict[str, Any]:
       campaign recorded one.
 
     :param document: The stored v15 campaign, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :return: A new document in the campaign-of-aspects shape, at the version it was read at.
-    :rtype: dict[str, Any]
     **Total: every stored v15 campaign upgrades.** A step that refused a stored document would make it unreadable, so
     what v15 never validated is read rather than refused: a run named twice is held once, in first-named order; a
     live question whose ``asked_at`` is missing or is not an ISO-8601 time with an offset leaves the campaign's
@@ -156,9 +154,7 @@ def upgrade_campaign_v16(document: Mapping[str, Any]) -> dict[str, Any]:
     they are, and ``document`` is not modified. Nothing else moves: no key, digest, time or addressing field.
 
     :param document: The stored v16 campaign, as the store returned it (or as the v15 step left it).
-    :ptype document: Mapping[str, Any]
     :return: A new document whose every declared axis carries a reader name.
-    :rtype: dict[str, Any]
     """
     upgraded = copy.deepcopy(dict(document))
     for aspect in upgraded.get("aspects") or []:
@@ -243,11 +239,8 @@ def aware_instant(stamp: str, what: str) -> datetime:
     the schema importing the kernel.
 
     :param stamp: The stored time.
-    :ptype stamp: str
     :param what: What carries it, as the refusal names it.
-    :ptype what: str
     :return: The instant.
-    :rtype: datetime
     :raises ValueError: ``stamp`` is not an ISO-8601 time, or carries no offset, so which of two came first cannot be
         said.
     """

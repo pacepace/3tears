@@ -95,9 +95,7 @@ def _current_schema_only(version: int) -> int:
     """Refuse a regenerable document written under any schema version but this build's.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`.
     """
     if version != REGENERABLE_SCHEMA_VERSION:
@@ -123,9 +121,7 @@ def _current_cassette_only(version: int) -> int:
     so a bump of the regenerable version, which every analysis shape change makes, leaves a recorded corpus readable.
 
     :param version: The cassette's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`.
     """
     if version != CASSETTE_SCHEMA_VERSION:
@@ -149,9 +145,7 @@ def _current_core_only(version: int) -> int:
     so this refuses only a construction or a payload naming an old or future version.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CORE_SCHEMA_VERSION`.
     """
     if version != CORE_SCHEMA_VERSION:
@@ -174,9 +168,7 @@ def _current_durable_only(version: int) -> int:
     (:data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`).
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`.
     """
     if version != DURABLE_SCHEMA_VERSION:
@@ -415,7 +407,6 @@ class ConversationSpec(EvalDocumentModel, CoreShapeModel):
         """Refuse a block a driver could not run as written.
 
         :return: The block, unchanged.
-        :rtype: ConversationSpec
         :raises ValueError: Two actors share an id, an actor's id is one the scheduler or the transcript
             reserves, or ``sessions`` exceeds ``max_turns`` and so names a session with no turn in it.
         """
@@ -489,9 +480,7 @@ class WorldSeed(EvalDocumentModel, CoreShapeModel):
         """Refuse a turn named twice: perturbation is applied once per named turn, so a repeat states nothing.
 
         :param value: The turns.
-        :ptype value: list[int]
         :return: They, unchanged.
-        :rtype: list[int]
         :raises ValueError: A turn appears more than once.
         """
         if len(set(value)) != len(value):
@@ -549,9 +538,7 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
         was doing.
 
         :param value: The expression text.
-        :ptype value: str
         :return: It unchanged.
-        :rtype: str
         :raises ValueError: The expression is malformed or uses something outside the grammar, or reads
             ``fired()``.
         """
@@ -573,7 +560,6 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
 
         :return: Dotted paths for a world registry to resolve. Case parameters are deliberately not
             here: ``variation.tone`` is an input the case carries, not state anything seeds.
-        :rtype: tuple[str, ...]
         """
         return extract_paths(self.expression).world
 
@@ -730,7 +716,6 @@ class GoalCheckControls(EvalDocumentModel, CoreShapeModel):
         """Refuse a block whose own references do not close: a duplicate check, a missing or an unused end state.
 
         :return: The block, unchanged.
-        :rtype: GoalCheckControls
         :raises ValueError: A check is listed twice, names an end state the block does not hold, or an
             end state is named by no check — data nothing would evaluate, which reads as proof
             and is not.
@@ -855,11 +840,8 @@ def rubric_dim_scale(dim: str, scales: Mapping[str, RubricScale]) -> RubricScale
     ``EvalRun.rubric_scales``, captured at launch from its template, or the scales its scores carried.
 
     :param dim: The dimension, or a reserved axis id.
-    :ptype dim: str
     :param scales: The scales recorded for the template's dims, by dim.
-    :ptype scales: Mapping[str, RubricScale]
     :return: The scale.
-    :rtype: RubricScale
     :raises ValueError: ``dim`` is no reserved axis and no scale was recorded for it.
     """
     if dim in RESERVED_DIM_IDS:
@@ -892,7 +874,6 @@ def require_namespaced_dim_name(name: str) -> None:
     persist.
 
     :param name: The dim name or ``rubric_dim_id`` being checked.
-    :ptype name: str
     :raises ValueError: ``name`` is not namespaced. Reserved dual-score axis ids
         (:data:`RESERVED_DIM_IDS`) are exempt and raise nothing.
     """
@@ -920,9 +901,7 @@ def _namespaced_dim_name(name: str) -> str:
     """Pass a namespaced dim name (or a reserved axis id) through; refuse any other.
 
     :param name: The name being validated.
-    :ptype name: str
     :return: ``name``, unchanged.
-    :rtype: str
     :raises ValueError: ``name`` is not namespaced — see :func:`require_namespaced_dim_name`.
     """
     require_namespaced_dim_name(name)
@@ -1038,9 +1017,7 @@ def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
     labeller read.
 
     :param evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
-    :ptype evidence: JudgeEvidence
     :return: A 64-character sha256 hex digest, domain-separated from every other digest the package takes.
-    :rtype: str
     """
     return canonical_digest({"judged_output": evidence.model_dump(mode="json", exclude={"inputs"})})
 
@@ -1060,9 +1037,7 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     the engine states it — so its criterion is its id and its 1-5 scale.
 
     :param dim: A template rubric dimension, or a reserved axis id.
-    :ptype dim: RubricDim | str
     :return: A 64-character sha256 hex digest.
-    :rtype: str
     :raises ValueError: ``dim`` is a string that is not a reserved axis id: a template dimension's name alone does
         not say what it asks.
     """
@@ -1092,11 +1067,8 @@ def label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey:
     criterion) pair and wants the labels people gave it (``EvalStorage.query_calibration_ratings(label_key=...)``).
 
     :param evidence: What was read.
-    :ptype evidence: JudgeEvidence
     :param dim: The template dimension, or reserved axis id, it was read on.
-    :ptype dim: RubricDim | str
     :return: The key.
-    :rtype: LabelKey
     """
     return LabelKey(fingerprint_judged_output(evidence), fingerprint_criterion(dim))
 
@@ -1383,16 +1355,11 @@ def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str, rater_ki
     judge — and an id without the kind would let either silently overwrite the other.
 
     :param result_id: The rated result.
-    :ptype result_id: str
     :param rubric_dim: The rated dimension.
-    :ptype rubric_dim: str
     :param rater: Who rated it.
-    :ptype rater: str
     :param rater_kind: Whether a ``person`` or an ``agent`` wrote it.
-    :ptype rater_kind: str
     :return: ``rating:`` and the digest of the four, so it can never collide with the result's own id or
         its trace sibling's in a shared partition.
-    :rtype: str
     """
     return "rating:" + canonical_digest([result_id, rubric_dim, rater, rater_kind])
 
@@ -1603,9 +1570,7 @@ class CalibrationRating(DurableDocumentModel):
         a later major's first minor (v16.0) included: only v15.0 predates the field.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The rating.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if (
@@ -1711,11 +1676,8 @@ def declared_name(name: str, *, what: str) -> str:
     """Refuse a declared display name that is blank or longer than :data:`DECLARED_NAME_CHARS`.
 
     :param name: The name, as declared.
-    :ptype name: str
     :param what: What it names, as the refusal says it.
-    :ptype what: str
     :return: The name, unchanged.
-    :rtype: str
     :raises ValueError: The name is blank, or longer than the cap.
     """
     if not name.strip():
@@ -1955,9 +1917,7 @@ class EvalTemplate(DurableDocumentModel):
         author naming a check the template does not declare is still refused.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The template.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if isinstance(data, Mapping) and isinstance(names := data.get("goal_check_names"), Mapping):
@@ -2013,9 +1973,7 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
     the order a store returned the records in.
 
     :param revisions: The records of one name, in any order.
-    :ptype revisions: Iterable[EvalTemplate]
     :return: The current revision, or None for no records.
-    :rtype: EvalTemplate | None
     """
     ordered = sorted(revisions, key=lambda t: (not t.archived, t.revision, t.created_at, t.id))
     return ordered[-1] if ordered else None
@@ -2028,11 +1986,11 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
 #: What every built-in judge prompt's identity starts with, in the place a versioned :class:`JudgeConfig`'s id
 #: stands (``EvalResult.judge_config_ids``, and every ``judge_config_id`` read from it). A config's id is a uuid
 #: and may never start with it (:class:`JudgeConfig` refuses one that does), so the two cannot be confused.
-BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
+_BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
 
 
 def builtin_judge_config_id(wording: str) -> str:
-    """The identity of a built-in judge prompt: :data:`BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
+    """The identity of a built-in judge prompt: :data:`_BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
 
     A dimension with no :class:`JudgeConfig` is judged with the engine's own wording, and that wording is an
     instrument as much as an operator's prompt is: change it and the judge is a different judge. So it has an id,
@@ -2046,11 +2004,9 @@ def builtin_judge_config_id(wording: str) -> str:
     :mod:`~threetears.evals.schema.versioning`).
 
     :param wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
-    :ptype wording: str
     :return: ``builtin:<sha12>``.
-    :rtype: str
     """
-    return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+    return _BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
 
 
 #: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
@@ -2071,11 +2027,9 @@ def is_builtin_judge_config_id(config_id: str | None) -> bool:
     """Whether a recorded judge config id names a built-in prompt rather than a versioned :class:`JudgeConfig`.
 
     :param config_id: A recorded config id, or ``None`` for a dim no judge asked.
-    :ptype config_id: str | None
     :return: True for a :func:`builtin_judge_config_id`.
-    :rtype: bool
     """
-    return config_id is not None and config_id.startswith(BUILTIN_JUDGE_CONFIG_PREFIX)
+    return config_id is not None and config_id.startswith(_BUILTIN_JUDGE_CONFIG_PREFIX)
 
 
 #: A configured judge's recorded identity: its config's id, ``@``, and the fingerprint of the reply-format wording the
@@ -2094,11 +2048,8 @@ def configured_judge_config_id(config_id: str, reply_format: str) -> str:
     (:func:`builtin_judge_config_id`). :func:`judge_config_of` reads the config's id back.
 
     :param config_id: The :class:`JudgeConfig`'s id.
-    :ptype config_id: str
     :param reply_format: The suffix's fixed wording, as the judge service renders it for the dimension's family.
-    :ptype reply_format: str
     :return: ``<config id>@<sha12>``.
-    :rtype: str
     """
     return f"{config_id}@{bytes_digest(reply_format.encode('utf-8'))[:12]}"
 
@@ -2110,9 +2061,7 @@ def judge_config_of(recorded: str | None) -> str | None:
     prompt's identity, or ``None`` (a dim no judge asked), names no config.
 
     :param recorded: A recorded judge config id, or ``None``.
-    :ptype recorded: str | None
     :return: The config's id, or ``None``.
-    :rtype: str | None
     :raises ValueError: ``recorded`` is neither a built-in prompt's identity nor a configured judge's: a bare config id
         is the config, not the prompt that was sent, so it is no judge's recorded identity.
     """
@@ -2228,7 +2177,7 @@ class JudgeConfig(DurableDocumentModel):
         """Refuse an id spelled as a built-in prompt's, which a recorded score could not tell from one."""
         if is_builtin_judge_config_id(v):
             raise ValueError(
-                f"judge config id {v!r} starts with {BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
+                f"judge config id {v!r} starts with {_BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
                 "built-in prompts; give the config another id, or leave it to the default"
             )
         if _CONFIGURED_JUDGE_ID.match(v):
@@ -2320,9 +2269,7 @@ class CatalogRubricDim(DurableDocumentModel):
         unreadable, and the direction that never lets a guardrail be averaged with capability is the safe one.
 
         :param data: The raw input.
-        :ptype data: Any
         :return: The input with both axes set alike.
-        :rtype: Any
         """
         if not isinstance(data, dict) or "dim" not in data:
             return data
@@ -2355,9 +2302,7 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     here, so it reads the types a real case holds and cannot pass on one no case could have.
 
     :param params: The parameters, by name.
-    :ptype params: Mapping[str, Any]
     :return: The same names, each value a string: verbatim when it already is one.
-    :rtype: dict[str, str]
     """
     return {
         name: value if isinstance(value, str) else json.dumps(value, sort_keys=True) for name, value in params.items()
@@ -2435,11 +2380,8 @@ def case_set_doc_id(name: str, version: int) -> str:
     """The stored id of version ``version`` of the case set ``name`` — one document per ``(scope, name, version)``.
 
     :param name: The set's name.
-    :ptype name: str
     :param version: Its version.
-    :ptype version: int
     :return: The id.
-    :rtype: str
     """
     return f"case_set:{name}:v{version}"
 
@@ -3180,11 +3122,8 @@ def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact)
     judge phase that asks them and the re-judge that asks again.
 
     :param rubric_dim_names: The template's rubric dim names, in template order.
-    :ptype rubric_dim_names: list[str]
     :param judged_artifact: What the kind's judge reads (:class:`JudgedArtifact`).
-    :ptype judged_artifact: JudgedArtifact
     :return: The dim ids, reserved axes first for a conversation; empty for an unjudged kind.
-    :rtype: list[str]
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
         return []
@@ -3208,17 +3147,13 @@ def resolve_effective_judges(
     the result alone without re-deriving the cascade against ``judge_model``.
 
     :param dim_ids: The dims to attribute, from :func:`scored_dim_ids`.
-    :ptype dim_ids: list[str]
     :param judge_config_for_dim: Resolves a dim id to the governing config, or
         ``None``. Injected so the launch path can pass the same frozen config
         load it built the judge service from, without reaching for storage
         here.
-    :ptype judge_config_for_dim: Callable[[str], JudgeConfig | None]
     :param judge_pin: The run's resolved run-level judge, used wherever no config
         names a model.
-    :ptype judge_pin: str
     :return: ``{dim_id: resolved_model}`` over exactly ``dim_ids``.
-    :rtype: dict[str, str]
     """
     effective = {}
     for dim_id in dim_ids:
@@ -3477,7 +3412,6 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
         """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
 
         :return: The settings, unchanged.
-        :rtype: Self
         :raises ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set, or a budget is named both as
             sent and as unsent.
         """
@@ -3501,9 +3435,7 @@ def request_settings_order(settings: ClientRequestSettings) -> str:
     is a model and not hashable, and its fields have no natural order of their own.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: Its canonical JSON.
-    :rtype: str
     """
     return json.dumps(settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
@@ -3517,9 +3449,7 @@ def request_settings_words(settings: ClientRequestSettings) -> str:
     two requests.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: The phrase.
-    :rtype: str
     """
     parts = [f"max_tokens={settings.max_tokens}"]
     if settings.reasoning_effort is not None:
@@ -3538,10 +3468,8 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
     """A judge's sent settings as the clause a sentence naming the judge carries.
 
     :param settings: What its calls were sent with (``None`` = unverified).
-    :ptype settings: ClientRequestSettings | None
     :return: ``"sent {...}"`` (:func:`request_settings_words`), or ``"request settings
         unconfirmed"`` when its client did not report them.
-    :rtype: str
     """
     return "request settings unconfirmed" if settings is None else f"sent {request_settings_words(settings)}"
 
@@ -3630,9 +3558,7 @@ def run_label_problem(label: str) -> str | None:
     """Why ``label`` cannot name a run, or None when it can.
 
     :param label: A candidate label, as given.
-    :ptype label: str
     :return: The reason, as a clause, or None.
-    :rtype: str | None
     """
     if not label.strip():
         return "is blank"
@@ -3844,24 +3770,15 @@ def ended_lifetimes(
     closes it here. Lifetimes with no open holding are returned as they are.
 
     :param lifetimes: The run's lifetimes.
-    :ptype lifetimes: Sequence[RunLifetime]
     :param status: The status the run ended with.
-    :ptype status: EvalRunStatus
     :param at: When it ended.
-    :ptype at: str
     :param reason: Why, when something said.
-    :ptype reason: str | None
     :param lost: The loss, when it was lost.
-    :ptype lost: JobLoss | None
     :param budget_stops: The per-run ceilings that stopped it.
-    :ptype budget_stops: list[BudgetStop] | None
     :param completeness: Its completeness when it ended.
-    :ptype completeness: RunCompleteness | None
     :param cells_stored: The result rows stored for the run, when the writer counted them; else the completeness's
         persisted cells.
-    :ptype cells_stored: int | None
     :return: The lifetimes, the last one closed when it was open.
-    :rtype: list[RunLifetime]
     """
     if not lifetimes or lifetimes[-1].status != "running":
         return list(lifetimes)
@@ -3888,9 +3805,7 @@ def run_ending_reason(run: EvalRun) -> str | None:
     stop's reason, or the error an exhausted or failed run recorded last.
 
     :param run: The run, ended.
-    :ptype run: EvalRun
     :return: The reason, or None when its record gives none.
-    :rtype: str | None
     """
     if run.lost is not None:
         return run.lost.cause
@@ -3933,7 +3848,6 @@ class EvalRun(CoreDocumentModel):
         """Record that ``paths`` were left out of this copy's ``host_payload`` by the read.
 
         :param paths: Dotted paths relative to ``host_payload``.
-        :ptype paths: frozenset[str]
         """
         self._elided_payload_paths = frozenset(paths)
 
@@ -4787,7 +4701,6 @@ class EvalRun(CoreDocumentModel):
 
         :return: The promised cell count. Never zero — ``test_case_ids`` is ``min_length=1`` and
             ``k_runs`` is ``ge=1``.
-        :rtype: int
         """
         return len(self.test_case_ids) * self.k_runs
 
@@ -4938,9 +4851,7 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The proofs as read, or None when the run recorded none.
-    :rtype: dict[str, GoalCheckProof] | None
     """
     if run.goal_check_proofs is None:
         return None
@@ -4953,9 +4864,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     """The checks whose ``proven`` the run recorded under an older proof rule — read as unproven, needing re-proof.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The checks, sorted; empty when the run's proofs are current or it recorded none.
-    :rtype: list[str]
     """
     if run.goal_check_proofs is None or (run.goal_check_proof_rules or 0) >= GOAL_CHECK_PROOF_RULES:
         return []
@@ -4969,9 +4878,7 @@ def refused_goal_checks(checks: Sequence[str]) -> dict[str, str]:
     grading it raises in every cell. Read at launch, so the run grades its cells without the check and names it.
 
     :param checks: The template's goal checks.
-    :ptype checks: Sequence[str]
     :return: Each refused check -> why; empty when the grammar reads every one.
-    :rtype: dict[str, str]
     """
     refused: dict[str, str] = {}
     for check in checks:
@@ -5145,7 +5052,6 @@ class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
         so the two cannot disagree about what the work reported.
 
         :return: The same report as an :class:`~threetears.evals.schema.external_spend.ExternalSpend`.
-        :rtype: ExternalSpend
         """
         return ExternalSpend(
             provider=self.provider,
@@ -5621,7 +5527,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons beside a known cost, an empty list, or an empty reason.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
         """
         if self.unpriced_reasons is None:
@@ -5663,7 +5568,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unanswered_reasons`` is set with neither count, counts a reason zero times or less, or
             accounts for more calls than ``unanswered_retried`` and ``unanswered_lost`` count.
         """
@@ -5694,9 +5598,7 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         value once, so a writer repeating one has counted calls where it was asked for values.
 
         :param sent: The values as written, or ``None`` (unverified).
-        :ptype sent: list[ClientRequestSettings] | None
         :return: The values in canonical order, or ``None``.
-        :rtype: list[ClientRequestSettings] | None
         :raises ValueError: ``sent`` is empty, or repeats a value.
         """
         if sent is None:
@@ -5713,7 +5615,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse an actor or a purpose on a row of any role but ``simulator``.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``.
         """
         if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
@@ -5795,6 +5696,12 @@ CellTermination = Literal[
     "apparatus_failed",
     "cancelled",
 ]
+
+#: What a row a run taken up again wrote over its cell's stored row had replaced (``EvalResult.written_over``): ``cut``
+#: where some attempt it replaces was cut while it ran (termination ``cancelled``), else ``unanswered`` (a call the
+#: account refused, or a model the provider did not serve), each a row that recorded no answer
+#: (:func:`~threetears.evals.kernel.result_condition.runs_again`).
+WrittenOver = Literal["cut", "unanswered"]
 
 
 class ConversationStopCause(StrEnum):
@@ -6352,7 +6259,7 @@ StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "e
 #: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
 #: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
 #: a fault of the rig.
-OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+_OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
 
 
 class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
@@ -6398,8 +6305,8 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
 
     @property
     def out_of_room(self) -> bool:
-        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
-        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
+        """Whether the reply ran out of room (:data:`_OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in _OUT_OF_ROOM_STOP_REASONS
 
 
 #: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
@@ -6417,15 +6324,10 @@ def cell_result_id(run_id: str, test_case_id: str, model: str, k_iteration: int)
     Readers order a run's results by when they were stored, never by id, so an id carries no order.
 
     :param run_id: The run.
-    :ptype run_id: str
     :param test_case_id: The cell's case.
-    :ptype test_case_id: str
     :param model: The cell's candidate model.
-    :ptype model: str
     :param k_iteration: Which repetition, from 1.
-    :ptype k_iteration: int
     :return: The id, as a uuid string.
-    :rtype: str
     """
     name = json.dumps([run_id, test_case_id, model, k_iteration], separators=(",", ":"))
     return str(uuid.uuid5(CELL_RESULT_ID_NAMESPACE, name))
@@ -6508,6 +6410,17 @@ class EvalResult(CoreDocumentModel):
             "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
             "again once the model is served runs this cell again, written over this row. False on a row stored "
             "before the field existed."
+        ),
+    )
+    written_over: WrittenOver | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What this row was written over: a row of its cell that recorded no answer (cut while it ran, its call "
+            "refused for the account, or its model not served), which a run taken up again runs again under the same "
+            "row. `cut` where some attempt it replaces was cut while it ran, else `unanswered`. A cell cut and taken "
+            "up again keeps no row of its cut, so this is how many cells ran again is still counted "
+            "(`redrawn_cells`). None on a row written over nothing, and on one stored before the field existed."
         ),
     )
     judging_set_aside: bool = Field(
@@ -6916,9 +6829,7 @@ class EvalResult(CoreDocumentModel):
         write and every agreement read find the same score.
 
         :param dim: The dimension, as its score spells it.
-        :ptype dim: str
         :return: The score, or ``None`` when this result carries none on that dimension.
-        :rtype: RubricScore | None
         """
         return next((score for score in self.judge_scores() if score.dim == dim), None)
 
@@ -6929,7 +6840,6 @@ class EvalResult(CoreDocumentModel):
         axis is never on one of those surfaces and missing from another.
 
         :return: The scores as the judge gave them, in that order; empty for a result no judge scored.
-        :rtype: list[RubricScore]
         """
         return [
             score for score in (*self.rubric_scores, self.transcript_score, self.outcome_score) if score is not None
@@ -7097,21 +7007,13 @@ class EvalCassette(EvalDocumentModel):
         """Construct a cassette with its key's document id.
 
         :param key: The ask this recording answers.
-        :ptype key: CassetteKey
         :param scope_id: The scope the corpus lives in.
-        :ptype scope_id: str
         :param seam: Which seam recorded it.
-        :ptype seam: CassetteSeam
         :param captured_model: The capture run's candidate model.
-        :ptype captured_model: str
         :param response: The action's result, or the delivered payload.
-        :ptype response: dict[str, Any] | None
         :param outcome: How the background work ended (delivery seam only).
-        :ptype outcome: CassetteDeliveryOutcome | None
         :param error: Why it failed (delivery seam only).
-        :ptype error: str | None
         :return: The unsaved cassette.
-        :rtype: EvalCassette
         """
         return cls(
             id=key.doc_id,
@@ -7206,6 +7108,7 @@ __all__ = [
     "CassetteSeam",
     "CatalogRubricDim",
     "CellTermination",
+    "WrittenOver",
     "ClientRequestSettings",
     "RunDisclosure",
     "CompletenessSource",
@@ -7231,7 +7134,6 @@ __all__ = [
     "GoalCheckControls",
     "GoalCheckIntent",
     "GoalStateOutcome",
-    "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
     "JUDGE_WORDING_CHANGE_SENTENCE",

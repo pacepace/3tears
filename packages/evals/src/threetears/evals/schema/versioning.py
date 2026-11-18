@@ -150,6 +150,8 @@ the document, so extending one is a major. Each, and why:
 - ``ArmSchedule`` — whether a comparison's arms were co-loaded on their providers; a reader that cannot say which
   cannot say whether a difference between arms can be the host's capacity.
 - ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``WrittenOver`` — whether a cell that ran again was cut while it ran, which the count of cells run again names
+  apart, since only a cut can lean a reading.
 - ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
   which excludes the cell.
 - ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.
@@ -228,7 +230,7 @@ the frozen fixtures under ``tests/fixtures/core_documents/`` (``scripts/regenera
 in its release notes that every core document is deleted before deploying it (``EvalStorage.reset_core``). A
 durable major instead appends one :class:`CoreUpgrader` to :data:`DURABLE_UPGRADERS`, whose ``from_version`` is
 the old major. A step reads every minor of its ``from_version`` up to the newest one released, and obeys four
-rules: it is pure (no store, host, clock or randomness); it never touches :data:`DURABLE_ADDRESSING_FIELDS`,
+rules: it is pure (no store, host, clock or randomness); it never touches a field the store addresses the document by,
 ``host_payload``, ``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``,
 ``context_components``, ``content_hash``, ``identity_version``), because the store filters, sorts and projects on
 the stored bytes before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its
@@ -488,7 +490,18 @@ CORE_SCHEMA_VERSION: int = 15
 #:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
 #:   without it, and reads its self-agreement as it did.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 22
+#: - **v15.23** — a row a run taken up again writes over its cell's stored row records what it replaced:
+#:   ``EvalResult.written_over`` (default None: written over nothing, or stored before the field existed), ``cut``
+#:   where some attempt it replaces was cut while it ran, else ``unanswered`` (a call the account refused, or a model
+#:   not served). The count of cells that ran again (``redrawn_cells``) reads it, since the take-up keeps no row of the
+#:   cut, and an engine family discloses that count. Left out of the document when unset, so a row written over
+#:   nothing is stored byte for byte as before. In no identity or key. Evidence in a bundle's fingerprint only where set,
+#:   so no stored fingerprint moves: a row taken up before this build carries none, and a bundle over it fingerprints as
+#:   it did (and counts fewer cells run again, a lower bound it does not flag); a row taken up under this build carries
+#:   it from its first write, so a bundle over it is fingerprinted with it from the start. An older build reads such a
+#:   row as the cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 23
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -647,26 +660,6 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
-    }
-)
-
-#: Per durable type, every field the store reads on the stored bytes, as :data:`CORE_ADDRESSING_FIELDS` is per core
-#: type, and under the same rule: a durable upgrader may not touch one.
-DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
-    {
-        "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
-        "calibration_rating": _ADDRESSED_EVERYWHERE
-        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
-        "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
-        "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
-        "rubric_dim": _ADDRESSED_EVERYWHERE | {"key", "archived", "created_at"},
-        "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
-        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
-        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
-        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
-        "blind_read": _ADDRESSED_EVERYWHERE | {"campaign_id", "created_at"},
     }
 )
 
@@ -1058,17 +1051,11 @@ def upgrade_document(
     step never writes the number itself. A document already at ``current`` is returned as a copy, unchanged.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
-    :ptype steps: Sequence[CoreUpgrader]
     :param current: The version to read to.
-    :ptype current: int
     :param baseline: The oldest version read.
-    :ptype baseline: int
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: A new document at ``current``; the input is not modified.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
         ``baseline``, or a step the chain needs is not registered; or a step failed on the document, whatever it
         raised, so a stored read meets one refusal type and never a step's own exception.
@@ -1119,11 +1106,8 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
     field's absence reads as its default.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: Its ``schema_minor``.
-    :rtype: int
     :raises CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
     """
     if "schema_minor" not in document:
@@ -1141,9 +1125,7 @@ def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's durable chain, version and baseline.
 
     :param document: A stored durable document.
-    :ptype document: Mapping[str, Any]
     :return: The document at :data:`DURABLE_SCHEMA_VERSION`.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: See :func:`upgrade_document`.
     """
     return upgrade_document(
@@ -1164,7 +1146,6 @@ __all__ = [
     "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_VERSION_SPACE",
-    "DURABLE_ADDRESSING_FIELDS",
     "DURABLE_BASELINE_VERSION",
     "DURABLE_DOC_TYPES",
     "DURABLE_SCHEMA_MINOR",

@@ -31,13 +31,8 @@ import pytest
 
 from pydantic import ValidationError
 
-from threetears.evals.analysis import (
-    ChartBlock,
-    DisclosureBlock,
-    TableBlock,
-    build_campaign_report,
-    campaign_report_html,
-)
+from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.chart_svg import chart_drawing
 from threetears.evals.analysis.report.doc_page.html import doc_page_html

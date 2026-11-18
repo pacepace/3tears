@@ -110,7 +110,6 @@ class StoreConformanceCase:
         """Run the case against ``store``, which must be fresh and empty.
 
         :param store: The adapter under test.
-        :ptype store: DocumentStore
         :raises StoreConformanceFailure: The store broke the rule; the message names the case, the rule
             and what was observed. Anything else the store raises propagates unchanged.
         """

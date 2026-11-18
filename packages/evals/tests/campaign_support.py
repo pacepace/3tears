@@ -15,13 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals import Answer, Eval
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    assemble_context_bundle,
-    aspect_view,
-    build_code_only_report,
-    get_campaign,
-)
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report import Report
 from threetears.evals.kernel.campaign import EvalCampaign

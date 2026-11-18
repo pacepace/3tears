@@ -198,25 +198,17 @@ def report_input(
     """The report input for one campaign, read off its bundle, with its one caveat list and its first screen.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :param provenance: Where the bundle came from, as the masthead's provenance line says it; None says nothing.
-    :ptype provenance: str | None
     :param examples: The most failed trials to show.
-    :ptype examples: int
     :param per_slice: The most failed trials to show per aspect, arm and stratum (this module's Examples).
-    :ptype per_slice: int
     :param excerpt: Where each shown trial's excerpt is cut from: the start of what the judge read, or around the
         failure.
-    :ptype excerpt: ExcerptAt
     :param counted: Whether the input also carries what is counted off the bundle's trials for an analyst (this
         module's Counted): each slice's failed trials, each example's case input, and which cases each two aspects
         share. An uncounted input carries none of them, so it digests as it did.
-    :ptype counted: bool
     :param call: The campaign's call as the first screen reads it; None reads the one the bundle was assembled with,
         if any.
-    :ptype call: CallRead | None
     :return: The input.
-    :rtype: ReportInput
     """
     built = _Builder(bundle).build(
         provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted

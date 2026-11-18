@@ -75,10 +75,8 @@ def default_system_prompt(axis: RubricAxis) -> str:
     """The shipped default system prompt for ``axis``'s proposal, as :func:`plan_draft` sends it when handed none.
 
     :param axis: Which axis the draft is for.
-    :ptype axis: RubricAxis
     :return: The default template's text (``EVAL_PROPOSER_TEMPLATE_DEFAULT`` or ``EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT``),
         which carries :data:`RUBRIC_PROPOSAL_CONTRACT`'s line.
-    :rtype: str
     """
     default = EVAL_PROPOSER_TEMPLATE_DEFAULT if axis == "capability" else EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
     return template_text(default.sections)
@@ -106,21 +104,15 @@ def plan_draft(
     An override must carry :data:`RUBRIC_PROPOSAL_CONTRACT`'s line, as the shipped defaults do.
 
     :param axis: Which axis the draft is for; names the prompt a refusal is about.
-    :ptype axis: RubricAxis
     :param system_prompt: The host's override of the axis's system prompt, rendered; ``None`` (the default) runs the
         shipped default.
-    :ptype system_prompt: str | None
     :param subject_feed: The rendered description of the subject under test.
-    :ptype subject_feed: str
     :param catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
         name reuses in ``reused_dim_keys``.
-    :ptype catalog_feed: str
     :param reset: With an override, how an operator of this host resets the axis's prompt slot to the shipped default —
         an action or a command, such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry
         is the host's, so the engine cannot name it; a refusal's remedy does. Required with ``system_prompt``.
-    :ptype reset: str | None
     :return: The planned call.
-    :rtype: PlannedCall
     :raises PromptContractError: ``system_prompt`` declares another output contract than
         :data:`RUBRIC_PROPOSAL_CONTRACT`, or none — a stored copy that predates the draft's shape. Its remedy
         names the prompt to reset, and ``reset`` as the way to reset it.
@@ -174,19 +166,13 @@ async def propose_draft(
     :param client: The completion client the call was admitted on — the host's client for the ``proposer`` role
         (:data:`~threetears.evals.kernel.host.CompletionRole`). This function owns it from here and
         releases it.
-    :ptype client: BoundCompletionClient
     :param admitted: The proposal's call, as ``budget`` admitted it on ``client`` (purpose ``proposer``).
-    :ptype admitted: AdmittedCall
     :param budget: The out-of-run budget that admitted the call, which ledgers it. Its ``subject_id``, when it
         names one, is the subject the draft is for.
-    :ptype budget: OutOfRunBudget
     :param axis: Which catalog axis the draft is for; stamped onto every new-dim suggestion.
-    :ptype axis: RubricAxis
     :param subject_id: The subject the draft is for, named in the log line only.
-    :ptype subject_id: str
     :return: The validated :class:`~threetears.evals.schema.models.RubricProposal` draft, and its call's
         ledger row.
-    :rtype: ProposedDraft
     :raises ValueError: ``budget`` names another subject than ``subject_id``; ``admitted`` was admitted for
         another purpose than ``proposer``; or ``budget`` did not admit it on ``client`` (another
         budget's, already made, or a copy) — the client released, nothing called.

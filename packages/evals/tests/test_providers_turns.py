@@ -28,8 +28,8 @@ from threetears.evals.schema import (
     TurnToolSpec,
     TurnToolUse,
     TurnMessage,
-    block_from_json,
 )
+from threetears.evals.schema.turns import block_from_json
 
 #: The pinned cases, by name: each one's request body and the reply it is answered with.
 CASES: Final[dict[str, dict[str, Any]]] = {

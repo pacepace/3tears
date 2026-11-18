@@ -110,17 +110,12 @@ class BudgetStoppedError(Exception):
         written from ``stops`` when they are given.
 
         :param completed: Number of results delivered (and persisted) before the stop.
-        :ptype completed: int
         :param total: Total results the run's matrix would have produced.
-        :ptype total: int
         :param breach: The ceiling and the accumulated spend that crossed it, when it was the cost cap.
-        :ptype breach: CapBreach | None
         :param stops: The typed record of each ceiling that stopped the run.
-        :ptype stops: Sequence[BudgetStop]
         :param unserved: ``(model, cells, detail)`` when some of the run's cells found the provider did not serve its
             model, short of stopping it: named beside the stop, since a take-up once the model is served runs them
             again; ``None`` when none did.
-        :ptype unserved: tuple[str, int, str] | None
         :raises ValueError: Neither ``breach`` nor ``stops`` is given.
         """
         if breach is None and not stops:
@@ -165,9 +160,7 @@ def _stop_reason(stops: Sequence[BudgetStop]) -> str:
     settled figures to the records.
 
     :param stops: The stop records, at least one.
-    :ptype stops: Sequence[BudgetStop]
     :return: One sentence, opening ``stopped by``.
-    :rtype: str
     """
     segments: list[str] = []
     for stop in stops:
@@ -194,9 +187,7 @@ def _set_aside_beside(stops: Sequence[BudgetStop]) -> str:
     rides the error (``stops``) onto the run's ``budget_stops``, so its count of the cells it left unjudged is kept.
 
     :param stops: The cap's records, empty when it set no cell aside.
-    :ptype stops: Sequence[BudgetStop]
     :return: The clause, or ``""`` when no cell was set aside.
-    :rtype: str
     """
     not_judged = sum(stop.cells_not_judged for stop in stops)
     if not not_judged:
@@ -245,17 +236,11 @@ class AccountExhaustedError(Exception):
         """Record how far the run got, what it had spent, and the refusal that stopped it.
 
         :param completed: Results delivered (and persisted) before the stop.
-        :ptype completed: int
         :param total: Results the run's matrix would have produced.
-        :ptype total: int
         :param accumulated_usd: The delivered priced results' summed cost.
-        :ptype accumulated_usd: float
         :param unpriced_results: Delivered results whose spend could not be priced.
-        :ptype unpriced_results: int
         :param detail: The refused cell's apparatus message.
-        :ptype detail: str
         :param stops: The cost cap's record of the cells whose judging it set aside beside the refusal.
-        :ptype stops: Sequence[BudgetStop]
         """
         self.completed = completed
         self.total = total
@@ -310,19 +295,12 @@ class ModelUnservedError(Exception):
         """Record how far the run got, what it had spent, the model and the provider's answer that stopped it.
 
         :param completed: Results delivered (and persisted) before the stop.
-        :ptype completed: int
         :param total: Results the run's matrix would have produced.
-        :ptype total: int
         :param model: The candidate model the provider does not serve.
-        :ptype model: str
         :param accumulated_usd: The delivered priced results' summed cost.
-        :ptype accumulated_usd: float
         :param unpriced_results: Delivered results whose spend could not be priced.
-        :ptype unpriced_results: int
         :param detail: The last unserved cell's apparatus message.
-        :ptype detail: str
         :param stops: The cost cap's record of the cells whose judging it set aside beside the circuit's stop.
-        :ptype stops: Sequence[BudgetStop]
         """
         self.completed = completed
         self.total = total
@@ -369,16 +347,13 @@ class EvalRunCostCap:
 
         :param run_id: The eval run this cap bounds — surfaced in the missing-cost
             WARNING so a data gap is attributable to its run.
-        :ptype run_id: str
         :param max_cost_usd: The per-run ceiling; the run stops once accumulated
             spend exceeds it.
-        :ptype max_cost_usd: float
         :param enabled: Whether the cap enforces. ``False`` makes :attr:`exceeded`
             always ``False`` (uncapped). Required rather than defaulted:
             only the caller knows whether its host has eval enforcement
             switched on, and a cap that silently stops enforcing is worse
             than one that fails to construct.
-        :ptype enabled: bool
         :raises ValueError: An enforcing cap whose ceiling is not a positive, finite amount.
         """
         if enabled and not 0.0 < max_cost_usd < float("inf"):
@@ -406,16 +381,11 @@ class EvalRunCostCap:
         so the engine keeps it.
 
         :param run_id: The eval run this cap bounds.
-        :ptype run_id: str
         :param max_cost_usd: Optional per-run override (validated ``> 0`` at the service
             boundary). ``None`` inherits the default below.
-        :ptype max_cost_usd: float | None
         :param configured_max_cost_usd: The default ceiling, as a value.
-        :ptype configured_max_cost_usd: float
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
-        :ptype enforcement_enabled: bool
         :return: A cap bound to this run's ceiling, enforcing exactly when the caller said to.
-        :rtype: EvalRunCostCap
         """
         return cls(
             run_id,
@@ -437,15 +407,11 @@ class EvalRunCostCap:
 
         :param max_cost_usd: Optional per-run override, as passed to
             :meth:`for_run`.
-        :ptype max_cost_usd: float | None
         :param configured_max_cost_usd: The default ceiling, as a value.
-        :ptype configured_max_cost_usd: float
         :param enforcement_enabled: Whether the caller enforces eval ceilings at
             all.
-        :ptype enforcement_enabled: bool
         :return: The effective ceiling, or ``None`` when cost enforcement is
             disabled and the run is therefore uncapped.
-        :rtype: float | None
         """
         return ceilings.resolve_effective_ceiling(
             max_cost_usd, configured=configured_max_cost_usd, enforcement_enabled=enforcement_enabled
@@ -462,14 +428,11 @@ class EvalRunCostCap:
         vocabulary cannot reach the cost cap and miss the metered-call ledger.
 
         :param max_cost_usd: Optional per-run override, as passed to :meth:`for_run`.
-        :ptype max_cost_usd: float | None
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
-        :ptype enforcement_enabled: bool
         :return: A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when
             enforcement is off (no ceiling bound the run, whatever the cascade would
             have resolved), else ``"chosen"`` for a launch-supplied ceiling and
             ``"inherited"`` for the configured default.
-        :rtype: KnownCostCapOrigin
         """
         return ceilings.resolve_ceiling_origin(max_cost_usd, enforcement_enabled=enforcement_enabled)
 
@@ -508,10 +471,8 @@ class EvalRunCostCap:
         :param pending_usd: Spend to count beside what is recorded: none (``0.0``) between cells, which reads the
             cap against landed spend; the running cells' spend and the judging to admit, before a judge phase. ``None`` is spend that could not be priced, which breaches an enforcing
             cap as an unpriced result does.
-        :ptype pending_usd: float | None
         :return: ``None`` while the run is within its cap counting that spend (including when enforcement
             is disabled, which is uncapped), or the :class:`CapBreach` that stops it.
-        :rtype: CapBreach | None
         """
         if not self._enabled:
             return None
@@ -529,7 +490,6 @@ class EvalRunCostCap:
         arithmetic; no budget-layer or database call, so there is no fail-open surface.
 
         :param cost_usd: The result's ``cost_usd``, ``None`` when its spend could not be priced.
-        :ptype cost_usd: float | None
         """
         if cost_usd is None:
             self._unpriced_results += 1

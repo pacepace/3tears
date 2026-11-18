@@ -39,7 +39,6 @@ def _siblings(host: EvalHost, case: EvalTestCase, scope_id: str) -> dict[str, st
     The cases of its template, and the cases of each case set listing it (a set may list cases of another template).
 
     :return: Each such case's id, by the place it shares with this one (``template '<id>'`` or ``case set <name> vN``).
-    :rtype: dict[str, str]
     """
     storage = host.storage
     beside: dict[str, str] = {}
@@ -112,19 +111,13 @@ def case_rename(
     each writes.
 
     :param host: The host whose store holds the case.
-    :ptype host: EvalHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param case_id: The case, by its test case id.
-    :ptype case_id: str
     :param name: Its new name, as the report should call it: one token such as ``double-charge``, surrounding whitespace
         dropped.
-    :ptype name: str
     :param corpus: The host's seed corpus for the scope (:func:`~threetears.evals.run.load_seed_corpus`), which says
         whether drift finds the case by its name; ``None`` for a host that seeds no template cases.
-    :ptype corpus: SeedCorpus | None
     :return: The case's id, and its name before and after.
-    :rtype: CaseRenamed
     :raises ValidationFailedError: The report could not call the case by the name: a blank name, one with whitespace
         inside, a bare number, a generated id, or one longer than a case label runs (``humanize("case", name)``
         is empty), so the page would name it ``case N``.

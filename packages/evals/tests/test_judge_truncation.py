@@ -22,7 +22,8 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import assemble_context_bundle, get_campaign
+from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
     ResultOutcome,

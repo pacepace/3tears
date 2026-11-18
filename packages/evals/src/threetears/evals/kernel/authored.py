@@ -2,7 +2,7 @@
 confidence words an author states.
 
 **The strict projection.** :func:`strict_schema` projects a pydantic JSON schema onto the portable strict subset
-(:data:`PORTABLE_STRICT_KEYWORDS`) both major providers' strict structured-output modes accept, and
+(:data:`_PORTABLE_STRICT_KEYWORDS`) both major providers' strict structured-output modes accept, and
 :func:`strict_response_format` wraps it as the ``json_schema`` directive the judge, the simulator, the proposer and the
 out-of-run calls send.
 
@@ -49,7 +49,7 @@ class UnportableSchema(TypeError):
 #: enforced: the reply left the field out. So a value that is not a string is refused in an ``enum`` or a ``const``
 #: (:func:`strict_schema`): a reply the engine reads asks for strings and reads them back
 #: (:data:`threetears.evals.run.judge.ORDINAL_ANSWERS`), and a host's schema says so in its own types.
-PORTABLE_STRICT_KEYWORDS: frozenset[str] = frozenset(
+_PORTABLE_STRICT_KEYWORDS: frozenset[str] = frozenset(
     {"type", "properties", "required", "additionalProperties", "items", "enum", "anyOf", "$ref", "$defs", "description"}
 )
 
@@ -83,7 +83,7 @@ _VALIDATED_ON_RETURN: frozenset[str] = frozenset(
 
 
 def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Project a pydantic JSON schema onto the portable strict subset (:data:`PORTABLE_STRICT_KEYWORDS`).
+    """Project a pydantic JSON schema onto the portable strict subset (:data:`_PORTABLE_STRICT_KEYWORDS`).
 
     Every object closed and fully required; ``oneOf`` as ``anyOf``; a ``const`` as the one-value ``enum`` it is; a
     ``$ref`` with nothing beside it (OpenAI refuses a sibling keyword); and every keyword a reply's validation on
@@ -93,15 +93,13 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
     **An ``enum`` or ``const`` holding a value that is not a string is refused, not rewritten.** A string enum is the
     one enum form every provider's strict mode enforces; an integer one was sent and not enforced
-    (:data:`PORTABLE_STRICT_KEYWORDS`). Projecting ``[1, 2, 3]`` to ``["1", "2", "3"]`` here would change the type of
+    (:data:`_PORTABLE_STRICT_KEYWORDS`). Projecting ``[1, 2, 3]`` to ``["1", "2", "3"]`` here would change the type of
     the reply its reader parses, and this projection does not know the reader: the engine's own judge asks for
     strings and reads them back (:func:`threetears.evals.run.judge.judge_reply_format`), and a host projecting its own
     model declares the values as strings in it (a ``Literal["1", "2"]``, a ``str`` enum) and converts on read.
 
     :param schema: A pydantic-generated JSON schema.
-    :ptype schema: dict[str, Any]
     :return: The projected schema.
-    :rtype: dict[str, Any]
     :raises MapFieldInSchema: An object carries an open ``additionalProperties``.
     :raises UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in
         for, or an ``enum`` or ``const`` holding a value that is not a string.
@@ -140,7 +138,7 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 out["enum"] = string_values(key, list(value), f"{path}/enum")
                 continue
             target = "anyOf" if key == "oneOf" else key
-            if target not in PORTABLE_STRICT_KEYWORDS:
+            if target not in _PORTABLE_STRICT_KEYWORDS:
                 raise UnportableSchema(
                     f"{path or '/'} carries {key!r}, which no strict structured-output mode is known to accept "
                     "and which no validation on return stands in for; state the shape with the portable keywords"
@@ -169,11 +167,8 @@ def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, An
     mode, a tool's input schema) — and the reply is validated against the model on return either way.
 
     :param name: The schema's name, as the directive carries it.
-    :ptype name: str
     :param schema: A pydantic-generated JSON schema (``Model.model_json_schema()``), or one shaped like it.
-    :ptype schema: Mapping[str, Any]
     :return: The OpenAI-shaped directive.
-    :rtype: dict[str, Any]
     :raises MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
     :raises UnportableSchema: A node in it carries a keyword outside the portable subset that validation does not stand
         in for, or an ``enum`` or ``const`` holding a value that is not a string (:func:`strict_schema`).

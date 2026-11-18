@@ -167,12 +167,9 @@ class WriterTurns:
         """The directory the arm's recordings sit in, for a model at an effort.
 
         :param model: The candidate model's id.
-        :ptype model: str
         :param effort: The arm's reasoning effort, or ``None`` for the model's own.
-        :ptype effort: EffortWord | None
         :return: ``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>``, then ``-e<editor>`` for an arm whose
             editor runs on a model of its own.
-        :rtype: Path
         :raises ValueError: The model id is no single path segment.
         """
         levers = f"{_segment(model, 'model id')}-{effort or _NO_EFFORT}-r{self._revisions}"
@@ -184,17 +181,12 @@ class WriterTurns:
         """The recording one case's sessions are routed to, for a model at an effort.
 
         :param model: The candidate model's id.
-        :ptype model: str
         :param effort: The arm's reasoning effort, or ``None`` for the model's own.
-        :ptype effort: EffortWord | None
         :param snapshot: The id of the snapshot the case is written over.
-        :ptype snapshot: str
         :param role: Whose sessions: the analyst's (every session, for an arm whose editor runs on the candidate model),
             or the editor's, for an arm whose editor runs on a model of its own.
-        :ptype role: WriterRole
         :return: ``<directory>/<case>-<snapshot12>.jsonl`` (:meth:`directory`), or ``...-editor.jsonl`` for the
             editor's.
-        :rtype: Path
         :raises ValueError: The model id is no single path segment, or the editor's file is asked of an arm whose
             editor runs on the candidate model.
         :raises KeyError: The snapshot is no case of the arm.
@@ -208,13 +200,9 @@ class WriterTurns:
         """Every recording one case's sessions are routed to: the analyst's, then the editor's for an arm naming one.
 
         :param model: The candidate model's id.
-        :ptype model: str
         :param effort: The arm's reasoning effort, or ``None`` for the model's own.
-        :ptype effort: EffortWord | None
         :param snapshot: The id of the snapshot the case is written over.
-        :ptype snapshot: str
         :return: The files, as :meth:`path` names each.
-        :rtype: list[Path]
         """
         roles: tuple[WriterRole, ...] = ("analyst",) if self._editor is None else ("analyst", "editor")
         return [self.path(model, effort, snapshot, role=role) for role in roles]
@@ -224,9 +212,7 @@ class WriterTurns:
 
         :param arm: Every lever the launched arm runs, and which session's model is asked for; its skill, revisions
             and editor must be the ones its recordings were made under.
-        :ptype arm: WriterArm
         :return: The factory, by effort.
-        :rtype: WriterModels
         :raises ValueError: The model id is no single path segment.
         :raises RecordingRefused: A lever is not the arm's own, whose recordings would replay as another's.
         """
@@ -261,7 +247,6 @@ class WriterTurns:
         """Each session a replay left recorded lines of, over every replay opened so far.
 
         :return: The sessions, in the order their replays were opened; empty when every replay ran as recorded.
-        :rtype: list[TurnsLeft]
         """
         return [
             TurnsLeft(case, session, left, replay.path)
@@ -359,24 +344,16 @@ def writer_turns(
 
     :param recordings: The directory every arm's recordings sit under; a relative path is read beside the eval file
         being loaded, else in the working directory.
-    :ptype recordings: str | os.PathLike[str]
     :param arm: The arm's label, which leads its recordings' directory name.
-    :ptype arm: str
     :param skill: The skill the arm runs, whose digest's first 12 hex digits the directory name carries.
-    :ptype skill: AnalystSkill
     :param cases: Snapshot id -> case name, for every case the arm writes over; a case's recording is named for it and
         its snapshot.
-    :ptype cases: Mapping[str, str]
     :param revisions: The arm's revisions lever, which its recordings' directory name carries; the lever's default
         when the arm names none.
-    :ptype revisions: int
     :param editor_model: The model the arm's editor runs on, which its recordings' directory name carries; ``None``
         for an arm whose editor runs on the candidate model.
-    :ptype editor_model: str | None
     :param provider: The provider every model built to record is sent to, whose key a recording run reads.
-    :ptype provider: str
     :return: The factory.
-    :rtype: WriterTurns
     :raises ValueError: The arm label, a case name, a snapshot id or the editor's model id is no single path segment,
         two snapshots name one case, the revisions are outside the lever's range, or the provider is none the client
         sends to.

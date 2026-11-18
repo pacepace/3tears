@@ -178,14 +178,10 @@ def check_report_doc(doc: ReportDoc, report_input: ReportInput, *, above_appendi
     each invariant's, in order.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :param above_appendix_text: The rendered page's text above the appendix, example cards left out (the claims
         renderer's ``above_appendix_text(page)``), for invariant 5; empty to check the document's prose alone.
-    :ptype above_appendix_text: str
     :return: The verdicts; empty for a document that may be stored.
-    :rtype: list[DocVerdict]
     """
     caveats = every_caveat(report_input)
     verdicts = [

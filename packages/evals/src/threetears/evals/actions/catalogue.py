@@ -82,19 +82,19 @@ log = get_logger(__name__)
 PermissionClass = Literal["read", "spend", "write", "destructive"]
 
 #: The classes, in the order help lists them.
-PERMISSION_CLASSES: tuple[PermissionClass, ...] = get_args(PermissionClass)
+_PERMISSION_CLASSES: tuple[PermissionClass, ...] = get_args(PermissionClass)
 
 #: An action's name: ``noun_verb`` — lowercase words joined by underscores, at least two of them.
-ACTION_NAME = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+$")
+_ACTION_NAME = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+$")
 
 #: A tool's name: a lowercase identifier.
-TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 #: The action every mounted tool answers, generated from the catalogue rather than declared in it.
-HELP_ACTION = "help"
+_HELP_ACTION = "help"
 
 #: Parameter names a tool reserves: ``action`` selects the action, ``topic`` is help's.
-RESERVED_PARAMETERS: frozenset[str] = frozenset({"action", "topic"})
+_RESERVED_PARAMETERS: frozenset[str] = frozenset({"action", "topic"})
 
 #: The default prefix a host's eval tools carry.
 DEFAULT_PREFIX = "evals"
@@ -176,7 +176,6 @@ class ConformanceStage:
         The runs execute as jobs, so their judges' requests are a job's. Arranged before the call under test.
 
         :return: The first run's id; it finished, and was judged when the host's judge answered.
-        :rtype: str
         """
         launch = self.host.launch
         runs = await start_run(
@@ -200,7 +199,7 @@ HappyPath = Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]
 class Action:
     """One action: what it is called, what it takes and returns, who may call it, and how it reads back.
 
-    :ivar name: ``noun_verb`` (:data:`ACTION_NAME`), unique in the catalogue.
+    :ivar name: ``noun_verb`` (lowercase words joined by underscores, at least two), unique in the catalogue.
     :ivar summary: One line, shown in the help index.
     :ivar workflow: The help index's group: the step of the work this action belongs to.
     :ivar permission: Its class: ``read``, ``spend``, ``write`` or ``destructive``.
@@ -256,7 +255,7 @@ class Action:
         """Refuse an action no transport could mount honestly.
 
         :raises ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
-            class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
+            class is not ``read``, ``spend``, ``write`` or ``destructive``; a parameter is reserved, undescribed or a
             nested model, or is required and declares ``null`` not given; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
@@ -267,17 +266,17 @@ class Action:
             declared idempotent; or the example does not validate.
         """
         where = f"action {self.name!r}"
-        if not ACTION_NAME.fullmatch(self.name):
+        if not _ACTION_NAME.fullmatch(self.name):
             raise ValueError(f"{where}: an action is named noun_verb — lowercase words joined by underscores")
-        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+        if self.cut is not None and not _TOOL_NAME.fullmatch(self.cut):
             raise ValueError(f"{where}: cut {self.cut!r} is not a lowercase identifier")
         # prose-canary: allow — Action.summary is help text a host's code declares, not text a model wrote
         if not self.summary.strip() or "\n" in self.summary.strip():
             raise ValueError(f"{where}: the summary is one non-blank line; longer help goes in `detail`")
-        if self.permission not in PERMISSION_CLASSES:
-            raise ValueError(f"{where}: class {self.permission!r} is none of {', '.join(PERMISSION_CLASSES)}")
+        if self.permission not in _PERMISSION_CLASSES:
+            raise ValueError(f"{where}: class {self.permission!r} is none of {', '.join(_PERMISSION_CLASSES)}")
         declared = self.params.model_fields
-        reserved = sorted(RESERVED_PARAMETERS & declared.keys())
+        reserved = sorted(_RESERVED_PARAMETERS & declared.keys())
         if reserved:
             raise ValueError(f"{where}: {', '.join(reserved)} is reserved by every tool and cannot be a parameter")
         undescribed = sorted(name for name, info in declared.items() if not (info.description or "").strip())
@@ -367,8 +366,8 @@ class HelpTopic:
 
         :raises ValueError: As described.
         """
-        if not TOOL_NAME.fullmatch(self.name) or self.name == HELP_ACTION:
-            raise ValueError(f"help topic {self.name!r} is not a lowercase identifier other than {HELP_ACTION!r}")
+        if not _TOOL_NAME.fullmatch(self.name) or self.name == _HELP_ACTION:
+            raise ValueError(f"help topic {self.name!r} is not a lowercase identifier other than {_HELP_ACTION!r}")
         # prose-canary: allow — HelpTopic.summary is help text a host's code declares, not text a model wrote
         if not self.summary.strip() or "\n" in self.summary.strip():
             raise ValueError(f"help topic {self.name!r}: the summary is one non-blank line")
@@ -378,7 +377,7 @@ class HelpTopic:
 class ToolSpec:
     """One tool a transport mounts: its name, its short description and the classes of action it carries.
 
-    :ivar name: The tool's name (:data:`TOOL_NAME`).
+    :ivar name: The tool's name (a lowercase identifier).
     :ivar description: What the tool is for, in a sentence or two; the tool adds how to get help.
     :ivar permissions: The classes of action it mounts.
     :ivar cut: The cut whose actions it mounts (:attr:`Action.cut`); ``None``, the default, for a standard tool, which
@@ -411,9 +410,9 @@ class ToolSpec:
 
         :raises ValueError: As described.
         """
-        if not TOOL_NAME.fullmatch(self.name):
+        if not _TOOL_NAME.fullmatch(self.name):
             raise ValueError(f"tool name {self.name!r} is not a lowercase identifier")
-        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+        if self.cut is not None and not _TOOL_NAME.fullmatch(self.cut):
             raise ValueError(f"tool {self.name!r}: cut {self.cut!r} is not a lowercase identifier")
         if not self.description.strip():
             raise ValueError(f"tool {self.name!r}: the description is blank")
@@ -433,11 +432,11 @@ class ToolSpec:
         topics = [topic.name for topic in self.topics]
         if len(set(topics)) != len(topics):
             raise ValueError(f"tool {self.name!r}: two help topics share a name among {topics}")
-        unknown = sorted(set(self.permissions) - set(PERMISSION_CLASSES))
+        unknown = sorted(set(self.permissions) - set(_PERMISSION_CLASSES))
         if not self.permissions or unknown:
             raise ValueError(
                 f"tool {self.name!r} mounts classes {sorted(self.permissions)}; it mounts one or more of "
-                f"{', '.join(PERMISSION_CLASSES)}"
+                f"{', '.join(_PERMISSION_CLASSES)}"
             )
 
 
@@ -445,9 +444,7 @@ def standard_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec, ToolSpec]:
     """The two tools a host mounts by default: ``<prefix>`` and ``<prefix>_admin``.
 
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :return: ``<prefix>`` — read, spend and write — and ``<prefix>_admin`` — the destructive actions.
-    :rtype: tuple[ToolSpec, ToolSpec]
     """
     return (
         ToolSpec(
@@ -467,9 +464,7 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     """One tool carrying only the ``read`` actions, for an agent that may look but not act.
 
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :return: ``<prefix>``, read actions only.
-    :rtype: tuple[ToolSpec]
     """
     return (
         ToolSpec(
@@ -518,10 +513,8 @@ class Refusal:
         """The refusal an engine error makes: the kind of its nearest public class, and its own status.
 
         :param error: The error a handler raised.
-        :ptype error: EvalServiceError
         :return: The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
             status it was raised with.
-        :rtype: Refusal
         """
         return cls(kind=refusal_kind(error), status=error.status_code)
 
@@ -728,9 +721,8 @@ class MountedTool:
 
         :return: A JSON Schema object. Nothing beyond ``action`` is required at the tool: each action holds
             the call to its own required parameters.
-        :rtype: dict[str, Any]
         """
-        names = [HELP_ACTION, *(action.name for action in self.actions)]
+        names = [_HELP_ACTION, *(action.name for action in self.actions)]
         properties: dict[str, Any] = {
             "action": {"type": "string", "enum": names, "description": "The action to run; 'help' lists them."},
             "topic": {"type": "string", "description": render.topic_description(self)},
@@ -746,9 +738,7 @@ class MountedTool:
         """One action's help page: its parameters, what it returns and an example call.
 
         :param name: The action.
-        :ptype name: str
         :return: The page.
-        :rtype: str
         :raises KeyError: This tool has no such action.
         """
         action = self.action(name)
@@ -769,12 +759,9 @@ class MountedTool:
         builds one of its own.
 
         :param refused: The error the host raised.
-        :ptype refused: EvalServiceError
         :param action: The call's ``action`` argument, as given: it was never checked, so it may name nothing.
-        :ptype action: object
         :return: The refused outcome, carrying ``action`` when it names one of this tool's actions and ``None``
             otherwise, as any outcome does.
-        :rtype: ActionOutcome
         """
         named = self.action(action) if isinstance(action, str) else None
         return ActionOutcome(
@@ -805,19 +792,15 @@ class MountedTool:
         propagates as the defect it is.
 
         :param arguments: The call's arguments, ``action`` among them.
-        :ptype arguments: Mapping[str, Any]
         :param host: The host the action works in.
-        :ptype host: OpsHost
         :param caller: Who is calling, and their scope.
-        :ptype caller: Caller
         :return: The outcome.
-        :rtype: ActionOutcome
         """
         given = dict(arguments)
         name = given.pop("action", None)
         if not isinstance(name, str) or not name:
             return _refused(render.refuse_no_action(self), _CALL_REFUSAL, self._pick("action", self._names()))
-        if name == HELP_ACTION:
+        if name == _HELP_ACTION:
             return self._help(given)
         action = self.action(name)
         if action is None:
@@ -862,11 +845,11 @@ class MountedTool:
 
     def _names(self) -> tuple[str, ...]:
         """Every value ``action`` takes on this tool: ``help``, then its actions."""
-        return (HELP_ACTION, *(action.name for action in self.actions))
+        return (_HELP_ACTION, *(action.name for action in self.actions))
 
     def _pick(self, parameter: str, values: Sequence[str]) -> Recovery:
         """The recovery of a call whose ``action`` or ``topic`` names nothing here: the values it takes, and help."""
-        return Recovery(parameters=(parameter,), valid_values=tuple(values), see={"action": HELP_ACTION})
+        return Recovery(parameters=(parameter,), valid_values=tuple(values), see={"action": _HELP_ACTION})
 
     def _form(
         self, action: Action, at_fault: Sequence[str], *, valid_values: tuple[Any, ...] | None = None
@@ -877,28 +860,28 @@ class MountedTool:
             accepted=tuple(action.params.model_fields),
             example={"action": action.name, **dict(action.example)},
             valid_values=valid_values,
-            see={"action": HELP_ACTION, "topic": action.name},
+            see={"action": _HELP_ACTION, "topic": action.name},
         )
 
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})
         if undeclared:
-            recovery = Recovery(parameters=tuple(undeclared), accepted=("topic",), see={"action": HELP_ACTION})
-            return _refused(render.refuse_help_parameters(self, undeclared), _CALL_REFUSAL, recovery, HELP_ACTION)
+            recovery = Recovery(parameters=tuple(undeclared), accepted=("topic",), see={"action": _HELP_ACTION})
+            return _refused(render.refuse_help_parameters(self, undeclared), _CALL_REFUSAL, recovery, _HELP_ACTION)
         topic = given.get("topic")
         if topic is None:
-            return ActionOutcome(self.help_index(), action=HELP_ACTION)
+            return ActionOutcome(self.help_index(), action=_HELP_ACTION)
         reference = self.topic(topic) if isinstance(topic, str) else None
         if reference is not None:
-            return ActionOutcome(reference.text(), action=HELP_ACTION)
+            return ActionOutcome(reference.text(), action=_HELP_ACTION)
         paged = self._topic_page(topic) if isinstance(topic, str) else None
         if paged is not None:
             return paged
         if not isinstance(topic, str) or self.action(topic) is None:
             topics = (*(action.name for action in self.actions), *(item.name for item in self.spec.topics))
             recovery = self._pick("topic", topics)
-            return _refused(render.refuse_unknown_topic(self, str(topic)), _CALL_REFUSAL, recovery, HELP_ACTION)
-        return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
+            return _refused(render.refuse_unknown_topic(self, str(topic)), _CALL_REFUSAL, recovery, _HELP_ACTION)
+        return ActionOutcome(self.help_page(topic), action=_HELP_ACTION)
 
     def _topic_page(self, topic: str) -> ActionOutcome | None:
         """One page of a reference topic's (``<topic>.<page>``), or the refusal of a page it does not have; ``None``
@@ -909,10 +892,10 @@ class MountedTool:
             return None
         pages = reference.pages()
         if page in pages:
-            return ActionOutcome(pages[page], action=HELP_ACTION)
+            return ActionOutcome(pages[page], action=_HELP_ACTION)
         named = tuple(f"{head}.{name}" for name in pages)
         recovery = self._pick("topic", named)
-        return _refused(render.refuse_unknown_page(reference, page, named), _CALL_REFUSAL, recovery, HELP_ACTION)
+        return _refused(render.refuse_unknown_page(reference, page, named), _CALL_REFUSAL, recovery, _HELP_ACTION)
 
 
 def _refused(text: str, refusal: Refusal, recovery: Recovery | None, action: str | None = None) -> ActionOutcome:
@@ -1003,9 +986,7 @@ def _null_is_omitted(params: type[BaseModel]) -> frozenset[str]:
     (:class:`~threetears.evals.actions.params.NullIsOmitted`).
 
     :param params: An action's parameter model.
-    :ptype params: type[BaseModel]
     :return: Their names.
-    :rtype: frozenset[str]
     """
     return frozenset(
         name
@@ -1067,7 +1048,7 @@ def _named(action: Action, refused: EvalServiceError) -> Recovery | None:
         accepted=tuple(action.params.model_fields),
         valid_values=refused.valid_values,
         valid_values_from=refused.valid_values_from,
-        see={"action": HELP_ACTION, "topic": action.name},
+        see={"action": _HELP_ACTION, "topic": action.name},
     )
 
 
@@ -1087,9 +1068,7 @@ def catalogue_primer(tools: Sequence[MountedTool]) -> str:
     of a server it builds; a host building its own server passes it there.
 
     :param tools: The tools the server mounts.
-    :ptype tools: Sequence[MountedTool]
     :return: The primer.
-    :rtype: str
     :raises ValueError: No tool is given, or the primer runs past 1,800 characters: a client would cut it, so
         shorten a tool's description or constraints.
     """
@@ -1117,7 +1096,6 @@ class ActionCatalogue:
         No action can be named ``help``: it is one word, and an action's name is ``noun_verb``.
 
         :param actions: The actions, in the order help lists them within a workflow.
-        :ptype actions: Iterable[Action]
         :raises ValueError: Two actions share a name.
         """
         held: dict[str, Action] = {}
@@ -1143,9 +1121,7 @@ class ActionCatalogue:
         """This catalogue with a host's actions added after the engine's.
 
         :param actions: The host's actions.
-        :ptype actions: Iterable[Action]
         :return: The new catalogue.
-        :rtype: ActionCatalogue
         :raises ValueError: A host action's name is already in the catalogue, or two of them share one.
         """
         return ActionCatalogue([*self._actions.values(), *actions])
@@ -1154,9 +1130,7 @@ class ActionCatalogue:
         """Cut one tool from the catalogue: the actions of the tool's cut and workflows whose class the tool mounts.
 
         :param spec: The tool.
-        :ptype spec: ToolSpec
         :return: The mounted tool.
-        :rtype: MountedTool
         :raises ValueError: No action of its cut and workflows has a class the tool mounts, or two of its actions
             declare one parameter name with different meanings (type or description).
         """
@@ -1196,9 +1170,7 @@ class ActionCatalogue:
         """Mount several tools, refusing two that share a name.
 
         :param specs: The tools.
-        :ptype specs: Sequence[ToolSpec]
         :return: The mounted tools, in order.
-        :rtype: tuple[MountedTool, ...]
         :raises ValueError: Two tools share a name, or :meth:`mount` refuses one.
         """
         names = [spec.name for spec in specs]
@@ -1208,13 +1180,8 @@ class ActionCatalogue:
 
 
 __all__ = [
-    "ACTION_NAME",
     "DEFAULT_PREFIX",
-    "HELP_ACTION",
-    "PERMISSION_CLASSES",
     "REFUSAL_KINDS",
-    "RESERVED_PARAMETERS",
-    "TOOL_NAME",
     "Action",
     "ActionCatalogue",
     "ActionHandler",

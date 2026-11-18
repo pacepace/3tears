@@ -7,7 +7,7 @@ pins the readers of three of them, and the curation write the fourth was missing
   least-repeated case ran fewer times than declared;
 - ``merit_priority`` and the aspect's ``merit_axes`` → ``AnalysisContextBundle.verdict_order``, the bars
   ranked by the declared priority and scoped to the question, read off each bar's own ``merit_axis``;
-- ``EvalCampaign.archived`` → :func:`~threetears.evals.run.set_campaign_archived`.
+- ``EvalCampaign.archived`` → :func:`~threetears.evals.run.curation.set_campaign_archived`.
 
 Mutations that turn this file red: comparing ``>`` for ``>=`` in ``short_cells``; reading a cell's
 ``repeats_per_case_max`` where it reads the minimum; taking the
@@ -25,14 +25,14 @@ import pytest
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
-    aspect_view,
     DisclosureBlock,
     QuestionScope,
     assemble_context_bundle,
     build_code_only_report,
 )
+from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.kernel import NotFoundError
-from threetears.evals.run import set_campaign_archived
+from threetears.evals.run.curation import set_campaign_archived
 from packages.evals.tests.factories import make_campaign, memory_storage, minimal_aspect_design
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign

@@ -222,9 +222,7 @@ def line_statistics(kind: str) -> frozenset[str]:
     """The statistics a chart of ``kind`` draws a measure at, which a floor or budget line's criterion must read.
 
     :param kind: The chart's kind.
-    :ptype kind: str
     :return: ``p50`` and ``p95`` for range bars; the mean for every other kind.
-    :rtype: frozenset[str]
     """
     return _KIND_STATISTICS.get(kind, _MEAN)
 
@@ -234,11 +232,8 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
     for none. A chart of contrasts carries one (GENERATOR §5.2).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
     :return: The level, as the input writes it.
-    :rtype: str
     """
     families = report_input.contrast_families
     by_aspect = {family.aspect: family.level for family in families}
@@ -254,12 +249,9 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     that order.
 
     :param report_input: The report input the chart reads.
-    :ptype report_input: ReportInput
     :param arms: Each arm as code's facts give it
         (:func:`~threetears.evals.analysis.report.fact_arms.fact_arms`).
-    :ptype arms: Sequence[FactArm]
     :return: The look.
-    :rtype: PageLook
     """
     return page_look(arms, names={str(kind): found for kind, found in reader_names(report_input).items()})
 
@@ -274,14 +266,10 @@ def complete_chart(
     account), and every part code could not complete.
 
     :param chart: The chart as the planner or the analyst chose it.
-    :ptype chart: PlannedChart
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :param path: The field path the chart sits at; each fault's path is under it.
-    :ptype path: str
     :param forms: The forms of the page the chart is drawn on (a reader's own, off any page), built from
         ``report_input``: they state its interval level.
-    :ptype forms: PageForms
     :return: The chart as stored (a reference line code could not key is left out), and each fault as
         ``(field path, why)``: its reference lines', then its level's, then its unit's.
     :rtype: tuple[ChartSpec, list[tuple[str, str]]]
@@ -723,14 +711,10 @@ def chart_faults(
     less a control the input does not name.
 
     :param path: The field path the chart sits at; each fault's path is under it.
-    :ptype path: str
     :param chart: The chart, completed.
-    :ptype chart: ChartSpec
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :param options: What else the chart may stress beside the input's arms, strata and tasks: the options a plan's
         table lists.
-    :ptype options: Iterable[str]
     :return: Each fault as ``(field path, why)``.
     :rtype: Iterator[tuple[str, str]]
     """
@@ -753,11 +737,8 @@ def held_aspects(query: ChartQuery, report_input: ReportInput) -> list[str]:
     keeps. Empty where the query names an aspect or its source reads every aspect's rows.
 
     :param query: The query.
-    :ptype query: ChartQuery
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The aspect ids, in the input's order after the lead.
-    :rtype: list[str]
     """
     source = query.source
     if query.aspect or source not in _ONE_ASPECT_SOURCES:
@@ -806,9 +787,7 @@ def small_multiple_faults(path: str, chart: ChartSpec) -> Iterator[_Fault]:
     """A chart repeating its panel where the kit draws no small multiples of its kind.
 
     :param path: The field path the chart sits at.
-    :ptype path: str
     :param chart: The chart.
-    :ptype chart: ChartSpec
     :return: The fault, where there is one, at its ``query.small_multiples_by``.
     :rtype: Iterator[tuple[str, str]]
     """
@@ -827,11 +806,8 @@ def bare_key_faults(path: str, key: str, report_input: ReportInput) -> Iterator[
     """A figure key written without braces that does not parse, resolve on the input, or suit its filters.
 
     :param path: The field path the key sits at.
-    :ptype path: str
     :param key: The key, its filters after ``|``.
-    :ptype key: str
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :return: The fault, where there is one.
     :rtype: Iterator[tuple[str, str]]
     """

@@ -77,13 +77,9 @@ def subject_depth(subject: SubjectFrontier, label_of: Callable[[str], str], *, w
     """One frontier subject's pass^k depths, each arm named by ``label_of``.
 
     :param subject: The subject's frontier.
-    :ptype subject: SubjectFrontier
     :param label_of: What a reader calls the arm a variant key names.
-    :ptype label_of: Callable[[str], str]
     :param where: Where its sentences say it is.
-    :ptype where: str
     :return: The depths.
-    :rtype: SubjectDepth
     """
     return SubjectDepth(
         where=where,
@@ -128,13 +124,9 @@ def aspect_depth(
     """One aspect's depths, read off its bundle: every arm's, and every frontier subject's.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param label_of: What a reader calls the arm a variant key names.
-    :ptype label_of: Callable[[str], str]
     :param name: What its sentences call the aspect; None calls it by its label.
-    :ptype name: str | None
     :return: The depths.
-    :rtype: AspectDepth
     """
     arms = {label_of(board.variant_key): board.depth for board in bundle.scoreboard if board.depth is not None}
     subjects = [subject for subject in bundle.frontier.subjects if subject.points]

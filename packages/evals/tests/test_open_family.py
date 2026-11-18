@@ -15,7 +15,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel import ENGINE_FAMILIES, MeasureFamily, MetricDescriptor, list_metrics
+from threetears.evals.kernel import ENGINE_FAMILIES, MeasureFamily, MetricDescriptor
+from threetears.evals.kernel.metrics import list_metrics
 from threetears.evals.kernel.declaration import UnreadableBarName, resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.metrics import CODE_GRADED_FAMILIES, is_code_graded

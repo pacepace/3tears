@@ -101,7 +101,6 @@ class ExternalSpend:
         :return: ``"<provider>:<unit>"``, or ``None`` when no weighted unit was consumed or no
             provider could be named. An unattributed unit is not comparable to anything, so
             there is no safe qualified form of it to hand out.
-        :rtype: str | None
         """
         if self.provider_unit is None or self.provider is None:
             return None

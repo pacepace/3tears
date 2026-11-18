@@ -31,7 +31,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
