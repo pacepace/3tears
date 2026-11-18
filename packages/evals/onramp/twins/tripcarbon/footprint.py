@@ -1,12 +1,12 @@
 """Business-travel emissions for the quarterly sustainability report.
 
-A trip is a list of legs, each a mode of travel and a distance in kilometres, and the nights spent in hotels. Its
-footprint, in kg CO2e, is:
+A trip is a list of legs, each a mode of travel and a distance in kilometres, and a list of hotel stays, each a country
+and a number of nights (a trip that moves between cities has a stay for each hotel). Its footprint, in kg CO2e, is:
 
 - for each leg, the distance times the mode's conversion factor for the 2026 reporting year (kg CO2e per
   passenger-km), with a flight leg also multiplied by its cabin's weighting (business class takes up more of the
   aircraft than economy);
-- plus, for each hotel night, the factor for a night in the country where it was spent.
+- plus, for every night of every stay, the factor for a hotel night in the stay's country.
 
 Factors are per passenger, so a trip is one traveller's trip.
 """
@@ -54,8 +54,10 @@ class Trip:
     @classmethod
     def from_row(cls, row: dict) -> Trip:
         legs = tuple(Leg(leg["mode"], float(leg["km"]), leg.get("cabin", "economy")) for leg in row["legs"])
-        nights = tuple((country, int(count)) for country, count in row.get("hotel_nights", {}).items())
-        return cls(row["trip_id"], legs, nights)
+        nights: dict[str, int] = {}
+        for stay in row.get("hotels", ()):
+            nights[stay["country"]] = nights.get(stay["country"], 0) + int(stay["nights"])
+        return cls(row["trip_id"], legs, tuple(nights.items()))
 
 
 def leg_kg(leg: Leg) -> float:

@@ -27,6 +27,10 @@ class TripTests(unittest.TestCase):
         trip = Trip("t1", (Leg("flight_short_haul", 371), Leg("flight_short_haul", 371)), (("NL", 2),))
         self.assertEqual(footprint_kg(trip), 135.86)
 
+    def test_stays_in_two_countries(self):
+        row = {"trip_id": "t3", "legs": [], "hotels": [{"country": "FR", "nights": 2}, {"country": "NL", "nights": 1}]}
+        self.assertEqual(footprint_kg(Trip.from_row(row)), 23.1)
+
     def test_a_drive(self):
         self.assertEqual(footprint_kg(Trip("t2", (Leg("electric_car", 80), Leg("electric_car", 80)))), 7.51)
 
@@ -38,7 +42,7 @@ class TripTests(unittest.TestCase):
                 {
                     "trip_id": "b",
                     "legs": [{"mode": "flight_domestic", "km": 500, "cabin": "economy"}],
-                    "hotel_nights": {"GB": 1},
+                    "hotels": [{"country": "GB", "nights": 1}],
                 },
             ]
             path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
