@@ -349,7 +349,7 @@ async def test_an_asked_aspect_with_no_margin_compares_its_pass_rate_and_its_flo
     (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
     assert family.family_size == 2 and compared.verdict == "not_separated"
     assert compared.delta == pytest.approx(-0.05) and compared.p_raw is not None
-    assert compared.p_adjusted == pytest.approx(2 * compared.p_raw)
+    assert compared.p_adjusted == pytest.approx(min(1.0, 2 * compared.p_raw))
     (trial,) = [contrast for contrast in bundle.floor_contrasts if contrast.reading == "trial"]
     assert (trial.control.variant_key, trial.contrast.variant_key, trial.test) == (control, candidate, "paired")
     rate = aspect_pass_rate(bundle, control, candidate)

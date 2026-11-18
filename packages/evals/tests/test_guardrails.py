@@ -128,7 +128,9 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         tested = {(c.name, c.verdict) for f in bundle.multiple_comparisons.families for c in f.comparisons}
         # The question's pass rate is the family's other member (owner, 2026-11-06); the boundary dimension is none.
-        assert tested == {(CAPABILITY, "improved"), ("passed", "improved")}
+        # Both are on 0 to 1, read by the bounded test, where ten cases gained and one lost of fifteen do not separate
+        # at α/2.
+        assert tested == {(CAPABILITY, "not_separated"), ("passed", "not_separated")}
         assert {m.name: m.axis for m in bundle.judged_measures} == {CAPABILITY: "capability", BOUNDARY: "boundary"}
 
 

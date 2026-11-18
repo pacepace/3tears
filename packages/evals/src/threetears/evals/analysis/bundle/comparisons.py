@@ -1382,7 +1382,8 @@ def _question_lean(
 def _one_check(members: Iterable[ResultView], catalog: Mapping[str, MetricDescriptor]) -> str | None:
     """The one check every trial of ``members`` is graded on, by the measure its pass rate is read under; None where any
     trial is graded on anything beside or instead of it (another check, a label, a judged dimension or a judge), or on
-    nothing at all.
+    nothing at all. A classifier's label is read as its accuracy, under another name, so a pass rate decided by a label
+    alone is not found here and stays in its family beside the accuracy.
 
     Read off what each trial is graded on, as :func:`~threetears.evals.kernel.scoring.failed_checks` and
     :func:`~threetears.evals.kernel.scoring.has_pass_criterion` read it, never off how any trial came out: whether the

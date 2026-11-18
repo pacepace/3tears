@@ -31,13 +31,15 @@ from statistics import NormalDist
 
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
+    SeparationTest,
+    bet_order,
     bounded_difference_interval,
+    bounded_separation_p,
     difference_interval,
     exact_decimal,
     holm_adjust,
     interval_permits_separation,
     paired_equivalence,
-    separation_p,
     separation_test,
 )
 from threetears.evals.kernel.metrics import confusion_cell
@@ -55,6 +57,7 @@ __all__ = [
     "draw_confusion",
     "draw_paired_arms",
     "draw_rater_pairs",
+    "engine_separation",
     "hedges_correction",
     "monte_carlo_se",
     "paired_t_power",
@@ -377,6 +380,27 @@ class FamilyVerdict:
     equivalence_p_adjusted: float | None = None
 
 
+def engine_separation(
+    a: Sequence[float], b: Sequence[float], *, paired: bool, value_range: tuple[float, float] | None
+) -> SeparationTest:
+    """The test an engine family reads one comparison by, restated: on the range 0 to 1 with every value inside it,
+    the bounded test whatever the spread (paired, the mixture bet over the pairs in :func:`bet_order` of their count;
+    unpaired, :func:`bounded_separation_p` at a cut between the means); otherwise
+    :func:`~threetears.evals.analysis.stats.separation_test`, the t-test where the values have spread."""
+    if value_range is None or tuple(value_range) != (0.0, 1.0) or any(not 0.0 <= v <= 1.0 for v in (*a, *b)):
+        return separation_test(a, b, paired=paired, value_range=value_range)
+    if paired:
+        order = bet_order(len(a))
+        return separation_test(
+            [a[i] for i in order], [b[i] for i in order], paired=True, value_range=value_range, mixture=True
+        )
+    tested = separation_test(a, b, paired=False, value_range=value_range)
+    if tested.basis != "t":
+        return tested
+    p = bounded_separation_p(a, b, paired=False, value_range=value_range)
+    return tested if p is None else SeparationTest(p, "bounded")
+
+
 def family_verdicts(
     comparisons: Sequence[tuple[dict[str, float], dict[str, float], bool]],
     *,
@@ -388,9 +412,10 @@ def family_verdicts(
 
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
-    side's values, its p :func:`~threetears.evals.analysis.stats.separation_p`'s — the t-test's where the
-    values have spread, the bounded test's on the reading's declared range (``value_ranges``) where they have
-    none, None where no test can decide or the reading declares no range — as the bundle's is. A paired comparison with
+    side's values, its p :func:`engine_separation`'s — on the range 0 to 1 the bounded test's whatever the spread;
+    on any other reading the t-test's where the values have spread, the bounded test's on the reading's declared range
+    (``value_ranges``) where they have none, None where no test can decide or the reading declares no range — as the
+    bundle's is. A paired comparison with
     a declared margin (``margins``, aligned with ``comparisons``) also runs the paired TOST against it, on the reading's
     declared range where ``value_ranges`` gives one (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every
     separation p and TOST p is Holm-adjusted together, the multiplier capped at the separation count
@@ -419,7 +444,7 @@ def family_verdicts(
         b = [contrast[case] for case in shared] if paired else list(contrast.values())
         delta = sum(b) / len(b) - sum(a) / len(a) if a and b else None
         value_range = value_ranges[index] if value_ranges is not None else None
-        p_raw = separation_p(a, b, paired=paired, value_range=value_range)
+        p_raw = engine_separation(a, b, paired=paired, value_range=value_range).p
         margin = margins[index] if margins is not None else None
         equivalence_p = None
         if paired and margin and p_raw is not None:
@@ -433,7 +458,7 @@ def family_verdicts(
     for (p_raw, equivalence_p, delta, a, b, paired, value_range), (_, _, higher_is_better) in zip(
         tested, comparisons, strict=True
     ):
-        separation = separation_test(a, b, paired=paired, value_range=value_range)
+        separation = engine_separation(a, b, paired=paired, value_range=value_range)
         if p_raw is None:
             # No spread on a reading with no range is not separated (no test of the mean ran); else untested.
             verdicts.append(FamilyVerdict(None, None, "not_separated" if separation.refusal else "untested"))

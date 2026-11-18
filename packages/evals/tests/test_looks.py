@@ -219,6 +219,7 @@ def _bundle(
     floors: Sequence[DecisionClause] = (),
     guardrail_margin: float | None = None,
     stripped: bool = True,
+    second_check: bool = False,
 ) -> tuple[AnalysisContextBundle, EvalCampaign, dict[str, dict[str, float]]]:
     """A two-arm campaign asked a question, its runs launched as ``launches`` says: each a launch group (None: each
     arm launched alone, the candidate five minutes after the control), when it started in minutes, the cases it ran,
@@ -227,8 +228,9 @@ def _bundle(
     starts, or at ``joined[launch index]``, as the membership record says (none where not ``recorded``, nor for the
     launches in ``unrecorded``); ``left`` is
     appended. The design, its plan and the question are declared at ``declared``. The candidate makes up to one
-    destructive call a case, read as a guardrail on its declared range at ``guardrail_margin``. Returns the bundle, the
-    campaign and each arm's per-case accuracy as written."""
+    destructive call a case, read as a guardrail on its declared range at ``guardrail_margin``. With ``second_check``
+    every trial is graded on a second check too, which it always passes: its pass rate is then no one check's, so the
+    family holds it beside the checks. Returns the bundle, the campaign and each arm's per-case accuracy as written."""
     rng = random.Random(seed)
     # Each other draw on a stream of its own, so the accuracy a seed was chosen for is drawn as it always was.
     passes, spend, calls = (random.Random(f"{seed}:{stream}") for stream in ("passes", "spend", "calls"))
@@ -274,7 +276,10 @@ def _bundle(
                         goal_state_outcomes=(
                             []
                             if pass_rates is None
-                            else [GoalStateOutcome(expression="ok", passed=passes.random() < pass_rates[side])]
+                            else [
+                                GoalStateOutcome(expression="ok", passed=passes.random() < pass_rates[side]),
+                                *([GoalStateOutcome(expression="filed", passed=True)] if second_check else []),
+                            ]
                         ),
                         cost_usd=cost,
                         usage=[] if cost is None else [RoleUsage(role="candidate", model=model, cost_usd=cost)],
@@ -330,13 +335,29 @@ def _bundle(
     )
     record = [*membership, *left] if recorded else list(left)
     campaign = campaign.model_copy(update={"aspects": [campaign.aspects[0].model_copy(update={"membership": record})]})
-    profile = toyhost_profile() if guardrail_margin is None else _with_guardrail(guardrail_margin)
+    profile = _unranged_accuracy() if guardrail_margin is None else _with_guardrail(guardrail_margin)
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=profile)
     return bundle, campaign, written
 
 
+#: The toy host's measures with ``field_accuracy`` declaring no range, so a family reads its contrast by the t test:
+#: a reading on 0 to 1 is read by the bounded test, and a plan's keeping is shown on the bounded test and not on the t
+#: test, so these campaigns read a family by each, the accuracy on the t test and the pass rate on the bounded one.
+_MEASURES = tuple(
+    descriptor.model_copy(update={"value_range": None}) if descriptor.name == "field_accuracy" else descriptor
+    for descriptor in TOYHOST_MEASURES
+)
+
+
+def _unranged_accuracy() -> HostProfile:
+    """The toy host with ``field_accuracy`` declaring no range (:data:`_MEASURES`)."""
+    profile = toyhost_profile()
+    return dataclass_replace(profile, measures=MeasureRegistry(_MEASURES, families=profile.measures.families))
+
+
 def _with_guardrail(margin: float | None) -> HostProfile:
-    """The toy host with a destructive-call count declared a guardrail (lower is better) on ``[0, 1]``."""
+    """The toy host with a destructive-call count declared a guardrail (lower is better) on ``[0, 1]``, and
+    ``field_accuracy`` declaring no range (:data:`_MEASURES`)."""
     profile = toyhost_profile()
     family = next(descriptor.family for descriptor in TOYHOST_MEASURES if descriptor.name == "field_accuracy")
     destructive = MetricDescriptor(
@@ -353,7 +374,7 @@ def _with_guardrail(margin: float | None) -> HostProfile:
         value_range=(0.0, 1.0),
     )
     return dataclass_replace(
-        profile, measures=MeasureRegistry((*TOYHOST_MEASURES, destructive), families=profile.measures.families)
+        profile, measures=MeasureRegistry((*_MEASURES, destructive), families=profile.measures.families)
     )
 
 
@@ -564,7 +585,7 @@ def test_the_family_reads_each_look_at_alpha_over_the_plan_and_states_alpha(plan
     )
     expected = family_verdicts(
         [(written[_CONTROL], written[_CANDIDATE], True), ({"x": 0.0, "y": 0.0}, {"x": 0.0, "y": 0.0}, True)],
-        value_ranges=[(0.0, 1.0), None],
+        value_ranges=[None, None],
         alpha=look,
     )[0]
     assert accuracy.p_raw == pytest.approx(expected.p_raw)
@@ -931,7 +952,8 @@ def test_a_page_prints_a_plan_s_level_only_where_keeping_it_is_shown_and_otherwi
 
     (family,) = twice.multiple_comparisons.families
     bases = {comparison.name: comparison.interval_basis for comparison in family.comparisons}
-    assert bases["field_accuracy"] == "t" and bases["passed"] == "bounded"
+    # An eval of one check: its pass rate is that check case for case, and the family holds it once, as the check.
+    assert bases["field_accuracy"] == "t" and bases["goal_state:ok"] == "bounded" and "passed" not in bases
     head, lines, rows = _page_lines(twice)
     assert head == "Interval", "not kept: the head prints no level"
     assert not [row for row in rows if "adjusted for" in row["interval"]], "nor does any cell"
@@ -953,14 +975,14 @@ def test_looks_past_a_plan_or_short_counted_say_what_the_count_is_and_name_every
     head, lines, _ = _page_lines(_with_looks(twice, taken=3))
     assert head == "Interval"
     assert _conditions(lines) == [
-        f"{level} over the 2 looks the design plans; the most looks any contrast behind Field accuracy, Ok check and "
-        "Pass rate had is 3, past the plan, so it is not shown."
+        f"{level} over the 2 looks the design plans; the most looks any contrast behind Field accuracy and Ok check "
+        "had is 3, past the plan, so it is not shown."
     ]
     head, lines, _ = _page_lines(_with_looks(twice, lower_bound=True))
     assert head == "Interval"
     assert _conditions(lines) == [
-        f"{level} over the 2 looks the design plans; not every look behind Field accuracy, Ok check and Pass rate was "
-        "counted, so more than planned may have been taken, and it is not shown."
+        f"{level} over the 2 looks the design plans; not every look behind Field accuracy and Ok check was counted, so "
+        "more than planned may have been taken, and it is not shown."
     ]
 
 
@@ -988,7 +1010,7 @@ def test_a_page_of_families_kept_and_not_prints_each_kept_family_s_level_in_its_
     assert head == "Interval"
     cells = {row["reading"]: row["interval"] for row in rows}
     assert "adjusted for" not in cells["Field accuracy"] and "%" not in cells["Field accuracy"]
-    assert cells["Pass rate"].endswith(" at 95% (adjusted for 3 comparisons)")
+    assert cells["Ok check"].endswith(" at 95% (adjusted for 2 comparisons)")
     assert _conditions(lines) == [
         "95% is the level the intervals are read to hold together over the 2 looks the design plans; it holds where "
         "each look's cases were fixed before its results, and is not shown where a look's cases were sized from an "
@@ -1000,10 +1022,12 @@ def test_a_written_page_prints_no_level_where_its_plan_is_not_shown_kept() -> No
     """The written page's heads and level cells (``interval_level``) and ``{weakest.interval}`` print the family's
     joint level where the plan is shown kept, and no level where it is not: never each interval's own level, which
     holds no better over several looks (owner ruling, level in headings)."""
+    # Two checks, so the pass rate, which a margin's worst case is read on, is in the family and no one check's.
     bundle, campaign, _ = _bundle(
         [("g1", 0, range(20)), ("g2", 120, range(20, 40))],
         planned=2,
         margin=0.05,
+        second_check=True,
         **_GAIN_TWICE,  # type: ignore[arg-type]
     )
     unkept = _built(bundle, campaign)

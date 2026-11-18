@@ -597,11 +597,8 @@ def run_shard(shard: Shard) -> dict[str, int]:
 #: - ``at_most``: the Clopper-Pearson 95% upper bound on the rate is at most the target;
 #: - ``above``: the 95% lower bound is above the target;
 #: - ``share_below``: the share itself is below the target (a rate reported, failing only far past it);
-#: - ``every``: every newcomer or comparison held the exact property (``held`` equals ``n``);
-#: - ``no_lean``: the count's one-sided binomial tail at the reading's exact rate (the target) is at least
-#:   :data:`~packages.evals.tests.engine_take_up.SURE`: the interrupts leaned nothing seen;
-#: - ``leans``: that tail is below it: the redrawn cells lean the reading.
-Test = Literal["at_most", "above", "share_below", "every", "no_lean", "leans"]
+#: - ``every``: every newcomer or comparison held the exact property (``held`` equals ``n``).
+Test = Literal["at_most", "above", "share_below", "every"]
 
 
 @dataclass(frozen=True)
@@ -809,17 +806,19 @@ def _claims() -> list[Claim]:
         )
     for reading, law, grader, stop in sorted(engine.SHOWN):
         exact = engine.exact_rate(cast("engine.Reading", reading))
+        read = "at a fixed count of 40 at α" if reading == "fixed" else "over a plan of three looks, each at α/3"
         group = (
             f"engine-drain-{reading}-{law}-{grader}" if stop == "drain" else f"engine-{stop}-{reading}-{law}-{grader}"
         )
         seeds = f"engine-{reading}-{law}-{grader}-{stop}-<index>, through the engine"
+        shown = engine.SHOWN[reading, law, grader, stop]
         if stop == "drain":
             claims.append(
                 Claim(
                     f"engine.drain.{reading}.{law}.{grader}",
                     f"An engine comparison ({reading}, {law}, {grader}) whose interrupts drain draws every cell once and "
-                    f"separates exactly where the uninterrupted reading of its first draws does, so it separates at the "
-                    f"exact rate {exact:.5f}: no lean. Each comparison held exactly, at the simulation's full size.",
+                    "separates exactly where the uninterrupted reading of its first draws does, its family read as the "
+                    "product builds it. Each comparison held exactly, at the simulation's full size.",
                     group,
                     "held",
                     "every",
@@ -827,26 +826,24 @@ def _claims() -> list[Claim]:
                     seeds,
                 )
             )
-        else:
-            shown = engine.SHOWN[reading, law, grader, stop]
-            claims.append(
-                Claim(
-                    f"engine.{stop}.{reading}.{law}.{grader}",
-                    f"An engine comparison ({reading}, {law}, {grader}) whose interrupts "
-                    + ("cut a second time in three of ten" if stop == "second" else "every one cut")
-                    + (
-                        " leans no more than the exact rate's tail allows"
-                        if shown == "no_lean"
-                        else " leans the reading"
-                    )
-                    + f" (exact rate {exact:.5f}, one-sided at {engine.SURE}).",
-                    group,
-                    "hits",
-                    cast("Test", shown),
-                    exact,
-                    seeds,
-                )
+        claims.append(
+            Claim(
+                f"engine.{stop}.{reading}.{law}.{grader}.separates",
+                f"Under the null, an engine comparison of coin pairs ({law}, {grader}) read {read} by the bounded test, "
+                + {
+                    "drain": "its interrupts draining,",
+                    "second": "three of ten interrupts cut by a second,",
+                    "cut": "every interrupt cutting,",
+                }[stop]
+                + (" separates at most α" if shown == "at_most" else " separates more often than α: the cuts lean it")
+                + f" (the uninterrupted reading's own rate is at most {exact:.5f}, computed exactly).",
+                group,
+                "hits",
+                shown,
+                SIGNIFICANCE_ALPHA,
+                seeds,
             )
+        )
     return claims
 
 
@@ -876,10 +873,7 @@ def judge(claim: Claim, count: int, replicates: int) -> Verdict:
     if claim.test == "share_below":
         share = count / replicates
         return Verdict(interval, share, share < claim.target)
-    if claim.test == "every":
-        return Verdict(interval, count / replicates, count == replicates)
-    tail = engine.tail(count, replicates, claim.target)
-    return Verdict(interval, tail, tail >= engine.SURE if claim.test == "no_lean" else tail < engine.SURE)
+    return Verdict(interval, count / replicates, count == replicates)
 
 
 def tally(results: Mapping[str, Mapping[str, int]]) -> dict[str, tuple[int, int]]:

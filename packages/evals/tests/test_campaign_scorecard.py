@@ -803,13 +803,16 @@ def test_a_shape_64_rate_contrast_drawn_on_its_t_interval_is_named_a_t_interval(
     assert level is not None
 
     def at_64(comparison: FamilyComparison) -> FamilyComparison:
-        assert comparison.case_values is not None and comparison.basis == "t"
+        assert comparison.case_values is not None
         control, contrast = comparison.case_values
         interval = difference_interval(
             list(control), list(contrast), paired=comparison.test == "paired", confidence=level, value_range=(0.0, 1.0)
         )
         assert interval is not None and interval != comparison.bounded_interval
-        return comparison.model_copy(update={"interval": interval, "interval_basis": None, "verdict": "regressed"})
+        # 64 read a rate's p by the t test, as its `basis` records.
+        return comparison.model_copy(
+            update={"basis": "t", "interval": interval, "interval_basis": None, "verdict": "regressed"}
+        )
 
     reports = _with_trial_contrast(shape, "refunds", "v2", at_64)
     (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")

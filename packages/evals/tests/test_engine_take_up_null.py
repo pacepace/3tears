@@ -7,9 +7,10 @@ what is still in flight, and the take-up runs each cut cell again, written over 
 again. A cancel the launch's lease finds on the record, or delivers before its own process counts it, is the same cancel.
 
 The reading's own rate on coin pairs, uninterrupted, is exact (:func:`~packages.evals.tests.engine_take_up.exact_rate`),
-pinned here to the digits. The unit suite keeps a smoke check of every simulation: a few comparisons each, every drained
-one read exactly as uninterrupted on its first draws. The full simulations, and what each shows against the exact rate,
-are the statistics certificate's claims (``stats_certificate.py``; ``docs/testing.md`` says how to re-certify).
+pinned here to the digits, at most α where the paired t test the engine read by before was above it. The unit suite
+keeps a smoke check of every simulation: a few comparisons each, every drained one read exactly as uninterrupted on its
+first draws. The full simulations, and what each shows against α, are the statistics certificate's claims
+(``stats_certificate.py``; ``docs/testing.md`` says how to re-certify).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import pytest
 
 from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
 from threetears.evals.analysis.bundle.trials import RedrawnCells, redrawn_cells
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.ops import job_cancel, job_poll
 from threetears.evals.ops import jobs as ops_jobs
@@ -39,6 +41,7 @@ from packages.evals.tests.engine_take_up import (
     drained_as_uninterrupted,
     exact_rate,
     held_launch,
+    t_test_rate,
     make_engine,
     rows_of,
     said,
@@ -142,18 +145,21 @@ async def test_a_cancel_the_lease_delivers_before_its_own_process_counts_it_is_s
     assert rows and {row.termination for row in rows} == {"completed"}, "nothing was cut"
 
 
-async def test_the_reading_s_own_rate_is_exact_and_above_alpha_at_a_fixed_count() -> None:
-    """The engine's paired t test on coin pairs, at a fixed count of 40, separates at 5.28% with no interrupt at all:
-    the test is discrete on such pairs, so an at-most-α claim on it fails before any cut. Under the plan of three looks
-    at α/3 it separates at the rate below. Held to the digits, so a change to the reading moves this first."""
-    assert exact_rate("fixed") == pytest.approx(0.05276, abs=5e-5)
-    assert exact_rate("looks") == pytest.approx(EXACT_LOOKS, abs=5e-5)
+async def test_the_reading_s_own_rate_is_exact_and_at_most_alpha_where_the_t_test_s_was_above_it() -> None:
+    """The engine's bounded test on coin pairs, at a fixed count of 40, separates at 2.85% with no interrupt at all;
+    under the plan of three looks at α/3, each look's rate summed bounds the watcher's at 2.04%. The paired t test the
+    engine read 0 to 1 by before separated at 5.28% and 4.49%: discrete on such pairs, an at-most-α claim on it failed
+    before any cut. Held to the digits, so a change to the reading moves this first."""
+    assert exact_rate("fixed") == pytest.approx(0.02851, abs=5e-5) and exact_rate("fixed") <= SIGNIFICANCE_ALPHA
+    assert exact_rate("looks") == pytest.approx(EXACT_LOOKS, abs=5e-5) and exact_rate("looks") <= SIGNIFICANCE_ALPHA
+    assert t_test_rate("fixed") == pytest.approx(0.05276, abs=5e-5) and t_test_rate("fixed") > SIGNIFICANCE_ALPHA
+    assert t_test_rate("looks") == pytest.approx(0.04485, abs=5e-5)
 
 
-async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_and_read_by_the_t_test() -> None:
+async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_and_read_by_the_bounded_test() -> None:
     """The unit suite's smoke check of every simulation: a few comparisons each, every launch held through its
     interrupts and take-ups to an end where every cell has one row and none runs again (inside ``engine_take_up._launched``; a
-    drained launch's take-ups run no cell again), each read by the paired t test, at α at a fixed count and at α/L under
+    drained launch's take-ups run no cell again), each read by the bounded test, at α at a fixed count and at α/L under
     the plan; and, drained, the reading separating at most one of each few, which at a rate of α happens with
     probability above 0.99 (cut at every interrupt, it leans, as the cut rows show)."""
     for reading in ("fixed", "looks"):
@@ -170,9 +176,9 @@ async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_an
 async def test_a_drained_engine_comparison_reads_as_the_uninterrupted_one_on_its_first_draws(
     reading: Reading, grader: Grader
 ) -> None:
-    """Drained, every cell of a comparison draws once, and each look's p is the paired t test on those first draws: the
-    comparison separates exactly where the uninterrupted reading of the same answers does, so its rate is the exact
-    rate. A few comparisons, at the law that leans most where a cut is allowed."""
+    """Drained, every cell of a comparison draws once, and each look's p and verdict are the family's rule on those first
+    draws: the comparison separates exactly where the uninterrupted reading of the same answers does, so its rate is at
+    most the exact rate. A few comparisons, at the law that leans most where a cut is allowed."""
     run = at_a_fixed_count if reading == "fixed" else watched_over_planned_looks
     for index in range(SMOKE):
         tag = comparison_tag("smoke-exact", reading, "b-slower-20x", grader, "drain", index)

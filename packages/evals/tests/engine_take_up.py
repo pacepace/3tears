@@ -14,9 +14,10 @@ The engine path, as a host or an agent drives it (no quick path anywhere):
 - **take-up**: ``job_resume`` takes the launch up again (``resume.resume_launch``), and each run runs, in its own order,
   every cell with no row and every row that runs again (``kernel.result_condition.runs_again``), a cut row among them,
   written over its row, which then records what it replaced (``EvalResult.written_over``);
-- **read**: a campaign over the runs, control ``a``, read by ``assemble_context_bundle``: the paired t test at α at a
-  fixed count, or, under a plan of ``L`` looks declared before the first (``AspectDesign.planned_looks``), each look at
-  α/L. A take-up of a launch is that launch's occasion, so it is no look of its own (``significance.looks_taken``).
+- **read**: a campaign over the runs, control ``a``, read by ``assemble_context_bundle``: on the range 0 to 1 the bounded
+  test (the mixture bet over the pairs in the order fixed by their count), at α at a fixed count, or, under a plan of
+  ``L`` looks declared before the first (``AspectDesign.planned_looks``), each look at α/L. A take-up of a launch is that
+  launch's occasion, so it is no look of its own (``significance.looks_taken``).
 
 A cell cut in flight is drawn afresh by the take-up, and a cell in flight is a long one: where one arm's wrong answers
 are its slow ones, a cut takes its wrong answers away more often than its right ones, and the arm reads better than it
@@ -29,12 +30,14 @@ twenty times that when wrong; the control's arms both 2 ms right and 40 ms wrong
 take-up) is interrupted in four of five at a point drawn apart from any answer (after a uniform count of the answers left
 to land), at most five holdings, the last run to its end.
 
-**Against what.** The reading's own rate on such pairs, uninterrupted, is computed exactly (:func:`exact_rate`): the
-paired t test is discrete on coin pairs, so it separates 5.28% of the time at a fixed count of 40 read at α, and 4.49%
-of the time over three looks read at α/3. A drained comparison is held to it exactly (:func:`drained_as_uninterrupted`);
-a comparison whose interrupts cut is held to it by its count's binomial tail (:data:`SHOWN`). A check is read as a
-family of one (:func:`reading_separates`): the engine's family of an eval with one check also holds the pass rate, which
-is that check case for case, and the read here is the corrected one.
+**Against what.** α. The reading's own rate on such pairs, uninterrupted, is computed exactly (:func:`exact_rate`): the
+bounded test's capital on coin pairs is a function of how many cases went each way, so the chance it ever reaches 1/level
+is a sum over those counts, 2.85% at a fixed count of 40 read at α; over three looks read at α/3, each look's own rate
+summed bounds the watcher's at 2.04%. The paired t test the engine read by before separated 5.28% and 4.49% of the time
+(:func:`t_test_rate`). A drained comparison is held exactly to the uninterrupted reading of its first draws
+(:func:`drained_as_uninterrupted`), and every simulation's count to α by its Clopper-Pearson bound (:data:`SHOWN`). The
+family is read as the product builds it (:func:`reading_separates`): an eval of one check holds that check alone, its
+pass rate being the check case for case, and a grade on 0 to 1 is alone in its family too.
 
 The statistics certificate runs these (``stats_certificate.py``); ``test_engine_take_up_null.py`` holds the interrupt
 rule cell by cell, the exact rates and a smoke check of every simulation.
@@ -47,6 +50,7 @@ import functools
 import math
 import random
 from collections import Counter
+from fractions import Fraction
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -55,7 +59,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.campaigns import get_campaign
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval, separation_test
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, composite_significance, exact_rate_interval
 from threetears.evals.kernel import ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.declaration import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -79,6 +83,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 
 from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.simulation_support import family_verdicts
 
 #: The scope, template and subject every simulated comparison lives in (each in a store of its own).
 SCOPE, TEMPLATE, SUBJECT = "engine", "coin", "coin-subject"
@@ -104,8 +109,9 @@ SECOND, SECOND_AFTER_S = 0.3, 0.005
 #: each (20, 40 and 60 cases at its three looks), and the looks it plans.
 FIXED_CASES, LOOK_CASES, PLANNED = 40, 20, 3
 
-#: The reading's own rate under the plan of three looks, uninterrupted, as :func:`exact_rate` computes it.
-EXACT_LOOKS = 0.04485
+#: The bound on the reading's own rate under the plan of three looks, uninterrupted, as :func:`exact_rate` computes it:
+#: each look's exact rate at α/3, summed.
+EXACT_LOOKS = 0.02037
 
 #: Comparisons in each long simulation at a fixed count, in each under a plan of looks, and in each smoke check: each
 #: long one a pool request of its own, inside its window.
@@ -135,9 +141,8 @@ def grade(case: Mapping[str, Any], answer: str) -> float:
     return 1.0 if answer == "right" else 0.0
 
 
-#: How the answer is graded: by a check (``correct``), whose family the engine reads beside the pass rate it equals, so
-#: Holm reads two equal p values and separates where p < α/2; or by a grade on the range 0 to 1 (``grade``), alone in
-#: its family, so the paired t test separates where p < α.
+#: How the answer is graded: by a check (``correct``), whose family holds it alone, the pass rate being that check case
+#: for case; or by a grade on the range 0 to 1 (``grade``), alone in its family. Either is read by the bounded test.
 Grader = Literal["check", "grade"]
 
 GRADERS: dict[Grader, tuple[Callable[[Mapping[str, Any], str], Any], dict[str, tuple[float, float]]]] = {
@@ -411,23 +416,18 @@ def family_of(engine: Engine, campaign_id: str) -> ComparisonFamily:
 
 
 def reading_separates(family: ComparisonFamily, grader: Grader) -> bool:
-    """Whether the family separates the arms on the grader's reading, by the paired t test (never the bet), read as a
-    family of that one reading: at the family's level (α, or α/L under the plan), uncorrected.
+    """Whether the family separates the arms, as the product reads it: its verdict on the grader's reading.
 
-    A grade's family holds it alone. A check's holds it beside the pass rate (``passed``), which an eval of one check
-    has case for case: one hypothesis counted twice, so Holm reads each at half the level. Until the family drops it (the
-    same ``multiple_comparisons`` reads it for every campaign), the read here is the corrected one: the check's own p at
-    the family's level, asserted to be the pass rate's too. Once dropped, the family holds the check alone."""
+    The family holds that one reading: a grade alone, and a check alone, the pass rate of an eval of one check being
+    that check case for case. It is read by the bounded test on 0 to 1 (never the bet read again: no evidence is
+    graded), at the family's level, α or α/L under the plan."""
     name = GRADERS[grader][0].__name__
     names = sorted(comparison.name for comparison in family.comparisons)
-    assert names in ([name], [name, "passed"]) if grader == "check" else names == [name], names
-    by_name = {comparison.name: comparison for comparison in family.comparisons}
-    compared = by_name[name]
-    assert compared.basis in (None, "t", "identical"), compared.basis
-    if "passed" in by_name:
-        assert by_name["passed"].p_raw == compared.p_raw, "the pass rate is the check, case for case"
-    level = family.look_alpha if family.look_alpha is not None else family.alpha
-    return compared.p_raw is not None and compared.p_raw < level
+    assert names == [name], names
+    (compared,) = family.comparisons
+    assert compared.basis in (None, "bounded", "identical"), compared.basis
+    assert compared.evidence_better is None, "read once at its count, not by the bet read again"
+    return compared.verdict in ("improved", "regressed")
 
 
 @dataclass(frozen=True)
@@ -452,25 +452,24 @@ def _grader_p(family: ComparisonFamily, grader: Grader) -> tuple[float | None, f
 def drained_as_uninterrupted(outcome: Outcome) -> str | None:
     """Where a drained comparison's reading is not the uninterrupted one on the same answers, as a sentence; ``None``
     where it is. Drained, every cell drew once, so each value read is a fresh fair coin assigned before it was seen and
-    the values are those of an uninterrupted launch; and each look's p is the paired t test on those first draws
-    (:func:`separates_at`'s reading), so the comparison separates exactly where the uninterrupted reading does, and its
-    rate is :func:`exact_rate`'s."""
+    the values are those of an uninterrupted launch; and each look's p and verdict are the family's rule on those first
+    draws (``simulation_support.family_verdicts``, which reads 0 to 1 by the bounded test), so the comparison separates
+    exactly where the uninterrupted reading does, and its rate is at most :func:`exact_rate`'s."""
     redrawn = sorted(cell for cell, draws in outcome.draws.items() if len(draws) != 1)
     if redrawn:
         return f"cells drew more than once: {redrawn[:5]}"
     restated_separated, restated_looks = False, 0
     for cases, p, level in outcome.reads:
-        a = [float(outcome.draws["a", n][0]) for n in range(cases)]
-        b = [float(outcome.draws["b", n][0]) for n in range(cases)]
-        recomputed = separation_test(a, b, paired=True, value_range=(0.0, 1.0)).p
+        control = {f"case-{n:04d}": float(outcome.draws["a", n][0]) for n in range(cases)}
+        contrast = {f"case-{n:04d}": float(outcome.draws["b", n][0]) for n in range(cases)}
+        (rule,) = family_verdicts([(control, contrast, True)], value_ranges=[(0.0, 1.0)], alpha=level)
+        recomputed = rule.p_raw
         if (p is None) != (recomputed is None) or (
             p is not None and recomputed is not None and not math.isclose(p, recomputed, rel_tol=1e-9, abs_tol=1e-12)
         ):
             return f"at {cases} cases the product read p {p}, the first draws {recomputed}"
-        plus = sum(1 for x, y in zip(a, b, strict=True) if y > x)
-        minus = sum(1 for x, y in zip(a, b, strict=True) if x > y)
         restated_looks += 1
-        if separates_at(plus, minus, cases, level):
+        if rule.verdict in ("improved", "regressed"):
             restated_separated = True
             break
     if (restated_separated, restated_looks) != (outcome.separated, outcome.looks):
@@ -630,22 +629,76 @@ async def taken_up_and_read(engine: Engine, job_id: str, launch_id: str) -> Comp
 # --- the simulations -------------------------------------------------------------------------------------------------
 
 
-@functools.cache
-def separates_at(plus: int, minus: int, cases: int, level: float) -> bool:
-    """Whether the engine's reading separates coin pairs where ``plus`` cases went to ``b`` alone, ``minus`` to ``a``
-    alone, and the rest tied: the paired t test on the 0-1 range the family reads (``separation_test``), at ``level``."""
-    a = [0.0] * plus + [1.0] * minus + [0.0] * (cases - plus - minus)
-    b = [1.0] * plus + [0.0] * minus + [0.0] * (cases - plus - minus)
-    p = separation_test(a, b, paired=True, value_range=(0.0, 1.0)).p
-    return p is not None and p < level
+#: The bounded test's mixture stake on coin pairs (``stats._mixture_log_path``), restated: ten bets, the j-th staking j/10
+#: of the cap 0.9/m on every pair with weight j/55. A pair is a difference of -1, 0 or 1 on the range ±1, rescaled to 0,
+#: 1/2 or 1 against the null mean m = 1/2, so the j-th bet's capital moves by 1 ± 0.09 j on a pair one arm alone got
+#: right and not at all on a tie: after ``plus`` pairs to ``b`` and ``minus`` to ``a`` it is
+#: ``(1 + 0.09 j)^plus (1 - 0.09 j)^minus``, whatever their order, and the downward bet's is that with the two swapped.
+_STAKES = tuple(0.09 * j for j in range(1, 11))
+_WEIGHTS = tuple(j / 55 for j in range(1, 11))
+
+
+def hedged_log_capital(plus: int, minus: int) -> float:
+    """The log of the even hedge's capital (half the upward mixture's, half the downward's) after ``plus`` coin pairs
+    went to ``b`` alone and ``minus`` to ``a`` alone, ties moving nothing: the capital the engine's bounded test reads
+    coin pairs by, which ``test_engine_fixed_count_bounded.py`` holds to the product's p."""
+    up = sum(w * (1 + c) ** plus * (1 - c) ** minus for w, c in zip(_WEIGHTS, _STAKES, strict=True))
+    down = sum(w * (1 + c) ** minus * (1 - c) ** plus for w, c in zip(_WEIGHTS, _STAKES, strict=True))
+    return math.log(0.5 * up + 0.5 * down)
+
+
+def exact_rates(level: float, cases: int, *, plus: Fraction = Fraction(1, 4)) -> list[Fraction]:
+    """The chance the bounded test separates pairs of equal mean at ``level``, read once at each count from 1 to
+    ``cases``, computed exactly: each pair goes to ``b`` alone with chance ``plus``, to ``a`` alone with the same chance,
+    and ties otherwise (``plus`` = 1/4 for two fair coins). Its p is one over the most its capital reached
+    (:func:`hedged_log_capital`), a function of the counts each way, so the chance it is below ``level`` by ``n`` pairs
+    is the chance the walk of those counts has entered the region where the capital exceeds 1/level: a sum over the
+    walk's states, kept as exact fractions. The order the pairs are bet in, fixed by their count, moves nothing under
+    the null, every pair drawn alike.
+
+    :return: The rate at each count from 1 to ``cases``.
+    :raises AssertionError: A state's capital lies within 1e-9 of the line in log terms, where float rounding could
+        put it on either side.
+    """
+    threshold = -math.log(level)
+    alive: dict[tuple[int, int], Fraction] = {(0, 0): Fraction(1)}
+    separated, rates = Fraction(0), []
+    for _ in range(cases):
+        grown: dict[tuple[int, int], Fraction] = {}
+        for (up, down), weight in alive.items():
+            for (more_up, more_down), chance in (((1, 0), plus), ((0, 1), plus), ((0, 0), 1 - 2 * plus)):
+                key = (up + more_up, down + more_down)
+                grown[key] = grown.get(key, Fraction(0)) + weight * chance
+        alive = {}
+        for (up, down), weight in grown.items():
+            log_capital = hedged_log_capital(up, down)
+            assert abs(log_capital - threshold) > 1e-9, (up, down)
+            if log_capital > threshold:
+                separated += weight
+            else:
+                alive[up, down] = weight
+        rates.append(separated)
+    return rates
 
 
 @functools.cache
 def exact_rate(reading: Reading) -> float:
-    """The rate the engine's reading separates arms of equal accuracy (0.5) at, uninterrupted, computed exactly: each
-    case goes to ``b`` alone, to ``a`` alone or ties with chances 1/4, 1/4 and 1/2, and the reading is read at the
-    fixed count (α), or after each look's cases with the watcher stopping at the first separation (α/L). What a
-    simulation with no lean draws around; the t test on such pairs is discrete, so this is not α itself."""
+    """The rate the engine's reading separates arms of equal accuracy (0.5) at, uninterrupted, by its p: at the fixed
+    count (α), exactly (:func:`exact_rates`); over the plan of looks (α/L), each look's own exact rate at α/L summed, a
+    bound on the watcher who stops at the first, whose looks are each read in the order fixed by their own count. A
+    separation needs the interval to exclude zero too, which only removes some, so the product separates at most this.
+    """
+    if reading == "fixed":
+        return float(exact_rates(SIGNIFICANCE_ALPHA, FIXED_CASES)[-1])
+    rates = exact_rates(SIGNIFICANCE_ALPHA / PLANNED, LOOK_CASES * PLANNED)
+    return float(sum(rates[LOOK_CASES * look - 1] for look in range(1, PLANNED + 1)))
+
+
+@functools.cache
+def t_test_rate(reading: Reading) -> float:
+    """The rate the paired t test the engine read 0 to 1 by before separated such pairs at, computed exactly as the old
+    reading was, over the counts each way, which are all a t statistic reads: 5.28% at a fixed count of 40, 4.49% over
+    three looks with the watcher stopping at the first separation. What the bounded test replaced."""
     sizes, level = (
         ([FIXED_CASES], SIGNIFICANCE_ALPHA)
         if reading == "fixed"
@@ -655,59 +708,53 @@ def exact_rate(reading: Reading) -> float:
     cases, separated = 0, 0.0
     for size in sizes:
         batch = {
-            (plus, minus): math.comb(size, plus)
-            * math.comb(size - plus, minus)
-            * 0.25 ** (plus + minus)
-            * 0.5 ** (size - plus - minus)
-            for plus in range(size + 1)
-            for minus in range(size + 1 - plus)
+            (up, down): math.comb(size, up)
+            * math.comb(size - up, down)
+            * 0.25 ** (up + down)
+            * 0.5 ** (size - up - down)
+            for up in range(size + 1)
+            for down in range(size + 1 - up)
         }
         grown: dict[tuple[int, int], float] = {}
-        for (plus, minus), weight in alive.items():
-            for (more_plus, more_minus), chance in batch.items():
-                key = (plus + more_plus, minus + more_minus)
+        for (up, down), weight in alive.items():
+            for (more_up, more_down), chance in batch.items():
+                key = (up + more_up, down + more_down)
                 grown[key] = grown.get(key, 0.0) + weight * chance
         cases += size
         alive = {}
-        for (plus, minus), weight in grown.items():
-            if separates_at(plus, minus, cases, level):
+        for (up, down), weight in grown.items():
+            a = [0.0] * up + [1.0] * down + [0.0] * (cases - up - down)
+            b = [1.0] * up + [0.0] * down + [0.0] * (cases - up - down)
+            p = composite_significance(a, b, paired=True).p_value
+            if p is not None and p < level:
                 separated += weight
             else:
-                alive[plus, minus] = weight
+                alive[up, down] = weight
     return separated
 
 
-def tail(separated: int, count: int, rate: float) -> float:
-    """The chance of ``separated`` or more separations in ``count`` comparisons at ``rate``: the exact binomial tail."""
-    return sum(math.comb(count, k) * rate**k * (1 - rate) ** (count - k) for k in range(separated, count + 1))
-
-
-#: What a simulation's share shows, against the reading's own exact rate (:func:`exact_rate`) and its binomial tail
-#: (:func:`tail`, one-sided, at :data:`SURE`, so twenty-odd rows run together fail by chance about once in forty):
+#: What a simulation's count shows, held to α by its Clopper-Pearson 95% bounds (``stats_certificate.judge``):
 #:
-#: - ``no_lean``: its count is not above the exact rate at that level: the interrupts leaned nothing;
-#: - ``leans``: its count is above it at that level: the redrawn cells lean the reading.
-Shown = Literal["no_lean", "leans"]
-
-#: The one-sided level each row's lean is decided at.
-SURE = 0.001
+#: - ``at_most``: the upper bound is at most α: the reading holds α, interrupted as the row says;
+#: - ``above``: the lower bound is above α: the redrawn cells lean the reading past α.
+Shown = Literal["at_most", "above"]
 
 #: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.
 SHOWN: dict[tuple[Reading, Law, Grader, Stop], Shown] = {
     # The engine as it is: a first interrupt drains, so no cell is cut and none drawn afresh, whatever the latency law;
     # each such comparison reads exactly as the uninterrupted one on its first draws (:func:`drained_as_uninterrupted`),
-    # so its rate is the exact rate itself, which the certificate holds comparison by comparison.
+    # which the certificate holds comparison by comparison, and the count holds α.
     **{
-        (reading, law, grader, "drain"): "no_lean"
+        (reading, law, grader, "drain"): "at_most"
         for reading in ("fixed", "looks")
         for law in LAWS
         for grader in ("check", "grade")
     },
     # A second interrupt in three of ten interrupted holdings, 5 ms after the first, cuts what is still in flight: the
-    # slow arm's wrong answers, and nothing else, where its wrong answers are its slow ones. A check read as a family of
-    # one is the grade's reading on the same values, so the grade's alone are drawn.
-    **{(reading, law, "grade", "second"): "no_lean" for reading in ("fixed", "looks") for law in LAWS},
+    # slow arm's wrong answers, and nothing else, where its wrong answers are its slow ones. A check's family is the
+    # grade's reading on the same values, so the grade's alone are drawn.
+    **{(reading, law, "grade", "second"): "at_most" for reading in ("fixed", "looks") for law in LAWS},
     # The engine before it drained, every interrupt cutting: the comparison that shows why it drains.
-    ("looks", "b-slower-20x", "check", "cut"): "leans",
-    ("looks", "b-slower-20x", "grade", "cut"): "leans",
+    ("looks", "b-slower-20x", "check", "cut"): "above",
+    ("looks", "b-slower-20x", "grade", "cut"): "above",
 }

@@ -231,17 +231,19 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         family = _family(_bundle([BORDERLINE, *[NOISE] * 9]))
 
         # Ten judged readings and the question's pass rate (the contrast fails seven cases' trials the control
-        # passes, p ≈ 0.0024), which ranks first, so the borderline reading's step is the tenth of eleven.
+        # passes; on 0 to 1, so read by the bounded test, p ≈ 0.048), which ranks second behind the borderline
+        # reading, so the borderline reading's step is the first of eleven and the pass rate's the second.
         assert family.family_size == 11
         assert len(family.comparisons) == 11 and family.n_untested == 0
         borderline = next(c for c in family.comparisons if c.name == "extraction.d0")
         assert borderline.test == "paired" and borderline.p_raw is not None and borderline.p_adjusted is not None
         assert borderline.p_raw < 0.05, "the raw p alone would have called this a separation"
         assert borderline.p_adjusted >= 0.05
-        assert borderline.p_adjusted == pytest.approx(min(1.0, 10 * borderline.p_raw))
+        assert borderline.p_adjusted == pytest.approx(min(1.0, 11 * borderline.p_raw))
         assert borderline.verdict == "not_separated"
         passed = _pass_rate(family)
-        assert passed.p_raw is not None and passed.p_adjusted == pytest.approx(min(1.0, 11 * passed.p_raw))
+        assert passed.basis == "bounded" and passed.p_raw is not None and passed.p_raw > borderline.p_raw
+        assert passed.p_adjusted == pytest.approx(min(1.0, 10 * passed.p_raw))
         assert "11 comparisons" in family.disclosure and "Holm" in family.disclosure
 
     def test_the_same_reading_alone_is_a_separation_so_the_family_made_the_difference(self) -> None:
@@ -435,10 +437,12 @@ class TestWhatAFamilyCovers:
 # --- materiality: a separated difference too small to act on is labelled so -----------------------------
 
 
-def _accuracy_threshold(threshold: float | None) -> HostProfile:
+def _accuracy_threshold(threshold: float | None, *, ranged: bool = True) -> HostProfile:
+    """The toy host with ``field_accuracy``'s margin at ``threshold``, and with no declared range unless ``ranged``."""
     profile = toyhost_profile()
+    unranged = {} if ranged else {"value_range": None}
     measures = tuple(
-        descriptor.model_copy(update={"materiality_threshold": threshold})
+        descriptor.model_copy(update={"materiality_threshold": threshold, **unranged})
         if descriptor.name == "field_accuracy"
         else descriptor
         for descriptor in TOYHOST_MEASURES
@@ -446,7 +450,9 @@ def _accuracy_threshold(threshold: float | None) -> HostProfile:
     return replace(profile, measures=MeasureRegistry(measures, families=profile.measures.families))
 
 
-#: The contrast extracts about two points better on every case, with spread: separated after any correction.
+#: The contrast extracts about two points better on every case, with spread: separated after any correction by the t
+#: test, which reads ``field_accuracy`` where it declares no range (on its range of 0 to 1 the bounded test reads it, and
+#: twelve cases cannot show two points there).
 _ACCURACY = ([0.80, 0.81, 0.79, 0.80] * 3, [0.82, 0.83, 0.82, 0.82] * 3)
 
 
@@ -491,7 +497,7 @@ def test_a_separated_comparison_carries_the_materiality_of_its_delta(threshold: 
     """The verdict says the arms separated; materiality says whether the separation is worth acting on — the
     host's threshold read by the one predicate every surface uses, so a memo cannot crown a winner on a
     difference the host declared too small to matter."""
-    family = _family(_bundle([], accuracy=_ACCURACY, profile=_accuracy_threshold(threshold)))
+    family = _family(_bundle([], accuracy=_ACCURACY, profile=_accuracy_threshold(threshold, ranged=False)))
     (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
 
     assert comparison.verdict == "improved"
@@ -503,7 +509,7 @@ def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None
     """Both places that hold a comparison's verdict: the report's contrast table and the bundle's comparison."""
     from threetears.evals.analysis.report.build import build_code_only_report
 
-    profile = _accuracy_threshold(0.05)
+    profile = _accuracy_threshold(0.05, ranged=False)
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]

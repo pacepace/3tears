@@ -459,7 +459,10 @@ async def test_an_asked_aspect_with_no_margin_compares_the_overall_pass_rate() -
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
     (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
-    assert family.family_size == 2 and (compared.verdict, compared.delta) == ("improved", 1.0)
+    # Seven cases a side, every one moved from failing to passing: on 0 to 1 the bounded test reads it, and seven
+    # cases at α/2 (p ≈ 0.048, adjusted ≈ 0.096) cannot show it.
+    assert family.family_size == 2 and (compared.verdict, compared.delta) == ("not_separated", 1.0)
+    assert compared.basis == "bounded"
     assert compared.p_raw is not None and compared.p_adjusted == pytest.approx(2 * compared.p_raw)
 
 
@@ -533,7 +536,7 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
         for comparison in family.comparisons
         if comparison.name == "accuracy"
     ]
-    assert check.basis == "t" and check.case_values is not None
+    assert check.basis == "bounded" and check.case_values is not None
     (family,) = bundle.multiple_comparisons.families
     assert family.interval_level is not None
     t_interval = difference_interval(
