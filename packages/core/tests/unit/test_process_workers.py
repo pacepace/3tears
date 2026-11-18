@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
 from collections.abc import AsyncIterator
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
@@ -105,6 +107,11 @@ class TestWhereItRuns:
         with pytest.raises(ValueError, match="no good"):
             await workers.run(_raises, "no good")
 
+    async def test_a_worker_is_forked_by_the_fork_server_never_by_this_process(self, workers: ProcessWorkers) -> None:
+        """Flips if a worker is this process's own child (a spawn: a fork_exec of the whole serving process under the
+        interpreter lock)."""
+        assert await workers.run(os.getppid) != os.getpid()
+
 
 class TestTheWorkersLifetime:
     async def test_a_dead_worker_fails_its_job_and_the_next_job_gets_a_fresh_pool(
@@ -124,9 +131,51 @@ class TestTheWorkersLifetime:
 
         assert second != first
 
+    def test_a_worker_exits_within_5_seconds_of_the_serving_process_s_sigkill(self, tmp_path: Any) -> None:
+        """Flips if a worker outlives its SIGKILLed serving process by 5 s: its parent, the fork server, lives while
+        any worker holds the server's liveness pipe, so only a watch on the serving process ends it."""
+        serving = subprocess.Popen([sys.executable, "-c", _SERVING], stdout=subprocess.PIPE, text=True)
+        worker = 0
+        try:
+            assert serving.stdout is not None
+            worker = int(serving.stdout.readline())
+            os.kill(serving.pid, signal.SIGKILL)
+            serving.wait()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and _alive(worker):
+                time.sleep(0.1)
+            left = _alive(worker)
+        finally:
+            if serving.poll() is None:
+                serving.kill()
+            if worker and _alive(worker):
+                os.kill(worker, signal.SIGKILL)
+        assert not left, f"worker {worker} outlived the serving process"
+
     def test_a_pool_needs_a_worker(self) -> None:
         with pytest.raises(ValueError, match="needs a worker"):
             ProcessWorkers(workers=0, name="none")
+
+
+#: a serving process holding one worker: prints the worker's pid, then waits to be killed
+_SERVING = """
+import asyncio, os, time
+from threetears.core.process_workers import ProcessWorkers
+async def main():
+    workers = ProcessWorkers(workers=1, name="killed")
+    print(await workers.run(os.getpid), flush=True)
+    time.sleep(600)
+asyncio.run(main())
+"""
+
+
+def _alive(pid: int) -> bool:
+    """whether ``pid`` is a live process."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 #: a process at the lowest priority there is starts a pool and runs a job on it; prints whether a worker ran it

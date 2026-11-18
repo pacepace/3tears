@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: pool workers forked by a fork server, exiting with the serving process; readers first
+
+**Added:** `threetears.core.processes.start_worker_server(preload=())` starts multiprocessing's fork server and the
+resource tracker once and returns the `forkserver` context; `exit_with_parent(interval, serving=None)` also watches
+the serving process's pid. `SharedArrowPool(..., preload=())` and `SharedArrowPool.run(..., reader=False)`.
+**Changed:** `SharedArrowPool` starts the fork server as it is made, and every worker, first and replacement, is
+forked by it, never by the serving process (a spawn was a `fork_exec` of the whole process under the interpreter
+lock: 40-77 ms loop stalls mid-load, reports FR3). Each worker exits when the serving process dies, and the server
+after its last worker. At most `workers` jobs are given to the workers at once; a `reader=True` job takes the next free
+worker ahead of every background job waiting, first come first served within each, and `read=True` now leases the
+version current when the job gets its worker, not at submission. `ProcessWorkers` starts its workers through the same
+server and each exits with the serving process.
+**Consumers:** make a `SharedArrowPool` as the pod starts or on a thread (its first make starts the server); mark the
+jobs a client waits on `reader=True`. Reports can drop its own fork-server start (`pod/workers.WORKER_START`,
+`start_worker_server`, `cpu_limit.size_worker(serving=)`) for these.
+
 ### registry: a call no endpoint took answers `TOOL_RESTARTING`, a code of its own
 
 **Changed:** when every endpoint the caller may use failed to take a call (a pod restarting: no responders, the
