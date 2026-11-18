@@ -6,7 +6,6 @@ import importlib
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +14,7 @@ from threetears.observe.tracing import set_span_attribute, traced
 
 
 @contextmanager
-def _tracing_without_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+def _tracing_without_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """``threetears.observe.tracing`` imported afresh into a process where OpenTelemetry is absent.
 
     The availability check runs once per process and remembers its answer, so the module the
@@ -26,15 +25,16 @@ def _tracing_without_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleTyp
 
     :param monkeypatch: pytest's patcher
     :ptype monkeypatch: pytest.MonkeyPatch
-    :return: the freshly imported module
-    :rtype: Iterator[ModuleType]
+    :return: nothing; inside the block ``from threetears.observe import tracing`` is the fresh copy
+    :rtype: Iterator[None]
     """
     import threetears.observe as observe_pkg
 
     monkeypatch.setattr(observe_pkg, "tracing", importlib.import_module("threetears.observe.tracing"))
     with patch.dict(sys.modules, {"opentelemetry": None, "opentelemetry.trace": None}):
         sys.modules.pop("threetears.observe.tracing", None)
-        yield importlib.import_module("threetears.observe.tracing")
+        importlib.import_module("threetears.observe.tracing")
+        yield
 
 
 class TestOtelCheck:
@@ -45,7 +45,7 @@ class TestOtelCheck:
         with patch("opentelemetry.trace.get_tracer") as get_tracer:
 
             @traced
-            def add(a, b):
+            def add(a: int, b: int) -> int:
                 return a + b
 
             assert add(1, 2) == 3
@@ -53,10 +53,11 @@ class TestOtelCheck:
 
     def test_otel_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the first check decides for the process: OTel arriving later does not change it."""
-        with _tracing_without_otel(monkeypatch) as tracing:
+        with _tracing_without_otel(monkeypatch):
+            from threetears.observe import tracing
 
             @tracing.traced
-            def add(a, b):
+            def add(a: int, b: int) -> int:
                 return a + b
 
             assert add(1, 2) == 3  # the check runs here, with OTel absent
@@ -101,7 +102,7 @@ class TestParamNames:
     """Parameter names, as the keys recorded arguments are filed under."""
 
     def test_get_param_names(self) -> None:
-        def foo(a, b, c=3) -> None:
+        def foo(a: int, b: int, c: int = 3) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(foo, 1, 2, 3)) == {"arg.a": 1, "arg.b": 2, "arg.c": 3}
@@ -117,13 +118,13 @@ class TestSafeAttrs:
     """Span attribute safety filtering, observed on the span a traced call records into."""
 
     def test_set_safe_attr_string(self) -> None:
-        def f(name) -> None:
+        def f(name: str) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "hello")) == {"arg.name": "hello"}
 
     def test_set_safe_attr_int(self) -> None:
-        def f(count) -> None:
+        def f(count: int) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, 42)) == {"arg.count": 42}
@@ -131,20 +132,20 @@ class TestSafeAttrs:
     def test_set_safe_attr_uuid(self) -> None:
         from uuid import UUID
 
-        def f(id) -> None:
+        def f(id: UUID) -> None:
             pass
 
         uid = UUID("12345678-1234-5678-1234-567812345678")
         assert _arg_attributes(_span_attributes(f, uid)) == {"arg.id": str(uid)}
 
     def test_set_safe_attr_sensitive_redacted(self) -> None:
-        def f(password) -> None:
+        def f(password: str) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "secret123")) == {}
 
     def test_set_safe_attr_long_string_truncated(self) -> None:
-        def f(data) -> None:
+        def f(data: str) -> None:
             pass
 
         recorded = _arg_attributes(_span_attributes(f, "x" * 300))
@@ -152,7 +153,7 @@ class TestSafeAttrs:
 
     def test_record_safe_args_skips_self(self) -> None:
         class Foo:
-            def bar(self, name) -> None:
+            def bar(self, name: str) -> None:
                 pass
 
         recorded = _arg_attributes(_span_attributes(Foo.bar, Foo(), "hello"))
@@ -160,7 +161,7 @@ class TestSafeAttrs:
         assert recorded == {"arg.name": "hello"}
 
     def test_record_safe_result(self) -> None:
-        def f():
+        def f() -> list[int]:
             return [1, 2, 3]
 
         attributes = _span_attributes(f)
@@ -173,28 +174,28 @@ class TestTracedDecorator:
 
     def test_traced_bare_sync(self) -> None:
         @traced
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         assert add(1, 2) == 3
 
     def test_traced_parameterised_sync(self) -> None:
         @traced(name="custom.span")
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         assert add(1, 2) == 3
 
     async def test_traced_bare_async(self) -> None:
         @traced
-        async def add(a, b):
+        async def add(a: int, b: int) -> int:
             return a + b
 
         assert await add(1, 2) == 3
 
     async def test_traced_parameterised_async(self) -> None:
         @traced(name="custom.async.span")
-        async def add(a, b):
+        async def add(a: int, b: int) -> int:
             return a + b
 
         assert await add(1, 2) == 3
@@ -223,19 +224,21 @@ class TestTracedDecorator:
             await explode()
 
     def test_traced_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _tracing_without_otel(monkeypatch) as tracing:
+        with _tracing_without_otel(monkeypatch):
+            from threetears.observe import tracing
 
             @tracing.traced(record_args=True, record_result=True)
-            def add(a, b):
+            def add(a: int, b: int) -> int:
                 return a + b
 
             assert add(1, 2) == 3
 
     async def test_traced_async_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _tracing_without_otel(monkeypatch) as tracing:
+        with _tracing_without_otel(monkeypatch):
+            from threetears.observe import tracing
 
             @tracing.traced(record_args=True)
-            async def add(a, b):
+            async def add(a: int, b: int) -> int:
                 return a + b
 
             assert await add(1, 2) == 3
@@ -245,7 +248,9 @@ class TestSetSpanAttribute:
     """set_span_attribute() -- attach attributes to the current active span."""
 
     def test_noop_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _tracing_without_otel(monkeypatch) as tracing:
+        with _tracing_without_otel(monkeypatch):
+            from threetears.observe import tracing
+
             tracing.set_span_attribute("key", "value")  # must not raise
 
     def test_noop_without_recording_span(self) -> None:
@@ -295,7 +300,7 @@ class TestSetSpanAttribute:
         """integration: set_span_attribute reaches the span @traced opened, end to end."""
 
         @traced
-        def do_work():
+        def do_work() -> str:
             set_span_attribute("result.custom", "value")
             return "done"
 

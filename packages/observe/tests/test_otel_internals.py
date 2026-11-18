@@ -22,6 +22,7 @@ from collections.abc import Sequence
 
 from opentelemetry.instrumentation.logging.handler import LoggingHandler
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -140,7 +141,7 @@ class TestTheSdkStillNamesItsExportWorkersAsTheFilterExpects:
         client's records, logged on an export's behalf, be exported again -- the feedback loop.
         """
         export = _export_through(FakeLogRecordExporter())
-        span_processor = BatchSpanProcessor(InMemorySpanExporter())
+        span_processor: SpanProcessor = BatchSpanProcessor(InMemorySpanExporter())
         try:
             running = {thread.name for thread in threading.enumerate()}
         finally:

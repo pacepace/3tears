@@ -631,7 +631,7 @@ class _ReleaseOnGivingUp(logging.Handler):
         :ptype release: threading.Event
         """
         super().__init__()
-        self.release = release
+        self.gave_up = release
 
     def emit(self, record: logging.LogRecord) -> None:
         """set the event on shutdown's giving-up record.
@@ -642,7 +642,7 @@ class _ReleaseOnGivingUp(logging.Handler):
         :rtype: None
         """
         if record.getMessage() == _GAVE_UP:
-            self.release.set()
+            self.gave_up.set()
 
 
 class _SlowCollector(BaseHTTPRequestHandler):

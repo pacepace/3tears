@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Iterator, MutableMapping
 from typing import Any
 
 import pytest
@@ -23,7 +24,7 @@ MAX_CORRELATION_LENGTH = 128
 
 
 @pytest.fixture(autouse=True)
-def _clean_context():
+def _clean_context() -> Iterator[None]:
     """Reset context between tests so cross-test bleed cannot mask bugs."""
     clear_context()
     yield
@@ -62,7 +63,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
 
     @pytest.mark.asyncio
     async def test_uses_header_when_valid(self) -> None:
-        sent: list[dict[str, Any]] = []
+        sent: list[MutableMapping[str, Any]] = []
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -70,7 +71,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(message: dict[str, Any]) -> None:
+        async def send(message: MutableMapping[str, Any]) -> None:
             sent.append(message)
 
         middleware = CorrelationMiddleware(app)
@@ -91,7 +92,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -109,7 +110,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -128,7 +129,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         long_value = b"x" * (MAX_CORRELATION_LENGTH + 1)
@@ -149,7 +150,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -167,7 +168,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -186,7 +187,7 @@ class TestCorrelationMiddlewareContextLifecycle:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -200,7 +201,7 @@ class TestCorrelationMiddlewareContextLifecycle:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             raise RuntimeError("boom")
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -219,7 +220,7 @@ class TestCorrelationMiddlewareContextLifecycle:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -237,13 +238,13 @@ class TestCorrelationMiddlewareScopeRouting:
     @pytest.mark.asyncio
     async def test_websocket_publishes_context_but_does_not_inject_header(self) -> None:
         observed_cid: list[str | None] = []
-        sent: list[dict[str, Any]] = []
+        sent: list[MutableMapping[str, Any]] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
             observed_cid.append(get_context().get("cid"))
             await send({"type": "websocket.accept"})
 
-        async def send(message: dict[str, Any]) -> None:
+        async def send(message: MutableMapping[str, Any]) -> None:
             sent.append(message)
 
         middleware = CorrelationMiddleware(app)
@@ -263,7 +264,7 @@ class TestCorrelationMiddlewareScopeRouting:
             called = True
             assert "cid" not in get_context()
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -292,7 +293,7 @@ class TestCorrelationMiddlewareIntegrationWithTraced:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = CorrelationMiddleware(app)
@@ -313,7 +314,7 @@ class TestOTelMiddlewareScopeRouting:
             nonlocal called
             called = True
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = OTelMiddleware(app)
@@ -328,7 +329,7 @@ class TestOTelMiddlewareScopeRouting:
             nonlocal called
             called = True
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = OTelMiddleware(app)
@@ -347,7 +348,7 @@ class TestOTelMiddlewareScopeRouting:
             nonlocal called
             called = True
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = OTelMiddleware(app)
@@ -360,7 +361,7 @@ class TestOTelMiddlewareScopeRouting:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             raise RuntimeError("ws-boom")
 
-        async def send(_: dict[str, Any]) -> None:
+        async def send(_: MutableMapping[str, Any]) -> None:
             pass
 
         middleware = OTelMiddleware(app)

@@ -7,7 +7,6 @@ import sys
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -21,7 +20,7 @@ from threetears.observe.metrics import (
 
 
 @contextmanager
-def _metrics_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+def _metrics_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """``threetears.observe.metrics`` imported afresh into a process where prometheus_client is absent.
 
     The availability check runs once per process and remembers its answer, so the module the
@@ -32,15 +31,16 @@ def _metrics_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> Iterator[Mod
 
     :param monkeypatch: pytest's patcher
     :ptype monkeypatch: pytest.MonkeyPatch
-    :return: the freshly imported module
-    :rtype: Iterator[ModuleType]
+    :return: nothing; inside the block ``from threetears.observe import metrics`` is the fresh copy
+    :rtype: Iterator[None]
     """
     import threetears.observe as observe_pkg
 
     monkeypatch.setattr(observe_pkg, "metrics", importlib.import_module("threetears.observe.metrics"))
     with patch.dict(sys.modules, {"prometheus_client": None}):
         sys.modules.pop("threetears.observe.metrics", None)
-        yield importlib.import_module("threetears.observe.metrics")
+        importlib.import_module("threetears.observe.metrics")
+        yield
 
 
 def _unique(stem: str) -> str:
@@ -64,7 +64,9 @@ class TestPrometheusCheck:
         """the first check decides for the process: prometheus_client arriving later does not change it."""
         from prometheus_client import REGISTRY
 
-        with _metrics_without_prometheus(monkeypatch) as metrics:
+        with _metrics_without_prometheus(monkeypatch):
+            from threetears.observe import metrics
+
             metrics.counter(_unique("test.check.before")).inc()  # the check runs here, absent
 
         name = _unique("test.check.after")
@@ -137,7 +139,7 @@ class TestAccessors:
         """the whole point: a value only known after a function returns."""
         from prometheus_client import REGISTRY
 
-        def process_response():
+        def process_response() -> dict[str, float]:
             return {"completion_rate": 0.75}
 
         result = process_response()
@@ -234,7 +236,9 @@ class TestAccessors:
             histogram("test.accessor.shared_name_conflict")
 
     def test_accessor_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _metrics_without_prometheus(monkeypatch) as metrics:
+        with _metrics_without_prometheus(monkeypatch):
+            from threetears.observe import metrics
+
             c = metrics.counter("test.accessor.passthrough")
             h = metrics.histogram("test.accessor.passthrough.histogram")
             g = metrics.gauge("test.accessor.passthrough.gauge")
@@ -253,28 +257,28 @@ class TestMeteredDecorator:
 
     def test_metered_bare_sync(self) -> None:
         @metered
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         assert add(1, 2) == 3
 
     def test_metered_parameterised_sync(self) -> None:
         @metered(name="test.custom.metric")
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         assert add(1, 2) == 3
 
     async def test_metered_bare_async(self) -> None:
         @metered
-        async def add(a, b):
+        async def add(a: int, b: int) -> int:
             return a + b
 
         assert await add(1, 2) == 3
 
     async def test_metered_parameterised_async(self) -> None:
         @metered(name="test.custom.async.metric")
-        async def add(a, b):
+        async def add(a: int, b: int) -> int:
             return a + b
 
         assert await add(1, 2) == 3
@@ -303,19 +307,21 @@ class TestMeteredDecorator:
             await explode()
 
     def test_metered_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _metrics_without_prometheus(monkeypatch) as metrics:
+        with _metrics_without_prometheus(monkeypatch):
+            from threetears.observe import metrics
 
             @metrics.metered(name="test.passthrough")
-            def add(a, b):
+            def add(a: int, b: int) -> int:
                 return a + b
 
             assert add(1, 2) == 3
 
     async def test_metered_async_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with _metrics_without_prometheus(monkeypatch) as metrics:
+        with _metrics_without_prometheus(monkeypatch):
+            from threetears.observe import metrics
 
             @metrics.metered(name="test.async.passthrough")
-            async def add(a, b):
+            async def add(a: int, b: int) -> int:
                 return a + b
 
             assert await add(1, 2) == 3
@@ -334,7 +340,7 @@ class TestMeteredRecording:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.success")
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         add(1, 2)
@@ -361,7 +367,7 @@ class TestMeteredRecording:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.duration")
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         add(1, 2)
@@ -380,7 +386,7 @@ class TestMeteredRecording:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.reuse")
-        def add(a, b):
+        def add(a: int, b: int) -> int:
             return a + b
 
         add(1, 2)
@@ -392,7 +398,7 @@ class TestMeteredRecording:
         from prometheus_client import REGISTRY
 
         @metered(name="test.recording.async.success")
-        async def add(a, b):
+        async def add(a: int, b: int) -> int:
             return a + b
 
         await add(1, 2)

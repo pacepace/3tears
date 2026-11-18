@@ -9,7 +9,7 @@ import pytest
 _OBSERVE_SRC = Path(__file__).resolve().parents[2] / "src" / "threetears" / "observe"
 
 
-def _python_files():
+def _python_files() -> list[Path]:
     return sorted(_OBSERVE_SRC.rglob("*.py"))
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +23,7 @@ from threetears.observe.logging import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_context():
+def _clean_context() -> Iterator[None]:
     """Reset context between tests.
 
     The call-site cache is keyed by ``(file, line)``, so every logging call in this file is its own
@@ -35,7 +36,7 @@ def _clean_context():
 
 
 @pytest.fixture(autouse=True)
-def _restore_logging_levels():
+def _restore_logging_levels() -> Iterator[None]:
     """Put back every logger level and handler list ``configure_logging`` may change.
 
     It sets the ROOT and ``threetears`` levels (to WARNING in one test) and the noisy-library levels, and
@@ -317,6 +318,25 @@ class TestThreeTearsLogger:
         assert [r.call_site_class for r in records] == ["First", "Second", "First"]  # type: ignore[attr-defined]
 
 
+class _Capturing(logging.Handler):
+    """a handler that keeps every record it is handed, in order."""
+
+    def __init__(self) -> None:
+        """start with no records."""
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """keep ``record``.
+
+        :param record: the record the logger handles
+        :ptype record: logging.LogRecord
+        :return: nothing
+        :rtype: None
+        """
+        self.records.append(record)
+
+
 def _records_of(logger: logging.Logger) -> list[logging.LogRecord]:
     """attach a capturing handler to *logger* and return the list it fills.
 
@@ -325,12 +345,10 @@ def _records_of(logger: logging.Logger) -> list[logging.LogRecord]:
     :return: the records the logger emits from now on
     :rtype: list[logging.LogRecord]
     """
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
+    handler = _Capturing()
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
-    return records
+    return handler.records
 
 
 class TestPathShortening:
