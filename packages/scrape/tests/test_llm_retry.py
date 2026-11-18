@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import SimpleNamespace
+from typing import TypedDict
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import BaseModel
 from threetears.models import LlmPurpose
+
+from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
 from threetears.scrape.llm_retry import (
     StructuredCallExhaustedError,
@@ -29,13 +31,19 @@ class _Answer(BaseModel):
     value: str
 
 
-def _fake_structured_model(result=None, *, side_effect=None):
-    ainvoke_mock = AsyncMock(return_value=result, side_effect=side_effect)
-    structured = SimpleNamespace(ainvoke=ainvoke_mock)
-    return SimpleNamespace(with_structured_output=lambda schema, **kwargs: structured), ainvoke_mock
+class _CallKwargs(TypedDict):
+    """The keyword arguments every call below shares."""
+
+    model_id: str
+    api_key: str
+    purpose: LlmPurpose
+    temperature: float
+    timeout: float
+    backoff_seconds: float
+    log_label: str
 
 
-_CALL = {
+_CALL: _CallKwargs = {
     "model_id": "m",
     "api_key": "k",
     "purpose": LlmPurpose.SUMMARIZATION,
@@ -52,7 +60,7 @@ def _errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 class TestOrRaise:
     async def test_returns_the_first_good_answer(self) -> None:
-        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[RuntimeError("once"), _Answer(value="ok")])
+        fake_model, ainvoke_mock = fake_structured_model(side_effect=[RuntimeError("once"), _Answer(value="ok")])
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -63,7 +71,7 @@ class TestOrRaise:
 
     async def test_exhaustion_raises_carrying_the_last_cause(self, caplog: pytest.LogCaptureFixture) -> None:
         last = ValueError("second")
-        fake_model, _ = _fake_structured_model(side_effect=[RuntimeError("first"), last])
+        fake_model, _ = fake_structured_model(side_effect=[RuntimeError("first"), last])
         with (
             caplog.at_level(logging.WARNING),
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -83,7 +91,7 @@ class TestOrRaise:
         assert "ValueError: second" in errors[0].getMessage()
 
     async def test_cancellation_is_not_an_attempt(self) -> None:
-        fake_model, ainvoke_mock = _fake_structured_model(side_effect=asyncio.CancelledError())
+        fake_model, ainvoke_mock = fake_structured_model(side_effect=asyncio.CancelledError())
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             pytest.raises(asyncio.CancelledError),
@@ -98,7 +106,7 @@ class TestOrRaise:
 
 class TestDegradeToNone:
     async def test_exhaustion_degrades_to_none_and_logs_one_error(self, caplog: pytest.LogCaptureFixture) -> None:
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("down"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("down"))
         with (
             caplog.at_level(logging.WARNING),
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),

@@ -5,15 +5,17 @@ nothing here reaches a real model or a real network.
 
 from __future__ import annotations
 
+import multiprocessing.queues
 import os
 import signal
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from threetears.scrape.extraction import (
+    FieldSchema,
     NOTICE_DOCUMENT_CLASS,
     OCR_PAGE_IMAGE_CLASS,
     DiscoverySchemaResult,
@@ -102,7 +104,7 @@ class TestStripBoilerplate:
 class TestValidateCandidate:
     def test_valid_strategy_extracts_all_fields(self) -> None:
         strategy = {"employer": "td.employer", "affected_count": "td.count"}
-        schema = {"employer": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is True
         assert result.extracted == {"employer": "Acme Corp", "affected_count": 42}
@@ -110,7 +112,7 @@ class TestValidateCandidate:
 
     def test_missing_selector_for_required_field(self) -> None:
         strategy = {"employer": "td.employer"}
-        schema = {"employer": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("no selector proposed" in e for e in result.errors)
@@ -118,28 +120,28 @@ class TestValidateCandidate:
 
     def test_selector_matches_nothing(self) -> None:
         strategy = {"employer": "td.does-not-exist", "affected_count": "td.count"}
-        schema = {"employer": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("matched nothing" in e for e in result.errors)
 
     def test_selector_matches_empty_element(self) -> None:
         strategy = {"employer": "div.empty-field"}
-        schema = {"employer": str}
+        schema: FieldSchema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("empty element" in e for e in result.errors)
 
     def test_type_mismatch_fails_validation(self) -> None:
         strategy = {"affected_count": "td.employer"}  # "Acme Corp" doesn't parse as int
-        schema = {"affected_count": int}
+        schema: FieldSchema = {"affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("does not parse as int" in e for e in result.errors)
 
     def test_str_field_never_needs_coercion(self) -> None:
         strategy = {"employer": "td.employer"}
-        schema = {"employer": str}
+        schema: FieldSchema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is True
         assert result.extracted["employer"] == "Acme Corp"
@@ -157,7 +159,7 @@ class TestValidateCandidate:
         # And the refusal names the selector as invalid: "matched nothing" would say the PAGE
         # lacks the field when it is the proposal that is broken.
         strategy = {"employer": "td:eq(0)"}
-        schema = {"employer": str}
+        schema: FieldSchema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("'td:eq(0)' is not valid CSS" in e for e in result.errors)
@@ -207,7 +209,7 @@ class TestGenerateCandidates:
         assert exc_info.value.last_error is boom
 
     async def test_empty_candidate_list_from_llm_returns_empty(self) -> None:
-        parsed = {"candidates": []}
+        parsed: dict[str, list[object]] = {"candidates": []}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             candidates = await generate_candidates(_PAGE_HTML, {"employer": str}, api_key="k")
@@ -274,7 +276,7 @@ class TestValidateRowCandidate:
             "row_selector": "tbody tr",
             "field_selectors": {"employer": "td.employer", "affected_count": "td.count", "county": "td.county"},
         }
-        schema = {"employer": str, "affected_count": int, "county": str}
+        schema: FieldSchema = {"employer": str, "affected_count": int, "county": str}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, schema)
         assert result.valid is True
         assert result.total_rows_matched == 3  # row_selector matched all 3, including the bad one
@@ -512,7 +514,7 @@ _TEXT_PAGE = "Acme Corp\nCounty: Oakland\nAffected: 42"
 class TestValidateRegexCandidate:
     def test_valid_pattern_extracts_all_fields(self) -> None:
         pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)\nAffected: (?P<affected_count>\d+)"
-        schema = {"employer": str, "county": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_candidate(_TEXT_PAGE, pattern, schema)
         assert result.valid is True
         assert result.extracted == {"employer": "Acme Corp", "county": "Oakland", "affected_count": 42}
@@ -585,7 +587,7 @@ class TestGenerateRegexCandidates:
         assert exc_info.value.last_error is boom
 
     async def test_empty_candidate_list_from_llm_returns_empty(self) -> None:
-        parsed = {"candidates": []}
+        parsed: dict[str, list[object]] = {"candidates": []}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             candidates = await generate_regex_candidates(_TEXT_PAGE, {"employer": str}, api_key="k")
@@ -607,7 +609,7 @@ class TestValidateRegexRowCandidate:
     _PATTERN = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]*)\nAffected: (?P<affected_count>[^\n]+)"
 
     def test_valid_pattern_extracts_every_full_record(self) -> None:
-        schema = {"employer": str, "county": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, self._PATTERN, schema)
         assert result.valid is True
         assert result.total_rows_matched == 3  # matched all 3, including the bad one
@@ -628,7 +630,7 @@ class TestValidateRegexRowCandidate:
         assert result.records == []
 
     def test_every_record_failing_is_invalid(self) -> None:
-        schema = {"employer": str, "county": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, self._PATTERN, schema)
         assert len(result.errors) >= 1  # the "Bad Record" entry's empty county / non-numeric count
 
@@ -995,7 +997,7 @@ class TestSplitNoticeDocuments:
 # extract_fields_directly
 # ===========================================================================
 
-_SCHEMA_DIRECT = {"employer": str, "affected_count": int}
+_SCHEMA_DIRECT: FieldSchema = {"employer": str, "affected_count": int}
 
 
 class TestExtractFieldsDirectly:
@@ -1088,7 +1090,7 @@ class TestIsPlausibleDirectExtraction:
     answer costs a second attempt, a plausible one is returned at once."""
 
     @staticmethod
-    async def _attempts_spent_on(first_answer: dict[str, str | None]) -> int:
+    async def _attempts_spent_on(first_answer: Mapping[str, str | None]) -> int:
         good = {"employer": "Acme Corp", "affected_count": "42"}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[first_answer, good])
         with (
@@ -1117,7 +1119,7 @@ class TestIsPlausibleDirectExtraction:
 # extract_fields_directly_chunked
 # ===========================================================================
 
-_SCHEMA_FOUR_FIELDS = {"employer": str, "notice_date": str, "effective_date": str, "affected_count": int}
+_SCHEMA_FOUR_FIELDS: FieldSchema = {"employer": str, "notice_date": str, "effective_date": str, "affected_count": int}
 
 
 class TestExtractFieldsDirectlyChunked:
@@ -1143,7 +1145,7 @@ class TestExtractFieldsDirectlyChunked:
         assert ainvoke_b.await_count == 1
 
     async def test_a_five_field_schema_splits_into_three_chunks(self) -> None:
-        schema = {**_SCHEMA_FOUR_FIELDS, "county": str}
+        schema: FieldSchema = {**_SCHEMA_FOUR_FIELDS, "county": str}
         fake_a, _ = fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
         fake_b, _ = fake_structured_model({"effective_date": "June 1, 2026", "affected_count": "12"})
         fake_c, _ = fake_structured_model({"county": "Baltimore"})
@@ -1178,7 +1180,7 @@ class TestExtractFieldsDirectlyChunked:
             await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
 
     async def test_custom_fields_per_call_of_one_makes_one_call_per_field(self) -> None:
-        schema = {"employer": str, "notice_date": str}
+        schema: FieldSchema = {"employer": str, "notice_date": str}
         fake_a, ainvoke_a = fake_structured_model({"employer": "Acme Corp"})
         fake_b, ainvoke_b = fake_structured_model({"notice_date": "May 1, 2026"})
         with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]):
@@ -1339,7 +1341,7 @@ class TestExtractMultiRowFieldsFromImages:
         assert result == [{"employer": "Acme Corp"}]
 
     async def test_zero_records_is_a_retry_worthy_result_not_silently_accepted(self) -> None:
-        empty = {"records": []}
+        empty: dict[str, list[object]] = {"records": []}
         good = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[empty, good])
         with (
@@ -1391,7 +1393,7 @@ _BACKTRACKING_PAGE = "".join(
     f"Employer {i}\nAddress {i}\nCOUNTY: Salt Lake\nNotice received\n# AFFECTED: {i}\nEFFECTIVE DATE: 1/1/2020\n"
     for i in range(2000)
 )
-_ROW_SCHEMA = {"employer": str, "county": str, "affected_count": int, "effective_date": str}
+_ROW_SCHEMA: FieldSchema = {"employer": str, "county": str, "affected_count": int, "effective_date": str}
 
 
 class TestRegexCandidatesRunUnderATimeLimit:
@@ -1434,7 +1436,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
         validate_regex_row_candidate(_BACKTRACKING_PAGE, _BACKTRACKING_PATTERN, _ROW_SCHEMA)
         monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 5.0)
-        schema = {"employer": str, "county": str, "affected_count": int}
+        schema: FieldSchema = {"employer": str, "county": str, "affected_count": int}
         pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]*)\nAffected: (?P<affected_count>[^\n]+)"
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, schema)
         assert result.valid is True
@@ -1448,7 +1450,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert result.total_rows_matched == 20000
 
     @pytest.mark.parametrize("pattern", [r"(?V1)(?P<employer>\w+)", r"(?au)(?P<employer>\w+)"])
-    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern) -> None:
+    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern: str) -> None:
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, {"employer": str})
         assert result.valid is False
         assert any("invalid regex" in e for e in result.errors)
@@ -1482,7 +1484,7 @@ _DIFFERENTIAL_ROW_PATTERNS = [
 
 
 @pytest.mark.parametrize("pattern", _DIFFERENTIAL_ROW_PATTERNS)
-def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern) -> None:
+def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern: str) -> None:
     import re
 
     compiled = re.compile(pattern, re.MULTILINE | re.DOTALL)
@@ -1492,7 +1494,7 @@ def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern) -> None:
         {name: None if value is None else " ".join(value.split()) for name, value in m.groupdict().items()}
         for m in compiled.finditer(_UNICODE_ROWS)
     ]
-    schema = dict.fromkeys(compiled.groupindex, str)
+    schema: FieldSchema = dict.fromkeys(compiled.groupindex, str)
 
     result = validate_regex_row_candidate(_UNICODE_ROWS, pattern, schema)
 
@@ -1562,7 +1564,9 @@ class TestBoundedRegexIsThreadAndForkSafe:
         assert bounded_matches(r"(?P<c>z)", re.MULTILINE, "z", mode="search", timeout=10.0) == [{"c": "z"}]
 
 
-def _child_matches(results) -> None:  # a forked child's body; module level so the fork context can run it
+def _child_matches(
+    results: multiprocessing.queues.Queue[list[dict[str, str | None]]],
+) -> None:  # a forked child's body; module level so the fork context can run it
     from threetears.scrape.bounded_regex import bounded_matches
 
     results.put(bounded_matches(r"(?P<b>y)", 0, "y", mode="search", timeout=10.0))
@@ -1586,7 +1590,7 @@ def _child_runs_a_runaway() -> None:  # a forked child's body; the test kills it
     )
 
 
-def _first_child_pid(parent_pid, within=1.0):
+def _first_child_pid(parent_pid: int | None, within: float = 1.0) -> int | None:
     """The pid of *parent_pid*'s first child process, polled for up to *within* seconds."""
     import subprocess
     import time
@@ -1601,7 +1605,7 @@ def _first_child_pid(parent_pid, within=1.0):
     return None
 
 
-def _process_running(pid):
+def _process_running(pid: int) -> bool:
     """Whether *pid* is a live process; a zombie awaiting its reaper has stopped running."""
     import subprocess
 
@@ -1740,7 +1744,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
     def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threetears.scrape.extraction as extraction
 
-        def _broken(*args, **kwargs) -> None:
+        def _broken(*args: object, **kwargs: object) -> None:
             raise RuntimeError("regex worker exited without answering")
 
         monkeypatch.setattr(extraction, "bounded_matches", _broken)

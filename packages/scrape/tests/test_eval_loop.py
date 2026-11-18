@@ -17,14 +17,17 @@ namespaces.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.models import LlmPurpose
-from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
+from threetears.scrape.extraction import FieldSchema, NoticeDocument
 from threetears.scrape.llm_retry import StructuredCallExhaustedError, StructuredCallTimeoutError
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
@@ -48,7 +51,7 @@ _PAGE_HTML = """
     </table>
 </body></html>
 """
-_SCHEMA = {"employer": str, "affected_count": int}
+_SCHEMA: FieldSchema = {"employer": str, "affected_count": int}
 _WINNING_STRATEGY = {"employer": "td.employer", "affected_count": "td.count"}
 
 _ROWS_PAGE_HTML = """
@@ -81,10 +84,10 @@ _TEXT_ROWS_PAGE_HTML = """
 _WINNING_REGEX_ROW_PATTERN = r"(?P<employer>[^\n]+)\nAFFECTED: (?P<affected_count>\d+)"
 
 
-def _dispatch_by_purpose(extraction_model, judge_model):
+def _dispatch_by_purpose(extraction_model: object, judge_model: object) -> Callable[..., object]:
     """``create_chat_model`` side_effect: pick the extraction or judge fake by ``purpose``."""
 
-    def _dispatch(*args, purpose=None, **kwargs):
+    def _dispatch(*args: object, purpose: LlmPurpose | None = None, **kwargs: object) -> object:
         return extraction_model if purpose == LlmPurpose.EXTRACTION else judge_model
 
     return _dispatch
@@ -240,6 +243,7 @@ class TestRunEvalLoopRecipeReuse:
         assert extraction.extraction_recipe_id == "warn_act_ca"
 
         recipe = await recipe_collection.get("warn_act_ca")
+        assert recipe is not None
         assert recipe.consecutive_validation_failures == 0
 
     async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self) -> None:
@@ -274,6 +278,7 @@ class TestRunEvalLoopRecipeReuse:
         assert extraction.extraction_recipe_id == "warn_act_ca"
 
         recipe = await recipe_collection.get("warn_act_ca")
+        assert recipe is not None
         assert recipe.consecutive_validation_failures == 1
         assert recipe.extraction_strategy == {"selectors": {"employer": ".gone", "affected_count": ".also-gone"}}
 
@@ -315,6 +320,7 @@ class TestRunEvalLoopRecipeReuse:
         assert extraction.validation_status == "validated"
 
         recipe = await recipe_collection.get("warn_act_ca")
+        assert recipe is not None
         assert recipe.extraction_strategy == {"selectors": _WINNING_STRATEGY}
         assert recipe.consecutive_validation_failures == 0
 
@@ -490,6 +496,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         assert len(extraction.structured_fields["records"]) == 2
 
         recipe = await recipe_collection.get("warn_act_md")
+        assert recipe is not None
         assert recipe.consecutive_validation_failures == 0
 
     async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self) -> None:
@@ -523,6 +530,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         assert extraction.structured_fields == {"records": []}
 
         recipe = await recipe_collection.get("warn_act_md")
+        assert recipe is not None
         assert recipe.consecutive_validation_failures == 1
 
     async def test_threshold_crossed_triggers_regeneration(self) -> None:
@@ -563,6 +571,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         assert extraction.validation_status == "validated"
 
         recipe = await recipe_collection.get("warn_act_md")
+        assert recipe is not None
         assert recipe.extraction_strategy == _WINNING_ROW_STRATEGY
         assert recipe.consecutive_validation_failures == 0
 
@@ -754,6 +763,7 @@ class TestRunEvalLoopRegexStrategyRecipeReuse:
         assert extraction.validation_status == "failed"
 
         recipe = await recipe_collection.get("warn_act_pa")
+        assert recipe is not None
         assert recipe.consecutive_validation_failures == 1
 
 
@@ -912,7 +922,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         recipe_collection, extraction_collection = _collections()
 
-        async def fake_extract(text, schema, *, model_id, api_key):
+        async def fake_extract(text: str, schema: FieldSchema, *, model_id: str, api_key: str) -> dict[str, Any]:
             return (
                 {"employer": "Acme Corp", "affected_count": 42}
                 if "Acme" in text
@@ -955,7 +965,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         recipe_collection, extraction_collection = _collections()
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        async def fake_extract(text, schema, *, model_id, api_key):
+        async def fake_extract(text: str, schema: FieldSchema, *, model_id: str, api_key: str) -> dict[str, Any]:
             return {"employer": "Acme Corp", "affected_count": 42}
 
         with (
@@ -1061,14 +1071,20 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
 
-    async def test_one_document_llm_total_failure_does_not_sink_the_others(self) -> None:
+    async def test_one_document_with_nothing_extracted_does_not_sink_the_others(self) -> None:
+        """A document the extractor reads no fields from yields no record; the others still count.
+
+        The extractor answers a document with nothing in it with ``{}``. It never answers
+        ``None``: a call that fails every attempt raises, and fails the poll
+        (``TestAModelOutageIsNotRecordedAsAnExtraction``).
+        """
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
 
-        async def fake_extract(text, schema, *, model_id, api_key):
+        async def fake_extract(text: str, schema: FieldSchema, *, model_id: str, api_key: str) -> dict[str, Any]:
             if "Acme" in text:
-                return None
+                return {}
             return {"employer": "Beta LLC", "affected_count": 7}
 
         with (
@@ -1106,7 +1122,9 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         deadline = 0.5
         stuck_deadline_fired = asyncio.Event()
 
-        async def fake_extract_chunked(text, schema, *, model_id, api_key):
+        async def fake_extract_chunked(
+            text: str, schema: FieldSchema, *, model_id: str, api_key: str
+        ) -> dict[str, Any]:
             if "Acme" in text:
                 # Simulates the live-reproduced hang: it never returns on its own, and only
                 # asyncio.wait_for's outer deadline ends it, by cancelling it.
@@ -1120,7 +1138,14 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
             await asyncio.sleep(deadline / 2)
             return {"employer": "Beta LLC", "affected_count": 7}
 
-        async def slow_judge(document, extracted, schema, *, api_key, judge_model_id):
+        async def slow_judge(
+            document: NoticeDocument,
+            extracted: dict[str, Any],
+            schema: FieldSchema,
+            *,
+            api_key: str,
+            judge_model_id: str,
+        ) -> bool:
             # Recorded only once the stuck document's deadline has fired -- an event, not a
             # timing guess -- so it proves the hang did not stop the rest of the batch. The wait
             # is about half of this call's own deadline, so neither call's margin is scheduler
@@ -1159,7 +1184,14 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         recipe_collection, extraction_collection = _collections()
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id) -> None:
+        async def hanging_judge(
+            document: NoticeDocument,
+            extracted: dict[str, Any],
+            schema: FieldSchema,
+            *,
+            api_key: str,
+            judge_model_id: str,
+        ) -> bool:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1248,17 +1280,24 @@ class TestRunEvalLoopMultiRowVisionRouting:
         text_calls: list[str] = []
         vision_calls: list[list[bytes]] = []
 
-        async def fake_text(text, schema, *, model_id, api_key):
+        async def fake_text(text: str, schema: FieldSchema, *, model_id: str, api_key: str) -> dict[str, Any]:
             text_calls.append(text)
             return {"employer": "Acme Corp", "affected_count": 1}
 
-        async def fake_vision(images, schema, *, api_key):
+        async def fake_vision(images: list[bytes], schema: FieldSchema, *, api_key: str) -> dict[str, Any]:
             vision_calls.append(images)
             return {"employer": "Scanned Co", "affected_count": 2}
 
         judge_calls: list[bool] = []
 
-        async def fake_judge(document, extracted, schema, *, api_key, judge_model_id):
+        async def fake_judge(
+            document: NoticeDocument,
+            extracted: dict[str, Any],
+            schema: FieldSchema,
+            *,
+            api_key: str,
+            judge_model_id: str,
+        ) -> bool:
             judge_calls.append(document.was_ocr)
             return True
 
@@ -1297,7 +1336,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
             "</div></body></html>"
         )
 
-        async def hanging_vision(images, schema, *, api_key) -> None:
+        async def hanging_vision(images: list[bytes], schema: FieldSchema, *, api_key: str) -> dict[str, Any]:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1505,6 +1544,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert extraction.structured_fields == {"records": [{"employer": "Acme Corp", "affected_count": 42}]}
         # only the one complete record was ever handed to the judge
         judge_mock.assert_awaited_once()
+        assert judge_mock.await_args is not None
         assert judge_mock.await_args.args[1] == [{"employer": "Acme Corp", "affected_count": 42}]
 
     async def test_extraction_returning_none_is_failed_not_a_crash(self) -> None:
@@ -1547,7 +1587,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         )
         await recipe_collection.save_entity(recipe)
 
-        async def hanging_extraction(images, schema, *, api_key) -> None:
+        async def hanging_extraction(images: list[bytes], schema: FieldSchema, *, api_key: str) -> list[dict[str, Any]]:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1581,7 +1621,9 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         recipe_collection, extraction_collection = _collections()
         records = [{"employer": "Acme Corp", "affected_count": 42}]
 
-        async def hanging_judge(images, records, schema, *, api_key) -> None:
+        async def hanging_judge(
+            images: list[bytes], records: list[dict[str, Any]], schema: FieldSchema, *, api_key: str
+        ) -> set[int]:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1622,7 +1664,9 @@ _SCANNED_DOCUMENT_HTML = (
 _EXTRACTED = {"employer": "Acme Corp", "affected_count": 42}
 
 
-async def _judge_one_document(html, fake_model, *, judge_model_id="deepseek/deepseek-chat-v3-0324"):
+async def _judge_one_document(
+    html: str, fake_model: object, *, judge_model_id: str = "deepseek/deepseek-chat-v3-0324"
+) -> tuple[ScrapeExtraction, MagicMock]:
     """Run one per_document poll over *html* whose extraction always yields :data:`_EXTRACTED`,
     with the default judge asking *fake_model*. Returns the persisted extraction and the
     ``create_chat_model`` mock, which only the judge reaches."""
@@ -1676,6 +1720,7 @@ class TestJudgeOneDocumentExtraction:
         _, create_model = await _judge_one_document(
             _TEXT_DOCUMENT_HTML, fake_model, judge_model_id="deepseek/deepseek-chat-v3-0324"
         )
+        assert create_model.call_args is not None
         assert create_model.call_args.args[0] == "deepseek/deepseek-chat-v3-0324"
         assert create_model.call_args.kwargs["provider"] is None
 
@@ -1685,6 +1730,7 @@ class TestJudgeOneDocumentExtraction:
             _SCANNED_DOCUMENT_HTML, fake_model, judge_model_id="this-should-be-ignored"
         )
         assert extraction.structured_fields == {"records": [_EXTRACTED]}
+        assert create_model.call_args is not None
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
@@ -1708,7 +1754,12 @@ _MULTI_ROW_RECORDS = [
 ]
 
 
-async def _judge_multi_row(fake_model, *, images=(b"fake-png-page-0",), records=_MULTI_ROW_RECORDS):
+async def _judge_multi_row(
+    fake_model: object,
+    *,
+    images: tuple[bytes, ...] = (b"fake-png-page-0",),
+    records: list[dict[str, Any]] = _MULTI_ROW_RECORDS,
+) -> tuple[ScrapeExtraction, MagicMock]:
     """Run one multi_row_vision poll whose page holds *images* and whose table read yields
     *records*, with the default judge asking *fake_model*. Returns the persisted extraction and
     the ``create_chat_model`` mock, which only the judge reaches."""
@@ -1777,6 +1828,7 @@ class TestJudgeMultiRowExtraction:
     async def test_always_uses_the_vision_model_and_provider(self) -> None:
         fake_model, _ = fake_structured_model({"confirmed_record_indices": [0], "reasoning": "ok"})
         _, create_model = await _judge_multi_row(fake_model)
+        assert create_model.call_args is not None
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
@@ -1852,7 +1904,7 @@ class TestRegexValidationRunsOffTheEventLoop:
 # ===========================================================================
 
 
-async def _rows_for(extraction_collection: ScrapeExtractionCollection, target_id: str) -> list:
+async def _rows_for(extraction_collection: ScrapeExtractionCollection, target_id: str) -> list[ScrapeExtraction]:
     return [row for row in await extraction_collection.list_all() if row.target_id == target_id]
 
 
@@ -1911,7 +1963,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         recipe_collection, extraction_collection = _collections()
         boom = RuntimeError("provider down")
 
-        async def extraction_answer(prompt):
+        async def extraction_answer(prompt: object) -> dict[str, str]:
             if "Acme" in str(prompt):
                 raise boom
             return {"employer": "Beta LLC", "affected_count": "7"}
@@ -2050,7 +2102,7 @@ class TestACancelledPollIsNotADeadlineFailure:
 
         recipe_collection, extraction_collection = _collections()
 
-        async def cancelled_extract(text, schema, *, model_id, api_key) -> None:
+        async def cancelled_extract(text: str, schema: FieldSchema, *, model_id: str, api_key: str) -> dict[str, Any]:
             raise asyncio.CancelledError()
 
         with (

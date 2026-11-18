@@ -29,7 +29,7 @@ from threetears.core.exceptions import ConcurrentModificationError, DataLayerUna
 from threetears.scrape.challenge import PageVerdict, build_classification_prompt, classify_failed_page
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
-from threetears.scrape.extraction import RowValidationResult, ValidationResult
+from threetears.scrape.extraction import FieldSchema, RowValidationResult, ValidationResult
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     clear_classification,
@@ -61,9 +61,9 @@ _WALL = """
 _TABLE_PAGE = '<html><body><table><tr><td class="employer">Acme Corp</td></tr></table></body></html>'
 _RESTYLED_PAGE = '<html><body><table><tr><td class="org">Acme Corp</td></tr></table></body></html>'
 
-_SCHEMA = {"employer": str}
-_ROW_STRATEGY = {"row_selector": "tr", "field_selectors": {"employer": "td.employer"}}
-_SINGLE_STRATEGY = {"selectors": {"employer": "td.employer"}}
+_SCHEMA: FieldSchema = {"employer": str}
+_ROW_STRATEGY: dict[str, Any] = {"row_selector": "tr", "field_selectors": {"employer": "td.employer"}}
+_SINGLE_STRATEGY: dict[str, Any] = {"selectors": {"employer": "td.employer"}}
 
 _DEAD_REGEX_PATTERN = r"(?P<employer>Nothing Matches This)"
 
