@@ -327,19 +327,27 @@ are not run on every build. Instead:
   (`packages/evals/tests/test_stats_guards.py`, `test_small_n_read.py`, `test_rereadable_bet.py`,
   `test_engine_take_up_null.py`).
 - **Certified claims** are counted by the certification and written to
-  `packages/evals/tests/fixtures/stats_certificate.json`: each claim, its count, its Clopper-Pearson 95% bounds, its
-  seeds and the digest of the files that decide it (`packages/evals/tests/stats_certificate.py` names them in
-  `SOURCES`: `analysis/stats.py`, the quick read path, the runner's launch, cut and drain path, the engine's operator
-  path, and the simulations themselves). Most claims are counted on the reading restated over the bet alone
-  (`null_newcomers.py`: the package's own statistics functions over the same seeded answers, no `Eval.run`), which the
-  `restated-as-product` claims hold read for read to a few hundred newcomers through `Eval.run`. The claims that depend
-  on time (which cells an interrupt finds in flight) run through the product: a drained stop draws nothing afresh, so
-  its claims are exact (every drained engine comparison reads as the uninterrupted one on its first draws; every
-  drained quick-path watcher separates only where the bet over its whole committed path does, whose rate the `horizon`
-  claims bound); a stop that cuts is counted at the simulation's full size.
-- **`test_stats_certificate.py`**, in the unit suite, fails when any claim's files have changed since it was certified,
-  naming each stale claim, the files that moved and the command; and fails on any claim whose count does not clear its
-  target.
+  `packages/evals/tests/fixtures/stats_certificate.json`: each claim, its count, its Clopper-Pearson 95% bounds and
+  its seeds, and the digest of every file that decides them. That digest is no list anyone keeps: it is the import
+  closure of the certification's entry points (`stats_certificate.closure()`), every repository file they import, at
+  module level, inside a function, under `TYPE_CHECKING` or by name for a lazy export, computed from the code at
+  certify time and at check time; `test_stats_certificate.py` also runs a few simulations in a fresh interpreter and
+  checks every repository file they load is in it. Most claims are counted on the reading restated over the bet alone
+  (`null_newcomers.py`: the package's own statistics functions over the same seeded answers, no `Eval.run`), which
+  the `restated-as-product` claims hold read for read to several hundred newcomers through `Eval.run`. The claims
+  that depend on time (which cells an interrupt finds in flight) run through the product: a drained stop draws
+  nothing afresh, so each drained engine comparison is held exactly to the uninterrupted reading of its first draws
+  and each drained quick-path watcher to the bet over its whole committed path, whose rate the `horizon` claims
+  bound; a stop that cuts is counted. Every one runs at the simulation's full size (engine 800 or 500 a cell,
+  watchers 300 or 1,000). The trade against the simulations they replace: each comparison is held to equality, not
+  to a rate that cannot reject, so one drain race in a checked comparison fails the claim; and as many comparisons
+  run as before, so a race once in a thousand would be seen with chance 26% at 300 newcomers, 63% at 1,000, and
+  above 99.9% over the engine's 7,800 drained comparisons together. Each end of the primary's interval is certified
+  on 4,000 newcomers: a count passes at most 172 misses, so an end that missed 6% of the time (one point past the 5%
+  it states) would pass with chance about one in a million.
+- **`test_stats_certificate.py`**, in the unit suite, fails when any file of the closure has changed, joined it or left
+  it since the certificate was written, naming the files, each stale claim and the command; and fails on any claim
+  whose count does not clear its target.
 
 **Re-certify** from the repository's root when that test says the certificate is stale, and commit the certificate it
 writes:
@@ -351,7 +359,9 @@ uv run python packages/evals/scripts/certify_stats.py
 It takes about five minutes and at most fifteen: the restated shards run here, side by side in processes (about two
 minutes), while the product shards run on the testament pool as one request of the `simulation` suite, each shard an
 xdist group of its own so the pool spreads them; each shard records its counts as metrics named by the run's key, which
-the command reads back. It exits 1 if a claim fails its target, and the certificate it wrote then fails
+the command reads back, asking again for up to ten minutes while the pool's metrics catch up with a request that has
+passed, and naming any shard still missing a count at that limit. A shard that fails fails the command. It exits 1 if a
+claim fails its target, and the certificate it wrote then fails
 `test_stats_certificate.py` too: a claim that fails is reported with its evidence, never re-run until it passes. With
 the pool down, `--local` runs every shard here (an hour or more). A claim added to the certification is a `Claim` and its
 shards in `stats_certificate.py`, with a fast guard beside it that fails for a wrong formula.

@@ -37,6 +37,9 @@ from packages.evals.tests import stats_certificate as cert  # noqa: E402
 _SHARD_FILE = "packages/evals/tests/test_certified_simulations.py"
 _DROPPED = ("connection_lost", "coordinator_unreachable")
 
+#: How long to wait for the pool's metrics once its request has passed, and how often to ask again meanwhile.
+_METRICS_WAIT_S, _METRICS_EVERY_S = 600, 15
+
 
 def _pool(key: str) -> tuple[dict[str, dict[str, int]], str]:
     """Run every product shard on the pool as one request and read each one's counts back. Returns them by shard id,
@@ -61,6 +64,11 @@ def _pool(key: str) -> tuple[dict[str, dict[str, int]], str]:
     if envelope.get("verdict") != "passed" or failed:
         lines = [f"  {item.get('id')}: {item.get('outcome')} {item.get('message', '')[:2000]}" for item in failed]
         raise SystemExit(f"pool: the shards did not all pass ({envelope.get('verdict')}):\n" + "\n".join(lines))
+    return _counts_of(key), str(envelope.get("request_id", ""))
+
+
+def _recorded(key: str) -> dict[str, dict[str, int]]:
+    """Every count the pool's shards have recorded under ``key`` so far, by test id and field."""
     by_item: dict[str, dict[str, int]] = {}
     for name in cert.FIELDS:
         asked = subprocess.run(
@@ -70,13 +78,36 @@ def _pool(key: str) -> tuple[dict[str, dict[str, int]], str]:
         )  # fmt: skip
         for series in json.loads(asked.stdout)["result"]["series"]:
             by_item.setdefault(series["item_id"], {})[name] = int(series["days"][-1]["last"])
-    results = {}
-    for shard in cert.pool_shards():
-        item = f"{_SHARD_FILE}::test_certified_simulation_shard[{shard.id}]"
-        if item not in by_item:
-            raise SystemExit(f"pool: shard {shard.id} recorded no counts under key {key}")
-        results[shard.id] = by_item[item]
-    return results, str(envelope.get("request_id", ""))
+    return by_item
+
+
+def _counts_of(key: str) -> dict[str, dict[str, int]]:
+    """Each pool shard's counts, read back from the metrics once every shard's every field is there. The pool's request
+    passes before its metrics are all taken in, so this asks again every :data:`_METRICS_EVERY_S` until they are, up to
+    :data:`_METRICS_WAIT_S`; past that it fails naming each shard still missing a count."""
+    waited_from = time.monotonic()
+    while True:
+        by_item = _recorded(key)
+        missing = {}
+        for shard in cert.pool_shards():
+            item = f"{_SHARD_FILE}::test_certified_simulation_shard[{shard.id}]"
+            absent = [name for name in cert.FIELDS if name not in by_item.get(item, {})]
+            if absent:
+                missing[shard.id] = absent
+        if not missing:
+            return {
+                shard.id: by_item[f"{_SHARD_FILE}::test_certified_simulation_shard[{shard.id}]"]
+                for shard in cert.pool_shards()
+            }
+        waited = time.monotonic() - waited_from
+        if waited >= _METRICS_WAIT_S:
+            named = "\n".join(f"  {shard_id}: {', '.join(fields)}" for shard_id, fields in sorted(missing.items()))
+            raise SystemExit(
+                f"pool: every shard passed, but after waiting {_METRICS_WAIT_S}s for the metrics {len(missing)} of "
+                f"{len(cert.pool_shards())} shards still have no count under key {key}:\n{named}"
+            )
+        print(f"pool: {len(missing)} shards' counts not yet taken in; asking again ({waited:.0f}s waited)", flush=True)
+        time.sleep(_METRICS_EVERY_S)
 
 
 def _here(shards: list[cert.Shard], workers: int) -> dict[str, dict[str, int]]:

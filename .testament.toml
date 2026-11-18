@@ -205,10 +205,11 @@ platform = ["packages/**"]
 # `uv run python packages/evals/scripts/certify_stats.py` sends it as one request, reads each shard's counts back from
 # the metrics it records, runs the restated shards on the submitting machine and writes
 # packages/evals/tests/fixtures/stats_certificate.json (docs/testing.md, "Statistical simulations"). Run that command
-# when packages/evals/tests/test_stats_certificate.py says the certificate is stale: it names each stale claim and the
-# files that moved, out of the files packages/evals/tests/stats_certificate.py names in SOURCES (the bet and its
-# reading, the quick read path, the runner's launch, cut and drain path, the engine's operator path, and the
-# simulations themselves). Otherwise the certificate is current and nothing here needs to run.
+# when packages/evals/tests/test_stats_certificate.py says the certificate is stale: it names the files that moved and
+# each stale claim. The files are the import closure of the certification's entry points, derived from the code
+# (stats_certificate.closure()): the bet and its reading, the quick read path, the runner's launch, cut and drain path,
+# the engine's operator path, the simulations themselves, and anything they come to import. Otherwise the certificate
+# is current and nothing here needs to run.
 # `--dist loadgroup` gives each shard its own unit (each is an xdist group of its own), so the pool runs them side by
 # side even where it has no recorded duration for them; without -n, pytest runs in one process as before.
 [suites.simulation]

@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.stats_certificate import Shard, metric_name, pool_shards, run_key, run_pool
+from packages.evals.tests.stats_certificate import FIELDS, Shard, metric_name, pool_shards, run_key, run_pool
 
 
 def _param(shard: Shard) -> Any:
@@ -34,5 +34,6 @@ async def test_certified_simulation_shard(shard: Shard, record_property: Any) ->
     """One product shard, its counts recorded for the certification that sent it."""
     counts = await run_pool(shard)
     key = run_key()
-    for name, value in counts.items():
-        record_property(metric_name(key, name), value)
+    assert set(counts) <= set(FIELDS), f"{shard.id} counted {sorted(counts)}, beyond {FIELDS}"
+    for name in FIELDS:
+        record_property(metric_name(key, name), counts.get(name, 0))

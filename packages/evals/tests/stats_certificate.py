@@ -16,7 +16,7 @@ newcomers to bound. Running them through ``Eval.run`` on every build took hours,
 
 Running the certification (:data:`COMMAND`, ``packages/evals/scripts/certify_stats.py``) writes
 :data:`CERTIFICATE`: each claim, its count, its Clopper-Pearson 95% bounds, its seeds, and the digest of the files that
-decide it (:data:`SOURCES`). ``test_stats_certificate.py`` fails, naming each stale claim and this command, when any of
+decide it (:func:`closure`: every repository file the certification imports, derived from the code). ``test_stats_certificate.py`` fails, naming each stale claim and this command, when any of
 those files has changed since; and fails on any claim whose count does not clear its target.
 
 The restated claims run on this machine, side by side in processes; the product claims run on the testament pool as one
@@ -30,7 +30,8 @@ import asyncio
 import hashlib
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -52,75 +53,124 @@ CERTIFICATE = Path(__file__).resolve().parent / "fixtures" / "stats_certificate.
 #: Where a certification run's key is written while it runs, so the pool's shards name their metrics by it.
 RUN_KEY = Path(__file__).resolve().parent / "fixtures" / "stats_certification_run.txt"
 
-_SRC = "packages/evals/src/threetears/evals/"
-_TESTS = "packages/evals/tests/"
+#: Where the closure starts: the modules the certification itself runs (the restated and product newcomers, the
+#: engine's take-up, the claims and their shards, the command). Every module they import, at any depth and wherever
+#: the import sits (inside a function, under ``TYPE_CHECKING``), that resolves to a file in this repository, is in the
+#: digest: the package's reading, its runner and its engine, and every other workspace module they reach.
+ENTRY_POINTS = (
+    "packages/evals/tests/null_newcomers.py",
+    "packages/evals/tests/engine_take_up.py",
+    "packages/evals/tests/stats_certificate.py",
+    "packages/evals/tests/test_certified_simulations.py",
+    "packages/evals/scripts/certify_stats.py",
+)
 
-#: The files that decide each claim, by group. A claim's digest is over every file of the groups it names
-#: (:attr:`Claim.sources`); a change to any of them makes the claim stale.
-SOURCES: dict[str, tuple[str, ...]] = {
-    # The bet, its interval, its evidence, Holm, Clopper-Pearson, the t test the engine reads.
-    "stats": (_SRC + "analysis/stats.py",),
-    # The quick read path: how a comparison is filed, assembled and read, its committed order and its family.
-    "read": tuple(
-        _SRC + path
-        for path in (
-            "analysis/significance.py",
-            "analysis/summary.py",
-            "analysis/campaigns.py",
-            "analysis/run_ending.py",
-            "analysis/contention.py",
-            "analysis/bundle/assemble.py",
-            "analysis/bundle/comparisons.py",
-            "analysis/bundle/trials.py",
-            "analysis/bundle/observations.py",
-            "kernel/candidate_kind.py",
-            "kernel/result_condition.py",
-            "kernel/result_reading.py",
-            "quick/contract.py",
-            "quick/result.py",
-            "quick/one_call.py",
-            "quick/continuation.py",
-            "quick/graders.py",
-            "schema/hashing.py",
-        )
-    ),
-    # The runner: how a run launches, plays its cells, stops, drains, cuts and files.
-    "runner": tuple(
-        _SRC + path
-        for path in (
-            "run/launch.py",
-            "run/executor.py",
-            "run/runner.py",
-            "run/jobs.py",
-            "run/lifecycle.py",
-            "run/arm_schedule.py",
-            "run/budget.py",
-            "run/reads.py",
-            "kernel/offload.py",
-        )
-    ),
-    # The engine's operator path: launch, cancel, take-up and leases.
-    "engine": tuple(
-        _SRC + path
-        for path in (
-            "ops/jobs.py",
-            "ops/sweeps.py",
-            "ops/resume.py",
-            "ops/runs.py",
-            "run/launch_job.py",
-            "run/resume.py",
-            "run/job_work.py",
-            "kernel/job_leases.py",
-        )
-    ),
-    # The simulations and the certification itself.
-    "quick-simulation": (_TESTS + "null_newcomers.py",),
-    "engine-simulation": (_TESTS + "engine_take_up.py",),
-    "certification": (_TESTS + "stats_certificate.py", _TESTS + "test_certified_simulations.py"),
-}
 
-_QUICK_SOURCES = ("stats", "read", "runner", "quick-simulation", "certification")
-_ENGINE_SOURCES = ("stats", "read", "runner", "engine", "engine-simulation", "certification")
+def _source_roots() -> list[Path]:
+    """The directories a top-level module is found in: every workspace package's ``src``, and the repository's root
+    (for ``packages.*``, the test support modules)."""
+    return [*sorted(ROOT.glob("packages/*/src")), *sorted(ROOT.glob("packages/agent/*/src")), ROOT]
+
+
+def _module_file(name: str, roots: Sequence[Path]) -> Path | None:
+    """The repository file a dotted module name resolves to (a module, or a package's ``__init__.py``), or None for
+    one outside it (the standard library, a third-party package) or a namespace directory with no file."""
+    parts = name.split(".")
+    for root in roots:
+        base = root.joinpath(*parts)
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _module_name(path: Path, roots: Sequence[Path]) -> str:
+    for root in roots:
+        if path.is_relative_to(root):
+            relative = path.relative_to(root).with_suffix("")
+            parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
+            return ".".join(parts)
+    raise ValueError(f"{path} is under no source root")
+
+
+#: An import statement, at any indentation (inside a function or under ``TYPE_CHECKING`` too): ``from x import y`` (its
+#: names in parentheses over several lines, or to the end of the line) or ``import x``. A line in a docstring that reads
+#: as one only widens the closure, which costs a re-certification at most.
+_FROM_IMPORT = re.compile(r"^[ \t]*from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)", re.MULTILINE)
+_IMPORT = re.compile(r"^[ \t]*import[ \t]+([^\n]+)", re.MULTILINE)
+#: A module named in a string (a lazy export's table, ``import_module("threetears...")``): imported on first use.
+_NAMED = re.compile(r"""["'](threetears(?:\.\w+)+)["']""")
+
+
+def _names(listed: str) -> list[str]:
+    """The names an import lists: parentheses, continuations, comments and ``as`` aliases left out."""
+    names = []
+    for line in listed.strip("()").splitlines():
+        for part in line.split("#", 1)[0].replace("\\", "").split(","):
+            word = part.strip().split(" as ")[0].strip()
+            if word and word != "*" and all(piece.isidentifier() for piece in word.split(".")):
+                names.append(word)
+    return names
+
+
+def _imported(path: Path, name: str) -> set[str]:
+    """Every module name ``path`` (module ``name``) imports, each with its parents, and each ``from x import y`` as
+    both ``x`` and ``x.y`` (``y`` may be a module). Read off the text, as :data:`_FROM_IMPORT` and :data:`_IMPORT`
+    match, which is fast enough to run on every unit-suite build."""
+    text = path.read_text()
+    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+    found: set[str] = set()
+    for source, listed in _FROM_IMPORT.findall(text):
+        level = len(source) - len(source.lstrip("."))
+        if level:
+            base = package.split(".")
+            base = base[: len(base) - (level - 1)] if level > 1 else base
+            module = ".".join([*base, *([source.lstrip(".")] if source.lstrip(".") else [])])
+        else:
+            module = source
+        found.add(module)
+        found.update(f"{module}.{imported}" for imported in _names(listed))
+    for listed in _IMPORT.findall(text):
+        found.update(_names(listed))
+    found.update(_NAMED.findall(text))
+    with_parents = set()
+    for module in found:
+        parts = module.split(".")
+        with_parents.update(".".join(parts[: index + 1]) for index in range(len(parts)))
+    return with_parents
+
+
+def closure() -> list[str]:
+    """Every repository file the certification imports, from :data:`ENTRY_POINTS`, as paths from the repository's
+    root, in path order: what decides every claim. Computed from the code as it stands, at certify time and at check
+    time, so a module the reading comes to import joins the digest without anyone listing it."""
+    roots = _source_roots()
+    # Every module of the workspace's ``src`` trees, indexed once by name; ``packages.*`` is looked for under the root.
+    indexed: dict[str, Path] = {}
+    for root in roots[:-1]:
+        for found in root.rglob("*.py"):
+            indexed.setdefault(_module_name(found, [root]), found)
+
+    def module_file(module: str) -> Path | None:
+        if module.startswith("packages."):
+            return _module_file(module, [ROOT])
+        return indexed.get(module)
+
+    resolved: dict[str, Path | None] = {}
+    seen: set[Path] = set()
+    pending = [(ROOT / entry, _module_name(ROOT / entry, roots)) for entry in ENTRY_POINTS]
+    while pending:
+        path, name = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        for module in _imported(path, name):
+            if module not in resolved:
+                resolved[module] = module_file(module)
+            found = resolved[module]
+            if found is not None and found not in seen:
+                pending.append((found, module))
+    return sorted(str(path.relative_to(ROOT)) for path in seen)
 
 
 def file_digest(path: str) -> str:
@@ -128,19 +178,17 @@ def file_digest(path: str) -> str:
     return hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
 
 
-def sources_digest(groups: Iterable[str], files: Mapping[str, str] | None = None) -> str:
-    """The digest of every file of ``groups``: a sha256 over each path and its own digest, in path order. ``files``
-    gives each file's digest where already read."""
-    paths = sorted({path for group in groups for path in SOURCES[group]})
+def sources_digest(files: Mapping[str, str]) -> str:
+    """The digest of ``files`` (each path's own digest): a sha256 over each path and its digest, in path order."""
     hashed = hashlib.sha256()
-    for path in paths:
-        hashed.update(f"{path}\0{files[path] if files is not None else file_digest(path)}\n".encode())
+    for path in sorted(files):
+        hashed.update(f"{path}\0{files[path]}\n".encode())
     return hashed.hexdigest()
 
 
-def every_source() -> list[str]:
-    """Every file any claim names, once, in path order."""
-    return sorted({path for paths in SOURCES.values() for path in paths})
+def current_files() -> dict[str, str]:
+    """Every file of the closure with its digest, as the code stands."""
+    return {path: file_digest(path) for path in closure()}
 
 
 # --- the shards ------------------------------------------------------------------------------------------------------
@@ -316,10 +364,10 @@ def _shards() -> list[Shard]:
         )
     # Watchers who drain: each reading the bet over a prefix, no cell drawn twice, separated only where the path did.
     for latency, k, launches, stop, count, size in (
-        ("alike-apart", 3, 5, "lead", 40, 20),
-        ("alike-slow-wrong", 3, 5, "lead", 40, 20),
-        ("b-slower-4x", 1, 2, "blind", 150, 75),
-        ("b-slower-20x", 1, 2, "blind", 150, 75),
+        ("alike-apart", 3, 5, "lead", 300, 25),
+        ("alike-slow-wrong", 3, 5, "lead", 300, 25),
+        ("b-slower-4x", 1, 2, "blind", 1000, 125),
+        ("b-slower-20x", 1, 2, "blind", 1000, 125),
     ):
         tag = f"alike-{latency}" if stop == "lead" else f"drained-{latency}"
         for block in _blocks(count, size):
@@ -365,15 +413,18 @@ def _shards() -> list[Shard]:
     # The engine: drained comparisons held exactly; those whose interrupts cut, counted at the simulation's size.
     for reading, law, grader, stop in sorted(engine.SHOWN):
         if stop == "drain":
-            shards.append(
-                Shard(
-                    f"engine-drain-{reading}-{law}-{grader}",
-                    f"engine-drain-{reading}-{law}-{grader}",
-                    "pool",
-                    "engine-drained",
-                    {"reading": reading, "law": law, "grader": grader, "start": 0, "count": 40},
+            # Every comparison of the simulation's full size, each held exactly: 50 to a shard.
+            total = engine.FIXED_REPLICATES if reading == "fixed" else engine.LOOKS_REPLICATES
+            for block in _blocks(total, 50):
+                shards.append(
+                    Shard(
+                        f"engine-drain-{reading}-{law}-{grader}-{block.start}",
+                        f"engine-drain-{reading}-{law}-{grader}",
+                        "pool",
+                        "engine-drained",
+                        {"reading": reading, "law": law, "grader": grader, "start": block.start, "count": len(block)},
+                    )
                 )
-            )
             continue
         total = engine.FIXED_REPLICATES if reading == "fixed" else engine.LOOKS_REPLICATES
         size = 100 if reading == "fixed" else 50
@@ -556,7 +607,7 @@ Test = Literal["at_most", "above", "share_below", "every", "no_lean", "leans"]
 @dataclass(frozen=True)
 class Claim:
     """One certified claim: its id, what it says, the shard group that counts it and the field it counts, how the
-    count is held to the target, the source groups that decide it, and its seeds."""
+    count is held to the target, and its seeds. Every claim is decided by the whole closure (:func:`closure`)."""
 
     id: str
     says: str
@@ -564,7 +615,6 @@ class Claim:
     field: str
     test: Test
     target: float
-    sources: tuple[str, ...]
     seeds: str
 
 
@@ -580,7 +630,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 f"once-{null}-<shard>-<index>, shards 0-19 of 200, restated",
             )
         )
@@ -595,7 +644,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 seeds,
             )
         )
@@ -609,7 +657,6 @@ def _claims() -> list[Claim]:
                     side,
                     "at_most",
                     strong,
-                    _QUICK_SOURCES,
                     seeds,
                 )
             )
@@ -628,7 +675,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 f"{asks}-once-<index>, 0-5999, restated",
             )
         )
@@ -641,7 +687,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 f"{asks}-<index>, 0-5999, restated",
             )
         )
@@ -654,7 +699,6 @@ def _claims() -> list[Claim]:
             "hits",
             "at_most",
             1.0 - 0.90,
-            _QUICK_SOURCES,
             "cover-<shard>-<index>, shards 0-19 of 200, restated",
         )
     )
@@ -667,7 +711,6 @@ def _claims() -> list[Claim]:
                 side,
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 "cover-<shard>-<index>, shards 0-19 of 200, restated",
             )
         )
@@ -680,7 +723,6 @@ def _claims() -> list[Claim]:
             "hits",
             "at_most",
             alpha,
-            _QUICK_SOURCES,
             "continued-<shard>-<index>, shards 0-199 of 50, restated",
         )
     )
@@ -693,7 +735,6 @@ def _claims() -> list[Claim]:
             "hits",
             "above",
             alpha,
-            _QUICK_SOURCES,
             "rerun-<shard>-<index>, shards 0-39 of 50, restated",
         )
     )
@@ -717,7 +758,6 @@ def _claims() -> list[Claim]:
                 "held",
                 "every",
                 1.0,
-                _QUICK_SOURCES,
                 "the first newcomers of the restated claim's own seeds, through the product on the pool",
             )
         )
@@ -736,7 +776,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "at_most",
                 alpha,
-                _QUICK_SOURCES,
                 f"horizon-k{k}-<index>, 0-9999, restated",
             )
         )
@@ -746,12 +785,12 @@ def _claims() -> list[Claim]:
                 f"watched.drained.{latency}",
                 f"Watchers whose arms are {latency}, every stop drained, through Eval.run: every reading is the bet over "
                 "the longest complete prefix of the committed order, no cell draws twice, and the product separates only "
-                "where the bet over its whole committed path does.",
+                "where the bet over its whole committed path does: every newcomer of the simulation's full size held "
+                "exactly.",
                 f"quick-drained-{latency}",
                 "held",
                 "every",
                 1.0,
-                _QUICK_SOURCES,
                 ("alike-" if latency.startswith("alike") else "drained-") + f"{latency}-<index>, through the product",
             )
         )
@@ -765,7 +804,6 @@ def _claims() -> list[Claim]:
                 "hits",
                 "share_below",
                 2 * alpha,
-                _QUICK_SOURCES,
                 f"cut-{latency}-<index>, 0-999, through the product",
             )
         )
@@ -781,12 +819,11 @@ def _claims() -> list[Claim]:
                     f"engine.drain.{reading}.{law}.{grader}",
                     f"An engine comparison ({reading}, {law}, {grader}) whose interrupts drain draws every cell once and "
                     f"separates exactly where the uninterrupted reading of its first draws does, so it separates at the "
-                    f"exact rate {exact:.5f}: no lean.",
+                    f"exact rate {exact:.5f}: no lean. Each comparison held exactly, at the simulation's full size.",
                     group,
                     "held",
                     "every",
                     1.0,
-                    _ENGINE_SOURCES,
                     seeds,
                 )
             )
@@ -807,7 +844,6 @@ def _claims() -> list[Claim]:
                     "hits",
                     cast("Test", shown),
                     exact,
-                    _ENGINE_SOURCES,
                     seeds,
                 )
             )
@@ -862,9 +898,10 @@ def tally(results: Mapping[str, Mapping[str, int]]) -> dict[str, tuple[int, int]
 
 
 def certificate(results: Mapping[str, Mapping[str, int]], **about: Any) -> dict[str, Any]:
-    """The certificate of ``results``: every claim with its count, bounds, verdict, seeds and digest, and every source
-    file's digest. ``about`` adds what the run says of itself (its wall time, its pool request)."""
-    files = {path: file_digest(path) for path in every_source()}
+    """The certificate of ``results``: every claim with its count, bounds, verdict and seeds, and the closure's files
+    with their digests and the digest over them. ``about`` adds what the run says of itself (its wall time, its pool
+    request)."""
+    files = current_files()
     counted = tally(results)
     claims = []
     for claim in CLAIMS:
@@ -882,13 +919,12 @@ def certificate(results: Mapping[str, Mapping[str, int]], **about: Any) -> dict[
                 "figure": verdict.figure,
                 "holds": verdict.holds,
                 "seeds": claim.seeds,
-                "sources": list(claim.sources),
-                "digest": sources_digest(claim.sources, files),
             }
         )
     return {
         "command": COMMAND,
-        "digest": sources_digest(SOURCES, files),
+        "digest": sources_digest(files),
+        "entry_points": list(ENTRY_POINTS),
         "files": files,
         **about,
         "claims": claims,
@@ -903,21 +939,28 @@ def read(path: Path = CERTIFICATE) -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(path.read_text()))
 
 
+def moved_files(document: Mapping[str, Any]) -> list[str]:
+    """The files of the closure, now or when certified, whose digest differs from the certificate's: changed, joined
+    the closure, or left it, each said so."""
+    now = current_files()
+    then = document.get("files", {})
+    moved = []
+    for path in sorted(set(now) | set(then)):
+        if path not in then:
+            moved.append(f"{path} (now imported)")
+        elif path not in now:
+            moved.append(f"{path} (no longer imported)")
+        elif now[path] != then[path]:
+            moved.append(path)
+    return moved
+
+
 def stale(document: Mapping[str, Any]) -> list[str]:
-    """The certificate's claims whose digest is no longer their sources', by id, each with the files that moved."""
-    files = {path: file_digest(path) for path in every_source() if (ROOT / path).exists()}
-    moved = sorted(path for path in every_source() if document.get("files", {}).get(path) != files.get(path))
-    out = []
-    for entry in document.get("claims", []):
-        claim = next((claim for claim in CLAIMS if claim.id == entry["id"]), None)
-        if claim is None:
-            continue
-        mine = sorted({path for group in claim.sources for path in SOURCES[group]} & set(moved))
-        if mine or entry.get("digest") != sources_digest(
-            claim.sources, files if len(files) == len(every_source()) else None
-        ):
-            out.append(f"{claim.id} (changed: {', '.join(mine) or 'its source list'})")
-    return out
+    """The certificate's claims, by id, if any file of the closure moved since it was written: every claim rests on
+    the whole closure. Empty where the certificate is current."""
+    if not moved_files(document) and document.get("digest") == sources_digest(document.get("files", {})):
+        return []
+    return [entry["id"] for entry in document.get("claims", [])]
 
 
 def run_key() -> str:
@@ -950,7 +993,9 @@ __all__ = [
     "COMMAND",
     "FIELDS",
     "SHARDS",
-    "SOURCES",
+    "ENTRY_POINTS",
+    "closure",
+    "moved_files",
     "Claim",
     "Shard",
     "certificate",
