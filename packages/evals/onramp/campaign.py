@@ -52,7 +52,17 @@ from .agent import (
 )
 from .checks import GRADERS, regrade
 from .isolation import IsolationUnavailable, unavailable
-from .plan import Plan, build_wheel, built_wheel, commit_of, committed_at, load_plan, plan_refusal
+from .plan import (
+    Plan,
+    build_wheel,
+    built_wheel,
+    commit_of,
+    committed_at,
+    head_commit,
+    load_plan,
+    plan_refusal,
+    uncommitted,
+)
 from .reading import PRIMARY, Unreadable, power_lines, reading_lines
 from .sandbox import HERE, DocsBuild, Sandbox
 
@@ -513,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         refusal = plan_refusal(
             plan,
             commit=committed_at(plan.path),
+            changed=uncommitted(),
             wheels=given,
             apps=[app for app in args.apps.split(",") if app],
             k=args.k,
@@ -539,7 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run.json").write_text(
-        json.dumps(_run_record(plan, wheels, [case["app"] for case in run_cases], k, priced), indent=1),
+        json.dumps(run_record(plan, wheels, [case["app"] for case in run_cases], k, priced), indent=1),
         encoding="utf-8",
     )
     exit_codes = []
@@ -590,16 +601,20 @@ def _plan_lines(plan: Plan, priced: Mapping[str, Quote]) -> list[str]:
     return lines
 
 
-def _run_record(
+def run_record(
     plan: Plan | None, wheels: Mapping[str, str], apps: Sequence[str], k: int, priced: Mapping[str, Quote]
 ) -> dict[str, Any]:  # Any: JSON
     """``run.json``: what a run ran, recorded before its first trial: the plan and the commit it was last changed in,
-    each arm's wheel and commit, the apps in the order its cases ran (a stored case's index is its place here), ``k``,
-    and each tier's model and caps."""
+    the head commit the run's code, apps and twins are as of (with anything under ``packages/evals`` not committed,
+    which a live run on a plan refuses), each arm's wheel and commit in the run's order (the control first, which
+    ``--read`` reads the direction by), the apps in the order its cases ran (a stored case's index is its place
+    here), ``k``, and each tier's model and caps."""
     refs = {arm.name: arm.ref for arm in plan.arms} if plan is not None else {}
     return {
         "plan": None if plan is None else str(plan.path.resolve().relative_to(HERE.parents[2])),
         "plan_commit": None if plan is None else committed_at(plan.path),
+        "head_commit": head_commit(),
+        "uncommitted": uncommitted(),
         "question": None if plan is None else plan.question,
         "primary": PRIMARY if plan is None else plan.primary,
         "arms": {
@@ -617,7 +632,8 @@ def _run_record(
 
 def read_stored(run_dir: Path) -> list[str]:
     """``--read``: the package's reading of a stored run, apps as cases, tier by tier (each tier's ``trials.jsonl``,
-    in its own directory when the run had more than one), with the plan's primary check and question when it ran one.
+    in its own directory when the run had more than one), with the plan's primary check and question when it ran one,
+    and the control the run's ``run.json`` names first (a tier's directory reads its run's).
 
     :raises Unreadable: No ``trials.jsonl`` under ``run_dir``, or rows the package cannot read with apps as cases.
     """
@@ -632,9 +648,18 @@ def read_stored(run_dir: Path) -> list[str]:
         for line in file.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
             rows.append({**row, "tier": row.get("tier") or tier})
-    meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8")) if (run_dir / "run.json").is_file() else {}
-    head = [f"plan {meta['plan']} at {meta.get('plan_commit')}"] if meta.get("plan") else []
-    return head + reading_lines(rows, primary=meta.get("primary") or PRIMARY, question=meta.get("question"))
+    recorded = [path for path in (run_dir / "run.json", run_dir.parent / "run.json") if path.is_file()]
+    meta = json.loads(recorded[0].read_text(encoding="utf-8")) if recorded else {}
+    head = (
+        [f"plan {meta['plan']} at {meta.get('plan_commit')}, run at {meta.get('head_commit')}"]
+        if meta.get("plan")
+        else []
+    )
+    # The run's own order of its arms and apps decides the control and the case list, never the rows' order: a
+    # reordered file reads the same.
+    arms, apps = list(meta.get("arms", {})), list(meta.get("apps", []))
+    asked = {"primary": meta.get("primary") or PRIMARY, "question": meta.get("question")}
+    return head + reading_lines(rows, arms=arms, apps=apps, **asked)
 
 
 def preflight(
@@ -721,7 +746,8 @@ def _finish(ev: Eval, run_dir: Path, *, tier: str | None = None, plan: Plan | No
     (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
     print("\n".join(said))
     if len(result.arms) > 1:
-        read = reading_lines(rows, **({"primary": plan.primary, "question": plan.question} if plan else {}))
+        asked = {"primary": plan.primary, "question": plan.question} if plan else {}
+        read = reading_lines(rows, arms=list(result.arms), apps=[case["app"] for case in ev.cases], **asked)
         (run_dir / "reading.txt").write_text("\n".join(read) + "\n", encoding="utf-8")
         print("\n".join(read))
     for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):

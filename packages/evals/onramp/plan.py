@@ -114,6 +114,25 @@ def commit_of(ref: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
+def head_commit() -> str | None:
+    """The commit checked out here, which a run's code, apps and twins are as of; ``None`` outside a repository."""
+    done = _git("rev-parse", "--verify", "--quiet", "HEAD")
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+#: What a live run on a plan must have committed: the harness, its apps, twins and transcripts, and the package.
+GUARDED = "packages/evals"
+
+
+def uncommitted(path: str = GUARDED) -> list[str]:
+    """Every change under ``path`` that is not committed (``git status --porcelain``), one line each; ignored files,
+    the runs among them, are none. Outside a repository, one line saying so."""
+    done = _git("status", "--porcelain", "--", path)
+    if done.returncode != 0:
+        return [f"not a repository ({done.stderr.strip()})"]
+    return [line for line in done.stdout.splitlines() if line.strip()]
+
+
 def committed_at(path: Path) -> str | None:
     """The commit ``path`` was last changed in, when the file is committed and unchanged since; else ``None``."""
     try:
@@ -168,6 +187,7 @@ def plan_refusal(
     plan: Plan,
     *,
     commit: str | None,
+    changed: Sequence[str],
     wheels: Mapping[str, str],
     apps: Sequence[str],
     k: int | None,
@@ -178,14 +198,19 @@ def plan_refusal(
 ) -> str | None:
     """Why a live run may not start on ``plan`` with what the command line says, or ``None`` when it may.
 
-    The plan must be committed and unchanged since (``commit``: :func:`committed_at` of it), name every app (no
-    placeholder), and name only apps the harness has; and the command line must agree with it: any ``--apps``, ``--k``
+    The plan must be committed and unchanged since (``commit``: :func:`committed_at` of it), and so must everything a
+    run reads under :data:`GUARDED` (``changed``: :func:`uncommitted`), so the head commit ``run.json`` records is the
+    code, apps and twins that ran; the plan must name every app (no placeholder), and only apps the harness has; and the
+    command line must agree with it: any ``--apps``, ``--k``
     or ``--tier`` given is the plan's, ``--cap`` is the plan's total, and every ``--arm`` given is an arm of the plan
     whose wheel is the one built from that arm's commit (``runs/wheels/<ref>/``, by the plan's ref or one naming the
     same commit).
     """
     if commit is None:
         return f"the plan {plan.path} is not committed, or has changed since its last commit: commit it before the run"
+    if changed:
+        listed = "; ".join(changed[:5]) + (f"; and {len(changed) - 5} more" if len(changed) > 5 else "")
+        return f"{GUARDED} has changes not committed ({listed}): commit them, so run.json's head commit is what ran"
     if placeholders := plan.placeholders():
         return f"the plan names {len(placeholders)} app(s) still as placeholders: name them, and commit the plan"
     if unknown := [app for app in plan.apps if app not in known_apps]:

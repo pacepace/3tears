@@ -78,8 +78,9 @@ So a run is billed at most its cap. The one gap: a provider endpoint priced abov
 `runs/<UTC stamp>/` (git-ignored): `onramp.sqlite` (the store), `report/`, `trials.jsonl` (every trial's record and
 checks), `census.txt`, `reading.txt` (with two arms: the package's reading, apps as cases), and per trial
 `<arm>/<app>-<n>/` with `steps.jsonl` (every turn), `record.json` and the app as the agent left it. A live run also
-writes `run.json` before its first trial: each arm's wheel and commit, the apps, `k`, each tier's model and caps, and
-the plan it ran with the commit the plan was last changed in. A run of more than one tier keeps each tier's files in
+writes `run.json` before its first trial: each arm's wheel and commit (the control first), the apps in case order, `k`,
+each tier's model and caps, the plan it ran with the commit the plan was last changed in, and the head commit its code,
+apps and twins are as of. `--read` takes the control and the case order from it, never from the rows' order. A run of more than one tier keeps each tier's files in
 `runs/<UTC stamp>/<tier>/`, and every row of a tier's `trials.jsonl` names its tier. Built wheels, images and environments are cached in `runs/wheels/`, `runs/images/`, `runs/venvs/`.
 
 ## Comparing arms
@@ -158,7 +159,8 @@ development run covers it, and `--apps` naming it without a plan is refused.
 
 A plan is a TOML file in `plans/` (`plan.py`). It names the files its apps are read from (`cases`, `apps.jsonl` unless
 it says). `--plan` runs exactly what it states, and a live run on one is refused
-unless the plan is committed and unchanged since, names every app, and agrees with the command line: its apps, its
+unless the plan is committed and unchanged since, nothing under `packages/evals` has an uncommitted change (so the
+head commit `run.json` records is what ran), the plan names every app, and it agrees with the command line: its apps, its
 `k`, its tiers, its total cap, and each arm's wheel built from that arm's commit (`runs/wheels/<ref>/`, built on first
 use). The run records the plan's commit in `run.json`. A second model tier is a second tier of the plan: each runs into
 its own directory, against its own cap, and is read on its own.

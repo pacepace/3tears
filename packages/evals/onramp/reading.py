@@ -79,11 +79,19 @@ class Design:
     trials: Mapping[str, Mapping[str, tuple[Mapping[str, Any], ...]]]  # Any: arm -> app -> stored rows
 
 
-def design_of(rows: Sequence[Mapping[str, Any]]) -> Design:  # Any: stored rows
+def design_of(
+    rows: Sequence[Mapping[str, Any]], arms: Sequence[str] = (), apps: Sequence[str] = ()
+) -> Design:  # Any: stored rows
     """The arms, apps and repeats of one tier's stored rows.
 
-    :raises Unreadable: Rows of more than one tier; a row with no app; arms that ran different apps; or an arm and app
-        with a different count of trials from another, since ``k`` is one number for every case and arm.
+    ``arms`` is the run's own order of its arms, the control first, and ``apps`` the order its cases ran in, as
+    ``run.json`` records them: given, they decide which arm is the control and the case list the package reads (whose
+    order its bet is committed by), so a file whose rows were reordered reads the same. Not given, each is in the order
+    the rows first name it, which the harness writes control first and in case order.
+
+    :raises Unreadable: Rows of more than one tier; a row with no app; arms other than ``arms``; arms that ran different
+        apps; or an arm and app with a different count of trials from another, since ``k`` is one number for every case
+        and arm.
     """
     if len(tiers_of(rows)) > 1:
         raise Unreadable(
@@ -95,10 +103,15 @@ def design_of(rows: Sequence[Mapping[str, Any]]) -> Design:  # Any: stored rows
         if app is None:
             raise Unreadable(f"a trial of arm {row.get('arm')} (repeat {row.get('repeat')}) names no app")
         trials[str(row["arm"])][app].append(row)
-    arms = tuple(trials)
-    if not arms:
+    if not trials:
         raise Unreadable("the run holds no trial")
-    apps = tuple(dict.fromkeys(app for arm in arms for app in trials[arm]))
+    if arms and sorted(arms) != sorted(trials):
+        raise Unreadable(f"the rows' arms ({', '.join(trials)}) are not the run's ({', '.join(arms)})")
+    arms = tuple(arms) or tuple(trials)
+    seen = tuple(dict.fromkeys(app for arm in arms for app in trials[arm]))
+    if apps and sorted(apps) != sorted(seen):
+        raise Unreadable(f"the rows' apps ({', '.join(seen)}) are not the run's ({', '.join(apps)})")
+    apps = tuple(apps) or seen
     if missing := [f"{arm} ran no trial on {app}" for arm in arms for app in apps if app not in trials[arm]]:
         raise Unreadable("; ".join(missing))
     counts = Counter(len(trials[arm][app]) for arm in arms for app in apps)
@@ -149,7 +162,13 @@ def _stored_grade(check: str) -> Callable[[dict[str, Any], dict[str, bool | None
 
 
 def comparison(
-    rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None, lead: bool = False
+    rows: Sequence[Mapping[str, Any]],
+    check: str = PRIMARY,
+    *,
+    question: str | None = None,
+    lead: bool = False,
+    arms: Sequence[str] = (),
+    apps: Sequence[str] = (),
 ) -> Eval:  # Any: stored rows
     """One tier's stored run as a comparison on one check, with the app as the case (see the module).
 
@@ -161,7 +180,7 @@ def comparison(
     """
     if check not in CHECKS:
         raise Unreadable(f"{check} is not a check the harness grades ({', '.join(CHECKS)})")
-    design = design_of(rows)
+    design = design_of(rows, arms, apps)
     asked = None if lead else question or f"Do agents given {design.arms[-1]} pass {check} more often, app by app?"
     return Eval(
         [{"id": app, "app": app} for app in design.apps],
@@ -174,10 +193,16 @@ def comparison(
 
 
 async def read(
-    rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None, lead: bool = False
+    rows: Sequence[Mapping[str, Any]],
+    check: str = PRIMARY,
+    *,
+    question: str | None = None,
+    lead: bool = False,
+    arms: Sequence[str] = (),
+    apps: Sequence[str] = (),
 ) -> Result:  # Any: stored rows
     """The package's reading of one tier's stored run on ``check``, apps as cases, held in memory (:func:`comparison`)."""
-    return await comparison(rows, check, question=question, lead=lead).run(store=":memory:")
+    return await comparison(rows, check, question=question, lead=lead, arms=arms, apps=apps).run(store=":memory:")
 
 
 def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored rows
@@ -186,13 +211,18 @@ def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored 
 
 
 async def read_lines(
-    rows: Sequence[Mapping[str, Any]], *, primary: str = PRIMARY, question: str | None = None
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    primary: str = PRIMARY,
+    question: str | None = None,
+    arms: Sequence[str] = (),
+    apps: Sequence[str] = (),
 ) -> list[str]:  # Any: stored rows
     """What the package reads of a stored run, tier by tier: each check's verdict, the primary first, with apps as cases,
     and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop."""
     lines: list[str] = []
     for tier, own in tiers_of(rows).items():
-        design = design_of(own)
+        design = design_of(own, arms, apps)
         head = f"tier {tier}: " if tier is not None else ""
         lines.append(
             f"{head}the package's reading, apps as cases: {len(design.apps)} app(s), {design.k} trial(s) per arm on each"
@@ -202,7 +232,7 @@ async def read_lines(
             continue
         for check in (primary, *[name for name in CHECKS if name != primary]):
             role = "primary" if check == primary else "secondary, a lead only"
-            result = await read(own, check, question=question, lead=check != primary)
+            result = await read(own, check, question=question, lead=check != primary, arms=arms, apps=apps)
             lines.append(f"  {check} ({role}): {result.render().splitlines()[0]}")
             for row in result.contrasts(check):
                 lines.append(
@@ -218,10 +248,15 @@ async def read_lines(
 
 
 def reading_lines(
-    rows: Sequence[Mapping[str, Any]], *, primary: str = PRIMARY, question: str | None = None
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    primary: str = PRIMARY,
+    question: str | None = None,
+    arms: Sequence[str] = (),
+    apps: Sequence[str] = (),
 ) -> list[str]:  # Any: stored rows
     """:func:`read_lines`, from code with no event loop running (the command line)."""
-    return asyncio.run(read_lines(rows, primary=primary, question=question))
+    return asyncio.run(read_lines(rows, primary=primary, question=question, arms=arms, apps=apps))
 
 
 def simulated_rows(

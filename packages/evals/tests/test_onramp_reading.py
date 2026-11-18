@@ -14,8 +14,17 @@ from typing import Any
 
 import pytest
 
-from packages.evals.onramp.campaign import CASES, HELD_OUT, TRANSCRIPTS, main, registry
-from packages.evals.onramp.plan import PLANS, Plan, PlannedArm, load_plan, plan_refusal, wheel_dir
+from packages.evals.onramp.campaign import CASES, HELD_OUT, TIERS, TRANSCRIPTS, main, quote, registry, run_record
+from packages.evals.onramp.plan import (
+    PLANS,
+    Plan,
+    PlannedArm,
+    committed_at,
+    head_commit,
+    load_plan,
+    plan_refusal,
+    wheel_dir,
+)
 from packages.evals.onramp.reading import (
     CHECKS,
     PRIMARY,
@@ -169,6 +178,7 @@ def test_a_live_run_on_a_plan_is_refused_when_the_plan_or_the_command_line_diffe
     control = wheel_dir(tmp_path, "f9ab6f74d") / "3tears_evals-0.0.0-py3-none-any.whl"
     agreed: dict[str, Any] = {
         "commit": "0" * 40,
+        "changed": [],
         "wheels": {"docs@control": str(control)},
         "apps": [],
         "k": None,
@@ -185,6 +195,8 @@ def test_a_live_run_on_a_plan_is_refused_when_the_plan_or_the_command_line_diffe
         return why
 
     assert "not committed" in refused(_plan(), commit=None)
+    edited = refused(_plan(), changed=[" M packages/evals/onramp/apps/x/x.py"])
+    assert "changes not committed" in edited and "apps/x/x.py" in edited, "the head commit would not be what ran"
     assert "placeholders" in refused(_plan(apps=("recipes", "PLACEHOLDER-2")))
     assert "does not have (atlas)" in refused(_plan(apps=("recipes", "atlas")))
     assert "run the plan's apps" in refused(_plan(), apps=["recipes"])
@@ -234,6 +246,44 @@ def test_a_plan_quotes_but_a_live_run_on_one_not_committed_is_refused_before_any
     assert main([*argv, "--cap", f"{plan.cap_usd:.2f}"]) == 2
     assert "is not committed" in capsys.readouterr().err
     assert not (tmp_path / "wheels").exists() and not (tmp_path / "images").exists(), "nothing built"
+
+
+def test_the_rows_are_read_in_the_runs_own_arm_and_app_order_whatever_order_they_come_in() -> None:
+    rows = _rows({"docs@control": {"x": (0, 3), "y": (1, 3)}, "docs@candidate": {"x": (3, 3), "y": (2, 3)}})
+    reordered = [row for row in rows if row["arm"] == "docs@candidate"] + [
+        row for row in rows if row["arm"] == "docs@control"
+    ]
+    assert design_of(reordered).arms == ("docs@candidate", "docs@control"), "unguided, the rows' order decides"
+    assert design_of(reordered, ["docs@control", "docs@candidate"]).arms == ("docs@control", "docs@candidate")
+    with pytest.raises(Unreadable, match="not the run's"):
+        design_of(rows, ["docs@control", "docs@other"])
+    assert design_of(list(reversed(rows)), apps=["x", "y"]).apps == ("x", "y"), "the run's case order, not the file's"
+    with pytest.raises(Unreadable, match="not the run's"):
+        design_of(rows, apps=["x", "z"])
+
+
+def test_run_json_records_the_plan_and_head_commits_and_the_reading_takes_its_control_from_it(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    plan = load_plan(PLANS / "held-out-1.toml")
+    wheels = {arm.name: str(wheel_dir(tmp_path, arm.ref) / "w.whl") for arm in plan.arms}
+    priced = {name: quote(TIERS[name], runs=8, cap_usd=cap) for name, cap in plan.tiers.items()}
+    record = run_record(plan, wheels, ["x", "y"], 2, priced)
+    assert record["plan"] == "packages/evals/onramp/plans/held-out-1.toml"
+    assert (record["plan_commit"], record["head_commit"]) == (committed_at(plan.path), head_commit())
+    assert list(record["arms"]) == ["docs@control", "docs@candidate"] and record["apps"] == ["x", "y"]
+    assert [arm["ref"] for arm in record["arms"].values()] == ["f9ab6f74d", "1f0ec4c68"] and record["k"] == 2
+    assert set(record) >= {"uncommitted", "question", "primary", "tiers"}
+    (tmp_path / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    rows = _rows({"docs@control": {"x": (0, 2), "y": (0, 2)}, "docs@candidate": {"x": (2, 2), "y": (2, 2)}})
+    rows.reverse()  # the candidate's rows first: the run's own order, not the file's, names the control
+    (tmp_path / "trials.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    assert main(["--read", str(tmp_path)]) == 0
+
+    said = capsys.readouterr().out.splitlines()
+    assert said[0] == f"plan {record['plan']} at {record['plan_commit']}, run at {record['head_commit']}"
+    assert "    by app (docs@control, docs@candidate): x 0 of 2, 2 of 2; y 0 of 2, 2 of 2" in said, said
 
 
 def test_a_stored_run_of_two_tiers_is_read_from_its_directories_tier_by_tier(
