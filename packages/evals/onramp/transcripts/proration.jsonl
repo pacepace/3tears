@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "proration.py"}
+{"tool": "read", "path": "data/invoices.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from datetime import date\n\nfrom threetears.evals import Eval\n\nfrom proration import prorate\n\ndef invoice(case):\n    \"\"\"The credit and charge lines for the plan change.\"\"\"\n    lines = prorate(case[\"old_plan\"], case[\"new_plan\"], case[\"anchor_day\"], date.fromisoformat(case[\"changed_on\"]))\n    return {\"credit\": lines.credit_pence, \"charge\": lines.charge_pence}\n\n\ndef matches_provider(case, out):\n    \"\"\"The invoice lines are the provider's.\"\"\"\n    return (out[\"credit\"], out[\"charge\"]) == (case[\"credit_pence\"], case[\"charge_pence\"])\n\ninvoices = Eval(\"data/invoices.jsonl\", runner=invoice, grader=[matches_provider], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_provider\", \"pass_rate\": 0.6739, \"finished\": true}"}

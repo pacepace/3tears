@@ -201,8 +201,8 @@ def test_a_live_run_on_a_plan_is_refused_when_the_plan_or_the_command_line_diffe
 
 def test_the_committed_plan_states_its_arms_tiers_check_and_k_and_its_apps_are_held_out() -> None:
     plan = load_plan(PLANS / "held-out-1.toml")
-    assert [arm.ref for arm in plan.arms] == ["f9ab6f74d", "8d433f44e"] and plan.arms[0].name == "docs@control"
-    assert list(plan.tiers) == ["cheap", "ceiling"] and plan.primary == PRIMARY
+    assert [arm.ref for arm in plan.arms] == ["f9ab6f74d", "1f0ec4c68"] and plan.arms[0].name == "docs@control"
+    assert list(plan.tiers) == ["cheap"] and plan.primary == PRIMARY and plan.k == 3 and len(plan.apps) == 24
     assert sorted((plan.primary, *plan.secondary)) == sorted(CHECKS)
     assert plan.registries == (HELD_OUT.name,) and not plan.placeholders()
     held_out = [case["app"] for case in registry([HELD_OUT])]
@@ -228,7 +228,7 @@ def test_a_plan_quotes_but_a_live_run_on_one_not_committed_is_refused_before_any
     argv = ["--plan", str(plan.path), "--workdir", str(tmp_path)]
     assert main([*argv, "--dry-run"]) == 0
     said = capsys.readouterr().out
-    assert said.count("tier ") == len(plan.tiers) and f"at most ${plan.cap_usd:.2f} in all" in said
+    assert said.count("model: ") == len(plan.tiers) and f"at most ${plan.cap_usd:.2f} in all" in said
     monkeypatch.setenv("ONRAMP_LIVE", "1")
     monkeypatch.delenv("RECORD", raising=False)
     assert main([*argv, "--cap", f"{plan.cap_usd:.2f}"]) == 2
