@@ -30,6 +30,7 @@ from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.sweepables import (
     CORE_SWEEPABLES,
@@ -143,7 +144,12 @@ class TestTwoLaunchesThatDifferOnlyInTheirCapAreOneTestSetup:
         assert len(bundle.cells) == 2, "one cell per arm, both under the one rig"
         assert "max_cost_usd" not in _named(bundle)
         assert campaign.control is not None
-        arms = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
+        arms = [
+            campaign.control,
+            CampaignArm(
+                label="v2", role="candidate", variant_key=_key(bundle, "candidate"), identity_version=IDENTITY_VERSION
+            ),
+        ]
         (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms).readings
         assert "no test setup in common" not in row.reason
         # Production passes all twenty cases and the candidate the first six: 30% - 100% is -70 points.
@@ -162,7 +168,9 @@ class TestTheQuickPathsPerArmShareSplitsNothing:
         host = pair.host
         run_ids = [summary.run_id for result in (pair, trio) for name, summary in result.arms.items() if name != "v3"]
         runs = [off_loop(get_run, host.storage, run_id, pair.scope_id) for run_id in run_ids]
-        assert sorted({run.max_cost_usd for run in runs}) == pytest.approx([1.0 / 3, 0.5])
+        caps = {run.max_cost_usd for run in runs}
+        assert None not in caps
+        assert sorted(cap for cap in caps if cap is not None) == pytest.approx([1.0 / 3, 0.5])
         bundle = off_loop(_bundle, host, off_loop(_campaign, host, pair, run_ids))
 
         assert len({cell.apparatus_class_id for cell in bundle.cells}) == 1
@@ -287,7 +295,12 @@ class TestALowCapStopsItsArmShortAndTheReadingsDepthShowsIt:
 
         assert len({cell.apparatus_class_id for cell in bundle.cells}) == 1, "the two caps are one rig"
         assert campaign.control is not None
-        arms = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
+        arms = [
+            campaign.control,
+            CampaignArm(
+                label="v2", role="candidate", variant_key=_key(bundle, "candidate"), identity_version=IDENTITY_VERSION
+            ),
+        ]
         (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms).readings
         assert row.control_depth == Depth(
             cases=CASES, trials=CASES * REPEATS, repeats_min=REPEATS, repeats_median=float(REPEATS), repeats_max=REPEATS

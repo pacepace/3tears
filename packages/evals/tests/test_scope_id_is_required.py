@@ -90,7 +90,7 @@ def _document(name: str) -> tuple[type[BaseModel], dict[str, Any]]:
 def test_the_valid_document_round_trips(name: str) -> None:
     """The positive control: the document the refusals mutate is itself accepted."""
     cls, document = _document(name)
-    assert cls.model_validate(document).scope_id == document["scope_id"]
+    assert cls.model_validate(document).model_dump()["scope_id"] == document["scope_id"]
 
 
 @pytest.mark.parametrize("name", sorted(_BUILDERS))

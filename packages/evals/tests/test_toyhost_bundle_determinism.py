@@ -31,7 +31,7 @@ from __future__ import annotations
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
-def _leaf_diffs(a, b, path: str = ""):
+def _leaf_diffs(a: object, b: object, path: str = "") -> list[tuple[str, object, object]]:
     """Every differing leaf between two JSON-shaped structures.
 
     :param a: Left structure.

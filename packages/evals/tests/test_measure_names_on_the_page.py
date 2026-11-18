@@ -23,6 +23,7 @@ from html import escape
 import pytest
 
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.analysis import (
     build_code_only_report,
@@ -393,11 +394,12 @@ def test_no_glossary_term_is_linked_inside_a_measure_s_name_wherever_a_line_prin
         order="as run",
         total_rows=1,
     )
-    lines = [
+    lines: list[DisclosureBlock] = [
         DisclosureBlock(section="methods", source="comparisons", text="Turns that ran over budget were none."),
         DisclosureBlock(section="methods", source="comparisons", text="Each arm ran every case once."),
     ]
-    said = report_page([scorecard, *lines, runs])
+    blocks: list[TableBlock | DisclosureBlock] = [scorecard, *lines, runs]
+    said = report_page(blocks)
     (axis,) = re.findall(r'<p class="axis">(.*?)</p>', said)
     assert axis.startswith("Turns that ran over budget drawn from "), axis
     assert ">Measuring spend, all roles</a>, per 1,000 replies drawn from" in axis, "the name is the term's words"
@@ -475,7 +477,7 @@ def test_every_call_predicate_the_grammar_knows_names_its_action(builtin: str) -
     assert check_names([expression], {}) == {expression: f"Send message {word} check"}
 
 
-def _written(form: str) -> tuple[str, CampaignReport]:
+def _written(form: ReportFormat) -> tuple[str, CampaignReport]:
     """toyhost_doc's report document page as a report read serves it by default, and the page it renders."""
     read = subject("toyhost_doc")
     served = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=False, trials="table")
@@ -484,7 +486,7 @@ def _written(form: str) -> tuple[str, CampaignReport]:
 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])
-def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form: str) -> None:
+def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form: ReportFormat) -> None:
     body, page = _written(form)
     assert page.doc_page is not None and page.doc_page.checks, "the document names a goal check"
     for check in page.doc_page.checks:
@@ -583,7 +585,7 @@ def test_a_hyphenated_check_name_links_its_entry_as_a_row_s_label_and_as_a_colum
 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])
-def test_every_measure_a_written_page_s_full_results_name_starts_with_a_capital(form: str) -> None:
+def test_every_measure_a_written_page_s_full_results_name_starts_with_a_capital(form: ReportFormat) -> None:
     # toyhost_doc's judged dimension has no label, so its name was the humanized key ("extraction layout fidelity")
     # beside "Pass rate" and the engine's labels: every measure name, as a row label or a column header, starts with
     # a capital whatever its source.

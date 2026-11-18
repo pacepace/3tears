@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import csv
 import io
+from typing import Any
 
 from threetears.evals.analysis import SERVED_MODEL_UNRECORDED, ServedModelReading, compare_two_runs
-from threetears.evals.analysis.reporting import METRIC_COMPOSITE, project_score_records
+from threetears.evals.analysis.reporting import METRIC_COMPOSITE, ScoreRecord, project_score_records
 from threetears.evals.analysis.lenses.pivot import compute_pivot
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.history import compute_history
@@ -116,7 +117,7 @@ class TestTheHistory:
 
 
 class TestThePivot:
-    def _records(self, second: str | None = _JUNE) -> list:
+    def _records(self, second: str | None = _JUNE) -> list[ScoreRecord]:
         runs, results = _corpus(second)
         return project_score_records(runs, results, archived_run_ids=None, profile=_PROFILE).records
 
@@ -157,7 +158,7 @@ class TestThePivot:
 
 
 class TestCompareRuns:
-    def _compare(self, second: str | None) -> dict:
+    def _compare(self, second: str | None) -> dict[str, Any]:
         storage = EvalStorage(InMemoryDocumentStore())
         runs, results = _corpus(second)
         for run in runs:
@@ -168,7 +169,7 @@ class TestCompareRuns:
         def template(template_id: str) -> EvalTemplate:
             return make_template(id=template_id)
 
-        return compare_two_runs(
+        arm: dict[str, Any] = compare_two_runs(
             storage,
             "run-march",
             "run-june",
@@ -176,6 +177,7 @@ class TestCompareRuns:
             load_template=template,
             subject_detail=lambda run: {},
         )["comparison"]["arm"]
+        return arm
 
     def test_each_side_names_the_model_that_answered_it(self) -> None:
         arm = self._compare(_JUNE)

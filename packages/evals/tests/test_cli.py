@@ -220,6 +220,7 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
 
     class _Broken:
         judged_artifact = JudgedArtifact.UNJUDGED
+        max_concurrent_cells: int | None = 1
 
         async def prepare(self, **_: Any) -> None:
             raise RuntimeError("the planner would not start")

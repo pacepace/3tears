@@ -28,6 +28,7 @@ from threetears.evals import Answer, Eval
 from threetears.evals.ops import dollars_text
 from threetears.evals.run import list_results
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.spend_support import spent
 
 SCOPE = "cost-precision-tests"
 
@@ -97,7 +98,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
         assert row.cost_usd == PRICE and result.cost_usd == PRICE
 
     # The run summary: three calls, summed without loss.
-    assert summary.role_spend("candidate").cost_usd == THREE
+    assert spent(summary, "candidate").cost_usd == THREE
     assert "candidate spend: $0.000037 over 3 call(s)" in summary.render()  # shown, not rounded to $0
 
     # The bundle: the run's total, the cell's mean, and both after a JSON round trip.
@@ -109,7 +110,8 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
         cell.variant_key: next(m.mean for m in cell.measures.measures if m.name == "cost_usd")
         for cell in bundle.cell_measures
     }
-    assert sorted(means.values()) == [PRICE, 2 * PRICE]
+    assert None not in means.values()
+    assert sorted(mean for mean in means.values() if mean is not None) == [PRICE, 2 * PRICE]
     reread = json.loads(bundle.model_dump_json())
     assert [s["cost_usd"] for s in reread["run_summaries"] if s["run_id"] == summary.run_id] == [THREE]
 

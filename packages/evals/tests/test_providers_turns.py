@@ -17,7 +17,7 @@ from typing import Any, Final
 import httpx
 import pytest
 
-from threetears.evals.providers import Catalogue, Model, ProviderError
+from threetears.evals.providers import Catalogue, Completion, Model, ProviderError
 from threetears.evals.schema import (
     TurnReply,
     ThinkingBinding,
@@ -352,6 +352,7 @@ async def test_a_completion_reads_the_same_facts_and_sends_a_budget_as_its_effor
 
     assert "budget_tokens" not in json.dumps(server.bodies[0])
     assert server.bodies[0]["thinking"] == {"type": "adaptive"}
+    assert isinstance(completion, Completion)
     assert completion.sent_settings is not None and completion.sent_settings.unsent_reasoning_max_tokens == 4096
 
 

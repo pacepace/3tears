@@ -39,6 +39,7 @@ from packages.evals.tests.analyst_support import (
     fixture_snapshots,
 )
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, reference_data
+from packages.evals.tests.figure_support import figure_number
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import Action, MountedTool, analyst_actions, analyst_tools, eval_catalogue
@@ -160,7 +161,7 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
     key = f"price.{cheaper}.{dearer}.persona"
     assert expected["monthly_cost_gap"] >= 1000, "the control: a saving a month of a thousand dollars or more"
     # The gap reads in the form of the monthly costs it compares (#993): every one is $10 or more, so whole dollars.
-    months = [float(resolve(f"cost_per_month.{arm.id}", held).value) for arm in held.arms]
+    months = [figure_number(resolve(f"cost_per_month.{arm.id}", held)) for arm in held.arms]
     assert render(f"{{{key}.monthly_cost_gap}}", {}, forms=PageForms.of(held)) == money_form(months).spell(
         expected["monthly_cost_gap"], signed=True
     )
@@ -349,9 +350,10 @@ def _pooled_means(held: ReportInput, key: str) -> dict[str, float]:
     pooled: dict[str, float] = {}
     for arm in {arm for _, per_arm in weighed for arm in per_arm}:
         means = [per_arm.get(arm, {}).get(key) for _, per_arm in weighed]
-        if all(stat is not None and stat.mean is not None for stat in means):
+        known = [float(stat.mean) for stat in means if stat is not None and stat.mean is not None]
+        if len(known) == len(means):
             total = sum(weight for weight, _ in weighed)
-            pooled[arm] = sum(w * float(s.mean) for (w, _), s in zip(weighed, means, strict=True)) / total  # type: ignore[union-attr,arg-type]
+            pooled[arm] = sum(w * mean for (w, _), mean in zip(weighed, known, strict=True)) / total
     return pooled
 
 
@@ -657,9 +659,10 @@ def _pooled_half_widths(held: ReportInput, key: str) -> dict[str, float]:
     found: dict[str, float] = {}
     for arm in pooled:
         widths = [_half_width(per_arm[arm][key]) for _, per_arm in weighed]
-        if all(width is not None for width in widths):
+        known = [width for width in widths if width is not None]
+        if len(known) == len(widths):
             found[arm] = math.sqrt(
-                sum((weight / total) ** 2 * width**2 for (weight, _), width in zip(weighed, widths, strict=True))  # type: ignore[operator]
+                sum((weight / total) ** 2 * width**2 for (weight, _), width in zip(weighed, known, strict=True))
             )
     return found
 
@@ -706,7 +709,9 @@ def test_a_move_between_two_candidates_carries_its_unpaired_interval_through_to_
     first, second = step.from_arm.removeprefix("arm:"), step.to_arm.removeprefix("arm:")
     gap = _value(f"price.{first}.{second}.{key}.cost_gap", held)
     points = 100.0 if resolve(f"price.{first}.{second}.{key}.gain", held).scale == "share" else 1.0
-    low, high = (end * points for end in step.unpaired.gain_interval.value)  # type: ignore[union-attr]
+    interval = step.unpaired.gain_interval
+    assert interval is not None and isinstance(interval.value, tuple), interval
+    low, high = (end * points for end in interval.value)
     assert step.unpaired.per_point_low is not None
     assert step.unpaired.per_point_low.value == pytest.approx(gap / high)
     if low > 0:
@@ -1015,7 +1020,7 @@ def test_a_prices_block_on_an_axis_whose_frontier_takes_no_step_is_refused_sayin
             assert ("holds no option" in said) == (not frontier), said
             assert f"price_tradeoff with gain_key={key!r}" in refused.value.remedy, refused.value.remedy
             assert "query.measures" in refused.value.parameters
-            assert list(refused.value.valid_values) == stepped
+            assert list(refused.value.valid_values or ()) == stepped
 
 
 def _costed(held: ReportInput) -> bool:

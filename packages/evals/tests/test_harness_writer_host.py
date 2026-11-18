@@ -52,7 +52,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.providers import Model
 from threetears.evals.quick.judged import BorrowedJudgeClient
-from threetears.evals.harness.writer_host import writer_ops_host
+from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import CaseSetRef, EvalRun
@@ -104,7 +104,7 @@ def _judge(model_id: str = JUDGE, **route: Any) -> Model:
 def _host(
     tmp_path: Path,
     *,
-    judge: Model | None = None,
+    judge: WriterJudge | None = None,
     budget: ReportBudget = BUDGET,
     request_s: float = 120.0,
     skills: dict[str, AnalystSkill] | None = None,

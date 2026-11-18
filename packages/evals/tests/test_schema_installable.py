@@ -281,7 +281,7 @@ def _stage_pydantic(deps: Path) -> None:
     :ptype deps: Path
     """
     for dist in _pydantic_distributions():
-        site = Path(dist.locate_file(""))
+        site = Path(str(dist.locate_file("")))
         tops = {file.parts[0] for file in (dist.files or ()) if not file.parts[0].startswith("..")}
         for top in sorted(tops):
             link = deps / top

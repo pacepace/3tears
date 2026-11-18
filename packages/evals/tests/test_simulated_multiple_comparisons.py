@@ -28,6 +28,7 @@ import pytest
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust
 from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.schema import EvalResult
 from packages.evals.tests.factories import (
     fixture_variant_key,
@@ -136,7 +137,7 @@ def _campaign_family(
         return per_reading
 
     control = arm([0.0] * readings)
-    family = []
+    family: list[tuple[dict[str, float], dict[str, float], bool]] = []
     for contrast_effects in effects[:contrasts]:
         contrast = arm(contrast_effects)
         family.extend((control[reading], contrast[reading], True) for reading in range(readings))
@@ -393,7 +394,12 @@ def _seeded_campaign(
         design=minimal_aspect_design(merit_axes=["quality"]),
         question="is a contrast better?",
         asked_at=min(run.created_at for run in runs),
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(_CONTROL)),
+        control=CampaignArm(
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key(_CONTROL),
+            identity_version=IDENTITY_VERSION,
+        ),
         scope_id=runs[0].scope_id,
         name="seeded family",
         subject_id=runs[0].subject_snapshot.subject_id,

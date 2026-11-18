@@ -46,6 +46,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from threetears.evals.analysis.report.blocks import TrialDetail
+from threetears.evals.analysis.report.serialize import ReportFormat
+
 import pytest
 
 from threetears.evals.analysis import comparison_sets, orphaned_runs, program_budget
@@ -57,6 +60,7 @@ from threetears.evals.ops import report_read
 from threetears.evals.ops.lenses import detectable_effects, scope_frontier, scope_history, scope_pivot
 from threetears.evals.ops.regressions import RegressionAlert, RegressionWatch
 from threetears.evals.run.reads import list_runs
+from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
@@ -72,7 +76,6 @@ from threetears.evals.schema.models import (
     SecondJudge,
     SecondJudgeScore,
     SecondJudging,
-    WorldEvent,
 )
 from packages.evals.tests.factories import make_eval_result, memory_storage
 from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE, COURIER_TEMPLATE_ID, courier_cases
@@ -98,7 +101,7 @@ COURIER_CAPTURE = Path(__file__).parent / "fixtures" / "hot_path_oracle" / "inpu
 #: The pages a report is read as, ``(format, trials)``. A page reads nothing of a result that its bundle's assembly
 #: did not (every form and both trial details were measured to read the same set over the scaled campaign), so two
 #: pages cover ``report_read``'s own path at a fraction of the cost.
-PAGES = (("markdown", "all"), ("json", "table"))
+PAGES: tuple[tuple[ReportFormat, TrialDetail], ...] = (("markdown", "all"), ("json", "table"))
 
 #: The scope of the campaign built for the regression watch: the scaled corpus with one regressed step added.
 REGRESSED_SCOPE = "hot-path-regressed"
@@ -276,6 +279,11 @@ def _enriched(result: EvalResult, index: int) -> dict[str, Any]:
             cost_usd=0.004,
         )
     ]
+    outcome: dict[str, Any] = (
+        {"cannot_tell": "the transcript ends before the refund is decided"}
+        if index % 2
+        else {"error": "the judge's repeat timed out"}
+    )
     unanswered = RepeatedScore(
         dim=first.dim,
         scale=first.scale,
@@ -284,11 +292,7 @@ def _enriched(result: EvalResult, index: int) -> dict[str, Any]:
         first_judge_config_id=result.judge_config_ids.get(first.dim),
         first_judge_temperature=first.judge_temperature,
         first_judge_sent_settings=first.judge_sent_settings,
-        **(
-            {"cannot_tell": "the transcript ends before the refund is decided"}
-            if index % 2
-            else {"error": "the judge's repeat timed out"}
-        ),
+        **outcome,
     )
     fields["judge_repeats"] = [
         JudgeRepeat(

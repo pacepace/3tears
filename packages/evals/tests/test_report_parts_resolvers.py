@@ -54,6 +54,7 @@ from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
+    Cell,
     Contrast,
     Example,
     PreferenceRow,
@@ -393,10 +394,10 @@ def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
     spec = plan.sections[0].chart
     slices = [row.item for row in query_rows(spec.query, report_input) if isinstance(row.item, Stratum | Task)]
     names = {fact.id: fact.name for fact in fact_arms(report_input)}
-    drawn = {row.id for panel in data.panels for row in panel.rows or []}
+    drawn_ids = {row.id for panel in data.panels for row in panel.rows or []}
     if by == "arm":
         order = spec.query.arms or list(names)
-        assert [panel.title for panel in data.panels] == [names[arm] for arm in order if arm in drawn]
+        assert [panel.title for panel in data.panels] == [names[arm] for arm in order if arm in drawn_ids]
         assert all(len(panel.rows or []) == len(slices) for panel in data.panels)
     else:
         assert [panel.title for panel in data.panels] == [item.name or item.id.replace("_", " ") for item in slices]
@@ -785,10 +786,10 @@ def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fail
 @pytest.mark.parametrize("name", _TABLED)
 def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str) -> None:
     report_input = _input(name)
-    held = {
-        "strata": report_input.strata,
-        "tasks": report_input.tasks,
-        "cells": list(report_input.cells.values()),
+    held: dict[str, list[Stratum | Task | Cell]] = {
+        "strata": [*report_input.strata],
+        "tasks": [*report_input.tasks],
+        "cells": [*report_input.cells.values()],
     }
     for table in _tables(name):
         if table.name not in held:

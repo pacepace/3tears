@@ -45,7 +45,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import CampaignReport
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
-from threetears.evals.analysis.report.serialize import serialize_report
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import RefusedInput
@@ -70,6 +70,14 @@ _MEMO_LINE: Final = (
 
 #: What the store holds beside the analysis: the planner's own plan, the host's, a plan no model reads, or none.
 _STORED_PLANS = ("planners", "hosts", "unreadable", "none")
+
+#: Every door a report is read through: each format, and the page whole as well as live.
+_READS: Final[tuple[tuple[ReportFormat, bool], ...]] = (
+    ("markdown", False),
+    ("html", False),
+    ("html", True),
+    ("json", False),
+)
 
 
 def _plan_body(stored: str) -> dict[str, Any] | None:
@@ -124,7 +132,7 @@ async def test_report_read_is_code_s_page_with_the_line_on_its_first_screen_in_e
     fixture, _, analysis = await _planned(stored)
     host = fixture.host.eval_host
 
-    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+    for form, static in _READS:
         read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
 
         assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("code_only", analysis.id, "plan", None)
@@ -268,7 +276,7 @@ async def test_report_read_of_a_memo_is_code_s_page_with_the_memo_writer_s_line_
     fixture, memo = await _memo()
     host = fixture.host.eval_host
 
-    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+    for form, static in _READS:
         read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
 
         assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("code_only", memo.id, "memo", None)
@@ -394,7 +402,7 @@ async def test_a_stored_memo_no_memo_model_accepts_reads_through_every_door_with
     fixture, memo = await _unreadable_memo()
     host = fixture.host.eval_host
 
-    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+    for form, static in _READS:
         read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
         assert (read.basis, read.analysis_id, read.analysis_basis) == ("code_only", memo.id, "memo"), form
         assert _said(memo, form, _MEMO_LINE) in _first_screen(read.body, form), form

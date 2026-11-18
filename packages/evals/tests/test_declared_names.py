@@ -112,6 +112,14 @@ def _template(*, named: bool) -> EvalTemplate:
     )
 
 
+def _arm_fields(index: int, label: str, *, named: bool) -> dict[str, Any]:
+    """What an arm states past its label, role and key: the control its naming time, a named arm its short name."""
+    return {
+        **({"named_at": ASKED_AT} if index == 0 else {}),
+        **({"short_name": ARM_SHORT_NAMES[label]} if named else {}),
+    }
+
+
 def _fixture(*, named: bool) -> dict[str, Any]:
     """The template, the runs, every aspect's bundle and the campaign bundle over them, each built from fixed ids."""
     template = _template(named=named)
@@ -120,8 +128,7 @@ def _fixture(*, named: bool) -> dict[str, Any]:
             label=label,
             role="control" if index == 0 else "candidate",
             variant_key=fixture_variant_key(label),
-            **({"named_at": ASKED_AT} if index == 0 else {}),
-            **({"short_name": ARM_SHORT_NAMES[label]} if named else {}),
+            **_arm_fields(index, label, named=named),
         )
         for index, label in enumerate(ARMS)
     ]

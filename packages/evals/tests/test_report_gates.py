@@ -145,13 +145,18 @@ def _failing_places(report_input: ReportInput, arm: str) -> list[tuple[str, str]
     return failing
 
 
+def _place(place: str, value: str) -> dict[str, Any]:
+    """The one keyword naming ``value`` as the ``place`` a check narrows to."""
+    return {place: value}
+
+
 class TestSurvivorsAreUnchanged:
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_survivors_and_modes_are_as_before(
         self, case: str, make: Any, survivors: list[str], modes: set[str]
     ) -> None:
         report_input = _input(make())
-        assert (surviving_options(report_input), decision_at(report_input).modes) == (survivors, modes)
+        assert surviving_options(report_input) == survivors and decision_at(report_input).modes == modes
 
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_an_arm_survives_exactly_when_no_place_fails_it_and_no_guardrail_is_breached(
@@ -292,7 +297,7 @@ class TestTheCheck:
     @pytest.mark.parametrize(("place", "value"), [("task", "nowhere"), ("cell", "nowhere|nothing")])
     def test_a_place_the_input_does_not_hold_is_refused(self, place: str, value: str) -> None:
         with pytest.raises(ValueError, match="nowhere"):
-            gate_check(_input(_data("r1")), "atlas-m", **{place: value})
+            gate_check(_input(_data("r1")), "atlas-m", **_place(place, value))
 
 
 class TestAFigureThatIsNotANumber:

@@ -888,8 +888,8 @@ def test_a_table_told_apart_by_two_columns_keeps_both_in_view_on_the_kairo_captu
     assert (pinned["overflow-wrap"], pinned["word-break"], pinned["hyphens"]) == ("normal", "normal", "manual")
     assert 6 * 16 <= _px(pinned["min-width"]) <= _px(pinned["max-width"]), pinned
     # Both pinned columns together leave most of a 688 px frame to the columns that scroll.
-    widths = [re.fullmatch(r"min\((\d+)rem,\d+vw\)", value) for value in (cap, pinned["max-width"])]
-    assert all(widths) and sum(int(match.group(1)) * 16 for match in widths if match) <= 0.6 * FRAME_PX
+    caps = [re.fullmatch(r"min\((\d+)rem,\d+vw\)", value) for value in (cap, pinned["max-width"])]
+    assert all(caps) and sum(int(match.group(1)) * 16 for match in caps if match) <= 0.6 * FRAME_PX
 
 
 # =============================================================================
@@ -1327,6 +1327,7 @@ def _drawn_ids(page: str, width: int, tmp_path: Path, name: str) -> dict[str, An
     path.write_text(page, encoding="utf-8")
     drawn, errors = rendered(path, _ID_PROBE, width=width)
     assert not errors, errors
+    assert isinstance(drawn, dict), drawn
     return drawn
 
 

@@ -93,7 +93,12 @@ def _refuse_a_widened_family(bundle: Mapping[str, Any]) -> None:
 def _verdict(comparison: Mapping[str, Any], interval: list[float] | None, alpha: float) -> str:
     """A corrected comparison's verdict read off its stored adjusted p's and delta, beside a rate's bounded interval."""
     delta = comparison["delta"]
-    if comparison["p_adjusted"] < alpha and delta and interval is not None and interval_permits_separation(interval):
+    if (
+        comparison["p_adjusted"] < alpha
+        and delta
+        and interval is not None
+        and interval_permits_separation((interval[0], interval[1]))
+    ):
         return "improved" if (delta > 0) == comparison["higher_is_better"] else "regressed"
     equivalence = comparison.get("equivalence_p_adjusted")
     if equivalence is not None and equivalence < alpha:

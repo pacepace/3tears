@@ -47,6 +47,7 @@ from threetears.evals.schema.models import (
     JudgedArtifact,
     JudgeEvidence,
 )
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import TOY_JUDGE_MODEL, ToyJudgeCompletion, toyhost_judged_template
@@ -179,7 +180,7 @@ def test_model_unserved_without_its_infra_entry_is_refused() -> None:
 
 
 # parity-with: threetears.evals.schema.completion.CompletionClient
-class FakeJudgeClient:
+class FakeJudgeClient(BoundClientDouble):
     """A judge client that scores every dim a 4 and counts what it was asked."""
 
     def __init__(self) -> None:

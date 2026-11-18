@@ -96,4 +96,5 @@ def test_the_action_takes_the_template() -> None:
     action = tool.action("campaign_create") or next(
         t.action("campaign_create") for t in eval_catalogue().mount_all(standard_tools()) if t.action("campaign_create")
     )
+    assert action is not None
     assert "template_id" in (action.params.model_fields["aspects"].description or "")

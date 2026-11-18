@@ -89,6 +89,8 @@ import pytest
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from importlib.metadata import distribution
+
 from threetears.evals.kernel import build_stamp
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import report_read
@@ -543,7 +545,7 @@ def bumped_build(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """The installed 3tears-evals distribution reporting :data:`BUMPED_VERSION`, as it would after a release bump:
     its metadata is what :func:`~threetears.evals.kernel.build_stamp.package_version` reads, so every reader of the
     version sees the bump."""
-    installed = build_stamp.distribution
+    installed = distribution
 
     def bumped(name: str) -> Any:
         distribution = installed(name)

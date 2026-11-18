@@ -29,6 +29,7 @@ from statistics import NormalDist
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
+from packages.evals.tests.figure_support import figure_number
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.figure_keys import key_subjects, passed_aspects, resolve
@@ -144,7 +145,7 @@ def _holds_its_count_basis(held: ReportInput, row: SettleRow, aspect: str, arms:
     if len(repeats) == 1 and all(board[arm].cases for arm in arms):
         (each,) = repeats
         assert row.trials_needed is not None and row.cases_needed is not None
-        assert row.trials_needed.value == math.ceil(float(row.cases_needed.value) * each - 1e-9)
+        assert row.trials_needed.value == math.ceil(figure_number(row.cases_needed) * each - 1e-9)
     else:
         assert row.trials_needed is None and row.repeats == []
     for figure in [*row.estimate, *row.counts, *row.cases, *row.basis]:
@@ -232,10 +233,10 @@ def test_a_two_arm_call_naming_no_held_measure_teaches_the_pass_rate_where_an_as
     first, second = (arm.id for arm in held.arms[:2])
     with pytest.raises(RefusedInput) as refused:
         settle_cases(held, [first, second], measure="no such measure")
-    assert PASSED in refused.value.valid_values
+    assert PASSED in (refused.value.valid_values or ())
     without = fixture_inputs()["r4"]
     assert not passed_aspects(without, [arm.id for arm in without.arms])
     pair = [arm.id for arm in without.arms[:2]]
     with pytest.raises(RefusedInput) as unheld:
         settle_cases(without, pair, measure=PASSED)
-    assert PASSED not in unheld.value.valid_values
+    assert unheld.value.valid_values is not None and PASSED not in unheld.value.valid_values

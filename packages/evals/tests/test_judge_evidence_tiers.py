@@ -70,7 +70,7 @@ from threetears.evals.kernel.evidence_tiers import (
     separation_criterion,
     tier_of,
 )
-from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore
+from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScale, RubricScore
 from threetears.evals.run import rate_result
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
@@ -329,7 +329,7 @@ def _repeat(
     judge: str | None = "judge-a",
     served: str | None = "judge-a",
     cannot_tell: bool = False,
-    scale: str = "ordinal",
+    scale: RubricScale = "ordinal",
     first_config: str | None = None,
     repeat_config: str | None = None,
 ) -> JudgeRepeat:
@@ -679,7 +679,7 @@ class TestEachResultWeighsOnceInTheFigure:
 
 class TestACannotTellRepeatCountsAgainstTheJudge:
     @pytest.mark.parametrize("scale", ["ordinal", "pass_fail"])
-    def test_a_judge_declining_a_third_of_its_repeats_does_not_separate(self, scale: str) -> None:
+    def test_a_judge_declining_a_third_of_its_repeats_does_not_separate(self, scale: RubricScale) -> None:
         firsts = _cycle(30) if scale == "ordinal" else [index % 2 for index in range(30)]
         results = []
         for index, first in enumerate(firsts):

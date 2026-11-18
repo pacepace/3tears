@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -194,7 +195,9 @@ def test_a_change_to_a_shape_the_core_embeds_too_moves_a_durable_pin() -> None:
 
     template = _durable_models()["eval_template"]
     rubric = template.model_fields["rubric"].annotation
-    grown = create_model("EvalTemplate", __base__=template, rubric=(rubric | None, None))
+    assert rubric is not None
+    widened: tuple[Any, None] = (rubric | None, None)
+    grown = create_model("EvalTemplate", __base__=template, rubric=widened)
 
     assert core_shape_digest(grown) != DURABLE_SHAPE_DIGESTS["eval_template"]
 

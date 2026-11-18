@@ -92,7 +92,7 @@ class TestAnOverrideMayOnlyLowerTheHostsCeiling:
         [(_CONFIGURED_USD + 0.01, _CONFIGURED_USD), (_CONFIGURED_CALLS + 1, _CONFIGURED_CALLS)],
         ids=["dollars", "calls"],
     )
-    def test_an_override_above_the_configured_ceiling_is_refused(self, override, configured) -> None:
+    def test_an_override_above_the_configured_ceiling_is_refused(self, override: float, configured: float) -> None:
         with pytest.raises(ceilings.CeilingRaisedError, match="a launch may only lower the host's ceiling"):
             ceilings.refuse_raised_ceiling(override, configured=configured, name="cap", configured_name="host.cap")
         with pytest.raises(ceilings.CeilingRaisedError):
@@ -104,7 +104,7 @@ class TestAnOverrideMayOnlyLowerTheHostsCeiling:
                 )
 
     @pytest.mark.parametrize("override", [None, _OVERRIDE_USD, _CONFIGURED_USD], ids=["inherit", "lower", "equal"])
-    def test_an_override_at_or_below_the_configured_ceiling_is_a_choice(self, override) -> None:
+    def test_an_override_at_or_below_the_configured_ceiling_is_a_choice(self, override: float | None) -> None:
         ceilings.refuse_raised_ceiling(override, configured=_CONFIGURED_USD, name="cap", configured_name="host.cap")
         assert ceilings.resolve_ceiling(override, configured=_CONFIGURED_USD) == (
             _CONFIGURED_USD if override is None else override
@@ -132,13 +132,12 @@ class TestBothClassesReadTheOneCascade:
     def test_a_new_origin_value_reaches_both_classes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ceilings, "resolve_ceiling_origin", lambda override, *, enforcement_enabled: "renamed")
 
-        assert EvalRunCostCap.resolve_ceiling_origin(_OVERRIDE_USD, enforcement_enabled=True) == "renamed"
-        assert (
-            MeteredCallLedger.resolve_ceiling_origin(
-                _OVERRIDE_CALLS, configured_max_metered_calls=_CONFIGURED_CALLS, enforcement_enabled=True
-            )
-            == "renamed"
+        # Read as text: the patched rule answers outside the origin vocabulary, which is the point.
+        dollars: str = EvalRunCostCap.resolve_ceiling_origin(_OVERRIDE_USD, enforcement_enabled=True)
+        calls: str = MeteredCallLedger.resolve_ceiling_origin(
+            _OVERRIDE_CALLS, configured_max_metered_calls=_CONFIGURED_CALLS, enforcement_enabled=True
         )
+        assert (dollars, calls) == ("renamed", "renamed")
 
     def test_a_changed_enforcement_off_rule_reaches_both_recorded_ceilings(
         self, monkeypatch: pytest.MonkeyPatch

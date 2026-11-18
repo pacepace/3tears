@@ -757,7 +757,9 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
     # A stop that saved something says so in its own sentence, and the launch line still says what the readings were
     # read on: each once.
     readout = list(stopped_run.readout())
-    assert readout.count(stopped_run.result.launch_line) == 1 and readout.count(stopped_run.saved()) == 1
+    launch_line, saved_line = stopped_run.result.launch_line, stopped_run.saved()
+    assert launch_line is not None and saved_line is not None
+    assert readout.count(launch_line) == 1 and readout.count(saved_line) == 1
     assert stopped_run.saved() == (
         f"The run stopped at case 6 of 7, after launching 6, 3 at a time, and spent ${writing + judged:.2f}; at its own "
         f"spend per case, all 7 would have cost about ${writing + judged + saved:.2f}, so the stop saved about "

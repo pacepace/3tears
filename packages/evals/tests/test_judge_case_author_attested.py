@@ -337,6 +337,7 @@ def _frozen_v16_0_authored(**changes: Any) -> AuthoredJudgeCase:
 
 def _frozen_v16_0_template() -> EvalTemplate:
     stored = _frozen_v16_0()
+    assert stored.template_id is not None
     return EvalTemplate(
         id=stored.template_id,
         scope_id=stored.scope_id,

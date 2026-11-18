@@ -59,6 +59,7 @@ from threetears.evals.schema.models import (
     scored_dim_ids,
 )
 
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.factories import declared, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -78,7 +79,7 @@ _EVIDENCE = JudgeEvidence(
 
 
 @dataclass
-class _ScriptedJudge:
+class _ScriptedJudge(BoundClientDouble):
     """A judge client: answers each dim with a score, except the dims told to fail, and records every call.
 
     Failing is answering unparseable text, which the judge service records as that dim's error —
@@ -112,9 +113,6 @@ class _ScriptedJudge:
         content = "not json" if dim in self.failing else json.dumps(reply)
         return _Completion(content=content)
 
-    async def aclose(self) -> None:
-        """Nothing to release."""
-
 
 @dataclass(frozen=True)
 class _Completion:
@@ -139,6 +137,7 @@ class _JudgedKind:
         :ptype judged_artifact: JudgedArtifact
         """
         self.judged_artifact = judged_artifact
+        self.max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,
@@ -484,7 +483,7 @@ def _trace(**fields: Any) -> EvalTrace:
     ],
     ids=["evidence-without-its-declaration", "a-declaration-without-evidence", "evidence-for-an-unjudged-kind"],
 )
-def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields) -> None:
+def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="judge_evidence and judged_artifact|unjudged kind"):
         _trace(**fields)
 

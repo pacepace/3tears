@@ -27,6 +27,7 @@ from typing import Any
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.storage import READINGS_PAGE, EvalStorage
 from threetears.evals.schema import GroupMeasure, JudgedArtifact, JudgeEvidence
 from threetears.evals.storage import InMemoryDocumentStore
@@ -135,7 +136,12 @@ def _assembly_reads(
     campaign = make_aspect_campaign(
         run_ids=run_ids,
         subject_id=DEFAULT_SUBJECT.subject_id,
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key("sonnet")),
+        control=CampaignArm(
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key("sonnet"),
+            identity_version=IDENTITY_VERSION,
+        ),
     )
     store.calls.clear()
 

@@ -48,6 +48,11 @@ def _frozen_clock() -> Iterator[None]:
         yield
 
 
+def _unchecked[T](function: Callable[..., T]) -> Callable[..., T]:
+    """``function``, called with arguments its signature refuses, on purpose: what the model does with them is the test."""
+    return function
+
+
 class _Sample(EvalBaseModel):
     """A minimal model on the eval base, for the round-trip and stance tests."""
 
@@ -110,7 +115,7 @@ def test_the_base_pins_its_configuration_values_literally() -> None:
 
     assert Aliased.model_validate({"wireName": 1}).wire_name == 1
     assert Aliased.model_validate({"wire_name": 2}).wire_name == 2
-    assert Aliased(wire_name=3).wire_name == 3
+    assert _unchecked(Aliased)(wire_name=3).wire_name == 3
 
 
 def test_the_document_base_derives_from_the_same_options_and_names_only_its_deltas() -> None:
@@ -132,7 +137,7 @@ def test_the_document_base_derives_from_the_same_options_and_names_only_its_delt
     document = EvalRun.model_config
 
     assert issubclass(EvalRun, EvalDocumentModel)
-    assert {k: document[k] for k in deltas} == deltas
+    assert {k: dict(document)[k] for k in deltas} == deltas
     assert not deltas.keys() & options.keys(), "a delta is now in the base's own table, so it is no longer a delta"
     assert {k: v for k, v in options.items() if k not in deltas}.items() <= document.items(), (
         "the document base no longer carries the base's option table — if it now spells those values "
@@ -182,7 +187,7 @@ def test_the_dict_path_passes_a_lone_surrogate_through_unrepaired() -> None:
 def test_an_unknown_field_is_refused() -> None:
     """The ``forbid`` stance still holds after the copy."""
     with pytest.raises(ValidationError, match="unexpected_keyword_argument|extra_forbidden"):
-        _Sample(name="ok", unknown_field="value")
+        _unchecked(_Sample)(name="ok", unknown_field="value")
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         _Sample.from_dict({"name": "ok", "unknown_field": "value"})
@@ -193,7 +198,7 @@ def test_assignment_is_validated() -> None:
     model = _Sample(name="ok")
 
     with pytest.raises(ValidationError):
-        model.name = 123
+        setattr(model, "name", 123)
 
 
 def test_the_json_pair_round_trips() -> None:

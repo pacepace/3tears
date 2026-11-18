@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_measure_facts
 from threetears.evals.kernel import MetricDescriptor, materiality
-from threetears.evals.schema.models import LatencyMetrics
+from threetears.evals.schema.models import EvalResult, LatencyMetrics
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.surface import MeasureFacts
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
@@ -92,6 +92,12 @@ def _with_p95_threshold(threshold: float | None) -> HostProfile:
     return replace(profile, measures=MeasureRegistry(measures, families=profile.measures.families))
 
 
+def _total_ms(result: EvalResult) -> float:
+    """A batch's recorded wall-clock."""
+    assert result.latency is not None and result.latency.total_ms is not None, result.id
+    return result.latency.total_ms
+
+
 def _divergent_movements(threshold: float | None) -> dict[str, MeasureMovement]:
     """Each end-to-end movement in the toy campaign's scope divergences, by measure name.
 
@@ -101,13 +107,14 @@ def _divergent_movements(threshold: float | None) -> dict[str, MeasureMovement]:
     """
     profile = _with_p95_threshold(threshold)
     campaign, storage = toyhost_campaign(profile=profile)
-    runs = [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in campaign.run_ids]
+    runs = [run for run_id in campaign.run_ids if (run := storage.load_eval_run(run_id, TOYHOST_SCOPE)) is not None]
+    assert len(runs) == len(campaign.run_ids)
     results = {
         run_id: [
             result.model_copy(
                 update={
-                    "host_measures": {**result.host_measures, _P95: result.latency.total_ms},
-                    "latency": LatencyMetrics(total_ms=result.latency.total_ms, tool_ms=300.0 + result.k_iteration),
+                    "host_measures": {**result.host_measures, _P95: _total_ms(result)},
+                    "latency": LatencyMetrics(total_ms=_total_ms(result), tool_ms=300.0 + result.k_iteration),
                 }
             )
             for result in storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE)
@@ -120,7 +127,7 @@ def _divergent_movements(threshold: float | None) -> dict[str, MeasureMovement]:
 
 def _p95_delta() -> float:
     movement = _divergent_movements(None)[_P95]
-    assert movement.direction != "flat", "the fixture must move the measure clear of its noise"
+    assert movement.direction in ("improved", "regressed"), "the fixture must move the measure clear of its noise"
     return abs(movement.delta)
 
 

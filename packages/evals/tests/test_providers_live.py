@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.providers import Catalogue, Model
+from threetears.evals.schema import sent_settings_of
 from threetears.evals.testing import check_completion_conformance
 
 #: Where the recordings live.
@@ -65,7 +66,8 @@ async def test_a_strict_schema_is_sent_enforced_and_the_reply_is_the_schema() ->
     directive = strict_response_format("Triage", Triage.model_json_schema())
     completion = await model.generate(system="Triage the support email.", user=EMAIL, response_format=directive)
     assert completion.stop_reason == "end_turn"
-    assert completion.sent_settings is not None and completion.sent_settings.strict_output is True
+    sent = sent_settings_of(completion)
+    assert sent is not None and sent.strict_output is True
     assert Triage.model_validate_json(completion.content).category == "billing"
 
 
@@ -81,7 +83,8 @@ async def test_a_refused_temperature_is_resent_without_it_and_the_reply_says_non
     directive = strict_response_format("Triage", Triage.model_json_schema())
     completion = await model.generate(system="Triage the support email.", user=EMAIL, response_format=directive)
     assert completion.temperature is None
-    assert completion.sent_settings is not None and completion.sent_settings.strict_output is True
+    sent = sent_settings_of(completion)
+    assert sent is not None and sent.strict_output is True
     assert Triage.model_validate_json(completion.content).category == "billing"
 
 

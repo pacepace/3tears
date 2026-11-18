@@ -199,6 +199,7 @@ def test_a_pairs_level_key_prints_the_level_as_the_input_states_it() -> None:
     for held, aspect, pair in found:
         first, second = pair.arms
         figure = resolve(f"aspects.{aspect}.pair.{first}.{second}.confidence", held)
+        assert pair.confidence is not None
         assert format_figure(figure, forms=PageForms.of(held)) == _stated(float(pair.confidence))
 
 

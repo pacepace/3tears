@@ -67,6 +67,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricScore,
 )
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -149,7 +150,7 @@ class _Judge:
 
 
 @dataclass
-class _Client:
+class _Client(ClientDouble):
     """One judge client, built for one temperature, priced at :data:`_CEILING` a call."""
 
     judge: _Judge
@@ -162,9 +163,6 @@ class _Client:
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         sent = self.temperature if self.judge.sends == "as_asked" else self.judge.sends
         return self.judge.answer(sent, system, user)
-
-    async def aclose(self) -> None:
-        """Nothing to release."""
 
 
 @dataclass
@@ -194,6 +192,7 @@ class _Kind:
     """A kind rendering :data:`_EVIDENCE` for its one output, as a document."""
 
     judged_artifact = JudgedArtifact.DOCUMENT
+    max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,
@@ -538,6 +537,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
         host, run_id = await _judged_run(judge, judge_asked_settings=_PRE_STRICT_SETTINGS)
         run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
         assert run is not None
+        assert run.template_id is not None
         template = off_loop(host.storage.load_template, run.template_id, _SCOPE)
         assert template is not None
         off_loop(

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from threetears.evals import Answer, Eval, World
 from threetears.evals.analysis import EvalSummary
 from threetears.evals.quick.world import WorldOutcome
+from packages.evals.tests.spend_support import spent
 
 SCOPE = "quick-combinations-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]
@@ -44,8 +45,8 @@ async def test_a_tool_using_runner_reports_its_spend_with_an_answer() -> None:
 
     summary = (await Eval(CASES, DOUBLING(doubling), [exact], k=1).run(store=":memory:", scope=SCOPE)).summary
     assert mean_exact(summary) == 1
-    assert summary.role_spend("candidate").calls == 3
-    assert summary.role_spend("candidate").cost_usd == 0.003
+    assert spent(summary, "candidate").calls == 3
+    assert spent(summary, "candidate").cost_usd == 0.003
 
 
 async def test_a_comparison_runs_tool_using_arms_on_two_factors() -> None:

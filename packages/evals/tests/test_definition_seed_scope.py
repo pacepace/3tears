@@ -18,7 +18,7 @@ from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome, load_s
 from packages.evals.tests.factories import make_template
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 
 
 def _corpus_dir(tmp_path: Path, template: dict[str, object]) -> Path:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 from dataclasses import fields, replace
 
 import pytest
@@ -338,7 +339,9 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     ],
     ids=["replay-without-corpus", "corpus-without-replay", "corpus-run-missing"],
 )
-async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said: str) -> None:
+async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(
+    arguments: dict[str, Any], said: str
+) -> None:
     host, storage, handed = off_loop(_launching_with, _wired)
 
     with pytest.raises(ValidationFailedError, match=said):
@@ -382,10 +385,15 @@ async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_la
     assert host.job_manager.admitted_count == 0
 
 
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function``, called with what its signature refuses, on purpose: the refusal is the test."""
+    return function
+
+
 def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument() -> None:
     with pytest.raises(ValueError, match="cassete_mode"):
-        LaunchableKind(
-            launch=lambda _request: None,  # type: ignore[arg-type,return-value]
+        _unchecked(LaunchableKind)(
+            launch=lambda _request: None,
             resolve_subject=lambda _subject, _scope: None,
             unhonoured_launch_arguments=frozenset({"cassete_mode"}),
         )
@@ -466,7 +474,7 @@ def _other_template_case() -> EvalTestCase:
     ],
 )
 async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(
-    overrides, arguments, said: str
+    overrides: Callable[[], dict[str, Any]], arguments: dict[str, Any], said: str
 ) -> None:
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
     host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides()))

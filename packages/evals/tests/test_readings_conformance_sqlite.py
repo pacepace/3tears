@@ -12,7 +12,7 @@ from __future__ import annotations
 import gc
 import sqlite3
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -105,6 +105,7 @@ def test_a_narrowed_read_abandoned_part_way_leaves_the_store_usable(tmp_path: Pa
         for index in range(600):
             store.upsert(_doc(index))
         rows = store.iter_narrowed("t", "s")
+        assert isinstance(rows, Generator)
         assert next(rows)["n"] == 0
         store.upsert(_doc(600))
         assert store.merge_fields("d0001", "s", {"n": -1})

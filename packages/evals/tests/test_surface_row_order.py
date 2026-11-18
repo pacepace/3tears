@@ -30,6 +30,13 @@ from threetears.evals.analysis.style import humanize
 from packages.evals.tests.aspect_support import with_control
 
 
+def _arms(bundle: AnalysisContextBundle) -> tuple[str, str]:
+    """The narrow arm's variant key, and the wide one's."""
+    narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+    assert narrow is not None and wide is not None
+    return narrow, wide
+
+
 def _label(variant_key: str, names: dict[str, str]) -> str:
     """An arm as the page names it: its given label, never ``axis=level``."""
     return humanize("arm", arm_label(variant_key, names))
@@ -79,7 +86,7 @@ class TestTheCodeOnlyReportFollowsTheRule:
     def test_the_control_leads_the_scoreboard_marked_and_the_rule_is_printed(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
         names = arm_names(bundle.variant_index)
-        narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        narrow, wide = _arms(bundle)
         table = _table(bundle, "scoreboard")
         assert table.order == "the control first, then the other arms by name"
         assert [row["arm"] for row in table.values()] == [f"▸ {_label(narrow, names)}", _label(wide, names)]
@@ -87,13 +94,13 @@ class TestTheCodeOnlyReportFollowsTheRule:
     def test_with_no_control_no_row_is_marked_and_the_arms_are_in_name_order(self) -> None:
         bundle = _bundle(control=None)
         names = arm_names(bundle.variant_index)
-        narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        narrow, wide = _arms(bundle)
         table = _table(bundle, "scoreboard")
         assert [row["arm"] for row in table.values()] == [_label(wide, names), _label(narrow, names)]
 
     def test_the_cases_table_lays_its_arms_out_in_the_scoreboard_s_order(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
         names = arm_names(bundle.variant_index)
-        narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        narrow, wide = _arms(bundle)
         headers = [column.header for column in _table(bundle, "cases").columns]
         assert headers.index(f"▸ {_label(narrow, names)}") < headers.index(_label(wide, names))

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -36,6 +38,7 @@ from threetears.evals.analysis import (
     program_budget,
     reads,
 )
+from threetears.evals.analysis.lenses.pivot import PivotTable
 from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.storage import EvalStorage
@@ -87,8 +90,8 @@ def _expected_records(storage: EvalStorage, scope_id: str) -> int:
     return len(projection.records)
 
 
-def _pivot(storage: EvalStorage, scope_id: str, **overrides: str):  # type: ignore[no-untyped-def]
-    arguments = {"row_factor": "test_case_id", "column_factor": "model", **overrides}
+def _pivot(storage: EvalStorage, scope_id: str, **overrides: str) -> PivotTable:
+    arguments: dict[str, Any] = {"row_factor": "test_case_id", "column_factor": "model", **overrides}
     return pivot(storage, scope_id, list_runs=_lister(storage), profile=PROFILE, **arguments)
 
 
@@ -144,7 +147,7 @@ class TestEachCallReportsWhatItReadAndHowLongItTook:
 
 
 #: The aggregates that project no score record themselves, each as a call over the toy scope.
-SILENT_BEFORE = {
+SILENT_BEFORE: dict[str, Callable[[EvalStorage, str], object]] = {
     "comparison_sets": lambda storage, scope_id: comparison_sets(
         storage, scope_id, list_runs=_lister(storage), profile=PROFILE
     ),

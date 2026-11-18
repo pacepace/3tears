@@ -195,7 +195,7 @@ def test_the_component_hashes_the_values_and_their_types() -> None:
     ids=["another-apparatus", "the-engines-apparatus", "a-lever", "a-list", "none", "not-finite"],
 )
 async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_before_its_launcher_runs(
-    settings, said: str
+    settings: dict[str, Any], said: str
 ) -> None:
     host, storage = off_loop(_launching)
     handed: list[LaunchRequest] = []
@@ -242,12 +242,13 @@ def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatu
 
 
 @pytest.mark.parametrize("default", [["pool-a"], None, float("nan")], ids=["a-list", "none", "not-finite"])
-def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(default) -> None:
+def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(default: object) -> None:
     async def launch(_request: LaunchRequest) -> EvalRun:
         raise AssertionError("never launched")
 
     with pytest.raises(ValueError, match="defaults a setting to a value no run could record"):
-        LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None, apparatus_settings={POOL: default})
+        settings: dict[str, Any] = {POOL: default}
+        LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None, apparatus_settings=settings)
 
 
 def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines() -> None:

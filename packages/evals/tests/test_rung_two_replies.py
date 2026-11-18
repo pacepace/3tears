@@ -22,6 +22,7 @@ from threetears.evals import Example, Judge
 from threetears.evals.quick.files import main
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES
+from packages.evals.tests.json_support import json_at
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.rung_support import (
     program_lines,
@@ -109,8 +110,8 @@ def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
     RecordedCompletions.check_covers(path, calls, settings=recorded_settings(path), rerecord="RECORD=1")
     judged = recorded(replies_dir / "recordings" / "judge.jsonl")
     assert len(judged) == 20 * 2 * 3 + 4 * 2, "every reply on every dimension, and every example, each twice"
-    assert {line["result"]["model"] for line in judged} == {"google/gemini-2.5-flash-lite"}  # type: ignore[index]
-    assert {line["result"]["temperature"] for line in judged} == {0.0}  # type: ignore[index]
+    assert {json_at(line, "result", "model") for line in judged} == {"google/gemini-2.5-flash-lite"}
+    assert {json_at(line, "result", "temperature") for line in judged} == {0.0}
 
 
 def test_the_run_replays_offline_and_says_its_judge_is_uncalibrated_with_the_next_step(

@@ -67,6 +67,7 @@ class _RecordingKind:
     def __init__(self, inner: ToyExtractorKind) -> None:
         self.inner = inner
         self.judged_artifact = inner.judged_artifact
+        self.max_concurrent_cells = inner.max_concurrent_cells
         self.last: CandidateOutput | None = None
 
     async def prepare(self, **kwargs: Any) -> Any:
@@ -133,10 +134,10 @@ async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> Non
         # The runner's cell fired its hold through the rig, which a witnessed session cannot hold — no rig and no
         # seed (refused below). The host records the same firing as the world's own, unarmed, and the assembly
         # carries what it is handed through verbatim, so the records still agree on every other field.
-        observed = [
-            event.model_copy(update={"caused_by": "world", "armed": False}) for event in runner_result.world_events
-        ]
-        assert observed and all(event.caused_by == "rig" for event in runner_result.world_events)
+        fired = runner_result.world_events
+        assert fired is not None, runner_result.id
+        observed = [event.model_copy(update={"caused_by": "world", "armed": False}) for event in fired]
+        assert observed and all(event.caused_by == "rig" for event in fired)
         runner_trace = off_loop(host.storage.load_eval_trace, runner_result.id, runner_result.scope_id)
         assert runner_trace is not None
         result, trace = await record_witnessed_cell(

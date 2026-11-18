@@ -7,6 +7,7 @@ lists and alone, so its schema has definitions and references, with titles, defa
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, Literal
 
 import pytest
@@ -37,7 +38,7 @@ def _schema() -> dict[str, Any]:
     return authored.strict_schema(_Pick.model_json_schema())
 
 
-def _walk(node: Any):
+def _walk(node: Any) -> Iterator[dict[str, Any]]:
     if isinstance(node, dict):
         yield node
         for value in node.values():
@@ -47,7 +48,7 @@ def _walk(node: Any):
             yield from _walk(item)
 
 
-def _schema_nodes(node: Any):
+def _schema_nodes(node: Any) -> Iterator[dict[str, Any]]:
     """Every schema node, stepping over the name maps (`properties`, `$defs`) rather than yielding them."""
     if isinstance(node, list):
         for item in node:

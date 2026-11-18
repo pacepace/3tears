@@ -25,7 +25,7 @@ from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches,
 
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 _SAY = {
@@ -47,7 +47,7 @@ def _reader(tool: str, action: str) -> Mapping[str, Any] | None:
     return _SAY if (tool, action) == ("speech", "say") else None
 
 
-def _state(*calls: tuple[str, str, dict]) -> dict:
+def _state(*calls: tuple[str, str, dict[str, Any]]) -> dict[str, Any]:
     """The keyword arguments ``evaluate`` takes for a cell that made ``calls`` and holds no world."""
     ledger = CallLedger()
     for tool, action, params in calls:
@@ -55,7 +55,7 @@ def _state(*calls: tuple[str, str, dict]) -> dict:
     return {"end_state": {}, "ledger": ledger, "world": None}
 
 
-def _refusals(expression: str, reader=_reader) -> list[str]:
+def _refusals(expression: str, reader: Callable[[str, str], Mapping[str, Any] | None] | None = _reader) -> list[str]:
     return [reason for _, reason in call_parameter_matches(expression, reader)]
 
 
@@ -160,7 +160,7 @@ class TestTheCallParameterGate:
         assert _refusals('calls("speech.say").length >= 1', reader=None) == []
 
 
-def _create_template(definition: dict) -> object:
+def _create_template(definition: dict[str, Any]) -> object:
     """Author through the engine's own gate, with every host-side check a no-op.
 
     The refusals below are the engine's: the host's template checks ``create_template`` reads are

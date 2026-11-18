@@ -316,8 +316,8 @@ def _write(argv: Sequence[str]) -> int:
     # whose turns cannot be bounded too; refused here, nothing is written under --out either.
     try:
         unpriced = asyncio.run(model.turn_pricing_refusal())
-    except ValueError as refused:  # the model sends no turn at all (its route or settings): said as it words it
-        unpriced = str(refused)
+    except ValueError as no_turn:  # the model sends no turn at all (its route or settings): said as it words it
+        unpriced = str(no_turn)
     if unpriced is not None:
         print(f"analyst_cli.py write: not started, and nothing was frozen, sent or spent: {unpriced}", file=sys.stderr)
         return 2

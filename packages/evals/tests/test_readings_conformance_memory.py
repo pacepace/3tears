@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, ItemsView, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -30,7 +30,8 @@ class _HookedDocuments(dict[tuple[str, str], dict[str, Any]]):
 
     hook: Callable[[], None] | None = None
 
-    def items(self) -> ItemsView[tuple[str, str], dict[str, Any]]:
+    # Any: dict's own items view type lives in a private module, and this hands back exactly what dict's does.
+    def items(self) -> Any:
         if self.hook is not None:
             self.hook()
         return super().items()

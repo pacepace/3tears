@@ -72,6 +72,7 @@ async def test_the_toy_host_writes_a_campaigns_report_on_its_analyst_client() ->
     assert status.analysis_id is not None
     analysis = off_loop(host.eval_host.storage.load_analysis, status.analysis_id, TOYHOST_SCOPE)
     assert analysis is not None and analysis.basis == "doc"
+    assert analysis.report_doc_id is not None
     stored = off_loop(host.eval_host.storage.load_report_doc, analysis.report_doc_id, TOYHOST_SCOPE)
     assert isinstance(stored, EvalReportDoc) and (stored.ending, stored.campaign_id) == ("stored", campaign_id)
     assert len(analysts) == 1 and analysts[0].released

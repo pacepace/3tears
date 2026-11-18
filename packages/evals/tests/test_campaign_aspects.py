@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
@@ -110,7 +110,11 @@ def _aspect(label: str, template_id: str, *run_ids: str, margin: float | None = 
 
 
 def _create(
-    storage: EvalStorage, *, aspects_from: tuple[str, ...] = (), exploratory: bool = False, **definition: Any
+    storage: EvalStorage,
+    *,
+    aspects_from: tuple[str | dict[str, str], ...] = (),
+    exploratory: bool = False,
+    **definition: Any,
 ) -> EvalCampaign:
     fields: dict[str, Any] = {"name": "two aspects", "subject_id": "subject-1", "behavior": "assistant"}
     fields.update(definition)
@@ -683,7 +687,7 @@ def test_a_v15_campaign_adopted_into_a_campaign_of_two_keeps_its_design_s_time()
 # --- the campaign holds itself together ------------------------------------------------------------------------------
 
 
-def _arm(label: str, model: str, role: str = "candidate") -> CampaignArm:
+def _arm(label: str, model: str, role: Literal["control", "candidate"] = "candidate") -> CampaignArm:
     return CampaignArm(
         label=label, role=role, variant_key=_key(model), levers=_levers(model), identity_version=IDENTITY_VERSION
     )

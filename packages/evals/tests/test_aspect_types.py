@@ -192,7 +192,9 @@ class TestTheArm:
         assert resolve_control_arm(arm).variant_keys == [compute_variant_key(other), _KEY]
 
     def test_a_key_under_this_predicate_is_its_one_key(self) -> None:
-        arm = CampaignArm(label="control", role="control", variant_key=_KEY, levers=_LEVERS)
+        arm = CampaignArm(
+            label="control", role="control", variant_key=_KEY, levers=_LEVERS, identity_version=IDENTITY_VERSION
+        )
 
         resolved = resolve_control_arm(arm)
 

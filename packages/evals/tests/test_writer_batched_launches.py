@@ -637,7 +637,8 @@ async def _held_within_the_part(result: WriterResult, part: float, per_case: flo
         for summary, batch in zip(summaries, (BATCH, BATCH, CASES - 2 * BATCH), strict=True):
             assert before + batch * per_case <= part + 1e-9, "launched only when its reservation fit what was left"
             assert summary.max_cost_usd == pytest.approx(part - before), "run under all its arm's part had left"
-            assert summary.total_cost_usd is not None and summary.total_cost_usd <= summary.max_cost_usd
+            assert summary.total_cost_usd is not None and summary.max_cost_usd is not None
+            assert summary.total_cost_usd <= summary.max_cost_usd
             before += summary.total_cost_usd
         assert before <= part
     return by_arm
@@ -667,7 +668,8 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
     for skill, summaries in by_arm.items():
         assert [summary.status for summary in summaries] == ["budget_stopped"] * 3
         for run in runs[skill]:
-            (stop,) = run.budget_stops or ()
+            assert run.budget_stops is not None, run.id
+            (stop,) = run.budget_stops
             assert stop.currency == "cost_usd" and stop.landed_final <= stop.ceiling and stop.cells_not_judged >= 1
         scored = await _scored_by_run(result, runs[skill])
         assert scored == [2, 0, 0]
@@ -788,7 +790,8 @@ async def test_judging_billed_far_above_its_floor_ends_each_batch_within_one_cal
     for skill, summaries in by_arm.items():
         assert [summary.status for summary in summaries] == ["completed", "budget_stopped", "budget_stopped"]
         for summary, run in zip(summaries[1:], runs[skill][1:], strict=True):
-            (stop,) = run.budget_stops or ()
+            assert run.budget_stops is not None, run.id
+            (stop,) = run.budget_stops
             assert stop.landed_final == pytest.approx(summary.total_cost_usd)
             assert stop.landed_final <= stop.ceiling + 0.15, "within one call of the cap"
             assert stop.cells_not_judged >= 1

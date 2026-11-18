@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import TOY_JUDGE_MODEL, ToyJudgeCompletion, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
@@ -29,15 +30,11 @@ from threetears.evals.schema import CellIdentity, bind_cell_identity, current_ce
 from threetears.evals.schema.models import DEFAULT_JUDGE_TEMPERATURE, JudgedArtifact
 
 
-class _SeeingJudge:
+class _SeeingJudge(BoundClientDouble):
     """A judge client that records the identity current at each call, sleeping so cells interleave."""
 
     def __init__(self) -> None:
         self.seen: list[CellIdentity | None] = []
-
-    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
-        del system, user, response_format
-        return None
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         del user, response_format

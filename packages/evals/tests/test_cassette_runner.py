@@ -162,6 +162,7 @@ class _FakeGmKind:
     """
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    max_concurrent_cells: int | None = 1
 
     def __init__(self, *, wire: bool = True, report: str = "honest") -> None:
         self._wire = wire

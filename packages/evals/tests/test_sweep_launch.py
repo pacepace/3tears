@@ -16,6 +16,7 @@ from threetears.evals.actions import Caller
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.ops import (
     JobStatus,
+    JobsStarted,
     OpsHost,
     SweepArguments,
     SweepArm,
@@ -201,6 +202,7 @@ async def test_the_action_launches_a_sweep_from_flat_parameters() -> None:
         }
     )
     started = await action.handler(host, Caller(scope_id=TOYHOST_SCOPE, identity="agent:test"), params)
+    assert isinstance(started, JobsStarted)
     (job,) = started.jobs
     done = await _watch(host, job.job_id, lambda status: status.done, [])
     assert done.state == "completed" and done.progress["arms_total"] == 2

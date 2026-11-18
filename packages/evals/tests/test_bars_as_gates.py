@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.evals.tests.figure_support import figure_number
+
 import pytest
 
 from packages.evals.tests.analyst_support import budget_inputs, fixture_inputs
@@ -115,14 +117,14 @@ def test_a_bars_threshold_sweeps_the_call_only_when_the_bars_are_read_as_gates()
     figures = sorted(value for arm in held.arms if (value := _bar_value(held, bar, arm.id)) is not None)
     warned = sensitivity(held, f"threshold:{bar.id}")
     assert warned.bars_as == "warnings" and warned.holds
-    assert sorted(float(flip.at.value) for flip in warned.flips) == pytest.approx(figures)
+    assert sorted(figure_number(flip.at) for flip in warned.flips) == pytest.approx(figures)
     assert not any(flip.call_changes for flip in warned.flips)
     assert any("bars_as=gates" in note for note in warned.notes)
     gated = sensitivity(held, f"threshold:{bar.id}", bars_as="gates")
     assert gated.bars_as == "gates"
-    assert sorted(float(flip.at.value) for flip in gated.flips) == pytest.approx(figures)
+    assert sorted(figure_number(flip.at) for flip in gated.flips) == pytest.approx(figures)
     for flip in gated.flips:
-        value = float(flip.at.value)
+        value = figure_number(flip.at)
         step = 1e-6 * max(1.0, abs(value))
         below = decision_at(_as_gate(held, bar.id, value - step))
         above = decision_at(_as_gate(held, bar.id, value + step))

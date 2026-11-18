@@ -574,7 +574,7 @@ def test_every_public_root_declares_what_it_binds() -> None:
     """Each root's ``__all__`` names something the root actually binds, so a declared name imports."""
     import importlib
 
-    missing = []
+    missing: list[str] = []
     for module, names in public_api(SOURCE_ROOT).items():
         assert names, f"{module} declares no __all__, so nothing in it is public and every consumer import is refused"
         loaded = importlib.import_module(module)

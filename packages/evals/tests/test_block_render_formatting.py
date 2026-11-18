@@ -163,7 +163,8 @@ def test_a_lever_chart_in_points_prints_each_effect_and_its_ends_as_their_keys_r
                 continue
             values = _column(block, "Value")
             intervals = _column(block, _interval_column(block)) if block.level else [""] * len(values)
-            for row, value, interval in zip([*read.effects, *read.interactions], values, intervals, strict=True):
+            rows: list[EffectRow | InteractionRow] = [*read.effects, *read.interactions]
+            for row, value, interval in zip(rows, values, intervals, strict=True):
                 assert _numbers(value) == _numbers(row.figures[0].reads), (name, key, value, row.figures[0].reads)
                 if len(row.figures) > 1 and interval:
                     assert _ends(interval) == _ends(row.figures[1].reads), (name, key, interval)
@@ -381,7 +382,8 @@ def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_in
     first, second, key = _paired(held)
     assert not any(row.may_be_narrow for row in arms_compare(held, [first, second], key, limit=_EVERY).rows)
     block = _drawn(held, "diverging_bars", _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
-    assert block is not None and not any("too narrow" in note for note in block.notes), block.notes
+    assert block is not None
+    assert not any("too narrow" in note for note in block.notes), block.notes
 
 
 def _counted(held: ReportInput, **counts: Any) -> ReportInput:
@@ -449,6 +451,7 @@ def test_a_paired_interval_whose_contrast_states_no_count_keeps_its_unstated_uni
 def _stated(held: ReportInput, setting: str, arm: str) -> str:
     """A setting's value on an arm as the input states it: its declared level's name, else the value, whole if whole."""
     value = arm_settings(held)[arm][setting]
+    assert value is not None, (arm, setting)
     spelled = value if isinstance(value, str) else (str(int(value)) if float(value).is_integer() else str(value))
     factor = next((factor for factor in held.factors if factor.id == setting), None)
     for level in factor.levels if factor is not None else []:

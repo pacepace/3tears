@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import hashlib
 import itertools
 import json
@@ -57,7 +56,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SM
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
-from packages.evals.tests.report_writer_support import RecordedModel
+from packages.evals.tests.report_writer_support import NoSpans, RecordedModel
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
 from threetears.evals.actions.report_writing import report_writer_kind
@@ -76,6 +75,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.report_writer.preference import (
     CasePreference,
     PairJudgment,
+    Slot,
     case_preference,
     pair_evidence,
     preference_rubric,
@@ -90,7 +90,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     writer_scoring_rubric,
 )
 from threetears.evals.ops.report_writer.writer_kind import WriterCase, writer_case_payload, writer_subject_components
-from threetears.evals.providers import Model
+from threetears.evals.providers import Model, Provider
 from threetears.evals.run import (
     EvalRunCostCap,
     JudgeCaseFreezeReport,
@@ -188,15 +188,6 @@ def _counts(findings: Sequence[dict[str, Any]]) -> tuple[float, float]:
     )
 
 
-class _NoSpans:
-    """A cell's tracing windows when a replay is driven alone: both open nothing."""
-
-    def identity(self) -> contextlib.AbstractContextManager[None]:
-        return contextlib.nullcontext()
-
-    collecting = identity
-
-
 async def replay_round(case_dir: Path, round_: int) -> Page | LeftOut:
     """Replay one recording through the writer kind until its ``round_``'s page, and pair it with that round's review.
 
@@ -236,7 +227,7 @@ async def replay_round(case_dir: Path, round_: int) -> Page | LeftOut:
         ),
         variant_config=VariantConfig(candidate_model=made["model"]),
         world_seed=None,
-        span_window=_NoSpans(),
+        span_window=NoSpans(),
         cassettes=None,
         world=None,
     )
@@ -415,7 +406,7 @@ class FakeDryJudge:
 _KEYS: Final = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
 
-def _provider(model: str) -> str:
+def _provider(model: str) -> Provider:
     """Where a live judge is sent: OpenRouter for a ``vendor/model`` id, Anthropic's own API for a bare one."""
     return "openrouter" if "/" in model else "anthropic"
 
@@ -721,7 +712,7 @@ class AnchorRead:
         judged: dict[PairKey, list[PairJudgment]] = {}
         for row in (row for row in rows if row["judge"] == judge):
             early, late = sorted((int(row["first"]), int(row["second"])))
-            slot = "B" if row["second"] == late else "A"
+            slot: Slot = "B" if row["second"] == late else "A"
             judged.setdefault((row["run"], early, late), []).append(PairJudgment(slot, row["score"]))
         served = frozenset(row["served_model"] for row in rows if row["judge"] == judge and row["served_model"])
         return cls({key: case_preference(j) for key, j in judged.items()}, served) if judged else None

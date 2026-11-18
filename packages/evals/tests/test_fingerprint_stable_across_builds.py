@@ -30,6 +30,8 @@ import subprocess
 import sys
 from typing import Any
 
+from threetears.evals.analysis.report.serialize import ReportFormat
+
 import pytest
 
 from threetears.evals.analysis import (
@@ -254,7 +256,13 @@ def test_charts_and_tables_moved_one_ulp_serve_the_same_page_in_every_form(towar
     assert _glyph_cells(report), "the page draws an interval glyph"
     assert _glyph_cells(nudged) != _glyph_cells(report), "the glyphs' intervals did move"
 
-    for form, static in (("html", False), ("html", True), ("markdown", False), ("json", False)):
+    reads: tuple[tuple[ReportFormat, bool], ...] = (
+        ("html", False),
+        ("html", True),
+        ("markdown", False),
+        ("json", False),
+    )
+    for form, static in reads:
         assert serialize_report(nudged, form, static=static) == serialize_report(report, form, static=static), form
 
 

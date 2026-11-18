@@ -9,6 +9,8 @@ plausible number that a marginal would then treat as an observation.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from threetears.evals.kernel.covariates import (
     count_dropped_tool_calls,
@@ -20,7 +22,7 @@ from threetears.evals.kernel.covariates import (
 from threetears.evals.schema.models import RoleUsage
 
 
-def _candidate(**kwargs) -> RoleUsage:
+def _candidate(**kwargs: Any) -> RoleUsage:
     return RoleUsage(role="candidate", model=kwargs.pop("model", "cand-1"), **kwargs)
 
 
@@ -135,14 +137,14 @@ def _candidate_turn(
     dropped: list[str] | None,
     refused: list[str] | None = None,
     truncated: int | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """A trace entry shaped like the one _record_candidate_turn appends.
 
     Every field is omitted rather than emptied when not supplied, because "the record does
     not carry this field" is a real population — a turn loop that does not stamp it — and it
     is the one the absent-versus-zero rule has to get right.
     """
-    record: dict = {"turn_number": 0}
+    record: dict[str, Any] = {"turn_number": 0}
     if dropped is not None:
         record["dropped_tool_calls"] = dropped
     if refused is not None:

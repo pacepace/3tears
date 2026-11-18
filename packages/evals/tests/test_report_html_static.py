@@ -32,6 +32,7 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.ops import report_read
 from packages.evals.tests.hostile_page_support import HOSTILE, hostile_campaign_page, hostile_report
 from packages.evals.tests.off_loop import off_loop
@@ -85,13 +86,17 @@ async def test_the_default_pages_are_the_static_pages_plus_the_script_and_the_ch
         assert parsed(default).tags[-1] == ("script", []), "the default page still ends in the kit's script"
 
 
+#: The forms a page carries no script in.
+_UNSCRIPTED: tuple[ReportFormat, ...] = ("markdown", "json")
+
+
 async def test_markdown_and_json_carry_no_script_the_package_writes_and_static_changes_neither() -> None:
     _, _, toy = await toy_report()
     for form in ("markdown", "json"):
         assert what_runs(serialize_report(toy, form)) == [], f"the package writes no script or link into {form}"
     report, campaign = hostile_report(), await hostile_campaign_page()
     for page in (toy, report, campaign):
-        for form in ("markdown", "json"):
+        for form in _UNSCRIPTED:
             assert serialize_report(page, form, static=True) == serialize_report(page, form)
     assert serialize_report(report, "html", static=True) == report_html(report, static=True)
     assert serialize_report(campaign, "html", static=True) == campaign_report_html(campaign, static=True)

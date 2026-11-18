@@ -27,7 +27,13 @@ from threetears.evals import Eval, grader
 from threetears.evals.analysis import report_markdown
 from threetears.evals.analysis.report.verdict import verdict_line
 from threetears.evals.analysis.stats import wilson_interval
-from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
+from threetears.evals.kernel import (
+    ClassifierStatistic,
+    ValidationFailedError,
+    classifier_label_measure,
+    confusion_cell,
+    confusion_of,
+)
 from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, field_scorer
@@ -58,7 +64,7 @@ async def double(case: Mapping[str, Any]) -> int:
 
 
 def even(case: Mapping[str, Any], answer: Any) -> bool:
-    return answer % 2 == 0
+    return bool(answer % 2 == 0)
 
 
 def size(case: Mapping[str, Any], answer: Any) -> float:
@@ -482,7 +488,7 @@ async def test_an_imperfect_classifier_reports_its_confusion_matrix_and_each_lab
 
     assert (summary.status, summary.n_scored) == ("completed", 5)
     by_name = {measure.name: measure for measure in summary.measures}
-    assert (by_name["match"].mean, by_name["match"].n) == (pytest.approx(0.6), 5)
+    assert by_name["match"].mean == pytest.approx(0.6) and by_name["match"].n == 5
     assert [(cell.expected, cell.predicted, cell.count) for cell in summary.confusion] == [
         ("attack", "attack", 2),
         ("move", "attack", 1),
@@ -492,7 +498,7 @@ async def test_an_imperfect_classifier_reports_its_confusion_matrix_and_each_lab
     labels = {statistics.label: statistics for statistics in summary.labels}
     attack, move, wait = labels["attack"], labels["move"], labels["wait"]
     assert (attack.expected, attack.predicted, attack.correct) == (2, 3, 2)
-    assert (attack.precision, attack.recall, attack.f1) == (pytest.approx(2 / 3), 1.0, pytest.approx(0.8))
+    assert (attack.precision, attack.recall, attack.f1) == pytest.approx((2 / 3, 1.0, 0.8))
     assert attack.precision_interval == wilson_interval(2, 3)
     assert attack.recall_interval == wilson_interval(2, 2)
     assert (move.precision, move.recall, move.f1) == (0.5, 0.5, 0.5)
@@ -523,7 +529,11 @@ async def test_the_analysis_reads_an_evals_classifier_as_it_reads_a_classifier_k
     assert measures["accuracy"].mean == pytest.approx(0.6)
     labels = {statistics.label: statistics for statistics in summary.labels}
     for label, statistics in labels.items():
-        for name, value in (("precision", statistics.precision), ("recall", statistics.recall)):
+        read: tuple[tuple[ClassifierStatistic, float | None], ...] = (
+            ("precision", statistics.precision),
+            ("recall", statistics.recall),
+        )
+        for name, value in read:
             reading = measures.get(classifier_label_measure(name, label))
             assert (None if reading is None else reading.rate) == value, (name, label)
         f1 = measures.get(classifier_label_measure("f1", label))
@@ -712,7 +722,10 @@ def test_a_field_a_case_expects_null_must_be_absent_from_the_answer(expected: An
 
 
 async def test_a_field_with_a_margin_grades_a_case_expecting_null_and_its_miss_shows_the_value() -> None:
-    cases = [{"id": "printed", "label": "a", "total": 12.5}, {"id": "none", "label": "a", "total": None}]
+    cases: list[dict[str, Any]] = [
+        {"id": "printed", "label": "a", "total": 12.5},
+        {"id": "none", "label": "a", "total": None},
+    ]
 
     async def extract(case: Mapping[str, Any]) -> dict[str, Any]:
         return {"label": "a", "total": 12.5}  # states a total on the invoice that prints none

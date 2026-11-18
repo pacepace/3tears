@@ -19,13 +19,16 @@ beside the delete cascade's own detach, because the two edit the same membership
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 from threetears.evals.analysis import campaigns
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run import curation
@@ -38,7 +41,7 @@ SCOPE = "uni-1"
 
 def _controlled(run_ids: list[str], key: str, **overrides: Any) -> EvalCampaign:
     """A campaign of one aspect holding ``run_ids``, its control the typed key ``key``."""
-    control = CampaignArm(label="control", role="control", variant_key=key)
+    control = CampaignArm(label="control", role="control", variant_key=key, identity_version=IDENTITY_VERSION)
     return make_aspect_campaign(run_ids=run_ids, control=control, **overrides)
 
 
@@ -116,8 +119,8 @@ def test_the_archivable_set_named_by_the_default_alternative_matches_the_models(
     from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.schema.models import EvalResult, EvalRun
 
-    archivable = {EvalRun, EvalAnalysis, EvalCampaign}
-    not_archivable = {EvalResult, EvalInsight}
+    archivable: set[type[BaseModel]] = {EvalRun, EvalAnalysis, EvalCampaign}
+    not_archivable: set[type[BaseModel]] = {EvalResult, EvalInsight}
 
     assert all("archived" in model.model_fields for model in archivable)
     assert not any("archived" in model.model_fields for model in not_archivable)
@@ -177,8 +180,16 @@ def test_delete_run_destroys_results_before_the_run_document() -> None:
     storage = _storage_double()
     storage.query_eval_result_ids_by_run.return_value = ["res-1"]
     calls: list[str] = []
-    storage.delete_eval_result.side_effect = lambda *a, **k: calls.append("result") or True
-    storage.delete_eval_run.side_effect = lambda *a, **k: calls.append("run") or True
+
+    def deleting(what: str) -> Callable[..., bool]:
+        def delete(*_: object, **__: object) -> bool:
+            calls.append(what)
+            return True
+
+        return delete
+
+    storage.delete_eval_result.side_effect = deleting("result")
+    storage.delete_eval_run.side_effect = deleting("run")
 
     removed = curation.delete_run(storage, _run(), SCOPE, confirm="doomed")
 

@@ -9,6 +9,7 @@ because the kind is what a host translates and the path is what an author edits.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -142,7 +143,7 @@ def _dotted(namespace: str, key: str) -> str:
     return f"{namespace}.{key}"
 
 
-def _dotted_registry(address=_dotted) -> WorldRegistry:
+def _dotted_registry(address: Callable[[str, str], str] = _dotted) -> WorldRegistry:
     """A host whose dimension names compose the carrier in (``shelf.stock``).
 
     :param address: The addressing it declares; the composition by default.

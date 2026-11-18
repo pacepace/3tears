@@ -263,6 +263,7 @@ async def smoke(*, dry: bool, cap_usd: float, out: Path | None) -> dict[str, Any
         if verdict.price.predicted_usd is not None and verdict.price.predicted_usd > share
     ]
     reports = len(CASES)
+    assert BUDGET.usd is not None
     if over or reports * BUDGET.usd > share:
         raise SystemExit(
             f"writer_smoke.py: an arm could pass its ${share:.2f} share of the ${cap_usd} cap "

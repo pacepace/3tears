@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -45,6 +46,7 @@ __all__ = [
     "RUBRIC",
     "FakeToolTurnClient",
     "FakeTurnModel",
+    "NoSpans",
     "RecordedModel",
     "answer",
     "call",
@@ -179,6 +181,16 @@ class RecordedModel:
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient:
         return self.recording.turn_session(name, snapshot=snapshot)
+
+
+class NoSpans:
+    """A cell's tracing windows when a kind is driven alone: both open nothing (a ``CellSpanWindow``)."""
+
+    def identity(self) -> AbstractContextManager[None]:
+        return nullcontext()
+
+    def collecting(self) -> AbstractContextManager[None]:
+        return nullcontext()
 
 
 def reply(

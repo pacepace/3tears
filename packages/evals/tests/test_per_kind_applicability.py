@@ -53,6 +53,15 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from threetears.evals.schema.models import EvalRun
+
+
+def _seats() -> frozenset[str]:
+    """The seats the toy extractor declares."""
+    seats = TOY_EXTRACTOR_CONTRACT.seats
+    assert seats is not None
+    return seats
+
+
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 
@@ -99,21 +108,21 @@ def _run(kind: str, *, judged: bool, run_id: str = "run-1") -> EvalRun:
 
 def test_a_seat_naming_nothing_the_host_declares_is_refused() -> None:
     with pytest.raises(ProfileRegistrationError, match="seats 'judgee', which is nothing this host declares"):
-        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=TOY_EXTRACTOR_CONTRACT.seats | {"judgee"}))
+        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=_seats() | {"judgee"}))
 
 
 def test_a_seat_naming_a_lever_or_a_label_is_refused() -> None:
     """Only apparatus is scanned for confounds, so seating a lever or a label says nothing."""
     with pytest.raises(ProfileRegistrationError, match="seats 'chunk_tokens', which is a lever"):
-        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=TOY_EXTRACTOR_CONTRACT.seats | {"chunk_tokens"}))
+        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=_seats() | {"chunk_tokens"}))
     with pytest.raises(ProfileRegistrationError, match="seats 'batch_label', which is a label"):
-        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=TOY_EXTRACTOR_CONTRACT.seats | {"batch_label"}))
+        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=_seats() | {"batch_label"}))
 
 
 def test_leaving_a_dimension_whose_blank_is_a_real_level_unseated_is_refused() -> None:
     """``reviewer_pool`` reads a blank as a recorded level, so unseating it could only ever warn."""
     with pytest.raises(ProfileRegistrationError, match="leaves 'reviewer_pool' unseated"):
-        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=TOY_EXTRACTOR_CONTRACT.seats - {"adjudicator"}))
+        _with_kinds(replace(TOY_EXTRACTOR_CONTRACT, seats=_seats() - {"adjudicator"}))
 
 
 def test_every_defect_in_one_declaration_is_reported_at_once() -> None:

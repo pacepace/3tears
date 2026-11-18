@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Iterator
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,7 @@ def _distribution(requirement: str) -> str:
     return requirement.strip()
 
 
-def _manifest() -> dict:
+def _manifest() -> dict[str, Any]:
     return tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
@@ -253,7 +254,7 @@ def _optional_roots() -> list[str]:
 
 
 @pytest.mark.parametrize("root", _optional_roots())
-def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root) -> None:
+def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root: str) -> None:
     """The modules a root's entry lists are exactly the ones its source names that the base install lacks, sorted:
     a gate that checks them checks everything the root may fail on, and nothing it does not import."""
     from threetears.evals import ROOT_EXTRAS
@@ -363,7 +364,7 @@ def test_on_the_base_install_exactly_the_listed_roots_fail_to_import() -> None:
 
 
 @pytest.mark.parametrize("extra", sorted(IMPORT_ROOTS_BY_EXTRA))
-def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra) -> None:
+def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra: str) -> None:
     """With one extra's dependencies unimportable and the rest installed, the roots that fail are the ones the map lists
     under that extra: each listed root needs the extra it is listed under, and no other."""
     from threetears.evals import ROOT_EXTRAS
@@ -389,7 +390,7 @@ def _listed_modules() -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(("root", "module"), _listed_modules())
-def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module) -> None:
+def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root: str, module: str) -> None:
     """With any one listed module unimportable and everything else installed, its root fails to import: every module
     a gate is told to check is one the root needs at import, not only somewhere in a call."""
     proc = subprocess.run(

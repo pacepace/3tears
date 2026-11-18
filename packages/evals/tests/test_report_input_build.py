@@ -106,12 +106,12 @@ def test_every_arm_and_reading_reaches_the_input(bundles: dict[str, CampaignBund
         assert copied.cases == [row.control_cases, row.arm_cases]
     pairs = [(aspect.id, pair) for aspect in built.aspects for pair in aspect.pairs]
     assert len(pairs) == len(bundle.readings.pairs)
-    for (aspect, pair), row in zip(pairs, bundle.readings.pairs, strict=True):
+    for (aspect, pair), read in zip(pairs, bundle.readings.pairs, strict=True):
         assert (aspect, pair.arms, pair.change, pair.interval) == (
-            row.aspect,
-            (row.first_label, row.second_label),
-            row.change,
-            row.interval,
+            read.aspect,
+            (read.first_label, read.second_label),
+            read.change,
+            read.interval,
         )
     assert len(built.floors) == len(bundle.readings.floors)
     assert [(floor.arm, floor.status) for floor in built.floors] == [

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -229,7 +229,9 @@ class TestTheBundleEarnsATimeAxis:
         first, second = _two_days().time_axis.positions
 
         def total(position: TimePosition) -> list[float]:
-            return [next(m.mean for m in cell.measures.measures if m.name == "total_ms") for cell in position.cells]
+            means = [next(m.mean for m in cell.measures.measures if m.name == "total_ms") for cell in position.cells]
+            assert None not in means
+            return [mean for mean in means if mean is not None]
 
         # The second day ran a tenth slower per document; each document's own offset rides on top, so the
         # ratio is near 1.1 rather than exactly it — and on neither day is it the pooled campaign's figure.
@@ -280,7 +282,7 @@ class TestTheTimeAxisContract:
         assert axis.basis_reason == "the host labels no build"
 
     @pytest.mark.parametrize(("basis", "label"), [("release", None), ("date", "app_version")])
-    def test_the_basis_and_the_label_agree(self, basis: str, label: str | None) -> None:
+    def test_the_basis_and_the_label_agree(self, basis: Literal["release", "date"], label: str | None) -> None:
         with pytest.raises(ValueError, match="names its release_label"):
             TimeAxis(basis=basis, release_label=label, positions=[self._position("a"), self._position("b")])
 

@@ -26,6 +26,7 @@ from functools import cache
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
+from packages.evals.tests.figure_support import figure_number
 from threetears.evals.analysis.analyst.analyses import Sensitivity, sensitivity
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.figure_keys import resolve
@@ -120,7 +121,7 @@ def test_a_range_stopping_short_of_a_change_names_that_side_and_its_nearest_flip
             continue
         (unswept,) = named
         nearest = (
-            max(past, key=lambda flip: float(flip.at.value))
+            max(past, key=lambda flip: figure_number(flip.at))
             if side == "below_range_low"
             else min(
                 past,

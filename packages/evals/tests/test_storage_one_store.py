@@ -13,11 +13,10 @@ from __future__ import annotations
 from threetears.evals.schema.models import EvalRun
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 
-from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.run.lifecycle import sweep_abandoned_runs
 from threetears.evals.schema.models import EVAL_DOC_TYPES
 from threetears.evals.kernel.storage import EvalStorage
@@ -57,7 +56,14 @@ def test_every_stored_model_is_reached_by_the_derivation() -> None:
 
 
 #: Each definition kind: how to build one in a scope, save it, and read it back by id in a scope.
-_DEFINITIONS: dict[str, tuple[Callable[[str], EvalBaseModel], str, Callable[[EvalStorage, str, str], Any]]] = {
+class _Definition(Protocol):
+    """A stored definition, read back by its id."""
+
+    @property
+    def id(self) -> str: ...
+
+
+_DEFINITIONS: dict[str, tuple[Callable[[str], _Definition], str, Callable[[EvalStorage, str, str], Any]]] = {
     "template": (lambda s: make_template(scope_id=s), "save_template", EvalStorage.load_template),
     "judge_config": (lambda s: make_judge_config(scope_id=s), "save_judge_config", EvalStorage.load_judge_config),
     "rubric_dim": (lambda s: make_rubric_dim(scope_id=s), "save_rubric_dim", EvalStorage.load_rubric_dim),

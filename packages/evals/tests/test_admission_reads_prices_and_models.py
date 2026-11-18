@@ -428,7 +428,7 @@ async def _notice_of(process: _Process) -> str:
     """What an uncapped estimate on ``process`` says of the skipped check: the sentence every result carries."""
     arm = await process.estimate(None)
     [check] = arm.plan.served_checks
-    notice = check.skipped_notice()
+    notice: str | None = check.skipped_notice()
     assert notice is not None
     return notice
 

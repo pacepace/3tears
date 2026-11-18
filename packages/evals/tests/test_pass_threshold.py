@@ -84,7 +84,7 @@ def _bundle(behavior: str, threshold: int, *, score: int = 4) -> AnalysisContext
     return assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=_profile(threshold))
 
 
-def _pass_hat_k(bundle) -> set[float | None]:
+def _pass_hat_k(bundle: AnalysisContextBundle) -> set[float | None]:
     return {point.pass_hat_k for subject in bundle.frontier.subjects for point in subject.points}
 
 

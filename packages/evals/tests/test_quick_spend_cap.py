@@ -25,7 +25,7 @@ CASES = [{"n": n} for n in range(4)]
 
 
 def even(case: Mapping[str, Any], answer: Any) -> bool:
-    return answer % 2 == 0
+    return bool(answer % 2 == 0)
 
 
 async def costly(case: Mapping[str, Any]) -> Answer:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 
 import pytest
 
@@ -405,7 +406,11 @@ class TestAUniformMoveIsNotReadByTheSignFlip:
         [_separates_by_contrast, _separates_by_history, _separates_by_levels],
         ids=["contrast-and-frontier", "history", "mechanism-and-scope"],
     )
-    def test_the_counterexample_null_is_called_separated_at_most_alpha(self, separates, value_range) -> None:
+    def test_the_counterexample_null_is_called_separated_at_most_alpha(
+        self,
+        separates: Callable[[list[float], list[float], tuple[float, float] | None], bool],
+        value_range: tuple[float, float] | None,
+    ) -> None:
         replicates = 3000
         rng = random.Random(f"sign-flip-counterexample-{separates.__name__}-{value_range}")
         hits = sum(separates(*_counterexample_null(rng, 10), value_range) for _ in range(replicates))

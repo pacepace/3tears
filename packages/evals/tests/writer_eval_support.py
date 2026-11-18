@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.report_writer_support import call, reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.harness import WriterCaseFile
@@ -46,7 +47,7 @@ class ScoredReply:
 
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge
-class FakeScoringJudge:
+class FakeScoringJudge(ClientDouble):
     """A scoring judge that sends nothing: it scores the dimension its system prompt names, the pairwise pass's
     preference among them, and keeps every call. Its model and route are the test's to name."""
 

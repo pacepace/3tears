@@ -44,7 +44,7 @@ def _bundle(*, question: str | None = None, **design_updates: Any) -> AnalysisCo
     """The toy campaign's bundle, with its aspect's design amended and, where given, its question asked anew before
     its runs."""
     campaign, storage = toyhost_campaign()
-    asked = {} if question is None else {"question": question, "asked_at": TOYHOST_INSTANT}
+    asked: dict[str, Any] = {} if question is None else {"question": question, "asked_at": TOYHOST_INSTANT}
     campaign = redeclared(campaign, design=design_updates, **asked)
     return assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 

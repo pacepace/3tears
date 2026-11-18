@@ -13,6 +13,8 @@ These pin:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
@@ -20,7 +22,7 @@ from threetears.evals.schema import OutOfRunSpend
 from threetears.evals.ops import OutOfRunSpendReport, out_of_run_spend_text, scope_out_of_run_spend
 from threetears.evals.quick import run_cli
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
-from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 
 _GROUP = "launch-1"
@@ -41,7 +43,7 @@ def _row(**fields: object) -> OutOfRunSpend:
     return OutOfRunSpend.model_validate({**defaults, **fields})
 
 
-def _ledgered() -> tuple[object, list[OutOfRunSpend]]:
+def _ledgered() -> tuple[OpsFixture, list[OutOfRunSpend]]:
     fixture = ops_fixture()
     rows = [
         _row(created_at="2026-10-05T10:00:00+00:00"),
@@ -91,10 +93,10 @@ def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_b
     [({"purpose": "proposer"}, 1), ({"launch_group_id": _GROUP}, 3), ({"template_id": "tpl-a"}, 3)],
     ids=["purpose", "launch", "template"],
 )
-def test_the_lens_narrows_by_purpose_launch_or_template(narrowed: dict[str, str], expected: int) -> None:
+def test_the_lens_narrows_by_purpose_launch_or_template(narrowed: dict[str, Any], expected: int) -> None:
     fixture, _rows = _ledgered()
 
-    report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE, **narrowed)  # type: ignore[arg-type]
+    report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE, **narrowed)
 
     assert report.totals.n_calls == len(report.rows) == expected
     assert next(iter(narrowed.values())) in out_of_run_spend_text(report)

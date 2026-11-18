@@ -21,7 +21,7 @@ import pytest
 
 from threetears.evals.kernel import AdmittedCall, OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.ops import await_job, start_paid_call
-from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Model, PriceRefresh
+from threetears.evals.providers import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, Clients, Completion, Model, PriceRefresh
 from threetears.evals.schema import BoundCompletionClient
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.testing import CompletionGuard
@@ -312,6 +312,7 @@ async def test_rows_stale_past_the_bound_price_the_call_but_bound_none(caplog: p
     stale = await haiku.generate(system="", user="x")
 
     assert stale.cost_usd == pytest.approx(10 * 0.0000001 + 4 * 0.0000005), "a completion still prices"
+    assert isinstance(stale, Completion)
     assert stale.pricing_stale_since is not None and shared.stale_since is not None
     with caplog.at_level(logging.WARNING):
         assert haiku.price_ceiling(system="", user="x") is None, "an enforced cap never holds a call on old prices"
@@ -505,6 +506,7 @@ async def test_a_refresh_a_ceiling_and_a_call_in_one_task_read_the_catalogue_onc
     completion = await haiku.generate(system="", user="x")
 
     assert server.fetches == 1, "the ceiling and the call priced from the refresh's read"
+    assert isinstance(completion, Completion)
     assert completion.cost_usd is None and "could not be read" in (completion.pricing_failure or "")
 
 

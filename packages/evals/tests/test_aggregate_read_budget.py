@@ -61,7 +61,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.schema.store_port import GroupMeasure
+from threetears.evals.schema.store_port import DocumentStore, GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
@@ -699,7 +699,7 @@ class _RecordingSink(RegressionSink):
 _WATCH_CASES = [f"c{index}" for index in range(12)]
 
 
-def _watched(*, others: int = 0, store: InMemoryDocumentStore | None = None) -> tuple[RegressionWatch, _RecordingSink]:
+def _watched(*, others: int = 0, store: DocumentStore | None = None) -> tuple[RegressionWatch, _RecordingSink]:
     """Two completed runs of one contestant of :data:`NARROW`, the later one's cost up fivefold and its judged
     transcript score down from 5 to 1, every judged score rated in agreement by a person (24 ratings, so the judge
     calibrates on this subject alone), beside ``others`` runs of :data:`OTHER`; and a watch on cost and the

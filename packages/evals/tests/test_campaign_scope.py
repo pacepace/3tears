@@ -99,7 +99,8 @@ class TestAttachment:
         updated = campaigns.add_runs_to_campaign(storage, campaign.id, _HOME, ["run-here"])
 
         assert updated.run_ids == ["run-here"]
-        assert storage.load_campaign(campaign.id, _HOME).run_ids == ["run-here"]
+        stored = storage.load_campaign(campaign.id, _HOME)
+        assert stored is not None and stored.run_ids == ["run-here"]
 
     def test_a_run_of_another_scope_is_refused_and_the_campaign_is_left_as_it_was(self) -> None:
         storage, _ = _storage_with_a_run_in_each_scope()
@@ -110,7 +111,8 @@ class TestAttachment:
         with pytest.raises(ValidationFailedError, match="'run-there'.*scope 'scope-a'"):
             campaigns.add_runs_to_campaign(storage, campaign.id, _HOME, ["run-there"])
 
-        assert storage.load_campaign(campaign.id, _HOME).run_ids == ["run-here"]
+        stored = storage.load_campaign(campaign.id, _HOME)
+        assert stored is not None and stored.run_ids == ["run-here"]
 
     def test_re_attaching_a_member_is_not_refused(self) -> None:
         """An id already held needs no re-check: it was admitted under the same rule."""

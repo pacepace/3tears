@@ -24,7 +24,7 @@ import json
 import re
 import threading
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -142,8 +142,13 @@ async def hasty_n(case: Mapping[str, Any]) -> int:
     return int(case["n"])
 
 
+def _unchecked[T](function: Callable[..., T]) -> Callable[..., T]:
+    """``function``, called with what its signature refuses, on purpose: the refusal is the test."""
+    return function
+
+
 def even(case: Mapping[str, Any], answer: Any) -> bool:
-    return answer % 2 == 0
+    return bool(answer % 2 == 0)
 
 
 @pytest.mark.parametrize(
@@ -246,7 +251,7 @@ async def test_a_sync_runner_handed_a_worlds_tools_is_refused_once_before_anythi
     host = callable_host()
     refusal = "sync_agent is not an async function, and a candidate handed a world's tools must be one"
     with pytest.raises(ValueError, match=refusal):
-        await Eval(CASES, World(tools=[lookup])(sync_agent), [QUEUE]).run(host=host, scope=SCOPE)
+        await Eval(CASES, _unchecked(World(tools=[lookup]))(sync_agent), [QUEUE]).run(host=host, scope=SCOPE)
     assert off_loop(host.storage.query_templates, SCOPE) == []
 
 

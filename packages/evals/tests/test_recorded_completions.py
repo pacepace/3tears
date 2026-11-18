@@ -508,7 +508,8 @@ async def test_a_prompt_the_recording_does_not_hold_is_refused_by_name(tmp_path:
     assert "call 0" in message and "`RECORD=1 python llm_judge.py`" in message
     assert isinstance(refused.value, ReplayMiss), "a replay miss is the rig's fault, so the run fails naming it"
 
-    for changed in ({"system": "Another system prompt."}, {"response_format": SCHEMA}):
+    changes: tuple[dict[str, Any], ...] = ({"system": "Another system prompt."}, {"response_format": SCHEMA})
+    for changed in changes:
         with pytest.raises(RecordingRefused, match="no call is recorded for the prompt 'My order never came.'"):
             await client.generate(**{"system": SYSTEM, "user": "My order never came.", **changed})
 

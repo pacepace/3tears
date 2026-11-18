@@ -60,7 +60,7 @@ def test_a_conversation_with_no_actors_needs_a_world_round_for_every_turn() -> N
 )
 def test_a_block_no_driver_could_run_is_refused(fields: dict[str, object], message: str) -> None:
     with pytest.raises(ValidationError, match=message):
-        ConversationSpec(**{"actors": [actor("a")], "max_turns": 3, **fields})
+        ConversationSpec.model_validate({"actors": [actor("a")], "max_turns": 3, **fields})
 
 
 # =============================================================================

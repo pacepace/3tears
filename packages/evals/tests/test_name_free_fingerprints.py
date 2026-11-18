@@ -558,6 +558,13 @@ def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_measure_name_it_was_fro
 _UNRUN = 2048
 
 
+def _named(value: SweepableValue, names: Mapping[int, str]) -> SweepableValue:
+    """``value``, displayed by the name ``names`` gives its level, where it gives one."""
+    assert value.raw is not None, value
+    level = int(value.raw)
+    return value.model_copy(update={"display": names[level]}) if level in names else value
+
+
 def _with_unrun_level(host: EvalHost, campaign: EvalCampaign, *, names: Mapping[int, str] | None = None) -> None:
     """Store ``campaign`` with its chunk axis declaring a third level no run sat at, each level named as ``names``
     says (its interval's own display where it names none)."""
@@ -574,10 +581,7 @@ def _with_unrun_level(host: EvalHost, campaign: EvalCampaign, *, names: Mapping[
                 SweepableValue.of(level, scale=IntervalScale(value=level, unit="tok"), keep_raw=True)
                 for level in (256, 1024, _UNRUN)
             ]
-            named = [
-                value.model_copy(update={"display": names[int(value.raw)]}) if int(value.raw) in names else value
-                for value in values
-            ]
+            named = [_named(value, names) for value in values]
             axes.append(axis.model_copy(update={"values": named}))
         aspects.append(aspect.model_copy(update={"design": aspect.design.model_copy(update={"axes": axes})}))
     host.storage.save_campaign(campaign.model_copy(update={"aspects": aspects}))
@@ -616,6 +620,7 @@ def test_a_declared_crossing_holds_each_level_by_its_content_hash_and_a_page_nam
     stored = host.storage.load_campaign(campaign.id, campaign.scope_id)
     assert stored is not None and stored.aspects[0].design is not None
     (aspect,) = stored.aspects
+    assert aspect.design is not None
     crossed = aspect.model_copy(update={"design": aspect.design.model_copy(update={"crossing": "full"})})
     host.storage.save_campaign(stored.model_copy(update={"aspects": [crossed]}))
 

@@ -232,6 +232,7 @@ class _FakeCountingKind:
     another model that counted nothing."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,

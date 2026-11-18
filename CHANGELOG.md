@@ -9,7 +9,7 @@ packages (bumped in lock-step).
 ### evals: a completion client's `model_name` is read-only to the engine
 
 `BoundCompletionClient`, `PricedCompletion` and `VariationLLM` declare `model_name` as a read-only property instead of
-a settable attribute. The engine only reads it, and a client answering it from a property (the shipped
+a settable attribute, and so does the report writer's `TurnModel` (a frozen dataclass holding it did not satisfy it). The engine only reads it, and a client answering it from a property (the shipped
 `threetears.evals.testing.RecordedCompletions`, whose replayed model is the recording's) did not satisfy the protocol
 under a type checker. A client holding it as a plain attribute satisfies it as before; nothing changes at run time.
 

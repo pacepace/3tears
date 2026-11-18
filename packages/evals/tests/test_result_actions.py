@@ -226,7 +226,7 @@ async def test_an_offset_past_the_end_is_an_empty_last_page(tools: dict[str, Any
 @pytest.mark.parametrize(
     ("bounds", "message"), [({"offset": -1}, "offset is -1"), ({"limit": 0}, "limit is 0")], ids=["offset", "limit"]
 )
-def test_the_operation_refuses_a_page_that_cannot_exist(bounds: dict[str, int], message: str) -> None:
+def test_the_operation_refuses_a_page_that_cannot_exist(bounds: dict[str, Any], message: str) -> None:
     with pytest.raises(ValidationFailedError, match=message):
         results_list(_seeded().host.eval_host, RUN_ID, TOYHOST_SCOPE, **bounds)
 

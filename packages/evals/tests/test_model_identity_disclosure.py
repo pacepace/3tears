@@ -40,7 +40,7 @@ from threetears.evals.quick.one_call import callable_host
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.schema import EvalResult, EvalRun, RoleUsage, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
+from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
     TOYHOST_SUBJECT,
@@ -198,8 +198,12 @@ class TestTheRunSummary:
 class TestRunSummaryRead:
     def _read(self, results: list[EvalResult]) -> dict[str, Any]:
         run = _run(results)
+        storage, _ = memory_storage()
+        storage.save_eval_run(run)
+        for result in results:
+            storage.save_eval_result(result)
         return run_summary(
-            ToyhostStorage([run], {run.id: results}),
+            storage,
             run.id,
             run.scope_id,
             load_run_listed=lambda _id, _scope: run,

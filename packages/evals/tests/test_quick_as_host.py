@@ -34,7 +34,7 @@ async def sloppy(case: Mapping[str, Any]) -> str:
 
 def correct(case: Mapping[str, Any], out: Any) -> bool:
     """The answer is the case's label."""
-    return out == case["label"]
+    return bool(out == case["label"])
 
 
 async def test_one_host_holds_the_runs_of_every_eval_it_was_built_for_in_the_store_given() -> None:

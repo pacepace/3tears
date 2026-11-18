@@ -47,8 +47,8 @@ def _joins(source: str) -> list[tuple[int, str]]:
         if isinstance(node, ast.JoinedStr):
             parts = node.values
             if any(
-                isinstance(parts[index], ast.Constant)
-                and parts[index].value == " to "
+                isinstance(part := parts[index], ast.Constant)
+                and part.value == " to "
                 and isinstance(parts[index - 1], ast.FormattedValue)
                 and isinstance(parts[index + 1], ast.FormattedValue)
                 for index in range(1, len(parts) - 1)

@@ -269,7 +269,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         _, report = code_only
         (scoreboard,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard"]
         assert len(scoreboard.rows) == len(report.bundle.scoreboard) == 2
-        assert sum(row["ran"] for row in scoreboard.values()) == len(report.bundle.trials)
+        ran = [row["ran"] for row in scoreboard.values()]
+        counts = [count for count in ran if isinstance(count, int)]
+        assert len(counts) == len(ran) and sum(counts) == len(report.bundle.trials)
         charts = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "scoreboard"]
         assert [chart.chart for chart in charts] == ["outcome_bar"]
 

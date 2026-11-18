@@ -47,7 +47,7 @@ def _edited(template: SeedTemplate, text: str) -> SeedTemplate:
 
 
 @pytest.mark.parametrize("entry", SEED_PROMPTS, ids=lambda entry: entry.prompt_type)
-def test_every_catalogue_prompt_has_a_digest_of_its_shipped_default(entry) -> None:
+def test_every_catalogue_prompt_has_a_digest_of_its_shipped_default(entry: SeedPrompt) -> None:
     module, constant = entry.seed_ref
     seed = getattr(importlib.import_module(module), constant)
     digest = seed_digest(seed)

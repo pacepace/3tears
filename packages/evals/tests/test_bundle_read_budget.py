@@ -26,6 +26,7 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis import reads
 from threetears.evals.analysis.reads import BUNDLE_READ_BUDGET, READING_BUDGET, hold_to_read_budget
 from threetears.evals.kernel import CampaignArm, ValidationFailedError
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.storage import InMemoryDocumentStore
@@ -187,7 +188,12 @@ class TestTheBundleCountsWhatItReads:
         member = _stored(storage, "run-member", cases=3, k=1)
         curated = _stored(storage, "run-curated", cases=3, k=1, archived=True)
         monkeypatch.setattr(reads, "BUNDLE_READ_BUDGET", 5)
-        control = CampaignArm(label="control", role="control", variant_key=fixture_variant_key("sonnet"))
+        control = CampaignArm(
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key("sonnet"),
+            identity_version=IDENTITY_VERSION,
+        )
         store.result_reads.clear()
 
         # A declared control may have been curated out, so the archived member is read too: 6 results, past 5.

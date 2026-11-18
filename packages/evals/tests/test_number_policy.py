@@ -254,7 +254,7 @@ class TestAnAbsentOrNegativeZeroFigure:
     """An absent or non-finite figure reads as the em dash, never a zero; ``-0.0`` is a zero, with no sign."""
 
     @pytest.mark.parametrize("value", [None, math.nan, math.inf])
-    def test_an_absent_figure_reads_as_an_em_dash(self, value) -> None:
+    def test_an_absent_figure_reads_as_an_em_dash(self, value: float | None) -> None:
         assert policy_figure(value, 1, signed=True, bounds=(0.0,)) == ABSENT
         assert policy_rate(value, 0) == ABSENT
         assert policy_percent(value, 0) == ABSENT

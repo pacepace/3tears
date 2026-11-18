@@ -68,7 +68,9 @@ from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.kernel import EvalStorage
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.factories import make_eval_run, make_campaign
+from threetears.evals.schema.completion import StopReason
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 
@@ -93,8 +95,9 @@ class _Completion:
     content: str
     model: str
     served_model: str
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
+    price_source: str | None = None
     input_tokens: int = 10
     output_tokens: int = 5
     reasoning_tokens: int | None = None
@@ -102,7 +105,7 @@ class _Completion:
 
 
 @dataclass
-class _ScriptedJudge:
+class _ScriptedJudge(ClientDouble):
     """A judge that scores each case by its party number, shifted per dim — a judge whose answers are known.
 
     Score ``2 + party % 4 + shift[dim]``, held to 1-5: twenty parties carry first scores across 2-5, so a kappa is
@@ -140,6 +143,7 @@ class _Kind:
     """A kind rendering :data:`_EVIDENCE` for its one output."""
 
     judged_artifact = JudgedArtifact.DOCUMENT
+    max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,
@@ -345,6 +349,7 @@ class TestThePassIsItsOwnRecord:
         assert {judging.pass_id for result in off_loop(_results, host, run_id) for judging in result.judge_seconds} == {
             report.pass_id
         }
+        assert work.discard is not None
         await work.discard()  # an admitted pass never run releases the clients it was admitted on
 
     async def test_a_refused_admission_spends_nothing_and_releases_its_clients(self) -> None:
@@ -405,7 +410,7 @@ class TestDriftAcrossAJudgeChange:
         moved, steady = drift[_SHIFTED], drift[_STEADY]
         assert moved.verdict == "separated" and moved.delta is not None and moved.delta > 0
         assert moved.interval is not None and moved.interval[0] > 0, "the interval on the movement excludes 0"
-        assert (moved.n_cases, moved.interval_level) == (_CASES, pytest.approx(1 - 0.05 / 2))
+        assert moved.n_cases == _CASES and moved.interval_level == pytest.approx(1 - 0.05 / 2)
         assert steady.verdict == "not_separated" and steady.delta == 0
         after = off_loop(_results, host, run_id)
         assert [result.rubric_scores for result in after] == [result.rubric_scores for result in before], (

@@ -33,7 +33,7 @@ from threetears.evals.analysis.report.parts.words import (
     SERVED_BY_TEMPLATE,
 )
 from threetears.evals.analysis.report.fact_arms import fact_arms
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Pricing, ReportInput
 from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.kernel import RoleUsageLedger
 from threetears.evals.providers import Catalogue, Model
@@ -139,13 +139,14 @@ def _trials(usage: Sequence[Sequence[RoleUsage]]) -> list[tuple[EvalRun, list[Ev
     ]
 
 
-def _fast(built: ReportInput) -> tuple[ArmPricing | None, dict[str, Any]]:
+def _fast(built: ReportInput) -> tuple[Pricing | None, dict[str, Any]]:
     """The candidate arm's pricing in the report input, and its options table row."""
     table = arms_table(built, block_look(built, fact_arms(built)), (), forms=PageForms.of(built))
     (row,) = [row for row in table.rows if row["option"].value is not None and FAST in str(row["option"].value)]
-    (pricing,) = [
+    pricings: list[Pricing | None] = [
         board.pricing for arm, board in built.scoreboard.items() if FAST in arm and board.pricing is not None
-    ] or [None]
+    ]
+    (pricing,) = pricings or [None]
     return pricing, row
 
 

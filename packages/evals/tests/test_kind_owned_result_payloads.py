@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from packages.evals.tests.json_support import json_list
+
 import pytest
 from pydantic import ValidationError
 
@@ -141,7 +143,7 @@ def test_an_entry_telling_two_stories_is_refused_naming_the_contradiction(fields
 def test_substituted_has_no_default_because_live_and_seeded_are_different_evidence() -> None:
     """A forgotten flag must not report a seeded run's cost as production's."""
     with pytest.raises(ValidationError, match="substituted"):
-        AsyncDelivery(tool="scout_ahead", status="undelivered")
+        AsyncDelivery.model_validate({"tool": "scout_ahead", "status": "undelivered"})
 
 
 @pytest.mark.parametrize(
@@ -177,7 +179,7 @@ async def test_every_toy_cell_stores_the_fields_its_extraction_missed() -> None:
         document_id = trace.trace[0]["document_id"]
         expected = misses.get((result.model, document_id), [])
         assert result.kind_payload is not None
-        assert sorted(result.kind_payload["missed_fields"]) == sorted(expected)
+        assert sorted(str(name) for name in json_list(result.kind_payload, "missed_fields")) == sorted(expected)
         # The kind starts no background work, and says so by reporting nothing rather than [].
         assert result.async_deliveries is None
     assert any(result.kind_payload and result.kind_payload["missed_fields"] for result in results), (

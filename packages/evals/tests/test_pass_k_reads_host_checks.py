@@ -169,10 +169,16 @@ def test_an_arm_held_by_a_check_alone_has_a_measured_pass_k() -> None:
     assert all(not read_trial(r, rubric_threshold=THRESHOLD, catalog=CATALOG).no_criterion for r in results)
 
 
+def _count(value: object) -> float:
+    """A numeric host measure's value."""
+    assert isinstance(value, int | float) and not isinstance(value, bool), value
+    return float(value)
+
+
 def test_an_undirected_boolean_or_a_numeric_measure_fails_nothing() -> None:
     run = make_eval_run(status="completed", candidate_model="m", k_runs=K)
     results = _results(run, failing=set(), prefix="r")
-    assert all(UNDIRECTED.name in r.host_measures and r.host_measures[COUNT.name] > 0 for r in results)
+    assert all(UNDIRECTED.name in r.host_measures and _count(r.host_measures[COUNT.name]) > 0 for r in results)
 
     assert _census_rate(results) == 1
     row = compute_pass_hat_k(results, catalog=CATALOG, rubric_threshold=THRESHOLD)[("m", run.id)]

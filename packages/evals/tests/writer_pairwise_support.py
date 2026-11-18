@@ -13,11 +13,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.writer_promotion_support import SCORING_JUDGE
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND
-from threetears.evals.schema.completion import ProviderFailure
+from threetears.evals.schema.completion import ProviderFailure, StopReason
 from threetears.evals.schema.models import EvalTemplate, EvalTrace, JudgedArtifact, JudgeEvidence, eval_trace_doc_id
 
 __all__ = [
@@ -99,7 +100,8 @@ def describe_account_refusal(exc: BaseException) -> ProviderFailure:
 @dataclass(frozen=True)
 class _Completion:
     content: str
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
+    price_source: str | None = None
     temperature: float | None = None
     input_tokens: int = 10
     output_tokens: int = 5
@@ -110,7 +112,7 @@ class _Completion:
 
 
 @dataclass
-class ScriptedPairJudge:
+class ScriptedPairJudge(ClientDouble):
     """The scoring judge: reads which report is the candidate's off the two pages it is shown, answers by ``policy``.
 
     :ivar calls: Each call's document, the candidate's slot, and Report A's and Report B's pages, in call order.
@@ -139,9 +141,6 @@ class ScriptedPairJudge:
         if answer == GARBLED:
             return _Completion(content="not json")
         return _Completion(content=json.dumps({"reasoning": "read both", "criteria_scores": {dim: answer}}))
-
-    async def aclose(self) -> None:
-        """Nothing to release."""
 
 
 def store_pages(host: EvalHost, campaign_id: str, pages: Pages = every_page) -> None:

@@ -167,8 +167,8 @@ def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_
     # A measure read on one aspect only is that aspect's, a dash on the others.
     column = f"measure:{_ARRIVAL_ONLY}"
     assert column in keys
-    for (aspect, _index), row in by_place.items():
-        assert (row[column].value is not None) == (aspect == "arrival"), aspect
+    for (place, _index), row in by_place.items():
+        assert (row[column].value is not None) == (place == "arrival"), place
     # The cost measure is each aspect's own figure, never the lead aspect's on every row.
     cost = f"measure:{_COST}"
     stated = {aspect: by_place[aspect, 1][cost].value for aspect in names}

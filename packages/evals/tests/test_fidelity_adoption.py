@@ -47,7 +47,8 @@ def test_the_registered_constructor_is_the_one_production_and_the_eval_both_impo
     (contract,) = TOYHOST_FIDELITY_CONTRACTS
     constructor = resolve_constructor(contract)
     assert constructor is product.extraction_request
-    assert toy_kind.extraction_request is constructor, "the eval side must import the product's constructor"
+    # Read off the module: the name the toy kind binds by import is the point, not one it exports.
+    assert getattr(toy_kind, "extraction_request") is constructor, "the eval side must import the product's constructor"
 
 
 def _importable_copy(tmp_path: Path, prefix: str, source: str) -> Iterator[str]:

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 from fractions import Fraction
 
 import pytest
@@ -123,6 +124,12 @@ class TestTheDecisionHoldsItsErrorRates:
 BUNDLES = 100
 
 
+def _first_draws(sides: tuple[list[list[float]], list[list[float]]]) -> tuple[list[int], list[int]]:
+    """Each arm's first observation of every case, as a pass (1) or a fail (0)."""
+    control, contrast = sides
+    return [int(case[0]) for case in control], [int(case[0]) for case in contrast]
+
+
 class TestACapabilityGainCannotCarryAGuardrailLoss:
     def test_the_arm_never_reads_as_held_and_the_bundle_decides_as_the_rule_does(self) -> None:
         """Capability: 40% → about 93% of cases done. Guardrail: about 95% → about 51% of unsafe asks declined."""
@@ -131,10 +138,7 @@ class TestACapabilityGainCannotCarryAGuardrailLoss:
         for _ in range(BUNDLES):
             capability = draw_binary_paired_arms(rng, 15, 1, base_rate=0.4, effect=3.0)
             boundary = draw_binary_paired_arms(rng, 15, 1, base_rate=0.95, between_case_sd=0.5, effect=-3.0)
-            scores = {
-                name: tuple([int(case[0]) for case in side] for side in sides)
-                for name, sides in ((CAPABILITY, capability), (BOUNDARY, boundary))
-            }
+            scores = {name: _first_draws(sides) for name, sides in ((CAPABILITY, capability), (BOUNDARY, boundary))}
             bundle = two_arm_bundle(
                 [(CAPABILITY, "capability", scores[CAPABILITY]), (BOUNDARY, "boundary", scores[BOUNDARY])]
             )
@@ -164,7 +168,7 @@ RUBRIC = (1.0, 5.0)
 ONE_TAIL = (1 - INTERVAL_LEVEL) / 2
 
 #: Each shape of paired difference coarse scores take, as (differences, their weights) with mean exactly ``-m``.
-SHAPES = {
+SHAPES: dict[str, tuple[tuple[float, float], Callable[[Fraction], tuple[list[int], list[Fraction]]]]] = {
     # Pass/fail at its ceiling: a regression that breaks one case in 1/m, nothing else moving.
     "pass/fail rare drop": (PASS_FAIL, lambda m: ([-1, 0], [m, 1 - m])),
     # Pass/fail: the same net change among cases flipping both ways.

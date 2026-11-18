@@ -28,7 +28,7 @@ import pytest
 from threetears.evals.run.budget import BudgetStoppedError, CapBreach, EvalRunCostCap
 
 
-def _cap(*, run_id="run-1", max_cost_usd=15.0, enabled=True) -> EvalRunCostCap:
+def _cap(*, run_id: str = "run-1", max_cost_usd: float = 15.0, enabled: bool = True) -> EvalRunCostCap:
     return EvalRunCostCap(run_id, max_cost_usd, enabled=enabled)
 
 
@@ -128,7 +128,7 @@ def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling() -> None:
 
 
 @pytest.mark.parametrize("ceiling", [0.0, -1.0, float("inf"), float("nan")])
-def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling) -> None:
+def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling: float) -> None:
     with pytest.raises(ValueError, match="positive, finite ceiling"):
         EvalRunCostCap("run-x", ceiling, enabled=True)
     assert EvalRunCostCap("run-x", ceiling, enabled=False).exceeded is False
@@ -272,7 +272,7 @@ class TestTheStopSaysWhatItMeasured:
 
     def test_the_error_names_the_cap_and_the_spend_alongside_the_progress(self) -> None:
         err = BudgetStoppedError(2, 4, CapBreach(max_cost_usd=0.02, accumulated_usd=0.0299, unpriced_results=0))
-        assert err.breach.max_cost_usd == 0.02
+        assert err.breach is not None and err.breach.max_cost_usd == 0.02
         assert err.breach.accumulated_usd == pytest.approx(0.0299)
         message = str(err)
         assert "2/4" in message

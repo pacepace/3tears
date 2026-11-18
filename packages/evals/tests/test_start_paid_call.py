@@ -44,7 +44,8 @@ class _ReleaseTracking:
         self.model_name: str = inner.model_name
 
     def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
-        return self._inner.price_ceiling(system=system, user=user, response_format=response_format)
+        ceiling: float | None = self._inner.price_ceiling(system=system, user=user, response_format=response_format)
+        return ceiling
 
     async def generate(self, *, system: str, user: str, response_format: Any = None, **kwargs: Any) -> Any:
         return await self._inner.generate(system=system, user=user, response_format=response_format, **kwargs)

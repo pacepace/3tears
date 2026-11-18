@@ -67,7 +67,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricScore,
 )
-from threetears.evals.schema.completion import ProviderFailure
+from threetears.evals.schema.completion import ProviderFailure, StopReason
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.ops import OpsHost, await_job, judge_repeat
 from threetears.evals.run import JudgeRepeatReport, estimate_judge_repeat, judge_repeat_work, run_job_work
@@ -76,6 +76,7 @@ from threetears.evals.run.judge_service import JudgeService, builtin_judge_confi
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
@@ -110,7 +111,8 @@ _EVIDENCE = JudgeEvidence(
 @dataclass(frozen=True)
 class _Completion:
     content: str
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
+    price_source: str | None = None
     temperature: float | None = None
     input_tokens: int = 10
     output_tokens: int = 5
@@ -121,7 +123,7 @@ class _Completion:
 
 
 @dataclass
-class _PricedJudge:
+class _PricedJudge(ClientDouble):
     """A judge client that prices every call at ``ceiling`` and scores each case by its variation.
 
     The score for a case is read off the ``party=`` value its prompt carries, so twenty cases can carry
@@ -168,6 +170,7 @@ class _Kind:
 
     def __init__(self, judged_artifact: JudgedArtifact) -> None:
         self.judged_artifact = judged_artifact
+        self.max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,

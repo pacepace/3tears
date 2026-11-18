@@ -9,6 +9,9 @@ the SAME registry, so an inverted rule cannot pass.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 from threetears.evals.kernel.dsl import world_prose_matches
 from threetears.evals.kernel.host.world import WorldDimension, WorldRegistry
@@ -16,9 +19,9 @@ from threetears.evals.schema import goal_grammar as _grammar
 from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches
 from threetears.evals.schema.prose import PROSE_SCHEMA_KEY, schema_is_prose, schema_nodes_at
 
-_BINDINGS = {"h.seed": lambda value: None, "h.read": list}
+_BINDINGS: dict[str, Callable[..., Any]] = {"h.seed": lambda value: None, "h.read": list}
 
-_MESSAGE = {
+_MESSAGE: dict[str, Any] = {
     "type": "object",
     "properties": {
         "content": {"type": "string", PROSE_SCHEMA_KEY: True},
@@ -28,7 +31,7 @@ _MESSAGE = {
 _ITEM = {"type": "object", "properties": {"title": {"type": "string"}, "uri": {"type": "string"}}}
 
 
-def _dimension(name: str, schema: dict) -> WorldDimension:
+def _dimension(name: str, schema: dict[str, Any]) -> WorldDimension:
     return WorldDimension(
         name=name,
         schema=schema,

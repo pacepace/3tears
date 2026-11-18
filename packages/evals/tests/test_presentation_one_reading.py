@@ -48,6 +48,7 @@ from threetears.evals.analysis.report.words import (
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.report.parts.words import reading_words
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
+from threetears.evals import Eval
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 
@@ -103,6 +104,7 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
                 (runnable,) = load_evals(copy / file)
             else:
                 runnable = getattr(load(copy / file, Path(file).stem, monkeypatch), attribute)
+            assert isinstance(runnable, Eval), (name, attribute)
             result = asyncio.run(runnable.run(store=":memory:"))
         (lead,) = _said(result.page.blocks, "verdict", "answer")
         (verdict,) = _said(result.report.blocks, "verdict", "header")

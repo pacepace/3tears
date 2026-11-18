@@ -86,7 +86,9 @@ def test_r3_s_balanced_accuracy_reads_the_interval_its_cells_give(arm: str) -> N
     half = HAND_HALF_WIDTH[arm]
     assert cite(_key(arm, "half_width"), held).value == pytest.approx(half, abs=1e-5)
     assert cite(_key(arm, "se"), held).value == pytest.approx(half / Z95, abs=1e-5)
-    low, high = cite(_key(arm, "interval"), held).value  # type: ignore[misc]
+    interval = cite(_key(arm, "interval"), held).value
+    assert isinstance(interval, tuple), interval
+    low, high = interval
     assert (low, high) == pytest.approx((OVERALL[arm] - half, OVERALL[arm] + half), abs=1e-5)
     assert cite(_key(arm, "low"), held).value == pytest.approx(low)
     assert cite(_key(arm, "high"), held).value == pytest.approx(high)

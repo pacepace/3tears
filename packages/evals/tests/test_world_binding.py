@@ -206,7 +206,7 @@ class TestABindIsHeldToTheDeclaration:
 
     def test_a_non_callable_binding_is_refused(self) -> None:
         registry, _state = _per_cell()
-        table = {**toyhost_world()[0].bindings, "toy.read_language": "en"}
+        table: dict[str, Any] = {**toyhost_world()[0].bindings, "toy.read_language": "en"}
 
         with pytest.raises(WorldRegistrationError, match="not callable"):
             WorldSession(registry, provenance="commissioned").bind(table)

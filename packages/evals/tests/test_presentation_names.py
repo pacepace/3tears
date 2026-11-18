@@ -31,7 +31,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -78,6 +78,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.style import CANNOT_TELL_APART, CHECK_LINK_TITLE, GLOSSARY, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops import WriterLimits, analysis_generate, campaigns_list
 from threetears.evals.ops.analysis import QUESTION_SHORT_CHARS, CampaignDefinition, campaign_create
@@ -175,11 +176,18 @@ def test_a_page_heads_with_the_campaign_s_name_and_names_each_arm_once_under_it(
     assert not re.search(r"^## (classify|score)$", rung.markdown, flags=re.MULTILINE)
 
 
+def _roles(
+    control: list[str], candidates: list[str]
+) -> tuple[tuple[Literal["control"], list[str]], tuple[Literal["candidate"], list[str]]]:
+    """Each role, with the labels of its arms."""
+    return ("control", control), ("candidate", candidates)
+
+
 def _titled(name: str, control: list[str], candidates: list[str], aspects: list[tuple[str, str | None]]) -> str:
     """The listing title over arms of these labels, read through the title a frozen bundle's arms are given."""
     arms = [
-        CampaignArm(label=label, role=role, variant_key=fixture_variant_key(label))
-        for role, labels in (("control", control), ("candidate", candidates))
+        CampaignArm(label=label, role=role, variant_key=fixture_variant_key(label), identity_version=IDENTITY_VERSION)
+        for role, labels in _roles(control, candidates)
         for label in labels
     ]
     return declared_title(name, arms, aspects)

@@ -18,7 +18,7 @@ from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.schema.models import EvalResult, EvalRun, GoalStateOutcome, RoleUsage
-from packages.evals.tests.campaign_support import ASKED_AT, QUESTION
+from packages.evals.tests.campaign_support import ASKED_AT, QUESTION, named_at
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_aspect_campaign,
@@ -91,7 +91,7 @@ def aspect_bundle(trials: Trials) -> tuple[EvalCampaign, AnalysisContextBundle, 
             label=run.candidate_model,
             role="control" if index == 0 else "candidate",
             variant_key=fixture_variant_key(run.candidate_model),
-            **({"named_at": ASKED_AT} if index == 0 else {}),
+            **named_at(index == 0),
         )
         for index, run in enumerate(runs)
     ]

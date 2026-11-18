@@ -28,6 +28,7 @@ import time
 import pytest
 
 from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.kernel import NotFoundError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.offload import run_blocking
@@ -261,7 +262,7 @@ class TestTheCallSites:
 
     @pytest.mark.parametrize("format", ["markdown", "html", "json"])
     def test_a_code_only_report_read_logs_its_bundle_s_line_then_its_own(
-        self, format: str, caplog: pytest.LogCaptureFixture
+        self, format: ReportFormat, caplog: pytest.LogCaptureFixture
     ) -> None:
         fixture = off_loop(ops_fixture)
         host = fixture.host.eval_host

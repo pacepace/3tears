@@ -707,9 +707,9 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
 def _vocabularies_on_core_shapes() -> dict[str, frozenset[Any]]:
     """Every ``Literal`` and enum a core shape's field carries, at any depth, by ``Model.field``: its values."""
     seen: set[type[BaseModel]] = set()
-    for model in _core_models():
-        seen.add(model)
-        _embedded_models(model, seen)
+    for core in _core_models():
+        seen.add(core)
+        _embedded_models(core, seen)
     found: dict[str, frozenset[Any]] = {}
     for model in seen:
         for name, field in model.model_fields.items():
@@ -841,7 +841,7 @@ def test_a_caller_s_purpose_filter_takes_only_a_purpose_this_build_knows() -> No
     from threetears.evals.schema import OUT_OF_RUN_PURPOSES
 
     with pytest.raises(ValidationError, match="purpose_filter"):
-        ScopeOutOfRunSpendParams(purpose_filter="varaition")
+        ScopeOutOfRunSpendParams.model_validate({"purpose_filter": "varaition"})
     assert ScopeOutOfRunSpendParams(purpose_filter="variation").purpose_filter == "variation"
     schema = json.dumps(ScopeOutOfRunSpendParams.model_json_schema())
     assert all(f'"{purpose}"' in schema for purpose in OUT_OF_RUN_PURPOSES)

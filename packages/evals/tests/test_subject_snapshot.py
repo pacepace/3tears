@@ -133,7 +133,7 @@ class TestSweepableValueScale:
         """0.1 / 0.4 / 0.85 must not render equally spaced — that puts the knee in the wrong place."""
         levels = [SweepableValue.of(v, scale=IntervalScale(value=v)) for v in (0.1, 0.4, 0.85)]
 
-        assert [level.scale.value for level in levels] == [0.1, 0.4, 0.85]
+        assert [level.scale.value for level in levels if isinstance(level.scale, IntervalScale)] == [0.1, 0.4, 0.85]
 
     def test_the_scale_union_round_trips_through_json(self) -> None:
         original = SweepableValue.of(15, scale=IntervalScale(value=15, unit="items"))

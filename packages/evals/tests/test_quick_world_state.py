@@ -61,7 +61,7 @@ def start(case: Mapping[str, Any]) -> dict[str, Any]:
 
 
 #: Each case states its lamp and darkness (read as ``variation.*``), and starts its world from them.
-CASES = [
+CASES: list[dict[str, Any]] = [
     {"lamp": "off", "dark": True, "world": {"lamp": "off", "dark": True}},
     {"lamp": "on", "dark": False, "world": {"lamp": "on", "dark": False}},
 ]
@@ -149,7 +149,8 @@ async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refu
         with pytest.raises(ValueError, match="no tool 'shout'"):
             await tools.call("shout")
         await tools.call("switch", to="on")
-        return await tools.call("switch", to="on")
+        said: str = await tools.call("switch", to="on")
+        return said
 
     once = 'call_count("room.switch") <= 1'
     ev = Eval(CASES[:1], room()(sloppy), [once], k=1)
@@ -164,7 +165,8 @@ async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refu
 async def test_a_tool_that_raises_excludes_the_cell_as_the_rigs_fault() -> None:
     async def presses(case: Mapping[str, Any], tools: Any) -> str:
         """Press the broken relay."""
-        return await tools.call("broken")
+        said: str = await tools.call("broken")
+        return said
 
     summary = (await Eval(CASES[:1], room()(presses), [LIT_IFF_DARK], k=1).run(store=":memory:")).summary
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
@@ -215,7 +217,7 @@ async def test_a_world_less_eval_is_unchanged_it_opens_no_world_and_keeps_no_led
         return int(case["n"]) * 2
 
     def even(case: Mapping[str, Any], answer: Any) -> bool:
-        return answer % 2 == 0
+        return bool(answer % 2 == 0)
 
     ev = Eval([{"n": 1}], double, [even], k=1)
     host = as_host([ev], store=":memory:")

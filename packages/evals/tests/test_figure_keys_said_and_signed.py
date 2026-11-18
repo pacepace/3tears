@@ -50,7 +50,7 @@ def test_a_settle_level_resolves_to_its_number_and_reads_with_its_sidedness() ->
     held = _input("r1")
     key = "settle.atlas-l.atlas-m.overall.task.billing.level"
     figure = resolve(key, held)
-    assert (figure.kind, figure.value, figure.level) == ("number", pytest.approx(0.95), True)
+    assert (figure.kind, figure.level) == ("number", True) and figure.value == pytest.approx(0.95)
     assert _said(key, held) == "95% two-sided"
 
 
@@ -58,7 +58,7 @@ def test_the_plain_interval_a_weakest_margin_is_read_on_holds_its_level_as_a_num
     held = _input("r5")
     bare = held.model_copy(update={"contrasts": [c for c in held.contrasts if c.kind != "trial"]})
     figure = resolve("weakest.interval", bare)
-    assert (figure.kind, figure.value, figure.level, figure.joint) == ("number", pytest.approx(0.95), True, None)
+    assert (figure.kind, figure.level, figure.joint) == ("number", True, None) and figure.value == pytest.approx(0.95)
     assert _said("weakest.interval", bare) == "the 95% interval"
 
 
@@ -67,8 +67,8 @@ def test_the_corrected_interval_a_weakest_margin_is_read_on_states_its_joint_gua
     figure holds the joint level as its value and, beside it, the family's size, for the page's forms to print."""
     held = _input("r5")
     figure = resolve("weakest.interval", held)
-    assert (figure.kind, figure.value, figure.level) == ("number", pytest.approx(0.95), True)
-    assert figure.joint == (pytest.approx(0.95), 16)
+    assert (figure.kind, figure.level) == ("number", True) and figure.value == pytest.approx(0.95)
+    assert figure.joint is not None and figure.joint[0] == pytest.approx(0.95) and figure.joint[1] == 16
     assert _said("weakest.interval", held) == "the 95% interval, adjusted for 16 comparisons"
 
 

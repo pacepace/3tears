@@ -33,7 +33,8 @@ def _with_measures(bundle: Any, per_run: list[list[MeasureSummary]]) -> Any:
 
 
 def _measure(bundle: Any, name: str, *, run: int = 0) -> MeasureSummary:
-    return next(m for m in bundle.run_summaries[run].measures.measures if m.name == name)
+    measure: MeasureSummary = next(m for m in bundle.run_summaries[run].measures.measures if m.name == name)
+    return measure
 
 
 async def _run_index(bundle: Any) -> list[Any]:

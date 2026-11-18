@@ -52,7 +52,8 @@ def _passing_model() -> FakeTurnModel:
 
 def _system(client: FakeToolTurnClient) -> str:
     """The system text a session's every turn was sent with: one text for the whole session."""
-    (system,) = {request["system"] for request in client.requests}
+    systems: set[str] = {request["system"] for request in client.requests}
+    (system,) = systems
     return system
 
 

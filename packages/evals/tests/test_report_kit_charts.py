@@ -144,12 +144,11 @@ def test_a_chart_s_table_is_what_a_reader_sees_where_no_chart_is_drawn(tmp_path:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     bars = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4], "fmt": "int"}
     rows = [{"label": "a", "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6}]
-    markup = report_page(
-        [
-            {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
-            {"kind": "chart", "section": "memo", "chart": "interval_rows", "title": "Rows", "rows": rows},
-        ]
-    )
+    blocks: list[dict[str, Any]] = [
+        {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
+        {"kind": "chart", "section": "memo", "chart": "interval_rows", "title": "Rows", "rows": rows},
+    ]
+    markup = report_page(blocks)
     with_script, without_script = tmp_path / "with.html", tmp_path / "without.html"
     with_script.write_text(markup, encoding="utf-8")
     script = markup[markup.rindex("<script>") : markup.rindex("</script>") + len("</script>")]
@@ -183,21 +182,14 @@ def test_a_static_page_hides_a_drawn_chart_s_table_and_shows_an_undrawn_one(tmp_
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     bars = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4], "fmt": "int"}
     rows = [{"label": "a", "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6}]
+    blocks: list[dict[str, Any]] = [
+        {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
+        {"kind": "chart", "section": "memo", "chart": "interval_rows", "title": "Rows", "rows": rows},
+    ]
     page = tmp_path / "static.html"
     page.write_text(
         report_html(
-            report_of(
-                [
-                    {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
-                    {
-                        "kind": "chart",
-                        "section": "memo",
-                        "chart": "interval_rows",
-                        "title": "Rows",
-                        "rows": rows,
-                    },
-                ]
-            ),
+            report_of(blocks),
             static=True,
         ),
         encoding="utf-8",
@@ -358,7 +350,7 @@ def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_mode
             },
         ],
     }
-    block = ChartBlock(section="memo", chart="bars", title="t", data=data)
+    block = ChartBlock.model_validate({"section": "memo", "chart": "bars", "title": "t", "data": data})
     _, rows = block.values_table()
     assert [row for row in rows if row[1] == "floor 3"] == [["own", "floor 3", "3"], ["null", "floor 3", "3"]]
     page = tmp_path / "nulls.html"
@@ -540,7 +532,7 @@ def test_a_short_line_charts_wrapped_end_labels_all_sit_inside_its_drawing(tmp_p
 
 
 #: A change chart of bars whose first note is wider than the margin's 30% at a phone's width.
-_LONG_NOTE_BARS = {
+_LONG_NOTE_BARS: dict[str, Any] = {
     "rows": [
         {
             "label": "Persona holds character",

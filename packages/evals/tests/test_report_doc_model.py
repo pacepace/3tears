@@ -290,7 +290,7 @@ def _bare(annotation: Any) -> tuple[Any, int]:
 
 def _filled[M: BaseModel](model: type[M]) -> M:
     """``model`` built without validation with every field set: a text to a word, a list to one item, a model filled."""
-    values: dict[str, object] = {}
+    values: dict[str, Any] = {}
     for name, field in model.model_fields.items():
         annotation, lists = _bare(field.annotation)
         value: object

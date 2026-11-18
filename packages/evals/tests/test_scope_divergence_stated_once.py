@@ -48,6 +48,7 @@ from packages.evals.tests.fixtures.toyhost.variant import variant_levers
 from packages.evals.tests.factories import make_campaign
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema import EvalResult
 
 #: The extractor's model knob, and the host surface it is resolved into.
@@ -67,7 +68,7 @@ _LLM_MS = {"m-a": 140000.0, "m-b": 6800.0, "m-c": 70000.0}
 _STILL_PARTS = {"tool_ms", "orchestration_ms", "async_wait_ms", "judge_ms"}
 
 
-def _recorded_params(run: EvalRun, _results: Sequence[EvalResult]) -> str | None:
+def _recorded_params(run: EvalRun, _results: Sequence[ResultView]) -> str | None:
     """The content hash of the model parameters a run resolved, ``None`` where it recorded none."""
     value = (run.host_payload or {}).get(_NAMESPACE, {}).get(_PARAMS)
     return None if value is None else SweepableValue.of(value, display=_PARAMS).content_hash

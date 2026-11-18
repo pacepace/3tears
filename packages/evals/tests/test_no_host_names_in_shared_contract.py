@@ -160,7 +160,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, TypeGuard
 
 import pytest
 
@@ -686,7 +686,7 @@ def _host_nouns_in(text: str) -> tuple[str, ...]:
     return tuple(sorted({word for word in identifier_words(text) if _HOST_NOUN_RE.match(word)}))
 
 
-def _is_token_shaped(value: object) -> bool:
+def _is_token_shaped(value: object) -> TypeGuard[str]:
     """Whether a constant is declared vocabulary rather than prose."""
     return isinstance(value, str) and 0 < len(value) <= _MAX_TOKEN_LENGTH and not re.search(r"\s", value)
 
@@ -1393,7 +1393,8 @@ class TestWhichStringsTheScannerCanSee:
         Half the guard. It says the enumeration and the classification agree; it says nothing
         about whether the classification matches the scanner, which is the other test's job.
         """
-        marks = [m for m in self.test_a_value_on_a_carrying_surface_is_scanned.pytestmark if m.name == "parametrize"]
+        carried = getattr(self.test_a_value_on_a_carrying_surface_is_scanned, "pytestmark")
+        marks = [m for m in carried if m.name == "parametrize"]
         assert len(marks) == 1, "the case table is read off this mark, so a second parametrize would silently pick one"
         cases = marks[0].args[1]
         covered = {v.surface for _, source in cases for v in _scan_source("probe.py", source)}
@@ -1434,14 +1435,14 @@ class TestWhichStringsTheScannerCanSee:
         )
         positions = {"_record": 0, "_record_declared_values": 1}
         emitted = {
-            call.args[index].value
+            label.value
             for call in ast.walk(scanner)
             if isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
             and (index := positions.get(call.func.attr, -1)) >= 0
             and len(call.args) > index
-            and isinstance(call.args[index], ast.Constant)
-            and isinstance(call.args[index].value, str)
+            and isinstance(label := call.args[index], ast.Constant)
+            and isinstance(label.value, str)
         }
         assert emitted, "found no surface labels — the call forms this reads must have changed"
         assert emitted == self._VALUE_SURFACES | self._NAME_SURFACES

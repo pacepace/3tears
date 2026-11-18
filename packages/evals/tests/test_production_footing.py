@@ -272,12 +272,18 @@ class TestTheScoreRollupRowCarriesIt:
         )
         host = comparison.host
         run_id = next(iter(comparison.arms.values())).run_id
+
+        def listed(rid: str, scope: str) -> EvalRun:
+            run = off_loop(host.storage.load_eval_run, rid, scope)
+            assert run is not None, rid
+            return run
+
         summary = off_loop(
             run_summary,
             host.storage,
             run_id,
             "footing",
-            load_run_listed=lambda rid, scope: off_loop(host.storage.load_eval_run, rid, scope),
+            load_run_listed=listed,
             row_columns=lambda _results: {},
             profile=host.profile,
         )

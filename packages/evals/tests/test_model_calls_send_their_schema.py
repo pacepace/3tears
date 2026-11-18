@@ -25,6 +25,7 @@ from threetears.evals.run.judge import judge_reply_format
 from threetears.evals.run.simulator import SIMULATED_USER_RESPONSE_FORMAT, next_speaker_response_format
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema.models import (
+    RubricScale,
     SCALE_LEVELS,
     EvalTemplate,
     JudgedArtifact,
@@ -109,7 +110,7 @@ def test_a_variation_call_sends_its_values_envelope_as_a_strict_schema() -> None
         jsonschema.validate(["a", "b"], schema)
 
 
-def _judge_request(scale: str) -> Any:
+def _judge_request(scale: RubricScale) -> Any:
     service = JudgeService(client_factory=lambda model, temperature: None, failure_describer=withhold_failure_detail)
     context = JudgeContext(
         case_id="tc-1",
@@ -131,7 +132,7 @@ def _judge_request(scale: str) -> Any:
     ],
 )
 def test_a_judge_request_sends_its_dimension_s_answers_as_a_strict_schema(
-    scale: str, answers: list[Any], refused: list[Any]
+    scale: RubricScale, answers: list[Any], refused: list[Any]
 ) -> None:
     schema = _strict(_judge_request(scale).response_format)
 

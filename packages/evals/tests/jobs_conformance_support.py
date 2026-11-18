@@ -42,7 +42,9 @@ from threetears.evals.schema import (
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
 from threetears.evals.schema.turns import TurnText
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.clock_support import FIXED_AT
+from threetears.evals.schema.completion import StopReason
 from packages.evals.tests.doc_writer_support import FakeAnalystClient, scripted_reply
 from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
@@ -72,7 +74,8 @@ class _Completion:
     content: str
     model: str
     served_model: str
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
+    price_source: str | None = None
     input_tokens: int = 10
     output_tokens: int = 5
     reasoning_tokens: int | None = None
@@ -81,7 +84,7 @@ class _Completion:
 
 
 @dataclass
-class _ScriptedClient:
+class _ScriptedClient(ClientDouble):
     """One role's client: a judge scores every dimension it is asked 3; any other role answers ``{}``."""
 
     role: str
@@ -100,9 +103,6 @@ class _ScriptedClient:
         return _Completion(
             content=content, model=self.model_name, served_model=self.model_name, temperature=self.temperature
         )
-
-    async def aclose(self) -> None:
-        """Nothing to release."""
 
 
 @dataclass

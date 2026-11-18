@@ -380,7 +380,7 @@ def test_jobs_resumable_lists_exactly_the_runs_job_resume_would_take_up(store: D
     operator = jobs["operator"]
     assert operator.job_id == "run:operator" and operator.reason == "shipping a fix"
     assert (operator.cells_done, operator.cells_expected) == (2, 4), "a cut-short row is not done"
-    assert (operator.spent_usd, operator.unpriced, operator.max_cost_usd) == (pytest.approx(0.30), 1, 1.0)
+    assert operator.spent_usd == pytest.approx(0.30) and (operator.unpriced, operator.max_cost_usd) == (1, 1.0)
     assert (operator.lifetimes, operator.note) == (1, None)
     budget = jobs["budget"]
     assert budget.reason == "the cost cap was reached"
@@ -522,7 +522,7 @@ def test_jobs_resumable_lists_a_lost_sweep_and_a_lost_launch_once_with_their_arm
     )
     assert lost_sweep.arms == {"a": "cancelled", "b": "completed", "c": "not_launched"}
     (arm,) = lost_sweep.runs
-    assert (arm.job_id, arm.cells_done, arm.spent_usd) == ("run:arm-lost", 1, pytest.approx(0.1))
+    assert (arm.job_id, arm.cells_done) == ("run:arm-lost", 1) and arm.spent_usd == pytest.approx(0.1)
     assert (lost_launch.kind, lost_launch.ended) == ("launch", "lost")
     assert lost_launch.arms == {"sonnet": "cancelled", "opus": "completed"}
     assert [run.run_id for run in lost_launch.runs] == ["launch-lost"]

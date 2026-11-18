@@ -406,7 +406,7 @@ async def test_a_terminal_status_write_that_loses_one_race_still_lands() -> None
             raise ConflictError("lost the race", remedy="try again")
         real_save(saving, if_match=if_match)
 
-    storage.save_eval_run = _refuse_the_first_terminal_write  # type: ignore[method-assign]
+    setattr(storage, "save_eval_run", _refuse_the_first_terminal_write)
 
     async def fast_work(progress: Any) -> None:
         return None
@@ -900,7 +900,7 @@ async def test_a_refused_progress_write_is_logged_with_the_figure_it_lost(caplog
             raise ConflictError("lost the race", remedy="try again")
         real_save(saving, if_match=if_match)
 
-    storage.save_eval_run = _refuse_progress_writes  # type: ignore[method-assign]
+    setattr(storage, "save_eval_run", _refuse_progress_writes)
 
     async def work(progress: Any) -> None:
         await progress({"completed": 7, "total": 11})

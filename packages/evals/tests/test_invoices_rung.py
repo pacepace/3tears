@@ -35,8 +35,8 @@ from threetears.evals.quick.files import main
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.style_support import unlinked
+from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.ladder_support import (
-    EXAMPLES,
     count_calls,
     load,
     non_blank_lines,
@@ -46,6 +46,7 @@ from packages.evals.tests.ladder_support import (
     stated_spend,
 )
 from packages.evals.tests.report_support import page_violations
+from packages.evals.tests.json_support import json_at
 from packages.evals.tests.rung_support import recorded
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.page_contract_support import what_runs
@@ -118,7 +119,7 @@ def test_the_grid_s_two_recordings_cover_its_cells_at_each_effort(
     for recording, effort in ((RECORDING, "low"), (RECORDING_HIGH, "high")):
         settings = ClientRequestSettings(max_tokens=8192, reasoning_effort=effort)
         RecordedCompletions.check_covers(recording, _asked(module, module.grid.k), settings=settings)
-    assert {line["sent_settings"]["reasoning_effort"] for line in recorded(RECORDING_HIGH)} == {"high"}
+    assert {json_at(line, "sent_settings", "reasoning_effort") for line in recorded(RECORDING_HIGH)} == {"high"}
 
 
 async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_the_question_s_measure(

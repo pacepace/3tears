@@ -144,7 +144,7 @@ def _restated(data: dict[str, Any], key: str, by: float) -> dict[str, Any]:
             return [walk(item) for item in node]
         return node
 
-    shared = walk(data)
+    shared: dict[str, Any] = walk(data)
     if key in shared["measures"]:
         shared["measures"][key]["unit"] = None
     for criterion in shared["criteria"]:
@@ -641,7 +641,9 @@ def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> No
     assert data_drawn.panels is None and _named(data_drawn.fmt, quantity("percent").fmt)
     drawn = {round(row.value, _PLACES) for row in data_drawn.rows or [] if row.value is not None}
     held = _input("r4").measures
-    expected = {round(float(stat.mean), _PLACES) for key in ("task", "specul") for stat in held[key].per_arm.values()}
+    means = [stat.mean for key in ("task", "specul") for stat in held[key].per_arm.values()]
+    assert None not in means
+    expected = {round(float(mean), _PLACES) for mean in means if mean is not None}
     assert drawn == expected, "each rate drawn in percent, the share at a hundred times its figure"
 
 
@@ -727,6 +729,7 @@ def test_a_strip_per_arm_of_a_share_beside_a_percent_draws_each_at_its_own_scale
     assert all(panel.fmt is None for panel in data.panels), "one quantity: every strip shares the chart's axis"
     drawn: dict[str, list[float]] = {key: [] for key in keys}
     for panel in data.panels:
+        assert panel.rows is not None
         for row in panel.rows:
             assert row.id is not None and row.value is not None
             drawn[row.id.rpartition("/")[2]].append(row.value)

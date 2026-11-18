@@ -131,9 +131,9 @@ class TestUnobservedCost:
         assert _cost_disclosures(comparison) == []
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         assert bundle.cost_unmeasured_cells == [] and bundle.cost_unmeasured is None
-        costs = sorted(
-            next(m.mean for m in cell.measures.measures if m.name == "cost_usd") for cell in bundle.cell_measures
-        )
+        means = [next(m.mean for m in cell.measures.measures if m.name == "cost_usd") for cell in bundle.cell_measures]
+        assert None not in means
+        costs = sorted(mean for mean in means if mean is not None)
         assert costs == [0.0, 1e-5]
         (spend,) = comparison.contrasts("production_replicating_cost")
         assert spend["control_mean"] is not None and spend["arm_mean"] is not None

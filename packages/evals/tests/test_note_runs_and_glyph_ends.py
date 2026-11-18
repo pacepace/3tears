@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,7 +23,7 @@ from threetears.evals.analysis.report.forms import PageForms
 from packages.evals.tests.report_kit_support import chromium_unavailable, rendered, report_page
 
 #: Outcome bars whose notes each wrap at a phone's width, each a share passed and its count of its arm's trials.
-_NOTED_BARS = {
+_NOTED_BARS: dict[str, Any] = {
     "rows": [
         {"label": "control", "value": 21.0, "note": "21% passed · 96 of 456"},
         {"label": "candidate-a", "value": 23.0, "note": "23% passed · 87 of 380"},

@@ -29,8 +29,14 @@ TICKETS = [
 CASES = [{"ticket": ticket, "queue": queue} for ticket, queue in TICKETS]
 
 # Each arm takes the first queue whose words appear; the candidate checks the ambiguous queues in a better order.
-BASELINE_RULES = {"account": ("account", "email", "login"), "billing": ("charged", "refund", "invoice")}
-CANDIDATE_RULES = {"feature_request": ("would be great", "plan to add", "could you add"), "billing": ("charged",)}
+BASELINE_RULES: dict[str, tuple[str, ...]] = {
+    "account": ("account", "email", "login"),
+    "billing": ("charged", "refund", "invoice"),
+}
+CANDIDATE_RULES: dict[str, tuple[str, ...]] = {
+    "feature_request": ("would be great", "plan to add", "could you add"),
+    "billing": ("charged",),
+}
 CANDIDATE_RULES |= {"bug": ("error", "crash", "nothing", "loops"), "account": ("account", "email", "password")}
 
 

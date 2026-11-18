@@ -80,7 +80,11 @@ def test_each_kind_the_kit_draws_as_a_picture_is_drawn_and_the_rest_are_not() ->
 def test_a_chart_not_drawn_says_in_one_line_that_it_is_shown_as_its_table() -> None:
     rows = {"label": "a", "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6}
     gate = next(chart for chart in hostile_kit_charts() if chart["chart"] == "gate_matrix")
-    page = report_html(report_of([{**gate, "title": "Gates"}, _block(chart="interval_rows", rows=[rows])]), static=True)
+    blocks: list[dict[str, Any]] = [
+        {**gate, "title": "Gates"},
+        {"kind": "chart", "section": "memo", "title": "Chart", "chart": "interval_rows", "rows": [rows]},
+    ]
+    page = report_html(report_of(blocks), static=True)
     for figure in re.findall(r'<figure class="fig".*?</figure>', page, flags=re.DOTALL):
         assert figure.count(f'<p class="chart-note">{AS_TABLE_NOTE}</p>') == 1 and "chart-values" in figure
 

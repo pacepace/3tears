@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
-from collections.abc import AsyncIterator, Callable, ItemsView, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,7 +36,8 @@ class _HookedDocuments(dict[tuple[str, str], dict[str, Any]]):
 
     hook: Callable[[], None] | None = None
 
-    def items(self) -> ItemsView[tuple[str, str], dict[str, Any]]:
+    # Any: dict's own items view type lives in a private module, and this hands back exactly what dict's does.
+    def items(self) -> Any:
         if self.hook is not None:
             self.hook()
         return super().items()
@@ -279,6 +280,7 @@ def test_a_read_abandoned_part_way_closes_the_stores_iterator(loop: asyncio.Abst
     assert isinstance(bridge, ResultReadings)
 
     rows = bridge.iter_narrowed("t", "s")
+    assert isinstance(rows, Generator)
     assert next(rows)["n"] == 0
     assert not store.finished
     rows.close()

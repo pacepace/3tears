@@ -135,7 +135,8 @@ async def test_report_read_defaults_to_the_table_and_reads_the_records_when_aske
 async def test_the_action_takes_trials_and_reads_what_the_operation_reads() -> None:
     fixture = off_loop(ops_fixture)
     (evals, *_rest) = eval_catalogue().mount_all(standard_tools())
-    for asked in ({}, {"trials": "all"}, {"trials": "table"}):
+    choices: tuple[dict[str, Any], ...] = ({}, {"trials": "all"}, {"trials": "table"})
+    for asked in choices:
         outcome = await evals.call(
             {"action": "report_read", "campaign_id": fixture.campaign.id, "format": "html", **asked},
             host=fixture.host,

@@ -118,7 +118,7 @@ async def test_the_declaration_the_help_names_is_made_over_a_real_sweeps_runs(ev
     )
 
     assert not created.is_error, created.text
-    assert created.structured["exploratory"] is False
+    assert created.structured is not None and created.structured["exploratory"] is False
     declared = off_loop(storage.load_campaign, created.structured["id"], TOYHOST_SCOPE)
     assert declared is not None and set(declared.run_ids) == set(run_ids)
     eval_host = host.eval_host

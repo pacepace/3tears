@@ -102,7 +102,9 @@ class _Table:
             "rules_lookup", frozenset({"lookup"}), lambda p: RulesAnswer(ok=True, text=rules[p["topic"]])
         )
         self.tools: dict[str, Any] = {"roll": self.roll, "rules_lookup": self.rules}
-        self._recorded = dict(recorded if recorded is not None else {"roll": RollResult, "rules_lookup": RulesAnswer})
+        self._recorded: dict[str, type[BaseModel]] = dict(
+            recorded if recorded is not None else {"roll": RollResult, "rules_lookup": RulesAnswer}
+        )
 
     @property
     def action_seam(self) -> Any:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, NoReturn
 
 import pytest
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
@@ -31,7 +32,7 @@ class _Kind:
         return CandidateTurn(content=f"answer {len(self.rounds)}")
 
 
-def _driver(**fields) -> TurnDriver:
+def _driver(**fields: Any) -> TurnDriver:
     return TurnDriver(conversation=ConversationSpec(**fields), variation={})
 
 
@@ -232,7 +233,7 @@ async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_con
     assert sink.spent == {"simulator": None}, "unpriced spend leaves its source unpriced, never zero"
 
 
-async def _raising(*_args: object) -> None:
+async def _raising(*_args: object) -> NoReturn:
     raise RuntimeError("boom")
 
 
@@ -244,12 +245,18 @@ async def _raising(*_args: object) -> None:
         ("candidate", ConversationStopCause.CANDIDATE_ERROR),
     ],
 )
-async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side: str, cause) -> None:
+async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(
+    side: str, cause: ConversationStopCause
+) -> None:
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": [Raw("not json") if side == "simulator" else "a1"]})
     kind = _Kind()
-    post = _raising if side == "post" else kind.post
-    answer = _raising if side == "candidate" else kind.answer
+    post: Callable[[SimulatorTurn], Awaitable[None]] = kind.post
+    answer: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]] = kind.answer
+    if side == "post":
+        post = _raising
+    if side == "candidate":
+        answer = _raising
 
     with pytest.raises(Exception) as caught:
         await drive_conversation(driver, answer, post, llm=table, sink=FakeCellSink())

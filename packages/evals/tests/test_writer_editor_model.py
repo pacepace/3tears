@@ -95,7 +95,7 @@ def _runs(tmp_path: Path, result: WriterResult) -> dict[str, EvalRun]:
     return runs
 
 
-def _usage_models(tmp_path: Path, run: EvalRun) -> set[str]:
+def _usage_models(tmp_path: Path, run: EvalRun) -> set[str | None]:
     """The models the candidate role's usage rows name, over every result of ``run``."""
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     results = storage.query_eval_results_by_run(run.id, SCOPE)

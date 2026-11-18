@@ -31,7 +31,9 @@ from packages.evals.tests.ladder_support import offline_copy
 from packages.evals.tests.offline_support import assert_no_connects, refuse_connects
 from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.writer_eval_support import ScoredReply
+from threetears.evals.ops.report_writer.preference import pair_evidence
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import AnalystSkill, WriterEval, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
@@ -238,7 +240,7 @@ def test_a_page_whose_text_moved_under_the_judge_s_recording_fails_the_pass_nami
 ) -> None:
     """One word more on each page the pairwise judge reads moves every pass call's key off its recording. The pass
     fails at its first call, naming it, and reads no share; it once dropped each missed call and read 54/46 off fewer."""
-    shipped = writer_pairwise.pair_evidence
+    shipped = pair_evidence
 
     def moved(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
         paired = shipped(a, b)
@@ -321,18 +323,21 @@ def _two_held_out_cases(directory: Path) -> dict[str, str]:
     return kept
 
 
+class _ScriptedJudge(ClientDouble):
+    """The judge a recording is made from: one score of 4 for whatever it is asked."""
+
+    model_name = JUDGE
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
+        return ScoredReply(content=json.dumps({"score": 4}), temperature=0.0)
+
+
 def _judge_recording(directory: Path) -> None:
     """One scripted call in the judge's recording, so the judge builds with no key: nothing in a silent replay asks
     it anything."""
 
-    class ScriptedJudge:
-        model_name = JUDGE
-
-        async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-            return ScoredReply(content=json.dumps({"score": 4}), temperature=0.0)
-
     async def record() -> None:
-        recorder = RecordedCompletions.record(ScriptedJudge(), directory / "recordings" / "judge.jsonl", settings=None)
+        recorder = RecordedCompletions.record(_ScriptedJudge(), directory / "recordings" / "judge.jsonl", settings=None)
         await recorder.generate(system="scripted", user="scripted")
 
     asyncio.run(record())

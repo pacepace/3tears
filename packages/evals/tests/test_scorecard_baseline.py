@@ -41,6 +41,7 @@ from threetears.evals.analysis.report.figures import SHARE
 from threetears.evals.analysis.report.forms import PageForms, Printed
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.numbers import round_half_even
+from threetears.evals import Eval
 from threetears.evals.quick.files import load_evals
 
 from packages.evals.tests.campaign_page_support import kairo_page
@@ -89,6 +90,7 @@ def pages(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Campai
                 (runnable,) = load_evals(copy / file)
             else:
                 runnable = getattr(load(copy / file, Path(file).stem, monkeypatch), attribute)
+            assert isinstance(runnable, Eval), (name, attribute)
             built[name] = asyncio.run(runnable.run(store=":memory:")).page
     built["kairo"] = kairo_page()
     corpus = hot_path_corpus(scale=1)

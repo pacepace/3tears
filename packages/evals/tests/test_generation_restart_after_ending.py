@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 import threetears.evals.ops.analysis as analysis_ops
+from threetears.evals.analysis.service import record_written_generation
 from threetears.evals.kernel import ConflictError
 from threetears.evals.ops import job_poll
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
@@ -26,7 +27,7 @@ from packages.evals.tests.off_loop import off_loop
 def _unwinding_slowly(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
     """Make every generation hold its task open after it has written its ending, until the returned event is set."""
     unwound = asyncio.Event()
-    record = analysis_ops.record_written_generation
+    record = record_written_generation
 
     async def ended_then_held(*args: Any, **kwargs: Any) -> Any:
         ended = await record(*args, **kwargs)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ def test_a_call_with_no_parameters_records_an_empty_mapping() -> None:
 
 def test_recorded_parameters_are_insulated_from_the_caller() -> None:
     """A caller mutating what it passed after the call cannot rewrite what the candidate asked for."""
-    params = {"query": "kitchen", "filters": ["new"]}
+    params: dict[str, Any] = {"query": "kitchen", "filters": ["new"]}
     ledger = CallLedger()
     ledger.record("shop", "search", params)
     params["query"] = "outdoor"
@@ -58,7 +59,7 @@ def test_a_ledger_round_trips_through_json() -> None:
     ],
     ids=["unknown ledger key", "unknown call key", "empty tool"],
 )
-def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored) -> None:
+def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         CallLedger.model_validate(stored)
 

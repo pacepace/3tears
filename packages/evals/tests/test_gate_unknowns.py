@@ -122,8 +122,8 @@ def test_dominance_lists_the_undecided_apart_from_the_removed(name: str) -> None
     for row in result.out:
         assert all(gate.status == "fail" for gate in row.gates)
         assert all(gate.status == "unknown" for gate in row.unknown)
-    for row in result.undecided:
-        assert row.unknown and all(gate.status == "unknown" for gate in row.unknown)
+    for undecided_row in result.undecided:
+        assert undecided_row.unknown and all(gate.status == "unknown" for gate in undecided_row.unknown)
         assert all({figure.key.rsplit(".", 1)[1] for figure in gate.figures} == {"threshold"} for gate in row.unknown)
     assert any("undecided" in note for note in result.notes) == bool(undecided)
 
@@ -232,4 +232,5 @@ def test_a_floor_read_stating_no_margin_for_one_arm_is_refused_as_a_key_never_an
     with pytest.raises(UnresolvableReference):
         resolve(f"settle.floor.{first.aspect}.{first.floor}.{first.arm}.line", mixed)
     other = others[0]
+    assert other.margin is not None
     assert resolve(f"settle.floor.{other.aspect}.{other.floor}.{other.arm}.line", mixed).value == -float(other.margin)

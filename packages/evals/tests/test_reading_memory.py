@@ -41,8 +41,17 @@ class _DecodedRowsStore(InMemoryDocumentStore):
         decoded: list[dict[str, Any]] = json.loads(json.dumps(rows))
         return decoded
 
-    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str) -> list[dict[str, Any]]:
-        decoded: list[dict[str, Any]] = json.loads(json.dumps(super().get_many(doc_type, doc_ids, scope_id)))
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        rows = super().get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+        decoded: list[dict[str, Any]] = json.loads(json.dumps(rows))
         return decoded
 
 

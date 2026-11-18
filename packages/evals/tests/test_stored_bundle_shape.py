@@ -20,7 +20,7 @@ from __future__ import annotations
 import copy
 import gzip
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from html import escape
 from typing import Any
 
@@ -34,6 +34,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, build_code_only_report
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.service import analysis_report, record_campaign_call
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -53,7 +54,7 @@ from packages.evals.tests.writer_host_support import WRITER_TEMPLATE
 SHIPPED_SHAPE = 60
 
 
-def _frozen_at(shape: int, campaign_id: str) -> dict:
+def _frozen_at(shape: int, campaign_id: str) -> dict[str, Any]:
     """An aspect bundle as an older build froze it: its shape, and a field that shape carried and this one dropped."""
     bundle = empty_bundle(campaign_id=campaign_id).to_dict()
     return {**bundle, "schema_version": shape, "measurement_window_disclosure": None}
@@ -100,7 +101,7 @@ def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_rege
 
 @pytest.mark.parametrize("format", ["markdown", "html", "json"])
 def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped_shape_reads_code_only(
-    format: str,
+    format: ReportFormat,
 ) -> None:
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
@@ -207,10 +208,11 @@ def test_a_campaign_bundle_frozen_before_names_left_the_readings_is_refused_sayi
     assert CAMPAIGN_BUNDLE_SHAPE == 4
     current = campaign_bundle(empty_bundle(campaign_id="c"))
     assert CampaignBundle.from_dict(current.to_dict()) == current
-    for read in (
+    reads: tuple[Callable[[], CampaignBundle], ...] = (
         lambda: CampaignBundle.from_dict({**current.to_dict(), "schema_version": shape}),
         lambda: CampaignBundle.from_frame({**current.frame(), "schema_version": shape}, current.aspects),
-    ):
+    )
+    for read in reads:
         with pytest.raises(RefusedInput, match="frozen before names left the readings") as refused:
             read()
         assert f"shape {shape}" in refused.value.fault and f"({CAMPAIGN_BUNDLE_SHAPE})" in refused.value.fault
@@ -231,7 +233,7 @@ def test_the_kairo_bundle_at_shape_65_is_refused_as_frozen_before_names_left_the
 
 
 @pytest.mark.parametrize("form", ["markdown", "html", "json"])
-async def test_a_report_over_shape_65_evidence_stands_in_code_only_saying_why(form: str) -> None:
+async def test_a_report_over_shape_65_evidence_stands_in_code_only_saying_why(form: ReportFormat) -> None:
     store = InMemoryDocumentStore()
     fixture, analysis = await _written(store)
     _frozen_again_at(store, analysis, NAMED_SHAPE)
@@ -281,10 +283,18 @@ async def test_a_call_a_freeze_and_a_writer_case_over_a_shape_65_analysis_are_re
     arm = analysis_campaign_bundle(analysis).arms[0]
     _frozen_again_at(store, analysis, NAMED_SHAPE)
     off_loop(host.storage.save_template, WRITER_TEMPLATE)
-    call = {"arm": arm.variant_key, "called_by": CALLER.identity, "reason": "kept on the stored report"}
 
     with pytest.raises(ValidationFailedError, match=WHY):
-        off_loop(record_campaign_call, host, fixture.campaign.id, TOYHOST_SCOPE, analysis_id=analysis.id, **call)
+        off_loop(
+            record_campaign_call,
+            host,
+            fixture.campaign.id,
+            TOYHOST_SCOPE,
+            analysis_id=analysis.id,
+            arm=arm.variant_key,
+            called_by=CALLER.identity,
+            reason="kept on the stored report",
+        )
     with pytest.raises(ValidationFailedError, match=WHY):
         await report_snapshot_freeze(fixture.host, TOYHOST_SCOPE, analysis_id=analysis.id, created_by=CALLER.identity)
     with pytest.raises(ValidationFailedError, match=WHY):

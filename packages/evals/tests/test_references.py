@@ -231,7 +231,7 @@ class TestOneLevelComputesAndLabelsEveryInterval:
         reading = resolve_reading(_surface(), _REF, "reply.grounding", "judged")
 
         half = t_critical_two_sided(0.8, 3) * 0.25
-        assert (reading.ci_low, reading.ci_high) == (pytest.approx(4.0 - half), pytest.approx(4.0 + half))
+        assert (reading.ci_low, reading.ci_high) == pytest.approx((4.0 - half, 4.0 + half))
         assert "; 80% CI [" in reading.dispersion
 
     def test_a_measure_is_captioned_at_the_one_constant(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,6 +248,7 @@ def test_a_value_and_its_interval_are_spelled_by_one_rule_on_one_line() -> None:
     surface = _surface()
     [latency] = [m for m in surface.cells[0].measures.measures if m.name == "total_ms"]
     half = stats.ci_half_width(1234.0, 4)
+    assert half is not None
     surface.cells[0].measures.measures[0] = latency.model_copy(
         update={"mean": 12345.6, "sem": 1234.0, "ci_low": 12345.6 - half, "ci_high": 12345.6 + half}
     )

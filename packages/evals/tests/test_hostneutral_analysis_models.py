@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, get_args
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from threetears.evals.kernel import authored
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
@@ -36,6 +36,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE, analysed_aspect, empty_bundle
+from packages.evals.tests.json_support import json_at
 
 
 AXIS = "extractor_model"
@@ -109,7 +110,7 @@ def _insight(confidence: Any) -> EvalInsight:
 
 
 def _analysis(*, confidence: Any = "high", recommendation: dict[str, Any] | None = None, **fields: Any) -> EvalAnalysis:
-    finding = {
+    finding: dict[str, JsonValue] = {
         "title": "model-b extracts faster.",
         "body": "",
         "confidence": confidence,
@@ -121,7 +122,7 @@ def _analysis(*, confidence: Any = "high", recommendation: dict[str, Any] | None
         "durable": "",
     }
     # The memo as the retired memo writer stored it: JSON, held as written.
-    document = {
+    document: dict[str, JsonValue] = {
         "findings": [finding],
         "recommendation": [recommendation or _recommendation()],
         "aspect_summaries": [],
@@ -233,4 +234,4 @@ class TestARecommendationsWordingIsNotRefused:
     )
     def test_a_reason_that_opens_with_a_negation_is_stored_as_written(self, reason: str) -> None:
         analysis = _analysis(recommendation=_recommendation(reason))
-        assert analysis.document is not None and analysis.document["recommendation"][0]["reasons"] == [reason]
+        assert analysis.document is not None and json_at(analysis.document, "recommendation", 0, "reasons") == [reason]

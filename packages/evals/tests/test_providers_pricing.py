@@ -22,6 +22,7 @@ from threetears.evals.providers import (
     CallPrice,
     Catalogue,
     Clients,
+    Completion,
     HostRates,
     Model,
     ModelRates,
@@ -141,6 +142,7 @@ async def test_every_listed_model_prices_a_call_and_bounds_its_turns_with_no_cat
 
     assert completion.cost_usd == pytest.approx(float((1000 * base_input + 100 * output) / 1_000_000))
     assert completion.price_source == SOURCE
+    assert isinstance(completion, Completion)
     assert completion.pricing_failure is None and completion.pricing_stale_since is None
     assert not catalogue.loaded
 

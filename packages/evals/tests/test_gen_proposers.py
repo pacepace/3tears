@@ -127,7 +127,7 @@ _AXES = [
 
 
 @pytest.mark.parametrize("axis", _AXES)
-async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis) -> None:
+async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis: str) -> None:
     """The user message is the subject feed, then the catalog feed, ending in one newline."""
     client = _RecordingClient(_draft(suggestion_axis=axis))
     budget, _storage = _budget()
@@ -225,7 +225,7 @@ async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis: str) ->
     ],
 )
 async def test_a_refused_draft_raises_and_still_releases_the_client(
-    axis: str, refused_by: str, content, reason: str
+    axis: str, refused_by: str, content: str, reason: str
 ) -> None:
     """Both refusal paths raise the structured error, naming the axis's proposer and the call's cost, after release.
 

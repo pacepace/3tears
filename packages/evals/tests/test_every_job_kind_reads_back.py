@@ -22,7 +22,7 @@ from threetears.evals.actions import (
     eval_catalogue,
     standard_tools,
 )
-from threetears.evals.ops import JobKind, JobStatus, OpsHost, job_poll, start_action_job
+from threetears.evals.ops import JobKind, JobsStarted, JobStatus, OpsHost, job_poll, start_action_job
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.testing import CompletionGuard
 from packages.evals.tests.jobs_conformance_support import CONFORMANCE_SCOPE, conformance_host
@@ -68,6 +68,7 @@ async def test_a_completed_job_of_every_kind_renders_through_job_poll() -> None:
         assert action.happy_path is not None, f"{action.name} starts jobs and declares no happy path"
         params = action.params.model_validate(dict(await action.happy_path(stage)))
         started = await action.handler(host, caller, params)
+        assert isinstance(started, JobsStarted), action.name
         pending += [(host, caller, job.job_id) for job in started.jobs]
 
     async def draft() -> _Drafted:

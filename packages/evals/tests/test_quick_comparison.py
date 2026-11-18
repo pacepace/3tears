@@ -66,6 +66,14 @@ async def hasty(case: Mapping[str, Any]) -> str:
     return "bug" if "crash" in text or "broken" in text else "billing"
 
 
+def _intent(comparison: Result, template_id: str | None) -> str:
+    """The intent the comparison's stored template states."""
+    assert template_id is not None
+    template = off_loop(comparison.host.storage.load_template, template_id, SCOPE)
+    assert template is not None, template_id
+    return template.intent
+
+
 async def _compare(
     runners: Mapping[str, Any] | None = None,
     *,
@@ -217,23 +225,20 @@ async def test_a_docstring_every_arm_shares_is_the_intent_of_the_one_template() 
 
     comparison = await _compare({"hasty": routed_hasty, "careful": routed_careful})
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    assert (
-        off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
-        == "Route each ticket to its queue."
-    )
+    assert _intent(comparison, template_id) == "Route each ticket to its queue."
 
 
 async def test_arms_whose_docstrings_differ_share_the_generic_intent() -> None:
     comparison = await _compare()
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    intent = off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
+    intent = _intent(comparison, template_id)
     assert intent == "Answer each case so that every scorer grades the answer well."
 
 
 async def test_arms_whose_candidates_share_a_docstring_share_its_first_line_as_the_intent() -> None:
     comparison = await _compare({"a": careful, "b": careful})
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    intent = off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
+    intent = _intent(comparison, template_id)
     assert intent == "Billing whenever money is mentioned, else a bug."
 
 

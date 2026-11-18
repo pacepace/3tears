@@ -613,8 +613,8 @@ def test_panels_by_aspect_over_a_source_reading_one_aspect_are_refused_naming_a_
             if len(aspects) < 2:
                 try:
                     block_render(held, block_kind=kind, query=query, limit=200)
-                except RefusedInput as refusal:
-                    assert "one block per aspect" not in refusal.fault, (source, refusal.fault)
+                except RefusedInput as declined:
+                    assert "one block per aspect" not in declined.fault, (source, declined.fault)
                 continue
             with pytest.raises(RefusedInput) as caught:
                 block_render(held, block_kind=kind, query=query, limit=200)

@@ -22,6 +22,7 @@ from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.metrics import AttributionScope
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -46,7 +47,7 @@ def _key(model: str) -> str:
 BASELINE, CHALLENGER = _key("model-a"), _key("model-b")
 
 
-def _summary(name: str, mean: float, *, scope: str = "end_to_end") -> MeasureSummary:
+def _summary(name: str, mean: float, *, scope: AttributionScope = "end_to_end") -> MeasureSummary:
     return MeasureSummary(
         population="scored",
         name=name,

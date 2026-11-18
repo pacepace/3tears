@@ -247,7 +247,9 @@ class FakeGameSession(CassetteSeams):
             "narrate": self.narrate,
             "scout_ahead": self.scout,
         }
-        self._recorded = dict(recorded if recorded is not None else {"roll": RollResult, "rules_lookup": RulesAnswer})
+        self._recorded: dict[str, type[BaseModel]] = dict(
+            recorded if recorded is not None else {"roll": RollResult, "rules_lookup": RulesAnswer}
+        )
 
     @property
     def action_seam(self) -> ActionSeam | None:
@@ -400,7 +402,7 @@ async def test_the_proxy_is_the_tool_to_the_session_s_own_machinery() -> None:
     _wire(_lane(storage, "capture"), session)
 
     proxy = session.tools["roll"]
-    assert isinstance(proxy, ToolLike)
+    assert isinstance(proxy, ToolLike) and isinstance(proxy, CassetteProxy)
     assert proxy.name == "roll"
     assert proxy.description == FakeTool.description
 

@@ -237,6 +237,7 @@ class TestAStratumIsMetadata:
             caller=CALLER,
         )
         assert not called.is_error, called.text
+        assert called.structured is not None
         assert (called.structured["stratum"], called.structured["reused"]) == ("by-the-action", True)
 
 

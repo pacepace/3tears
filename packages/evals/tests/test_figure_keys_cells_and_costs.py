@@ -27,6 +27,7 @@ from itertools import permutations
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_inputs, fixture_snapshots
+from packages.evals.tests.figure_support import figure_number
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
@@ -235,7 +236,7 @@ def test_a_cost_some_trials_did_not_report_reads_free_and_at_its_p95_or_says_why
 def test_some_arm_leaves_trials_without_a_cost() -> None:
     """The control for the walk above: Kairo's arms each ran trials that report no cost."""
     held = UNREPORTED[KAIRO]
-    assert all(resolve(f"cost.unreported.{arm}.missing", held).value > 0 for arm in _costs(held))
+    assert all(figure_number(resolve(f"cost.unreported.{arm}.missing", held)) > 0 for arm in _costs(held))
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))

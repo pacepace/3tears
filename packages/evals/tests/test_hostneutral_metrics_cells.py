@@ -65,7 +65,15 @@ class TestACellIsReadOnlyByItsCountsName:
 
     def test_k_is_not_a_spelling_of_the_count(self) -> None:
         with pytest.raises(ValidationError) as refused:
-            Cell(variant_key="v-1", apparatus_class_id="rig-1", provenance="commissioned", k=6, observation_ids=_SIX)
+            Cell.model_validate(
+                {
+                    "variant_key": "v-1",
+                    "apparatus_class_id": "rig-1",
+                    "provenance": "commissioned",
+                    "k": 6,
+                    "observation_ids": _SIX,
+                }
+            )
         assert _missing(refused.value) == {"n_observations"}
 
     def test_a_next_experiment_reads_its_counts_only_by_their_names(self) -> None:
@@ -74,5 +82,7 @@ class TestACellIsReadOnlyByItsCountsName:
         )
         assert (named.n_observations_now, named.n_observations_if_recorded) == (3, 9)
         with pytest.raises(ValidationError) as refused:
-            NextExperiment(variant_key="v-1", dimension="rig.width", k_now=3, k_if_recorded=9)
+            NextExperiment.model_validate(
+                {"variant_key": "v-1", "dimension": "rig.width", "k_now": 3, "k_if_recorded": 9}
+            )
         assert _missing(refused.value) == {"n_observations_now", "n_observations_if_recorded"}

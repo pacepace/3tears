@@ -953,7 +953,9 @@ async def test_a_candidate_runs_the_control_s_editor_only_when_its_editor_md_mod
 def _uncompared_headings() -> set[str]:
     """Each editor-decided reading's heading, as a promotion's sentence would name it."""
     uncompared = uncompared_readings(one_editor=False)
-    return {measure.reader_name for measure in WRITER_KIND_MEASURES if measure.name in uncompared}
+    names = {measure.reader_name for measure in WRITER_KIND_MEASURES if measure.name in uncompared}
+    assert None not in names
+    return {name for name in names if name is not None}
 
 
 async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_editor(
@@ -984,8 +986,8 @@ async def test_a_candidate_held_at_its_pass_s_stop_is_read_as_running_another_ed
         cases = {case.snapshot.id: case.name for case in (kairo, again)}
         routed = writer_turns(tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases=cases)
         effort = next((word for word in get_args(EffortWord) if word == writer.effort), None)
-        for snapshot in cases:
-            lay_recording(routed.path(WRITER, effort, snapshot), kairo_report(WRITER, WRITER))
+        for snapshot_id in cases:
+            lay_recording(routed.path(WRITER, effort, snapshot_id), kairo_report(WRITER, WRITER))
 
     result = await _eval(tmp_path, arms, judge=FakeDearPairJudge(), stop_when="separated", batch_size=1).run()
 

@@ -31,6 +31,7 @@ from threetears.evals.analysis.stats import (
     pooled_rate_interval,
 )
 from threetears.evals.kernel import RefusedInput
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, Floor, RateDrop
 
 from packages.evals.tests.campaign_support import (
@@ -552,7 +553,7 @@ async def test_a_floor_status_is_evaluate_floor_s_own() -> None:
 
 def test_a_campaign_s_kind_is_derived_from_its_arms() -> None:
     def arm(label: str, role: Literal["control", "candidate"], digit: str) -> CampaignArm:
-        return CampaignArm(label=label, role=role, variant_key=digit * 64)
+        return CampaignArm(label=label, role=role, variant_key=digit * 64, identity_version=IDENTITY_VERSION)
 
     assert campaign_kind([]) == "measurement"
     assert campaign_kind([arm("v1", "candidate", "a")]) == "measurement"

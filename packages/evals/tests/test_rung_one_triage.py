@@ -23,6 +23,7 @@ from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.example_loader import EXAMPLES
+from packages.evals.tests.json_support import json_at
 from packages.evals.tests.rung_support import (
     program_lines,
     recorded,
@@ -90,7 +91,7 @@ def test_each_recording_covers_every_call_its_file_makes(triage_dir: Path) -> No
         directive = strict_response_format(schema_name, module.Triage.model_json_schema() | {"title": schema_name})
         calls = [RecordedPrompt("", prompt, directive) for prompt in prompts for _ in range(3)]
         RecordedCompletions.check_covers(path, calls, settings=recorded_settings(path), rerecord="RECORD=1")
-        assert {line["result"]["model"] for line in recorded(path)} == {"deepseek/deepseek-v4-flash"}  # type: ignore[index]
+        assert {json_at(line, "result", "model") for line in recorded(path)} == {"deepseek/deepseek-v4-flash"}
 
 
 def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(

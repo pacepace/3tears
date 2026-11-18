@@ -187,7 +187,7 @@ def test_a_candidate_failure_counts_every_check_as_failed() -> None:
 
 
 @pytest.mark.parametrize("fault", [{"infra_error": "slot did not start"}, {"judge_error": "judge timed out"}])
-def test_a_harness_faulted_result_is_in_no_rate(fault) -> None:
+def test_a_harness_faulted_result_is_in_no_rate(fault: dict[str, str]) -> None:
     assert counted_goal_verdicts(_result(goal_state_outcomes=_CHECKS, **fault)) is None
 
 
@@ -478,7 +478,7 @@ class TestTheOutputCapEndedATurn:
         assert candidate_failure_cause(result) == "model_failed"
 
     @pytest.mark.parametrize("covariates", [{}, {"truncated_rounds": 0.0}])
-    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates) -> None:
+    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates: dict[str, float]) -> None:
         assert candidate_failure_cause(_result(covariates=covariates)) is None
         assert resolve_result_condition(_result(covariates=covariates)).scoring is ResultOutcome.OK
 
@@ -512,7 +512,7 @@ class TestTheTurnBudgetEndedATurn:
         assert candidate_failure_cause(result) == "turn_budget"
 
     @pytest.mark.parametrize("covariates", [{}, {"turns_ended_by_budget": 0.0}])
-    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates) -> None:
+    def test_no_count_or_a_zero_count_is_not_a_failure(self, covariates: dict[str, float]) -> None:
         assert candidate_failure_cause(_result(covariates=covariates)) is None
         assert resolve_result_condition(_result(covariates=covariates)).scoring is ResultOutcome.OK
 

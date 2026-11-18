@@ -36,7 +36,8 @@ from threetears.evals.analysis.report.parts.charting import computed_interval
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
-from threetears.evals.analysis.report_input import ReportInput, Stat
+from threetears.evals.analysis.report_input import Judged, Measure, ReportInput, Stat
+from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
@@ -80,13 +81,18 @@ def _read(key: str, held: ReportInput) -> Any:
         return None
 
 
+def _tables(held: ReportInput) -> list[tuple[str, Measure | Judged]]:
+    """Every measure, then every judged dimension, by key."""
+    return [*held.measures.items(), *held.judged.items()]
+
+
 def _computed() -> list[tuple[str, str, list[str]]]:
     """Each measure or judged dimension no arm's overall figure states a spread of, with the arms whose spread reads a
     binomial interval, the one a chart computes: the input, the key and those arms. An overall that is the plain mean
     of its cells reads the spread derived from theirs instead (``cell_mean``), which a chart does not draw as computed."""
     found = []
     for name, held in _inputs().items():
-        for key, table in [*held.measures.items(), *held.judged.items()]:
+        for key, table in _tables(held):
             stats = table.per_arm
             if not stats or not all(_bare(stat) for stat in stats.values()):
                 continue
@@ -132,7 +138,7 @@ def test_no_interval_is_computed_on_a_figure_that_is_no_share_of_counted_trials(
 def test_an_arms_spread_reads_its_interval_as_its_mean_plus_and_minus_the_quantile_times_its_error() -> None:
     read = 0
     for held in _inputs().values():
-        for key, table in [*held.measures.items(), *held.judged.items()]:
+        for key, table in _tables(held):
             for arm, stat in table.per_arm.items():
                 prefix = f"spread.{arm}.{key}.overall"
                 interval = _read(f"{prefix}.interval", held)
@@ -237,8 +243,9 @@ def test_a_chart_stored_before_its_intervals_were_computed_draws_as_it_was_store
         assert not faults
         stored = spec.model_copy(update={"level": ""})
         chart = resolve_chart(stored, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart
-        assert isinstance(chart.data, DotIntervalChart)
-        rows = [row for panel in (chart.data.panels or [chart.data]) for row in (panel.rows or [])]
+        assert isinstance(chart, ChartBlock) and isinstance(chart.data, DotIntervalChart)
+        panels = chart.data.panels
+        rows = [row for panel in panels for row in (panel.rows or [])] if panels else [*(chart.data.rows or [])]
         assert rows and all(row.lo is None and row.hi is None for row in rows)
 
 

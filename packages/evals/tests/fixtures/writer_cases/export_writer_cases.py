@@ -45,6 +45,7 @@ from typing import Final
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.writer_case_support import SEED
+from threetears.evals import Eval
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
@@ -150,6 +151,7 @@ async def replayed_case(eval_file: Path, *, name: str, group: str, stratum: str,
     :rtype: WriterCaseFile
     """
     (evaluation,) = load_evals(eval_file)
+    assert isinstance(evaluation, Eval), f"{eval_file} declares no Eval"
     ran = await evaluation.run(store=":memory:", scope=scope)
     return await writer_case_freeze(
         OpsHost.reading(ran.host),

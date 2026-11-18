@@ -18,6 +18,8 @@ Covers three contracts:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -42,8 +44,8 @@ def _search(*, calls: int, credits: int | None) -> ExternalSpend:
     )
 
 
-def _eval_result(**overrides) -> EvalResult:
-    base = dict(
+def _eval_result(**overrides: Any) -> EvalResult:
+    base: dict[str, Any] = dict(
         result_capture_defaults(),
         scope_id="u",
         eval_run_id="run-1",

@@ -916,11 +916,12 @@ async def test_a_host_resolution_s_context_reaches_both_hooks_beside_its_host() 
 @pytest.mark.parametrize("given", ["host", "bare-resolver", "sync-resolution"])
 async def test_a_bare_host_still_serves_and_carries_no_context(given: str) -> None:
     tenant = off_loop(ops_fixture).host
-    mount: dict[str, Any] = {
+    mounts: dict[str, dict[str, Any]] = {
         "host": {"host": tenant},
         "bare-resolver": {"host_resolver": lambda: tenant},
         "sync-resolution": {"host_resolver": lambda: HostResolution(tenant)},
-    }[given]
+    }
+    mount = mounts[given]
     actions = _Host()
     seen = _Seen()
     _, _, is_error = await _call(
@@ -982,7 +983,8 @@ async def test_the_hooks_see_the_exact_error_a_host_resolver_refused_with() -> N
 @pytest.mark.parametrize("given", ["host", "resolver"])
 async def test_a_call_the_host_resolver_did_not_refuse_carries_no_refused_error(given: str) -> None:
     tenant = off_loop(ops_fixture).host
-    mount: dict[str, Any] = {"host": {"host": tenant}, "resolver": {"host_resolver": lambda: tenant}}[given]
+    mounts: dict[str, dict[str, Any]] = {"host": {"host": tenant}, "resolver": {"host_resolver": lambda: tenant}}
+    mount = mounts[given]
     seen = _Seen()
     _, _, is_error = await _call(
         off_loop(_served, _Host(), around=seen.around, annotate=seen.annotate, **mount),

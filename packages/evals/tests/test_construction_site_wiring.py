@@ -124,7 +124,7 @@ _HOST_WIRING_WITHOUT_DEFAULTS: tuple[str, ...] = (
 
 
 @pytest.mark.parametrize("name", _HOST_WIRING_WITHOUT_DEFAULTS)
-def test_every_host_names_the_wiring_whose_default_would_be_silent(name) -> None:
+def test_every_host_names_the_wiring_whose_default_would_be_silent(name: str) -> None:
     """A default that means "nobody was watching" is indistinguishable from a forgotten keyword.
 
     The four used to be ``RunnerOptions`` fields, defaulted, and held by an AST walk over every

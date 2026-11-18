@@ -33,6 +33,7 @@ class _ForgetfulKind:
     """Seeds its cell's world (or not) and runs, never asserting the template's presumptions."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    max_concurrent_cells: int | None = 1
 
     def __init__(self, *, seeds: bool = True, asserts: bool = False) -> None:
         self._seeds = seeds

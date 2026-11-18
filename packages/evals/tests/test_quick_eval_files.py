@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from threetears.evals import Eval
+
 from threetears.evals.quick import EXIT_FAILED, EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
 from threetears.evals import Log
 from threetears.evals.quick.files import load_evals, main, report_dir, run_file
@@ -162,6 +164,7 @@ def test_a_python_file_s_relative_paths_are_read_beside_it_and_an_absolute_one_a
     monkeypatch.chdir(elsewhere)
 
     (loaded,) = load_evals(Path("../rung/evals.py"))
+    assert isinstance(loaded, Eval)
     assert len(loaded.cases) == 1 and loaded.arms[None].path == Path("../rung/outputs.jsonl")
     assert main(["../rung/evals.py"]) == EXIT_OK
     assert "stored in .evals/evals.sqlite, scope 'beside'" in capsys.readouterr().out
@@ -169,6 +172,7 @@ def test_a_python_file_s_relative_paths_are_read_beside_it_and_an_absolute_one_a
 
     (rung / "evals.py").write_text(BESIDE.replace('"cases.jsonl"', repr(str(rung / "cases.jsonl"))), encoding="utf-8")
     (absolute,) = load_evals(rung / "evals.py")
+    assert isinstance(absolute, Eval)
     assert len(absolute.cases) == 1
     # Outside a load, a relative path is the working directory's, as anywhere in Python.
     assert Log("outputs.jsonl").path == Path("outputs.jsonl")

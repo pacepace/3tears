@@ -18,6 +18,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.report_shapes_support import SHAPES
+from threetears.evals.analysis import ChartBlock
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.charts import ExampleField, ExamplesChart
@@ -57,7 +58,11 @@ def _examples_drawn(path: str, report_input: ReportInput) -> list[ExamplesChart]
         for spec in specs
         if spec.kind == "examples"
     ]
-    return [one.chart.data for one in drawn if isinstance(one.chart.data, ExamplesChart)]
+    return [
+        one.chart.data
+        for one in drawn
+        if isinstance(one.chart, ChartBlock) and isinstance(one.chart.data, ExamplesChart)
+    ]
 
 
 def _input_fields(text: str) -> list[ExampleField]:
@@ -110,7 +115,7 @@ def test_the_examples_table_details_column_holds_no_json() -> None:
 
 
 def _plans_with_examples() -> list[tuple[str, str, str]]:
-    found = []
+    found: list[tuple[str, str, str]] = []
     for name in ("r1", "r2", "r3", "r4", "r5"):
         for label in ("anchor", "run"):
             drawn = [chart for chart in stored_charts(f"{name}-{label}").charts() if chart.kind == "examples"]
@@ -213,6 +218,6 @@ def test_an_arm_the_cost_source_lacks_but_the_scoreboard_prices_shows_its_cost_a
         }
     )
     cells = _cost_cells(moved)
-    assert cells[first] is not None and cells[first].startswith("$")
-    assert cells[second] is not None and cells[second].startswith("$")  # the scoreboard's cost per reply, same form
+    assert (cells[first] or "").startswith("$"), cells[first]
+    assert (cells[second] or "").startswith("$"), cells[second]  # the scoreboard's cost per reply, same form
     assert cells[third] == UNPRICED

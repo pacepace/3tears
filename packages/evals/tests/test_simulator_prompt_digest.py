@@ -40,6 +40,7 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.run import simulator
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SimulatorReplyInvalid,
@@ -123,8 +124,12 @@ async def test_the_pre_image_is_what_a_scheduled_round_sends_with_the_cells_part
 ) -> None:
     decided = _conversation(_GUILD, _NEWCOMER, scheduler="llm_decided")
     held: list[Any] = []
-    real = simulator.canonical_digest
-    monkeypatch.setattr(simulator, "canonical_digest", lambda payload: held.append(payload) or real(payload))
+
+    def digest(payload: Any) -> str:
+        held.append(payload)
+        return canonical_digest(payload)
+
+    monkeypatch.setattr(simulator, "canonical_digest", digest)
     simulator_prompt_digest(decided)
     (scheduler,) = [call for call in held[0]["simulator_prompts"] if "scheduler" in call]
 

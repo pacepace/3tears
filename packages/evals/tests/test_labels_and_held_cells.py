@@ -27,6 +27,7 @@ from packages.evals.tests.test_quick_comparison import CASES, careful, hasty
 from threetears.evals import Eval
 from threetears.evals.analysis import ChartBlock, OutcomeBar, OutcomeSegment, report_html, report_markdown
 from threetears.evals.analysis.report.build import IN_THE_WRITTEN_REPORT, NO_ANALYSIS
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.analysis.report.html_parts import table_html
 from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.report.model import TableBlock, TableCell, TableColumn
@@ -144,7 +145,7 @@ def test_the_stylesheet_holds_a_figure_cells_figure_and_its_bracket_each_on_one_
 # --- a written report's evidence record --------------------------------------------------------------------------------
 
 
-def _read(fixture: Any, form: str) -> str:
+def _read(fixture: Any, form: ReportFormat) -> str:
     """The campaign's page in ``form``, a written report's with its evidence record (every trial's record)."""
     return off_loop(
         report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format=form, trials="all"

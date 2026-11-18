@@ -99,6 +99,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, get_args
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
 from packages.evals.tests.report_writer_support import reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
@@ -128,6 +129,8 @@ from threetears.evals.ops.report_writer.writer_pairwise import (
     resolution_line,
 )
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
+from threetears.evals.providers import Provider
+from threetears.evals.schema.completion import StopReason
 from threetears.evals.schema.turns import TurnReply, TurnText
 
 #: The writer both arms run on, on Anthropic's own API: Sonnet 5.5, since the owner's spend rule runs candidate trials
@@ -504,12 +507,12 @@ class _DryReply:
     model: str = _DRY_SERVED
     served_model: str | None = _DRY_SERVED
     reasoning_tokens: int | None = None
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
 
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge
-class FakeDryJudge:
+class FakeDryJudge(ClientDouble):
     """The dry scoring judge: its score is a digest of the prompt, so the path runs and measures no signal. It names
     the live judge's model and route, so the family checks run as they do live, and prices every call at nothing."""
 
@@ -997,7 +1000,7 @@ def _cap(usd: float | None) -> str:
 _KEYS: Final = {"anthropic": "ANTHROPIC_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
 
-def judge_provider(model: str) -> str:
+def judge_provider(model: str) -> Provider:
     """Where the judge is sent: OpenRouter for a ``vendor/model`` id, Anthropic's own API for a bare one."""
     return "openrouter" if "/" in model else "anthropic"
 
@@ -1082,6 +1085,7 @@ async def _measured(
 ) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
     """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
+    batch: dict[str, Any] = {} if batch_size is None else {"batch_size": batch_size}
     result = await WriterEval(
         cases,
         arms=arms,
@@ -1100,7 +1104,7 @@ async def _measured(
         prior=prior,
         fewest_cases=MIN_LIVE_CASES,
         # None keeps the writer eval's own batch.
-        **({} if batch_size is None else {"batch_size": batch_size}),
+        **batch,
     ).run()
     if variant.name in result.pairwise_unread:
         raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[variant.name]}")

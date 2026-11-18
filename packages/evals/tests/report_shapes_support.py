@@ -35,7 +35,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, DecisionClause, RateDrop
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.schema.models import EvalRun, GoalStateOutcome, LatencyMetrics, RoleUsage, RubricScale
-from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
+from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION, named_at
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_aspect_campaign,
@@ -229,7 +229,7 @@ def _assembled(
             label=label,
             role="control" if control and index == 0 else "candidate",
             variant_key=fixture_variant_key(label),
-            **({"named_at": ASKED_AT} if control and index == 0 else {}),
+            **named_at(control and index == 0),
         )
         for index, label in enumerate(labels)
     ]

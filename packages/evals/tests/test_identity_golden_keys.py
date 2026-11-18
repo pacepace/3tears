@@ -36,10 +36,9 @@ from threetears.evals.kernel.identity import derive_context_identity, derive_var
 import threetears.evals.kernel.identity as identity_module
 from packages.evals.tests.fixtures.courierhost import COURIER_MODELS, courier_cases, courier_host, courier_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.kind import ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.run import (
     RUN_MODELS,
-    ScriptedExtractionClient,
     toyhost_run,
     toyhost_template,
 )
@@ -48,7 +47,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
 PINNED_IDENTITY_VERSION = 25
 
 #: The toy host's context, shared by both its arms: one condition, two contestants.
-_TOY_CONTEXT = {
+_TOY_CONTEXT: dict[str, object] = {
     "subject_state": None,
     "seeded_world": "082338b40e87dda25cf60934744cc37392a995447545889bcfb8db3dbe977e16",
     "case_basis": "dd1f3878ca6ff8dbc705fa4947afe35ffc354ffc53934a6249108f0e95528fe9",
@@ -61,7 +60,7 @@ _TOY_CONTEXT = {
 }
 _TOY_CONTEXT_KEY = "32938755aefdf646ca72c579d5824eb76ff8e92994989fb8d5248f770f8c62de"
 
-_COURIER_CONTEXT = {
+_COURIER_CONTEXT: dict[str, object] = {
     "subject_state": {},
     "seeded_world": "6f3e213054b28d30c9ea12f8c692cd67ebcd062d2577194505cb87c9ffbf38fd",
     "case_basis": "af91d959cf9cc7310918968291b4a9a777081353cf6072b9120279fc9e4c2d7b",

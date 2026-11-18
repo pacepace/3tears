@@ -61,8 +61,8 @@ class TestTheHelperDecidesTheTraceback:
         exc = _raised()
         seen: list[BaseException] = []
 
-        def describer(e: BaseException) -> ProviderFailure:
-            seen.append(e)
+        def describer(exc: BaseException) -> ProviderFailure:
+            seen.append(exc)
             return ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, owner="account")
 
         with caplog.at_level(logging.ERROR):

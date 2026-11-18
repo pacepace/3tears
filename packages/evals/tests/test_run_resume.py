@@ -62,6 +62,7 @@ from threetears.evals.run import (
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
+from threetears.evals.schema.values import NominalScale, SweepableValue
 from threetears.evals.schema.models import (
     GOAL_CHECK_PROOF_RULES,
     RunLifetime,
@@ -834,8 +835,8 @@ async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_w
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     after = {row.id: row for row in _rows(holder, run_id)}
-    for row in cut_short:
-        assert after[row.id].superseded_spend_usd == pytest.approx(2 * CUT_SHORT_USD), "the dropped send moved too"
+    for result in cut_short:
+        assert after[result.id].superseded_spend_usd == pytest.approx(2 * CUT_SHORT_USD), "the dropped send moved too"
 
 
 # =============================================================================
@@ -919,7 +920,7 @@ async def test_of_two_take_ups_racing_exactly_one_wins(monkeypatch: pytest.Monke
     holder, run_id, _, _ = await _interrupted(monkeypatch, "lost")
     first, second = other_process(holder), other_process(holder)
 
-    outcomes: list[Any] = await asyncio.gather(
+    outcomes = await asyncio.gather(
         resume_run(first.launch, run_id, TOYHOST_SCOPE),
         resume_run(second.launch, run_id, TOYHOST_SCOPE),
         return_exceptions=True,
@@ -1149,11 +1150,15 @@ async def test_a_run_stamped_under_an_older_identity_version_with_its_inputs_unc
     assert off_loop(_run, holder, run_id).variant_levers == launched.variant_levers
 
 
+#: A value on an axis the host does not declare.
+_UNDECLARED = SweepableValue(content_hash="0" * 64, display="x", scale=NominalScale())
+
+
 def test_a_run_that_recorded_no_lever_map_its_host_can_no_longer_place_is_a_difference_named() -> None:
     template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
     stored = make_eval_run(variant_levers=None, created_at="2026-06-01T00:00:00+00:00")
     fresh = stored.model_copy(update={"variant_levers": {}, "identity_version": IDENTITY_VERSION})
-    unplaceable = dataclasses.replace(toyhost_profile(), variant_levers=lambda run: {"an_undeclared_axis": "x"})
+    unplaceable = dataclasses.replace(toyhost_profile(), variant_levers=lambda run: {"an_undeclared_axis": _UNDECLARED})
 
     differences = _measured_otherwise(stored, fresh, template, unplaceable)
 

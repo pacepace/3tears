@@ -37,6 +37,18 @@ QUESTION = "Does the candidate pass more support requests than production, witho
 #: When the question was asked: before every run, so every aspect's readings are confirmatory.
 ASKED_AT = "2000-01-01T00:00:00+00:00"
 
+
+def named_at(control: bool) -> dict[str, Any]:
+    """When an arm was named, as its fields state it: the control at :data:`ASKED_AT`; another arm, never.
+
+    :param control: Whether the arm is the control.
+    :ptype control: bool
+    :return: The ``named_at`` field to spread into the arm, or nothing.
+    :rtype: dict[str, Any]
+    """
+    return {"named_at": ASKED_AT} if control else {}
+
+
 #: The cases each aspect runs, and the repeats of each.
 CASES = 20
 REPEATS = 3
@@ -371,6 +383,7 @@ def arms_of(measured: MeasuredAspect) -> list[CampaignArm]:
 
 
 __all__ = [
+    "named_at",
     "ASKED_AT",
     "ASSEMBLED_AT",
     "CANDIDATE_LABEL",

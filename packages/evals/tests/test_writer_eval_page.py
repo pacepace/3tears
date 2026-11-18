@@ -32,6 +32,7 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report import ChartBlock, DisclosureBlock, DotIntervalChart, TableBlock
 from threetears.evals.harness import Writer, WriterEval, WriterResult
 from threetears.evals.harness import writer_eval as writer_eval_module
+from threetears.evals.ops import await_job
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 
@@ -233,7 +234,7 @@ async def _two_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wr
             tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
         )
         lay_recording(routed.path(WRITER, None, kairo.snapshot.id), kairo_report(WRITER, WRITER))
-    awaited = writer_eval_module.await_job
+    awaited = await_job
 
     async def shaped(*args: Any, **kwargs: Any) -> Any:
         statuses = await awaited(*args, **kwargs)

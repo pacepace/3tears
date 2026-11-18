@@ -62,7 +62,7 @@ def _scored(
     result_id: str, score: int, *, judge: str = "judge-a", key: LabelKey | None = KEY, **extra: Any
 ) -> EvalResult:
     """A result whose judge scored ``TONE``, stamped with ``key``."""
-    stamp = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
+    stamp: dict[str, Any] = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
     return make_eval_result(
         id=result_id,
         rubric_scores=[
@@ -81,7 +81,7 @@ def _scored(
 
 
 def _rating(result_id: str, score: int, *, rater: str = "host", key: LabelKey | None = KEY) -> CalibrationRating:
-    stamp = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
+    stamp: dict[str, Any] = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
     return make_calibration_rating(result_id=result_id, score=score, rater=rater, **stamp)
 
 

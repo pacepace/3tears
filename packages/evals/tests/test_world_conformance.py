@@ -1225,7 +1225,8 @@ class TestEverySurfaceAnswersToTheDimension:
 
         def watching(*, surfaces: tuple[str, ...]) -> dict[str, str]:
             seen.append(surfaces)
-            return original(surfaces=surfaces)
+            view: dict[str, str] = original(surfaces=surfaces)
+            return view
 
         watched = WorldRegistry(
             ambient.declarations,

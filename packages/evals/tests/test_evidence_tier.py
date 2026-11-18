@@ -8,11 +8,13 @@ import typing
 import pytest
 from pydantic import ValidationError
 
+from typing import Literal
+
 from threetears.evals.kernel.campaign import EvidenceRow, EvidenceTier, FindingResolution, evidence_tier_of
 from threetears.evals.kernel.evidence_tiers import JUDGED_TIERS_WEAKEST_FIRST, JudgedEvidenceTier
 
 
-def _row(reading: str, tier: JudgedEvidenceTier | None = None) -> EvidenceRow:
+def _row(reading: Literal["measure", "judged"], tier: JudgedEvidenceTier | None = None) -> EvidenceRow:
     return EvidenceRow(
         aspect="conversation",
         cell_ref="k1:a1",
@@ -73,8 +75,15 @@ class TestTheTierCannotDisagreeWithItsRows:
         # The tier is decided by `reading`, so a default would decide it: a judged row that lost its
         # kind would read as mechanical.
         with pytest.raises(ValidationError, match="reading"):
-            EvidenceRow(
-                aspect="conversation", cell_ref="k1:a1", measure_id="total_ms", value=1.0, n=5, dispersion="sd 0.1"
+            EvidenceRow.model_validate(
+                {
+                    "aspect": "conversation",
+                    "cell_ref": "k1:a1",
+                    "measure_id": "total_ms",
+                    "value": 1.0,
+                    "n": 5,
+                    "dispersion": "sd 0.1",
+                }
             )
 
     def test_a_judged_row_without_its_tier_is_refused(self) -> None:

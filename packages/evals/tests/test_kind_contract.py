@@ -111,7 +111,9 @@ class _MapKeyedByNumber(BaseModel):
     ],
     ids=["no-description", "no-title", "alias", "ordinal-without-order", "interval-over-text", "map-keyed-by-number"],
 )
-def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said: str) -> None:
+def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(
+    model: type[BaseModel], said: str
+) -> None:
     with pytest.raises(KindContractError) as refused:
         KindContract("probe", overlays=model)
 
@@ -170,7 +172,9 @@ class _NestedExclusion(BaseModel):
     ids=["excluded", "excluded-conditionally", "excluded-inside-a-nested-model"],
 )
 @pytest.mark.parametrize("as_spec", [False, True], ids=["overlay", "spec"])
-def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, path: str, as_spec: bool) -> None:
+def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(
+    model: type[BaseModel], path: str, as_spec: bool
+) -> None:
     """A field serialization leaves out is one the frozen record cannot see, so it would merge runs.
 
     The launcher acts on the validated model, which still holds the field; the run records the model's
@@ -338,7 +342,7 @@ def test_a_campaign_may_name_an_entry_of_the_map_as_its_axis_and_never_the_famil
 # --- identity -----------------------------------------------------------------------------------------
 
 
-def _variant_key(run) -> str:
+def _variant_key(run: EvalRun) -> str:
     return derive_variant_identity(run=run, profile=toyhost_profile()).variant_key
 
 
@@ -635,7 +639,7 @@ def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name() -> None:
     ],
     ids=["empty", "a-field-the-spec-does-not-grade", "a-name-the-spec-does-not-have"],
 )
-def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, named: str) -> None:
+def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec: dict[str, Any], named: str) -> None:
     with pytest.raises(ValidationFailedError) as refused:
         TOY_EXTRACTOR_CONTRACT.validate_spec(kind_spec)
 
@@ -673,7 +677,8 @@ def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolv
     stated = create_template(host, _definition(graded_fields=["total_amount"]), scope_id=TOYHOST_SCOPE)
     silent = create_template(host, {**_definition(), "name": "grade every field"}, scope_id=TOYHOST_SCOPE)
 
-    assert host.storage.load_template(stated.id, TOYHOST_SCOPE).kind_spec == {"graded_fields": ["total_amount"]}
+    loaded = host.storage.load_template(stated.id, TOYHOST_SCOPE)
+    assert loaded is not None and loaded.kind_spec == {"graded_fields": ["total_amount"]}
     assert silent.kind_spec == {"graded_fields": list(ExtractorSpec().graded_fields)}
 
 

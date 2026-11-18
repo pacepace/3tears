@@ -41,6 +41,7 @@ from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema import EvalResult
 from packages.evals.tests.factories import (
@@ -231,11 +232,14 @@ _PASS_FAIL = MetricDescriptor(
 )
 
 #: Each case's repeats that answered in full, of three: the control mostly, the contrast rarely.
-_FULL = {"control-model": (3, 2, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3), "contrast-model": (1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1)}
+_FULL: dict[str, tuple[int, ...]] = {
+    "control-model": (3, 2, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3),
+    "contrast-model": (1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1),
+}
 
 #: One repeat a case over twenty: the control answers six in full and the contrast one of them, so the paired t test
 #: separates the two and the bounded interval does not.
-_FULL_DROP = {"control-model": (1,) * 6 + (0,) * 14, "contrast-model": (1,) + (0,) * 19}
+_FULL_DROP: dict[str, tuple[int, ...]] = {"control-model": (1,) * 6 + (0,) * 14, "contrast-model": (1,) + (0,) * 19}
 
 
 def _pass_fail_bundle(full: dict[str, tuple[int, ...]], repeats: int, *, margin: float | None) -> AnalysisContextBundle:
@@ -275,7 +279,11 @@ def _pass_fail_bundle(full: dict[str, tuple[int, ...]], repeats: int, *, margin:
         question="does the contrast answer in full as often?",
         asked_at=asked,
         control=CampaignArm(
-            label="control", role="control", variant_key=fixture_variant_key("control-model"), named_at=asked
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key("control-model"),
+            named_at=asked,
+            identity_version=IDENTITY_VERSION,
         ),
         scope_id=runs[0].scope_id,
         name="pass fail",

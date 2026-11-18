@@ -62,6 +62,7 @@ from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
+from threetears.evals.run.launch import start_run
 from threetears.evals.run import EvalJobManager, sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
@@ -1005,7 +1006,6 @@ async def test_an_interleaved_sweep_whose_record_reads_lost_while_its_arms_prepa
     store = ClockedStore()
     holder = off_loop(_sweeping_host, store)
     prepared: list[str] = []
-    start_run = sweeps.start_run
 
     async def prepare_then_lapse(*args: Any, **kwargs: Any) -> Any:
         runs = await start_run(*args, **kwargs)
@@ -1866,7 +1866,8 @@ def test_the_kernel_keeps_its_leases_by_the_numbers_the_schema_defines() -> None
 
     assert leases.lease_s == schema.DEFAULT_JOB_LEASE_S
     assert leases.renew_every_s == schema.DEFAULT_JOB_LEASE_S * schema.JOB_LEASE_RENEWAL_FRACTION
-    assert job_leases.LEASE_POOL_WORKERS is schema.LEASE_POOL_WORKERS, "the pool's width is the schema's"
+    # Read off the module: the name it binds from the schema is the one asserted here, not one it exports.
+    assert getattr(job_leases, "LEASE_POOL_WORKERS") is schema.LEASE_POOL_WORKERS, "the pool's width is the schema's"
     assert not {"DEFAULT_JOB_LEASE_S", "LEASE_POOL_WORKERS"} & set(kernel.__all__), "defined once, exported from schema"
 
 

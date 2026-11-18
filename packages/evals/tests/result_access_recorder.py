@@ -391,7 +391,8 @@ def _recording_class(base: type[BaseModel], path: str) -> type[BaseModel]:
         }
         if base.__hash__ is None:
             namespace["__hash__"] = None
-        held = _CLASSES[(base, path)] = type(base)(f"Recorded{base.__name__}", (RecordingModel, base), namespace)
+        metaclass: Callable[..., type[BaseModel]] = type(base)
+        held = _CLASSES[(base, path)] = metaclass(f"Recorded{base.__name__}", (RecordingModel, base), namespace)
     return held
 
 

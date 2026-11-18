@@ -49,6 +49,7 @@ class _MovesItsWorldKind:
     """Seeds through its cell's session, fires the armed hold in ``invoke``, and never reads the end state."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    max_concurrent_cells: int | None = 1
 
     def __init__(self, *, seeds: bool = True, fault_after_firing: bool = False, **ends: Any) -> None:
         self._seeds = seeds

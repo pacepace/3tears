@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
@@ -147,7 +147,7 @@ class TestTheTemperatureRecordedIsWhatWasSent:
         assert raised.value.calls == 1, "the refused call's spend goes up with it"
 
 
-def _scored(result_id: str, score: int, temperature: float | str | None) -> Any:
+def _scored(result_id: str, score: int, temperature: float | Literal["model_default"] | None) -> Any:
     return make_eval_result(
         id=result_id,
         rubric_scores=[

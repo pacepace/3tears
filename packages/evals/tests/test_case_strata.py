@@ -221,7 +221,7 @@ class TestEachCellIsReadPerStratum:
         assert plain["confusion_cell"].categories == {"NONE → NONE": 12}
         # NONE's recall on the lookalikes is one of three; on the plain cases, twelve of twelve.
         recall = classifier_label_measure("recall", "NONE")
-        assert (lookalike[recall].rate, lookalike[recall].n) == (pytest.approx(1 / 3), 3)
+        assert lookalike[recall].rate == pytest.approx(1 / 3) and lookalike[recall].n == 3
         assert (plain[recall].rate, plain[recall].n) == (1.0, 12)
         # DIRECT was predicted twice among the lookalikes and right neither time; the plain cases never predicted it.
         precision = classifier_label_measure("precision", "DIRECT")
@@ -235,7 +235,7 @@ class TestEachCellIsReadPerStratum:
         (pooled,) = cell.judged
         (lookalike,) = strata["lookalike"].judged
         (plain,) = strata["plain"].judged
-        assert (pooled.mean, pooled.n) == (pytest.approx((12 * 4 + 3 * 2 + 4) / 16), 16)
+        assert pooled.mean == pytest.approx((12 * 4 + 3 * 2 + 4) / 16) and pooled.n == 16
         assert (lookalike.mean, lookalike.n, lookalike.n_independent) == (2.0, 3, 3)
         assert (plain.mean, plain.n) == (4.0, 12)
         assert lookalike.evidence_tier == pooled.evidence_tier

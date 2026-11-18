@@ -29,8 +29,8 @@ from threetears.evals.quick import run_cli
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.schema import ClientRequestSettings, RecordedCall
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
+from packages.evals.tests.example_loader import EXAMPLES
 from packages.evals.tests.ladder_support import (
-    EXAMPLES,
     count_calls,
     load,
     non_blank_lines,

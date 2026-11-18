@@ -467,7 +467,7 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     said = r"production passed \d+ of 12 trials on 4 cases\. Cases that failed a trial: queue-\d(, queue-\d)*\."
     assert re.fullmatch(said, verdict.text), verdict.text
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
-    assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
+    assert sorted(str(row["case"]) for row in cases.values()) == [f"queue-{index}" for index in range(4)]
     # Only a failed or lost trial has a record, so its summary is read off the first record the page lays out; a
     # passed trial names its case in the closed table instead.
     trials = [block for block in report.blocks if isinstance(block, TrialBlock)]
@@ -730,7 +730,7 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     assert name == "Queue track calls check"
     # A name that says it is a check is never told so twice (``check: Queue track calls check``).
     assert name in whys and f"check: {name}" not in whys
-    assert not [why for why in whys if why and expression in why]
+    assert not [why for why in whys if why and expression in str(why)]
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
     assert f"- `{name}`: `{expression}`" in markdown

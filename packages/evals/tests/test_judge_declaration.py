@@ -26,10 +26,12 @@ from threetears.evals.run import build_judge_service, create_template, get_templ
 from threetears.evals.run.definition_seed import SeedCorpus, seed_eval_definitions
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.schema.models import EvalTemplate, fingerprint_criterion
+from packages.evals.tests.bound_client_support import no_clients
 from packages.evals.tests.factories import declared, make_judge_config, memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
 
 TONE = "dj.tone"
@@ -55,7 +57,7 @@ def _definition(*dims: RubricDim, name: str = "probe") -> dict[str, Any]:
 def _stored(*dims: RubricDim) -> tuple[Any, EvalTemplate]:
     """A host whose store holds a template with ``dims``, saved past admission as a template stored before .26 is."""
     storage, _ = memory_storage()
-    host = toyhost_host(storage=storage, clients=lambda role, model, **_: object())
+    host = toyhost_host(storage=storage, clients=no_clients)
     template = toyhost_template().model_copy(update={"rubric": list(dims)})
     storage.save_template(template)
     return host, template

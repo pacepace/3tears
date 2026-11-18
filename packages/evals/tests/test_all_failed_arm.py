@@ -314,7 +314,7 @@ class TestTheRunnerCountsTheTurnsDelivered:
         assert count_delivered_turns([], reported=0) == 0
 
     def test_otherwise_the_turn_records_its_trace_stamps(self) -> None:
-        trace = [{"role": "user"}, {"turn_record": {}}, {"role": "user"}, {"turn_record": {}}]
+        trace: list[dict[str, Any]] = [{"role": "user"}, {"turn_record": {}}, {"role": "user"}, {"turn_record": {}}]
         assert count_delivered_turns(trace, reported=None) == 2
 
     def test_with_neither_nothing_counted(self) -> None:
@@ -357,11 +357,8 @@ class TestCostAndLatencyAreReadOverTurnsTaken:
         # `cost_usd` is measuring spend, so every dollar billed counts — the refusals' too, as the pivot, the
         # history series and a run summary's program total read it.
         spend = summaries["cost_usd"]
-        assert (spend.mean, spend.n, spend.population) == (
-            pytest.approx((2 * 0.002 + 2 * 0.0001) / 4),
-            4,
-            "all_observed",
-        )
+        assert spend.mean == pytest.approx((2 * 0.002 + 2 * 0.0001) / 4)
+        assert (spend.n, spend.population) == (4, "all_observed")
 
     def test_a_cell_s_measuring_spend_is_the_run_summary_s_program_mean(self) -> None:
         """One population for `cost_usd` on every surface: the cell, the run summary, the pivot and history."""
@@ -370,7 +367,7 @@ class TestCostAndLatencyAreReadOverTurnsTaken:
         arms = _three_arms()
         spend = _summaries(_cell(_bundle(arms), _FLAKY))["cost_usd"]
         (program,) = compute_cost_summary(arms[_FLAKY]).values()
-        assert (spend.mean, spend.n) == (pytest.approx(program["mean_cost_usd"]), program["n_cost_usd"])
+        assert spend.mean == pytest.approx(program["mean_cost_usd"]) and spend.n == program["n_cost_usd"]
 
     def test_the_failures_still_count_against_the_arm_in_its_pass_rate(self) -> None:
         rate = _summaries(_cell(_bundle(), _FLAKY))[_CHECK_RATE]
@@ -761,7 +758,7 @@ class TestUnmeasuredCostIsReadOverTurnsTaken:
         assert [cell.variant_key for cell in bundle.cost_unmeasured_cells] == [flaky.variant_key]
         # Measuring spend states what was billed and over how many: the two refusals, never the unpriced turns.
         spend = _summaries(flaky)["cost_usd"]
-        assert (spend.mean, spend.n) == (pytest.approx(0.0001), 2)
+        assert spend.mean == pytest.approx(0.0001) and spend.n == 2
 
 
 # =============================================================================

@@ -86,7 +86,7 @@ DELTA_TABLE = {
 #:
 #: The only entry below whose figure is not row-based, which is why several
 #: geometry assertions state their subject as "row-based" rather than "every".
-FRONTIER: dict = {
+FRONTIER: dict[str, Any] = {
     "points": [
         {
             "label": "model-a-3.5-fast-lite",
@@ -148,7 +148,7 @@ SWEEP_RANKING = {
 }
 
 
-def _timeseries_ci(mean: float, half: float) -> dict:
+def _timeseries_ci(mean: float, half: float) -> dict[str, Any]:
     return {
         "low": mean - half,
         "high": mean + half,
@@ -190,7 +190,7 @@ TIMESERIES = {
 
 
 #: One payload per drawable type, for the checks that must hold across all of them.
-EVERY_TYPE: dict[str, dict] = {
+EVERY_TYPE: dict[str, dict[str, Any]] = {
     "sweep_ranking": SWEEP_RANKING,
     "breakdown": PAYLOAD,
     "distribution": DISTRIBUTION,

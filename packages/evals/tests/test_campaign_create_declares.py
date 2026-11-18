@@ -275,6 +275,7 @@ async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: Moun
     )
 
     assert not read.is_error, read.text
+    assert read.structured is not None
     page = read.structured["body"]
     # On the first screen, under the title and above the aspect's fold, and nowhere else on the page: the fold leaves
     # out the aspect page's own exploratory verdict line, which the campaign's first screen carries once.

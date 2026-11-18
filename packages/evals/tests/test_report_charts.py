@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.evals.tests.json_support import json_at
+
 import pytest
 from pydantic import ValidationError
 
@@ -250,7 +252,7 @@ def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_
     """A stored report spells a range row's start ``from``, as the kit's contract and ``kit_data`` do; one stored as
     ``from_`` before still loads."""
     data = {"domain": [0, 4], "fmt": "s", "groups": [{"label": "g", "rows": [{"label": "a", "from": 1, "to": 2}]}]}
-    block = ChartBlock(section="memo", chart="range_bars", title="t", data=data)
+    block = ChartBlock.model_validate({"section": "memo", "chart": "range_bars", "title": "t", "data": data})
     stored = report_of([block]).to_dict()
     (row,) = next(b for b in stored["blocks"] if b.get("chart") == "range_bars")["data"]["groups"][0]["rows"]
     assert "from" in row and "from_" not in row
@@ -304,7 +306,7 @@ def test_spelling_a_chart_keeps_every_text_it_carries_and_adds_the_rest_without_
         {**_TEXTED_FOREST["rows"][1], "value_text": "-1.5", "lo_text": "-3.25", "hi_text": "+0.5"},
     ]
     forest.values_table()
-    assert forest.kit_data()["rows"][1] == _TEXTED_FOREST["rows"][1]
+    assert json_at(forest.kit_data(), "rows", 1) == _TEXTED_FOREST["rows"][1]
 
 
 def test_a_panel_s_values_are_spelled_in_the_format_it_is_drawn_with() -> None:

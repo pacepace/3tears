@@ -93,7 +93,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, TOY_EXTRACTOR_KIND, toyhost_template
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, toyhost_template
 from packages.evals.tests.clock_support import frozen_clock
 
 
@@ -1039,7 +1040,7 @@ def test_a_case_a_host_seeded_itself_renamed_then_customised_still_reads_customi
     storage.save_test_case(renamed.model_copy(update={"host_payload": {"persona": "a buyer in a hurry"}}))
 
     reading = next(r for r in _drift(storage, now, seeded_digests=then).readings if r.key == _own_key("a"))
-    assert (reading.state, reading.stored_id) == ("customized", a.id), reading.line()
+    assert (reading.state, reading.stored_id) == ("customized", a.id), reading.line
     with pytest.raises(ConflictError, match="template_case/.*/a: it reads customized"):
         _reset(storage, now, [_own_key("a")], seeded_digests=then)
     assert len(_cases_on(storage, revision)) == 3 and _subject(storage).id == revision.id
@@ -1058,7 +1059,8 @@ async def test_the_rename_action_reads_the_host_s_seed_corpus() -> None:
     )
 
     assert not outcome.is_error, outcome.text
-    assert off_loop(storage.load_test_case, a.id, TOYHOST_SCOPE).seed_name == "a"
+    named = off_loop(storage.load_test_case, a.id, TOYHOST_SCOPE)
+    assert named is not None and named.seed_name == "a"
 
 
 def test_a_corpus_refuses_a_template_case_it_cannot_write_naming_each() -> None:
@@ -1412,6 +1414,7 @@ def test_a_name_another_writer_gave_a_case_after_the_seed_read_the_revision_is_n
 
     assert not boot.named and not boot.name_fill_contended and not boot.name_fill_failed
     names = {c.id: c.name for c in _cases_on(storage, _subject(storage))}
+    assert writer.changed is not None
     assert names.pop(writer.changed) == "a"
     assert list(names.values()) == [None], "the other case of that content is not named a as well"
 

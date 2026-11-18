@@ -59,11 +59,11 @@ def test_a_ledger_keeps_no_refusal_record_until_one_is_started_and_the_first_ref
     assert ledger.refused is None
 
     ledger.record_refusal("player", "queue_track", {}, reason="locked")
-    assert [refusal.reason for refusal in ledger.refused or []] == ["locked"]
+    assert ledger.refused is not None and [refusal.reason for refusal in ledger.refused] == ["locked"]
 
 
 def test_refused_parameters_are_insulated_from_the_caller() -> None:
-    params = {"track": "t1", "tags": ["a"]}
+    params: dict[str, Any] = {"track": "t1", "tags": ["a"]}
     ledger = CallLedger(refused=[])
     ledger.record_refusal("player", "queue_track", params, reason="locked")
     params["tags"].append("b")
@@ -169,7 +169,8 @@ async def test_every_call_the_world_refuses_is_recorded_before_it_is_refused_and
             await tools.call("switch", to="dim")
         with pytest.raises(ToolRefused, match="no tool 'shout'"):
             await tools.call("shout", loud=True)
-        return await tools.call("switch", to="on")
+        said: str = await tools.call("switch", to="on")
+        return said
 
     checks = ['refused_count("room.switch") == 1', 'call_count("room.switch") == 1', 'not refused("room.switch")']
     ev = Eval(CASES, _room()(sloppy), checks, k=1)
@@ -194,7 +195,8 @@ async def test_every_call_the_world_refuses_is_recorded_before_it_is_refused_and
 async def test_a_world_cell_with_no_refusal_keeps_an_empty_record_so_a_refusal_check_grades_it() -> None:
     async def tidy(case: Mapping[str, Any], tools: Any) -> str:
         """Switch the lamp on."""
-        return await tools.call("switch", to="on")
+        said: str = await tools.call("switch", to="on")
+        return said
 
     check = 'refused_count("room.switch") == 0'
     ev = Eval(CASES, _room()(tidy), [check], k=1)

@@ -340,7 +340,8 @@ class TestACampaignWithNoRule:
 )
 def stored(request: pytest.FixtureRequest) -> dict[str, Any]:
     """The stored document, built when the test runs: a document stamps its id, which an import must not."""
-    return request.param()
+    stored: dict[str, Any] = request.param()
+    return stored
 
 
 class TestTheStepIsPure:

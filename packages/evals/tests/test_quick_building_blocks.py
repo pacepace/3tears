@@ -27,6 +27,7 @@ from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals import Eval, grader
 from threetears.evals.quick import Measure, as_host, measure
+from threetears.evals.providers import describe_failure
 from threetears.evals.quick.one_call import CALLABLE_KIND, callable_host, callable_kind, callable_kind_contracts
 from threetears.evals.run import (
     KindWiring,
@@ -118,7 +119,7 @@ async def test_a_host_of_your_own_launches_the_quick_kind_through_start_run(tmp_
                 kinds=(contract,),
             ),
             storage=EvalStorage(store),
-            failure_describer=lambda failure: None,
+            failure_describer=describe_failure,
             trace_sink=None,
             blocking_executor=None,
             cell_timeout=default_cell_timeout,

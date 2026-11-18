@@ -99,11 +99,16 @@ class TurnModel(Protocol):
 
     ``threetears.evals.providers.Model`` is one: built by the host with its key, and with a ``turn_recording`` its
     sessions are recorded or replayed by name.
-
-    :ivar model_name: The model id every session runs on, which its replies name.
     """
 
-    model_name: str
+    @property
+    def model_name(self) -> str:
+        """The model id every session runs on, which its replies name.
+
+        Read-only to the writer, so a model may hold it as a plain attribute or a frozen field (a recording replayed
+        under its model's id).
+        """
+        ...
 
     async def turn_pricing_refusal(self) -> str | None:
         """Why a turn on this model could not be bounded before it is sent, or ``None`` when every one can be.

@@ -34,5 +34,9 @@ def off_loop[**P, T](fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -
     :rtype: T
     """
     context = contextvars.copy_context()
+
+    def call() -> T:
+        return fn(*args, **kwargs)
+
     with ThreadPoolExecutor(max_workers=1) as worker:
-        return worker.submit(context.run, fn, *args, **kwargs).result()
+        return worker.submit(context.run, call).result()

@@ -478,9 +478,9 @@ async def test_a_turn_failed_by_a_520_prices_its_result_at_the_turns_before_it_a
         assert result.candidate_error == f"report_writer: a turn failed: {SAID_520} (after 2 attempts)"
         assert result.turns_delivered == 1
         (row,) = result.usage
-        assert (row.call_count, row.cost_usd, row.unanswered_lost, row.unpriced_reasons) == (
+        assert row.cost_usd == pytest.approx(READS_USD)
+        assert (row.call_count, row.unanswered_lost, row.unpriced_reasons) == (
             1,
-            pytest.approx(READS_USD),
             1,
             None,
         ), "the failed turn sits beside the priced read as one unanswered call"
@@ -529,7 +529,7 @@ async def test_a_turn_whose_first_send_dropped_counts_the_send_on_its_cells_row_
     assert stopped is None and len(results) == 2
     for result in results:
         (row,) = result.usage
-        assert (row.call_count, row.cost_usd, row.maybe_billed_sends) == (1, pytest.approx(READS_USD), 1)
+        assert row.cost_usd == pytest.approx(READS_USD) and (row.call_count, row.maybe_billed_sends) == (1, 1)
         assert result.cost_usd == pytest.approx(READS_USD), "the row's cost holds the answered read alone"
         assert maybe_billed_usd(result.usage, result.cost_roles) == pytest.approx(READS_USD)
 

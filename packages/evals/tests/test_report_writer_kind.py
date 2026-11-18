@@ -34,6 +34,7 @@ from packages.evals.tests.report_writer_support import (
     MODEL,
     FakeToolTurnClient,
     FakeTurnModel,
+    NoSpans,
     call,
     reply,
     review,
@@ -284,7 +285,8 @@ def _analyst_system(models: _Models, snapshot: str) -> str:
         if snapshot == _snapshot_id(KAIRO)
         else [model for model in models.built if model.sessions and "editor-1" not in model.sessions]
     )
-    (system,) = {request["system"] for request in model.sessions["analyst"].requests}
+    systems: set[str] = {request["system"] for request in model.sessions["analyst"].requests}
+    (system,) = systems
     return system
 
 
@@ -316,7 +318,8 @@ async def test_two_arms_differing_by_one_line_of_skill_produce_results_keyed_apa
     declared = {descriptor.name: descriptor.data_type for descriptor in WRITER_KIND_MEASURES}
     for result in (*shipped, *tried):
         for name, value in result.host_measures.items():
-            expected = {"boolean": bool, "numeric": float, "categorical": str}[declared[name]]
+            types: dict[str | None, type] = {"boolean": bool, "numeric": float, "categorical": str}
+            expected = types[declared[name]]
             assert type(value) is expected, (name, value)
 
     profile = host.eval_host.profile
@@ -776,7 +779,7 @@ async def test_a_cell_whose_subject_carries_no_skill_is_refused_by_the_kind() ->
             subject_snapshot=bare,
             variant_config=VariantConfig(candidate_model=MODEL),
             world_seed=None,
-            span_window=None,
+            span_window=NoSpans(),
             cassettes=None,
             world=None,
         )
@@ -803,7 +806,7 @@ async def test_a_cell_whose_skill_states_no_editor_rubric_is_refused_by_the_kind
             subject_snapshot=_arm(broken).subject_snapshot,
             variant_config=VariantConfig(candidate_model=MODEL),
             world_seed=None,
-            span_window=None,
+            span_window=NoSpans(),
             cassettes=None,
             world=None,
         )
@@ -822,7 +825,7 @@ async def test_a_cell_whose_revisions_the_loop_does_not_run_is_refused_before_an
             subject_snapshot=_arm(load_skill()).subject_snapshot,
             variant_config=VariantConfig(candidate_model=MODEL),
             world_seed=None,
-            span_window=None,
+            span_window=NoSpans(),
             cassettes=None,
             world=None,
         )

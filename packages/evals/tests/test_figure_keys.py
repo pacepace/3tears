@@ -69,7 +69,8 @@ def _r5_names() -> dict[str, str]:
 
 
 def _slot(key: str) -> str:
-    return next(slot["text"] for slot in _plan()["decision"]["slots"] if slot["key"] == key)
+    text: str = next(slot["text"] for slot in _plan()["decision"]["slots"] if slot["key"] == key)
+    return text
 
 
 def _rendered(text: str) -> str:
@@ -494,11 +495,11 @@ class TestDerivedValues:
         assert uplift == pytest.approx(cost["qwen3.8-flash"].mean / cost["September"].mean - 1)
 
     def test_the_uplift_range_spans_the_candidates(self) -> None:
-        low, high = resolve("cost.uplift_range", _input("r5")).value
-        assert (low, high) == (
-            pytest.approx(resolve("cost.uplift.1017", _input("r5")).value),
-            pytest.approx(resolve("cost.uplift.qwen3.8-flash", _input("r5")).value),
-        )
+        uplift = resolve("cost.uplift_range", _input("r5")).value
+        assert isinstance(uplift, tuple), uplift
+        low, high = uplift
+        assert low == pytest.approx(resolve("cost.uplift.1017", _input("r5")).value)
+        assert high == pytest.approx(resolve("cost.uplift.qwen3.8-flash", _input("r5")).value)
 
     def test_a_strata_loss_share_is_its_weighted_part_of_each_candidates_loss(self) -> None:
         report_input = _input("r5")

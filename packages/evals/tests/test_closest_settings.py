@@ -46,7 +46,12 @@ SONNET_5 = {
     "reasoning_disable": True,
     "structured_output": True,
 }
-HAIKU_4_5 = {"reasoning_efforts": (), "reasoning_budget": True, "adaptive_reasoning": False, "reasoning_disable": True}
+HAIKU_4_5: dict[str, Any] = {
+    "reasoning_efforts": (),
+    "reasoning_budget": True,
+    "adaptive_reasoning": False,
+    "reasoning_disable": True,
+}
 ALWAYS_ON = {"reasoning_disable": False}
 GPT_5 = {"reasoning_efforts": ("minimal", "low", "medium", "high")}
 GPT_5_1 = {"reasoning_efforts": ("none", "low", "medium", "high")}

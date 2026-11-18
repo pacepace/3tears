@@ -10,10 +10,12 @@ import json
 from pathlib import Path
 
 
+from pydantic import JsonValue
+
 from threetears.evals.schema import ClientRequestSettings
 
 
-def recorded(path: Path) -> list[dict[str, object]]:
+def recorded(path: Path) -> list[dict[str, JsonValue]]:
     """Every line of a recording, as JSON."""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 

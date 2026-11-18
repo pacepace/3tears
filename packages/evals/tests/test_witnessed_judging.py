@@ -45,7 +45,10 @@ from threetears.evals.run import (
     stamp_witnessed_judge,
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.factories import make_eval_result, make_eval_run
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.schema.completion import StopReason
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 
@@ -66,8 +69,9 @@ _EVIDENCE = JudgeEvidence(
 @dataclass(frozen=True)
 class _Completion:
     content: str
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
+    price_source: str | None = None
     input_tokens: int = 10
     output_tokens: int = 5
     reasoning_tokens: int | None = None
@@ -91,7 +95,7 @@ class _TemperaturelessCompletion:
 
 
 @dataclass
-class _ScriptedJudge:
+class _ScriptedJudge(BoundClientDouble):
     """Scores every dim 4, or answers unparseable text for a failing one, and records what it was sent."""
 
     failing: set[str] = field(default_factory=set)
@@ -109,9 +113,6 @@ class _ScriptedJudge:
         if self.temperatureless:
             return _TemperaturelessCompletion(content=content)  # type: ignore[return-value]
         return _Completion(content=content)
-
-    async def aclose(self) -> None:
-        """Nothing to release."""
 
 
 def _setup(judge: _ScriptedJudge) -> tuple[EvalHost, EvalTemplate, EvalRun, EvalTestCase]:
@@ -196,7 +197,7 @@ def test_stamping_gives_the_run_the_template_and_the_judge_a_launch_would() -> N
     assert (stamped.judge_config_ids, stamped.judge_config_provenance) == ({}, {})
     assert stamped.judge_asked_settings == JUDGE_REQUEST_SETTINGS
     assert stamped.rubric_scales == {_DIM: "ordinal"}
-    assert stamped.model_role_provenance["judge"] == "chosen"
+    assert stamped.model_role_provenance is not None and stamped.model_role_provenance["judge"] == "chosen"
     assert (run.template_id, run.judge_model) == (None, None), "a copy; the run as built is unchanged"
 
 
@@ -710,20 +711,22 @@ async def test_a_clean_witnessed_cell_that_graded_none_of_the_template_s_checks_
     assert judge.calls == [], "refused before any judge call was bought"
 
 
-class _ThreadRecordingStore:
-    """The host's store, recording the thread each call ran on."""
+class _ThreadRecordingStore(EvalStorage):
+    """The host's store, over the same documents, recording the thread each of its calls ran on."""
 
-    def __init__(self, inner: Any, threads: list[tuple[str, int]]) -> None:
-        self._inner = inner
+    def __init__(self, inner: EvalStorage, threads: list[tuple[str, int]]) -> None:
+        # The same storage, not a copy of its documents: every field the inner one holds, this one reads.
+        vars(self).update(vars(inner))
         self._threads = threads
 
-    def __getattr__(self, name: str) -> Any:
-        attribute = getattr(self._inner, name)
-        if not callable(attribute):
+    def __getattribute__(self, name: str) -> Any:
+        attribute = super().__getattribute__(name)
+        if name.startswith("_") or not callable(attribute):
             return attribute
+        threads: list[tuple[str, int]] = super().__getattribute__("_threads")
 
         def recorded(*args: Any, **kwargs: Any) -> Any:
-            self._threads.append((name, threading.get_ident()))
+            threads.append((name, threading.get_ident()))
             return attribute(*args, **kwargs)
 
         return recorded

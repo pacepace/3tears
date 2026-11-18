@@ -180,7 +180,13 @@ _DRAWING_TAGS = {"div", "span", "h4", "svg", "g", "title", "rect", "line", "path
 
 def _with_cost_quality(report: Report) -> Report:
     """``report`` with a cost/quality chart too, its arms named in markup, so it holds every kind a report can."""
-    point = {"cost": 0.01, "cost_low": 0.008, "cost_high": 0.012, "pass_rate_low": 70, "pass_rate_high": 90}
+    point: dict[str, Any] = {
+        "cost": 0.01,
+        "cost_low": 0.008,
+        "cost_high": 0.012,
+        "pass_rate_low": 70,
+        "pass_rate_high": 90,
+    }
     chart = ChartBlock(
         section="memo",
         chart="cost_quality",

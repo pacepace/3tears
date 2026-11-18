@@ -15,6 +15,7 @@ from threetears.evals.analysis.cells import (
     Cell,
     NextExperiment,
     Observation,
+    RefusedMerge,
     apparatus_class_of,
     pool_observations,
     subject_key_instabilities,
@@ -56,7 +57,7 @@ def _observation(
 
 def _pool(
     *observations: Observation, classes: tuple[ApparatusClass, ...]
-) -> tuple[list[Cell], list, list[NextExperiment]]:
+) -> tuple[list[Cell], list[RefusedMerge], list[NextExperiment]]:
     """Pool observations against the classes they reference.
 
     :param *observations: The observations.
@@ -64,7 +65,7 @@ def _pool(
     :param classes: Every class referenced.
     :ptype classes: tuple[ApparatusClass, ...]
     :return: The three-part pooling result.
-    :rtype: tuple[list[Cell], list, list[NextExperiment]]
+    :rtype: tuple[list[Cell], list[RefusedMerge], list[NextExperiment]]
     """
     return pool_observations(list(observations), {c.apparatus_class_id: c for c in classes})
 

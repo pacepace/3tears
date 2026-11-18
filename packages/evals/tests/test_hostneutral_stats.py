@@ -16,6 +16,13 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, ci_half_width, t_critical_two_sided
 
 
+def _half(sem: float, n: int) -> float:
+    """The half-width at ``n`` observations, two or more, which states one."""
+    half = ci_half_width(sem, n)
+    assert half is not None, n
+    return half
+
+
 def test_the_reported_level_is_ninety_five_percent() -> None:
     assert INTERVAL_LEVEL == 0.95
 
@@ -28,20 +35,20 @@ def test_below_two_observations_there_is_no_interval_not_a_zero_width_one(n: int
 
 def test_three_observations_take_the_t_multiplier_not_the_large_sample_constant() -> None:
     """At two degrees of freedom the 95% multiplier is about 4.30, well over twice 1.96."""
-    half = ci_half_width(1.0, 3)
+    half = _half(1.0, 3)
 
     assert half == pytest.approx(4.3027, abs=1e-3)
     assert half > 2 * 1.96
 
 
 def test_the_width_scales_with_the_standard_error() -> None:
-    assert ci_half_width(2.0, 10) == pytest.approx(2 * ci_half_width(1.0, 10))
+    assert _half(2.0, 10) == pytest.approx(2 * _half(1.0, 10))
 
 
 def test_the_width_is_computed_at_the_level_the_module_declares(monkeypatch: pytest.MonkeyPatch) -> None:
     """Moving the level moves the width, so a caption read off the constant cannot lie."""
-    at_default = ci_half_width(1.0, 8)
+    at_default = _half(1.0, 8)
     monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.8)
 
     assert ci_half_width(1.0, 8) == pytest.approx(t_critical_two_sided(0.8, 7))
-    assert ci_half_width(1.0, 8) < at_default
+    assert _half(1.0, 8) < at_default

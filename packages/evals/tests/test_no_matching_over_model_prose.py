@@ -87,7 +87,8 @@ def _all_models() -> set[type[BaseModel]]:
     stack: list[type] = [BaseModel]
     while stack:
         cls = stack.pop()
-        for sub in cls.__subclasses__():
+        subclasses: list[type] = cls.__subclasses__()
+        for sub in subclasses:
             if sub not in seen:
                 seen.add(sub)
                 stack.append(sub)
