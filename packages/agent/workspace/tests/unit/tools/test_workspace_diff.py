@@ -209,7 +209,7 @@ async def test_diff_checkpoint_label_resolves_via_label_selector(
 ) -> None:
     """string ref (non-digit, non-head) treated as checkpoint label."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    script = {
+    script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("m.txt", "v1"): _journal_row(b"alpha\n"),
         ("m.txt", "head"): _journal_row(b"alpha-plus\n"),
     }
@@ -231,7 +231,7 @@ async def test_diff_binary_content_returns_clean_error(
 ) -> None:
     """non-UTF-8 content in either ref triggers clean error text."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    script = {
+    script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("bin.dat", 1): _journal_row(b"\xff\xfe\x00\x01"),
         ("bin.dat", 2): _journal_row(b"ok text\n"),
     }

@@ -56,12 +56,15 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import pytest
+from pydantic import BaseModel
+from threetears.nats import Subject
 
 from packages.agent.workspace.tests.helpers.asyncpg_shims import asks_journal_max
 from threetears.core.testing.kv import FakeNatsClient as _FakeNatsKVClient
@@ -561,10 +564,10 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):
 
     async def publish(
         self,
-        *,
-        subject: Any,
-        message: Any,
-        reply_to: Any | None = None,
+        *args: Any,
+        subject: Any = None,
+        message: BaseModel | None = None,
+        reply_to: Any = None,
     ) -> None:
         """record publish, dispatch to any matching in-process subscriber.
 
@@ -574,16 +577,19 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):
         assertions stay unchanged: we serialize the typed message here
         so consumers see bytes the same way they would on the wire.
 
+        :param args: the raw positional form, which this recorder does not take
+        :ptype args: Any
         :param subject: typed :class:`Subject` carrying the dotted path
         :ptype subject: Any
         :param message: typed Pydantic message
-        :ptype message: Any
+        :ptype message: BaseModel | None
         :param reply_to: optional reply subject; ignored by recorder
         :ptype reply_to: Any | None
         :return: None
         :rtype: None
         """
         del reply_to
+        assert not args and message is not None, "the recorder takes the typed keyword form only"
         subject_path = subject.path if hasattr(subject, "path") else str(subject)
         payload = message.model_dump_json().encode("utf-8")
         self.published.append((subject_path, payload))
@@ -591,7 +597,14 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):
             if _subject_matches(subject_path, prefix):
                 await handler(_FakeMsg(subject=subject_path, data=payload))
 
-    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None:
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | float = timedelta(seconds=10),
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         """record a JetStream publish + dispatch to any matching in-process subscriber.
 
         mirrors :meth:`publish` for the JetStream persistence path the audit
@@ -603,12 +616,17 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):
         :meth:`threetears.nats.NatsClient.jetstream_publish` shape.
 
         :param subject: typed :class:`Subject` carrying dotted path
-        :ptype subject: Any
+        :ptype subject: Subject
         :param payload: already-serialized message bytes
         :ptype payload: bytes
+        :param timeout: the publish's ack timeout; nothing waits here
+        :ptype timeout: timedelta | float
+        :param headers: message headers; not recorded
+        :ptype headers: Mapping[str, str] | None
         :return: None
         :rtype: None
         """
+        del timeout, headers
         subject_path = subject.path if hasattr(subject, "path") else str(subject)
         self.published.append((subject_path, payload))
         for prefix, handler in self._subscriptions:

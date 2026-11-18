@@ -208,7 +208,7 @@ async def test_rollback_whole_workspace_reverts_each_file(
         _FakeFileEntity(relative_path="a.txt"),
         _FakeFileEntity(relative_path="b.md"),
     ]
-    script = {
+    script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("a.txt", 1): {
             "content": b"old-a",
             "sha256": "a" * 64,
@@ -252,7 +252,7 @@ async def test_rollback_single_file_narrows_set(
         _FakeFileEntity(relative_path="a.txt"),
         _FakeFileEntity(relative_path="b.md"),
     ]
-    script = {
+    script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("b.md", 2): {
             "content": b"v2",
             "sha256": "x" * 64,
@@ -323,7 +323,7 @@ async def test_rollback_sandbox_denied_aborts_before_any_write(
         _FakeFileEntity(relative_path="public.md"),
         _FakeFileEntity(relative_path="secret.env"),
     ]
-    script = {
+    script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("public.md", 1): {
             "content": b"old",
             "sha256": "p" * 64,

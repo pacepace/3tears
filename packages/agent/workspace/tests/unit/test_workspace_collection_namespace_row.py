@@ -12,6 +12,8 @@ write.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -54,7 +56,7 @@ def _workspaces_metadata() -> MetaData:
 
 
 @pytest.fixture()
-def workspaces_l1() -> SQLiteBackend:
+def workspaces_l1() -> Iterator[SQLiteBackend]:
     """build SQLite L1 backend with workspaces schema.
 
     :yield: initialized SQLite backend

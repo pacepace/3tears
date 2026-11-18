@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -13,11 +13,10 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import CHAR, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text
 
-from pydantic import BaseModel
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.nats import Subject, Subjects
+from threetears.nats import Subjects
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.agent.workspace.collections import (
@@ -26,6 +25,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileVersionCollection,
 )
 from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
+from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
@@ -136,156 +136,6 @@ def _make_workspace_file_version_row() -> dict[str, Any]:
     }
 
 
-# parity-exempt: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
-class _FakeNatsBus:
-    """in-process fake NATS client matching typed NatsClient surface.
-
-    supports the two methods the cache-invalidation path uses:
-    ``publish(subject=Subject, message=BaseModel)`` and
-    ``subscribe_typed(subject=Subject, message_type=BaseModel, cb=...)``.
-    each subscriber owns its own decoder, so multiple subscribers on the
-    same subject with different message_types coexist.
-    """
-
-    def __init__(self) -> None:
-        """initialize empty subscriber registry and KV store."""
-        self._typed_subscribers: dict[str, list[tuple[type[BaseModel], Callable[[Any], Awaitable[None]]]]] = {}
-        self._kv: dict[str, dict[str, bytes]] = {}
-
-    def bucket_name(self, suffix: str) -> str:
-        """
-        returns canonical bucket name for suffix.
-
-        :param suffix: logical bucket suffix
-        :ptype suffix: str
-        :return: bucket name
-        :rtype: str
-        """
-        return f"test_{suffix}"
-
-    async def publish(
-        self,
-        *,
-        subject: Subject,
-        message: BaseModel,
-        reply_to: Subject | None = None,
-    ) -> None:
-        """
-        deliver typed message synchronously to all subject subscribers.
-
-        :param subject: target subject
-        :ptype subject: Subject
-        :param message: typed pydantic message to dispatch
-        :ptype message: BaseModel
-        :param reply_to: ignored, present for api parity
-        :ptype reply_to: Subject | None
-        """
-        del reply_to
-        payload = message.model_dump_json().encode("utf-8")
-        for message_type, handler in self._typed_subscribers.get(subject.path, []):
-            decoded = message_type.model_validate_json(payload)
-            await handler(decoded)
-
-    async def subscribe_typed(
-        self,
-        *,
-        subject: Subject,
-        cb: Callable[[Any], Awaitable[None]],
-        message_type: type[BaseModel],
-        queue: str | None = None,
-        max_in_flight: int | None = None,
-        deadletter_on_failure: bool = True,
-    ) -> None:
-        """
-        register typed handler for subject.
-
-        :param subject: target subject
-        :ptype subject: Subject
-        :param cb: async callback receiving the decoded message
-        :ptype cb: Callable[[Any], Awaitable[None]]
-        :param message_type: pydantic class to decode incoming bytes into
-        :ptype message_type: type[BaseModel]
-        :param queue: ignored, present for api parity
-        :ptype queue: str | None
-        :param max_in_flight: ignored, present for api parity
-        :ptype max_in_flight: int | None
-        :param deadletter_on_failure: ignored, present for api parity
-        :ptype deadletter_on_failure: bool
-        """
-        del queue, max_in_flight, deadletter_on_failure
-        self._typed_subscribers.setdefault(subject.path, []).append((message_type, cb))
-
-    async def get(self, bucket: str, key: str) -> bytes | None:
-        """fetch bytes for key from bucket or None."""
-        return self._kv.get(bucket, {}).get(key)
-
-    async def put(self, bucket: str, key: str, value: bytes) -> bool:
-        """store bytes under key in bucket."""
-        self._kv.setdefault(bucket, {})[key] = value
-        return True
-
-    async def delete(self, bucket: str, key: str) -> bool:
-        """remove key from bucket."""
-        self._kv.get(bucket, {}).pop(key, None)
-        return True
-
-    async def kv_bucket(self, *, name: str, **_: Any) -> _InMemoryBucket:
-        """resolve the wrapper-style bucket handle a Collection's L2 tier opens.
-
-        needed since the invalidation listener evicts the receiver's own scoped L2 entry,
-        not only its L1 row -- so a receiving pod now reaches L2 on every broadcast.
-
-        :param name: bucket suffix the Collection asks for
-        :ptype name: str
-        :return: the in-memory bucket handle backing that suffix
-        :rtype: _InMemoryBucket
-        """
-        return _InMemoryBucket(self._kv.setdefault(self.bucket_name(name), {}))
-
-
-class _InMemoryBucket:
-    """kw-only in-memory stand-in for :class:`threetears.nats.NatsKvBucket`."""
-
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    async def get(self, *, key: str) -> bytes | None:
-        """read one value.
-
-        :param key: the KV key
-        :ptype key: str
-        :return: the stored bytes, or ``None`` when absent
-        :rtype: bytes | None
-        """
-        return self._store.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        """write one value.
-
-        :param key: the KV key
-        :ptype key: str
-        :param value: serialized row
-        :ptype value: bytes
-        :return: the store's size, standing in for a revision
-        :rtype: int
-        """
-        self._store[key] = value
-        return len(self._store)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
-        """remove one value.
-
-        :param key: the KV key
-        :ptype key: str
-        :param revision: ignored, present for api parity
-        :ptype revision: int | None
-        :return: whether the key existed
-        :rtype: bool
-        """
-        del revision
-        return self._store.pop(key, None) is not None
-
-
 def _make_pool_mock() -> AsyncMock:
     """
     returns AsyncMock with recorded execute/fetchrow/fetch calls.
@@ -342,7 +192,7 @@ def config_always() -> DefaultCoreConfig:
 
 
 @pytest.fixture()
-def workspaces_l1() -> SQLiteBackend:
+def workspaces_l1() -> Iterator[SQLiteBackend]:
     """build SQLite L1 backend with workspaces schema."""
     backend = SQLiteBackend(db_name=f"test_ws_{uuid4().hex[:8]}")
     backend.initialize(_workspaces_metadata())
@@ -351,7 +201,7 @@ def workspaces_l1() -> SQLiteBackend:
 
 
 @pytest.fixture()
-def workspace_files_l1() -> SQLiteBackend:
+def workspace_files_l1() -> Iterator[SQLiteBackend]:
     """build SQLite L1 backend with workspace_files schema."""
     backend = SQLiteBackend(db_name=f"test_wsf_{uuid4().hex[:8]}")
     backend.initialize(_workspace_files_metadata())
@@ -360,7 +210,7 @@ def workspace_files_l1() -> SQLiteBackend:
 
 
 @pytest.fixture()
-def workspace_file_versions_l1() -> SQLiteBackend:
+def workspace_file_versions_l1() -> Iterator[SQLiteBackend]:
     """build SQLite L1 backend with workspace_file_versions schema."""
     backend = SQLiteBackend(db_name=f"test_wsfv_{uuid4().hex[:8]}")
     backend.initialize(_workspace_file_versions_metadata())
@@ -555,7 +405,7 @@ class TestCrossPodInvalidation:
         """
         pool_a = _make_pool_mock()
         pool_b = _make_pool_mock()
-        bus = _FakeNatsBus()
+        bus = FakeNatsClient()
 
         l1_a = SQLiteBackend(db_name=f"podA_{uuid4().hex[:8]}")
         l1_a.initialize(_workspaces_metadata())

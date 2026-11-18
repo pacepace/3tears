@@ -261,7 +261,8 @@ class _PinnedSnapshot:
 def _only_envelope(nats: _FakeNats) -> dict[str, Any]:
     """extract single envelope; assert exactly one publish happened."""
     assert len(nats.published) == 1, nats.published
-    return json.loads(nats.published[0][1].decode("utf-8"))
+    envelope: dict[str, Any] = json.loads(nats.published[0][1].decode("utf-8"))
+    return envelope
 
 
 def _subject(nats: _FakeNats) -> str:
