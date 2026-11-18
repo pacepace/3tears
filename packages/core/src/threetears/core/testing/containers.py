@@ -227,7 +227,7 @@ def _ping_docker() -> bool:
         log.info("the docker SDK is not installed; treating docker as unavailable")
         return False
     try:
-        client = docker.from_env()  # type: ignore[attr-defined]
+        client = docker.from_env()
         client.ping()
     except (docker.errors.DockerException, OSError) as exc:
         # requests' errors are OSErrors; the SDK wraps them in DockerException when it reads the version

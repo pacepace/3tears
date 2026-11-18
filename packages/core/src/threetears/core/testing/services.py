@@ -1211,6 +1211,8 @@ def _nats_container(config: str | None, image: str) -> Iterator[RunningNats]:
     container: DockerContainer = nats_server(image, config=config)
     with container:
         container_id = container.get_wrapped_container().id
+        if container_id is None:
+            raise RuntimeError("the nats container started without an id, so it cannot be signalled")
 
         def lame_duck() -> None:
             _run_checked(
