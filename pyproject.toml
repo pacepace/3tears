@@ -63,6 +63,8 @@ dev-dependencies = [
     # rather than a `# type: ignore[misc]` on each base, so the loader override
     # (the whole guard) stays checked instead of resolving to Any.
     "types-PyYAML>=6.0",
+    # python-dateutil ships no inline types; core's PoP tests parse the server's HTTP Date with it.
+    "types-python-dateutil>=2.9",
     "ruff>=0.15.18,<0.16",  # 0.16 reformats 56 files: its own PR after 0.75, not mixed into one
     # the same floors and ceilings as 3tears-observe's `otel` extra (see the comment there); the
     # dev install must never resolve below what the package itself declares it needs, nor past
@@ -662,6 +664,28 @@ module = [
     # (a CI env with the extra installed reports import-untyped, not
     # import-not-found, so ignore_missing_imports alone does not cover it).
     "threetears.datasources.drivers.redshift_driver",
+    # The test modules that build or read Arrow tables to drive the modules above: the same per-module rule
+    # as the sources (one rule for the tree), named here as typecheck.sh addresses a test module (its path
+    # from the repository root).
+    "packages.core.tests.integration.test_load_files_live",
+    "packages.core.tests.integration.test_reload_analyzed_live",
+    "packages.core.tests.unit.backends.test_arrow_copy",
+    "packages.core.tests.unit.backends.test_load_files",
+    "packages.core.tests.unit.collections.test_bulk_write_off_loop",
+    "packages.core.tests.unit.collections.test_save_arrow",
+    "packages.core.tests.unit.shared_arrow.jobs",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_column_tokens",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_eviction",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_handoff",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_layout",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_loop",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_merge",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_pieces",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_publish_cost",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_status",
+    "packages.core.tests.unit.test_keyed_changed",
+    "packages.core.tests.unit.test_keyed_helpers",
 ]
 disable_error_code = ["import-untyped"]
 
