@@ -509,8 +509,11 @@ def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None
     """Both places that hold a comparison's verdict: the report's contrast table and the bundle's comparison."""
     from threetears.evals.analysis.report.build import build_code_only_report
 
-    profile = _accuracy_threshold(0.05, ranged=False)
-    bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
+    # On field_accuracy's range of 0 to 1, read by the bounded test: a quarter better on forty cases, inside a margin of
+    # thirty points.
+    profile = _accuracy_threshold(0.3)
+    wide = ([0.50, 0.52, 0.48, 0.50] * 10, [0.75, 0.77, 0.76, 0.74] * 10)
+    bundle = _bundle([], accuracy=wide, cases=40, profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
@@ -518,7 +521,7 @@ def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None
     # A margin on a share is stated in points, as the change it bounds is.
     assert (
         " better than " in row["verdict"]
-        and "immaterial: the observed delta is inside the margin of ±5 pts on Field accuracy, which does not show"
+        and "immaterial: the observed delta is inside the margin of ±30 pts on Field accuracy, which does not show"
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
