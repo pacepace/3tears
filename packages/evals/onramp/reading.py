@@ -251,6 +251,17 @@ def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored 
     return f"{sum(1 for row in graded if row['scores'][check] == 1.0)} of {len(graded)}"
 
 
+def _first_screen(result: Result, *, advised: bool) -> str:
+    """The package's first screen of ``result`` on one line, as its page's lead reads it: the advice the print opens
+    on, then the proof under it. A secondary check is a lead only, never advice on what to run, so it reads the proof
+    alone."""
+    printed = result.render().splitlines()
+    if not printed[0].startswith(f"{result.name}: Advice: ") and not printed[0].startswith(f"{result.name}: No advice"):
+        return printed[0]
+    proof = printed[1].removeprefix(f"{result.name}: ")
+    return f"{printed[0]} {proof}" if advised else printed[1]
+
+
 async def read_lines(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -260,8 +271,8 @@ async def read_lines(
     apps: Sequence[str] = (),
     earlier: Sequence[Stage] = (),
 ) -> list[str]:  # Any: stored rows
-    """What the package reads of a stored run, tier by tier: each check's verdict, the primary first, with apps as cases,
-    and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop.
+    """What the package reads of a stored run, tier by tier: each check's verdict, the primary first and opening on the
+    package's advice, with apps as cases, and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop.
 
     With ``earlier`` runs, the run continues them as one comparison (:func:`read_continued`): every check is read over
     the earlier runs' apps and then this run's, and the tallies cover them all. A continued run is one tier's.
@@ -290,7 +301,7 @@ async def read_lines(
         for check in (primary, *[name for name in CHECKS if name != primary]):
             role = "primary" if check == primary else "secondary, a lead only"
             result = await read_continued(stages, check, question=question, lead=check != primary)
-            lines.append(f"  {check} ({role}): {result.render().splitlines()[0]}")
+            lines.append(f"  {check} ({role}): {_first_screen(result, advised=check == primary)}")
             for row in result.contrasts(check):
                 lines.append(
                     f"    {row['arm']}: {row['outcome']}; {row['cases']} apps; {row['verdict']}"

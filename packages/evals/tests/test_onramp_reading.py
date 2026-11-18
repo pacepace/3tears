@@ -394,3 +394,25 @@ def test_held_out_2_continues_held_out_1_on_every_term_of_the_comparison_with_ei
     held_out = [case["app"] for case in registry([HELD_OUT])]
     assert list(second.apps) == held_out[24:32] and len(second.apps) == 8 and not second.placeholders()
     assert second.registries == (HELD_OUT.name,) and list(second.tiers) == ["cheap"]
+
+
+def test_the_primary_opens_on_the_package_s_advice_and_a_secondary_on_its_proof_alone() -> None:
+    """The primary's line is the package's first screen on one line: what to do, then what is proven and what proving
+    it needs. A secondary check is a lead only, never advice on which build to run, so it reads its proof alone."""
+    rows = _rows(
+        {
+            "docs@control": {app: (1, 3) for app in "abcdefgh"},
+            "docs@candidate": {**{app: (3, 3) for app in "abcdef"}, "g": (1, 3), "h": (2, 3)},
+        }
+    )
+
+    said = reading_lines(rows)
+
+    (primary,) = [line for line in said if line.startswith(f"  {PRIMARY} (primary): ")]
+    assert primary.startswith(
+        f"  {PRIMARY} (primary): onramp: Advice: switch to docs@candidate. At worst it is 8 points behind docs@control. "
+        "Measures the app score: docs@candidate ahead of docs@control, not yet proven. Over 8 paired cases"
+    ), primary
+    assert "; proving it needs 22." in primary
+    secondaries = [line for line in said if "(secondary, a lead only): " in line]
+    assert secondaries and not any("Advice" in line for line in secondaries), secondaries
