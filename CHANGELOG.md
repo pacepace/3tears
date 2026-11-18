@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats, core, agent-audit: `NatsClientLike.ping`; `request_audit_anonymization` takes a `RawRequester`
+
+**Added:** `NatsClientLike` carries `ping(*, timeout=2.0) -> bool`, the health probe's round trip `NatsClient` already
+answers, and `threetears.core.testing.kv.FakeNatsClient` answers it (`answers_ping`, True until a test sets it False),
+so a holder of the whole client typed by `NatsClientLike` (survey's registry) runs its health probe with no cast.
+**Changed:** `threetears.agent.audit.request_audit_anonymization` is typed by `threetears.nats.capabilities.RawRequester`
+(it only sends `request_raw` through `ask_hub`), so a `NatsClientLike` holder or a scripted double passes with no
+ignore. Nothing changes at run time.
+
 ### core: `exit_with_parent` watches the process that started the worker, not the parent it finds later
 
 **Fixed:** `threetears.core.processes.exit_with_parent` read the worker's parent when it ran, after the start had

@@ -1330,6 +1330,9 @@ class FakeNatsClient:
         self.jetstream_published: list[tuple[Subject, bytes]] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
+        #: what :meth:`ping` answers: whether the broker answers a round trip; a test sets it False for one that
+        #: has stopped answering while the connection still reads as connected
+        self.answers_ping = True
         # what the real client remembers: every bucket this client declared through
         # :meth:`ensure_kv_bucket` with a create, on memory or file storage, and so puts back after a
         # reconnect. names only -- the fake bucket carries its own config.
@@ -1471,6 +1474,18 @@ class FakeNatsClient:
                 )
                 continue
             refill.owed = False
+
+    async def ping(self, *, timeout: float = 2.0) -> bool:
+        """a health probe's round trip, as the real client makes it: answered by :attr:`answers_ping`, which a test
+        sets False for a broker that has stopped answering.
+
+        :param timeout: seconds the real client would wait; nothing is waited on here
+        :ptype timeout: float
+        :return: whether the broker answered
+        :rtype: bool
+        """
+        del timeout
+        return self.answers_ping
 
     def add_reconnect_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """register an async hook run after each reconnect, as the real client does.

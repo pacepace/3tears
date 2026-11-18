@@ -78,7 +78,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.core.security.door_request import PopKey
-    from threetears.nats import NatsClient
+    from threetears.nats.capabilities import RawRequester
 
 __all__ = [
     "AUDIT_ANONYMIZE_ERROR_CODES",
@@ -244,7 +244,7 @@ class AuditAnonymization:
 
 
 async def request_audit_anonymization(
-    nats_client: NatsClient,
+    nats_client: RawRequester,
     *,
     identity_token: str,
     agent_id: UUID,
@@ -259,8 +259,9 @@ async def request_audit_anonymization(
     every batch is safe to retry, so a caller that sees
     :class:`AuditAnonymizeUnavailableError` retries the whole call.
 
-    :param nats_client: this pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :param nats_client: this pod's connected NATS client, or anything that sends a request and answers its
+        reply's bytes (only ``request_raw`` is used)
+    :ptype nats_client: RawRequester
     :param identity_token: this pod's CURRENT hub identity token
     :ptype identity_token: str
     :param agent_id: this pod's own agent id, which the hub compares with the verified one -- or,
@@ -322,12 +323,12 @@ async def request_audit_anonymization(
 
 
 async def _send(
-    nats_client: NatsClient, request: AuditAnonymizeRequest, *, timeout_seconds: float
+    nats_client: RawRequester, request: AuditAnonymizeRequest, *, timeout_seconds: float
 ) -> AuditAnonymization:
     """send one batch and validate its reply.
 
-    :param nats_client: this pod's connected NATS client
-    :ptype nats_client: NatsClient
+    :param nats_client: this pod's connected NATS client (its ``request_raw``)
+    :ptype nats_client: RawRequester
     :param request: the batch
     :ptype request: AuditAnonymizeRequest
     :param timeout_seconds: seconds to wait for the answer

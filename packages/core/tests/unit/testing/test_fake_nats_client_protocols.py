@@ -135,6 +135,17 @@ async def test_a_holder_of_the_whole_client_reads_its_namespace_publishes_raw_an
     assert [(str(subject), payload) for subject, payload in client.jetstream_published] == [("audit.x", b"event")]
 
 
+@pytest.mark.asyncio
+async def test_a_holder_of_the_whole_client_pings_the_broker_and_hears_when_it_stops_answering() -> None:
+    """Flips if a health probe holding the client by NatsClientLike cannot ping through the double, or the double
+    cannot be made to stop answering (survey's FakeBusRegistry handed the fake over as a NatsClient for this)."""
+    client = FakeNatsClient()
+    held: NatsClientLike = client
+    assert await held.ping() is True
+    client.answers_ping = False
+    assert await held.ping(timeout=0.1) is False
+
+
 def test_the_double_binds_a_change_log_an_epoch_source_and_reader_take() -> None:
     client = FakeNatsClient()
     assert isinstance(client, ChangeLogBinder)

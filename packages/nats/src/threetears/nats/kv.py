@@ -3718,8 +3718,8 @@ class NatsClientLike(KvDeclaring, KvPublisher, TypedSubscriber, JetStreamPublish
     for one call. A field typed by this takes a :class:`NatsClient` in production and
     :class:`threetears.core.testing.kv.FakeNatsClient` in a test, with no cast: the declaring and
     opening of KV buckets, a typed or raw publish and a typed subscription, a JetStream publish, a
-    change log, the namespace subjects are built under, and the reconnect hook a bucket's declarer
-    re-runs after the broker comes back. A consumer that also needs what the fake does not serve
+    change log, the namespace subjects are built under, the reconnect hook a bucket's declarer
+    re-runs after the broker comes back, and a health probe's round trip (``ping``). A consumer that also needs what the fake does not serve
     (requests, durable consumers, object stores) types that one call by its own capability.
     """
 
@@ -3770,6 +3770,17 @@ class NatsClientLike(KvDeclaring, KvPublisher, TypedSubscriber, JetStreamPublish
 
         :return: None
         :rtype: None
+        """
+        ...
+
+    async def ping(self, *, timeout: float = 2.0) -> bool:
+        """a round trip to the broker: whether it answered within ``timeout`` (a health probe's question; the
+        connection's own state can say connected long after the broker has gone).
+
+        :param timeout: seconds to wait for the answer
+        :ptype timeout: float
+        :return: whether the broker answered in time
+        :rtype: bool
         """
         ...
 

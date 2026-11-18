@@ -56,7 +56,9 @@ class _ScriptedRequests:
         self._replies = list(replies)
         self.sent: list[tuple[str, dict[str, Any]]] = []
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+    async def request_raw(
+        self, *, subject: Subject, payload: bytes, timeout: timedelta = timedelta(seconds=5)
+    ) -> bytes:
         """
         :param subject: request subject
         :ptype subject: Subject
@@ -104,7 +106,7 @@ async def _call(nats: _ScriptedRequests, actors: list[UUID], **kwargs: Any) -> A
     """
     arguments: dict[str, Any] = {"identity_token": _TOKEN, "agent_id": _AGENT, "actor_user_ids": actors}
     arguments.update(kwargs)
-    return await request_audit_anonymization(nats, **arguments)  # type: ignore[arg-type]
+    return await request_audit_anonymization(nats, **arguments)
 
 
 class TestTheModels:
