@@ -41,6 +41,15 @@ class PlannedArm:
 
 
 @dataclass(frozen=True)
+class Continues:
+    """The earlier run a plan continues as one comparison: its run (its directory's name under the runs) and the plan
+    commit that run recorded."""
+
+    run: str
+    plan_commit: str
+
+
+@dataclass(frozen=True)
 class Plan:
     """A plan as its file states it (see the module).
 
@@ -58,6 +67,8 @@ class Plan:
     secondary: tuple[str, ...]
     #: The files under ``onramp/`` its apps are read from: ``apps.jsonl`` (the development set) unless it says.
     registries: tuple[str, ...] = ("apps.jsonl",)
+    #: The earlier run this plan's run continues as one comparison, or ``None`` for a comparison of its own.
+    continues: Continues | None = None
 
     @property
     def cap_usd(self) -> float:
@@ -90,6 +101,11 @@ def load_plan(path: Path) -> Plan:
             primary=str(raw["check"]["primary"]),
             secondary=tuple(str(check) for check in raw["check"]["secondary"]),
             registries=tuple(str(name) for name in raw.get("cases", ["apps.jsonl"])),
+            continues=(
+                Continues(str(raw["continues"]["run"]), str(raw["continues"]["plan_commit"]))
+                if "continues" in raw
+                else None
+            ),
         )
     except (KeyError, TypeError) as unshaped:
         raise ValueError(f"{path} is not a plan: {unshaped!r} is missing or misshapen") from unshaped
@@ -234,3 +250,29 @@ def plan_refusal(
         if held != wheel_dir(workdir, built_from).resolve() or not same:
             return f"arm {name}'s wheel {wheel} is not the one built from the plan's {ref} ({wheel_dir(workdir, ref)})"
     return None
+
+
+def continuation_refusal(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> str | None:  # Any: run.json
+    """Why the run ``later`` describes may not continue the run ``earlier`` describes as one comparison, or ``None``
+    when it may. Both are ``run.json``'s shape (a planned run's too, before it runs, as ``campaign.run_record`` builds
+    it).
+
+    The two must have the same arms, by name and commit and in the same order (the control first, so the direction
+    is the same); the same tier and model; the same ``k``; the same primary check; and the same question (which sets
+    the lean). The level is the package's, read by one interpreter. No app may be in both: a case is read once.
+    """
+    said = []
+    arms = [(name, arm.get("commit")) for name, arm in earlier.get("arms", {}).items()]
+    if arms != [(name, arm.get("commit")) for name, arm in later.get("arms", {}).items()]:
+        said.append(
+            f"the arms differ ({arms} against {[(n, a.get('commit')) for n, a in later.get('arms', {}).items()]})"
+        )
+    models = {name: tier.get("model") for name, tier in earlier.get("tiers", {}).items()}
+    if models != {name: tier.get("model") for name, tier in later.get("tiers", {}).items()}:
+        said.append(f"the tiers or their models differ ({models} against the later run's)")
+    for key in ("k", "primary", "question"):
+        if earlier.get(key) != later.get(key):
+            said.append(f"{key} differs ({earlier.get(key)!r} against {later.get(key)!r})")
+    if repeated := sorted(set(earlier.get("apps", [])) & set(later.get("apps", []))):
+        said.append(f"an app is read once in a comparison, and {', '.join(repeated)} is in both runs")
+    return "; ".join(said) or None

@@ -50,7 +50,14 @@ from packages.evals.onramp.agent import (
     scored_door_turns,
     stuck_point,
 )
-from packages.evals.onramp.checks import REGRADE_BUDGET_S, eval_runs, measures_the_app, read_right
+from packages.evals.onramp.checks import (
+    REGRADE_BUDGET_S,
+    eval_runs,
+    first_line_read,
+    measures_the_app,
+    read_right,
+    within_tolerance,
+)
 from packages.evals.onramp.rescore import read_again
 from packages.evals.onramp.campaign import (
     CELL_BUDGET_S,
@@ -65,6 +72,8 @@ from packages.evals.onramp.campaign import (
     live_refusal,
     main,
     quote,
+    regraded,
+    stored_costs,
 )
 from packages.evals.onramp import isolation
 from packages.evals.onramp.isolation import (
@@ -81,7 +90,16 @@ from packages.evals.onramp.isolation import (
     stoppable,
     unpack,
 )
-from packages.evals.onramp.sandbox import APPS, READ_BYTES, TWINS, DocsBuild, Observation, Sandbox
+from packages.evals.onramp.sandbox import (
+    APPS,
+    READ_BYTES,
+    TWINS,
+    DocsBuild,
+    Observation,
+    Sandbox,
+    UntrackedSource,
+    copy_tracked,
+)
 
 FIXTURES = {
     "recipes": "tests/fixtures/scaling.jsonl",
@@ -1456,3 +1474,91 @@ def test_the_spend_line_states_the_charged_bound_beside_the_reported_cost() -> N
         == "spend: $0.030 reported by the provider; at most $0.060 billed (each cut-off call at its ceiling)"
     )
     assert "unpriced" in spend_line([{"record": {"cost_usd": None, "charged_usd": 0.05}}])
+
+
+def test_a_pass_rate_on_the_tolerance_is_within_it_whatever_the_floats_say() -> None:
+    """``abs(0.72 - 0.725)`` is a hair above 0.005 in floats; the tolerance is read in exact decimals, inclusive."""
+    assert abs(0.72 - 0.725) > 0.005, "the floats' own difference, which the check must not read"
+    assert within_tolerance(0.72, 0.725) and within_tolerance(0.12, 0.125) and within_tolerance(0.73, 0.725)
+    assert not within_tolerance(0.719, 0.725) and not within_tolerance(0.7301, 0.725)
+    one = _run_facts(readings=["grader"], means={"grader": 0.725})
+    report = {"first_line": "g: r passed 2 of 3 cases.", "finished": True, "pass_rate": 0.72}
+    assert read_right({}, {"report": report, "checks": one})
+
+
+def test_the_first_line_is_read_right_when_its_lead_sentence_is_given_as_printed() -> None:
+    """The lead sentence is the verdict and its counts; what follows names the cases that failed, printed only when an
+    eval catches some, so leaving it off is a right reading, and cutting into the lead is not."""
+    printed = "app: run passed 29 of 40 cases. Cases that failed a trial: case 4, case 5, and 9 more."
+    assert first_line_read(printed, printed)
+    assert first_line_read("app: run passed 29 of 40 cases.", printed)
+    assert first_line_read("app: run passed 29 of 40 cases. Cases that failed a trial: case 4", printed)
+    assert not first_line_read("app: run passed 29 of 40", printed), "the lead cut short"
+    assert not first_line_read("app: run passed 30 of 40 cases.", printed), "another count"
+    assert not first_line_read("", "")
+
+
+def test_ls_of_a_path_that_is_not_in_the_app_is_the_agents_and_one_outside_it_the_harnesss() -> None:
+    missing = "ls: requests/ is not in the app's directory or the installed package"
+    assert cause(_step(3, "run", False, command="ls requests/", first_error=missing)) == "agent"
+    outside = "ls: /etc is not in the app's directory or the installed package"
+    assert cause(_step(3, "run", False, command="ls /etc", first_error=outside)) == "harness"
+    climbing = "ls: ../other is not in the app's directory or the installed package"
+    assert cause(_step(3, "run", False, command="ls ../other", first_error=climbing)) == "harness"
+
+
+def test_a_trial_is_made_of_committed_files_only_and_never_of_an_ignored_one(tmp_path: Path) -> None:
+    app = tmp_path / "repo" / "app"
+    (app / "data").mkdir(parents=True)
+    (app / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (app / "data" / "cases.jsonl").write_text("{}\n", encoding="utf-8")
+    (app.parent / ".gitignore").write_text("__pycache__/\n*.log\n", encoding="utf-8")
+    for command in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "t"]):
+        subprocess.run(["git", "-C", str(app.parent), *command], check=True)
+    (app / "__pycache__").mkdir()
+    (app / "__pycache__" / "app.cpython-314.pyc").write_bytes(b"stale")
+    (app / "local.log").write_text("ignored\n", encoding="utf-8")
+    (app / "notes.txt").write_text("untracked\n", encoding="utf-8")
+
+    copied = copy_tracked(app, tmp_path / "trial")
+
+    assert copied == ["app.py", "data/cases.jsonl"]
+    assert (
+        sorted(p.relative_to(tmp_path / "trial").as_posix() for p in (tmp_path / "trial").rglob("*") if p.is_file())
+        == copied
+    )
+    with pytest.raises(UntrackedSource, match="no committed file"):
+        copy_tracked(tmp_path / "trial", tmp_path / "again")
+
+
+def test_the_quote_expects_what_stored_trials_of_its_model_were_billed_and_the_cap_still_bounds_it(
+    tmp_path: Path,
+) -> None:
+    tier = TIERS["cheap"]
+    (tmp_path / "20260101T000000Z").mkdir()
+    rows = [{"record": {"model": tier.model_id, "charged_usd": cost}} for cost in (0.004, 0.008, 0.006)] + [
+        {"record": {"model": "scripted", "charged_usd": 0.0}},
+        {"record": None},
+    ]
+    (tmp_path / "20260101T000000Z" / "trials.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    stored = stored_costs(tier.model_id, tmp_path)
+    assert stored == [0.004, 0.008, 0.006]
+    priced = quote(tier, runs=10, cap_usd=2.0, stored=stored)
+    assert priced.expected_usd == pytest.approx(0.06) and priced.bound_usd == pytest.approx(2.0)
+    assert "the mean billed over 3 stored trials" in priced.lines()[-1]
+    assert quote(tier, runs=10, cap_usd=0.01, stored=stored).expected_usd == pytest.approx(0.01), "held to its cap"
+    assert "no trial of this model is stored" in quote(tier, runs=10, cap_usd=None).lines()[-1]
+
+
+def test_a_stored_run_graded_again_moves_only_what_todays_checks_read_differently() -> None:
+    facts = {**_run_facts(readings=["grader"], means={"grader": 0.725}), "twin": {"means": {"grader": 0.725}}}
+    record = {"app": "x", "checks": facts, "report": {"first_line": "g: r passed 2 of 3 cases.", "finished": True,
+              "pass_rate": 0.72}}  # fmt: skip
+    stored = {"eval_runs": 1.0, "measures_the_app": 0.0, "read_right": 0.0}
+    rows = [{"arm": "a", "app": "x", "repeat": 1, "state": "failed", "scores": stored, "record": record}]
+    again, said = regraded(rows)
+    assert again[0]["scores"]["read_right"] == 1.0 and rows[0]["scores"]["read_right"] == 0.0, "the stored row kept"
+    assert "a read_right: 0 passed as stored, 1 by today's check" in said
+    assert any("grades every stored trial as the run did" in line for line in said)

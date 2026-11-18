@@ -9,9 +9,9 @@ the event loop (``quick/one_call.py``), where three re-runs of an eval would sta
 - :func:`measures_the_app`: on the app's fixed twin its reading moves the better way on at least one measure, the way
   the package states is better for it (``higher_is_better``), and a runner that does nothing passes at most half its
   cases: the eval beats doing nothing.
-- :func:`read_right`: the agent's report matches the run: the first line verbatim, the pass rate within half a point
-  of the measure it names (of the eval's one measure, when the name is none the run printed), and ``finished`` true
-  exactly when the run finished.
+- :func:`read_right`: the agent's report matches the run: the first line's lead sentence (the verdict and its counts),
+  given as the run printed it; the pass rate within half a point of the measure it names (of the eval's one measure,
+  when the name is none the run printed), compared exactly; and ``finished`` true exactly when the run finished.
 
 Every re-run is a command in the trial's container (:class:`~.isolation.Container`), as the agent's own were: the
 regrade runs what the agent wrote, so it runs it where the agent ran it, with no network, and it makes no model call.
@@ -29,6 +29,7 @@ import re
 import shlex
 import time
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +38,9 @@ from .sandbox import DOOR_EXITS_OK, Observation, Sandbox, is_door
 #: The most the whole regrade of one trial may take, in seconds: with the agent's wall cap it fits the cell budget. The
 #: baseline's regrades took 9 to 15 s each (run 20261115T224108Z, regraded again 2026-11-16).
 REGRADE_BUDGET_S = 90.0
-#: How far the reported pass rate may be from the stored one: half a point.
-PASS_RATE_TOLERANCE = 0.005
+#: How far the reported pass rate may be from the stored one: half a point, inclusive, compared in exact decimals (a
+#: rate of 0.72 against a mean of 0.725 is within it, though the floats' difference is a hair above 0.005).
+PASS_RATE_TOLERANCE = Decimal("0.005")
 
 
 def _eval_file(report: Mapping[str, Any] | None, commands: Sequence[Mapping[str, Any]]) -> str | None:
@@ -175,9 +177,36 @@ def reported_measures(report: Mapping[str, Any], app: Mapping[str, Any]) -> list
     return list(means.values()) if len(app["readings"]) == 1 else []
 
 
+def within_tolerance(rate: float, mean: float) -> bool:
+    """Whether a reported ``rate`` is within :data:`PASS_RATE_TOLERANCE` of ``mean``, each read as the decimal its
+    shortest repr spells, so the bound is the one the docs state and not a float's rounding of it."""
+    return abs(Decimal(repr(rate)) - Decimal(repr(mean))) <= PASS_RATE_TOLERANCE
+
+
+#: Where a first line's lead sentence ends: a full stop followed by a space, or the line's end.
+_SENTENCE_END = re.compile(r"\.(?=\s|$)")
+
+
+def lead_sentence(line: str) -> str:
+    """A first line's lead sentence: the verdict and its counts, through the first full stop that ends a sentence (the
+    whole line when none does). What follows it (``Cases that failed a trial: ...``) names cases, and is printed only
+    when an eval fails some; an agent that gives the lead and leaves the rest has read the line right."""
+    stripped = line.strip()
+    end = _SENTENCE_END.search(stripped)
+    return stripped if end is None else stripped[: end.end()]
+
+
+def first_line_read(reported: str, printed: str) -> bool:
+    """Whether the report's first line is the run's: the line as printed, or a part of it from its start that holds at
+    least its whole lead sentence (:func:`lead_sentence`)."""
+    given, line = reported.strip(), printed.strip()
+    return bool(line) and line.startswith(given) and given.startswith(lead_sentence(line))
+
+
 def read_right(case: dict[str, Any], out: dict[str, Any]) -> bool:
-    """The agent's report matches the run: its first line verbatim, its pass rate within half a point of the measure it
-    names (or of the eval's one measure, when the name is none the run printed), its ending.
+    """The agent's report matches the run: its first line's lead sentence as printed (:func:`first_line_read`), its pass
+    rate within half a point of the measure it names (or of the eval's one measure, when the name is none the run
+    printed), its ending.
 
     A competent reading names the measure it reports, as the console printed it or as the eval declared it, and gives
     its value; of an eval with one measure, the name may be left out. A pass rate that is not the named measure's (a
@@ -190,10 +219,10 @@ def read_right(case: dict[str, Any], out: dict[str, Any]) -> bool:
     app = checks["app"]
     rate = report.get("pass_rate")
     return (
-        str(report.get("first_line", "")).strip() == checks["door_first_line"].strip()
+        first_line_read(str(report.get("first_line", "")), checks["door_first_line"])
         and isinstance(rate, int | float)
         and not isinstance(rate, bool)
-        and any(abs(rate - mean) <= PASS_RATE_TOLERANCE for mean in reported_measures(report, app))
+        and any(within_tolerance(rate, mean) for mean in reported_measures(report, app))
         and report.get("finished") is app["finished"]
     )
 

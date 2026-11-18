@@ -17,6 +17,7 @@ import pytest
 from packages.evals.onramp.campaign import CASES, HELD_OUT, TIERS, TRANSCRIPTS, main, quote, registry, run_record
 from packages.evals.onramp.plan import (
     PLANS,
+    continuation_refusal,
     Plan,
     PlannedArm,
     committed_at,
@@ -27,6 +28,8 @@ from packages.evals.onramp.plan import (
 )
 from packages.evals.onramp.reading import (
     CHECKS,
+    Stage,
+    read_continued,
     PRIMARY,
     SEPARATED,
     Unreadable,
@@ -123,7 +126,7 @@ def test_the_reading_states_every_check_the_primary_first_and_each_apps_tally_pe
 #: The package's certified claims under the on-ramp's null (apps as cases, three trials each, base shares from 0.1 to
 #: 0.6, an arm-by-app spread of sd 0.1): a question's primary read once, or continued to five reads, separates at most
 #: alpha. Counted through the package's reading by ``packages/evals/scripts/certify_stats.py``.
-ONRAMP_CLAIMS = ("small-n.once.onramp", "small-n.continued.onramp.separates")
+ONRAMP_CLAIMS = ("small-n.once.onramp", "small-n.continued.onramp.separates", "small-n.planned.onramp.separates")
 
 
 def test_the_error_rate_the_reading_holds_is_the_packages_certified_claim_under_the_onramp_null() -> None:
@@ -315,3 +318,57 @@ def test_every_app_has_its_twin_and_a_scripted_transcript_the_pre_flight_runs() 
         acts = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines() if line.strip()]
         assert acts[-1]["tool"] == "done" and "{first_line}" in acts[-1]["text"], app
         assert any(act["tool"] == "run" and "threetears.evals" in act["command"] for act in acts), app
+
+
+def _stage(tallies: dict[str, dict[str, tuple[int, int]]]) -> Stage:
+    rows = _rows(tallies, tier="cheap")
+    return Stage(tuple(rows), tuple(tallies), tuple(next(iter(tallies.values()))))
+
+
+async def test_two_runs_are_read_as_one_comparison_continued_and_the_first_alone_reads_as_it_did() -> None:
+    first = _stage(
+        {
+            "docs@control": {"a": (1, 3), "b": (0, 3), "c": (2, 3)},
+            "docs@candidate": {"a": (3, 3), "b": (2, 3), "c": (2, 3)},
+        }
+    )
+    later = _stage({"docs@control": {"d": (0, 3), "e": (1, 3)}, "docs@candidate": {"d": (3, 3), "e": (3, 3)}})
+    alone = await read(list(first.rows), arms=first.arms, apps=first.apps)
+    (once,) = alone.contrasts(PRIMARY)
+    (again,) = (await read_continued([first])).contrasts(PRIMARY)
+    assert (once["p_adjusted"], once["cases"]) == (again["p_adjusted"], again["cases"]), "one stage reads as read does"
+
+    continued = await read_continued([first, later])
+
+    (row,) = continued.contrasts(PRIMARY)
+    assert row["cases"] == "5 paired"
+    assert row["control_mean"] == pytest.approx(100 * (1 / 3 + 0 + 2 / 3 + 0 + 1 / 3) / 5)
+    assert any(line.startswith("Continues the comparison run before") for line in continued.render().splitlines())
+    with pytest.raises(Unreadable, match="a, b, c is in two runs"):
+        await read_continued([first, first])
+    with pytest.raises(Unreadable, match="arms differ"):
+        await read_continued([first, Stage(later.rows, ("docs@candidate", "docs@control"), later.apps)])
+
+
+def test_a_run_may_continue_another_only_on_the_same_builds_tier_k_check_and_question() -> None:
+    earlier = {
+        "arms": {"docs@control": {"commit": "f9"}, "docs@candidate": {"commit": "1f"}},
+        "tiers": {"cheap": {"model": "m"}},
+        "k": 3,
+        "primary": PRIMARY,
+        "question": "Q?",
+        "apps": ["a", "b"],
+    }
+    later = {**earlier, "apps": ["c"]}
+    assert continuation_refusal(earlier, later) is None
+    for changed, said in (
+        ({"arms": {"docs@control": {"commit": "f9"}, "docs@candidate": {"commit": "zz"}}}, "arms differ"),
+        ({"arms": {"docs@candidate": {"commit": "1f"}, "docs@control": {"commit": "f9"}}}, "arms differ"),
+        ({"tiers": {"cheap": {"model": "other"}}}, "tiers or their models differ"),
+        ({"k": 2}, "k differs"),
+        ({"primary": "eval_runs"}, "primary differs"),
+        ({"question": "Other?"}, "question differs"),
+        ({"apps": ["c", "a"]}, "a is in both runs"),
+    ):
+        refused = continuation_refusal(earlier, {**later, **changed})
+        assert refused is not None and said in refused, (changed, refused)

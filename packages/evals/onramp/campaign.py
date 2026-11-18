@@ -54,6 +54,7 @@ from .checks import GRADERS, regrade
 from .isolation import IsolationUnavailable, unavailable
 from .plan import (
     Plan,
+    continuation_refusal,
     build_wheel,
     built_wheel,
     commit_of,
@@ -63,7 +64,7 @@ from .plan import (
     plan_refusal,
     uncommitted,
 )
-from .reading import PRIMARY, Unreadable, power_lines, reading_lines
+from .reading import PRIMARY, Stage, Unreadable, continued_power, power_lines, read_continued, reading_lines
 from .sandbox import HERE, DocsBuild, Sandbox
 
 CASES = HERE / "apps.jsonl"
@@ -147,7 +148,10 @@ class Quote:
     :ivar runs: Agent runs: arms x apps x repeats.
     :ivar per_run_usd: The most one run may spend: the tier's cap, or its share of the campaign's if smaller.
     :ivar bound_usd: The most the campaign can spend: every run at its cap.
-    :ivar expected_usd: What it is expected to spend at :data:`PROFILE` and the tier's rates.
+    :ivar expected_usd: What it is expected to spend: the mean billed over the tier's model's stored trials
+        (:attr:`stored`), each run held to its cap; with none stored, :data:`PROFILE` at the tier's rates.
+    :ivar stored: The billed cost of each stored trial of the tier's model the expectation is the mean of; empty when
+        none is stored, and the profile is used.
     """
 
     tier: Tier
@@ -155,25 +159,53 @@ class Quote:
     per_run_usd: float
     bound_usd: float
     expected_usd: float
+    stored: tuple[float, ...] = ()
 
     def lines(self) -> list[str]:
         turns, prompt_tokens, output_tokens = PROFILE
+        expected = (
+            f"expected: ${self.expected_usd:.2f} (the mean billed over {len(self.stored)} stored trials of this model, "
+            f"${sum(self.stored) / len(self.stored):.4f} a run, at most ${max(self.stored):.4f}; the cap bounds it)"
+            if self.stored
+            else f"expected: ${self.expected_usd:.2f} ({turns} turns a run, {prompt_tokens} prompt and {output_tokens} "
+            f"output tokens a turn, at ${self.tier.input_per_m}/${self.tier.output_per_m} per million: "
+            f"{self.tier.rates_from}; no trial of this model is stored to fit it to)"
+        )
         return [
             f"model: {self.tier.model_id} ({self.tier.name} tier)",
             f"runs: {self.runs}, each capped at ${self.per_run_usd:.2f}",
             f"at most: ${self.bound_usd:.2f}",
-            f"expected: ${self.expected_usd:.2f} ({turns} turns a run, {prompt_tokens} prompt and {output_tokens} "
-            f"output tokens a turn, at ${self.tier.input_per_m}/${self.tier.output_per_m} per million: "
-            f"{self.tier.rates_from})",
+            expected,
         ]
 
 
-def quote(tier: Tier, *, runs: int, cap_usd: float | None) -> Quote:
-    """What ``runs`` runs on ``tier`` may spend, held to ``cap_usd`` when one is stated."""
+def quote(tier: Tier, *, runs: int, cap_usd: float | None, stored: Sequence[float] = ()) -> Quote:
+    """What ``runs`` runs on ``tier`` may spend, held to ``cap_usd`` when one is stated, and expected to spend at the
+    mean of ``stored`` (the billed cost of each stored trial of the tier's model, :func:`stored_costs`), or at
+    :data:`PROFILE` when none is stored. The cap, not the expectation, is what holds a run."""
     per_run = tier.per_run_usd if cap_usd is None else min(tier.per_run_usd, cap_usd / runs)
     turns, prompt_tokens, output_tokens = PROFILE
-    each = turns * (prompt_tokens * tier.input_per_m + output_tokens * tier.output_per_m) / 1_000_000
-    return Quote(tier, runs, per_run, per_run * runs, min(each, per_run) * runs)
+    each = (
+        sum(stored) / len(stored)
+        if stored
+        else turns * (prompt_tokens * tier.input_per_m + output_tokens * tier.output_per_m) / 1_000_000
+    )
+    return Quote(tier, runs, per_run, per_run * runs, min(each, per_run) * runs, tuple(stored))
+
+
+def stored_costs(model_id: str, workdir: Path) -> list[float]:
+    """The billed cost of every stored live trial of ``model_id`` under ``workdir``'s runs (each ``trials.jsonl``, a
+    tier's too): what the trial was charged, counting each cut-off call at its ceiling. A scripted trial, or one whose
+    charge was not bounded, is none."""
+    costs = []
+    for file in sorted([*workdir.glob("*/trials.jsonl"), *workdir.glob("*/*/trials.jsonl")]):
+        for line in file.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line).get("record")
+            if isinstance(record, Mapping) and record.get("model") == model_id:
+                charged = record.get("charged_usd")
+                if isinstance(charged, int | float) and not isinstance(charged, bool):
+                    costs.append(float(charged))
+    return costs
 
 
 def live_refusal(environment: Mapping[str, str], cap_usd: float | None) -> str | None:
@@ -381,12 +413,24 @@ def _parser() -> argparse.ArgumentParser:
         help="read a stored run by the package, apps as cases, tier by tier: no model call, nothing run",
     )
     parser.add_argument(
+        "--today",
+        action="store_true",
+        help="with --read: grade each stored trial again by today's checks over its stored facts; the run is unchanged",
+    )
+    parser.add_argument(
         "--power",
         nargs=3,
         type=float,
         default=None,
         metavar=("APPS", "K", "EFFECT"),
         help="how often the package's reading of a plan this size separates EFFECT, simulated: nothing run",
+    )
+    parser.add_argument(
+        "--power-continued",
+        nargs=3,
+        default=None,
+        metavar=("RUN_DIR", "ADD", "SCALE"),
+        help="how often continuing a stored run with ADD apps separates, its observed effect times SCALE: simulated",
     )
     parser.add_argument("--spread", type=float, default=0.1, help="with --power: the arm-by-app noise, as an sd")
     parser.add_argument("--reps", type=int, default=200, help="with --power: simulated runs")
@@ -408,10 +452,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.read is not None:
         try:
-            print("\n".join(read_stored(args.read)))
+            print("\n".join(read_stored(args.read, today=args.today)))
         except Unreadable as unreadable:
             print(f"onramp-agent: {unreadable}", file=sys.stderr)
             return 2
+        return 0
+    if args.power_continued is not None:
+        stored, add, scale = Path(args.power_continued[0]), int(args.power_continued[1]), float(args.power_continued[2])
+        meta, rows = load_run(stored)
+        earlier = Stage(tuple(rows), tuple(meta["arms"]), tuple(meta["apps"]))
+        hits, n = continued_power(
+            earlier, add=add, scale=scale, reps=args.reps, seed=args.seed, question=meta.get("question")
+        )
+        low, high = clopper_pearson(hits, n)
+        print(
+            f"run {stored.name} continued with {add} apps, its observed effect x{scale:g}, seed {args.seed}: "
+            f"separated in {hits} of {n} simulated continuations ({hits / n:.2f}, 95% range {low:.2f} to {high:.2f})"
+        )
         return 0
     if args.power is not None:
         apps_n, k_n, effect = args.power
@@ -489,7 +546,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("onramp-agent: name a docs build (--arm NAME=WHEEL), or run --scripted", file=sys.stderr)
         return 2
     priced = {
-        name: quote(TIERS[name], runs=len(wheels) * cases * k, cap_usd=plan.tiers[name] if plan else args.cap)
+        name: quote(
+            TIERS[name],
+            runs=len(wheels) * cases * k,
+            cap_usd=plan.tiers[name] if plan else args.cap,
+            stored=stored_costs(TIERS[name].model_id, args.workdir),
+        )
         for name in tiers
     }
     for name, each in priced.items():
@@ -498,6 +560,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if plan is not None:
         print("\n".join(_plan_lines(plan, priced)))
+    # A plan that continues an earlier run reads it and this run as one comparison: the earlier run must be here, be the
+    # run the plan names, and share every term of the comparison, or no live run starts.
+    earlier: list[Stage] = []
+    if plan is not None and plan.continues is not None:
+        planned = run_record(plan, wheels, [case["app"] for case in run_cases], k, priced)
+        try:
+            earlier = earlier_stages(planned, args.workdir)
+        except (Unreadable, OSError, KeyError) as why:
+            print(f"plan continues run {plan.continues.run}, which it cannot: {why}", file=sys.stderr)
+            if not args.dry_run:
+                return 2
+        else:
+            print(
+                f"plan continues run {plan.continues.run}: its {len(earlier[0].apps)} apps, then this plan's "
+                f"{len(run_cases)}, read as one comparison"
+            )
     base = args.recordings or run_dir / "recordings"
     # With several tiers, each tier's recordings are in its own directory, beside its trials, so --regrade reads it.
     recordings = {
@@ -568,7 +646,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             tier_dir = run_dir / name if len(tiers) > 1 else run_dir
             arms[build.name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=tier_dir, caps=caps)
         ev = onramp_eval(arms, k=k, max_cost_usd=plan.tiers[name] if plan else args.cap, cases=run_cases)
-        exit_codes.append(_finish(ev, run_dir / name if len(tiers) > 1 else run_dir, tier=name, plan=plan))
+        exit_codes.append(
+            _finish(ev, run_dir / name if len(tiers) > 1 else run_dir, tier=name, plan=plan, earlier=earlier)
+        )
     return next((code for code in exit_codes if code), 0)
 
 
@@ -613,6 +693,11 @@ def run_record(
     return {
         "plan": None if plan is None else str(plan.path.resolve().relative_to(HERE.parents[2])),
         "plan_commit": None if plan is None else committed_at(plan.path),
+        "continues": (
+            None
+            if plan is None or plan.continues is None
+            else {"run": plan.continues.run, "plan_commit": plan.continues.plan_commit}
+        ),
         "head_commit": head_commit(),
         "uncommitted": uncommitted(),
         "question": None if plan is None else plan.question,
@@ -630,12 +715,12 @@ def run_record(
     }
 
 
-def read_stored(run_dir: Path) -> list[str]:
-    """``--read``: the package's reading of a stored run, apps as cases, tier by tier (each tier's ``trials.jsonl``,
-    in its own directory when the run had more than one), with the plan's primary check and question when it ran one,
-    and the control the run's ``run.json`` names first (a tier's directory reads its run's).
+def load_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # Any: run.json, stored rows
+    """A stored run: its ``run.json`` (its own, or, for one tier's directory, its run's; empty for a run from before it
+    was written) and every row of its ``trials.jsonl`` (each tier's, in its own directory when the run had more than
+    one), each stamped with its tier.
 
-    :raises Unreadable: No ``trials.jsonl`` under ``run_dir``, or rows the package cannot read with apps as cases.
+    :raises Unreadable: No ``trials.jsonl`` under ``run_dir``.
     """
     files = (
         [run_dir / "trials.jsonl"] if (run_dir / "trials.jsonl").is_file() else sorted(run_dir.glob("*/trials.jsonl"))
@@ -650,6 +735,67 @@ def read_stored(run_dir: Path) -> list[str]:
             rows.append({**row, "tier": row.get("tier") or tier})
     recorded = [path for path in (run_dir / "run.json", run_dir.parent / "run.json") if path.is_file()]
     meta = json.loads(recorded[0].read_text(encoding="utf-8")) if recorded else {}
+    return meta, rows
+
+
+def earlier_stages(meta: Mapping[str, Any], runs: Path) -> list[Stage]:  # Any: run.json
+    """The earlier run ``meta`` continues, as the first stage of one comparison (empty for a run that continues none):
+    read from ``runs/<run>``, and held to share the comparison (:func:`~.plan.continuation_refusal`).
+
+    :raises Unreadable: The earlier run is not there, is not the one the plan named, or does not share the comparison.
+    """
+    continues = meta.get("continues")
+    if not continues:
+        return []
+    earlier_dir = runs / continues["run"]
+    earlier, rows = load_run(earlier_dir)
+    commit, named = earlier.get("plan_commit") or "", continues["plan_commit"]
+    if not commit or not (commit.startswith(named) or commit_of(named) == commit):
+        raise Unreadable(f"run {continues['run']} ran plan commit {commit or 'none'}, not the {named} the plan names")
+    if (refusal := continuation_refusal(earlier, meta)) is not None:
+        raise Unreadable(f"this run may not continue {continues['run']}: {refusal}")
+    return [Stage(tuple(rows), tuple(earlier["arms"]), tuple(earlier["apps"]))]
+
+
+def regraded(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:  # Any: stored rows
+    """Each stored trial graded again by today's checks over the facts its record holds (no container, no model call),
+    and what moved: a line per arm and check whose count changed, and one per trial whose primary grade changed, which
+    should be none (the primary's grader is not today's to change). Rows with no record keep their stored grades. The
+    stored rows are not touched."""
+    again, said = [], []
+    moved: dict[tuple[str, str], tuple[int, int]] = {}
+    for row in rows:
+        record = row.get("record")
+        if not isinstance(record, Mapping) or not isinstance(record.get("checks"), Mapping):
+            again.append(dict(row))
+            continue
+        scores = {g.__name__: float(g({"app": record.get("app")}, dict(record))) for g in GRADERS}
+        for name, score in scores.items():
+            before, after = moved.get((str(row["arm"]), name), (0, 0))
+            moved[(str(row["arm"]), name)] = (before + (row["scores"].get(name) == 1.0), after + (score == 1.0))
+            if name == PRIMARY and score != row["scores"].get(name):
+                said.append(f"PRIMARY MOVED: {row['arm']} {record.get('app')} repeat {row.get('repeat')}")
+        again.append({**row, "scores": {**row["scores"], **scores}})
+    for (arm, name), (before, after) in moved.items():
+        if before != after:
+            said.append(f"{arm} {name}: {before} passed as stored, {after} by today's check")
+    if not any(line.startswith("PRIMARY MOVED") for line in said):
+        said.append(f"{PRIMARY}: today's check grades every stored trial as the run did")
+    return again, said
+
+
+def read_stored(run_dir: Path, *, today: bool = False) -> list[str]:
+    """``--read``: the package's reading of a stored run, apps as cases, tier by tier, with the plan's primary check and
+    question when it ran one, the control and the case order its ``run.json`` names (never the rows' order), and, for a
+    run that continues an earlier one, the two read as one comparison (:func:`earlier_stages`).
+
+    :raises Unreadable: As :func:`load_run` and :func:`earlier_stages`; or rows the package cannot read with apps as
+        cases.
+    """
+    meta, rows = load_run(run_dir)
+    moved: list[str] = []
+    if today:
+        rows, moved = regraded(rows)
     head = (
         [f"plan {meta['plan']} at {meta.get('plan_commit')}, run at {meta.get('head_commit')}"]
         if meta.get("plan")
@@ -659,7 +805,13 @@ def read_stored(run_dir: Path) -> list[str]:
     # reordered file reads the same.
     arms, apps = list(meta.get("arms", {})), list(meta.get("apps", []))
     asked = {"primary": meta.get("primary") or PRIMARY, "question": meta.get("question")}
-    return head + reading_lines(rows, arms=arms, apps=apps, **asked)
+    root = run_dir if (run_dir / "run.json").is_file() else run_dir.parent
+    earlier = earlier_stages(meta, root.parent)
+    lines = reading_lines(rows, arms=arms, apps=apps, earlier=earlier, **asked)
+    if today:
+        head += ["graded again by today's checks over the stored facts (description; the stored run is unchanged):"]
+        head += [f"  {line}" for line in moved]
+    return head + lines
 
 
 def preflight(
@@ -723,14 +875,22 @@ def _isolated_builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild
         return f"an agent's commands run only in a trial container, and none can run here: {why}"
 
 
-def _finish(ev: Eval, run_dir: Path, *, tier: str | None = None, plan: Plan | None = None) -> int:
-    """Run the eval into ``run_dir``'s store, print it, write its report and every trial (each stamped with its
-    ``tier``, when the run names one), and, with two arms or more, the package's reading of the run with apps as cases
-    (``reading.txt``); exit as the door does."""
+def _finish(
+    ev: Eval, run_dir: Path, *, tier: str | None = None, plan: Plan | None = None, earlier: Sequence[Stage] = ()
+) -> int:
+    """Run the eval into ``run_dir``'s store, write every trial (each stamped with its ``tier``, when the run names
+    one), print what the run says, and exit as the door does.
+
+    With one arm, the run's own report is the report. With two arms or more, the headline is the package's reading of
+    the primary with apps as cases (``reading.txt``, and ``report/`` from that reading), continuing ``earlier`` runs
+    when a plan continues them; the run's own campaign, every check over trials pooled, is description only and goes
+    to ``campaign-report/``. Under a plan, the console states the plan's rule on what may follow, not the package's
+    general invitation to append cases."""
     run_dir.mkdir(parents=True, exist_ok=True)
     result = asyncio.run(ev.run(store=run_dir / "onramp.sqlite"))
-    print(result.render())
-    written = result.write(run_dir / "report")
+    compared = len(result.arms) > 1
+    if not compared:
+        print(result.render())
     rows = [{**row, "tier": tier} if tier is not None else row for row in trials(result)]
     print(spend_line(rows))
     (run_dir / "trials.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
@@ -745,16 +905,45 @@ def _finish(ev: Eval, run_dir: Path, *, tier: str | None = None, plan: Plan | No
     said = census(rows)
     (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
     print("\n".join(said))
-    if len(result.arms) > 1:
+    if compared:
         asked = {"primary": plan.primary, "question": plan.question} if plan else {}
-        read = reading_lines(rows, arms=list(result.arms), apps=[case["app"] for case in ev.cases], **asked)
+        arms, apps = list(result.arms), [case["app"] for case in ev.cases]
+        read = reading_lines(rows, arms=arms, apps=apps, earlier=earlier, **asked)
         (run_dir / "reading.txt").write_text("\n".join(read) + "\n", encoding="utf-8")
         print("\n".join(read))
+        stages = [*earlier, Stage(tuple(rows), tuple(arms), tuple(apps))]
+        headline = asyncio.run(read_continued(stages, asked.get("primary", PRIMARY), question=asked.get("question")))
+        written = headline.write(run_dir / "report")
+        pooled = result.write(run_dir / "campaign-report")
+        lost = sum(1 for row in rows if not isinstance(row["record"], Mapping))
+        print(
+            f"campaign: every check over trials, pooled (description, never the comparison): {pooled['html']}"
+            + (f"; {lost} trial(s) gave no record: see it" if lost else "")
+        )
+        if plan is not None:
+            print(plan_rule(plan))
+    else:
+        written = result.write(run_dir / "report")
     for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):
         if not (unfinished / "record.json").is_file():
             print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
     print(f"report: {written['html']}\ntrials: {run_dir / 'trials.jsonl'}")
     return result.exit_code()
+
+
+def plan_rule(plan: Plan) -> str:
+    """What a plan's console says may follow its run: its result is the primary's reading, and more apps are a new plan,
+    committed before it runs (a plan that continues an earlier run is that comparison's one continuation)."""
+    if plan.continues is not None:
+        return (
+            f"plan {plan.name}: its result is the primary's reading above, continuing run {plan.continues.run} as one "
+            "comparison, apps as cases. This is that comparison's one continuation: a further top-up is a new plan, "
+            "with its own pre-registration, committed before it runs."
+        )
+    return (
+        f"plan {plan.name}: its result is the primary's reading above, apps as cases. It is read once: more apps are a "
+        "new plan, committed before it runs."
+    )
 
 
 def spend_line(rows: Sequence[Mapping[str, Any]]) -> str:  # Any: a trial's stored row
