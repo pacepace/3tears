@@ -17,10 +17,15 @@ class TestIntentionStatus:
 
     def test_members_compare_equal_to_wire_value(self) -> None:
         """Members are ``str`` subclasses that equal their wire value."""
-        assert IntentionStatus.OPEN == "open"
-        assert IntentionStatus.ASKED == "asked"
-        assert IntentionStatus.GRANTED == "granted"
-        assert IntentionStatus.DROPPED == "dropped"
+        # each member held as a plain str: it is one, and equals its wire value
+        wire: dict[str, str] = {
+            "open": IntentionStatus.OPEN,
+            "asked": IntentionStatus.ASKED,
+            "granted": IntentionStatus.GRANTED,
+            "dropped": IntentionStatus.DROPPED,
+        }
+        for value, member in wire.items():
+            assert member == value
 
     def test_values_derived_from_enum(self) -> None:
         """The tuple is derived from the enum -- no drift possible."""

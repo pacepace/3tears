@@ -157,8 +157,12 @@ class TestTheCollectionTakesTheWidth:
             _collection(embedding_dim=16_001)
 
     def test_the_factory_takes_the_width_and_defaults_to_1024(self) -> None:
-        assert intentions_table(MetaData()).c.embedding.type.dim == 1024
-        assert intentions_table(MetaData(), embedding_dim=1536).c.embedding.type.dim == 1536
+        from pgvector.sqlalchemy import Vector
+
+        default = intentions_table(MetaData()).c.embedding.type
+        wide = intentions_table(MetaData(), embedding_dim=1536).c.embedding.type
+        assert isinstance(default, Vector) and default.dim == 1024
+        assert isinstance(wide, Vector) and wide.dim == 1536
 
     async def test_a_write_of_another_width_is_refused_before_any_statement(self) -> None:
         pool = _RecordingPool()

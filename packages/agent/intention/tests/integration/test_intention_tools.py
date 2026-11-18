@@ -23,6 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 import asyncpg
+from langchain_core.embeddings import Embeddings
 import pytest
 
 from threetears.core.collections import SalienceDecay
@@ -47,7 +48,7 @@ pytestmark = pytest.mark.integration
 _DIM = 1024
 
 
-class _OneHotEmbedder:
+class _OneHotEmbedder(Embeddings):
     """deterministic embedder: identical text -> identical unit vector.
 
     Gives each distinct text its own axis of a 1024-vector, in the order the
@@ -64,7 +65,13 @@ class _OneHotEmbedder:
     def __init__(self) -> None:
         self._axes: dict[str, int] = {}
 
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_query(text) for text in texts]
+
     async def aembed_query(self, text: str) -> list[float]:
+        return self.embed_query(text)
+
+    def embed_query(self, text: str) -> list[float]:
         axis = self._axes.setdefault(text, len(self._axes))
         vec = [0.0] * _DIM
         vec[axis] = 1.0

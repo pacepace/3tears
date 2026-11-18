@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+from langchain_core.embeddings import Embeddings
 import pytest
 
 from threetears.agent.intention.tools import (
@@ -36,14 +37,20 @@ _DIM = 1024
 _WRITTEN = datetime(2026, 10, 9, 22, 0, tzinfo=UTC)
 
 
-class _NearEmbedder:
+class _NearEmbedder(Embeddings):
     """One axis per text, except the texts named ``near``: 0.97 the same as the text they name."""
 
     def __init__(self, near: Mapping[str, str] | None = None) -> None:
         self._axes: dict[str, int] = {}
         self._near = dict(near or {})
 
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_query(text) for text in texts]
+
     async def aembed_query(self, text: str) -> list[float]:
+        return self.embed_query(text)
+
+    def embed_query(self, text: str) -> list[float]:
         vec = [0.0] * _DIM
         if text in self._near:
             vec[self._axes.setdefault(self._near[text], len(self._axes))] = 0.97
