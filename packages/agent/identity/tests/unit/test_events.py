@@ -21,9 +21,11 @@ def test_wire_discriminators() -> None:
 
 
 def test_applied_event_carries_auto_applied_flag() -> None:
-    common = {"agent_id": "a", "version_id": "v", "block_key": "personality"}
-    assert IdentityAppliedEvent(**common, auto_applied=True).auto_applied is True
-    assert IdentityAppliedEvent(**common).auto_applied is False
+    assert (
+        IdentityAppliedEvent(agent_id="a", version_id="v", block_key="personality", auto_applied=True).auto_applied
+        is True
+    )
+    assert IdentityAppliedEvent(agent_id="a", version_id="v", block_key="personality").auto_applied is False
 
 
 def test_events_registered_in_default_registry() -> None:

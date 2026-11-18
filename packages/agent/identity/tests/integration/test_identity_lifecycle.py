@@ -48,10 +48,11 @@ def _kw(**extra: Any) -> dict[str, Any]:
 
 
 async def _count_active(pool: Any, block: str) -> int:
-    return await pool.fetchval(
+    count: int = await pool.fetchval(
         "SELECT count(*) FROM identity_versions WHERE block_key = $1 AND status = 'active'",
         block,
     )
+    return count
 
 
 async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:

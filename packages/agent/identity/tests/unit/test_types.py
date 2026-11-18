@@ -33,8 +33,11 @@ def test_status_values_are_declaration_ordered() -> None:
 
 
 def test_enum_members_equal_wire_values() -> None:
-    assert IdentityBlockKey.PERSONALITY == "personality"
-    assert IdentityVersionStatus.ACTIVE == "active"
+    # a member IS its wire string: held as a plain str, it compares equal to the value.
+    block_key: str = IdentityBlockKey.PERSONALITY
+    status: str = IdentityVersionStatus.ACTIVE
+    assert block_key == "personality"
+    assert status == "active"
 
 
 def test_every_block_has_a_tier() -> None:

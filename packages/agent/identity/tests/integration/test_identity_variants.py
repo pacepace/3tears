@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any
+from typing import Any, TypedDict
 
 import asyncpg
 import pytest
@@ -115,6 +115,15 @@ async def _stack(pg_schema: tuple[str, str]) -> tuple[Any, Any]:
     return coll, pool
 
 
+class _Seed(TypedDict):
+    """the owner and block every seed in a test shares."""
+
+    agent_id: uuid.UUID
+    customer_id: uuid.UUID
+    user_id: uuid.UUID
+    block_key: str
+
+
 def _kw(**extra: Any) -> dict[str, Any]:
     base: dict[str, Any] = dict(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, caller_agent_id=_AGENT)
     base.update(extra)
@@ -211,7 +220,7 @@ async def test_seed_imports_each_variant_on_its_own(pg_schema: tuple[str, str]) 
     coll, pool = await _stack(pg_schema)
     authz = owner_authorizer()
     try:
-        seed = dict(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
+        seed = _Seed(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
         base = await lifecycle.seed_active(coll, authz, content="base", **seed)
         alt = await lifecycle.seed_active(coll, authz, content="alt", variant="alt", **seed)
         again = await lifecycle.seed_active(coll, authz, content="ignored", variant="alt", **seed)

@@ -8,6 +8,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel
+
 from threetears.agent.identity.tools import load_identity_propose_tool
 from threetears.agent.identity.types import IDENTITY_BLOCK_KEY_VALUES
 
@@ -20,7 +23,7 @@ _CUST = UUID("00000000-0000-0000-0000-00000000000c")
 _PROPOSE = "threetears.agent.identity.tools.propose"
 
 
-async def _tool():
+async def _tool() -> BaseTool:
     tools = await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock())
     return tools[0]
 
@@ -32,6 +35,7 @@ async def test_tier1_return_mentions_awaiting_consent() -> None:
         out = await tool.ainvoke({"block_key": "personality", "content": "v2", "rationale": "sharper"})
     assert "awaiting the user's consent" in out
     # user_id + agent bound; proposer + caller are the agent
+    assert prop.await_args is not None
     kw = prop.await_args.kwargs
     assert kw["user_id"] == _USER and kw["agent_id"] == _AGENT
     assert kw["proposer_agent_id"] == _AGENT and kw["caller_agent_id"] == _AGENT
@@ -80,6 +84,7 @@ async def test_the_block_itself_is_the_only_variant_by_default() -> None:
     with patch(_PROPOSE, new_callable=AsyncMock, return_value=version) as prop:
         tool = await _tool()
         out = await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r"})
+    assert prop.await_args is not None
     assert prop.await_args.kwargs["variant"] == ""
     assert "'presence'" in out
     assert "Variants you may write" not in tool.description
@@ -94,7 +99,8 @@ async def test_an_opened_variant_is_proposed_and_named() -> None:
         ]
         out = await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r", "variant": "alt"})
         refused = await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r", "variant": "second"})
-    assert prop.await_count == 1 and prop.await_args.kwargs["variant"] == "alt"
+    assert prop.await_count == 1 and prop.await_args is not None
+    assert prop.await_args.kwargs["variant"] == "alt"
     assert "'presence/alt'" in out
     assert "Variant 'second' is not open here" in refused
     assert "Variants you may write: '', alt." in tool.description
@@ -116,5 +122,8 @@ async def test_a_host_that_opens_only_variants_must_name_one() -> None:
     with patch(_PROPOSE, new_callable=AsyncMock, return_value=version) as prop:
         tool = (await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock(), variants=("alt",)))[0]
         await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r", "variant": "alt"})
+    assert prop.await_args is not None
     assert prop.await_args.kwargs["variant"] == "alt"
-    assert "variant" in tool.tool_call_schema.model_json_schema()["required"]
+    call_schema = tool.tool_call_schema
+    assert isinstance(call_schema, type) and issubclass(call_schema, BaseModel)
+    assert "variant" in call_schema.model_json_schema()["required"]

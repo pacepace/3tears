@@ -9,6 +9,7 @@ reject, rollback-clone, and which FrameworkEvent each op emits.
 
 from __future__ import annotations
 
+from typing import TypedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -56,7 +57,9 @@ def _version(**overrides: object) -> IdentityVersionEntity:
     return IdentityVersionEntity(data, is_new=False)
 
 
-def _collection(*, active=None, get_result=None) -> MagicMock:
+def _collection(
+    *, active: IdentityVersionEntity | None = None, get_result: IdentityVersionEntity | None = None
+) -> MagicMock:
     coll = MagicMock()
     coll.resolve_active = AsyncMock(return_value=active)
     coll.get = AsyncMock(return_value=get_result)
@@ -69,15 +72,22 @@ def _authorizer() -> MagicMock:
     return MagicMock()
 
 
-def _kwargs(**extra):
-    base = dict(
-        agent_id=_AGENT,
-        customer_id=_USER,
-        user_id=_USER,
-        caller_agent_id=_AGENT,
-    )
-    base.update(extra)
-    return base
+class _Owner(TypedDict):
+    """the agent and owner every lifecycle call names."""
+
+    agent_id: UUID
+    customer_id: UUID
+    user_id: UUID
+
+
+class _Caller(_Owner):
+    """the owner plus the agent making the call."""
+
+    caller_agent_id: UUID
+
+
+def _kwargs() -> _Caller:
+    return _Caller(agent_id=_AGENT, customer_id=_USER, user_id=_USER, caller_agent_id=_AGENT)
 
 
 # authorize + event dispatch are patched at the lifecycle module boundary
@@ -100,6 +110,7 @@ class TestPropose:
             )
         assert out is not None and out.status == "proposed"
         coll.save_entity.assert_awaited_once()
+        assert ev.await_args is not None
         assert isinstance(ev.await_args.args[0], IdentityProposedEvent)
 
     async def test_tier2_auto_applies(self) -> None:
@@ -115,6 +126,7 @@ class TestPropose:
                 **_kwargs(),
             )
         assert out is not None and out.status == "active"
+        assert ev.await_args is not None
         applied = ev.await_args.args[0]
         assert isinstance(applied, IdentityAppliedEvent) and applied.auto_applied is True
 
@@ -154,7 +166,7 @@ class TestPropose:
 
 
 class TestSeedActive:
-    _seed_kw = dict(agent_id=_AGENT, customer_id=_USER, user_id=_USER)
+    _seed_kw = _Owner(agent_id=_AGENT, customer_id=_USER, user_id=_USER)
 
     async def test_seed_creates_active_root_when_absent(self) -> None:
         coll = _collection(active=None)
@@ -342,6 +354,7 @@ class TestRollback:
         assert out.content == "the good version" and out.status == "active"
         assert out.version_id != target.version_id  # a NEW version (clone)
         assert prior.status == "superseded"
+        assert ev.await_args is not None
         rolled = ev.await_args.args[0]
         assert isinstance(rolled, IdentityRestoredEvent)
         assert rolled.target_version_id == str(target.version_id)
@@ -378,6 +391,7 @@ class TestVariants:
             )
         assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
         assert out is not None and out.variant == "alt"
+        assert ev.await_args is not None
         assert ev.await_args.args[0].variant == "alt"
 
     async def test_propose_without_a_variant_is_the_block_itself(self) -> None:
@@ -460,4 +474,5 @@ class TestVariants:
             )
         assert coll.resolve_active.await_args.kwargs["variant"] == "alt"
         assert clone is not None and clone.variant == "alt"
+        assert ev.await_args is not None
         assert ev.await_args.args[0].variant == "alt"
