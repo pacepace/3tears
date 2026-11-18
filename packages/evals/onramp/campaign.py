@@ -738,9 +738,13 @@ def load_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # A
     return meta, rows
 
 
-def earlier_stages(meta: Mapping[str, Any], runs: Path) -> list[Stage]:  # Any: run.json
+def earlier_stages(
+    meta: Mapping[str, Any], runs: Path, later_rows: Sequence[Mapping[str, Any]] = ()
+) -> list[Stage]:  # Any: run.json, stored rows
     """The earlier run ``meta`` continues, as the first stage of one comparison (empty for a run that continues none):
-    read from ``runs/<run>``, and held to share the comparison (:func:`~.plan.continuation_refusal`).
+    read from ``runs/<run>``, held to share the comparison (:func:`~.plan.continuation_refusal`, :func:`cap_refusal`
+    over its trials and ``later_rows``, the continuing run's, once it has run), and its secondary checks graded again
+    by today's (:func:`regraded`), so each check is one definition over every app; its primary keeps its grades.
 
     :raises Unreadable: The earlier run is not there, is not the one the plan named, or does not share the comparison.
     """
@@ -754,14 +758,44 @@ def earlier_stages(meta: Mapping[str, Any], runs: Path) -> list[Stage]:  # Any: 
         raise Unreadable(f"run {continues['run']} ran plan commit {commit or 'none'}, not the {named} the plan names")
     if (refusal := continuation_refusal(earlier, meta)) is not None:
         raise Unreadable(f"this run may not continue {continues['run']}: {refusal}")
-    return [Stage(tuple(rows), tuple(earlier["arms"]), tuple(earlier["apps"]))]
+    if (refusal := cap_refusal(earlier, meta, [*rows, *later_rows])) is not None:
+        raise Unreadable(f"this run may not continue {continues['run']}: {refusal}")
+    # The earlier run's secondary checks are graded again by today's (over its stored facts), so each check of the
+    # continued comparison is one definition over every app; its primary keeps the grades it ran with.
+    again, _ = regraded(rows)
+    return [Stage(tuple(again), tuple(earlier["arms"]), tuple(earlier["apps"]))]
+
+
+#: What a continued reading says of its earlier run's grades (:func:`earlier_stages`).
+EARLIER_REGRADED = (
+    "the earlier run's secondary checks are graded by today's checks over its stored facts, so each is one definition "
+    "over every app; every primary grade is as it ran"
+)
+
+
+def cap_refusal(
+    earlier: Mapping[str, Any], later: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> str | None:  # Any: run.json, stored rows
+    """Why two runs' per-run caps keep them from being one comparison, or ``None``. A trial its cap stops is graded like
+    any other, so a cap that bound is a term of the comparison: the caps may differ only where no trial of either run
+    (``rows``, as many as have run) was stopped by its cap."""
+    caps = [
+        {name: tier.get("per_run_usd") for name, tier in meta.get("tiers", {}).items()} for meta in (earlier, later)
+    ]
+    if caps[0] == caps[1]:
+        return None
+    capped = sum(1 for row in rows if isinstance(row.get("record"), Mapping) and row["record"].get("stopped") == "cap")
+    if capped:
+        return f"its per-run cap differs ({caps[0]} against {caps[1]}), and {capped} trial(s) were stopped by a cap"
+    return None
 
 
 def regraded(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:  # Any: stored rows
-    """Each stored trial graded again by today's checks over the facts its record holds (no container, no model call),
-    and what moved: a line per arm and check whose count changed, and one per trial whose primary grade changed, which
-    should be none (the primary's grader is not today's to change). Rows with no record keep their stored grades. The
-    stored rows are not touched."""
+    """Each stored trial's secondary checks graded again by today's checks over the facts its record holds (no
+    container, no model call), and what moved: a line per arm and check whose count changed, and one per trial whose
+    primary grade today's check would give otherwise, which should be none. The primary keeps its stored grade whatever
+    today's check says: it is the run's, and the comparison's. Rows with no record keep their stored grades. The stored
+    rows are not touched."""
     again, said = [], []
     moved: dict[tuple[str, str], tuple[int, int]] = {}
     for row in rows:
@@ -775,7 +809,8 @@ def regraded(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], l
             moved[(str(row["arm"]), name)] = (before + (row["scores"].get(name) == 1.0), after + (score == 1.0))
             if name == PRIMARY and score != row["scores"].get(name):
                 said.append(f"PRIMARY MOVED: {row['arm']} {record.get('app')} repeat {row.get('repeat')}")
-        again.append({**row, "scores": {**row["scores"], **scores}})
+        kept = {PRIMARY: row["scores"][PRIMARY]} if PRIMARY in row["scores"] else {}
+        again.append({**row, "scores": {**row["scores"], **scores, **kept}})
     for (arm, name), (before, after) in moved.items():
         if before != after:
             said.append(f"{arm} {name}: {before} passed as stored, {after} by today's check")
@@ -806,8 +841,10 @@ def read_stored(run_dir: Path, *, today: bool = False) -> list[str]:
     arms, apps = list(meta.get("arms", {})), list(meta.get("apps", []))
     asked = {"primary": meta.get("primary") or PRIMARY, "question": meta.get("question")}
     root = run_dir if (run_dir / "run.json").is_file() else run_dir.parent
-    earlier = earlier_stages(meta, root.parent)
+    earlier = earlier_stages(meta, root.parent, rows)
     lines = reading_lines(rows, arms=arms, apps=apps, earlier=earlier, **asked)
+    if earlier:
+        head.append(EARLIER_REGRADED)
     if today:
         head += ["graded again by today's checks over the stored facts (description; the stored run is unchanged):"]
         head += [f"  {line}" for line in moved]
@@ -906,22 +943,9 @@ def _finish(
     (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
     print("\n".join(said))
     if compared:
-        asked = {"primary": plan.primary, "question": plan.question} if plan else {}
-        arms, apps = list(result.arms), [case["app"] for case in ev.cases]
-        read = reading_lines(rows, arms=arms, apps=apps, earlier=earlier, **asked)
-        (run_dir / "reading.txt").write_text("\n".join(read) + "\n", encoding="utf-8")
-        print("\n".join(read))
-        stages = [*earlier, Stage(tuple(rows), tuple(arms), tuple(apps))]
-        headline = asyncio.run(read_continued(stages, asked.get("primary", PRIMARY), question=asked.get("question")))
-        written = headline.write(run_dir / "report")
-        pooled = result.write(run_dir / "campaign-report")
-        lost = sum(1 for row in rows if not isinstance(row["record"], Mapping))
-        print(
-            f"campaign: every check over trials, pooled (description, never the comparison): {pooled['html']}"
-            + (f"; {lost} trial(s) gave no record: see it" if lost else "")
-        )
-        if plan is not None:
-            print(plan_rule(plan))
+        apps = [case["app"] for case in ev.cases]
+        said, written = report_comparison(result, rows, run_dir, apps=apps, plan=plan, earlier=earlier)
+        print("\n".join(said))
     else:
         written = result.write(run_dir / "report")
     for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):
@@ -929,6 +953,41 @@ def _finish(
             print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
     print(f"report: {written['html']}\ntrials: {run_dir / 'trials.jsonl'}")
     return result.exit_code()
+
+
+def report_comparison(
+    result: Result,
+    rows: Sequence[Mapping[str, Any]],
+    run_dir: Path,
+    *,
+    apps: Sequence[str],
+    plan: Plan | None = None,
+    earlier: Sequence[Stage] = (),
+) -> tuple[list[str], dict[str, Path]]:  # Any: stored rows
+    """What a run of two arms or more reports, and where (:func:`_finish`): the package's reading with apps as cases,
+    continuing ``earlier`` runs (``reading.txt``); its report of the primary, the headline (``report/``); the run's own
+    campaign ``result``, every check over trials pooled, as description (``campaign-report/``); and, under a plan, the
+    plan's rule on what may follow (:func:`plan_rule`), not the package's general note on appending cases. Returns the
+    lines to print and the headline report's files."""
+    asked = {"primary": plan.primary, "question": plan.question} if plan else {}
+    arms = list(result.arms)
+    said = [
+        *([EARLIER_REGRADED] if earlier else []),
+        *reading_lines(rows, arms=arms, apps=apps, earlier=earlier, **asked),
+    ]
+    (run_dir / "reading.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
+    stages = [*earlier, Stage(tuple(rows), tuple(arms), tuple(apps))]
+    headline = asyncio.run(read_continued(stages, asked.get("primary", PRIMARY), question=asked.get("question")))
+    written = headline.write(run_dir / "report")
+    pooled = result.write(run_dir / "campaign-report")
+    lost = sum(1 for row in rows if not isinstance(row.get("record"), Mapping))
+    said.append(
+        f"campaign: every check over trials, pooled (description, never the comparison): {pooled['html']}"
+        + (f"; {lost} trial(s) gave no record: see it" if lost else "")
+    )
+    if plan is not None:
+        said.append(plan_rule(plan))
+    return said, written
 
 
 def plan_rule(plan: Plan) -> str:

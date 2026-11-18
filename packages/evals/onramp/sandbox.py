@@ -394,8 +394,9 @@ class Sandbox:
         }
 
     def made(self) -> list[str]:
-        """Every file in the sandbox the app did not ship, its store and caches aside: what the agent left."""
-        shipped = {p.relative_to(APPS / self.app).as_posix() for p in (APPS / self.app).rglob("*") if p.is_file()}
+        """Every file in the sandbox the app did not ship (its committed files, :func:`tracked`, which is what a trial is
+        made of), its store and caches aside: what the agent left."""
+        shipped = set(tracked(APPS / self.app))
         return sorted(
             relative
             for path in self.root.rglob("*")
