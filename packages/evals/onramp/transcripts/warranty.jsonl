@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "claims.py"}
+{"tool": "read", "path": "data/decided.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom claims import Claim, decide\n\ndef judge_claim(case):\n    \"\"\"The desk's decision on the claim: its outcome and the faults it repairs.\"\"\"\n    decision = decide(Claim.from_row(case))\n    return {\"outcome\": decision.outcome, \"repair\": list(decision.repair)}\n\n\ndef as_decided(case, out):\n    \"\"\"The claim is decided as the senior technician decided it.\"\"\"\n    return out == case[\"desk\"]\n\nclaims = Eval(\"data/decided.jsonl\", runner=judge_claim, grader=[as_decided], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_decided\", \"pass_rate\": 0.6957, \"finished\": true}"}

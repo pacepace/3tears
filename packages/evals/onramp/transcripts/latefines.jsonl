@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "fines.py"}
+{"tool": "read", "path": "data/returns.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom fines import Loan, fine, load_closures\n\nCLOSURES = load_closures(\"data/closures.jsonl\")\n\n\ndef charge(case):\n    \"\"\"The fine for the returned loan.\"\"\"\n    return {\"fine\": fine(Loan.from_row(case), CLOSURES)}\n\n\ndef matches_old_system(case, out):\n    \"\"\"The loan is fined what the old system charged.\"\"\"\n    return out[\"fine\"] == case[\"fine_pence\"]\n\nreturns = Eval(\"data/returns.jsonl\", runner=charge, grader=[matches_old_system], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_old_system\", \"pass_rate\": 0.7292, \"finished\": true}"}

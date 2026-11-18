@@ -3,7 +3,10 @@
 An eval of the package's docs, built on the package. It asks: can a coding agent that has never seen this package add
 a working eval to an unfamiliar app, from the docs and the error messages alone?
 
-- **Cases:** three small apps (`apps/`), each with a planted defect, and a fixed twin of each (`twins/`).
+- **Cases:** small apps (`apps/`), each with a planted defect, and a fixed twin of each (`twins/`). `apps.jsonl` lists
+  the development set, the apps the docs were tuned on, which every run covers by default; `held-out.jsonl` lists the
+  held-out set, which only a committed plan that names it runs (below). Their defects are in `held-out-defects.md`,
+  which no trial sees.
 - **Arms:** docs builds. Each arm is a wheel of `3tears-evals` and the `llms.txt` inside it. The control arm is the
   wheel built from `ONRAMP_CONTROL_REF` (default `f9ab6f74d`).
 - **Runner:** a model acting as the agent. It reads, writes and runs `python` in a Docker container with no network,
@@ -14,7 +17,7 @@ a working eval to an unfamiliar app, from the docs and the error messages alone?
 |---|---|
 | `eval_runs` | the agent's eval file, run by the eval door on a fresh copy of the app, exits 0 or 4, stores a finished run, and scores at least one result |
 | `measures_the_app` | the eval reads better on the fixed twin than on the app, and a runner that does nothing fails at least half its cases |
-| `read_right` | the agent's report gives the run's first line verbatim, the named measure's value within 0.005, and whether the run finished |
+| `read_right` | the agent's report gives the run's first line, at least its lead sentence (the verdict and its counts) as printed, the named measure's value within 0.005 (exact decimals, inclusive), and whether the run finished |
 
 Nothing under `src/` imports this directory, and the wheel does not ship it.
 
@@ -31,6 +34,12 @@ the agent's commands and every re-grade run only in trial containers, never on t
 | `... --scripted succeeds --host` | the same, with commands run on this machine (scripted only) | free |
 | `./scripts/onramp-agent.sh --regrade packages/evals/onramp/runs/<stamp>` | grades a stored run again with today's checks | free |
 | `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --cap 4.50 --k 7 --arm docs@candidate=PATH.whl` | the live comparison: cheap tier, 3 apps, 2 arms | see below |
+| `./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/<plan>.toml --dry-run` | a committed plan's arms, and each tier's quote | free |
+| `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/<plan>.toml --cap <its total>` | a plan, run as committed: its arms, apps, `k`, and every tier | the plan's caps |
+| `./scripts/onramp-agent.sh --read packages/evals/onramp/runs/<stamp>` | the package's reading of a stored run, apps as cases, tier by tier (a run that continues another, read with it as one comparison) | free |
+| `... --read packages/evals/onramp/runs/<stamp> --today` | the same, each trial graded again by today's checks over its stored facts; says what moved, and that the primary did not; the run is unchanged | free |
+| `./scripts/onramp-agent.sh --power-continued packages/evals/onramp/runs/<stamp> ADD SCALE` | how often continuing a stored run with ADD apps separates, at its observed effect times SCALE, simulated | free |
+| `./scripts/onramp-agent.sh --power APPS K EFFECT` | how often a plan of that size would separate EFFECT, simulated | free |
 
 Add `--arm docs@candidate=PATH.whl` to any form to measure a second build against the control. Before a live or
 replayed run starts, the harness runs `--scripted succeeds` against each arm and refuses the run unless every check
@@ -41,7 +50,8 @@ The isolation canaries: `./scripts/test-integration.sh --here -k onramp -rs`.
 ## What a live run costs
 
 The cheap tier is `deepseek/deepseek-v4-flash` through OpenRouter (`OPENROUTER_API_KEY`). The ceiling tier
-(`--tier ceiling`) is Claude Haiku 5.5, direct to Anthropic (`ANTHROPIC_API_KEY`).
+(`--tier ceiling`) is Claude Haiku 5.5, direct to Anthropic (`ANTHROPIC_API_KEY`). A plan may name both: each tier is
+quoted, capped, run and read on its own.
 
 The live runs of 2026-11-15 and 2026-11-16, all at `--cap 4.50`, cheap tier:
 
@@ -65,11 +75,27 @@ How the cap holds:
 
 So a run is billed at most its cap. The one gap: a provider endpoint priced above the catalogue row, about $0.02 a run.
 
+The quote's "expected" is the mean billed over the stored live trials of the tier's model under `runs/` (the most a
+trial was charged, each cut-off call at its ceiling); with none stored, an assumed turn profile at the tier's rates,
+which ran about 8 times high against the first held-out run. The cap, not the expectation, holds a run.
+
 ## Where results land
 
 `runs/<UTC stamp>/` (git-ignored): `onramp.sqlite` (the store), `report/`, `trials.jsonl` (every trial's record and
-checks), `census.txt`, and per trial `<arm>/<app>-<n>/` with `steps.jsonl` (every turn), `record.json` and the app as
-the agent left it. Built wheels, images and environments are cached in `runs/wheels/`, `runs/images/`, `runs/venvs/`.
+checks), `census.txt`, `reading.txt` (with two arms: the package's reading, apps as cases), and per trial
+`<arm>/<app>-<n>/` with `steps.jsonl` (every turn), `record.json` and the app as the agent left it. A live run also
+writes `run.json` before its first trial: each arm's wheel and commit (the control first), the apps in case order, `k`,
+each tier's model and caps, the plan it ran with the commit the plan was last changed in, and the head commit its code,
+apps and twins are as of. `--read` takes the control and the case order from it, never from the rows' order. A run of more than one tier keeps each tier's files in
+`runs/<UTC stamp>/<tier>/`, and every row of a tier's `trials.jsonl` names its tier. Built wheels, images and environments are cached in `runs/wheels/`, `runs/images/`, `runs/venvs/`.
+
+With two arms or more, `report/` is the package's report of the primary check read with apps as cases (continuing the
+earlier run a plan continues), the same reading `reading.txt` leads with; the run's own campaign, every check over
+trials pooled, is in `campaign-report/` and is description, never the comparison. Under a plan, the console states the
+plan's rule on what may follow its run.
+
+A trial, and every grading copy, is made of the app's (and twin's) committed files only (`git ls-files`): an ignored
+file, a `__pycache__` or a local log, never reaches one.
 
 ## Comparing arms
 
@@ -103,10 +129,29 @@ It cannot show:
   disagree, and states a p-value the design cannot support. A test stratified by app (Cochran-Mantel-Haenszel, or an
   exact conditional test) is valid, but only for "on these apps, with this model", never beyond them. The harness
   computes none of these tests. The package's own verdict on such a run ("too few cases to call a difference") is
-  the right reading.
+  the right reading, and the harness states it (below).
 - A rate to rely on. With one arm the census prints an exact 95% range over trials, and trials on one app share the
   app, so even that range is too narrow: at 3 of 9 it already runs from 0.07 to 0.70.
 - Whether a failure belongs to the docs or to the model.
+
+### The package's reading, with the app as the case
+
+Every run of two arms or more ends with the package's own reading of it (`reading.txt`, and `--read` for a stored
+run), in `reading.py`. The run's rows go to `threetears.evals` through its front door, as an adopter's comparison: an
+`Eval` whose cases are the apps, whose arms replay each arm's stored trials of an app, and whose one grader is the
+check read. `k` is the trials an arm ran on each app. The package averages each app's trials before any test, so it
+compares each app's share passed, paired across apps; no trial is pooled with another app's. Each check is read as
+its own comparison, the plan's primary first; the others are leads. Each tier is read on its own, never pooled.
+
+The primary check is the comparison's question, which the package tests alone and one-sided, toward the candidate;
+the other checks are read with no question, as leads. The error rate the reading holds under the on-ramp's null (apps
+as cases, three trials each, an arm-by-app spread) is the package's certified claim (`small-n.once.onramp` and
+`small-n.continued.onramp.separates` in `tests/fixtures/stats_certificate.json`). `tests/test_onramp_reading.py`
+reads those claims, and guards on seeded noise-only runs that the replay hands the package apps, not trials: read with
+each trial as its own case, the same runs separate where the apps do not.
+
+What it costs to read a difference this way is apps. `--power APPS K EFFECT` simulates a plan through the same
+reading and says how often it separates; `plans/held-out-1.toml` has the figures for its size.
 
 ### Development set and held-out set
 
@@ -121,6 +166,50 @@ What can support a claim beyond these apps:
 - The plan (arms, apps, k, the check compared, the test, what counts as a result) committed to the repo or posted on
   the tracking issue before the run starts. A plan in a working file with no history cannot be verified as written
   first.
+
+A held-out app stops being held out once any trial's transcript on it is read while writing a docs change; from then
+on it belongs to the development set. So a held-out app is in `held-out.jsonl`, never `apps.jsonl`: no default or
+development run covers it, and `--apps` naming it without a plan is refused.
+
+A plan is a TOML file in `plans/` (`plan.py`). It names the files its apps are read from (`cases`, `apps.jsonl` unless
+it says). `--plan` runs exactly what it states, and a live run on one is refused
+unless the plan is committed and unchanged since, nothing under `packages/evals` has an uncommitted change (so the
+head commit `run.json` records is what ran), the plan names every app, and it agrees with the command line: its apps, its
+`k`, its tiers, its total cap, and each arm's wheel built from that arm's commit (`runs/wheels/<ref>/`, built on first
+use). The run records the plan's commit in `run.json`. A second model tier is a second tier of the plan: each runs into
+its own directory, against its own cap, and is read on its own.
+
+A plan may continue an earlier plan's run as one comparison (`[continues]`: the run and the plan commit it recorded).
+The two must share every term: the arms by commit and in order, the tier and its model, `k`, the primary check and the
+question (which sets the lean); no app may be in both. The reading then runs the earlier run's apps, as they ran, and
+the new ones appended after them, into one store, so the package's anytime-valid bet reads one committed order with its
+capital carried forward (`reading.read_continued`). Its error rate for the held-out plans' shape (24 apps, then 8) is the
+certified claim `small-n.planned.onramp.separates`. A continuation is declared before its run, once: a further top-up
+is a new plan with its own pre-registration.
+
+## Adding an app
+
+An app is a case: a directory under `apps/`, its fixed twin under `twins/`, a line in `apps.jsonl`, and a scripted
+transcript that succeeds on it. The pre-flight runs every app's transcript before any live run, and refuses the run
+unless every check passes on every app, so a new app is not done until its transcript passes.
+
+1. The app's builder writes `apps/<app>/` (with a `README.md`) and `twins/<app>/` (the files that fix the planted
+   defect, laid over the app), and adds `{"id": "<app>", "app": "<app>"}` to `apps.jsonl`, or to `held-out.jsonl`
+   for an app nobody tuning the docs may see.
+2. Write `transcripts/<app>.jsonl`, one act per line, on the shape of `transcripts/holds.jsonl`: read `{llms}` and
+   the app, write an eval file that measures what the defect breaks, run it through the door
+   (`python -m threetears.evals <file>`), and end with `done`, whose report gives `{first_line}` (filled in from the
+   run) and the measure's name. Set its `pass_rate` to 0 for now.
+3. Run it alone: `./scripts/onramp-agent.sh --scripted succeeds --host --k 1 --apps <app>` (a held-out app: add
+   `--plan <a plan naming it>`, which a scripted run takes for its apps only). `read_right` fails
+   until `pass_rate` is the measure's mean on the app: the trial's `record.json` holds it under
+   `checks.app.means`. Put it in the transcript and run again: all three checks pass.
+4. Run it in a trial container, as the pre-flight will: `./scripts/onramp-agent.sh --scripted succeeds --k 1 --apps
+   <app>` (needs Docker), and `--scripted stuck --k 1 --apps <app>`, which must fail every check. Add
+   `--arm docs@candidate=<wheel>` to run it on a second build too: the pre-flight runs it on every arm.
+
+`tests/test_onramp_reading.py` holds every app of either list to its twin and its transcript, and
+`tests/test_onramp_end_to_end.py` runs the development set's transcripts.
 
 History: on issue #1177, a docs change to `llms.txt` was described as established by a Fisher exact test over 42
 trials a side on the three apps here. The correction of 2026-11-16 withdrew that: the trials were 3 apps by 14 repeats,

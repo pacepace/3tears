@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "footprint.py"}
+{"tool": "read", "path": "data/audited.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom footprint import Trip, footprint_kg\n\ndef estimate(case):\n    \"\"\"The trip's estimated footprint, in kilograms.\"\"\"\n    return {\"kg\": footprint_kg(Trip.from_row(case))}\n\n\ndef within_five_percent(case, out):\n    \"\"\"The estimate is within 5% of the audited figure.\"\"\"\n    return abs(out[\"kg\"] - case[\"audited_kg\"]) / case[\"audited_kg\"] <= 0.05 + 1e-9\n\ntrips = Eval(\"data/audited.jsonl\", runner=estimate, grader=[within_five_percent], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"within_five_percent\", \"pass_rate\": 0.6957, \"finished\": true}"}

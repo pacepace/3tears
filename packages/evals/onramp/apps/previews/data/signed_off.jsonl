@@ -1,0 +1,46 @@
+{"id": "n-001", "channel": "lock_screen", "body": "Priya: running 5 min late, start without me", "approved": "Priya: running 5 min late, start without me"}
+{"id": "n-002", "channel": "lock_screen", "body": "Tom: Can someone check the staging deploy? The health check has been red since about 10:40 and I can't see why from the logs, they just stop.", "approved": "Tom: Can someone check the staging deploy? The health check has been red since about 10:40 and I can't see wh…"}
+{"id": "n-003", "channel": "banner", "body": "Reminder: Design review in 15 minutes (Room 3)", "approved": "Reminder: Design review in 15 minutes (Room 3)"}
+{"id": "n-004", "channel": "watch", "body": "Ana: 👍", "approved": "Ana: 👍"}
+{"id": "n-005", "channel": "watch", "body": "Reminder: Standup in 5 minutes", "approved": "Reminder: Standup in 5 minutes"}
+{"id": "n-006", "channel": "lock_screen", "body": "Marcus mentioned you in #release: @you the changelog for 4.2 still lists the old export flag, can you take a look before we tag?", "approved": "Marcus mentioned you in #release: @you the changelog for 4.2 still lists the old export flag, can you take a…"}
+{"id": "n-007", "channel": "banner", "body": "Joy: lunch? thinking the noodle place", "approved": "Joy: lunch? thinking the noodle place"}
+{"id": "n-008", "channel": "banner", "body": "Facilities: The third floor kitchen will be closed on Thursday for the dishwasher replacement.", "approved": "Facilities: The third floor kitchen will be closed on Thursday…"}
+{"id": "n-009", "channel": "lock_screen", "body": "Calendar: Quarterly planning moved to Wednesday 14:00", "approved": "Calendar: Quarterly planning moved to Wednesday 14:00"}
+{"id": "n-010", "channel": "watch", "body": "Sam: approved, merging now", "approved": "Sam: approved, merging now"}
+{"id": "n-011", "channel": "watch", "body": "Leila: are you still on the incident bridge or did it get closed?", "approved": "Leila: are you still on the incident br…"}
+{"id": "n-012", "channel": "lock_screen", "body": "Build failed on main: test_invoice_totals (3 failures)", "approved": "Build failed on main: test_invoice_totals (3 failures)"}
+{"id": "n-013", "channel": "banner", "body": "Priya: ok", "approved": "Priya: ok"}
+{"id": "n-014", "channel": "lock_screen", "body": "Dmitri:\n\nhere are the numbers from yesterday\n\n- signups 1,204\n- activations 611\n- churned 38", "approved": "Dmitri: here are the numbers from yesterday - signups 1,204 - activations 611 - churned 38"}
+{"id": "n-015", "channel": "banner", "body": "Oskar: the vendor sent the new contract, it's in the shared drive under Legal / 2026", "approved": "Oskar: the vendor sent the new contract, it's in the shared dri…"}
+{"id": "n-016", "channel": "watch", "body": "Calendar: 1:1 with Hana now", "approved": "Calendar: 1:1 with Hana now"}
+{"id": "n-017", "channel": "lock_screen", "body": "Hana: thanks for covering on Friday!", "approved": "Hana: thanks for covering on Friday!"}
+{"id": "n-018", "channel": "banner", "body": "IT: Your password expires in 3 days. Change it from the account page to avoid being locked out.", "approved": "IT: Your password expires in 3 days. Change it from the account…"}
+{"id": "n-019", "channel": "watch", "body": "Ben: can you call me when you get a sec", "approved": "Ben: can you call me when you get a sec"}
+{"id": "n-020", "channel": "lock_screen", "body": "Grace mentioned you in #support: customer on the enterprise plan says exports have been timing out since the weekend, ticket 48213, any idea?", "approved": "Grace mentioned you in #support: customer on the enterprise plan says exports have been timing out since the…"}
+{"id": "n-021", "channel": "banner", "body": "Rui: pushed the fix", "approved": "Rui: pushed the fix"}
+{"id": "n-022", "channel": "lock_screen", "body": "Calendar: Offsite logistics call   (moved)", "approved": "Calendar: Offsite logistics call (moved)"}
+{"id": "n-023", "channel": "watch", "body": "Payroll: Your March payslip is ready to view", "approved": "Payroll: Your March payslip is ready to…"}
+{"id": "n-024", "channel": "banner", "body": "Ana: the client wants the deck by 9 tomorrow, not end of day, sorry!!", "approved": "Ana: the client wants the deck by 9 tomorrow, not end of day, s…"}
+{"id": "n-025", "channel": "lock_screen", "body": "Jonas: do we have a template for the security questionnaire? the one from last year had answers for most of this", "approved": "Jonas: do we have a template for the security questionnaire? the one from last year had answers for most of t…"}
+{"id": "n-026", "channel": "watch", "body": "Tom: health check is green again", "approved": "Tom: health check is green again"}
+{"id": "n-027", "channel": "banner", "body": "Calendar: All hands – 16:00, Atrium", "approved": "Calendar: All hands – 16:00, Atrium"}
+{"id": "n-028", "channel": "lock_screen", "body": "Mei: I'll be out Monday and Tuesday, Lars is covering the on-call rotation, his number is in the runbook.", "approved": "Mei: I'll be out Monday and Tuesday, Lars is covering the on-call rotation, his number is in the runbook."}
+{"id": "n-029", "channel": "watch", "body": "Priya: 🎉🎉 we shipped it", "approved": "Priya: 🎉🎉 we shipped it"}
+{"id": "n-030", "channel": "banner", "body": "Leila: postmortem doc is up, comments by Friday please", "approved": "Leila: postmortem doc is up, comments by Friday please"}
+{"id": "n-031", "channel": "lock_screen", "body": "Sam: ok", "approved": "Sam: ok"}
+{"id": "n-032", "channel": "watch", "body": "Calendar: Dentist (personal) in 30 minutes", "approved": "Calendar: Dentist (personal) in 30 minu…"}
+{"id": "n-033", "channel": "banner", "body": "Marcus: reverted the config change, error rate is back under 0.1% and the alert cleared about two minutes ago", "approved": "Marcus: reverted the config change, error rate is back under 0…"}
+{"id": "n-034", "channel": "lock_screen", "body": "Security: A new sign-in to your account from Firefox on Windows. If this wasn't you, reset your password now.", "approved": "Security: A new sign-in to your account from Firefox on Windows. If this wasn't you, reset your password now."}
+{"id": "n-035", "channel": "watch", "body": "Joy: running late", "approved": "Joy: running late"}
+{"id": "n-036", "channel": "banner", "body": "Oskar: can we push our sync to 3?", "approved": "Oskar: can we push our sync to 3?"}
+{"id": "n-037", "channel": "lock_screen", "body": "Ben: here's the thing, the importer handles UTF-8 fine but the CSVs from the bank are Windows-1252 and nobody told us; all the names with accents are garbled.", "approved": "Ben: here's the thing, the importer handles UTF-8 fine but the CSVs from the bank are Windows-1252 and nobody…"}
+{"id": "n-038", "channel": "watch", "body": "Dmitri: numbers look good, nice work on the onboarding flow", "approved": "Dmitri: numbers look good, nice work on…"}
+{"id": "n-039", "channel": "banner", "body": "Rui: standup notes", "approved": "Rui: standup notes"}
+{"id": "n-040", "channel": "lock_screen", "body": "Calendar: Interview – senior backend engineer, 11:30, video link in the invite", "approved": "Calendar: Interview – senior backend engineer, 11:30, video link in the invite"}
+{"id": "n-041", "channel": "watch", "body": "Hana: yes", "approved": "Hana: yes"}
+{"id": "n-042", "channel": "banner", "body": "Grace: the customer confirmed exports work again, closing the ticket. Thanks everyone for jumping on it so fast.", "approved": "Grace: the customer confirmed exports work again, closing the t…"}
+{"id": "n-043", "channel": "watch", "body": "Lars: paged for disk usage on db-2, looking now", "approved": "Lars: paged for disk usage on db-2, loo…"}
+{"id": "n-044", "channel": "banner", "body": "Mei: reminder that the expense deadline is tomorrow at noon, receipts after that go into next month", "approved": "Mei: reminder that the expense deadline is tomorrow at noon, re…"}
+{"id": "n-045", "channel": "lock_screen", "body": "Jonas mentioned you in #platform: the cert on the internal registry expires on the 28th and the renewal job failed twice, can you own it?", "approved": "Jonas mentioned you in #platform: the cert on the internal registry expires on the 28th and the renewal job f…"}
+{"id": "n-046", "channel": "watch", "body": "Calendar: Budget review with finance, room 2", "approved": "Calendar: Budget review with finance, r…"}

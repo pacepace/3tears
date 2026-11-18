@@ -1,0 +1,24 @@
+{"report": "reports/2026-01-06-checkout-latency.txt", "facts": ["3,100 customers", "missing index on the new promotions table", "every checkout scanned the whole table"]}
+{"report": "reports/2026-01-08-email-delays.txt", "facts": ["delayed by up to two hours", "marketing send", "separate account"]}
+{"report": "reports/2026-01-09-search-outage.txt", "facts": ["ran out of disk", "40% of sessions", "restored by 16:12"]}
+{"report": "reports/2026-01-12-login-errors.txt", "facts": ["07:55 and 08:30", "the eviction policy was set to never evict", "errors stopped at 08:31"]}
+{"report": "reports/2026-01-14-warehouse-sync.txt", "facts": ["supplier changed a column name", "220 orders", "refuses a feed whose columns it does not know"]}
+{"report": "reports/2026-01-16-image-cdn.txt", "facts": ["users in Asia", "Singapore edge", "rolled back the push at 11:40"]}
+{"report": "reports/2026-01-19-payment-timeouts.txt", "facts": ["8% of payment attempts", "degraded data centre in Frankfurt", "failed over at 19:54"]}
+{"report": "reports/2026-01-21-admin-panel.txt", "facts": ["admin panel was unavailable", "broken environment variable", "rolled back at 10:22"]}
+{"report": "reports/2026-01-23-discount-codes.txt", "facts": ["every code was rejected as expired", "codes were compared against UTC midnight", "310 tickets"]}
+{"report": "reports/2026-01-26-mobile-crash.txt", "facts": ["crashed on launch", "deprecated API call in the analytics library", "6,000 users"]}
+{"report": "reports/2026-01-28-reviews-spam.txt", "facts": ["1,500 reviews", "contained no links", "scores accounts by how fast they post"]}
+{"report": "reports/2026-01-30-tax-rounding.txt", "facts": ["one penny off", "the new invoice template summed rounded lines", "corrected invoices"]}
+{"report": "reports/2026-02-02-db-failover.txt", "facts": ["failed over unexpectedly", "40 seconds", "failing disk"]}
+{"report": "reports/2026-02-04-recommendations.txt", "facts": ["same five items", "its credentials had expired", "restored at 17:30"]}
+{"report": "reports/2026-02-06-newsletter.txt", "facts": ["12,000 customers who had unsubscribed", "failed silently for a week", "alerts when a run fails"]}
+{"report": "reports/2026-02-09-returns-portal.txt", "facts": ["rejected valid returns", "the age check used the wrong field", "450 customers"]}
+{"report": "reports/2026-02-11-api-rate-limit.txt", "facts": ["900 requests a second", "the limiter applied the block to every partner", "its own key and limit"]}
+{"report": "reports/2026-02-13-gift-cards.txt", "facts": ["showed as zero in the app", "a deploy had emptied", "warmed again at 13:30"]}
+{"report": "reports/2026-02-16-shipping-quotes.txt", "facts": ["orders to Ireland", "a zone table update dropped the Ireland row", "the difference was refunded"]}
+{"report": "reports/2026-02-18-search-relevance.txt", "facts": ["less relevant", "weighted recency too heavily", "rolled back on Thursday morning"]}
+{"report": "reports/2026-02-20-sms-codes.txt", "facts": ["not delivered to customers on one mobile network", "blocked our sender ID", "2,400 failed logins"]}
+{"report": "reports/2026-02-23-report-exports.txt", "facts": ["ran out of memory", "130 merchants", "stream large exports"]}
+{"report": "reports/2026-02-25-loyalty-points.txt", "facts": ["awarded twice", "each retry added the points again", "3,900 customers"]}
+{"report": "reports/2026-02-27-status-page.txt", "facts": ["outage that was not happening", "an endpoint that had been retired", "the live health endpoint"]}

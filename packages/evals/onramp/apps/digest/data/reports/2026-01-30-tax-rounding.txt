@@ -1,0 +1,1 @@
+Invoices for business customers showed VAT that was one penny off on some orders. The root cause was rounding per line vs. rounding the total, i.e. the new invoice template summed rounded lines. Approx. 2% of January invoices are affected. Finance has issued corrected invoices. The template now rounds once, on the total.

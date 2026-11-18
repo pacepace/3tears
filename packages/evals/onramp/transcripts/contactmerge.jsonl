@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "contacts.py"}
+{"tool": "read", "path": "data/reviewed_pairs.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom contacts import Contact, same_person\n\ndef decide(case):\n    \"\"\"Whether the merge takes the pair for one person.\"\"\"\n    left = Contact.from_row(case[\"left\"], case[\"left_source\"])\n    right = Contact.from_row(case[\"right\"], case[\"right_source\"])\n    return {\"same\": bool(same_person(left, right))}\n\n\ndef as_reviewed(case, out):\n    \"\"\"The merge decides the pair as the reviewer did.\"\"\"\n    return out[\"same\"] == case[\"same\"]\n\npairs = Eval(\"data/reviewed_pairs.jsonl\", runner=decide, grader=[as_reviewed], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_reviewed\", \"pass_rate\": 0.7273, \"finished\": true}"}

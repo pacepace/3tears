@@ -31,6 +31,9 @@ from threetears.evals.analysis.stats import (
 )
 
 from packages.evals.tests.null_newcomers import (
+    PLANNED_ADD,
+    PLANNED_READS,
+    PLANNED_START,
     QUESTION,
     RATE,
     came_to,
@@ -275,3 +278,17 @@ def test_the_first_shards_of_the_no_question_claims_count_as_the_product_did() -
     assert sum(rereadable(f"rerun-0-{i}", continued=False)[-1].decided for i in range(50)) == 4
     assert sum(horizon_crossed(f"horizon-k1-{i}", 1, 120) for i in range(300)) == 9
     assert sum(horizon_crossed(f"horizon-k3-{i}", 3, 420) for i in range(100)) == 1
+
+
+def test_the_first_shards_of_the_planned_onramp_claim_count_as_restated() -> None:
+    """The on-ramp's held-out plans (read at twenty-four apps, then continued once with eight more), under its null: the
+    first four shards of 150 separate 0, 0, 2 and 0 times, and every newcomer not decided at twenty-four reads again at
+    thirty-two. Counted by this restatement on these seeds, which ``restated-as-product.small-planned`` holds to
+    ``Eval.run``."""
+    planned = {"start": PLANNED_START, "reads": PLANNED_READS, "add": PLANNED_ADD}
+    counts = []
+    for shard in range(4):
+        reads = [small_continued("onramp", f"planned-onramp-{shard}-{i}", **planned) for i in range(150)]
+        assert all(len(each) == 2 and each[1].cases == 32 for each in reads if not each[0].decided), shard
+        counts.append(sum(came_to(each).separated for each in reads))
+    assert counts == [0, 0, 2, 0]

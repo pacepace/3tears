@@ -1,0 +1,1 @@
+Card payments timed out for some customers on Monday evening. Between 19:20 and 19:55 approx. 8% of payment attempts failed with timeouts, e.g. the gateway took over 30 seconds to answer. The root cause was on the gateway's side, a degraded data centre in Frankfurt. The gateway failed over at 19:54 and payments recovered. We are adding a second gateway for card payments.
