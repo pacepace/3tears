@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a pool's workers name themselves (`process_name=`, `name_process`)
+
+**Added:** `ProcessWorkers(..., process_name=)` and `SharedArrowPool(..., process_name=)`: each worker names itself so
+as it starts, as `ps`, `top` and `/proc/<pid>/comm` say it on Linux (`prctl(PR_SET_NAME)`, cut to 15 bytes); None
+keeps the fork server's name, as before. Every worker the fork server forks has the server's command line, so the
+name is what tells one pool's workers from another's (an operator's fault aimed at one pool:
+`aibots cluster fault kill-process --name`). `threetears.core.processes.name_process(name) -> bool` names the calling
+process (a pool's own initializer, a consumer's own process); nothing off Linux, answering False.
+Moved from reports' `pod/workers.name_process`, which can call it at its re-pin.
+
 ### interfaces, core, datasources: a `$1` inside a literal, a quoted name or a comment is not a placeholder
 
 **Fixed:** `renumbered` (every keyed helper moving a fragment's or a `Derived`'s placeholders past its own, through

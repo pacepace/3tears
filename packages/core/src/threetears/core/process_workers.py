@@ -35,7 +35,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
-from threetears.core.processes import exit_with_parent, start_worker_server
+from threetears.core.processes import exit_with_parent, name_process, start_worker_server
 from threetears.observe import get_logger
 
 __all__ = ["ProcessWorkers"]
@@ -90,7 +90,7 @@ def _plain_call(job: Callable[..., Any], args: tuple[Any, ...]) -> Any:
     return answer
 
 
-def _below_the_server(serving: int) -> None:
+def _below_the_server(serving: int, process_name: str | None = None) -> None:
     """a worker's start: it exits when the serving process dies (:func:`~threetears.core.processes.exit_with_parent`,
     never an orphan waiting on its queue: its parent is the fork server, which outlives a killed serving process while
     any worker lives), and is scheduled below it, so the server stays responsive.
@@ -101,10 +101,15 @@ def _below_the_server(serving: int) -> None:
 
     :param serving: the serving process's pid
     :ptype serving: int
+    :param process_name: the name the worker gives itself (:func:`~threetears.core.processes.name_process`); None
+        to keep the fork server's
+    :ptype process_name: str | None
     :return: nothing
     :rtype: None
     """
     exit_with_parent(serving=serving)
+    if process_name is not None:
+        name_process(process_name)
     try:
         os.nice(5)
     except OSError as error:
@@ -121,13 +126,18 @@ class ProcessWorkers:
     :ptype workers: int
     :param name: the work, for the log
     :ptype name: str
+    :param process_name: the name each worker gives itself as it starts, as ``ps`` and ``/proc/<pid>/comm`` say it
+        on Linux (:func:`~threetears.core.processes.name_process`, cut to 15 bytes): every worker the fork server
+        forks has its command line, so this tells this pool's workers from another's; None keeps the server's
+    :ptype process_name: str | None
     """
 
-    def __init__(self, *, workers: int, name: str) -> None:
+    def __init__(self, *, workers: int, name: str, process_name: str | None = None) -> None:
         if workers < 1:
             raise ValueError("a pool needs a worker")
         self._workers = workers
         self._name = name
+        self._process_name = process_name
         #: held while a thread makes, replaces or shuts the pool: never by the event loop
         self._lock = threading.Lock()
         self._pool: ProcessPoolExecutor | None = None
@@ -211,7 +221,7 @@ class ProcessWorkers:
                     max_workers=self._workers,
                     mp_context=start_worker_server(),
                     initializer=_below_the_server,
-                    initargs=(os.getpid(),),
+                    initargs=(os.getpid(), self._process_name),
                 )
                 self._broken = False
             pool = self._pool

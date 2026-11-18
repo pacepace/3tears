@@ -34,9 +34,11 @@ workers.
 
 from __future__ import annotations
 
+import ctypes
 import multiprocessing
 import multiprocessing.context
 import os
+import sys
 import threading
 import time
 from collections.abc import Sequence
@@ -45,7 +47,7 @@ from typing import Final
 
 from threetears.observe import get_logger
 
-__all__ = ["exit_with_parent", "start_worker_server"]
+__all__ = ["exit_with_parent", "name_process", "start_worker_server"]
 
 log = get_logger(__name__)
 
@@ -54,6 +56,13 @@ _INTERVAL: Final[float] = 1.0
 
 #: how every pool's workers start: forked by multiprocessing's fork server, never by the serving process
 _WORKER_START: Final = "forkserver"
+
+#: the longest name a process holds (Linux's ``/proc/<pid>/comm``: 16 bytes with its terminating null); a longer one
+#: is cut to it
+_PROCESS_NAME_LENGTH: Final = 15
+
+#: what ``prctl`` names the calling thread (the process, for its main thread) by: Linux's ``PR_SET_NAME``
+_PR_SET_NAME: Final = 15
 
 #: whether this process already watches its parent
 _watching = threading.Event()
@@ -126,6 +135,30 @@ def exit_with_parent(interval: float = _INTERVAL, serving: int | None = None) ->
         serving = spawner.pid
     watched = None if serving == parent else serving
     threading.Thread(target=_watch, args=(parent, watched, interval), name="exit-with-parent", daemon=True).start()
+
+
+def name_process(name: str) -> bool:
+    """name this process as ``/proc/<pid>/comm`` (and ``ps``, ``top``) say it: Linux's ``prctl(PR_SET_NAME)`` on the
+    calling thread, the process's main thread in a pool worker's initializer. Every worker the fork server forks has
+    the server's command line, so its name is what tells one pool's workers from another's (an operator's fault aimed
+    at a pool: ``aibots cluster fault kill-process --name``). Nothing elsewhere: macOS has no name another process
+    reads so.
+
+    :param name: the name, cut to :data:`_PROCESS_NAME_LENGTH` bytes
+    :ptype name: str
+    :return: whether the name was set (False off Linux, or when the call failed, said in the log)
+    :rtype: bool
+    """
+    named = False
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        named = libc.prctl(_PR_SET_NAME, name.encode()[:_PROCESS_NAME_LENGTH], 0, 0, 0) == 0
+        if not named:
+            log.warning(
+                "a worker process could not name itself",
+                extra={"extra_data": {"name": name, "errno": ctypes.get_errno()}},
+            )
+    return named
 
 
 def start_worker_server(preload: Sequence[str] = ()) -> multiprocessing.context.BaseContext:

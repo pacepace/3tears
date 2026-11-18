@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+from threetears.core.processes import name_process
+
 #: a parent holding a pool of three workers: ``spawn`` (its workers its children), or ``server`` (forked by the fork
 #: server, watching the parent's pid); prints the parent's pid, then each worker's pid and its parent's, then waits
 _PARENT = """
@@ -165,6 +167,22 @@ def test_a_fork_server_s_worker_watching_no_named_process_exits_within_5_seconds
     """Flips if a worker the fork server forked, calling exit_with_parent with no ``serving``, watches the server
     (its parent, alive while the worker is) rather than the process that asked for it."""
     assert not _left_after_late_watch("server", tmp_path), "the worker outlived the process that started it"
+
+
+def test_a_process_names_itself_on_linux_alone_cut_to_what_a_process_holds() -> None:
+    """Flips if name_process sets no name on Linux, does not cut a long one to the 15 bytes a process holds, or claims to set
+    one elsewhere (macOS has no name another process reads so). Run in a child, so this runner keeps its own name."""
+    script = "import sys; from threetears.core.processes import name_process; " + (
+        "print(name_process('tt-a-very-long-process-name'), "
+        "open('/proc/self/comm').read().strip() if sys.platform.startswith('linux') else '')"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    if sys.platform.startswith("linux"):
+        assert done.stdout.split() == ["True", "tt-a-very-long-"]
+    else:
+        assert done.stdout.split() == ["False"]
+        assert name_process("unchanged") is False
 
 
 def test_the_fork_server_s_workers_hold_its_preloaded_modules(tmp_path: Path) -> None:

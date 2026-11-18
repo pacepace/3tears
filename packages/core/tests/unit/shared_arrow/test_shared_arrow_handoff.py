@@ -14,6 +14,7 @@ import hashlib
 import multiprocessing
 import os
 import pickle
+import sys
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Future, ProcessPoolExecutor
@@ -428,3 +429,14 @@ class TestHandOffsSideBySide:
             list(threads.map(export, range(306)))
         assert gone == [], f"{len(gone)} of 306 hand-offs were swept before their worker mapped them: {gone[:3]}"
         assert store.handoffs() == () and _hidden(store) == []
+
+
+async def test_a_shared_arrow_pool_s_workers_carry_the_name_it_gives_them(store: SharedArrowStore) -> None:
+    """Flips if a worker of a SharedArrowPool given ``process_name`` does not name itself so as it starts (Linux, cut
+    to 15 bytes; nothing elsewhere)."""
+    pool = SharedArrowPool(store, workers=1, private_bytes=1 << 40, name="named", process_name="tt-arrow-worker-x")
+    try:
+        name = (await pool.run(jobs.process_name, read=False)).value
+    finally:
+        await pool.close()
+    assert name == ("tt-arrow-worker" if sys.platform.startswith("linux") else "")

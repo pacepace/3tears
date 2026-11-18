@@ -114,7 +114,7 @@ from threetears.core.eviction import (
     policy_declare,
     policy_lookup,
 )
-from threetears.core.processes import exit_with_parent, start_worker_server
+from threetears.core.processes import exit_with_parent, name_process, start_worker_server
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
 from threetears.observe.metrics import counter, gauge
@@ -4910,9 +4910,14 @@ def _spawned() -> int:
     return os.getpid()
 
 
-def _worker_start(serving: int, initializer: Callable[..., object] | None, initargs: tuple[Any, ...]) -> None:
+def _worker_start(
+    serving: int,
+    initializer: Callable[..., object] | None,
+    initargs: tuple[Any, ...],
+    process_name: str | None = None,
+) -> None:
     """a pool worker's start: it exits when the serving process dies (its parent is the fork server, which outlives
-    a killed serving process while any worker lives), then runs the pool's own initializer.
+    a killed serving process while any worker lives), names itself, then runs the pool's own initializer.
 
     :param serving: the serving process's pid
     :ptype serving: int
@@ -4920,10 +4925,15 @@ def _worker_start(serving: int, initializer: Callable[..., object] | None, inita
     :ptype initializer: Callable[..., object] | None
     :param initargs: its arguments
     :ptype initargs: tuple[Any, ...]
+    :param process_name: the name the worker gives itself (:func:`~threetears.core.processes.name_process`); None
+        to keep the fork server's
+    :ptype process_name: str | None
     :return: nothing
     :rtype: None
     """
     exit_with_parent(serving=serving)
+    if process_name is not None:
+        name_process(process_name)
     if initializer is not None:
         initializer(*initargs)
 
@@ -5151,6 +5161,10 @@ class SharedArrowPool:
     :param preload: modules the fork server imports as it starts, so each worker it forks holds them already (the
         jobs' modules, and what they import); read only by a server not yet started in this process
     :ptype preload: Sequence[str]
+    :param process_name: the name each worker gives itself as it starts, as ``ps`` and ``/proc/<pid>/comm`` say it
+        on Linux (:func:`~threetears.core.processes.name_process`, cut to 15 bytes): every worker the fork server
+        forks has its command line, so this tells this pool's workers from another's; None keeps the server's
+    :ptype process_name: str | None
     """
 
     def __init__(
@@ -5163,9 +5177,11 @@ class SharedArrowPool:
         initializer: Callable[..., object] | None = None,
         initargs: tuple[Any, ...] = (),
         preload: Sequence[str] = (),
+        process_name: str | None = None,
     ) -> None:
         if workers < 1:
             raise ValueError("a pool needs a worker")
+        self._process_name = process_name
         self._store = store
         self._workers = workers
         self._private_bytes = private_bytes
@@ -5441,7 +5457,7 @@ class SharedArrowPool:
                 max_workers=self._workers,
                 mp_context=self._context,
                 initializer=_worker_start,
-                initargs=(self._serving, self._initializer, self._initargs),
+                initargs=(self._serving, self._initializer, self._initargs, self._process_name),
             )
             with self._reaping_lock:
                 self._shutdown_locks[self._pool] = threading.Lock()
