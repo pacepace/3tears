@@ -23,6 +23,7 @@ The scrape sidecar is exempt: it is a separate deployable with its own venv,
 from __future__ import annotations
 
 import ast
+from typing import TypeGuard
 from pathlib import Path
 
 from threetears.enforcement.common import parse_python_path
@@ -49,13 +50,13 @@ def _test_tree_sources() -> list[Path]:
     return sorted(found)
 
 
-def _mutates_sys_path(node: ast.AST) -> bool:
+def _mutates_sys_path(node: ast.AST) -> TypeGuard[ast.Call | ast.Assign | ast.AugAssign]:
     """whether ``node`` is ``sys.path.insert/append/extend(...)`` or an assignment to ``sys.path``.
 
     :param node: any AST node
     :ptype node: ast.AST
     :return: whether it changes ``sys.path``
-    :rtype: bool
+    :rtype: TypeGuard[ast.Call | ast.Assign | ast.AugAssign]
     """
 
     def _is_sys_path(expr: ast.AST) -> bool:

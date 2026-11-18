@@ -45,8 +45,10 @@ in this repository and can therefore be compared to each other.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
-from threetears.nats.subject_permissions import Principal, build_permissions, kv_bucket_names
+from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions, kv_bucket_names
 
 #: Stand-in namespace, visually distinct from any bucket suffix so a mis-slice reads
 #: as wrong in the failure message rather than as plausible.
@@ -159,11 +161,12 @@ def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() ->
     assert len(opened.bucket_names) == 1, f"bucket_identity opened {opened.bucket_names}, expected one bucket"
     epoch_bucket = opened.bucket_names[0]
 
-    for principal, kwargs in (
+    principals: tuple[tuple[Principal, _Ids], ...] = (
         (Principal.AGENT_POD, {"agent_id": _AGENT_ID, "pod_id": "pod-1", "conn_id": "conn-1"}),
         (Principal.HUB, {"conn_id": "conn-1"}),
         (Principal.GATEWAY, {"conn_id": "conn-1"}),
-    ):
+    )
+    for principal, kwargs in principals:
         granted = kv_bucket_names(build_permissions(principal, **kwargs))
         assert f"{_NAMESPACE}-{epoch_bucket}" in granted, (
             f"{principal} is not granted the epoch bucket "
@@ -199,7 +202,7 @@ def test_no_pod_is_granted_the_bucket_the_checkpointer_l2_defaults_to() -> None:
         f"SUFFIX that kv_bucket prefixes."
     )
     for principal in (Principal.AGENT_POD, Principal.TOOL_POD):
-        granted = kv_bucket_names(_permissions_for(principal))  # type: ignore[arg-type]
+        granted = kv_bucket_names(_permissions_for(principal))
         assert f"{_NAMESPACE}-{default_l2_bucket}" not in granted, (
             f"{principal} is granted the shared checkpoint bucket ('{_NAMESPACE}-{default_l2_bucket}'), "
             f"which carries every agent's thread state under keys no grant can narrow to one owner."
@@ -223,8 +226,8 @@ def test_the_shared_pod_buckets_are_granted_under_the_scope_their_openers_key_wi
     import inspect
     from uuid import UUID
 
-    def owner_scope_of(permissions: object, bucket: str) -> str | None:
-        found = [r for r in permissions.js_resources if r.name == bucket]  # type: ignore[attr-defined]
+    def owner_scope_of(permissions: PrincipalPermissions, bucket: str) -> str | None:
+        found = [r for r in permissions.js_resources if r.name == bucket]
         assert len(found) == 1, (bucket, found)
         assert found[0].capability is JsCapability.KV_OWNER_KEYS, found[0]
         return found[0].scope
@@ -269,10 +272,18 @@ def test_an_agent_pod_publishes_audit_events_and_holds_no_grant_on_the_audit_str
     assert f"{_NAMESPACE}.audit.tool.call" in granted.publish, "the agent pod must still emit its audit events"
 
 
+class _Ids(TypedDict, total=False):
+    """the identity ``build_permissions`` resolves a principal's allow-list from."""
+
+    agent_id: str
+    pod_id: str
+    conn_id: str
+
+
 #: representative ids per principal, so every member of the enum resolves to a concrete
 #: allow-list. Keyed by the enum itself: a member added without an entry raises a ``KeyError``
 #: in :func:`_permissions_for` rather than being quietly skipped by a hand-written roster.
-_IDS: dict[Principal, dict[str, str]] = {
+_IDS: dict[Principal, _Ids] = {
     Principal.AGENT_POD: {"agent_id": _AGENT_ID, "pod_id": _POD_ID},
     Principal.TOOL_POD: {"pod_id": _POD_ID},
     Principal.REGISTRY: {"conn_id": "conn-1"},
@@ -284,7 +295,7 @@ _IDS: dict[Principal, dict[str, str]] = {
 }
 
 
-def _permissions_for(principal: Principal) -> object:
+def _permissions_for(principal: Principal) -> PrincipalPermissions:
     """resolve one principal's allow-list from its representative ids.
 
     :param principal: the connection identity class
@@ -323,7 +334,7 @@ def test_the_collections_bucket_every_principal_holds_is_the_one_basecollection_
     assert "-" not in suffix and "_" not in suffix, (
         f"{suffix!r} looks like it has baked in a namespace of its own; it is a SUFFIX that kv_bucket prefixes."
     )
-    granted = kv_bucket_names(_permissions_for(principal))  # type: ignore[arg-type]
+    granted = kv_bucket_names(_permissions_for(principal))
     assert f"{_NAMESPACE}-{suffix}" in granted, (
         f"{principal} is not granted the shared collections bucket "
         f"('{_NAMESPACE}-{suffix}'); it holds {list(granted)}. Every L2 read and write from this "

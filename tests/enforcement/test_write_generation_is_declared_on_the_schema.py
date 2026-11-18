@@ -9,6 +9,7 @@ round -- would advance a generation for writes no trigger marks, or mark writes 
 from __future__ import annotations
 
 import importlib
+from typing import Any
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -29,22 +30,22 @@ _SOURCE_ROOTS = tuple(
 )
 
 
-def class_is_switched(cls: type[BaseCollection]) -> bool:
+def class_is_switched(cls: type[BaseCollection[Any]]) -> bool:
     """whether a collection class's writes advance its table's generation.
 
     :param cls: the class
-    :ptype cls: type[BaseCollection]
+    :ptype cls: type[BaseCollection[Any]]
     :return: ``True`` when it declares ``WRITE_GENERATION`` or caches absences
     :rtype: bool
     """
     return isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None
 
 
-def disagreements(classes: Iterable[type[BaseCollection]]) -> list[str]:
+def disagreements(classes: Iterable[type[BaseCollection[Any]]]) -> list[str]:
     """the classes over a ``TableSchema`` whose switch and whose schema's switch differ.
 
     :param classes: collection classes
-    :ptype classes: Iterable[type[BaseCollection]]
+    :ptype classes: Iterable[type[BaseCollection[Any]]]
     :return: ``Class: class says X, schema says Y`` for each
     :rtype: list[str]
     """
@@ -59,18 +60,18 @@ def disagreements(classes: Iterable[type[BaseCollection]]) -> list[str]:
     return found
 
 
-def _schema_backed_classes() -> list[type[BaseCollection]]:
+def _schema_backed_classes() -> list[type[BaseCollection[Any]]]:
     """every ``SchemaBackedCollection`` subclass the source defines, imported.
 
     :return: the classes
-    :rtype: list[type[BaseCollection]]
+    :rtype: list[type[BaseCollection[Any]]]
     """
     for root in _SOURCE_ROOTS:
         for path in sorted(root.rglob("*.py")):
             if "SchemaBackedCollection" in path.read_text(encoding="utf-8"):
                 importlib.import_module(".".join(path.relative_to(root).with_suffix("").parts))
-    found: list[type[BaseCollection]] = []
-    pending: list[type] = [SchemaBackedCollection]
+    found: list[type[BaseCollection[Any]]] = list(SchemaBackedCollection.__subclasses__())
+    pending = list(found)
     while pending:
         for sub in pending.pop().__subclasses__():
             found.append(sub)

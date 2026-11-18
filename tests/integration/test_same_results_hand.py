@@ -53,6 +53,9 @@ import pytest
 
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.wake import manual, rate_limit
+from threetears.agent.wake.entities import WakeScheduleEntity
+from threetears.agent.workspace.entities import Workspace
+from threetears.core import keyed
 from threetears.agent.workspace.collections import WorkspaceFileVersionCollection
 from threetears.agent.workspace.tools import helpers as workspace_helpers
 from threetears.agent.workspace.tools.helpers import next_journal_version
@@ -567,7 +570,7 @@ async def test_a_workspace_s_customer_is_its_namespace_row_s(
     """Flips if ``enrich_workspace_identity``'s keyed read of the namespace row (both row scopes and the id: the whole
     primary key) answers another row than its ``row_scope IN ('platform', 'customer')`` statement did."""
     kept: list[Any] = []
-    real = workspace_helpers.read_row
+    real = keyed.read_row  # the function the helpers module imported, and the name the spy replaces there
 
     async def spy(*args: Any, **kwargs: Any) -> Any:
         row = await real(*args, **kwargs)
@@ -579,7 +582,9 @@ async def test_a_workspace_s_customer_is_its_namespace_row_s(
 
     async def helper(conn: Any) -> list[dict[str, Any]]:
         kept.clear()
-        await workspace_helpers.enrich_workspace_identity(SimpleNamespace(id=target, customer_id=None), _Unrouted(conn))
+        await workspace_helpers.enrich_workspace_identity(
+            Workspace({"id": target, "customer_id": None}), _Unrouted(conn)
+        )
         (row,) = kept
         return [] if row is None else [dict(row)]
 
@@ -641,7 +646,7 @@ async def test_an_agent_s_active_count_is_its_unprotected_active_wakes(
     ``resume_schedule_serialized`` (resume), the count each sends kept by a spy."""
     left_out = None if excluding is None else uuid.uuid5(_NS, f"schedule-{excluding}")
     kept: list[Any] = []
-    real = rate_limit.aggregate_keyed
+    real = keyed.aggregate_keyed
 
     async def spy(*args: Any, **kwargs: Any) -> Any:
         rows = await real(*args, **kwargs)
@@ -764,7 +769,7 @@ class _Kept:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.counted: list[int] = []
-        real = rate_limit.aggregate_keyed
+        real = keyed.aggregate_keyed
 
         async def spy(*args: Any, **kwargs: Any) -> Any:
             rows = await real(*args, **kwargs)
@@ -912,19 +917,21 @@ async def test_a_manual_claim_takes_the_limit_its_statement_took(
 
     async def helper(conn: Any) -> list[dict[str, Any]]:
         # named by tenant 0's conversation, as the statement names it: a wake of tenant 1's is not found
-        wake = SimpleNamespace(
-            conversation_id=tenant_conversation,
-            schedule_id=wake_id,
-            user_id=_USERS[0],
-            agent_id=_AGENTS[0],
-            execution_mode="inline",
-            schedule_type="cron",
-            name="wake",
-            task_prompt="do it",
-            context_from_schedule_id=None,
-            skill_id=None,
-            include_conversation_history=False,
-            protected=False,
+        wake = WakeScheduleEntity(
+            {
+                "conversation_id": tenant_conversation,
+                "schedule_id": wake_id,
+                "user_id": _USERS[0],
+                "agent_id": _AGENTS[0],
+                "execution_mode": "inline",
+                "schedule_type": "cron",
+                "name": "wake",
+                "task_prompt": "do it",
+                "context_from_schedule_id": None,
+                "skill_id": None,
+                "include_conversation_history": False,
+                "protected": False,
+            }
         )
         try:
             claim = await manual.claim_manual_fire(
@@ -932,7 +939,7 @@ async def test_a_manual_claim_takes_the_limit_its_statement_took(
                 wake,
                 requested_by="user:x",
                 min_gap=_GAP,
-                now=_CLAIMED_AT,  # type: ignore[arg-type]
+                now=_CLAIMED_AT,
             )
         except manual.ManualFireRefused:
             return []

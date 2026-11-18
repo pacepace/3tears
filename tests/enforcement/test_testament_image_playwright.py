@@ -24,7 +24,7 @@ _DOCKERFILE = _REPO_ROOT / "docker" / "testament.Dockerfile"
 
 def _locked_playwright() -> str:
     lock = tomllib.loads((_REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
-    versions = {package["version"] for package in lock["package"] if package["name"] == "playwright"}
+    versions: set[str] = {package["version"] for package in lock["package"] if package["name"] == "playwright"}
     assert len(versions) == 1, f"uv.lock locks playwright at {sorted(versions)}, not at one version"
     return versions.pop()
 

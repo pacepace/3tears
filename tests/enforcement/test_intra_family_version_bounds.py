@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ def _package_dirs() -> list[Path]:
     return found
 
 
-def _all_declared_deps(data: dict) -> list[tuple[str, str]]:
+def _all_declared_deps(data: dict[str, Any]) -> list[tuple[str, str]]:
     """return ``(section, entry)`` for every declared dependency of a package.
 
     covers required dependencies AND every optional-dependency extra, because an

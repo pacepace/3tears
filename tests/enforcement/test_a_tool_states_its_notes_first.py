@@ -180,7 +180,9 @@ def _glued_on(tree: ast.AST, where: str) -> list[str]:
     for node in ast.walk(tree):
         if id(node) in inside:
             continue  # a piece of an f-string, read with the whole of it
-        text = _opening(node) if isinstance(node, ast.Constant | ast.JoinedStr) else None
+        if not isinstance(node, ast.Constant | ast.JoinedStr):
+            continue
+        text = _opening(node)
         if not text or text.lstrip(" \n") == text or not NOTE.match(text.lstrip(" \n")):
             continue
         if any(f"{where}:{text}".startswith(key) for key in NOT_A_TOOL_RESULT):
@@ -275,6 +277,8 @@ def _built_late(tree: ast.AST, where: str, waived: set[str] | None = None) -> li
     }
     hits = []
     for node in ast.walk(tree):
+        if not isinstance(node, ast.expr):
+            continue  # only an expression builds a string: an f-string, a ``+`` chain, a join
         pieces = _pieces(node)
         if not pieces:
             continue

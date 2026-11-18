@@ -29,6 +29,7 @@ import pytest
 
 from threetears.agent.acl.collections import GroupCollection, NamespaceCollection
 from threetears.agent.skills.collections import AgentSkillCollection, AgentSkillInvocationCollection
+from threetears.agent.skills.types import SkillOutcome
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.same_results import Seeded, assert_same_results
@@ -394,7 +395,7 @@ SELECT m.was, m.was_notes, EXISTS (SELECT 1 FROM counted) AS counted FROM marked
 
 @pytest.mark.parametrize(("outcome", "notes"), [("success", None), ("failure", "it broke"), ("success", "fine")])
 async def test_an_outcome_report_writes_what_the_statement_wrote(
-    db: Any, skills: None, outcome: str, notes: str | None
+    db: Any, skills: None, outcome: SkillOutcome, notes: str | None
 ) -> None:
     """Flips if ``record_outcome`` writes other rows or values than its one CTE statement did: the use by its key and
     skill (another skill's use is not found), its notes kept when none are given, the skill's counts moved once and

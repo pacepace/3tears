@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import TypedDict
 
 import pytest
 
@@ -24,8 +25,17 @@ pytestmark = pytest.mark.enforcement
 
 _NS = "3tears"
 
+
+class _Ids(TypedDict, total=False):
+    """the identity ``build_permissions`` resolves a principal's allow-list from."""
+
+    agent_id: str
+    pod_id: str
+    conn_id: str
+
+
 #: two connections of each principal, so a principal's grants are checked against another of its own kind too
-_IDS: dict[Principal, tuple[dict[str, str], dict[str, str]]] = {
+_IDS: dict[Principal, tuple[_Ids, _Ids]] = {
     Principal.AGENT_POD: (
         {"agent_id": "019470a8-b5c3-7def-8123-0000000000aa", "pod_id": "01947100-0000-7000-8000-0000000000aa"},
         {"agent_id": "019470a8-b5c3-7def-8123-0000000000bb", "pod_id": "01947100-0000-7000-8000-0000000000bb"},

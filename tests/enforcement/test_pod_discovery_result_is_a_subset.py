@@ -36,7 +36,9 @@ _PAIRS: list[tuple[type[BaseModel], type[BaseModel]]] = [
 ]
 
 #: a field whose annotation names the other side's model, compared by the pair it names instead.
-_PAIRED_ANNOTATIONS = {(DiscoveryProbeResponse, "tools"): (DiscoveryProbeResultEntry, DiscoverResultEntry)}
+_PAIRED_ANNOTATIONS: dict[tuple[type[BaseModel], str], tuple[type[BaseModel], type[BaseModel]]] = {
+    (DiscoveryProbeResponse, "tools"): (DiscoveryProbeResultEntry, DiscoverResultEntry)
+}
 
 
 def _default(field: FieldInfo) -> object:

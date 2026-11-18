@@ -13,13 +13,31 @@ invocation:
 
 from __future__ import annotations
 
-import sys
+import importlib.util
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT / "docker"))
 
-from family_from_base import strip_family_requirements  # noqa: E402
+
+def _load_script() -> ModuleType:
+    """``docker/family_from_base.py``, loaded from its path as the image runs it: a script, not a package.
+
+    Loaded by file rather than by putting ``docker/`` on ``sys.path``: that directory is no package,
+    and a path entry would outlive this module, leaving the script importable by its bare name to
+    every test collected after it.
+    """
+    path = _REPO_ROOT / "docker" / "family_from_base.py"
+    spec = importlib.util.spec_from_file_location("family_from_base", path)
+    assert spec is not None and spec.loader is not None, f"{path} cannot be loaded as a module"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: the function under test, with the signature the script declares
+strip_family_requirements: Callable[[str], tuple[str, list[str]]] = _load_script().strip_family_requirements
 
 
 def _preceded_by_a_requirement(lines: list[str], index: int) -> bool:

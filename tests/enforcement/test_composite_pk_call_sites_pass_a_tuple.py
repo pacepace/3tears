@@ -88,14 +88,14 @@ def _declared_pk_arity(cls: ast.ClassDef) -> int | None:
     """
     result: int | None = None
     for node in cls.body:
-        target = None
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            target = node.target.id
+            target, value = node.target.id, node.value
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            target = node.targets[0].id
+            target, value = node.targets[0].id, node.value
+        else:
+            continue
         if target != "primary_key_column":
             continue
-        value = node.value
         if isinstance(value, ast.Tuple):
             result = len(value.elts)
         elif isinstance(value, ast.Constant) and isinstance(value.value, str):

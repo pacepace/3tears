@@ -73,7 +73,9 @@ def _sql_strings(path: Path) -> list[tuple[int, str]]:
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in inner:
             text = node.value
         elif isinstance(node, ast.JoinedStr):
-            text = "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+            text = "".join(
+                v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else "{}" for v in node.values
+            )
         else:
             continue
         upper = text.upper()

@@ -182,12 +182,12 @@ def scan(scan_cache: ScanCache) -> _Scan:
                 relative = path.relative_to(_REPO_ROOT).as_posix()
                 if not relative.startswith(_ENFORCEMENT_TESTS):
                     test_modules.append((relative, True))
-    names = module_names(scan_cache, _REPO_ROOT, [*src_modules, *test_modules])
+    scanned = module_names(scan_cache, _REPO_ROOT, [*src_modules, *test_modules])
     uses: dict[str, frozenset[str]] = {}
     defines: dict[str, frozenset[str]] = {}
-    for module in src_modules:
-        uses[module[0]], defines[module[0]] = names[module]
-    test_uses = {module[0]: names[module][0] for module in test_modules}
+    for src_module in src_modules:
+        uses[src_module[0]], defines[src_module[0]] = scanned[src_module]
+    test_uses = {test_module[0]: scanned[test_module][0] for test_module in test_modules}
     return _Scan(frozenset(exported), frozenset(added), uses, test_uses, defines, baseline)
 
 

@@ -32,9 +32,10 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import Enum, MetaData
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import CreateEnumType
 from sqlalchemy.schema import CreateIndex, CreateTable
+
+from packages.core.tests.dialect_support import pg_dialect
 from threetears.agent.acl.collections import ImpersonationGateCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.audit.migrations import register as register_audit
@@ -161,10 +162,10 @@ async def _build(url: str, schema: str) -> bool:
             for column in table.columns:
                 # an enum column's type is the hub's to create, beside its table
                 if isinstance(column.type, Enum) and column.type.name:
-                    await conn.execute(str(CreateEnumType(column.type).compile(dialect=postgresql.dialect())))
-            await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
+                    await conn.execute(str(CreateEnumType(column.type).compile(dialect=pg_dialect())))
+            await conn.execute(str(CreateTable(table).compile(dialect=pg_dialect())))
             for index in table.indexes:
-                await conn.execute(str(CreateIndex(index).compile(dialect=postgresql.dialect())))
+                await conn.execute(str(CreateIndex(index).compile(dialect=pg_dialect())))
         return yugabyte
     finally:
         await conn.close()
