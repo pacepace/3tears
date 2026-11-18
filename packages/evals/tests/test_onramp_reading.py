@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.onramp.campaign import CASES, HELD_OUT, TRANSCRIPTS, clopper_pearson, main, registry
+from packages.evals.onramp.campaign import CASES, HELD_OUT, TRANSCRIPTS, main, registry
 from packages.evals.onramp.plan import PLANS, Plan, PlannedArm, load_plan, plan_refusal, wheel_dir
 from packages.evals.onramp.reading import (
     CHECKS,
@@ -27,8 +27,9 @@ from packages.evals.onramp.reading import (
     simulated_rows,
 )
 from packages.evals.onramp.sandbox import APPS, TWINS
+from packages.evals.tests.stats_certificate import read as read_certificate
 
-#: The level every comparison the package reads holds its error to, over its family.
+#: The level every comparison the package reads holds its error to.
 ALPHA = 0.05
 
 
@@ -110,37 +111,42 @@ def test_the_reading_states_every_check_the_primary_first_and_each_apps_tally_pe
     assert "    by app (docs@control, docs@candidate): x 0 of 3, 3 of 3; y 1 of 3, 2 of 3" in said
 
 
-@pytest.mark.timeout(900)
-def test_with_apps_as_cases_arms_that_differ_only_by_noise_read_separated_at_most_alpha_and_pooled_trials_do_not() -> (
-    None
-):
-    """The error rate the reading holds, simulated over the real path (stored rows replayed through the package).
+#: The package's certified claims under the on-ramp's null (apps as cases, three trials each, base shares from 0.1 to
+#: 0.6, an arm-by-app spread of sd 0.1): a question's primary read once, or continued to five reads, separates at most
+#: alpha. Counted through the package's reading by ``packages/evals/scripts/certify_stats.py``.
+ONRAMP_CLAIMS = ("small-n.once.onramp", "small-n.continued.onramp.separates")
 
-    The arms differ only by noise: each app's base share is drawn once, and each arm's share on each app moves from it
-    by an arm-by-app draw (sd 0.35) a binomial over trials has no term for, as two runs of one design on one app
-    disagreed in the run this harness's history records. Read with the app as the case, the arms separate at most
-    alpha of the time: the upper end of the exact 95% range on that share is at most alpha. Read with each trial as
-    its own case (the arm-by-app draw then counted k times over), the same rows separate more than alpha of the time:
-    the lower end of that range is above alpha, so this test fails a reading that pools trials.
+
+def test_the_error_rate_the_reading_holds_is_the_packages_certified_claim_under_the_onramp_null() -> None:
+    """The reading is the package's own (an ``Eval`` over the apps), so the error rate it holds is the package's: its
+    certificate holds both on-ramp claims at alpha. ``test_stats_certificate.py`` holds the certificate current."""
+    certified = {claim["id"]: claim for claim in read_certificate()["claims"]}
+    for claim in ONRAMP_CLAIMS:
+        assert certified[claim]["holds"] and certified[claim]["test"] == "at_most", claim
+        assert certified[claim]["target"] == ALPHA and certified[claim]["figure"] <= ALPHA, claim
+
+
+@pytest.mark.timeout(300)
+def test_seeded_noise_only_runs_separate_with_apps_as_cases_less_often_than_with_trials_pooled() -> None:
+    """A fast guard on the replay, which the certificate does not cover: it must hand the package apps as cases.
+
+    Fifteen seeded runs whose arms differ only by noise (12 apps, 10 trials each, an arm-by-app draw of sd 0.4 that a
+    binomial over trials has no term for). Read with the app as the case, none separates; read with each trial as its
+    own case, the arm-by-app draw counted ten times over, three do. The counts are the ones this code gave on this seed
+    under the package's reading of 2026-11-18; a replay that pooled trials reads the second count in the first place.
     """
-    apps, k, spread = 8, 8, 0.35
 
     def separated(rows: list[dict[str, Any]]) -> bool:
         result = asyncio.run(read(rows))
         return any(row["outcome"] in SEPARATED for row in result.contrasts(PRIMARY))
 
-    rng = random.Random(20261117)
-    as_cases = [separated(simulated_rows(rng, apps=apps, k=k, effect=0.0, spread=spread)) for _ in range(150)]
-    low, high = clopper_pearson(sum(as_cases), len(as_cases))
-    assert high <= ALPHA, (sum(as_cases), len(as_cases), low, high)
-
     rng = random.Random(20261118)
-    pooled = []
-    for _ in range(60):
-        rows = simulated_rows(rng, apps=apps, k=k, effect=0.0, spread=spread)
-        pooled.append(separated([{**row, "app": f"{row['app']}#{row['repeat']}"} for row in rows]))
-    low, high = clopper_pearson(sum(pooled), len(pooled))
-    assert low > ALPHA, (sum(pooled), len(pooled), low, high)
+    as_cases = pooled = 0
+    for _ in range(15):
+        rows = simulated_rows(rng, apps=12, k=10, effect=0.0, spread=0.4)
+        as_cases += separated(rows)
+        pooled += separated([{**row, "app": f"{row['app']}#{row['repeat']}"} for row in rows])
+    assert (as_cases, pooled) == (0, 3)
 
 
 def _plan(**changed: Any) -> Plan:

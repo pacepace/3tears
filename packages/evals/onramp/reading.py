@@ -10,11 +10,15 @@ test sees them). No trial is pooled with another app's, and no model is called: 
 A trial is replayed as the run ended it: one the run lost is lost again (its grade refuses it), and one whose runner
 raised fails again, as the package read it in the run.
 
-One check is read per comparison, so the primary check of a plan is tested on its own, not in a family with the other
-two. Tiers are never pooled: rows of more than one tier are read tier by tier.
+One check is read per comparison. The primary is the comparison's question, which the package tests alone and
+one-sided, toward the candidate; the other checks are leads, read with no question, never decided on. Tiers are never
+pooled: rows of more than one tier are read tier by tier.
 
-:func:`simulated_rows` draws stored-shaped rows under a stated model of apps and noise, for the seeded test of the
-error rate this reading holds and for ``--power``, which says how often a plan of a given size separates an effect.
+The error rate this reading holds under the on-ramp's null (apps as cases, three trials, an arm-by-app spread) is the
+package's certified claim (``small-n.once.onramp`` and ``small-n.continued.onramp.*`` in
+``packages/evals/tests/fixtures/stats_certificate.json``); ``tests/test_onramp_reading.py`` guards that this replay
+hands the package apps as cases, not trials. :func:`simulated_rows` draws stored-shaped rows under that model, for
+the guard and for ``--power``, which says how often a plan of a given size separates an effect.
 """
 
 from __future__ import annotations
@@ -144,15 +148,21 @@ def _stored_grade(check: str) -> Callable[[dict[str, Any], dict[str, bool | None
     return grade
 
 
-def comparison(rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None) -> Eval:
+def comparison(
+    rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None, lead: bool = False
+) -> Eval:  # Any: stored rows
     """One tier's stored run as a comparison on one check, with the app as the case (see the module).
+
+    With two arms or more it asks ``question`` (one naming the check when none is given), which the package tests
+    alone and one-sided, toward the candidate passing more often. A ``lead`` asks none: a secondary check, which the
+    package reads without deciding.
 
     :raises Unreadable: As :func:`design_of`; or a check no trial is graded on.
     """
     if check not in CHECKS:
         raise Unreadable(f"{check} is not a check the harness grades ({', '.join(CHECKS)})")
     design = design_of(rows)
-    asked = question or f"Do agents given {design.arms[-1]} pass {check} more often, app by app?"
+    asked = None if lead else question or f"Do agents given {design.arms[-1]} pass {check} more often, app by app?"
     return Eval(
         [{"id": app, "app": app} for app in design.apps],
         runner={arm: _replay(design.trials[arm], check) for arm in design.arms},
@@ -163,9 +173,11 @@ def comparison(rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, quest
     )
 
 
-async def read(rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None) -> Result:
-    """The package's reading of one tier's stored run on ``check``, apps as cases, held in memory."""
-    return await comparison(rows, check, question=question).run(store=":memory:")
+async def read(
+    rows: Sequence[Mapping[str, Any]], check: str = PRIMARY, *, question: str | None = None, lead: bool = False
+) -> Result:  # Any: stored rows
+    """The package's reading of one tier's stored run on ``check``, apps as cases, held in memory (:func:`comparison`)."""
+    return await comparison(rows, check, question=question, lead=lead).run(store=":memory:")
 
 
 def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored rows
@@ -190,7 +202,7 @@ async def read_lines(
             continue
         for check in (primary, *[name for name in CHECKS if name != primary]):
             role = "primary" if check == primary else "secondary, a lead only"
-            result = await read(own, check, question=question if check == primary else None)
+            result = await read(own, check, question=question, lead=check != primary)
             lines.append(f"  {check} ({role}): {result.render().splitlines()[0]}")
             for row in result.contrasts(check):
                 lines.append(
