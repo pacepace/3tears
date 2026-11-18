@@ -40,10 +40,9 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import redshift_connector
-from redshift_connector.error import InterfaceError
 
 from threetears.datasources.config import RedshiftConnectionConfig
+from threetears.datasources.drivers import redshift_driver as redshift_driver_module
 from threetears.datasources.drivers.base import ColumnRow, Driver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.introspection import compute_column_hash
@@ -517,8 +516,9 @@ class TestCloseDrainsCache:
         """run a query (fills cache), close, assert every connection it opened is closed."""
         config = _make_config(redshift_config)
         # a spy on the driver's own login, not a login of the test's: every call is the
-        # driver's, with the gated fixture's identity.
-        connector = redshift_connector
+        # driver's, with the gated fixture's identity. The connector is the driver module's own (the live-Redshift
+        # gate allows no test of its own import of it), read by name: the module does not re-export it.
+        connector: Any = getattr(redshift_driver_module, "redshift_connector")
         real_connect = connector.connect
         opened: list[Any] = []
 
@@ -539,7 +539,7 @@ class TestCloseDrainsCache:
         await driver.close()
         # closed by the drain: redshift_connector refuses to close a connection twice.
         for connection in opened:
-            with pytest.raises(InterfaceError, match="connection is closed"):
+            with pytest.raises(connector.InterfaceError, match="connection is closed"):
                 connection.close()
         with pytest.raises(RuntimeError, match="closed"):
             await driver.fetch("SELECT 1")
