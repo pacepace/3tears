@@ -15,7 +15,7 @@ Needs ``pyarrow`` (the ``export`` extra).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, assert_never
 
 try:
     import pyarrow as pa
@@ -47,9 +47,10 @@ _JSON_FORMS: Final[Mapping[str, str]] = {
     "timestamp with time zone": "string",
     "time without time zone": "string",
     "time with time zone": "string",
-    # SVV_COLUMNS' spelling of a Redshift TABLE's time with time zone column (its late-binding view's is the long
-    # one, as information_schema.columns spells both): read on the warehouse, 2026-11-19. Every other type above
-    # SVV_COLUMNS spells as information_schema.columns does (varchar(max) and numeric(10,2) too, bare)
+    # SVV_COLUMNS' spelling of a Redshift table's time with time zone column, where information_schema.columns and a
+    # late-binding view's SVV_COLUMNS row spell it long (read on the warehouse, 2026-11-19). Every column the two
+    # catalogues both held for the ots login that day had one spelling in both; a table of each type it may read is
+    # compared live (test_warehouse_arrow_types_redshift_live.py)
     "timetz": "string",
     "smallint": "int64",
     "integer": "int64",
@@ -85,17 +86,20 @@ def _columns_sql(dialect: Dialect) -> str:
     order, from the catalogue that holds every relation's columns in ``dialect``: the one place a warehouse
     relation's columns are read over the rail.
 
+    Each member is matched by identity, so a plain string (``"redshift"``) never passes for one, and a member added to
+    :class:`Dialect` without a catalogue here is a type error (``assert_never``).
+
     :param dialect: the dialect the datasource's statements are spelled in, from its declared engine
     :ptype dialect: Dialect
     :return: the statement
     :rtype: str
-    :raises ValueError: for a dialect this module names no catalogue for
+    :raises AssertionError: for anything not a :class:`Dialect` member
     """
     if dialect is Dialect.REDSHIFT:
         return _REDSHIFT_COLUMNS_SQL
-    if dialect in (Dialect.POSTGRES, Dialect.YUGABYTE, Dialect.DUCKDB):
+    if dialect is Dialect.POSTGRES or dialect is Dialect.YUGABYTE or dialect is Dialect.DUCKDB:
         return _STANDARD_COLUMNS_SQL
-    raise ValueError(f"no column catalogue is named for the dialect {dialect!r}")
+    assert_never(dialect)
 
 
 def _arrow_of(form: str) -> Any:
@@ -141,17 +145,18 @@ async def warehouse_arrow_types(
         catalogue is read once, not once per select list); a column of another type is then left out, and refused only
         when a read names it
     :ptype columns: Sequence[str] | None
-    :param dialect: the dialect the datasource's statements are spelled in (a
-        :class:`~threetears.datasources.keyed_reader.DatasourceReader`'s ``sql_dialect``, from the datasource's
-        declared engine), which names the catalogue read; never learned by a statement failing
+    :param dialect: the dialect the datasource's statements are spelled in, from its declared engine
+        (:func:`threetears.core.keyed.dialect_of` over the datasource's
+        :class:`~threetears.datasources.keyed_reader.DatasourceReader`, which refuses an engine with none); it names
+        the catalogue read, never learned by a statement failing
     :ptype dialect: Dialect
     :param extra: the types of selected expressions the catalogue does not hold (a row hash), by their names, which
         follow ``columns`` in this order
     :ptype extra: Mapping[str, pyarrow.DataType] | None
     :return: column name -> its Arrow type, in order
     :rtype: dict[str, pyarrow.DataType]
-    :raises ValueError: when a column is not in the catalogue, or its type has no one JSON form here, or the dialect
-        names no catalogue
+    :raises ValueError: when a column is not in the catalogue, or its type has no one JSON form here
+    :raises AssertionError: when ``dialect`` is not a :class:`Dialect` member (a plain string)
     :raises ImportError: without pyarrow
     """
     if not _PYARROW:

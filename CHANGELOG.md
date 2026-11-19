@@ -11,24 +11,36 @@ packages (bumped in lock-step).
 **Fixed:** `warehouse_arrow_types` read a relation's columns from `information_schema.columns`, which on Redshift
 holds none of a late-binding view's (`WITH NO SCHEMA BINDING`, what dbt's `+bind: false` makes of every view): over
 such a view it found no column, and a reader refused every load of it. On Redshift it now reads `SVV_COLUMNS`, which
-holds a table's, a bound view's and a late-binding view's columns alike, in the same spellings (read on the warehouse,
-2026-11-19); a table's `timetz` column, which `SVV_COLUMNS` spells `timetz`, is text as before. PostgreSQL, YugabyteDB
-and DuckDB read `information_schema.columns` by the same statement as before.
+holds a table's, a bound view's and a late-binding view's columns alike. Every column both catalogues held for the
+ots login on 2026-11-19 had one spelling in both; a table's `time with time zone` column, which `SVV_COLUMNS` spells
+`timetz`, is text as before. A live read-only test reads the warehouse's own late-binding views and compares a table
+of each column type the login may read across both catalogues. PostgreSQL, YugabyteDB and DuckDB read
+`information_schema.columns` by the same statement as before.
 
 **Changed (breaking):** `warehouse_arrow_types` takes `dialect`, keyword-only and required: the dialect the
-datasource's statements are spelled in (`threetears.core.keyed.Dialect`, a `DatasourceReader`'s `sql_dialect`), which
-names the catalogue it reads. The engine is the datasource's declared one, never learned by a statement failing.
+datasource's statements are spelled in (a `threetears.core.keyed.Dialect` member; `dialect_of` over the datasource's
+`DatasourceReader` gives it), which names the catalogue it reads. The engine is the datasource's declared one, never
+learned by a statement failing; a plain string (`"redshift"`) is refused before any ask.
 
-### core: a reader lets a superseded shared Arrow version go without holding the event loop
+### core: a shared Arrow reader lets go of a superseded version, and of files it kept to lend, without holding the event loop
 
-**Fixed:** `MappedTables.close` dropped every mapped table at once: one cascade of deallocations in C, during which no
-other thread can take the interpreter lock until the last array is freed. This is the close behind a
-`SharedArrowStore` reader's let-go of a superseded version after each publish, behind a worker's version and behind a
-claimed result. Cobalt dev's two reports pods stalled their idle event loops for 134 ms and 160 ms in it (2026-11-19,
-15:49Z), reached from `publish -> _tell_readers -> refresh`. The tables are now freed one at a time, each joined table
-before the parts it joins, so the loop takes its turn between two. At the pod's size (2240 files of 200 columns, a
-publish replacing every part) the loop ran 62.7 ms late past the host's own idle loop before, and 11.7 ms after
-(`test_shared_arrow_let_go_loop.py`, a `loop_timing` budget of 20 ms).
+**Fixed:** a `SharedArrowStore` reader freed what a publish superseded all at once: one cascade of deallocations in
+C, during which no other thread can take the interpreter lock until the last array is freed. Two places did it.
+`MappedTables.close` dropped every mapped table of the version a reader let go of (and of a worker's version, and of
+a claimed result). An idle reader's files kept to lend its next read were dropped whole, under the reader's lock,
+when a publish left the current version naming none of them (and on its next read and its close). Cobalt dev's two
+reports pods stalled their idle event loops for 134 ms and 160 ms in the first (2026-11-19, 15:49Z), reached from
+`publish -> _tell_readers -> refresh`. Both now free one table at a time, a joined table before the parts it joins
+and out of the reader's lock, so the loop takes its turn between two. At the pod's size (2240 files of 200 columns, a
+publish replacing every part) the loop ran past the host's own idle loop by 62.7 ms letting a held version go and
+53.1 ms letting lent files go before, and by 11.6-11.7 ms and 11.7-14.0 ms after (`test_shared_arrow_let_go_loop.py`,
+a `loop_timing` budget of 20 ms).
+
+### enforcement: the no-whole-reads rule replays migrations in number order
+
+**Fixed:** `collect_schema` replayed a repo's migration files in their paths' text order, so `v1001_*` came before
+`v118_*`, and a v1001 drop of an index v118 creates left the index declared. Files are now replayed in natural order,
+each run of digits compared as a number (`v118` < `v185` < `v1001`).
 
 ### agent-audit: a username's digest is an identifying audit detail
 

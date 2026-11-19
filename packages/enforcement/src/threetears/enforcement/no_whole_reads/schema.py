@@ -7,7 +7,8 @@ importing:
 - 3tears' ``TableSchema(name=..., primary_key=..., indexes=(Index(...), ...))`` and SQLAlchemy's
   ``Table("name", metadata, Column(..., primary_key=True), Index(...))``, in every module under the walked roots;
 - SQL DDL written anywhere in them (a migration's ``CREATE TABLE`` / ``CREATE INDEX`` / ``ALTER TABLE ... ADD
-  PRIMARY KEY`` / ``DROP INDEX``, in ``.py`` strings and ``.sql`` files), applied in path order so a later
+  PRIMARY KEY`` / ``DROP INDEX``, in ``.py`` strings and ``.sql`` files), applied in migration order (each path's
+  runs of digits compared as numbers: ``v118`` before ``v1001``) so a later
   migration's drop or rename wins; a ``DROP TABLE`` takes every index of each table it lists, and an ``ALTER TABLE ...
   DROP COLUMN`` every index whose key, ``INCLUDE``, expression or predicate names the column, as the database does;
 - a table list in YAML (a tool pod's ``tables.yaml``, an ``agent.yaml`` data section): every mapping with a
@@ -2170,6 +2171,22 @@ def _sql_files(root: Path) -> Iterator[Path]:
     yield from (path for path in sorted(root.rglob("*.sql")) if not set(path.parts) & _SKIP_DIRS)
 
 
+#: a run of digits in a path: a migration's number (``v118``, ``v1001``)
+_DIGITS: Final = re.compile(r"(\d+)")
+
+
+def _replay_order(relative: str) -> tuple[str | int, ...]:
+    """a migration file's place in its replay: its path with every run of digits compared as a number, so ``v118``
+    comes before ``v185`` and ``v1001`` after both, where their text puts ``v1001`` first.
+
+    :param relative: the file's repo-relative path
+    :ptype relative: str
+    :return: the path's text and numbers, alternating (text first, so any two compare part for part)
+    :rtype: tuple[str | int, ...]
+    """
+    return tuple(int(part) if index % 2 else part for index, part in enumerate(_DIGITS.split(relative)))
+
+
 def collect_schema(
     repo_root: Path,
     roots: tuple[Path, ...],
@@ -2209,8 +2226,9 @@ def collect_schema(
                 if any(relative.startswith(prefix) for prefix in excluded_prefixes):
                     continue
                 entries.append((relative, path, local and inside))
-    # a dependency's tables first, then the repo's, each in path order: a later migration's drop or rename wins
-    entries.sort(key=lambda entry: (entry[2], entry[0]))
+    # a dependency's tables first, then the repo's, each in migration order (its number, not its text): a later
+    # migration's drop or rename wins
+    entries.sort(key=lambda entry: (entry[2], _replay_order(entry[0])))
     for relative, path, local in entries:
         # every declaration in 3tears' own sources (a dependency) is 3tears': its migrations' tables too
         catalog.marking = not local

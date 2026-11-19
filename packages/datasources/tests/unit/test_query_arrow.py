@@ -345,3 +345,22 @@ async def test_a_relation_on_another_engine_is_read_from_information_schema_as_b
             ["reporting", "results_20261119"],
         )
     ]
+
+
+@pytest.mark.parametrize("named", ["redshift", "postgres", "unnamed"])
+async def test_a_dialect_named_by_a_plain_string_is_refused_before_any_ask(named: str) -> None:
+    """Flips if a plain string passes for a dialect (a reader's ``sql_dialect`` for an engine with none, or an engine's
+    name): ``"redshift"`` would read another catalogue than ``Dialect.REDSHIFT`` names, or a load would run on a guess.
+    Narrowed by ``dialect_of`` first, the caller gets a :class:`Dialect` or its refusal."""
+    catalogue = _TwoCatalogues()
+
+    with pytest.raises(AssertionError):
+        await warehouse_arrow_types(
+            catalogue,  # type: ignore[arg-type]
+            "ds",
+            "reporting.results",
+            None,
+            dialect=named,  # type: ignore[arg-type]
+        )
+
+    assert catalogue.asked == []
