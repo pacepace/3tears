@@ -31,7 +31,7 @@ from packages.evals.tests.rung_support import (
     root_only_imports,
 )
 from packages.evals.tests.ladder_support import offline_copy
-from packages.evals.tests.offline_support import refuse_connects
+from packages.evals.tests.offline_support import assert_no_connects, refuse_connects
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 RUNG = EXAMPLES / "1-triage"
@@ -232,7 +232,7 @@ def test_an_email_the_recording_does_not_hold_fails_the_run_naming_its_call_and_
     assert main(["triage.py"]) == 1
 
     printed = capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
     # The print leads with the failure, naming the call that missed, and prints no verdict: what the cells that
     # finished first came to is no reading of the eval, so the next line says the readings cover only those.
     first, second, *_ = printed.splitlines()

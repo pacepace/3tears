@@ -41,7 +41,7 @@ from typing import Any, Final
 import pytest
 
 from packages.evals.tests.ladder_support import offline_copy
-from packages.evals.tests.offline_support import refuse_connects
+from packages.evals.tests.offline_support import assert_no_connects, refuse_connects
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.ops.report_writer import writer_kind, writer_pairwise
 from threetears.evals.ops.report_writer.preference import pair_evidence
@@ -318,7 +318,7 @@ def test_rung_five_replays_every_judge_call_with_the_same_answers_over_reworded_
     monkeypatch.setattr(writer_pairwise, "pair_evidence", relabelled)
     moved = _replay(offline_copy("5-writer", tmp_path / "reworded", monkeypatch), capsys)
 
-    assert attempts == []
+    assert_no_connects(attempts)
     # Not vacuous: every page the judge read was reworded.
     assert len(moved.artifacts) == len(plain.artifacts) == 14
     assert all(
