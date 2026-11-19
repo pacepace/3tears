@@ -9,7 +9,7 @@ both these reads and a restore produce.
 **Why apart from the keeper** (Pace 2026-11-15, pyarrow stays an optional extra of core): a restore folds its notes as
 Arrow in a worker process (:mod:`threetears.core.change_note_fold`), so the keeper imports pyarrow and NumPy at module
 top. Every process that follows the epoch log imports these readers (``threetears.epoch``, the write marks, the
-migrations); with the keeper beside them each needed pyarrow (26dabec04 made it a core dependency, after the SDK's
+migrations); with the keeper beside them each needed pyarrow (pyarrow became a core dependency, after the SDK's
 unit suite failed 111 tests on ``ModuleNotFoundError: pyarrow``). Only the process that runs the keeper (the hub)
 needs the ``arrow`` extra now; ``tests/enforcement/test_core_imports_without_arrow.py`` holds the line.
 """
@@ -774,7 +774,7 @@ async def _noted_keys_page(
 ) -> NotedKeysPage | str:
     try:
         # the ring row by its key, and the planner told to keep the index's order for the notes read after it
-        # (_INDEX_ORDER), the settings as they were read first, beside it (_SETTINGS_WERE): one round trip (f93ef9522:
+        # (_INDEX_ORDER), the settings as they were read first, beside it (_SETTINGS_WERE): one round trip (2026-11-09:
         # a page in two round trips, not four). Told only where the ring row is
         ring = await read_row(
             conn,

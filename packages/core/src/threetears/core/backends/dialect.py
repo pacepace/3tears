@@ -38,7 +38,7 @@ _HINT_MISSING_LOGGED: list[bool] = [False]
 _DIALECT_OF_READER: Final = "answers_from_yugabyte"
 
 #: the capability a hub's broker names in its replies' ``hub_capabilities`` when its database is YugabyteDB (the hub's
-#: ``DIALECT_CAPABILITY_PREFIX`` and the database it reads from ``version()`` at start, 14-eng-ai-bot 99a3266d6)
+#: ``DIALECT_CAPABILITY_PREFIX`` and the database it reads from ``version()`` at start)
 _YUGABYTE_DIALECT_CAPABILITY: Final = "dialect:yugabyte"
 
 #: what ``version()`` says on YugabyteDB (``PostgreSQL 15.12-YB-2026.1.0.0-b0 ...``)

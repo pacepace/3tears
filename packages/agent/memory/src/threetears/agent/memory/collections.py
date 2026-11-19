@@ -1124,7 +1124,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             # parameters mirror prod (upstream alembic). these are
             # strings to match the textual ``WITH (key = value)`` DDL
             # syntax pgvector emits.
-            # KEEP (coordinator, 2026-11-15; v001 idx_mem_embedding, renamed in 8060d75d7): an owner with many
+            # KEEP (coordinator, 2026-11-15; v001 idx_mem_embedding, renamed in v0.8.1): an owner with many
             # memories is read nearest-first through it on both engines (an owner of 20,000: PostgreSQL and
             # YugabyteDB walk it for every read named below), a small one is sorted exactly off the owner index
             # (test_vector_index_plans holds both). find_same_event is no reader: ix_memories_message_source serves it.
@@ -1950,7 +1950,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 )
             # ``older_than`` narrows the read to the history (see the history pool below): the user's memories older
             # than the window, pinned by agent and user so the read is the one ix_memories_agent_user_date names, the
-            # date bound read off it, the customer checked after. b2bc83998 fenced the customer out (an OFFSET 0
+            # date bound read off it, the customer checked after. The customer was once fenced out (an OFFSET 0
             # subquery): with it beside the pins, YugabyteDB read the owner's every memory by
             # idx_memories_agent_customer_user. Here it is ``(...) IS TRUE``, the same rows (a WHERE keeps neither a NULL)
             # as a predicate no index condition takes, as gin_filter keeps a predicate off an index
@@ -3241,7 +3241,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
             # ``WITH`` clause here (the index was built before the
             # upstream migration started parametrising hnsw), so this
             # declaration has no ``pg_with=``.
-            # KEEP (coordinator, 2026-11-15; v0.8.1, 8060d75d7): a heavy owner's file contents, nearest first, are
+            # KEEP (coordinator, 2026-11-15; v0.8.1): a heavy owner's file contents, nearest first, are
             # read through it on both engines; a small owner's are sorted off idx_media_content_agent_user
             # (test_vector_index_plans holds both). The YugabyteDB small-owner ybhnsw cost (~100 ms at k=10) is the
             # known follow-up at ix_memories_embedding_hnsw.
@@ -3525,7 +3525,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         # content id (media_content_pkey) and by file id
         # (ix_media_content_media_type), then the user is checked on both the
         # content and its file: with the user beside the ids, YugabyteDB read
-        # every content row of the user (b2bc83998). both are bound because no
+        # every content row of the user. both are bound because no
         # constraint makes a content row's user its file's.
         columns = ("content_id", "content", "content_type", "media_id", Selected("t.date_created", "content_created"))
         guards = [Fragment("t.user_id = $1", (user_id,)), *_media_parent_guards(self.read_filter)]
@@ -3895,7 +3895,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
             # v0.8.1: HNSW vector-similarity index with
             # ``vector_cosine_ops``. Prod does NOT carry a ``WITH``
             # clause here (mirror of ``ix_media_content_embedding``).
-            # KEEP (coordinator, 2026-11-15; v007 idx_chunks_embedding, renamed in 8060d75d7): a heavy owner's
+            # KEEP (coordinator, 2026-11-15; v007 idx_chunks_embedding, renamed in v0.8.1): a heavy owner's
             # chunks, nearest first, are read through it on both engines; a small owner's are sorted off
             # idx_memory_chunks_agent_user (test_vector_index_plans holds both). hybrid_search_within_memory is no
             # reader: one memory's chunks are read by ix_memory_chunks_memory. The YugabyteDB small-owner ybhnsw
@@ -4606,7 +4606,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # cache-bypass: the conversation's memories by idx_mem_conversation,
         # then their chunks by ix_memory_chunks_memory, the owner checked on
         # each chunk: two keyed reads, the form both planners took behind the
-        # MATERIALIZED fence (b2bc83998: with the owner on the chunk in a plain
+        # MATERIALIZED fence (without it: with the owner on the chunk in a plain
         # join YugabyteDB read every chunk of the user; with it on the memory,
         # PostgreSQL read every memory of the owner).
         memories = await read_by(

@@ -55,6 +55,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final
 
+from threetears.enforcement.no_whole_reads.placeholders import without_hidden_dollars
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
     MIN_REASON,
@@ -487,14 +488,14 @@ def _bound_value(text: str) -> bool:
     if _SELECT.search(stripped) is not None:
         return True
     if not (
-        _PLACEHOLDER.search(stripped)
+        _PLACEHOLDER.search(without_hidden_dollars(stripped))
         or _INTERPOLATION.search(stripped)
         or "'_'" in stripped
         or re.search(r"(?<![\w.])-?\d", stripped)
         or re.search(r"\b(?:TRUE|FALSE)\b", stripped, re.IGNORECASE)
     ):
         return False
-    rest = _PLACEHOLDER.sub(" ", _INTERPOLATION.sub(" ", stripped.replace("'_'", " ")))
+    rest = _PLACEHOLDER.sub(" ", _INTERPOLATION.sub(" ", without_hidden_dollars(stripped).replace("'_'", " ")))
     # a cast to any type, a schema's own included (``$1::text::public.vector``)
     rest = re.sub(r"::\s*(?:\w+\.)?[\w ]+(?:\[\])*", " ", rest)
     rest = re.sub(r"\bAS\s+\w+(?:\[\])*", " ", rest, flags=re.IGNORECASE)
@@ -515,7 +516,9 @@ def _side(operand: str, lower: bool) -> str:
     :return: the side, or empty
     :rtype: str
     """
-    placed = _PLACEHOLDER.search(operand) is not None or _INTERPOLATION.search(operand) is not None
+    placed = (
+        _PLACEHOLDER.search(without_hidden_dollars(operand)) is not None or _INTERPOLATION.search(operand) is not None
+    )
     return ("lo" if lower else "hi") if placed else ""
 
 
@@ -616,7 +619,11 @@ def _atoms(predicate: str) -> list[_Atom]:
     :rtype: list[_Atom]
     """
     text = _unwrap(predicate)
-    bound = _PLACEHOLDER.search(text) is not None or _INTERPOLATION.search(text) is not None or "'_'" in text
+    bound = (
+        _PLACEHOLDER.search(without_hidden_dollars(text)) is not None
+        or _INTERPOLATION.search(text) is not None
+        or "'_'" in text
+    )
     bound = bound or re.search(r"=\s*-?\d|\b(?:TRUE|FALSE)\b", text, re.IGNORECASE) is not None
     if text == PK_TOKEN:
         # a predicate the code names as the key (``WHERE {pk_predicate}``): the read is by the table's key
@@ -795,7 +802,10 @@ def _relations(text: str, masked: str, ctes: set[str], bound_ctes: frozenset[str
                 close = shown.find(")", opening)
                 close = len(shown) if close < 0 else close + 1
                 args = item[opening:close]
-                bound = _PLACEHOLDER.search(args) is not None or _INTERPOLATION.search(args) is not None
+                bound = (
+                    _PLACEHOLDER.search(without_hidden_dollars(args)) is not None
+                    or _INTERPOLATION.search(args) is not None
+                )
                 kind, after = ("source" if bound else "other"), close
             elif bare in bound_ctes or bare.lower() in bound_ctes:
                 kind = "source"
@@ -1778,7 +1788,9 @@ def _bound_ctes(text: str, depths: list[int], ctes: set[str], reader: Reader) ->
         # a seed reading no table binds the key in what it selects; one reading a table binds it in its WHERE, so a
         # placeholder in a whole read's select list binds nothing
         placeholder = _PLACEHOLDER.search(
-            text[seed.start() + where.end() : end] if reads and where else text[seed.start() : end]
+            without_hidden_dollars(
+                text[seed.start() + where.end() : end] if reads and where else text[seed.start() : end]
+            )
         )
         keyed = placeholder is not None and (not reads or where is not None)
         if keyed and _judge_select(text, depths, seed.start(), ctes, frozenset(bound), reader) is None:

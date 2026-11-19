@@ -45,6 +45,7 @@ from typing import Any, Final
 
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits
 from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME
+from threetears.enforcement.no_whole_reads.placeholders import without_hidden_dollars
 from threetears.enforcement.no_whole_reads.schema import (
     CONSTRAINT_PURPOSE,
     MAX_PLAIN_INDEXES,
@@ -161,7 +162,7 @@ def _shape(statement: str, columns: Sequence[str]) -> tuple[tuple[str, ...], str
 def _also_bound(statement: str, bound: Sequence[str]) -> tuple[str, ...]:
     """the columns other than ``bound`` the statement binds to a parameter by plain equality (``"col" = $n``), in
     the statement's order: the plan test's read sends them too, as the read does."""
-    found = re.findall(r'(?<![\w."])(?:\w+\.)?"?(\w+)"?\s*=\s*\$\d+', _where_part(statement))
+    found = re.findall(r'(?<![\w."])(?:\w+\.)?"?(\w+)"?\s*=\s*\$\d+', without_hidden_dollars(_where_part(statement)))
     return tuple(dict.fromkeys(column.lower() for column in found if column.lower() not in bound))
 
 

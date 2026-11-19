@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_PREFIX
+from threetears.enforcement.no_whole_reads.placeholders import placeholder_numbers, renumbered_with
 
 __all__ = [
     "COPY_CALLS",
@@ -554,13 +555,13 @@ def _read_nearest(call: ast.Call) -> list[str]:
     joins = _joined_statements(call) if _argument(call, "joins", None) is not None else []
     node = _argument(call, "nearest", None)
     if isinstance(node, ast.Call) and _name(node) == "PatternCount":
-        place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+        place = 1 + max(placeholder_numbers(statement), default=0)
         ties = _then_order(_argument(node, "then", 3))
         return [f"{statement} ORDER BY pattern_count(${place}) DESC{ties} LIMIT ${place + 1}", *own, *joins]
     if not (isinstance(node, ast.Call) and _name(node) in {"Nearest", "TextRank"}):
         return [statement, *own, *joins]
     column = _text(_argument(node, "column", 0), "nearest")
-    place = 1 + max((int(found) for found in re.findall(r"\$(\d+)", statement)), default=0)
+    place = 1 + max(placeholder_numbers(statement), default=0)
     if _name(node) == "TextRank":
         config = _argument(node, "config", 3)
         language = config.value if isinstance(config, ast.Constant) and isinstance(config.value, str) else "english"
@@ -705,9 +706,9 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
         if not (isinstance(sql, ast.Constant) and isinstance(sql.value, str)):
             continue
         text = sql.value
-        numbers = [int(found) for found in re.findall(r"\$(\d+)", text)]
+        numbers = placeholder_numbers(text)
         # in its own parentheses, as the helper writes it
-        written.append("(" + re.sub(r"\$(\d+)", lambda match: f"${int(match.group(1)) + place - 1}", text) + ")")
+        written.append("(" + renumbered_with(text, lambda number, place=place: number + place - 1) + ")")
         place += max(numbers, default=0)
     return written, place
 

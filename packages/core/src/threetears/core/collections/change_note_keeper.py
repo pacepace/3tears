@@ -1478,8 +1478,8 @@ class ChangeNoteKeeper:
         )
 
     # WHY BATCHED DELETES AND NEVER TRUNCATE (measured; docs/runbook-epoch-write-cost.md, "Recorded results": "The
-    # cached slot and batched-delete emptying, 2026-11-08" and "The change note (declared+notes), 2026-11-08"; 3tears
-    # 44216b89e, 63a8c70a3, c9cb7c317, 1c636600f). Do not change the batch, pause, budget or band walk without
+    # cached slot and batched-delete emptying, 2026-11-08" and "The change note (declared+notes), 2026-11-08").
+    # Do not change the batch, pause, budget or band walk without
     # measuring again with scripts/measure-epoch-write-cost.py.
     # - TRUNCATE invalidates every session's cached plan of the note function, so every save overlapping an emptying
     #   replans: on Postgres at 8 writers those saves rose to an 18.8 ms p99 (40 ms max) in run 2.

@@ -8,7 +8,7 @@ ChangedRow` models on the event loop, and ``finish_restore`` then wrote each chu
 200,000-note ring, each turn timed on the loop thread's CPU clock): the loop was held 29.1 ms at worst on PG 16 and
 22.8 ms on YugabyteDB, p99 7.8 / 8.5 ms -- each page's fold and validation one turn of ~8.5 ms (39 such turns), and
 the driver's decode of the rows, with the collector's pauses over the objects it made (18.9 and 22.5 ms), the worst.
-The budget is 1 ms a turn. With the fold here (same test and ring, 3 restores each, e033c51d9/5d680cbe3): the
+The budget is 1 ms a turn. With the fold here (same test and ring, 3 restores each, 2026-11-15): the
 longest turn 0.33-0.45 ms on PG, 0.31-0.38 ms on YugabyteDB, p99 0.13-0.18 / 0.16-0.24 ms; the restore speed test
 (2x the bare reads) stays green on both.
 

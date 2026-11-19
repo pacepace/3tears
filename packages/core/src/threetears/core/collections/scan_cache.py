@@ -105,9 +105,9 @@ _DEPS_PAGE = 1_000
 class _Dependents:
     """Which tables of one L1 backend are known to have no stored scan depending on them.
 
-    WHY (2026-11-15, builder S2): every local write and every broadcast runs :meth:`ScanCache.drop_for_table`, and
-    almost none of them is for a table a cached scan depends on. The keyed read of the dependency rows (a957c69ba)
-    cost about 8.4 us a write on SQLite against about 2 us for the whole-cache select it replaced (R3, 2026-11-15;
+    WHY (2026-11-15): every local write and every broadcast runs :meth:`ScanCache.drop_for_table`, and
+    almost none of them is for a table a cached scan depends on. The keyed read of the dependency rows
+    cost about 8.4 us a write on SQLite against about 2 us for the whole-cache select it replaced (2026-11-15;
     on a loaded 10-core host 69 us against 12 us), all of it the keyed helper building and running a statement that
     finds nothing. A table an eviction has emptied is marked clean here, and an eviction of a clean table skips L1
     entirely (about 0.3 us); a store unmarks every table it depends on BEFORE it writes its rows. Nothing here ages:

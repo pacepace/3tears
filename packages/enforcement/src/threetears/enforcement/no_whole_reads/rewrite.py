@@ -102,6 +102,11 @@ from pathlib import Path
 from typing import Any, Final
 
 from threetears.core.keyed import each_placeholder
+from threetears.enforcement.no_whole_reads.placeholders import (
+    placeholder_numbers,
+    renumbered_with,
+    without_hidden_dollars,
+)
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers, _undeclared_statements
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
 from threetears.enforcement.no_whole_reads.use_the_helper import _helper_hits
@@ -576,7 +581,7 @@ def _select_list(text: str, table: str, alias: str | None) -> tuple[str | dict[s
         named = _SELECTED_ITEM.match(item_masked)
         if named is None:
             return "an expression in the select list with no alias (AS <name>)"
-        if re.search(r"\$\d", item_masked):
+        if placeholder_numbers(item):
             return "a select-list expression binding a parameter"
         names = {name for name in (alias, bare) if name}
         if _AGGREGATE.search(_without_subselects(item_masked)):
@@ -626,7 +631,7 @@ def parse_first(sql: str, *, guards: bool = False) -> PointSql | str:
     :rtype: PointSql | str
     """
     text = " ".join(sql.split())
-    found = _LIMIT.search(text)
+    found = _LIMIT.search(without_hidden_dollars(text))
     if found is None:
         return "no trailing LIMIT 1 / LIMIT $n after its ORDER BY (an OFFSET, or no LIMIT)"
     nearest = _nearest_read(text[: found.start()])
@@ -791,12 +796,7 @@ def _items(text: str) -> list[str]:
 def _renumbered(sql: str, numbers: Sequence[int]) -> str:
     """``sql`` with its parameters ``numbers`` (in that order) renumbered from ``$1``."""
     place = {number: index for index, number in enumerate(numbers, start=1)}
-    masked = _QUOTED.sub(lambda hit: "'" + "x" * (len(hit.group()) - 2) + "'", sql)
-    pieces, last = [], 0
-    for found in re.finditer(r"\$(\d+)", masked):
-        pieces += [sql[last : found.start()], f"${place[int(found.group(1))]}"]
-        last = found.end()
-    return "".join([*pieces, sql[last:]])
+    return renumbered_with(sql, lambda number: place[number])
 
 
 def _aggregate_part(text: str, *, guards: bool, sub: str | None) -> dict[str, Any] | str:
@@ -845,7 +845,7 @@ def _aggregate_part(text: str, *, guards: bool, sub: str | None) -> dict[str, An
         return "a lone count(*) (the count shape's: a count sent by fetchval)"
     where = part("where")
     # a sub-select's parameters are the statement's: parsed numbered from $1, then numbered back
-    numbers = sorted({int(found) for found in re.findall(r"\$(\d+)", _QUOTED.sub("''", where))})
+    numbers = sorted(set(placeholder_numbers(where)))
     parsed = parse_point(
         f"SELECT * FROM {part('table')}{' ' + alias if alias else ''} WHERE {_renumbered(where, numbers)}",
         guards=guards,
@@ -1172,7 +1172,7 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         return "a comment or hint in the statement"
     # a page of it: a trailing LIMIT after its ORDER BY, cut off and kept
     limit: dict[str, int] | None = None
-    paged = _LIMIT.search(text)
+    paged = _LIMIT.search(without_hidden_dollars(text))
     if paged is not None and re.search(r"\border\s+by\b", text[: paged.start()], re.IGNORECASE):
         written = paged.group("limit")
         limit = {"param": int(written[1:])} if written.startswith("$") else {"literal": int(written)}
@@ -1651,10 +1651,12 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
     # an EXISTS keeps its qualifiers (its own aliases, and ``t.`` for the helper's row); any other guard reads one relation
     text = conjunct if exists is not None else "".join(_unqualified(conjunct, masked))
     order, renumbered = _first_use_order(text)
+    # each pairing below reads the conjunct with every $ that is no placeholder's (in a literal: 'geo = $1') hidden
+    beside = without_hidden_dollars(renumbered)
     # a row comparison (a keyset seek, ``(date_created, id) > ($1, $2)``): each parameter compared with the column in
     # its place
     in_rows: dict[int, str] = {}
-    for found in _ROW_COMPARISON.finditer(renumbered):
+    for found in _ROW_COMPARISON.finditer(beside):
         columns = [column.strip().lower() for column in found.group("columns").split(",")]
         numbers = [int(number) for number in re.findall(r"\$(\d+)", found.group("params"))]
         if len(columns) == len(numbers):
@@ -1665,15 +1667,15 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
             compared.append(in_rows[place])
             continue
         parameter = rf"\${place}(?!\d)(?:\s*::\s*{_IDENT}(?:\[\])?)*"
-        paired = re.search(
-            rf"(?P<column>{_IDENT})\s*{_COMPARISON}\s*{parameter}", renumbered, re.IGNORECASE
-        ) or re.search(rf"{parameter}\s*{_COMPARISON}\s*(?P<column>{_IDENT})", renumbered, re.IGNORECASE)
+        paired = re.search(rf"(?P<column>{_IDENT})\s*{_COMPARISON}\s*{parameter}", beside, re.IGNORECASE) or re.search(
+            rf"{parameter}\s*{_COMPARISON}\s*(?P<column>{_IDENT})", beside, re.IGNORECASE
+        )
         column = paired.group("column").lower() if paired is not None else ""
         if column in _SQL_WORDS:
             column = ""
         if not column and re.search(
             rf"(?:^|(?<!\w)\(|\bor\b|\band\b|\bnot\b)\s*\${place}(?!\d)(?:\s*::\s*bool(?:ean)?)?\s*(?:$|\)|\bor\b|\band\b)",
-            renumbered,
+            beside,
             re.IGNORECASE,
         ):
             # a parameter standing as a truth value on its own (``($1 OR col <> 'x')``): the proof binds it False, so

@@ -324,7 +324,7 @@ def partial_predicate(where: str) -> tuple[frozenset[tuple[str, str]], frozenset
     alias) WHERE alias IS NOT NULL`` was never named to YugabyteDB, so a user merge's alias-collision lock (pinning the
     agent and the user, guarded ``t.alias IS NOT NULL``) was hinted to the user's every memory by date. A read states
     the guard in its own ``where=`` (:func:`not_null_guards`), never by its pins, so the index serves only a read
-    carrying exactly that guard; nothing measured argued against it (it was left out as unstateable, e124fe266).
+    carrying exactly that guard; nothing measured argued against it (it was left out only as unstateable).
 
     :param where: the predicate, as declared
     :ptype where: str
