@@ -98,6 +98,9 @@ class CachedHubJwksProvider:
     :ptype thumbprint_switch: DoorProofSwitch | None
     :param keyring: the key set with each key's provenance; a fresh one when not given
     :ptype keyring: JwksKeyring | None
+    :param namespace: the subject namespace its requests to the hub are built in; the process's default when None (a
+        server provisioning it names its own, so two servers in one process never share one)
+    :ptype namespace: str | None
     """
 
     def __init__(
@@ -112,8 +115,10 @@ class CachedHubJwksProvider:
         statement_switch: DoorProofSwitch | None = None,
         thumbprint_switch: DoorProofSwitch | None = None,
         keyring: JwksKeyring | None = None,
+        namespace: str | None = None,
     ) -> None:
         self._nc = nats_client
+        self._namespace = namespace
         doors = process_door_proofs()
         self._trust = JwksTrust(
             door="hub.jwks",
@@ -230,7 +235,7 @@ class CachedHubJwksProvider:
         """
         try:
             response = await self._nc.request_raw(
-                subject=Subjects.hub_jwks(),
+                subject=Subjects.hub_jwks(namespace=self._namespace),
                 payload=b"",
                 timeout=timedelta(seconds=self._request_timeout),
             )

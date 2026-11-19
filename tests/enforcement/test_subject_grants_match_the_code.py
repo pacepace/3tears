@@ -392,7 +392,9 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     jwks = _here(
-        "packages/core/src/threetears/core/security/jwks_provider.py", "Subjects.hub_jwks()", str(Subjects.hub_jwks())
+        "packages/core/src/threetears/core/security/jwks_provider.py",
+        "Subjects.hub_jwks(namespace=self._namespace)",
+        str(Subjects.hub_jwks()),
     )
     l3 = _here("packages/core/src/threetears/core/backends/nats_proxy.py", "Subjects.l3_tx(", *_l3())
     server = "packages/agent/tools/src/threetears/agent/tools/server.py"
@@ -411,7 +413,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("sdk:src/aibots_agents/runtime/catalog.py:270", str(Subjects.hub_object_commit())),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/object_resolver.py",
-                "Subjects.hub_object_resolve()",
+                "Subjects.hub_object_resolve(namespace=self._namespace)",
                 str(Subjects.hub_object_resolve()),
             ),
             _there("sdk:src/aibots_agents/runtime/nats_transport.py:1937", str(Subjects.hub_approval_record())),
@@ -514,12 +516,12 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             ),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/object_resolver.py",
-                "Subjects.hub_object_resolve()",
+                "Subjects.hub_object_resolve(namespace=self._namespace)",
                 str(Subjects.hub_object_resolve()),
             ),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/engagement_resolver.py",
-                "Subjects.hub_engagement_scope()",
+                "Subjects.hub_engagement_scope(namespace=self._namespace)",
                 str(Subjects.hub_engagement_scope()),
             ),
             # the discovery client moved where a tool pod can reach it

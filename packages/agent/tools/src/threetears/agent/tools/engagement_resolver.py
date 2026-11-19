@@ -234,6 +234,9 @@ class HubEngagementScopeResolver:
     :ptype nats_client: NatsClient
     :param request_timeout_seconds: the scope request/reply timeout in seconds
     :ptype request_timeout_seconds: float
+    :param namespace: the subject namespace its requests to the hub are built in; the process's default when None (a
+        server provisioning it names its own, so two servers in one process never share one)
+    :ptype namespace: str | None
     """
 
     def __init__(
@@ -241,9 +244,11 @@ class HubEngagementScopeResolver:
         nats_client: NatsClient,
         *,
         request_timeout_seconds: float,
+        namespace: str | None = None,
     ) -> None:
         self._nc = nats_client
         self._timeout = request_timeout_seconds
+        self._namespace = namespace
 
     async def resolve(
         self,
@@ -290,7 +295,7 @@ class HubEngagementScopeResolver:
         )
         try:
             response = await self._nc.request(
-                subject=Subjects.hub_engagement_scope(),
+                subject=Subjects.hub_engagement_scope(namespace=self._namespace),
                 message=request,
                 response_type=EngagementScopeResponseModel,
                 timeout=timedelta(seconds=self._timeout),

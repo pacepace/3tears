@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools, core: the resolvers and JWKS provider a `ToolServer` provisions ask the hub in its namespace
+
+**Fixed:** the object resolver, the engagement-scope resolver and the Hub JWKS provider a `ToolServer` provisions over
+its connection built their hub subjects (`hub.object.resolve`, `hub.engagement.scope`, `hub.jwks`) from the process's
+default namespace, so with two servers in one process the one not matching the default asked a namespace no hub
+answered (the hub's `hub.jwks` had no responder: the same class as the server's own subjects, fixed in this release).
+Each takes `namespace=` (the default when None) and the server gives them its own. **Added:** `Subjects.hub_jwks`,
+`hub_object_resolve` and `hub_engagement_scope` take `namespace=`.
+
 ### core: a restore holds the event loop under 1 ms a turn on a slower host
 
 **Fixed:** a change-log restore appended the `COPY`'s chunks to one buffer bounded at 4 MiB, and the buffer's growth
@@ -51,13 +60,13 @@ against a real broker.
 the server's other subjects read the process's default back. With two tool servers in one process on namespaces A
 and B, whichever registered last won it, and every subject built after without a namespace landed in that one (the
 hub met it as `NoRespondersError` on `intg_*.tools.discover`: a pod left over from an earlier test rebinding the global
-under a later one). The server now names its namespace on every subject it builds (its call, probe, heartbeat,
-registration and discovery subjects) and neither reads nor writes the default. `NatsClient.connect` still binds the
+under a later one). The server now names its namespace on every subject it builds or checks (its call, probe,
+heartbeat, registration and discovery subjects, the result subject a caller hands it, and the hub subjects of the
+resolvers and JWKS provider it provisions, below) and neither reads nor writes the default. `NatsClient.connect` still binds the
 process default: one connection is one deployment's namespace. **Added:** `Subjects.tools_register`, `tools_discover`,
 `tools_heartbeat`, `tools_internal` and `tools_probe` take `namespace=` (the default when omitted), as
-`Subjects.audit_event` does. The resolvers and the JWKS provider a server provisions over its connection
-(`HubObjectResolver`, `HubEngagementScopeResolver`, `CachedHubJwksProvider`) still build their hub subjects from the
-default: a process of servers on several namespaces needs them given one too.
+`Subjects.audit_event` does, and `Subjects.tools_result_pod_wildcard`, `result_subject_prefix_for_pod` and
+`result_subject_is_owned_by_pod` take `namespace=` too.
 
 ### agent-acl: `visible_customers` counts a grant only through a role that acts where its scope needs one
 

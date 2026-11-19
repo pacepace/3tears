@@ -230,6 +230,9 @@ class HubObjectResolver:
         one replica is served to every replica. ``None`` -> the historical
         pod-local cache
     :ptype resolution_cache: ObjectResolutionCache | None
+    :param namespace: the subject namespace its requests to the hub are built in; the process's default when None (a
+        server provisioning it names its own, so two servers in one process never share one)
+    :ptype namespace: str | None
     """
 
     def __init__(
@@ -239,8 +242,10 @@ class HubObjectResolver:
         request_timeout_seconds: float,
         cache_max: int = _DEFAULT_CACHE_MAX,
         resolution_cache: ObjectResolutionCache | None = None,
+        namespace: str | None = None,
     ) -> None:
         self._nc = nats_client
+        self._namespace = namespace
         self._timeout = request_timeout_seconds
         self._cache_max = cache_max
         self._resolution_cache = resolution_cache
@@ -297,7 +302,7 @@ class HubObjectResolver:
         )
         try:
             response = await self._nc.request(
-                subject=Subjects.hub_object_resolve(),
+                subject=Subjects.hub_object_resolve(namespace=self._namespace),
                 message=request,
                 response_type=ObjectResolveResponseModel,
                 timeout=timedelta(seconds=self._timeout),

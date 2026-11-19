@@ -1929,7 +1929,9 @@ class ToolServer:
             await connected_callback(self._nc)
 
         if self._jwks_provider is None:
-            owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
+            owned = CachedHubJwksProvider(
+                self._nc, request_timeout_seconds=get_jwks_request_timeout(), namespace=self._namespace
+            )
             await owned.start()
             self._jwks_provider = owned
             self._owned_jwks_provider = owned
@@ -1952,6 +1954,7 @@ class ToolServer:
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
                 resolution_cache=self._object_resolution_cache,
+                namespace=self._namespace,
             )
         if self._engagement_resolver is None:
             # self-provision the engagement-scope resolver over this connection so
@@ -1962,6 +1965,7 @@ class ToolServer:
             self._engagement_resolver = HubEngagementScopeResolver(
                 self._nc,
                 request_timeout_seconds=get_engagement_scope_request_timeout(),
+                namespace=self._namespace,
             )
         if self._assertion_replay_guard is None:
             # ANCHORED WHERE THE POD HAS SOMEWHERE TO ANCHOR. Without one the guard cannot tell
@@ -3447,7 +3451,7 @@ class ToolServer:
                 if delivery_subject is None:
                     refusal = (
                         f"result subject {request.result_subject!r} is not this pod's to publish; "
-                        f"expected one token under {result_subject_prefix_for_pod(self._pod_id)!r}"
+                        f"expected one token under {result_subject_prefix_for_pod(self._pod_id, namespace=self._namespace)!r}"
                     )
                     await self._respond(
                         msg,
@@ -3721,7 +3725,7 @@ class ToolServer:
         :rtype: Subject | None
         """
         result: Subject | None = None
-        if result_subject_is_owned_by_pod(candidate, pod_id=self._pod_id):
+        if result_subject_is_owned_by_pod(candidate, pod_id=self._pod_id, namespace=self._namespace):
             result = Subject.raw(candidate)
         return result
 

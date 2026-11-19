@@ -939,7 +939,7 @@ class Subjects:
         )
 
     @classmethod
-    def tools_result_pod_wildcard(cls, pod_id: str | UUID) -> Subject:
+    def tools_result_pod_wildcard(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
         """standing publish-grant pattern for ONE tool pod's own results.
 
         minted from the pod's own id at every connect, so a reconnect re-mints
@@ -948,10 +948,13 @@ class Subjects:
 
         :param pod_id: the connecting pod's own routing identifier
         :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.result.{pod_id}.>``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.result.{_routing_token(pod_id)}.>", kind="pattern")
+        return Subject(path=f"{_ns_or(namespace)}.tools.result.{_routing_token(pod_id)}.>", kind="pattern")
 
     @classmethod
     def tools_result_agent_subtree(cls, agent_id: str | UUID) -> Subject:
@@ -1109,16 +1112,19 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.handshake", kind="point")
 
     @classmethod
-    def hub_jwks(cls) -> Subject:
+    def hub_jwks(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for the Hub identity-token JWKS fetched by verifiers.
 
         The registry proxy + tool pods request this to fetch the public keys identity tokens are
         signed under, then verify tokens against it before RBAC (platform-auth Option B).
 
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a client that
+            knows its own (the resolvers and JWKS provider a :class:`threetears.agent.tools.ToolServer` provisions)
+        :ptype namespace: str | None
         :return: subject ``{ns}.hub.jwks``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.hub.jwks", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.hub.jwks", kind="point")
 
     @classmethod
     def hub_secrets_request(cls) -> Subject:
@@ -1152,7 +1158,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.object.commit", kind="point")
 
     @classmethod
-    def hub_object_resolve(cls) -> Subject:
+    def hub_object_resolve(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for resolving an object id to its stored key.
 
         The consuming agent asks the hub to resolve an ``object_id`` to its
@@ -1160,10 +1166,13 @@ class Subjects:
         derives the owning customer, and returns the key only when the row is
         owned by that tenant (fail-closed).
 
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a client that
+            knows its own (the resolvers and JWKS provider a :class:`threetears.agent.tools.ToolServer` provisions)
+        :ptype namespace: str | None
         :return: subject ``{ns}.hub.object.resolve``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.hub.object.resolve", kind="point")
 
     @classmethod
     def hub_memory_namespace_ensure(cls) -> Subject:
@@ -1184,7 +1193,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.memory.namespace.ensure", kind="point")
 
     @classmethod
-    def hub_engagement_scope(cls) -> Subject:
+    def hub_engagement_scope(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for resolving an engagement's authorized target scope.
 
         A consuming TOOL POD asks the hub for the in-scope targets of the
@@ -1195,10 +1204,13 @@ class Subjects:
         only when the engagement is owned by that tenant (fail-closed). The
         read-side twin of :meth:`hub_object_resolve`.
 
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a client that
+            knows its own (the resolvers and JWKS provider a :class:`threetears.agent.tools.ToolServer` provisions)
+        :ptype namespace: str | None
         :return: subject ``{ns}.hub.engagement.scope``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.hub.engagement.scope", kind="point")
 
     @classmethod
     def hub_audit_anonymize(cls) -> Subject:

@@ -116,7 +116,7 @@ def result_stream_name() -> str:
     return f"{get_default_namespace()}-{RESULT_STREAM_SUFFIX}"
 
 
-def result_subject_prefix_for_pod(pod_id: str | UUID) -> str:
+def result_subject_prefix_for_pod(pod_id: str | UUID, *, namespace: str | None = None) -> str:
     """the subject prefix a tool pod may publish its own results under, ``.``-terminated.
 
     Derived by stripping the wildcard off the pod's own standing grant, so the prefix is by
@@ -124,13 +124,15 @@ def result_subject_prefix_for_pod(pod_id: str | UUID) -> str:
 
     :param pod_id: the responding pod's own routing identifier
     :ptype pod_id: str | UUID
+    :param namespace: the pod's subject namespace; the process's default when None (a server names its own)
+    :ptype namespace: str | None
     :return: prefix ``{ns}.tools.result.{pod_id}.``
     :rtype: str
     """
-    return str(Subjects.tools_result_pod_wildcard(pod_id)).removesuffix(">")
+    return str(Subjects.tools_result_pod_wildcard(pod_id, namespace=namespace)).removesuffix(">")
 
 
-def result_subject_is_owned_by_pod(subject: str, *, pod_id: str | UUID) -> bool:
+def result_subject_is_owned_by_pod(subject: str, *, pod_id: str | UUID, namespace: str | None = None) -> bool:
     """whether ``subject`` lies inside the standing result grant of pod ``pod_id``.
 
     The responder checks the subject it was HANDED before publishing to it. The broker already
@@ -144,10 +146,12 @@ def result_subject_is_owned_by_pod(subject: str, *, pod_id: str | UUID) -> bool:
     :ptype subject: str
     :param pod_id: the responding pod's own routing identifier
     :ptype pod_id: str | UUID
+    :param namespace: the pod's subject namespace; the process's default when None (a server names its own)
+    :ptype namespace: str | None
     :return: ``True`` when the subject is the responder's own to publish
     :rtype: bool
     """
-    return _is_single_token_under(subject, result_subject_prefix_for_pod(pod_id))
+    return _is_single_token_under(subject, result_subject_prefix_for_pod(pod_id, namespace=namespace))
 
 
 def reply_subject_prefix_for_agent(agent_id: str | UUID) -> str:
