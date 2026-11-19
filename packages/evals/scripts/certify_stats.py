@@ -338,7 +338,10 @@ def pool(
             )
             if not any(word in stdout + stderr for word in _DROPPED) or attempt == 4:
                 break
-            out.say(f"pool: the connection dropped (attempt {attempt}); trying again in {retry_after_s:.0f}s")
+            out.say(
+                f"pool: the connection dropped (attempt {attempt}, exit {code}: {why(stdout, stderr)}); trying again "
+                f"in {retry_after_s:.0f}s"
+            )
             time.sleep(retry_after_s)
             watchdog.beat()
         try:
@@ -350,13 +353,30 @@ def pool(
         if envelope.get("verdict") != "passed" or failed:
             lines = [f"  {item.get('id')}: {item.get('outcome')} {item.get('message', '')[:2000]}" for item in failed]
             raise CertificationFailed(
-                f"pool: the shards did not all pass ({envelope.get('verdict')}):\n" + "\n".join(lines)
+                f"pool: the shards did not all pass (exit {code}: {why(stdout, stderr)}):\n" + "\n".join(lines)
             )
         request = str(envelope.get("request_id", "")) or request
         out.say(f"pool: request {request} passed")
     with watchdog.phase("metrics read-back"):
         counts = counts_of(key, watchdog, out, testament=testament)
     return counts, request
+
+
+def why(stdout: str, stderr: str) -> str:
+    """What testament said of a run that did not pass: its envelope's verdict, reason and error, and the last of what
+    it said on stderr."""
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        envelope = {}
+    error = envelope.get("error") if isinstance(envelope, dict) else None
+    said = [f"verdict {envelope.get('verdict')}, {envelope.get('verdict_reason')}"] if envelope else ["no envelope"]
+    if isinstance(error, dict):
+        said.append(f"error {error.get('code')}: {str(error.get('message', ''))[:500]}")
+    tail = stderr.strip().splitlines()[-3:]
+    if tail:
+        said.append("stderr ended " + " / ".join(tail))
+    return "; ".join(said)
 
 
 def metrics(name: str, *, testament: Sequence[str] = TESTAMENT, timeout_s: float = METRICS_TIMEOUT_S) -> list[Any]:

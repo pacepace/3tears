@@ -288,3 +288,31 @@ def test_a_terminated_run_says_so_and_leaves_no_key_file(command: ModuleType, tm
     assert log.splitlines()[-1].startswith("certification stopped by signal 15 in phase pool request after "), log
     assert not key_file.exists()
     assert time.monotonic() - started < 60
+
+
+def test_a_dropped_connection_says_why_each_time(command: ModuleType, tmp_path: Path) -> None:
+    """A run the pool could not give a verdict says testament's reason and error on each retry, and in its failure."""
+    envelope = {
+        "verdict": "unavailable",
+        "verdict_reason": "coordinator_unreachable",
+        "error": {"code": "coordinator_unreachable", "message": "no answer from the coordinator"},
+        "report": {"items": []},
+    }
+    testament, key_file = _stub(tmp_path, stderr=["testament: coordinator_unreachable"], envelope=envelope)
+    code, log, _ = _run(
+        command,
+        tmp_path,
+        [],
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"retry_after_s": 0.0},
+    )
+    why = (
+        "verdict unavailable, coordinator_unreachable; error coordinator_unreachable: no answer from the coordinator; "
+        "stderr ended testament: coordinator_unreachable"
+    )
+    for attempt in (1, 2, 3):
+        assert f"pool: the connection dropped (attempt {attempt}, exit 0: {why}); trying again in 0s" in log, log
+    assert f"pool: the shards did not all pass (exit 0: {why})" in log
+    assert code == command.FAILED
