@@ -367,7 +367,7 @@ _SCRUB_READS_AT_ONCE: Final = 64
 _RESTORE_PAGE_BYTES: Final = 1 << 20
 
 #: the most keyed-note bytes the restore holds while its worker folds a page: the ``COPY`` waits past it. WHY one page
-#: (TF1, 2026-11-18, brooks-5950x exclusive, the 200,000-note restore, 3 runs each): every chunk the ``COPY`` hands
+#: (2026-11-18, an exclusive 32-core Linux runner, the 200,000-note restore, 3 runs each): every chunk the ``COPY`` hands
 #: the loop is appended to one buffer, and a buffer grown toward 4 MiB is reallocated (copied, its new pages touched)
 #: inside asyncpg's COPY-out turn: at 4 MiB that turn held the loop 1.50-1.82 ms on PostgreSQL and up to 1.43 ms on
 #: YugabyteDB, over the 1 ms bar (test_a_restore_holds_the_loop_under_1_ms_a_turn); at 2 MiB once 1.14 ms; at 1 MiB

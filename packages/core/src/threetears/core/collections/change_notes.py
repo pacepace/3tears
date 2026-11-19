@@ -311,7 +311,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
             beside=_noted_rows_step(notes_schema, table, since),
             limit=cap + 1,
             present="noted",
-            # the ring row's columns on one answered row, not repeated on each of hundreds of notes (IT3, 2026-11-16,
+            # the ring row's columns on one answered row, not repeated on each of hundreds of notes (2026-11-16,
             # YugabyteDB, 500 notes: 2,500 values fewer to send and decode, the statement's median 2.08 -> 1.64 ms)
             first="ring_row",
         )

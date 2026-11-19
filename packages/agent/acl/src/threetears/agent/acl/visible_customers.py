@@ -110,7 +110,7 @@ def _within(column: str, placeholder: str, *, platform_rows: bool) -> str:
 
 #: the walk's discriminators, fixed by this code and written into its statement as literals (:class:`Const`): bound,
 #: PostgreSQL never cached the walk's generic plan (costed 510 against the custom 391) and re-planned it every call,
-#: ~75-100 us each, 2.3x the hand-written statement on the exclusive runner (Pace's ruling 2026-11-16; IT2 diagnosis).
+#: ~75-100 us each, 2.3x the hand-written statement on the exclusive runner (Pace's ruling 2026-11-16).
 #: As literals (2026-11-16, local, the speed test 20 runs alone): PostgreSQL 0.99-1.29x the old statement (was
 #: 1.43-1.54x locally), YugabyteDB 0.87-0.91x; the plan test test_the_visible_set_caches_its_generic_plan holds it
 _USER: Final[Const] = Const("user")

@@ -267,7 +267,7 @@ class CsprngNuid(NUID):
         One read of the system's CSPRNG (``secrets.token_bytes``), each byte below :data:`_NUID_ACCEPTED` kept as the
         digit of its remainder mod 62 (in C: ``bytes.translate``), the rest dropped: every digit equally likely, as
         ``secrets.choice`` draws them. Drawing a digit at a time took 22 CSPRNG reads, about 17 us a token, on every
-        NATS request (a KV get included: a third of the CPU a walked grant change spent on a follower, IT3 2026-11-16);
+        NATS request (a KV get included: a third of the CPU a walked grant change spent on a follower, 2026-11-16);
         this takes about 1 us.
 
         :return: a new, mutable ``bytearray`` of :data:`NUID_LENGTH` base62 bytes

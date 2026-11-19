@@ -3,12 +3,12 @@
 **Started by a server, never by the serving process.** A pool's worker started with ``spawn`` is a ``fork_exec`` of
 the whole serving process, run with the interpreter lock held: on macOS, which has no ``vfork``, it lasts as long as
 the process is large, and a pool started or replaced mid-load stalls the event loop (40-77 ms at 1.2-1.9 GB, reports
-FR3 2026-11-17: faulthandler on the late tick, the loop's thread in ``spawnv_passfds``). :func:`start_worker_server`
+2026-11-17: faulthandler on the late tick, the loop's thread in ``spawnv_passfds``). :func:`start_worker_server`
 starts multiprocessing's fork server, a small single-threaded process, and the resource tracker, once; every worker of
 a pool made in its context (the one it returns) is then forked by that server over its socket, and the serving process
 forks nothing more. ``preload`` names modules the server imports as it starts, so each worker it forks holds them
 already: a worker's start then costs no imports, and the pod holds their pages once, shared until written (reports'
-full start 30.0-30.8 s, 22.7-24.0 s with its job modules preloaded, FR4 2026-11-17). Start it as the pod starts, on a
+full start 30.0-30.8 s, 22.7-24.0 s with its job modules preloaded, 2026-11-17). Start it as the pod starts, on a
 thread: its own start is the one ``fork_exec`` left.
 
 **Exiting with the serving process.** A spawned pool's worker waits on its call queue. When its parent is killed
@@ -129,7 +129,8 @@ def exit_with_parent(interval: float = _INTERVAL, serving: int | None = None) ->
     # the process that started this one, by the pid multiprocessing handed over at the start, never read as the
     # parent here: this runs after the start imported the worker's modules (1.6 s in the hub's read worker), and a
     # spawner killed meanwhile left this process adopted by init, which a watch of the parent begun now waited on
-    # for ever (hub 580f6e079, red 4 of 4, 2026-11-18). For a worker the fork server forked it is the serving process
+    # for ever (the hub's read worker, every one of four runs alone, 2026-11-18). For a worker the fork server forked it
+    # is the serving process
     spawner = multiprocessing.parent_process()
     if serving is None and spawner is not None:
         serving = spawner.pid

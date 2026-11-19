@@ -253,7 +253,7 @@ def read_row_beside_statement(
         row's columns then come back on that row alone (and on the row alone), NULL on every other, in no particular
         order of rows. Each answered row otherwise repeats them, and at hundreds of step rows that is hundreds of
         values more to send and decode for one row read (the change notes' ring, 2026-11-16, YugabyteDB, 500 notes
-        with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, IT3).
+        with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, 2026-11-16).
         ``None`` repeats them on every row
     :ptype first: str | None
     :return: the statement, and its binds: the pins', the step's, then ``limit``

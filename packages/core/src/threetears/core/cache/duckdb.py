@@ -1382,7 +1382,7 @@ class DuckDBBackend:
             raise KeyError(absent[0])
         if rows.num_rows and key and not unique_keys:
             # the last row of each key, as a batch of dict rows keeps it: by Arrow's hash kernels, never an Acero
-            # group_by, whose DeclarationToTable can answer a null table with an OK status (reports SG1, 2026-11-18;
+            # group_by, whose DeclarationToTable can answer a null table with an OK status (a reports loop_timing run, 2026-11-18;
             # threetears.core.arrow_keys has the account)
             last = last_rows(rows, key)
             if len(last) != rows.num_rows:

@@ -20,7 +20,7 @@ its value's place in that column's dictionary, and the combination is a mixed-ra
 next column would overflow it. A null is a value of its own (``null_encoding="encode"``), as a key column never holds
 one (L3's primary key, a settle's keys) but a join on ``=`` would never match one.
 
-Moved here from reports (``aibots_reports.pod.arrow_keys``, SG1 2026-11-18), where it replaced four Acero sites; 3tears'
+Moved here from reports (``aibots_reports.pod.arrow_keys``, 2026-11-18), where it replaced four Acero sites; 3tears'
 own :meth:`threetears.core.cache.duckdb.DuckDBBackend.storage_arrow` keeps the last row of each key by
 :func:`last_rows` instead of a ``group_by``. The enforcement rule ``tests/enforcement/test_no_acero_tables.py`` keeps
 every package's source off Acero.
@@ -118,7 +118,7 @@ def rows_named(held: pa.Table, named: pa.Table, key: Sequence[str], *, room: int
     column, so the part is probed whole once and its few candidates after. Coded over both sides together
     (:func:`key_codes`), a 28k-row part matched against 382 named keys of six columns took 1.46 ms, 3x the Acero join
     it replaces (0.48 ms on Arrow's thread pool); every column probed whole, 1.16 ms (``index_in`` ~140 us a text
-    column of 28k rows); so, 0.53 ms on the calling thread alone (SG1 bench, 2026-11-18).
+    column of 28k rows); so, 0.53 ms on the calling thread alone (2026-11-18).
     """
     found = np.empty(0, dtype=np.int64)
     if held.num_rows and named.num_rows:
