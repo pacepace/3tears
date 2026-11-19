@@ -122,9 +122,10 @@ pool. Testament names the cause:
 `TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/test.sh core packages/core/tests/test_x.py`.
 On a machine with room for it (not the laptop), a package works the same way.
 
-**Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint, typecheck,
-the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
-run" and "Integration suite NOT run". Those lines are expected only when the testament error above
+**Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint and the mcp 1.x,
+OpenTelemetry-floor and sidecar suites, then fails at the end with "Typecheck NOT run", "Unit suite
+NOT run" and "Integration suite NOT run". The typecheck is cheap here: run it with
+`TESTAMENT=off TESTAMENT_OFF_REASON="pool down" ./scripts/typecheck.sh`. Those lines are expected only when the testament error above
 them is one of the pool or machine causes listed here; any other exit 2 (a `TESTAMENT=off` with no
 reason, `path_not_found`, a crash in the code under test) is yours to fix. Every other check above
 them must be green.
@@ -268,8 +269,40 @@ to `https://testament.rodeo.illuminati.org/`; an Actions variable `TESTAMENT_CON
 **+ New client key**, named `ci-3tears`. Store it as the repo's Actions secret `TESTAMENT_KEY`
 (*Settings → Secrets and variables → Actions*), and revoke it there in the console when CI no
 longer needs it. The pool's address is the Actions variable `TESTAMENT_COORDINATOR`. Integration,
-lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the attribution check stay on
-GitHub either way.
+lint, the mcp 1.x and OpenTelemetry-floor suites and the attribution check stay on GitHub either
+way. The typecheck takes the unit suite's route in a job of its own (below).
+
+### The typecheck suite, and its cache
+
+Strict mypy runs as testament's `typecheck` suite: `typecheck/test_mypy.py`, one test per package
+(the roots read off each `src/threetears/` tree, `typecheck/targets.py`) and one for the evals example
+hosts. It is a suite so that the pool's result cache serves it: a tree that already passed is not
+checked again, whoever ran it. `./scripts/typecheck.sh` and CI's `typecheck` job, on the same tree,
+check it once.
+
+- **Where it runs.** `./scripts/typecheck.sh [package]` sends it to the pool where testament is
+  installed, `fallback = "pool-only"` as for `test.sh`. `TESTAMENT=off` with a
+  `TESTAMENT_OFF_REASON` runs it here, and so does CI's fallback. Arguments after the package go to
+  pytest, not mypy: the tests own their mypy flags.
+- **What the cache keys on.** The tree, the manifest and every `v*` tag in the checkout that ran it.
+  A laptop's run serves CI only from a clean committed checkout (uncommitted and untracked files ship
+  with a run) whose tags match origin's, on a branch that already contains its base, so a pull
+  request's merge commit has the branch's tree. `typecheck.sh` fetches origin's tags first and names
+  any that differ (one only here, one only at origin, one origin moved); it never moves or deletes one.
+  About one result in seven that could be served runs anyway, as the cache's own check.
+- **Why the tests look the way they do.** Testament serves only what its recorder found nothing live
+  in: no subprocess, no clock, no entropy, no file outside the tree, the venv and temp. So mypy runs
+  in-process (`mypy.api.run`) with `time.time` frozen and `os.urandom` fixed (it uses them only to
+  time itself and name files), a `--cache-dir` under pytest's temp, an explicit `--config-file`, and
+  its fallback stub directory `/usr/local/lib/mypy` reported missing. A change that makes the suite
+  uncacheable shows in the run's summary (`cache (serving same tree): 0 of N from cache ... can't be
+  cached`); `testament cacheability --project 3tears --suite typecheck` lists the causes.
+- **CI.** The `typecheck` job runs `./scripts/ci-unit-pool.sh typecheck` on the pool when `route`
+  chose it, without `--fresh` or `--no-cache`, and its summary says how many results were served. On
+  the shards' route, or when the pool is lost during the run, it runs `./scripts/typecheck.sh` on its
+  own runner. `check` reads its result in a step of its own, so a red unit suite no longer hides a type
+  error, and `check`'s later steps (lint, the attribution check, the floor suites) run after a failed
+  verdict too. `release.yml` runs `typecheck.sh` on GitHub's runner.
 
 ### Where the unit suite's time goes
 

@@ -228,7 +228,7 @@ class _Stage:
     def go(self, mode: str, **env: str) -> _Run:
         """Run the staged script.
 
-        :param mode: ``route`` or ``run``
+        :param mode: ``route``, ``run`` or ``typecheck``
         :ptype mode: str
         :param env: the environment beyond PATH and the GitHub files; overrides the defaults
         :ptype env: str
@@ -474,6 +474,105 @@ class TestTheRunsOutcome:
         assert "::error title=unit (testament pool)::2 test(s) failed or errored" in run.stdout
         assert "running the GitHub shards" not in run.stdout
         assert "Failed on the pool" in run.summary
+
+
+class TestTheTypecheckRun:
+    """``typecheck`` runs the typecheck suite on the pool with its cache on, and reads its endings as ``run`` does."""
+
+    def test_the_typecheck_suite_runs_with_the_cache_on(self, stage: _Stage) -> None:
+        """the typecheck suite, no local fallback, and neither ``--fresh`` nor ``--no-cache``.
+
+        Either flag would check a tree the cache already holds a pass for again, which is the work the
+        suite exists to skip: a laptop's ``typecheck.sh`` and CI's run of the same tree check it once.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        stage.runs(_PASSED)
+        run = stage.go("typecheck")
+        assert run.returncode == 0 and run.outputs.get("outcome") == "passed", run.stdout
+        args = run.testament[0].split()
+        assert args[0] == "run"
+        assert args[args.index("--suite") + 1] == "typecheck", args
+        assert {"--no-fallback", "--json=summary"} <= set(args)
+        assert not {"--fresh", "--no-cache"} & set(args), args
+        assert "--" not in args, "a selection would narrow the suite, and a narrowed run is not the gate"
+
+    @pytest.mark.parametrize(
+        ("answers", "outcome", "exit_code"),
+        [
+            pytest.param([_FAILED], "failed", 1, id="a-package-failed"),
+            pytest.param([_LOST, _LOST], "unreachable", 0, id="lost-twice"),
+            pytest.param([_LOST, _PASSED], "passed", 0, id="lost-then-passed-on-the-retry"),
+            pytest.param([_FORBIDDEN], "failed", 1, id="forbidden"),
+        ],
+    )
+    def test_the_outcome(
+        self, stage: _Stage, answers: list[tuple[int, dict[str, object] | None]], outcome: str, exit_code: int
+    ) -> None:
+        """the unit run's endings, for the typecheck suite.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :param answers: what each run answers
+        :ptype answers: list[tuple[int, dict[str, object] | None]]
+        :param outcome: the outcome it must report
+        :ptype outcome: str
+        :param exit_code: the status it must exit with
+        :ptype exit_code: int
+        :return: nothing
+        :rtype: None
+        """
+        stage.runs(*answers)
+        run = stage.go("typecheck")
+        assert run.outputs.get("outcome") == outcome, run.stdout
+        assert run.returncode == exit_code, run.stdout
+
+    def test_a_lost_pool_says_the_typecheck_runs_here(self, stage: _Stage) -> None:
+        """unreachable names what runs instead: the typecheck on the job's own runner, not the shards.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        stage.runs(_LOST, _LOST)
+        run = stage.go("typecheck")
+        assert "::warning title=typecheck route::pool unreachable during the run" in run.stdout
+        assert "running the typecheck on this job's runner" in run.stdout
+        assert "GitHub shards" not in run.stdout + run.summary
+        assert "the typecheck runs on this job's runner instead" in run.summary
+
+    def test_a_failure_is_named_as_the_typecheck(self, stage: _Stage) -> None:
+        """a failing package is an error annotation titled for the typecheck job.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        stage.runs(_FAILED)
+        run = stage.go("typecheck")
+        assert "::error title=typecheck (testament pool)::2 test(s) failed or errored" in run.stdout
+        assert "### typecheck (testament pool)" in run.summary
+
+    def test_the_summary_says_what_the_cache_served(self, stage: _Stage) -> None:
+        """the job's summary says how much came from the cache, the evidence a run was served.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        envelope = _envelope(0, counts={"passed": 33})
+        report = envelope["report"]
+        assert isinstance(report, dict)
+        report["cache"] = {"state": "serving_tree", "served": 31, "ran": 2}
+        stage.runs((0, envelope))
+        run = stage.go("typecheck")
+        assert "cache (serving_tree): 31 served, 2 ran" in run.summary
 
 
 class TestTheClientDownload:

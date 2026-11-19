@@ -59,6 +59,7 @@ def _check_all(
     *,
     test_sh_exit: int,
     integration_exit: int = 0,
+    typecheck_exit: int = 0,
     testament: bool = True,
     env: dict[str, str] | None = None,
 ) -> _Run:
@@ -71,6 +72,8 @@ def _check_all(
     :ptype test_sh_exit: int
     :param integration_exit: the integration step's exit status
     :ptype integration_exit: int
+    :param typecheck_exit: the typecheck step's exit status
+    :ptype typecheck_exit: int
     :param testament: whether a ``testament`` is on PATH (the pool route)
     :ptype testament: bool
     :param env: extra environment for the run
@@ -83,7 +86,9 @@ def _check_all(
     shutil.copy(_SCRIPT, scripts / "check-all.sh")
     log = tmp_path / "ran.txt"
     for step in _STEPS:
-        code = {"test.sh": test_sh_exit, "test-integration.sh": integration_exit}.get(step, 0)
+        code = {"test.sh": test_sh_exit, "test-integration.sh": integration_exit, "typecheck.sh": typecheck_exit}.get(
+            step, 0
+        )
         (scripts / step).write_text(f'#!/bin/sh\necho "{step}" >> "{log}"\nexit {code}\n')
         (scripts / step).chmod(0o755)
     bin_dir = tmp_path / "bin"
@@ -117,6 +122,36 @@ def test_a_unit_suite_the_pool_gave_no_verdict_on_fails_the_gate_at_the_end(tmp_
     assert "Unit suite NOT run" in run.output
     assert "When the pool is down" in run.output
     assert "All checks passed" not in run.output
+
+
+def test_a_typecheck_the_pool_gave_no_verdict_on_fails_the_gate_at_the_end(tmp_path: Path) -> None:
+    """exit 2 from typecheck.sh (it runs on the pool too): every suite still runs, and the gate fails naming it.
+
+    :param tmp_path: pytest's per-test directory
+    :ptype tmp_path: Path
+    :return: nothing
+    :rtype: None
+    """
+    run = _check_all(tmp_path, test_sh_exit=0, typecheck_exit=2)
+    assert run.returncode == 2
+    assert run.ran == list(_STEPS)
+    assert "Typecheck NOT run" in run.output
+    assert "TESTAMENT=off" in run.output
+    assert "Unit suite NOT run" not in run.output
+    assert "All checks passed" not in run.output
+
+
+def test_a_type_error_stops_the_gate_at_once(tmp_path: Path) -> None:
+    """a type error is the code's: check-all stops at the typecheck with its status.
+
+    :param tmp_path: pytest's per-test directory
+    :ptype tmp_path: Path
+    :return: nothing
+    :rtype: None
+    """
+    run = _check_all(tmp_path, test_sh_exit=0, typecheck_exit=1)
+    assert run.returncode == 1
+    assert run.ran == ["lint.sh", "typecheck.sh"]
 
 
 def test_a_failing_test_stops_the_gate_at_once(tmp_path: Path) -> None:

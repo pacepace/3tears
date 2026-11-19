@@ -199,3 +199,15 @@ nats = ["packages/nats/**"]
 core = ["packages/core/**"]
 agent = ["packages/agent/**"]
 platform = ["packages/**"]
+
+# The typecheck suite: strict mypy over every package, one test per package (typecheck/test_mypy.py), run
+# by scripts/typecheck.sh and CI's `typecheck` job. It is pytest, not a `files` suite, because only a suite a
+# recorder watches is served from the cache, and the cache is the point: a tree that passed once, from a
+# laptop or from CI, is not checked again (keyed on the tree and this manifest, so a laptop's run serves CI
+# only from a clean committed checkout holding the same release tags; typecheck.sh warns when they differ).
+# The tests run mypy in-process with the clock frozen, so the recorder finds nothing live in them. CI runs it
+# without --fresh or --no-cache, unlike the unit suite.
+[suites.typecheck]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest"]
+default_selection = ["typecheck/"]

@@ -225,10 +225,73 @@ jobs:
         # several sessions so no worker outgrows the runner's memory (see the script's header)
         run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v
 
+  # Strict mypy over every package: .testament.toml's `typecheck` suite (typecheck/test_mypy.py, one test
+  # per package). On the testament pool when `route` chose it, with testament's result cache on, so a tree
+  # already checked there (by a laptop's ./scripts/typecheck.sh, or an earlier run) is served, not checked
+  # again; otherwise, or when the pool was lost during the run, the same tests on this job's runner. A job of
+  # its own, so the typecheck reports whatever the unit suite did; `check` reads its result.
+  typecheck:
+    needs: route
+    if: "!cancelled() && needs.route.result == 'success'"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      outcome: ${{ steps.pool.outputs.outcome }}
+    steps:
+      # fetch-depth 0: the scope step diffs against the PR base, and the client sends the release tags
+      # the manifest asks for, which join the cache key
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether this change needs the suite
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/ci-scope.sh
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        if: steps.scope.outputs.needed == 'true'
+        with:
+          version: "latest"
+
+      - name: Typecheck (on the testament pool, served from its cache where this tree passed)
+        id: pool
+        if: steps.scope.outputs.needed == 'true' && needs.route.outputs.pool == 'true'
+        env:
+          TESTAMENT_KEY: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.TESTAMENT_KEY || '' }}
+          TESTAMENT_COORDINATOR: ${{ vars.TESTAMENT_COORDINATOR }}
+          TESTAMENT_CONSOLE: ${{ vars.TESTAMENT_CONSOLE || 'https://testament.rodeo.illuminati.org/' }}
+          TESTAMENT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          OUT: ${{ runner.temp }}/testament
+        run: ./scripts/ci-unit-pool.sh typecheck
+
+      - name: Set up Python (typecheck here)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && (needs.route.outputs.pool != 'true' || steps.pool.outputs.outcome == 'unreachable')"
+        run: uv python install 3.14
+
+      - name: Install dependencies (typecheck here)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && (needs.route.outputs.pool != 'true' || steps.pool.outputs.outcome == 'unreachable')"
+        run: uv sync --extra vision
+
+      - name: Typecheck (on this runner)
+        if: "!cancelled() && steps.scope.outputs.needed == 'true' && (needs.route.outputs.pool != 'true' || steps.pool.outputs.outcome == 'unreachable')"
+        run: ./scripts/typecheck.sh
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.pool.outcome != 'skipped'
+        continue-on-error: true
+        with:
+          name: testament-typecheck
+          path: ${{ runner.temp }}/testament
+          if-no-files-found: ignore
+
   check:
     # the required status: it reports whatever the unit route did, so it never waits on a check
     # that cannot arrive, and it is red unless the route that ran to a verdict passed.
-    needs: [route, unit, unit-pool]
+    needs: [route, unit, unit-pool, typecheck]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -267,9 +330,22 @@ jobs:
           fi
           echo "$ran passed."
 
+      # The typecheck's own job, whatever the unit suite did: its pool run or this repo's runner.
+      - name: The typecheck passed
+        if: "!cancelled()"
+        env:
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+        run: |
+          if [ "$TYPECHECK_RESULT" != "success" ]; then
+            echo "::error::the typecheck finished '$TYPECHECK_RESULT'; see the typecheck job."
+            exit 1
+          fi
+          echo "the typecheck passed."
+
       # fetch-depth 0 because the scope step below diffs against the PR base,
       # which a shallow clone does not have.
       - uses: actions/checkout@v7
+        if: "!cancelled()"
         with:
           fetch-depth: 0
 
@@ -281,7 +357,7 @@ jobs:
       # a documentation-only PR too: its commits carry trailers as readily as any other.
       # tests/enforcement/test_no_agent_attribution.py fails if this step goes away.
       - name: Refuse agent attribution in the PR's commits
-        if: github.event_name == 'pull_request'
+        if: "!cancelled() && github.event_name == 'pull_request'"
         run: ./scripts/check-attribution.sh '${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
 
       # A documentation-only PR runs no lint, typecheck or suite. Why the skip lives in the jobs
@@ -289,34 +365,30 @@ jobs:
       # scripts/ci-scope.sh -- one classifier, shared with the unit shards above.
       - name: Decide whether this change needs the suite
         id: scope
+        if: "!cancelled()"
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/ci-scope.sh
 
       - uses: astral-sh/setup-uv@v8.2.0
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         with:
           version: "latest"
 
       - name: Set up Python
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         run: uv python install 3.14
 
       - name: Install dependencies
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         run: uv sync --extra vision
 
       - name: Lint
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         run: |
           uv run ruff check .
           uv run ruff format . --check
-
-      - name: Typecheck
-        # single source of truth for the mypy target set (avoids CI/local drift).
-        if: steps.scope.outputs.needed == 'true'
-        run: ./scripts/typecheck.sh
 
       # The unit shards only ever see the OpenTelemetry uv.lock pins, which is always recent, so a
       # declared floor can fall behind the code with everything green. It did: observe imported a
@@ -324,13 +396,13 @@ jobs:
       # to 1.36 failed at import. This runs the OpenTelemetry tests at exactly the declared floor.
       # tests/enforcement/test_otel_floor.py fails if this step goes away.
       - name: Test observe at its declared OpenTelemetry floor
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         run: ./scripts/test-otel-floor.sh -v
 
       # 3tears 0.75 runs on mcp 1.x as well as the locked 2.x, so consumers can move on their own
       # schedule; the step above only ever sees 2.x. Goes away when 3tears drops mcp 1.x, which the owner decides; no release is set.
       - name: Test the MCP packages on mcp 1.x
-        if: steps.scope.outputs.needed == 'true'
+        if: "!cancelled() && steps.scope.outputs.needed == 'true'"
         run: ./scripts/test-mcp-v1.sh -q
 
   # The `integration` marker, which nothing ran until 2026-08-18.
