@@ -18,8 +18,12 @@ of each column type the login may read across both catalogues. PostgreSQL, Yugab
 `information_schema.columns` by the same statement as before.
 
 **Added:** `relation_columns_sql(relation, *, dialect)`, public: the same catalogue statement with the relation's
-schema and name written in as quoted literals, for a caller whose query binds nothing (an operator's check holding
-one login's fetch), so no caller hand-writes `information_schema.columns` and misses a late-binding view's columns.
+schema and name written in as quoted literals, in one pass (a `$2` inside a schema name stays that name), for a caller
+whose query binds nothing, such as an operator's check holding one login's fetch. A name holding a backslash or a NUL
+is refused with a `ValueError` naming the relation. Callers move onto it at their re-pin.
+
+**Fixed:** a bare relation name on DuckDB is looked up in `main`, DuckDB's own default schema, not `public` (both
+`warehouse_arrow_types` and `relation_columns_sql`).
 
 **Changed (breaking):** `warehouse_arrow_types` takes `dialect`, keyword-only and required: the dialect the
 datasource's statements are spelled in (a `threetears.core.keyed.Dialect` member; `dialect_of` over the datasource's
