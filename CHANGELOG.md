@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a restore holds the event loop under 1 ms a turn on a slower host
+
+**Fixed:** a change-log restore appended the `COPY`'s chunks to one buffer bounded at 4 MiB, and the buffer's growth
+toward it (reallocated, its new pages touched) ran inside asyncpg's COPY-out turn: on brooks-5950x that turn held
+the loop 1.50-1.82 ms (PostgreSQL) and up to 1.43 ms (YugabyteDB), over the 1 ms bar the restore's loop test holds
+(it had passed on the faster runner it was measured on). The buffer is bounded at one page (1 MiB): every turn
+0.27-0.38 ms, and the restore's whole time unchanged (PostgreSQL 446-448 ms against 445-449; YugabyteDB 456-467 ms
+against 544-553).
+
 ### core: `read_joined` answers its joined rows read-only, as the connection answers them (breaking)
 
 **Changed (breaking):** `threetears.core.keyed.read_joined` answers `dict[tuple, list[Mapping[str, Any]]]`: each joined
