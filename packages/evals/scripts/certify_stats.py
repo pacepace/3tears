@@ -14,12 +14,12 @@ it) and exits 1 if any claim does not clear its target. Commit the certificate i
 It never hangs silently. It prints, as it goes, its start, the pool request's id once testament accepts it, the
 request's progress every minute, the metrics it reads back and the end of each phase. A ``testament run`` past
 :data:`RUN_TIMEOUT_S` or a ``testament metrics`` past :data:`METRICS_TIMEOUT_S` is stopped and fails the run, naming
-which and how long it ran. A request the pool holds queued behind others' work is alive, however long it waits. The run
-stalls, writing every thread's stack, naming the phase and why, and exiting 3, when the coordinator stops answering for
-``--stall-minutes``, when the request leaves the coordinator with no verdict for as long, when the request has batches
-running and none finishes for :data:`STUCK_MINUTES`, or, anywhere else, when nothing moves for ``--stall-minutes``.
-``kill -USR1 <pid>`` writes every thread's stack at any time from the first line on, and ``py-spy dump --pid <pid>``
-shows the same from outside.
+which and how long it ran. A request the pool holds queued behind others' work counts as alive up to the run's limit,
+:data:`RUN_TIMEOUT_S`, which stops it like any other run. The run stalls, writing every thread's stack, naming the phase
+and why, and exiting 3, when the coordinator stops answering for ``--stall-minutes``, when the request leaves the
+coordinator with no verdict for as long, when the request has batches running and none finishes for
+:data:`STUCK_MINUTES`, or, anywhere else, when nothing moves for ``--stall-minutes``. ``kill -USR1 <pid>`` writes every
+thread's stack at any time from the first line on, and ``py-spy dump --pid <pid>`` shows the same from outside.
 
     # Run every shard here instead, when the pool can't take them (an hour or more, and it loads this machine):
     uv run python packages/evals/scripts/certify_stats.py --local
@@ -345,9 +345,9 @@ def _status(testament: Sequence[str], request: str) -> Standing:
 
 class Liveness:
     """Whether the pool's request is alive, from one :class:`Standing` after another. A request the coordinator lists
-    is alive, queued or running, however long others' work keeps it waiting. It is stalled only when the coordinator
-    stops answering for ``stall_s``, when the request is gone from it for ``stall_s`` with no verdict, or when it has
-    batches running and none finishes for ``stuck_s``."""
+    is alive, queued or running, up to the run's limit (:data:`RUN_TIMEOUT_S`) while others' work keeps it waiting. It
+    is stalled only when the coordinator stops answering for ``stall_s``, when the request is gone from it for
+    ``stall_s`` with no verdict, or when it has batches running and none finishes for ``stuck_s``."""
 
     def __init__(self, request: str, stall_s: float, stuck_s: float) -> None:
         self.request = request

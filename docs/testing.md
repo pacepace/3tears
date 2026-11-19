@@ -370,15 +370,15 @@ The command never hangs silently. It prints, flushed as it goes: a start line wi
 testament accepts it; where the request stands every minute (its state, and how many shards are done, passed and
 failed); each round of the metrics read-back; and each phase's start and end. A `testament run` past an hour, a
 `testament metrics` past two minutes, or under `--local` a shard past 25 minutes, is stopped and fails the run, naming
-which and how long it ran. A request the coordinator lists is alive, queued or running, however long a busy pool keeps
-it waiting. The run stalls when the coordinator stops answering for ten minutes (`--stall-minutes`), when the request
-is gone from the coordinator with no verdict for as long, when the request has batches running and none finishes for
-thirty minutes, or, before the request is accepted, under `--local` and while its modules load, when nothing moves for
-ten minutes. A stall writes every thread's stack to its log, names the phase (`loading`, `pool request`, `metrics
-read-back` or `local shards`) and which of those it was (the coordinator's own error, when it stopped answering), stops
-its subprocesses, removes its key file and exits 3. A signal (`timeout`'s SIGTERM, a hang-up) stops it with its last
-line written and its key file removed. A key file left by a killed run is replaced at the next run's start, and said
-so.
+which and how long it ran. A request the coordinator lists counts as alive, queued or running, up to the run's one-hour
+limit, which stops a queued request too. The run stalls when the coordinator stops answering for ten minutes
+(`--stall-minutes`), when the request is gone from the coordinator with no verdict for as long, when the request has
+batches running and none finishes for thirty minutes, or, before the request is accepted, under `--local` and while its
+modules load, when nothing moves for ten minutes. A stall writes every thread's stack to its log, names the phase
+(`loading`, `pool request`, `metrics read-back` or `local shards`) and which of those it was (the coordinator's own
+error, when it stopped answering), stops its subprocesses, removes its key file and exits 3. A signal (`timeout`'s
+SIGTERM, a hang-up) stops it with its last line written and its key file removed. A key file left by a killed run is
+replaced at the next run's start, and said so.
 
 **On a stall**, before stopping the run, take its stacks and attach them to the report: `kill -USR1 <pid>` (the pid is
 on its first line, and the signal is caught from then on) writes every thread's stack into its log, and `py-spy dump --pid <pid>` shows the same from
