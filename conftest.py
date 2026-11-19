@@ -31,6 +31,7 @@ import warnings
 from collections.abc import Iterator
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 # No test reaches the Hugging Face Hub. ``huggingface_hub`` (loaded through ``voyageai`` and ``tokenizers``) fetches
 # its agent-harness registry from huggingface.co the first time ``huggingface_hub.cli`` is imported, unless a copy
@@ -62,6 +63,15 @@ warnings.filterwarnings(
     message=r"The default value of .allowed_objects. will change in a future version",
     category=DeprecationWarning,
 )
+
+# Hypothesis bounds two things by wall clock: each example's run (``deadline``, 200 ms) and the time it takes to
+# draw inputs (the ``too_slow`` health check). On the testament pool a test shares its runner with other batches, so
+# both become bounds on the runner's load rather than the code: a property test failed "Input generation is slow"
+# beside other work while its property held (#1278). Neither says anything about the behaviour under test, so the
+# workspace's profile turns both off; every property and example a test states still runs.
+# tests/test_hypothesis_profile.py holds every Hypothesis test to it.
+settings.register_profile("workspace", deadline=None, suppress_health_check=[HealthCheck.too_slow])
+settings.load_profile("workspace")
 
 # ``tests.contain_tripwire`` fails a test whose code under test contained a programming error
 # (see its docstring); ``tests.clock_isolation`` keeps a freeze from importing under the fake
