@@ -59,8 +59,8 @@ _PREFIX = "picks"
 #: The key every test below grades against: two core entities, two acceptable ones, one alias.
 _KEY = ReferenceKey.model_validate(
     {
-        "core": [{"name": "Band A", "aliases": ["The Band A"]}, {"name": "Band B"}],
-        "acceptable": [{"name": "Band C"}, {"name": "Band D"}],
+        "core": [{"name": "Frankenstein", "aliases": ["The Modern Prometheus"]}, {"name": "Odyssey"}],
+        "acceptable": [{"name": "Beloved"}, {"name": "Iliad"}],
     }
 )
 
@@ -94,14 +94,14 @@ def _descriptors(
 
 
 def test_one_fixture_counts_recall_over_the_key_and_the_core_and_the_share_the_key_holds() -> None:
-    # "the band a" and "THE BAND A" fold alike, so they are one named entity; "The Band A" is an alias of Band A.
-    grade = _grade("the band a", "Band C", "A deep cut", "THE BAND A")
+    # "the modern prometheus" and "THE MODERN PROMETHEUS" fold alike, so they are one named entity; "The Modern Prometheus" is an alias of Frankenstein.
+    grade = _grade("the modern prometheus", "Beloved", "An unlisted novel", "THE MODERN PROMETHEUS")
 
     assert grade.named == 3
     assert grade.verified == 2
-    assert grade.found == ("Band A", "Band C")
-    assert grade.core_missed == ("Band B",)
-    assert grade.unverified_names == ("A deep cut",)
+    assert grade.found == ("Frankenstein", "Beloved")
+    assert grade.core_missed == ("Odyssey",)
+    assert grade.unverified_names == ("An unlisted novel",)
     assert grade.unverified == 1
     assert grade.recall == pytest.approx(2 / 4)
     assert grade.core_recall == pytest.approx(1 / 2)
@@ -116,20 +116,20 @@ def test_one_fixture_counts_recall_over_the_key_and_the_core_and_the_share_the_k
 
 
 def test_two_spellings_of_one_key_entity_are_one_pick() -> None:
-    # "Band A" and its alias "The Band A" fold differently and match one key entity; "a DEEP cut" folds as "A deep cut".
-    grade = _grade("Band A", "The Band A", "A deep cut", "a DEEP cut")
+    # "Frankenstein" and its alias "The Modern Prometheus" fold differently and match one key entity; "an UNLISTED novel" folds as "An unlisted novel".
+    grade = _grade("Frankenstein", "The Modern Prometheus", "An unlisted novel", "an UNLISTED novel")
 
     assert (grade.named, grade.verified, grade.unverified) == (2, 1, 1)
-    assert grade.found == ("Band A",)
-    assert grade.unverified_names == ("A deep cut",)
+    assert grade.found == ("Frankenstein",)
+    assert grade.unverified_names == ("An unlisted novel",)
     assert grade.verified_share == pytest.approx(1 / 2)
 
 
 def test_an_unverified_name_is_listed_and_never_counted_against_recall() -> None:
-    without = _grade("Band A", "Band C")
-    with_more = _grade("Band A", "Band C", "A deep cut", "Another deep cut")
+    without = _grade("Frankenstein", "Beloved")
+    with_more = _grade("Frankenstein", "Beloved", "An unlisted novel", "Another unlisted novel")
 
-    assert with_more.unverified_names == ("A deep cut", "Another deep cut")
+    assert with_more.unverified_names == ("An unlisted novel", "Another unlisted novel")
     # Unverified names change what was named and nothing found: recall over the key and the core stand.
     assert (with_more.recall, with_more.core_recall) == (without.recall, without.core_recall)
     assert with_more.found == without.found
@@ -174,9 +174,9 @@ def test_an_empty_output_names_nothing_and_has_no_verified_share() -> None:
 
 
 def test_a_perfect_output_reads_recall_one_and_verified_share_one() -> None:
-    grade = _grade("Band D", "The Band A", "Band B", "band c")
+    grade = _grade("Iliad", "The Modern Prometheus", "Odyssey", "beloved")
 
-    assert grade.found == ("Band A", "Band B", "Band C", "Band D")
+    assert grade.found == ("Frankenstein", "Odyssey", "Beloved", "Iliad")
     assert _measures(grade) == {
         "picks_recall": 1.0,
         "picks_core_recall": 1.0,
@@ -187,9 +187,9 @@ def test_a_perfect_output_reads_recall_one_and_verified_share_one() -> None:
 
 
 def test_a_key_with_no_core_carries_no_core_recall() -> None:
-    key = ReferenceKey.model_validate({"acceptable": [{"name": "Band C"}, {"name": "Band D"}]})
+    key = ReferenceKey.model_validate({"acceptable": [{"name": "Beloved"}, {"name": "Iliad"}]})
 
-    grade = _grade("Band C", "Band E", key=key)
+    grade = _grade("Beloved", "Walden", key=key)
 
     assert grade.core_recall is None
     assert _measures(grade) == {
@@ -256,17 +256,17 @@ class _NamesWhatTheKeyLacks:
         return "defective-v1"
 
     def match(self, named: NamedEntity, key: ReferenceKey) -> str | None:
-        return "Band Z"
+        return "Ulysses"
 
 
 def test_a_host_matcher_replaces_the_default() -> None:
-    assert _grade("The Band B", "The Band D").found == ()
-    assert _grade("The Band B", "The Band D", matcher=_ArticleDroppingMatcher()).found == ("Band B", "Band D")
+    assert _grade("The Odyssey", "The Iliad").found == ()
+    assert _grade("The Odyssey", "The Iliad", matcher=_ArticleDroppingMatcher()).found == ("Odyssey", "Iliad")
 
 
 def test_a_matcher_that_names_an_entity_the_key_lacks_is_refused() -> None:
-    with pytest.raises(ValueError, match="'Band Z', which the key does not hold"):
-        _grade("Band A", matcher=_NamesWhatTheKeyLacks())
+    with pytest.raises(ValueError, match="'Ulysses', which the key does not hold"):
+        _grade("Frankenstein", matcher=_NamesWhatTheKeyLacks())
 
 
 def test_a_changed_matcher_identity_changes_every_measure_definition() -> None:
@@ -296,7 +296,7 @@ def test_the_formula_names_the_matcher_and_the_source_of_the_set() -> None:
 def test_a_grade_and_its_measures_name_one_matcher(matcher: EntityMatcher | None) -> None:
     grader = SetGrader(_PREFIX, reader_label="Picks", matcher=matcher)
 
-    grade = grader.grade(_named("The Band B", "A deep cut"), _KEY)
+    grade = grader.grade(_named("The Odyssey", "An unlisted novel"), _KEY)
 
     assert grade.matcher_identity == grader.matcher.identity
     assert grade.extractor_identity == "structured"
@@ -326,7 +326,7 @@ class _FakeNamedClient:
 
 
 def test_an_extracted_set_is_its_own_family_and_definition() -> None:
-    extractor = EntityExtractor(client=_FakeNamedClient(), entity_kind="bands")
+    extractor = EntityExtractor(client=_FakeNamedClient(), entity_kind="books")
     extracted = _descriptors(extractor=extractor)
     structured = _GRADER.descriptors()
 
@@ -337,7 +337,7 @@ def test_an_extracted_set_is_its_own_family_and_definition() -> None:
 
 
 def test_a_host_registers_the_measures_and_declares_the_extracted_family() -> None:
-    extractor = EntityExtractor(client=_FakeNamedClient(), entity_kind="bands")
+    extractor = EntityExtractor(client=_FakeNamedClient(), entity_kind="books")
 
     MeasureRegistry(_GRADER.descriptors())
     MeasureRegistry(_descriptors(extractor=extractor), families=(EXTRACTED_SET_FAMILY,))
@@ -347,16 +347,16 @@ def test_a_host_registers_the_measures_and_declares_the_extracted_family() -> No
 
 def test_a_grader_bound_to_an_extractor_refuses_a_set_listed_another_way() -> None:
     grader = SetGrader(
-        _PREFIX, reader_label="Picks", extractor=EntityExtractor(client=_FakeNamedClient(), entity_kind="bands")
+        _PREFIX, reader_label="Picks", extractor=EntityExtractor(client=_FakeNamedClient(), entity_kind="books")
     )
 
     with pytest.raises(ValueError, match="grade_text"):
-        grader.grade(_named("Band A"), _KEY)
+        grader.grade(_named("Frankenstein"), _KEY)
 
 
 async def test_a_grader_with_no_extractor_refuses_prose() -> None:
     with pytest.raises(ValueError, match="no extractor"):
-        await _GRADER.grade_text("Band A, then Band C.", _KEY, ledger=RoleUsageLedger(role="judge"))
+        await _GRADER.grade_text("Frankenstein, then Beloved.", _KEY, ledger=RoleUsageLedger(role="judge"))
 
 
 # =============================================================================
@@ -369,7 +369,7 @@ async def test_a_grader_with_no_extractor_refuses_prose() -> None:
     [
         ("Émile", "émile", True),
         ("ﬁre", "fire", True),
-        ("Grand  Band", " grand band ", True),
+        ("Grand  Canyon", " grand canyon ", True),
         ("émile", "emile", False),
     ],
 )
@@ -390,9 +390,9 @@ def test_the_default_folds_case_and_compatibility_forms_and_keeps_accents(
 
 #: What the output names on each toy document: two (one outside the key), nothing, and the whole key.
 _PICKS: dict[str, tuple[str, ...]] = {
-    "doc-01": ("Band A", "A deep cut"),
+    "doc-01": ("Frankenstein", "An unlisted novel"),
     "doc-02": (),
-    "doc-03": ("Band A", "Band B", "Band C", "Band D"),
+    "doc-03": ("Frankenstein", "Odyssey", "Beloved", "Iliad"),
 }
 
 

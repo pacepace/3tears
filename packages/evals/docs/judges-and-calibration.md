@@ -1113,8 +1113,9 @@ bounces broke the format, so the run is void). Anything else fails, and nobody r
 
 ## Grading a named set against a reference key
 
-Some answers are a set: the bands a reply recommends, the sources a summary cites. Code grades the set against the
-case's reference key, and a judge is needed only to read the names out of prose. A `SetGrader` counts both directions
+Some answers are a set: the cities a travel answer names, the sources a summary cites, the books a reading list
+recommends, the components a design mentions. Code grades the set against the case's reference key, and a judge is
+needed only to read the names out of prose. A `SetGrader` counts both directions
 at once:
 
 | Reading | Value | On which cells | Judges quality |
@@ -1125,8 +1126,8 @@ at once:
 | named | distinct picks | every graded cell | no (a diagnostic) |
 | unverified | named entities the key does not hold | every graded cell | no (a diagnostic) |
 
-**A pick counts once.** Every spelling the matcher finds as one key entity is one pick, so naming a band and then its
-alias is one pick, not two. Unmatched names that are equal after folding are one pick too.
+**A pick counts once.** Every spelling the matcher finds as one key entity is one pick, so naming a city and then its
+alias (Lisbon, then Lisboa) is one pick, not two. Unmatched names that are equal after folding are one pick too.
 
 **Unverified is never wrong.** A key may be non-exhaustive, so a named entity outside it may be a good answer nobody
 listed. It is listed by name for a reader to check. It lowers the verified share, which is why that reading is a
@@ -1152,10 +1153,9 @@ ledger. A reply cut short fails at once, and one that will not parse is asked tw
 inside `invoke`, and out of `invoke` the runner excludes the cell as `apparatus_failed` and never scores it as an
 empty set, so a host that does not catch it is safe by default; a kind that registers its ledger's rows through the
 cell sink's `report_progress` keeps the failed call's spend on the excluded cell. The extractor's identity names the
-model it was declared with, the apparatus, while the model that served each call is recorded per cell on the
-`judge` ledger rows, which the engine's served-model checks guard. Measures over an extracted set
-are in the `extracted_set` family, which is judge-graded and never ranked on; the host declares it on its measure
-registry.
+model it was declared with, the apparatus, while the model that served each call is recorded per cell on its `judge`
+usage rows. Measures over an extracted set are in the `extracted_set` family, which is judge-graded and never ranked on;
+the host declares it on its measure registry.
 
 **Matching is the host's to replace.** The default matches a name or alias after folding case and Unicode
 compatibility forms (`É` is `é`, `ﬁ` is `fi`). It keeps accents (`é` is not `e`) and reads no word list, since both

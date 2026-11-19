@@ -51,7 +51,7 @@ from threetears.evals.schema.reference import ReferenceKey
 
 _MODEL = "scripted/extractor"
 
-_TEXT = "Tonight we open with Band A, then Band C from Leeds, and close on a deep cut by Band E."
+_TEXT = "The trip opens in Lisbon, then Seville in Spain, and closes with a quiet week in Granada."
 
 
 @dataclass(frozen=True)
@@ -114,17 +114,17 @@ def _listing(*entities: dict[str, Any]) -> _Reply:
     return _Reply(content=json.dumps({"entities": list(entities)}))
 
 
-def _extractor(client: _FakeScriptedClient, *, fields: tuple[str, ...] = ("origin",)) -> EntityExtractor:
-    return EntityExtractor(client=client, entity_kind="bands", fields=fields)
+def _extractor(client: _FakeScriptedClient, *, fields: tuple[str, ...] = ("country",)) -> EntityExtractor:
+    return EntityExtractor(client=client, entity_kind="cities", fields=fields)
 
 
 async def test_the_extractor_returns_the_entities_in_the_replys_order_with_the_fields_stated() -> None:
     client = _FakeScriptedClient(
         [
             _listing(
-                {"name": "Band A", "fields": {"origin": None}},
-                {"name": "Band C", "fields": {"origin": "Leeds"}},
-                {"name": "Band E", "fields": {"origin": " "}},
+                {"name": "Lisbon", "fields": {"country": None}},
+                {"name": "Seville", "fields": {"country": "Spain"}},
+                {"name": "Granada", "fields": {"country": " "}},
             )
         ]
     )
@@ -132,37 +132,37 @@ async def test_the_extractor_returns_the_entities_in_the_replys_order_with_the_f
     named = await _extractor(client).extract(_TEXT, ledger=RoleUsageLedger(role="judge"))
 
     assert named == (
-        NamedEntity(name="Band A"),
-        NamedEntity(name="Band C", fields={"origin": "Leeds"}),
-        NamedEntity(name="Band E"),
+        NamedEntity(name="Lisbon"),
+        NamedEntity(name="Seville", fields={"country": "Spain"}),
+        NamedEntity(name="Granada"),
     )
     (call,) = client.calls
     assert _TEXT in call["user"]
-    assert "bands" in call["user"]
+    assert "cities" in call["user"]
     schema = call["response_format"]["json_schema"]
     assert schema["strict"] is True
     entity = schema["schema"]["properties"]["entities"]["items"]
     assert entity["required"] == ["name", "fields"]
-    assert entity["properties"]["fields"]["required"] == ["origin"]
+    assert entity["properties"]["fields"]["required"] == ["country"]
 
 
 async def test_a_grader_bound_to_the_extractor_lists_without_the_key_and_grades_under_its_own_formula() -> None:
-    key = ReferenceKey.model_validate({"core": [{"name": "Band A"}], "acceptable": [{"name": "Band C"}]})
-    client = _FakeScriptedClient([_listing({"name": "Band A"}, {"name": "Band E"})])
+    key = ReferenceKey.model_validate({"core": [{"name": "Lisbon"}], "acceptable": [{"name": "Seville"}]})
+    client = _FakeScriptedClient([_listing({"name": "Lisbon"}, {"name": "Granada"})])
     extractor = _extractor(client, fields=())
     grader = SetGrader("picks", reader_label="Picks", extractor=extractor)
 
     grade = await grader.grade_text(_TEXT, key, ledger=RoleUsageLedger(role="judge"))
 
     (call,) = client.calls
-    assert "Band C" not in call["system"] + call["user"].replace(_TEXT, "")
-    assert (grade.found, grade.unverified_names) == (("Band A",), ("Band E",))
+    assert "Seville" not in call["system"] + call["user"].replace(_TEXT, "")
+    assert (grade.found, grade.unverified_names) == (("Lisbon",), ("Granada",))
     assert grade.extractor_identity == extractor.identity
     assert {descriptor.formula for descriptor in grader.descriptors()} == {grade.formula}
 
 
 async def test_a_grader_grades_blank_prose_as_an_empty_set_with_no_call() -> None:
-    key = ReferenceKey.model_validate({"core": [{"name": "Band A"}]})
+    key = ReferenceKey.model_validate({"core": [{"name": "Lisbon"}]})
     client = _FakeScriptedClient([])
     grader = SetGrader("picks", reader_label="Picks", extractor=_extractor(client))
 
@@ -178,7 +178,9 @@ async def test_a_grader_grades_blank_prose_as_an_empty_set_with_no_call() -> Non
 
 
 async def test_every_completion_is_recorded_on_the_judge_ledger() -> None:
-    client = _FakeScriptedClient([_Reply(content="not json"), _listing({"name": "Band A", "fields": {"origin": None}})])
+    client = _FakeScriptedClient(
+        [_Reply(content="not json"), _listing({"name": "Lisbon", "fields": {"country": None}})]
+    )
     ledger = RoleUsageLedger(role="judge")
 
     await _extractor(client).extract(_TEXT, ledger=ledger)
@@ -193,8 +195,8 @@ async def test_every_completion_is_recorded_on_the_judge_ledger() -> None:
 async def test_an_unreadable_reply_is_asked_twice_more_then_refused() -> None:
     unreadable = [
         _Reply(content="not json"),
-        _listing({"name": "Band A"}),  # the declared field is missing
-        _listing({"name": "Band A", "fields": {"origin": None, "decade": "1970s"}}),  # a field nobody asked for
+        _listing({"name": "Lisbon"}),  # the declared field is missing
+        _listing({"name": "Lisbon", "fields": {"country": None, "region": "Andalusia"}}),  # a field nobody asked for
     ]
     client = _FakeScriptedClient(unreadable)
     ledger = RoleUsageLedger(role="judge")
@@ -209,7 +211,7 @@ async def test_an_unreadable_reply_is_asked_twice_more_then_refused() -> None:
 
 async def test_a_reply_cut_short_is_refused_at_once_and_still_billed() -> None:
     client = _FakeScriptedClient(
-        [_Reply(content='{"entities": [{"name": "Band A", "fields": {"origin": null}}]}', stop_reason="max_tokens")]
+        [_Reply(content='{"entities": [{"name": "Lisbon", "fields": {"country": null}}]}', stop_reason="max_tokens")]
     )
     ledger = RoleUsageLedger(role="judge")
 
@@ -233,12 +235,12 @@ async def test_blank_text_names_nothing_and_makes_no_call(text: str) -> None:
 
 def test_a_client_that_names_no_model_is_refused() -> None:
     with pytest.raises(ValueError, match="names its model"):
-        EntityExtractor(client=_FakeUnnamedClient(), entity_kind="bands")
+        EntityExtractor(client=_FakeUnnamedClient(), entity_kind="cities")
 
 
 @pytest.mark.parametrize(
     ("entity_kind", "fields"),
-    [(" ", ()), ("bands", ("origin", "origin")), ("bands", ("",))],
+    [(" ", ()), ("cities", ("country", "country")), ("cities", ("",))],
 )
 def test_a_blank_kind_or_a_blank_or_repeated_field_is_refused(entity_kind: str, fields: tuple[str, ...]) -> None:
     with pytest.raises(ValueError, match="entity_kind|fields"):
@@ -261,9 +263,9 @@ def test_the_identity_names_the_model_and_moves_with_how_the_list_is_made() -> N
     assert len(base.identity.rsplit(":", 1)[1]) == 12
     assert base.identity == _extractor(_FakeScriptedClient([])).identity
     others = {
-        EntityExtractor(client=client, entity_kind="cities", fields=("origin",)).identity,
+        EntityExtractor(client=client, entity_kind="museums", fields=("country",)).identity,
         _extractor(client, fields=()).identity,
-        _extractor(client, fields=("origin", "decade")).identity,
+        _extractor(client, fields=("country", "region")).identity,
         _extractor(_FakeScriptedClient([], model_name="scripted/other")).identity,
     }
     assert base.identity not in others
@@ -281,20 +283,20 @@ def test_a_failed_extraction_is_a_fault_of_the_rig() -> None:
 #: The document whose answer the extractor's reply is cut short on.
 _CUT_DOCUMENT = "doc-02"
 
-_RUN_KEY = ReferenceKey.model_validate({"core": [{"name": "Band A"}], "acceptable": [{"name": "Band C"}]})
+_RUN_KEY = ReferenceKey.model_validate({"core": [{"name": "Lisbon"}], "acceptable": [{"name": "Seville"}]})
 
 
 # parity-with: threetears.evals.schema.CompletionClient
 @dataclass
 class _FakeDocumentClient:
-    """Lists Band A and Band E for every answer, and is cut short on the answer about :data:`_CUT_DOCUMENT`."""
+    """Lists Lisbon and Granada for every answer, and is cut short on the answer about :data:`_CUT_DOCUMENT`."""
 
     model_name: str = _MODEL
     calls: int = 0
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         self.calls += 1
-        listing = json.dumps({"entities": [{"name": "Band A"}, {"name": "Band E"}]})
+        listing = json.dumps({"entities": [{"name": "Lisbon"}, {"name": "Granada"}]})
         return _Reply(content=listing, stop_reason="max_tokens" if _CUT_DOCUMENT in user else "end_turn")
 
     async def aclose(self) -> None:
@@ -324,7 +326,7 @@ class _ProseGradingKind(ToyExtractorKind):
 
         # Registered before the extraction, so a cell it fails keeps the spend it billed.
         sink.report_progress(so_far)
-        answer = f"On {test_case.variation_params[DOCUMENT_PARAM]}: Band A, then a deep cut by Band E."
+        answer = f"On {test_case.variation_params[DOCUMENT_PARAM]}: Lisbon, then a quiet week in Granada."
         grade = await self._grader.grade_text(answer, _RUN_KEY, ledger=ledger)
         graded = so_far()
         return graded.model_copy(update={"host_measures": {**output.host_measures, **grade.host_measures()}})
@@ -332,7 +334,7 @@ class _ProseGradingKind(ToyExtractorKind):
 
 async def test_a_cell_whose_extraction_fails_is_excluded_as_apparatus_failed_and_never_scored() -> None:
     client = _FakeDocumentClient()
-    grader = SetGrader("picks", reader_label="Picks", extractor=EntityExtractor(client=client, entity_kind="bands"))
+    grader = SetGrader("picks", reader_label="Picks", extractor=EntityExtractor(client=client, entity_kind="cities"))
     profile = replace(
         toyhost_profile(),
         measures=MeasureRegistry(

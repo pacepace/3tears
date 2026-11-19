@@ -65,8 +65,10 @@ call is recorded on the `judge` ledger rows. Engine path only; the quick path is
 judge-graded and never ranked on). Grade each cell with that same grader: `grade` for a structured set, `grade_text`
 for prose, passing the cell's `RoleUsageLedger(role="judge")` and putting its rows on `CandidateTelemetry.usage`.
 Grade inside `invoke`: an `EntityExtractionFailed` left to reach the runner excludes the cell as `apparatus_failed`,
-never scored, and registering the ledger's rows through `sink.report_progress` keeps the failed call's spend on it. Change your matcher's
-`identity` whenever its matching changes. No stored shape changes.
+never scored. Register the cell's `sink.report_progress` reading before calling `grade_text`. A later registration
+replaces an earlier one, so that reading must hold the candidate's usage as well as the extractor's ledger rows:
+otherwise an excluded cell loses the extractor's spend, or the candidate's. Change your matcher's `identity` whenever
+its matching changes. No stored shape changes.
 
 ### evals: a comparison's first screen says what to do beside what is proven
 

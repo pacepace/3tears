@@ -78,7 +78,7 @@ class EntityExtractor:
 
     :ivar client: The completion client the step calls. It must name its model (``model_name``), since an unnamed
         extractor would let two models' lists pool.
-    :ivar entity_kind: What kind of entity to list, in the words the prompt shows the model ("bands", "cities").
+    :ivar entity_kind: What kind of entity to list, in the words the prompt shows the model ("cities", "sources").
     :ivar fields: The other values to ask for each entity, by field name; each lands on ``NamedEntity.fields`` when
         the text states it.
     """
