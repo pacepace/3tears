@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from threetears.core.fingerprint import relation_key_expression
-from threetears.core.keyed import each_placeholder
+from threetears.core.keyed import SQL_TOKEN, each_placeholder
 from threetears.core.sql_fragments import (
     FilterValue,
     as_written,
@@ -206,6 +206,40 @@ def build_set_search_path_sql(schemas: list[str]) -> str | None:
     return "SET search_path TO " + value
 
 
+def _format_style(sql: str) -> str:
+    """``sql`` in the DB-API ``format`` style Redshift's driver reads: each ``$n`` written ``%s``, and each ``%`` the
+    driver would read as its own written ``%%``.
+
+    The driver (``redshift_connector.core.convert_paramstyle``) reads a statement for ``%`` only when it is sent with
+    parameters, and then reads one outside a quoted literal, a quoted name or a comment as a placeholder or an escape:
+    a lone ``%`` there (a modulo, a ``LIKE`` pattern written unquoted) is refused ("Only %s and %% are supported"), so
+    it is doubled. Inside a literal, a quoted name or a comment the driver leaves ``%`` as it is, and so does this. A
+    dollar-quoted body the driver does not know as quoted: its ``%`` is doubled too. A statement naming no placeholder
+    is sent with no parameters (the drivers' ``execute(sql)``), so it is left whole.
+
+    :param sql: the statement, ``$n`` placeholders
+    :ptype sql: str
+    :return: the statement, ``%s`` placeholders
+    :rtype: str
+    """
+    tokens = list(SQL_TOKEN.finditer(sql))
+    if not any(token.group("n") is not None for token in tokens):
+        return sql
+    out: list[str] = []
+    at = 0
+    for token in tokens:
+        out.append(sql[at : token.start()].replace("%", "%%"))
+        if token.group("n") is not None:
+            out.append("%s")
+        elif token.group("tag") is not None:
+            out.append(token.group().replace("%", "%%"))
+        else:
+            out.append(token.group())
+        at = token.end()
+    out.append(sql[at:].replace("%", "%%"))
+    return "".join(out)
+
+
 def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
     """translate ``$N``-style placeholders to ``target_style``.
 
@@ -232,7 +266,7 @@ def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
     if target_style == "asyncpg":
         return sql
     if target_style == "pyformat":
-        return each_placeholder(sql, lambda number: "%s")
+        return _format_style(sql)
     if target_style == "numeric":
         return each_placeholder(sql, lambda number: f":{number}")
     if target_style == "named-at":

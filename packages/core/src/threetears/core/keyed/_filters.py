@@ -29,6 +29,7 @@ from threetears.interfaces.keyed.filters import (
     Selected,
     batched_join_hint,
     by_conditions,
+    SQL_TOKEN,
     clause_guards,
     each_placeholder,
     narrowing,
@@ -42,6 +43,7 @@ from threetears.interfaces.keyed.filters import (
 
 __all__ = [
     "IN_SUBQUERY",
+    "SQL_TOKEN",
     "AnyOf",
     "Const",
     "Derived",

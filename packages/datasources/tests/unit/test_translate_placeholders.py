@@ -148,3 +148,34 @@ class TestNoPlaceholders:
     def test_no_placeholder_passthrough(self, style: str) -> None:
         sql = "SELECT 1"
         assert translate_placeholders(sql, style) == sql  # type: ignore[arg-type]
+
+
+class TestAPercentUnderTheFormatStyle:
+    """``pyformat`` (Redshift's driver, ``%s``) reads a ``%`` outside a quoted literal, a quoted name or a comment as
+    its own: a lone one is refused ("Only %s and %% are supported"), so it is doubled there; inside a literal the driver
+    leaves it as it is, and so does this. A statement naming no placeholder is sent with no parameters, which the
+    driver does not read for ``%`` at all: it is left whole."""
+
+    def test_a_percent_outside_a_literal_is_doubled_and_one_inside_is_kept(self) -> None:
+        """Flips if a modulo or a LIKE pattern's ``%`` reaches the driver as a lone ``%``, or one inside a literal is
+        changed (the driver would then match ``%%``)."""
+        sql = "SELECT g % 2, name FROM races WHERE name LIKE 'Proposition: 40%' AND state = $1 AND share > 50 % 3"
+        assert translate_placeholders(sql, "pyformat") == (
+            "SELECT g %% 2, name FROM races WHERE name LIKE 'Proposition: 40%' AND state = %s AND share > 50 %% 3"
+        )
+
+    def test_quoted_names_comments_and_escaped_literals_keep_their_percent(self) -> None:
+        sql = "SELECT \"pct%\" -- 50% off\n, E'it\\'s 9%' /* 1% */ FROM t WHERE a = $1"
+        assert translate_placeholders(sql, "pyformat") == (
+            "SELECT \"pct%\" -- 50% off\n, E'it\\'s 9%' /* 1% */ FROM t WHERE a = %s"
+        )
+
+    def test_a_statement_naming_no_placeholder_is_left_whole(self) -> None:
+        """sent with no parameters, the driver reads no ``%`` in it: doubled, one would reach the warehouse as two."""
+        sql = "SELECT g % 2 FROM t WHERE name LIKE 'CA%'"
+        assert translate_placeholders(sql, "pyformat") == sql
+
+    def test_the_other_styles_leave_a_percent_alone(self) -> None:
+        sql = "SELECT g % 2 FROM t WHERE a = $1"
+        assert translate_placeholders(sql, "numeric") == "SELECT g % 2 FROM t WHERE a = :1"
+        assert translate_placeholders(sql, "named-at") == "SELECT g % 2 FROM t WHERE a = @p1"

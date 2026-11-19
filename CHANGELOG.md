@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a `%` reaches Redshift's driver as the driver reads it
+
+**Fixed:** `translate_placeholders(sql, "pyformat")` (every Redshift statement) wrote each `$n` as `%s` and left every
+`%` as it was. Redshift's driver (`redshift_connector`), sent parameters, reads a `%` outside a quoted literal, a quoted
+name or a comment as its own: a lone one (a modulo, `g % 2`) was refused ("Only %s and %% are supported in the
+query"). Such a `%` is now written `%%`, and one inside a literal, a quoted name or a comment is left as it is, as the
+driver leaves it (`'Proposition: 40%'` reaches the warehouse unchanged); a dollar-quoted body, which the driver does not
+know as quoted, has its `%` doubled. A statement naming no placeholder is sent with no parameters, which the driver
+does not read for `%`: it is left whole. Read a token at a time as the keyed builders read it (`SQL_TOKEN`, now also
+from `threetears.core.keyed`).
+
 ### agent-tools, core: the resolvers and JWKS provider a `ToolServer` provisions ask the hub in its namespace
 
 **Fixed:** the object resolver, the engagement-scope resolver and the Hub JWKS provider a `ToolServer` provisions over
