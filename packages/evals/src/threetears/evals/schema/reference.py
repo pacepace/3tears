@@ -1,21 +1,27 @@
 """A case's reference key: the entities an answer is graded against, which a host fills."""
+
 from __future__ import annotations
 import unicodedata
 from typing import Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
+
 def fold_name(text: str) -> str:
     """The name folded for matching: Unicode NFKC, case folded, whitespace runs as one space, ends stripped."""
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
+
 class ReferenceFact(EvalDocumentModel, CoreShapeModel):
     """One checkable fact about an entity, with where it is stated."""
+
     claim: str = Field(min_length=1)
     source_url: str = Field(min_length=1)
 
+
 class ReferenceEntity(EvalDocumentModel, CoreShapeModel):
     """One entity of a key: its name, the other names it goes by, and facts about it."""
+
     name: str = Field(min_length=1)
     aliases: tuple[str, ...] = ()
     facts: tuple[ReferenceFact, ...] = ()
@@ -40,8 +46,10 @@ class ReferenceEntity(EvalDocumentModel, CoreShapeModel):
             kept.setdefault((fact.claim, fact.source_url), fact)
         return tuple(kept.values())
 
+
 class ReferenceKey(EvalDocumentModel, CoreShapeModel):
     """The entities a case's answer is graded against: a required core and the others that also count."""
+
     type: Literal["entity_set"] = "entity_set"
     core: tuple[ReferenceEntity, ...] = ()
     acceptable: tuple[ReferenceEntity, ...] = ()
