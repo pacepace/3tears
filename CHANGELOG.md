@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-audit: a username's digest is an identifying audit detail
+
+**Changed:** `old_username_digest`, `new_username_digest`, `typed_username_digest` and `stored_username_digest` join
+`IDENTIFYING_DETAIL_KEYS` (and `PERSONAL_DETAIL_KEYS`): a username's keyed digest names its person (confirmable by
+guessing the name), and audit rows hold ids only. `publish_audit` and `persist_audit_event` refuse an event carrying
+one, at any depth, and `anonymize_details` masks one in a row written before. Producers at the consumers' release
+tips: identity only (`identity_core/auth/service.py` `typed_username_digest`, `stored_username_digest`;
+`principals/usernames.py` `old_username_digest`, `new_username_digest`), which drops them from its rows.
+
+### datasources: a `%` reaches Redshift's driver as the driver reads it
+
+**Fixed:** `translate_placeholders(sql, "pyformat")` (every Redshift statement) wrote each `$n` as `%s` and left every
+`%` as it was. Redshift's driver (`redshift_connector`), sent parameters, reads a `%` outside a quoted literal, a quoted
+name or a comment as its own: a lone one (a modulo, `g % 2`) was refused ("Only %s and %% are supported in the
+query"). Such a `%` is now written `%%`, and one inside a literal, a quoted name or a comment is left as it is, as the
+driver leaves it (`'Proposition: 40%'` reaches the warehouse unchanged); a dollar-quoted body, which the driver does not
+know as quoted, has its `%` doubled. A statement naming no placeholder is sent with no parameters, which the driver
+does not read for `%`: it is left whole. Read a token at a time as the keyed builders read it (`SQL_TOKEN`, now also
+from `threetears.core.keyed`).
+
+### agent-tools, core: the resolvers and JWKS provider a `ToolServer` provisions ask the hub in its namespace
+
+**Fixed:** the object resolver, the engagement-scope resolver and the Hub JWKS provider a `ToolServer` provisions over
+its connection built their hub subjects (`hub.object.resolve`, `hub.engagement.scope`, `hub.jwks`) from the process's
+default namespace, so with two servers in one process the one not matching the default asked a namespace no hub
+answered (the hub's `hub.jwks` had no responder: the same class as the server's own subjects, fixed in this release).
+Each takes `namespace=` (the default when None) and the server gives them its own. **Added:** `Subjects.hub_jwks`,
+`hub_object_resolve` and `hub_engagement_scope` take `namespace=`.
+
 ### core: a restore holds the event loop under 1 ms a turn on a slower host
 
 **Fixed:** a change-log restore appended the `COPY`'s chunks to one buffer bounded at 4 MiB, and the buffer's growth
@@ -51,13 +80,13 @@ against a real broker.
 the server's other subjects read the process's default back. With two tool servers in one process on namespaces A
 and B, whichever registered last won it, and every subject built after without a namespace landed in that one (the
 hub met it as `NoRespondersError` on `intg_*.tools.discover`: a pod left over from an earlier test rebinding the global
-under a later one). The server now names its namespace on every subject it builds (its call, probe, heartbeat,
-registration and discovery subjects) and neither reads nor writes the default. `NatsClient.connect` still binds the
+under a later one). The server now names its namespace on every subject it builds or checks (its call, probe,
+heartbeat, registration and discovery subjects, the result subject a caller hands it, and the hub subjects of the
+resolvers and JWKS provider it provisions, below) and neither reads nor writes the default. `NatsClient.connect` still binds the
 process default: one connection is one deployment's namespace. **Added:** `Subjects.tools_register`, `tools_discover`,
 `tools_heartbeat`, `tools_internal` and `tools_probe` take `namespace=` (the default when omitted), as
-`Subjects.audit_event` does. The resolvers and the JWKS provider a server provisions over its connection
-(`HubObjectResolver`, `HubEngagementScopeResolver`, `CachedHubJwksProvider`) still build their hub subjects from the
-default: a process of servers on several namespaces needs them given one too.
+`Subjects.audit_event` does, and `Subjects.tools_result_pod_wildcard`, `result_subject_prefix_for_pod` and
+`result_subject_is_owned_by_pod` take `namespace=` too.
 
 ### agent-acl: `visible_customers` counts a grant only through a role that acts where its scope needs one
 
@@ -98,8 +127,8 @@ read a token at a time as SQL reads it (`threetears.interfaces.keyed.filters.SQL
 an `E'...'` with its escapes, `$$...$$` or `$tag$...$tag$`), a quoted name or a comment holds no placeholder. The same
 reading moves to every other site that moves or fills placeholders: `one_use_each`, `sqlite_numbered`,
 `literal_select`'s literals, `Pin.expr` and `Selected` (which refuse an expression naming a placeholder),
-`threetears.core.cache.duckdb_binds` and `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
-now also leaves a dollar-quoted body and a comment alone). **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
+`threetears.core.cache.duckdb_binds`, `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
+now also leaves a dollar-quoted body and a comment alone) and the no_whole_reads rewriter's SET expressions and guards. **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
 (also from `threetears.core.keyed`). **Removed:** `threetears.interfaces.keyed.PLACEHOLDER` (new in this release:
 read alone it is the bug), its one caller on `each_placeholder`.
 
@@ -111,7 +140,9 @@ retired; the next write met the same. A write now reads and encodes all its new 
 holding them encoded (zstd Arrow IPC) until put, and asks `NatsObjectStore.require_room` once for them all:
 `ObjectStoreFullError` up front, nothing written. The copy is still read once a write (read twice, once to measure and
 once to put, every write would read and encode its rows twice); the cost is the new parts held at once, a whole
-write's (a cold start's) the size the checkpoint adds to the store. **Added:**
+write's (a cold start's) the size the checkpoint adds to the store: measured cold at the reports pod's copy size
+(2.89 GiB in the process, 15 M rows), 0.308 GiB encoded and the write's peak 0.115 GiB over the copy, under 2% of the
+pod's 16 GiB limit. **Added:**
 `NatsObjectStore.require_room(objects: Sequence[tuple[str, int]]) -> int` refuses several puts the store has no room
 for together (one `STREAM.INFO`) and answers the bytes they add as the server counts them. The store a
 `CopyCheckpoints` is given must answer `require_room` (a test's in-memory store too: reports'

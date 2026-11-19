@@ -275,7 +275,7 @@ def census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
         "import_failures": failures,
         "framework_import_failures": framework_failures,
         # every table these classes switch on whose change notes no trigger writes, with why: its missed writes are
-        # never named, and every follower is behind on it until a restart (RC2, 2026-11-16)
+        # never named, and every follower is behind on it until a restart (2026-11-16)
         "unnoted_switched_tables": switched_tables_not_noted(),
     }
 

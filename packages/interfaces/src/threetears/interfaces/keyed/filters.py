@@ -359,8 +359,8 @@ def renumbered(fragment: Fragment, before: int) -> str:
 
 def one_use_each(sql: str, params: Sequence[Any]) -> tuple[str, list[Any]]:
     """``sql`` with every use of a placeholder its own number, and the parameters each binds, in that order: a
+    statement naming ``$2`` three times names ``$2``, ``$3`` and ``$4``, each bound to the old ``$2``'s value. A
     placeholder inside a quoted literal, a quoted name or a comment is text, and stays (:data:`SQL_TOKEN`).
-    placeholder inside a quoted literal or identifier is text, and stays.
 
     Some drivers bind each placeholder once (Redshift through a datasource reader refuses a statement naming one
     twice, where PostgreSQL takes it); a statement sent through such a reader is sent this way, whatever builder
@@ -427,7 +427,7 @@ class Const(str):
     never cached and the read is re-planned on every call. The visible-customer walk bound ``member_type = $1``
     (``'user'``) and ``= $3`` (``'group'``): generic 510 against custom 391, 0 generic / 800 custom plans, ~75-100 us
     of planning a call (2.3x the hand-written statement it replaced). With the two written as literals the generic
-    plan is cached and the walk costs what the old statement did (IT2 diagnosis, scratchpad it2/logs/diag.txt).
+    plan is cached and the walk costs what the old statement did (2026-11-16, the plan read with and without the literals).
 
     Only text the code itself fixes, never anything a caller or an end user supplies: the text must be a plain
     identifier-like word (:data:`_CONST_TEXT`), and the enforcement test

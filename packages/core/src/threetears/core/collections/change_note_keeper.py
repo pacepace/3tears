@@ -96,13 +96,13 @@ ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It 
 its own database notes: a table whose note trigger writes into this ring, or any table of the ring's own schema (so a
 table refused a trigger, or one that lost it, is still reported). The log is shared with other databases' writers
 (identity-core's), whose notes are in their own rings; their epochs are skipped (``ScrubPass.others``), never read as
-missing (RC5, 2026-11-16). A ring beside the log (below) scrubs its own tables the same way. It reads up to
+missing (2026-11-16). A ring beside the log (below) scrubs its own tables the same way. It reads up to
 ``scrub_batch``
 records from the log, a few dozen at a time, and looks their notes up through the note tables'
 ``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
 checks and reports; it never writes a note, reloads anything or repairs.
 
-**A ring beside a log another keeper keeps** (RC3, Pace 2026-11-16; its restore and scrub RC5, 2026-11-16). One
+**A ring beside a log another keeper keeps** (Pace 2026-11-16; its restore and scrub 2026-11-16). One
 change log is shared by every database whose writers advance through it (the hub's platform database, identity-core's
 own), and one keeper, the hub's, owns its lifecycle: it alone declares the log, declares and labels a lost one's
 restore, marks the log's position and scrubs. A second database still needs its own ring, for what its notes name
@@ -128,7 +128,7 @@ back (``reason=too_large``; such a ring writes no marks to cut it by, and its no
 owner's scrub, for its part, judges only the epochs of the tables its own database notes (below), so another
 database's epochs are never read as missing notes.
 
-And it **scrubs its own tables** (RC8, 2026-11-16), through the owner's scrub, on the owner's metric
+And it **scrubs its own tables** (2026-11-16), through the owner's scrub, on the owner's metric
 (``threetears_change_notes_missing_total{table}``), so one alert covers every ring. Why: the owner skips this
 database's epochs, so before it a missing note on one of its tables (a write whose trigger was lost, a writer that
 stalled past the fence) was reported by no one, and a restore would have silently left it out. Which tables are its
@@ -140,7 +140,7 @@ processes whose classes its keeper does not import (it cannot know every noted t
 beside is its own service's, whose process gives every table it notes its trigger and backs that install up, and a
 table refused one is said at ERROR when it is refused.
 
-**A table of one name in both databases** (RC9, 2026-11-16). Both databases note ``coordination_revocations`` (3tears'
+**A table of one name in both databases** (2026-11-16). Both databases note ``coordination_revocations`` (3tears'
 coordination table, migrated into each one's schema), and by its name alone each scrub judged the other's every write
 of it as a missing note. So every record names the database it was written in (``EpochChange.database``, the ring's
 schema; :mod:`threetears.core.collections.epoch_change`), and the scrub judges a record naming one as its own exactly
@@ -367,7 +367,7 @@ _SCRUB_READS_AT_ONCE: Final = 64
 _RESTORE_PAGE_BYTES: Final = 1 << 20
 
 #: the most keyed-note bytes the restore holds while its worker folds a page: the ``COPY`` waits past it. WHY one page
-#: (TF1, 2026-11-18, brooks-5950x exclusive, the 200,000-note restore, 3 runs each): every chunk the ``COPY`` hands
+#: (2026-11-18, an exclusive 32-core Linux runner, the 200,000-note restore, 3 runs each): every chunk the ``COPY`` hands
 #: the loop is appended to one buffer, and a buffer grown toward 4 MiB is reallocated (copied, its new pages touched)
 #: inside asyncpg's COPY-out turn: at 4 MiB that turn held the loop 1.50-1.82 ms on PostgreSQL and up to 1.43 ms on
 #: YugabyteDB, over the 1 ms bar (test_a_restore_holds_the_loop_under_1_ms_a_turn); at 2 MiB once 1.14 ms; at 1 MiB
@@ -922,7 +922,7 @@ class ChangeNoteKeeper:
         # one (a stand-in that only reads) names none
         named = getattr(log, "database", None)
         database = named if isinstance(named, str) else None
-        # WHY (RC9, 2026-11-16): a record names the database it was written in, and this ring's scrub and restore
+        # WHY (2026-11-16): a record names the database it was written in, and this ring's scrub and restore
         # judge and name records by it. The name is the ring's schema, never a second setting that could drift; and
         # a ring beside another keeper's log exists only because two databases share it, so it may not start naming
         # none -- its records and the owner's of a table both note would read as one table's again
@@ -1325,7 +1325,7 @@ class ChangeNoteKeeper:
             self._held_since = None
             _SWITCH_HELD_SINCE.set(0)
         now = time.monotonic()
-        # every ring scrubs, the ring beside the log too (RC8, 2026-11-16): the owner's scrub skips this database's
+        # every ring scrubs, the ring beside the log too (2026-11-16): the owner's scrub skips this database's
         # tables, so without it a missing note on one of them was reported by no one
         if self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds():
             self._scrubbed_at = now
@@ -2221,10 +2221,10 @@ class ChangeNoteKeeper:
             _SCRUB_BEHIND.set(max(0, state.last_seq - start))
             return ScrubPass(position=_token(incarnation, start))
         read = await self._epochs_between(start, end)
-        # WHY only this database's tables (RC5, 2026-11-16): the log is shared with another database's writers
+        # WHY only this database's tables (2026-11-16): the log is shared with another database's writers
         # (identity-core's), whose notes are in that database's ring; read here, each of their epochs was a missing
         # note, raising threetears_change_notes_missing_total on every identity write.
-        # WHY by the record's database first (RC9, 2026-11-16): both databases note coordination_revocations, so by
+        # WHY by the record's database first (2026-11-16): both databases note coordination_revocations, so by
         # its table's name each ring judged the other's every write of it as missing. A record naming its database
         # is this ring's exactly when it names this one; only an older writer's, naming none, is judged by its table
         own = await self._own_tables({record.table for record in read if record.database is None})

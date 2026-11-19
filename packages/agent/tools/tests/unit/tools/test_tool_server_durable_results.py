@@ -150,6 +150,19 @@ def _decoded(payload: bytes) -> dict[str, Any]:
 
 class TestTheAnswerLeavesOnASubjectThePodOwns:
     @pytest.mark.asyncio
+    async def test_its_own_delivery_subject_is_read_in_the_server_s_namespace_not_the_process_s(self) -> None:
+        """Flips if the server checks a caller's result subject against the process's default namespace rather than
+        its own: with another namespace the default (a second server in the process connected last), this server
+        refused every long call's correct ``{its namespace}.tools.result.{pod}.{call}`` subject as not its to publish."""
+        set_default_namespace("elsewhere")
+        nats = _FakeNats()
+        server = _server(nats)
+
+        await server.handle_call(_long_call(result_subject=f"{_NS}.tools.result.{_POD}.call-1"))
+
+        assert [subject for subject, _ in nats.delivered] == [f"{_NS}.tools.result.{_POD}.call-1"]
+
+    @pytest.mark.asyncio
     async def test_the_result_is_delivered_not_replied(self) -> None:
         """THE PRODUCTION BUG. The scan's output leaves on the pod's own standing-grant subject."""
         nats = _FakeNats()

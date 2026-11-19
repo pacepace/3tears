@@ -251,6 +251,12 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "user_email",  # a user's email address
         "user_name",  # a person's user name
         "username",  # a person's user name
+        # a username's keyed digest: pseudonymous, but confirmable by guessing the name, and one person's (audit rows
+        # hold ids only, Pace 2026-11-12), identity.login.* / identity.username.change
+        "old_username_digest",
+        "new_username_digest",
+        "typed_username_digest",
+        "stored_username_digest",
         "api_key_masked",  # a masked provider key is still a credential fragment, gateway.provider.* (hub)
         "cause",  # optional free-text cause, channel.delete (hub)
         "column_name",  # operator-typed column name, admin.action pii_rotation (hub)
@@ -335,6 +341,10 @@ IDENTIFYING_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "external_id",
         "external_account_id",
         "external_user_id",
+        "old_username_digest",  # a username's keyed digest is the username, confirmable by guessing it
+        "new_username_digest",
+        "typed_username_digest",
+        "stored_username_digest",
     }
 )
 

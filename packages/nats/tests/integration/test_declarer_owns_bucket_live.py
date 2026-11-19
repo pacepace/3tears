@@ -25,7 +25,9 @@ import pytest
 from nats.js.api import Header, StorageType
 
 from threetears.nats import NatsClient, set_default_namespace
-from threetears.nats.errors import KvConfigMismatch
+from nats.js.errors import APIError
+
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 from threetears.nats.kv import build_kv_stream_config, reconcile_kv_stream
 from threetears.nats.raw_errors import is_bucket_not_found
 
@@ -350,7 +352,7 @@ async def test_an_owner_reading_the_bucket_mid_recreate_of_another_owner_succeed
             bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
         )
 
-        await reconcile_kv_stream(
+        recreated = await reconcile_kv_stream(
             js=_ReadsAfterAConcurrentDelete(b.jetstream_context(), a.jetstream_context()),
             full_name=full_name,
             config=declared,
@@ -358,6 +360,117 @@ async def test_an_owner_reading_the_bucket_mid_recreate_of_another_owner_succeed
             drop_file_storage=True,
         )
 
+        # this owner created the bucket: True, which the restoration round reads as a refill owed
+        assert recreated is True
         live = (await a.jetstream_context().stream_info(f"KV_{full_name}")).config
         assert live.storage == StorageType.MEMORY
         assert not live.max_age
+
+
+class _OtherOwnerCreatesFirst(_ReadsAfterAConcurrentDelete):
+    """as :class:`_ReadsAfterAConcurrentDelete`, and the other owner's create lands before this owner's: its bucket (an
+    hour's bucket-wide expiry, on memory) is in place when this owner's create runs.
+
+    :param js: this owner's JetStream context
+    :ptype js: Any
+    :param concurrent: the other owner's JetStream context
+    :ptype concurrent: Any
+    :param theirs: the config the other owner's create makes
+    :ptype theirs: Any
+    """
+
+    def __init__(self, js: Any, concurrent: Any, theirs: Any) -> None:
+        super().__init__(js, concurrent)
+        self._theirs = theirs
+        self.created_by_them: Any = None
+
+    async def add_stream(self, config: Any) -> Any:
+        if self.created_by_them is None:
+            self.created_by_them = (await self._concurrent.add_stream(self._theirs)).created
+        return await self._js.add_stream(config)
+
+
+class _CreateRefused(_ReadsAfterAConcurrentDelete):
+    """as :class:`_ReadsAfterAConcurrentDelete`, and this owner's create is refused for a reason other than the name
+    being taken (the broker out of storage, say)."""
+
+    async def add_stream(self, config: Any) -> Any:
+        raise APIError(code=500, err_code=10047, description="insufficient storage resources available")
+
+
+async def test_an_owner_whose_create_meets_the_other_owner_s_reconciles_that_bucket_and_creates_none(
+    nats_container: str,
+) -> None:
+    """Flips if, when the other owner's create lands first, this owner deletes that fresh bucket again, does not bring
+    it to the declaration, or answers True (a refill owed for a bucket it did not make)."""
+    namespace = "midrecreate2"
+    full_name = f"{namespace}-proxy_assertion_nonces"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-a") as a,
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-b") as b,
+    ):
+        await _create_stale(a, full_name=full_name, max_age_seconds=60, storage=StorageType.FILE)
+        declared = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        theirs = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=3600, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        js = _OtherOwnerCreatesFirst(b.jetstream_context(), a.jetstream_context(), theirs)
+
+        recreated = await reconcile_kv_stream(
+            js=js, full_name=full_name, config=declared, owns_bucket=True, drop_file_storage=True
+        )
+
+        assert recreated is False
+        info = await a.jetstream_context().stream_info(f"KV_{full_name}")
+        assert info.created == js.created_by_them, "the other owner's bucket was deleted and made again"
+        assert info.config.storage == StorageType.MEMORY
+        assert not info.config.max_age, "the other owner's bucket was not brought to the declaration"
+
+
+async def test_a_bucket_gone_under_a_declarer_that_does_not_own_it_is_still_not_found(nats_container: str) -> None:
+    """Flips if a declarer that does not own the bucket creates it when its read finds it gone: only an owner may."""
+    namespace = "midrecreate3"
+    full_name = f"{namespace}-proxy_assertion_nonces"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-a") as a,
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="pod-b") as b,
+    ):
+        await _create_stale(a, full_name=full_name, max_age_seconds=60, storage=StorageType.MEMORY)
+        declared = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        with pytest.raises(KvBucketNotFoundError):
+            await reconcile_kv_stream(
+                js=_ReadsAfterAConcurrentDelete(b.jetstream_context(), a.jetstream_context()),
+                full_name=full_name,
+                config=declared,
+            )
+
+
+async def test_an_owner_s_create_refused_for_another_reason_is_a_kv_error_naming_it(nats_container: str) -> None:
+    """Flips if an owner's create after a concurrent delete, refused for anything but the name being taken, is
+    swallowed, or raised as not-found rather than a KvError naming the refusal."""
+    namespace = "midrecreate4"
+    full_name = f"{namespace}-proxy_assertion_nonces"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-a") as a,
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-b") as b,
+    ):
+        await _create_stale(a, full_name=full_name, max_age_seconds=60, storage=StorageType.FILE)
+        declared = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        with pytest.raises(KvError, match="insufficient storage") as raised:
+            await reconcile_kv_stream(
+                js=_CreateRefused(b.jetstream_context(), a.jetstream_context()),
+                full_name=full_name,
+                config=declared,
+                owns_bucket=True,
+                drop_file_storage=True,
+            )
+        assert not isinstance(raised.value, KvBucketNotFoundError)

@@ -66,19 +66,23 @@ def test_a_null_is_a_value_of_its_own() -> None:
 
 
 def test_codes_stay_exact_when_the_combined_count_would_pass_an_int64() -> None:
-    """the codes so far are coded again before the next column would overflow them: held to a room of 7 distinct
-    keys, every column folds through a recode, and equal codes are still exactly equal keys."""
+    """the codes so far are coded again before the next column would overflow an int64: seven columns of 1,000
+    distinct values each count 1e21 keys combined, past 2**62, so the re-coding runs at a real size, and equal codes
+    are still exactly equal keys."""
     rng = np.random.default_rng(3)
-    held = _rows(rng, 500, chunks=2)
-    (codes,) = key_codes([held], KEY, room=7)
-    keys = _keys(held)
+    wide = tuple(f"c{n}" for n in range(7))
+    held = pa.table({column: pa.array(rng.permutation(1000).astype(np.int64)) for column in wide})
+    (codes,) = key_codes([held], wide)
+    keys = list(zip(*(held[column].to_pylist() for column in wide), strict=True))
     by_code: dict[int, tuple[object, ...]] = {}
     for code, values in zip(codes.tolist(), keys, strict=True):
         assert by_code.setdefault(code, values) == values
     assert len(by_code) == len(set(keys))
-    named = _rows(rng, 30).select(list(KEY))
-    wanted = set(_keys(named))
-    assert rows_named(held, named, KEY, room=7).tolist() == [r for r, values in enumerate(keys) if values in wanted]
+    named = held.take(pa.array(rng.choice(1000, 40, replace=False))).select(list(wide))
+    wanted = set(zip(*(named[column].to_pylist() for column in wide), strict=True))
+    assert rows_named(held, named, wide).tolist() == [r for r, values in enumerate(keys) if values in wanted]
+    # named keys as many as held, 1,000 distinct values a column: rows_named's own codes are re-coded too
+    assert rows_named(held, held.select(list(wide)), wide).tolist() == list(range(1000))
 
 
 def test_distinct_keys_are_each_key_once_in_first_seen_order() -> None:

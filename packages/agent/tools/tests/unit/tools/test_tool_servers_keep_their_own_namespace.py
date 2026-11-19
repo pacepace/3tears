@@ -16,12 +16,16 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid7
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver, ResolveEngagementScopeError
+from threetears.agent.tools.object_resolver import ResolveObjectError
 from threetears.agent.tools.server import DiscoveryProbeResponse, RegistrationResponse, ToolServer
+from threetears.nats.errors import RequestError
 from threetears.nats import get_default_namespace, set_default_namespace
 from threetears.nats.testing import reset_default_namespace
 
@@ -97,12 +101,15 @@ def _recording_nc() -> AsyncMock:
 
     async def _request(*args: Any, **kwargs: Any) -> DiscoveryProbeResponse | RegistrationResponse:
         _seen(kwargs)
-        # a registry that admits the registration and reports no tool ready
+        # a registry that admits the registration and reports no tool ready; a hub that answers nothing else
         if kwargs.get("response_type") is RegistrationResponse:
             return RegistrationResponse(success=True, pod_id=kwargs["message"].pod_id)
-        return DiscoveryProbeResponse(agent_id="x", tools=[])
+        if kwargs.get("response_type") is DiscoveryProbeResponse:
+            return DiscoveryProbeResponse(agent_id="x", tools=[])
+        raise RequestError("no responder in this double")
 
     async def _request_raw(*args: Any, **kwargs: Any) -> bytes:
+        _seen(kwargs)
         return json.dumps({"keys": []}).encode("utf-8")
 
     nc.subscribe = AsyncMock(side_effect=_subscribe)
@@ -159,6 +166,11 @@ async def test_a_server_s_subjects_stay_in_its_namespace_after_another_server_re
         assert await server_b.wait_until_ready(timeout=0.2) is False  # the double's registry reports nothing ready
         await server_b.publish_registration()
         assert await server_a.wait_until_ready(timeout=0.2) is False
+        # the resolver B's serve provisioned asks the hub in B's namespace (as its JWKS provider did at its start)
+        resolver = server_b.object_resolver
+        assert resolver is not None
+        with pytest.raises(ResolveObjectError):
+            await resolver.resolve(uuid7(), customer_id=uuid7(), identity_token="token")
         ambient = get_default_namespace()
 
     assert nc_b.subjects and nc_a.subjects
@@ -167,4 +179,17 @@ async def test_a_server_s_subjects_stay_in_its_namespace_after_another_server_re
     assert "nsb.tools.register" in nc_b.subjects and "nsb.tools.discover" in nc_b.subjects
     assert "nsa.tools.register" in nc_a.subjects and "nsa.tools.discover" in nc_a.subjects
     assert f"nsb.tools.internal.{_POD_B}" in nc_b.subjects and f"nsb.tools.probe.{_POD_B}" in nc_b.subjects
+    assert "nsb.hub.jwks" in nc_b.subjects and "nsa.hub.jwks" in nc_a.subjects
+    assert "nsb.hub.object.resolve" in nc_b.subjects
     assert ambient == _AMBIENT, "a tool server wrote the process's namespace"
+
+
+@pytest.mark.asyncio
+async def test_an_engagement_resolver_asks_the_hub_in_the_namespace_it_is_given() -> None:
+    """Flips if the engagement-scope resolver a server provisions builds its hub subject from the process's namespace
+    rather than the one it is given (the server gives it its own, as it gives its object resolver and JWKS provider)."""
+    nc = _recording_nc()
+    resolver = HubEngagementScopeResolver(nc, request_timeout_seconds=0.1, namespace="nsb")
+    with pytest.raises(ResolveEngagementScopeError):
+        await resolver.resolve(uuid7(), customer_id=uuid7(), identity_token="token")
+    assert nc.subjects == ["nsb.hub.engagement.scope"]

@@ -648,6 +648,17 @@ def test_an_increment_and_a_set_expression_are_parsed() -> None:
     )
 
 
+def test_a_dollar_number_inside_a_literal_is_no_parameter_of_a_set_expression_or_a_guard() -> None:
+    """Flips if the rewriter reads a ``$n`` inside a quoted literal as a parameter: renumbering the literal's text in
+    the source it writes, or failing to find it among the expression's parameters (a race named 'over $1 billion')."""
+    parsed = parse_write("UPDATE t SET v = COALESCE($2, 'over $1 billion') WHERE id = $1")
+    assert isinstance(parsed, WriteSql), parsed
+    assert parsed.sets == (Pin("v", "fragment", literal="COALESCE($1, 'over $1 billion')", params=(2,)),)
+    guarded = parse_write("UPDATE t SET v = $1 WHERE id = $2 AND note <> 'costs $9'", guards=True)
+    assert isinstance(guarded, WriteSql), guarded
+    assert Pin("", "guard", literal="note <> 'costs $9'") in guarded.guards, guarded.guards
+
+
 def test_a_returning_of_plain_columns_is_parsed() -> None:
     """Flips if a write's trailing RETURNING of plain columns is not read as those columns, in order, or is read into
     the WHERE's last pin."""

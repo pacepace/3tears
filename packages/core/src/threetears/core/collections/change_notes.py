@@ -311,7 +311,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
             beside=_noted_rows_step(notes_schema, table, since),
             limit=cap + 1,
             present="noted",
-            # the ring row's columns on one answered row, not repeated on each of hundreds of notes (IT3, 2026-11-16,
+            # the ring row's columns on one answered row, not repeated on each of hundreds of notes (2026-11-16,
             # YugabyteDB, 500 notes: 2,500 values fewer to send and decode, the statement's median 2.08 -> 1.64 ms)
             first="ring_row",
         )
@@ -338,7 +338,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
         # past the cap the statement stopped at an arbitrary cap + 1 notes, so the whole-table notes among the rest
         # were never read. Each is a write of its own (a truncate, a load) whose advance may have been lost with the
         # rest, and the caller's bracket of keys does not carry one: read them alone, from the whole-table notes'
-        # own partial index, so a truncate in the window still reaches every follower whole (RC2, 2026-11-16: before,
+        # own partial index, so a truncate in the window still reaches every follower whole (2026-11-16: before,
         # this answered "too_many_rows" and the truncate's removed rows stayed in followers).
         whole = await _noted_whole_since(pool, notes_schema, table, reach, ring)
         return NotedRows(
@@ -387,7 +387,7 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     :func:`~threetears.core.ddl.change_notes.change_notes_ddl`), which holds those notes alone, so the many keyed notes
     that took the read past its cap are never visited; the reach of each one from ``reach`` on is then read by its key.
 
-    WHY two reads, and the time compared here (RC2, 2026-11-16, ``test_change_note_ring_plans`` on YugabyteDB): read
+    WHY two reads, and the time compared here (2026-11-16, ``test_change_note_ring_plans`` on YugabyteDB): read
     in one statement with the reach (``columns``, which the partial index does not carry), or with ``noted_at >= $2``
     beside the table, YugabyteDB answered it from the ``(table_name, noted_at)`` index that carries every column of
     every note, filtering ``key_text IS NULL``: all 101 notes of a table holding one whole note. The look reads only what
@@ -689,7 +689,7 @@ class PoolNotedKeysReader:
     no broker to ask (:meth:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend.noted_keys`). Without one, such a
     registry stays behind on a table at any keys-unknown record carrying a notes bracket (a writer's commit too large
     to record, a reconciled lost write of more rows than one record names) until it restarts, the write's rows stale
-    in it (RC1, 2026-11-16). With one it pages the bracket's keys from the ring (:func:`noted_keys_page`, an index range
+    in it (2026-11-16). With one it pages the bracket's keys from the ring (:func:`noted_keys_page`, an index range
     read a page at a time) and evicts exactly them: nothing dropped, nothing read whole.
 
     Whose notes: a tenant's (``tenant_token``, ``None`` for ``_all``), or every tenant's (``every_tenant``). A platform

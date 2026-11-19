@@ -629,7 +629,7 @@ class WriteMarkReconciler:
         with the notes' bracket (:meth:`_notes_bracket`): each follower reads their keys from the notes a page at a
         time and evicts exactly them (:meth:`~threetears.core.collections.registry.CollectionRegistry
         .catch_up_generation`), as for a commit too large to record. Without the bracket every follower stayed
-        behind on the table until its next start (RC1, 2026-11-16). When the notes cannot say at all (not covered,
+        behind on the table until its next start (2026-11-16). When the notes cannot say at all (not covered,
         none, no ring) the advance is keys unknown with no bracket: every follower is behind on the table, never
         told to drop it. Either is said at WARNING and counted on ``collection_write_marks_keys_unknown_total``. A
         whole-table note among more rows than one record names is still recorded whole, beside the bracket. An
@@ -669,7 +669,7 @@ class WriteMarkReconciler:
             )
         # a whole-table note in the window is a write of its own (a truncate, a load) whose advance may have been lost
         # too: recorded whole beside the bracket, as the named path records it, since a follower applying the
-        # bracket's keys never acts on a whole note in it (RC2, 2026-11-16). A plain or reset change covers its
+        # bracket's keys never acts on a whole note in it (2026-11-16). A plain or reset change covers its
         # tenant's rows (every tenant's, for _all), so no bracket is recorded under a tenant it covers
         covering = {change.tenant for change in whole if not change.prefixes}
         unnamed = [
