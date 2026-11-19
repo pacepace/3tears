@@ -26,6 +26,8 @@ from threetears.nats import (
 )
 from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason
 
+from .wire_server import wire_server
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -109,6 +111,8 @@ class _Conn:
         self.name = name
         self.is_closed = False
         self.is_connected = True
+        # nats-py's connect options, which it reads again whenever the connection fails
+        self.options: dict[str, Any] = {"allow_reconnect": True}
         self.subs: list[_Sub] = []
         self.published: list[tuple[str, bytes]] = []
         self.drained = False
@@ -1049,6 +1053,97 @@ async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor() -> N
     await successor.subs[0].queue_in.put(_Msg(b"after the move"))
     await _settle()
     assert received == [b"after the move"]
+    await client.shutdown()
+
+
+async def test_a_lame_duck_move_takes_the_old_half_out_of_its_group_long_before_the_old_connection_retires() -> None:
+    """the lame-duck server closes the old connection after its grace period (10 s by default); a member still
+    in its group then loses whatever was being routed to it. So the old half leaves within about a second, while
+    the old connection itself is still kept for the longest request (30 s here)."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client, options_of = await _connected_capturing(current, successor)
+
+    async def _cb(msg: IncomingMessage) -> None:
+        return None
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    current.calls.clear()
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _until(lambda: _held(client) is successor)
+    await _until(lambda: "unsub 1" in current.calls, seconds=3.0)
+
+    after = current.calls[current.calls.index("unsub 1") :]
+    assert after[:2] == ["unsub 1", "round-trip"], "the UNSUB, then a round trip ordered after it"
+    assert not current.is_closed, "the old connection is still kept for the work it carries"
+    await client.shutdown()
+
+
+async def test_a_replaced_connection_closes_when_its_server_drops_it_rather_than_reconnecting() -> None:
+    """a reconnect would replay its subscriptions on another server, rejoining their groups as members that
+    are dropped again, with whatever was routed to them, when it retires."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+
+    assert current.options["allow_reconnect"] is False
+    assert successor.options["allow_reconnect"] is True, "the current connection still reconnects"
+    await client.shutdown()
+
+
+async def test_a_real_replaced_connection_closes_when_its_server_drops_it() -> None:
+    """against nats-py itself, not a stand-in: nats-py must read the option again when the connection fails.
+
+    The successor stays connected; the replaced connection, dropped by its server, closes and never connects
+    again -- the server sees no third connection.
+    """
+    async with wire_server() as server:
+        client = await NatsClient.connect(
+            nats_url=server.url,
+            nats_subject_namespace="3tears",
+            client_name="drop-test",
+            verify_jetstream=False,
+            # a reconnect, if one were attempted, comes well inside the wait below
+            reconnect_backoff_base=0.05,
+            reconnect_backoff_cap=0.05,
+        )
+        replaced = client.raw
+        try:
+
+            async def _cb(msg: IncomingMessage) -> None:
+                return None
+
+            await client.subscribe(Subject.raw("events.>"), cb=_cb)
+            await client.renew_connection(retire_after=timedelta(seconds=30))
+            assert client.raw is not replaced and len(server.connections) == 2
+
+            await server.drop(0)
+            await asyncio.sleep(1.0)
+
+            assert len(server.connections) == 2, "the replaced connection reconnected"
+            assert replaced.is_closed
+            assert client.raw.is_connected
+        finally:
+            # a replaced connection still reconnecting would otherwise keep the server's block from closing
+            await replaced.close()
+            await client.shutdown()
+
+
+async def test_an_old_half_whose_connection_closed_first_sends_no_unsub() -> None:
+    """the server dropped every member with the connection; there is no group left to leave."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+
+    async def _cb(msg: IncomingMessage) -> None:
+        return None
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    current.calls.clear()
+    await client.renew_connection(retire_after=timedelta(seconds=0.2))
+    current.is_closed = True
+    await asyncio.sleep(0.4)
+
+    assert "unsub 1" not in current.calls
     await client.shutdown()
 
 

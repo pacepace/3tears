@@ -6,6 +6,153 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a restore holds the event loop under 1 ms a turn on a slower host
+
+**Fixed:** a change-log restore appended the `COPY`'s chunks to one buffer bounded at 4 MiB, and the buffer's growth
+toward it (reallocated, its new pages touched) ran inside asyncpg's COPY-out turn: on brooks-5950x that turn held
+the loop 1.50-1.82 ms (PostgreSQL) and up to 1.43 ms (YugabyteDB), over the 1 ms bar the restore's loop test holds
+(it had passed on the faster runner it was measured on). The buffer is bounded at one page (1 MiB): every turn
+0.27-0.38 ms, and the restore's whole time unchanged (PostgreSQL 446-448 ms against 445-449; YugabyteDB 456-467 ms
+against 544-553).
+
+### core: `read_joined` answers its joined rows read-only, as the connection answers them (breaking)
+
+**Changed (breaking):** `threetears.core.keyed.read_joined` answers `dict[tuple, list[Mapping[str, Any]]]`: each joined
+row as the connection answers it (an asyncpg `Record` on a direct connection: read by name, `row["col"]`, `row.get`,
+`keys()`, never written), no longer copied into a `dict`. Why: on brooks-5950x (exclusive), 6,000 joined rows, the bare
+statement took 3.54 ms and the helper's own statement 3.32 ms, but a `dict` of each row 2.25 ms more: the read sat at
+2.0-2.1x its 2.0x bar. A caller that writes a joined row, or needs a real `dict` (`isinstance(row, dict)`, `**row`
+into a model, `json.dumps`), converts it there: `dict(row)`. `read_by_joined` still answers dicts (it builds each
+widened row itself), as do 3tears' own callers. Consumers: no call of `read_joined` in the hub, SDK, identity, admin,
+survey or reports release tips; the hub's `read_by_joined` calls are unchanged.
+
+### observe: `HealthServer.bound_port` is the port the listener bound
+
+**Added:** `HealthServer.bound_port` answers the port the server's listener bound while it runs (None before `start()`
+and after `stop()`), so a server configured on port 0 says which port the OS picked; `port` stays the configured one.
+A caller no longer binds a free port, closes it and hands the number over, a gap in which another process's connection
+could take it (the SDK's `test_health_server`, EADDRINUSE 1 run in 30). The start's log line names the bound port.
+
+### nats: an owner that reads a bucket mid-recreate by another owner declares it instead of failing
+
+**Fixed:** two owners declaring one bucket at once (two replicas of the declaring service) could fail one of them.
+Both found the stale bucket live on file storage; one deleted it to recreate it on memory, and the other's read of
+the live configuration landed between that delete and that create. The read answered not-found, which
+`reconcile_kv_stream` did not handle, so the declaration raised `KvBucketNotFoundError` (the integration suite's
+`test_two_owners_recreating_at_once_both_succeed`, in some runs). An owner whose read finds the bucket gone now
+creates it with the declared configuration, or, when the other owner's create lands first, reads that bucket and
+reconciles it. A declarer that does not own the bucket still raises. Pinned by
+`test_an_owner_reading_the_bucket_mid_recreate_of_another_owner_succeeds`, which puts the read in that window
+against a real broker.
+
+### agent-tools, nats: a `ToolServer` builds its subjects from its own namespace and never writes the process's
+
+**Fixed:** `ToolServer.serve` and every `publish_registration` called `set_default_namespace(self._namespace)`, and
+the server's other subjects read the process's default back. With two tool servers in one process on namespaces A
+and B, whichever registered last won it, and every subject built after without a namespace landed in that one (the
+hub met it as `NoRespondersError` on `intg_*.tools.discover`: a pod left over from an earlier test rebinding the global
+under a later one). The server now names its namespace on every subject it builds (its call, probe, heartbeat,
+registration and discovery subjects) and neither reads nor writes the default. `NatsClient.connect` still binds the
+process default: one connection is one deployment's namespace. **Added:** `Subjects.tools_register`, `tools_discover`,
+`tools_heartbeat`, `tools_internal` and `tools_probe` take `namespace=` (the default when omitted), as
+`Subjects.audit_event` does. The resolvers and the JWKS provider a server provisions over its connection
+(`HubObjectResolver`, `HubEngagementScopeResolver`, `CachedHubJwksProvider`) still build their hub subjects from the
+default: a process of servers on several namespaces needs them given one too.
+
+### agent-acl: `visible_customers` counts a grant only through a role that acts where its scope needs one
+
+**Fixed (security):** `threetears.agent.acl.visible_customers` read every grant without the role it binds: `is_all`
+came from `scope_type='all'` alone, and its `type_customer` and `namespace` grants had no role check. Any assignment
+at scope `all` -- a one-action system role, or a role with no action at all -- made every listing paging through it
+(the hub's group, membership and knowledge listings) fleet-wide: the leak #1276 closed in
+`caller_visible_customer_clause`, open still in this independent reading of the same set. The walk now reads each
+grant's role by its key (`roles` joined on `role_id`, and the bound namespace's `namespace_type`) and decides by the
+evaluator's own rule: a fleet-wide grant counts when its role acts on the listed type, a `type_customer` grant on the
+type when its role acts on it, a namespace grant when its role acts on that namespace's own type (a customer admin's
+grant on the customer namespace still opens that customer). `namespace_type=None`: a fleet-wide grant counts when its
+role grants any action at all, a `type_customer` grant when its role acts on the grant's own type. **Added:**
+`threetears.agent.acl.types.permissions_act_on` (`Role.actions_for`'s rule, which it and the method share,
+non-empty; any action anywhere for no type) and `decode_role_permissions` (how `RoleCollection` and `visible_customers`
+read a stored `permissions`; a double-encoded value decodes with or without the JSONB codec, as the SQL clause reads
+it). Held equal to the per-row clause over every scope and role shape on a real database
+(`test_query_visibility_roles.py`). A fixture seeding roles with no action (`'[]'`, `'{}'`) now sees nothing through
+them, as production does: the acl suites' fixtures seed a reader (`{"*": ["read"]}`).
+
+### core: a pool's workers name themselves (`process_name=`, `name_process`)
+
+**Added:** `ProcessWorkers(..., process_name=)` and `SharedArrowPool(..., process_name=)`: each worker names itself so
+as it starts, as `ps`, `top` and `/proc/<pid>/comm` say it on Linux (`prctl(PR_SET_NAME)`, cut to 15 bytes); None
+keeps the fork server's name, as before. Every worker the fork server forks has the server's command line, so the
+name is what tells one pool's workers from another's (an operator's fault aimed at one pool:
+`aibots cluster fault kill-process --name`). `threetears.core.processes.name_process(name) -> bool` names the calling
+process (a pool's own initializer, a consumer's own process); nothing off Linux, answering False.
+Moved from reports' `pod/workers.name_process`, which can call it at its re-pin.
+
+### interfaces, core, datasources: a `$1` inside a literal, a quoted name or a comment is not a placeholder
+
+**Fixed:** `renumbered` (every keyed helper moving a fragment's or a `Derived`'s placeholders past its own, through
+`ranked_order` among them) read any `$n` in the text as a placeholder, so a relation naming reports' California race
+'Proposition: 40 - Impose one-time wealth tax over $1 billion' as a literal was refused ("a fragment names $1 but
+binds 0 parameters"), and one binding parameters would have had the literal's text renumbered. A statement is now
+read a token at a time as SQL reads it (`threetears.interfaces.keyed.filters.SQL_TOKEN`): a quoted literal (with `''`,
+an `E'...'` with its escapes, `$$...$$` or `$tag$...$tag$`), a quoted name or a comment holds no placeholder. The same
+reading moves to every other site that moves or fills placeholders: `one_use_each`, `sqlite_numbered`,
+`literal_select`'s literals, `Pin.expr` and `Selected` (which refuse an expression naming a placeholder),
+`threetears.core.cache.duckdb_binds` and `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
+now also leaves a dollar-quoted body and a comment alone). **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
+(also from `threetears.core.keyed`). **Removed:** `threetears.interfaces.keyed.PLACEHOLDER` (new in this release:
+read alone it is the bug), its one caller on `each_placeholder`.
+
+### core, nats: a copy's checkpoint asks for its whole room before its first part
+
+**Fixed:** `CopyCheckpoints.write` put its parts one by one, each asking the Object Store for its own room, so a
+checkpoint too big for the store was refused part way, after some of its parts were written, and those parts were then
+retired; the next write met the same. A write now reads and encodes all its new parts before it puts the first,
+holding them encoded (zstd Arrow IPC) until put, and asks `NatsObjectStore.require_room` once for them all:
+`ObjectStoreFullError` up front, nothing written. The copy is still read once a write (read twice, once to measure and
+once to put, every write would read and encode its rows twice); the cost is the new parts held at once, a whole
+write's (a cold start's) the size the checkpoint adds to the store. **Added:**
+`NatsObjectStore.require_room(objects: Sequence[tuple[str, int]]) -> int` refuses several puts the store has no room
+for together (one `STREAM.INFO`) and answers the bytes they add as the server counts them. The store a
+`CopyCheckpoints` is given must answer `require_room` (a test's in-memory store too: reports'
+`tests/pod/snapshot_doubles.Store` at its re-pin). **Removed:** `threetears.nats.object_store.stored_bytes_of_put`
+is private (`_stored_bytes_of_put`): no consumer called it (reports never puts an export of its own; the ledger entry
+saying it would was stale), and `require_room` is its front door.
+
+### core: Arrow rows matched by a key without Acero (`threetears.core.arrow_keys`)
+
+**Added:** `threetears.core.arrow_keys` -- `key_codes`, `rows_named` (a left semi join's rows), `rows_not_named`
+(a left anti join's), `distinct_keys` (a `group_by`'s keys) and `last_rows` (the last row of each key) -- matches
+Arrow rows by a key of several columns in Arrow's hash kernels: each column dictionary-encoded, the codes combined
+into one int64 a key, then `is_in` or `np.unique`. Moved from reports (`aibots_reports.pod.arrow_keys`, SG1
+2026-11-18). Why: `Table.join`, `Table.group_by` and `Table.filter` given an expression each run an Acero plan whose
+answer is `DeclarationToTable`'s, which can be a null table with an OK status (Arrow 25.0.1); pyarrow's `Table` over
+it segfaults on first use (reports' loop_timing run of 2026-11-18 04:40). `rows_named` on a 28k-row part against
+382 keys of six columns: 0.53 ms on the calling thread (Acero's join 0.48 ms on Arrow's pool). Needs the `arrow`
+extra. **Fixed:** `DuckDBBackend.storage_arrow` keeps the last row of each key by `last_rows`, no longer a
+`group_by`. **Enforcement:** `tests/enforcement/test_no_acero_tables.py` refuses an Acero plan for a table in any
+package's source (`Table.join` with `keys=`/`join_type=`, `join_asof`, `group_by`, `pc.field`, `pyarrow.acero`).
+
+### nats, core, agent-audit: `NatsClientLike.ping`; `request_audit_anonymization` takes a `RawRequester`
+
+**Added:** `NatsClientLike` carries `ping(*, timeout=2.0) -> bool`, the health probe's round trip `NatsClient` already
+answers, and `threetears.core.testing.kv.FakeNatsClient` answers it (`answers_ping`, True until a test sets it False),
+so a holder of the whole client typed by `NatsClientLike` (survey's registry) runs its health probe with no cast.
+**Changed:** `threetears.agent.audit.request_audit_anonymization` is typed by `threetears.nats.capabilities.RawRequester`
+(it only sends `request_raw` through `ask_hub`), so a `NatsClientLike` holder or a scripted double passes with no
+ignore. Nothing changes at run time.
+
+### core: `exit_with_parent` watches the process that started the worker, not the parent it finds later
+
+**Fixed:** `threetears.core.processes.exit_with_parent` read the worker's parent when it ran, after the start had
+imported the worker's modules (1.6 s in the hub's read worker). A parent killed in that window left the worker adopted
+by init, which the watch then took for its parent: the worker never exited (the hub's
+`test_workers_exit_with_their_parent`, red 4 of 4 alone; hub 580f6e079 worked around it). Given no `serving`, the
+watch now names the process that started the worker by the pid multiprocessing handed over at the start
+(`multiprocessing.parent_process()`): the parent of a spawned worker, the serving process of one the fork server forked
+(which watched the server before, and so outlived a killed serving process unless `serving` was passed). A process
+multiprocessing did not start watches its parent, as before. The hub's own `serving=` workaround can stay or go.
+
 ### core: `SchemaBackedCollection.delete_prefixes` deletes whole key prefixes at a cost the rows held do not set
 
 **Added:** `SchemaBackedCollection.delete_prefixes(prefixes, *, conn) -> int` deletes every row of some key prefixes
@@ -651,6 +798,57 @@ are written without tokens). `file_tokens(path)` reads a file's tokens from its 
 inode, size and modified time, 65,536 files), and `column_print(path, columns)` prints the columns a read takes (a file
 without tokens prints as its identity). A memo over a version reruns a query only when a column it reads moved, with no
 row read again. Guide: docs/shared-arrow.md, "Know which columns a write moved".
+
+### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
+
+**Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and
+`three_scope_visibility_clause` wraps over it) admitted a row through an assignment of ANY role. A narrow role bound
+at scope `all` -- one action on one system namespace -- showed its holder every customer's rows of every listed
+type. Each scope arm now also reads the role, as `Role.actions_for` reads it (a non-empty action list under the
+type's bucket or the `*` bucket; a `permissions` value stored as a JSON string decoded as the role collection
+decodes it):
+
+- scope `all` and `type_customer` admit only through a role granting an action on the listed type;
+- scope `namespace` admits its customer only through a role granting an action on that namespace's own type. A
+  customer admin's grant on the customer namespace still opens every list of its customer; a role bound where it
+  grants nothing opens nothing.
+
+The signature is unchanged; a caller passes the listed type as before. What a caller sees can only narrow, and
+only through grants whose role does nothing where its scope points: every built-in role the hub seeds keeps its
+reach.
+
+**Changed (breaking):** `caller_visible_customers_query` takes `scope_namespace_type`, keyword-only and required,
+and returns two binds (the caller, then the type). The RLS set is now one type's, its arms read the role as the
+per-row clause does, and a `type_customer` grant adds its customer only for its own type, as the per-row clause
+always required. No released consumer calls it.
+
+### nats: a move off a lame-duck server loses nothing as the server closes the old connection
+
+**Fixed:** a client moving off a server in lame-duck mode kept each subscription's old half in its queue group
+for the longest request (30 s by default), past the server's grace period, so the server closed the old
+connection with the member still in its group, and a message being routed to it at that moment was lost (the CI
+`integration` job's `test_a_lame_duck_server_hands_its_clients_over_without_losing_anything`, one feed message
+in some runs; reproduced on two local servers, the lost message published within a millisecond of the close). The
+old half now leaves after one second, well inside nats-server's default 10 s grace
+and two orders of magnitude past the delivery lag the hold exists for. A credential renewal's hold is unchanged.
+
+**Fixed:** a connection replaced by a renewal or a lame-duck move reconnected when its server dropped it, replaying
+every subscription it still held on another server: each rejoined its group as a member, took a share of its
+messages, and lost what was being routed to it when the connection retired. A replaced connection now closes when
+its server drops it; its subscriptions are already on the successor. A leaving member whose connection closed first
+sends no `UNSUB` (the server dropped it with the connection) instead of logging a failure. The trade: a request still
+waiting on a replaced connection when its server drops it gets no reply and times out, and a reply still owed there
+leaves on the current connection.
+
+**Fixed:** a reconnect could retry one dead server forever. nats-py shuffles the server pool once per reconnect and
+passes it in the same order on every attempt, and the client's reconnect handler always took the first server, so
+a client whose shuffle put a dead server first (a node that left, a lame-duck server that closed its listener)
+never tried the live servers beside it: 2 of 12 local runs stayed on a killed server for 20 s, where 12 of 12 now
+fail over within about a second. The handler now takes the server tried least since it last connected, ties by the
+pool's order, so each failure moves it on as nats-py's own round-robin does. The delay is still keyed on the selected
+server's own count, so with every server of an N-server pool down it reaches its cap after about N times as many
+attempts; each server still sees its own retries back off exponentially.
+
 ### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
 
 **Added:** `web/`, the family's browser packages, published to npm as `@3tears/web-<name>` at the

@@ -107,7 +107,6 @@ from threetears.nats import (
     nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
-    set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError, PublishError, RequestError, SubscribeError
 from threetears.observe import (
@@ -1544,7 +1543,7 @@ class ToolServer:
         # to be stable across restarts and distinct per pod identity, and the
         # subject already is both -- it carries the pod id, so two DIFFERENT tool
         # pods never share a group and a restarted replica rejoins its own.
-        call_subject = Subjects.tools_internal(self._pod_id)
+        call_subject = Subjects.tools_internal(self._pod_id, namespace=self._namespace)
         # concurrent: a slow call never holds the calls behind it (:data:`CALLS_IN_FLIGHT`)
         assert self._nc is not None  # serve() connected first
         subscription = await self._subscribe_or_drop(
@@ -1594,7 +1593,7 @@ class ToolServer:
         :rtype: None
         """
         await self._answering_held.wait()
-        call_subject = Subjects.tools_internal(self._pod_id)
+        call_subject = Subjects.tools_internal(self._pod_id, namespace=self._namespace)
         queue = f"{call_subject.path}{HELD_QUEUE_SUFFIX}"
         while self._call_state is _CallState.HELD and self._running:
             try:
@@ -1909,14 +1908,10 @@ class ToolServer:
                     }
                 },
             )
-        # the server's configured ``namespace`` is the one that must
-        # appear on every subject built below. when the server opens
-        # its own connection :class:`NatsClient.connect` already binds
-        # the prefix; when a caller injects a pre-connected client, we
-        # bind here so :class:`Subjects` builders pick up the same
-        # prefix the server was constructed with rather than whatever
-        # the injected client picked up at connect time.
-        set_default_namespace(self._namespace)
+        # every subject this server builds names its own ``namespace`` explicitly: it never reads or writes the
+        # process's default. Written here (and on every registration) it let the last of two servers in one process
+        # win the global, and the other's subjects land in that one's namespace (the hub's NoRespondersError on
+        # ``intg_*.tools.discover``, a pod left over from an earlier test, 2026-11-18)
         self._running = True
 
         # self-provision the pod's verifier dependencies over this connection: a Hub-JWKS provider
@@ -2023,7 +2018,7 @@ class ToolServer:
         if self._call_state is _CallState.STARTING:
             await self._subscribe_calls()
 
-        probe_subject = Subjects.tools_probe(self._pod_id)
+        probe_subject = Subjects.tools_probe(self._pod_id, namespace=self._namespace)
         # sender-posture: read-only -- answers a probe ack and nothing else
         await self._nc.subscribe(subject=probe_subject, queue=probe_subject.path, cb=self.handle_probe)
         log.info(
@@ -2192,7 +2187,7 @@ class ToolServer:
                     )
                 )
                 response = await self._nc.request(
-                    subject=Subjects.tools_discover(),
+                    subject=Subjects.tools_discover(namespace=self._namespace),
                     message=request,
                     response_type=DiscoveryProbeResponse,
                     timeout=request_timeout,
@@ -2357,12 +2352,6 @@ class ToolServer:
         nc = self._nc
         if nc is None:
             raise RuntimeError("publish_registration called before NATS connected")
-        # idempotent re-bind so :class:`Subjects` builders below render
-        # against this server's configured namespace even when callers
-        # invoke :meth:`publish_registration` directly without going
-        # through :meth:`serve` (e.g. dynamic register_tool / deregister_tool
-        # flows on a server constructed with an injected nats_client).
-        set_default_namespace(self._namespace)
         tools_list: list[ToolManifestEntry] = []
         for tool in self._tools.values():
             schema = tool.mcp_schema()
@@ -2424,7 +2413,7 @@ class ToolServer:
             proves_delegation=self._proves_delegation(),
         )
 
-        subject = Subjects.tools_register()
+        subject = Subjects.tools_register(namespace=self._namespace)
         reply: RegistrationResponse | None = None
         if await_reply:
             reply = await self._register_and_read_reply(nc, subject, manifest)
@@ -4062,7 +4051,7 @@ class ToolServer:
         nc = self._nc
         if nc is None:
             raise RuntimeError("_heartbeat_loop started before NATS connected")
-        subject = Subjects.tools_heartbeat(self._pod_id)
+        subject = Subjects.tools_heartbeat(self._pod_id, namespace=self._namespace)
         consecutive_unhealthy = 0
         while self._running:
             heartbeat = HeartbeatMessage(

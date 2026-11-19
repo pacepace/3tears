@@ -281,11 +281,24 @@ async def test_a_put_past_the_bound_is_refused_whole_and_leaves_no_chunk(nats_co
         assert await store.list_names() == ["kept"]
 
 
+async def test_several_puts_too_big_together_are_refused_before_any_is_written(nats_container: str) -> None:
+    """each fits on its own, not together: refused up front, the store holding what it held."""
+    namespace = _namespace()
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="objects"
+    ) as nc:
+        store = await nc.ensure_object_store(name="objects", max_bytes=2 * 1024 * 1024)
+        before = await store.bytes_held()
+        with pytest.raises(ObjectStoreFullError, match="'a' and 2 more objects"):
+            await store.require_room([("a", 900_000), ("b", 900_000), ("c", 900_000)])
+        assert await store.require_room([("a", 900_000), ("b", 900_000)]) > 1_800_000
+        assert await store.bytes_held() == before
+        assert await store.require_room([]) == 0
+
+
 async def test_the_room_a_put_asks_for_is_what_the_server_counts(nats_container: str) -> None:
     """the room asked for covers what the stream holds after the put, and by little more: a put that fits is
     never refused for an estimate far above the server's count."""
-    from threetears.nats.object_store import stored_bytes_of_put
-
     namespace = _namespace()
     async with await NatsClient.connect(
         nats_url=nats_container, nats_subject_namespace=namespace, client_name="objects"
@@ -293,7 +306,7 @@ async def test_the_room_a_put_asks_for_is_what_the_server_counts(nats_container:
         store = await nc.ensure_object_store(name="objects", max_bytes=8 * 1024 * 1024)
         for size in (0, 17, 300_000, 3 * 1024 * 1024 + 5):
             before = await store.bytes_held()
+            asked = await store.require_room([(f"o{size}", size)])
             info = await store.put(f"o{size}", os.urandom(size))
             grown = await store.bytes_held() - before
-            asked = stored_bytes_of_put(store.name, f"o{size}", size, chunks=info.chunks, nuid_length=32)
             assert grown <= asked <= grown + 512 + 64 * info.chunks, (size, grown, asked)

@@ -96,7 +96,8 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         await held.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
         role = uuid.uuid4()
         await held.execute(
-            "INSERT INTO roles (role_id, name, description, permissions) VALUES ($1, 'r', 'r', '[]'::jsonb)", role
+            "INSERT INTO roles (role_id, name, description, permissions) VALUES ($1, 'r', 'r', '{\"*\": [\"read\"]}'::jsonb)",
+            role,
         )
         await held.execute(
             "INSERT INTO groups (row_scope, group_id, customer_id, name)"

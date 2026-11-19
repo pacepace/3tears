@@ -136,6 +136,16 @@ def process_id(context: JobContext) -> int:
     return os.getpid()
 
 
+def process_name(context: JobContext) -> str:
+    """the worker's name as Linux says it (``/proc/self/comm``); empty elsewhere.
+
+    :return: the name
+    :rtype: str
+    """
+    comm = Path("/proc/self/comm")
+    return comm.read_text(encoding="utf-8").strip() if comm.exists() else ""
+
+
 def process_and_parent(context: JobContext) -> tuple[int, int]:
     """the worker's process id and its parent's (the fork server's, for a pool's worker).
 

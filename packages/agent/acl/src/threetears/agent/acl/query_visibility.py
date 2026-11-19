@@ -11,18 +11,33 @@ architecture:
 
 a row at customer_id ``X`` is visible to caller user ``$U`` iff
 ``$U`` is a member of any group with at least one ``role_assignments``
-row whose scope admits ``X``:
+row whose scope admits ``X`` and whose ROLE grants an action where that
+scope needs one.
 
-- ``scope_type='all'`` admits every customer
+"grants an action on a type" mirrors :meth:`threetears.agent.acl.Role.actions_for`:
+the role's ``permissions`` carries a non-empty action list under the type's
+bucket or under the ``*`` wildcard bucket. the evaluator never authorizes an
+action through a role that carries none on the type.
+
+- ``scope_type='all'`` admits every customer, when the role grants an
+  action on the LISTED type. a fleet-wide grant reaches every customer's
+  rows only of the types its role acts on; without this, a narrow role
+  (one action on one system namespace) bound at ``all`` showed its holder
+  every customer's rows of every type.
 - ``scope_type='type_customer'`` with ``scope_customer_id=X`` AND
   ``scope_namespace_type`` matching the LISTED entity's namespace type
-  admits ``X`` for rows of that type only. a ``type_customer`` grant is
-  scoped to ONE namespace type within the customer (see
-  :meth:`threetears.agent.acl.RoleAssignment.covers`); dropping the type
-  predicate would let a grant on one type (e.g. ``datasource``) expose
-  every other type's rows in the same customer.
+  admits ``X`` for rows of that type only, when the role grants an action
+  on that type. a ``type_customer`` grant is scoped to ONE namespace type
+  within the customer (see :meth:`threetears.agent.acl.RoleAssignment.covers`);
+  dropping the type predicate would let a grant on one type (e.g.
+  ``datasource``) expose every other type's rows in the same customer.
 - ``scope_type='namespace'`` with ``scope_namespace_id`` whose
-  namespace's ``customer_id=X`` admits ``X``
+  namespace's ``customer_id=X`` admits ``X``, when the role grants an
+  action on THAT namespace's own type. a namespace grant is membership in
+  its customer: a customer admin's grant on the customer namespace opens
+  every list of that customer, which is the admin model the hub's routes
+  gate on. a role bound where it grants nothing is no grant, and admits
+  nothing.
 - ``scope_type='subtree'`` admits NO customer here, deliberately. that
   scope names a node in the namespace-NAME space, and the shapes it is
   written against -- ``tools.*`` rows -- carry ``customer_id IS NULL``,
@@ -31,9 +46,16 @@ row whose scope admits ``X``:
   on the strength of a grant that never mentioned one.
 
 the generator emits an ``EXISTS`` subquery joining
-``role_assignments`` + ``group_members`` + ``namespaces``, parameterised
+``role_assignments`` + ``roles`` + ``group_members`` + ``namespaces``, parameterised
 by the caller's user_id. composes additively with other WHERE clauses
 via the ``param_offset`` knob (caller passes the next $N to allocate).
+
+the subquery's own aliases -- ``ra``, ``vis_role``, ``gm`` and ``gm2``...,
+``ns``, ``vis_bucket`` -- shadow a caller's alias of the same name inside
+it, so the caller's ``customer_id_column`` must not name one. the role
+join is ``vis_role`` rather than ``r`` because callers alias their own
+listed table ``r`` (``dataset_runs r``): a short alias here would turn
+``r.customer_id`` into the role's NULL customer and admit nothing.
 
 the result IS a cache-bypass per CLAUDE.md cache primitive rule -- the
 generator builds raw SQL the consuming collection runs through its
@@ -58,7 +80,7 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH, WILDCARD_RESOURCE_TYPE
 
 __all__ = [
     "caller_visible_customer_clause",
@@ -97,6 +119,37 @@ def _caller_membership_predicate(param_offset: int) -> str:
     :rtype: str
     """
     return _member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1, param_offset)
+
+
+def _role_grants_type_predicate(type_sql: str) -> str:
+    """render the granting role carries an action on a type, as the evaluator reads it.
+
+    mirrors :meth:`threetears.agent.acl.Role.actions_for` over the ``vis_role`` alias (the
+    ``roles`` row joined on ``ra.role_id``): a non-empty action array under the
+    type's bucket, or under the ``*`` wildcard bucket. the role collection decodes a
+    ``permissions`` value stored as a JSON string (a double-encoded write) the same
+    as an object, and skips a bucket that is not a list, so the predicate does both;
+    a clause that read only the object form would hide rows the evaluator grants. the
+    emptiness test is a comparison rather than ``jsonb_array_length``: SQL does not
+    short-circuit ``AND``, and the length function raises on a scalar bucket.
+
+    :param type_sql: SQL naming the type: a ``$N`` placeholder bound to the listed
+        type, or a trusted column reference such as ``ns.namespace_type``; never user input
+    :ptype type_sql: str
+    :return: boolean SQL expression over the ``vis_role`` join alias
+    :rtype: str
+    """
+    permissions = "(CASE WHEN jsonb_typeof(vis_role.permissions) = 'string' THEN (vis_role.permissions #>> '{}')::jsonb ELSE vis_role.permissions END)"
+    wildcard = WILDCARD_RESOURCE_TYPE.replace("'", "''")
+    return f"""EXISTS (
+                SELECT 1
+                  FROM jsonb_each(
+                        CASE WHEN jsonb_typeof({permissions}) = 'object' THEN {permissions} ELSE '{{}}'::jsonb END
+                       ) vis_bucket
+                 WHERE vis_bucket.key IN ({type_sql}, '{wildcard}')
+                   AND jsonb_typeof(vis_bucket.value) = 'array'
+                   AND vis_bucket.value <> '[]'::jsonb
+            )"""
 
 
 def _member_reaches_caller(alias: str, edges_left: int, param_offset: int) -> str:
@@ -142,19 +195,23 @@ def caller_visible_customer_clause(
     (``$param_offset = caller_user_id`` and
     ``$(param_offset + 1) = scope_namespace_type``).
 
-    rows admitted when the caller has any role assignment whose
-    scope covers the row's customer:
+    rows admitted when the caller has any role assignment whose scope
+    covers the row's customer and whose role grants an action (its type's
+    bucket or the ``*`` bucket, as :meth:`Role.actions_for` reads it)
+    where that scope needs one:
 
-    - scope_type='all' (platform admin) -> every customer admitted
+    - scope_type='all' (platform admin), role grants on
+      ``scope_namespace_type`` -> every customer admitted
     - scope_type='type_customer' AND scope_customer_id = row's
-      customer_id AND scope_namespace_type = ``scope_namespace_type``
-      -> that customer admitted for rows of the listed type only. a
-      ``type_customer`` grant is scoped to ONE namespace type within the
-      customer, so the type predicate keeps a grant on one type (e.g.
-      ``datasource``) from exposing rows of every OTHER type in the same
-      customer. mirrors :meth:`RoleAssignment.covers`.
+      customer_id AND scope_namespace_type = ``scope_namespace_type``,
+      role grants on that type -> that customer admitted for rows of the
+      listed type only. a ``type_customer`` grant is scoped to ONE
+      namespace type within the customer, so the type predicate keeps a
+      grant on one type (e.g. ``datasource``) from exposing rows of every
+      OTHER type in the same customer. mirrors :meth:`RoleAssignment.covers`.
     - scope_type='namespace' AND namespace's customer_id matches the
-      row's customer_id -> that customer admitted
+      row's customer_id, role grants on the namespace's own type -> that
+      customer admitted
 
     a customer admin assigned to multiple customers' admin namespaces
     sees ALL their authorized customers' rows (not just their JWT
@@ -171,9 +228,10 @@ def caller_visible_customer_clause(
     :ptype customer_id_column: str
     :param scope_namespace_type: namespace type that governs the entity
         being listed (e.g. ``"api_key"``, ``"tool"``, ``"knowledge"``,
-        ``"customer"``). bound as a value, NOT embedded; constrains the
-        ``type_customer`` arm so a per-type customer grant admits only
-        rows of its own type.
+        ``"customer"``). bound as a value, NOT embedded; the ``all`` and
+        ``type_customer`` arms admit only through a role granting an
+        action on this type, and it constrains the ``type_customer`` arm
+        so a per-type customer grant admits only rows of its own type.
     :ptype scope_namespace_type: str
     :param param_offset: 1-based position of the FIRST ``$N``
         placeholder this fragment uses. callers building a multi-clause
@@ -189,19 +247,24 @@ def caller_visible_customer_clause(
     """
     # v0.8.0 PK column rename: namespaces.id -> namespaces.namespace_id;
     # the JOIN condition follows.
+    listed_grant = _role_grants_type_predicate(f"${param_offset + 1}")
     fragment = f"""EXISTS (
         SELECT 1
           FROM role_assignments ra
+          JOIN roles vis_role ON vis_role.role_id = ra.role_id
           JOIN group_members gm ON gm.group_id = ra.group_id
           LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
          WHERE {_caller_membership_predicate(param_offset)}
            AND (
-                ra.scope_type = 'all'
+                (ra.scope_type = 'all'
+                 AND {listed_grant})
              OR (ra.scope_type = 'type_customer'
                  AND ra.scope_customer_id = {customer_id_column}
-                 AND ra.scope_namespace_type = ${param_offset + 1})
+                 AND ra.scope_namespace_type = ${param_offset + 1}
+                 AND {listed_grant})
              OR (ra.scope_type = 'namespace'
-                 AND ns.customer_id = {customer_id_column})
+                 AND ns.customer_id = {customer_id_column}
+                 AND {_role_grants_type_predicate("ns.namespace_type")})
            )
     )"""
     return fragment, [user_id, scope_namespace_type]

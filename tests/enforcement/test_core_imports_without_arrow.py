@@ -55,6 +55,9 @@ _ARROW_MODULES: dict[str, str] = {
         "the change-note keeper: its restore folds through change_note_fold; run by the hub alone"
     ),
     "threetears.core.testing.note_ring": "test support installing the ring through ChangeNoteKeeper.install",
+    "threetears.core.arrow_keys": (
+        "Arrow rows matched by a key in Arrow's hash kernels (never Acero): Arrow tables in, NumPy row numbers out"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``

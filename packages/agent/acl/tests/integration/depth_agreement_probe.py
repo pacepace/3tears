@@ -133,10 +133,18 @@ async def _seed_chain(conn: asyncpg.Connection, groups: int, user_id: uuid.UUID,
     """
     chain = [uuid.uuid4() for _ in range(groups)]
     await conn.execute("INSERT INTO listed_things (thing_id, customer_id) VALUES ($1, $2)", uuid.uuid4(), customer_id)
+    # the clause reads the granting role's permissions, so the row the evaluator is handed as
+    # READER is the row the SQL reads.
     await conn.execute(
-        "INSERT INTO role_assignments (assignment_id, group_id, scope_type, scope_customer_id, scope_namespace_type) "
-        "VALUES ($1, $2, 'type_customer', $3, 'thing')",
+        "INSERT INTO roles (role_id, permissions) VALUES ($1, $2::text::jsonb) ON CONFLICT (role_id) DO NOTHING",
+        READER.id,
+        json.dumps({bucket: sorted(actions) for bucket, actions in READER.permissions.items()}),
+    )
+    await conn.execute(
+        "INSERT INTO role_assignments (assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type) VALUES ($1, $2, $3, 'type_customer', $4, 'thing')",
         uuid.uuid4(),
+        READER.id,
         chain[-1],
         customer_id,
     )

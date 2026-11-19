@@ -62,6 +62,7 @@ from threetears.agent.acl.types import (
     Role,
     RoleAssignment,
     ScopeType,
+    decode_role_permissions,
 )
 from threetears.agent.acl.types import Namespace as AclNamespace
 from threetears.core import keyed as k
@@ -178,33 +179,6 @@ def _coerce_uuid(raw: Any) -> UUID | None:
             result = raw
         else:
             result = UUID(str(raw))
-    return result
-
-
-def _coerce_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
-    """coerce a JSONB ``permissions`` payload into ``{resource: frozenset(action)}``.
-
-    asyncpg returns JSONB columns either as a parsed ``dict`` (when
-    the connection has the JSONB codec registered) or as the raw
-    ``str``; both shapes land here and normalize to the dataclass-
-    friendly mapping that :class:`Role` expects.
-
-    :param raw: raw JSONB column value as returned by asyncpg
-    :ptype raw: Any
-    :return: normalized permissions mapping
-    :rtype: dict[str, frozenset[str]]
-    """
-    parsed: dict[str, Any] = {}
-    if isinstance(raw, dict):
-        parsed = raw
-    elif isinstance(raw, str) and raw:
-        loaded = _json.loads(raw)
-        if isinstance(loaded, dict):
-            parsed = loaded
-    result: dict[str, frozenset[str]] = {}
-    for resource_type, actions in parsed.items():
-        if isinstance(actions, list):
-            result[resource_type] = frozenset(str(a) for a in actions)
     return result
 
 
@@ -1217,7 +1191,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
                 Role(
                     id=_coerce_uuid(row["role_id"]),  # type: ignore[arg-type]
                     name=row["name"],
-                    permissions=_coerce_role_permissions(row["permissions"]),
+                    permissions=decode_role_permissions(row["permissions"]),
                     is_built_in=bool(row["is_builtin"]),
                     customer_id=_coerce_uuid(row["customer_id"]),
                 )

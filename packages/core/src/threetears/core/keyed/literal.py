@@ -25,7 +25,7 @@ from threetears.core.keyed._filters import (
     selected_column,
 )
 from threetears.core.sql_fragments import quote_identifier
-from threetears.interfaces.keyed.filters import PLACEHOLDER
+from threetears.interfaces.keyed.filters import each_placeholder
 
 __all__ = ["literal_select", "literal_upsert"]
 
@@ -98,7 +98,8 @@ def literal_select(
         conditions.append(narrowing(fragment, len(values)))
         values.extend(fragment.params)
     text = " AND ".join(conditions)
-    written = PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)
+    # a placeholder only, never a $n inside a filter's own literal (a race named 'over $1 billion')
+    written = each_placeholder(text, lambda number: _sql_literal(values[number - 1]))
     selected = ", ".join(selected_column(column, alias) for column in columns)
     return f"SELECT {selected} FROM {_filters.relation(relation, alias)} WHERE {written}"  # noqa: S608 - TRUSTED names; literals
 

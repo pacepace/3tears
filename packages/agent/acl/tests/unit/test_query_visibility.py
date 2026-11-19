@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
@@ -282,6 +282,24 @@ def test_three_scope_columns_embedded_verbatim() -> None:
     assert "(ec.user_id IS NULL OR ec.user_id = $1)" in fragment
 
 
+def test_the_clause_admits_only_a_role_that_grants_where_its_scope_needs() -> None:
+    """the role predicates ride the clause: the listed type's, and the bound namespace's own.
+
+    a fleet-wide or per-type grant admits through a role granting on the listed type; a namespace
+    grant through a role granting on the namespace it is bound to. an assignment failing its arm's
+    predicate admits no row: the semantics are proved against a real database in
+    ``integration/test_query_visibility_roles.py`` (beside :func:`visible_customers`, which reads
+    the same roles); this pins that the generator does not drop the predicate.
+    """
+    fragment, _ = caller_visible_customer_clause(
+        user_id=uuid4(), customer_id_column="t.customer_id", scope_namespace_type="thing", param_offset=4
+    )
+    assert "JOIN roles vis_role ON vis_role.role_id = ra.role_id" in fragment
+    assert "vis_bucket.key IN ($5, '*')" in fragment
+    assert "vis_bucket.key IN (ns.namespace_type, '*')" in fragment
+    assert "vis_bucket.value <> '[]'::jsonb" in fragment
+
+
 def test_caller_clause_reaches_through_one_nesting_level() -> None:
     """the fragment carries the group-hop arm, and it binds the same caller.
 
@@ -362,9 +380,17 @@ class _Tables:
                             for key in ("scope_type", "scope_customer_id", "scope_namespace_type", "scope_namespace_id")
                         },
                         "namespace_customer_id": self.namespaces.get(namespace) if namespace is not None else None,
+                        # the bound namespace's own type, and the role each grant binds (a reader on every type unless
+                        # the grant names its own): the set counts a grant only through a role acting where it needs
+                        "namespace_type": "customer" if namespace in self.namespaces else None,
+                        "role_permissions": grant.get("role_permissions", _READER) if grant else None,
                     }
                 )
         return rows
+
+
+#: the role a double's grant binds unless it names its own: a reader on every type
+_READER: Final = {"*": ["read"]}
 
 
 def _grant(group: UUID, scope_type: str, **values: Any) -> dict[str, Any]:

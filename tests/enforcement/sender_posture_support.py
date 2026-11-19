@@ -33,7 +33,7 @@ SENDER_POSTURE_CONFIG = SenderPostureConfig(
     primitive_functions=frozenset(
         {
             "packages/nats/src/threetears/nats/client.py::Subscription.subscribe_on",
-            "packages/nats/src/threetears/nats/client.py::NatsClient.renew_connection",
+            "packages/nats/src/threetears/nats/client.py::NatsClient._renew_connection",
             "packages/nats/src/threetears/nats/client.py::NatsClient._subscribe_internal",
             "packages/nats/src/threetears/nats/client.py::NatsClient.jetstream_subscribe_durable._bind",
             "packages/nats/src/threetears/nats/client.py::NatsClient.jetstream_pull_subscribe._bind",

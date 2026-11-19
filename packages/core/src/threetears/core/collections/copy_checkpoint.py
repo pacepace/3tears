@@ -24,7 +24,9 @@ added. A table is read whole from the copy only when no checkpoint holds it (its
 changed, or the follower read it whole from L3 (a cold start, reset or schema change), each counted in
 ``copy_checkpoint_whole_writes_total{table, why}``. A replica whose last checkpoint's parts are no longer named by the
 newest or the previous checkpoint (another replica wrote twice since) writes no checkpoint: it never rewrites whole
-what the newest already holds. A write runs under a lock and a write claim in the pointer bucket and moves the pointer
+what the newest already holds. A write reads and encodes all its new parts before it puts the first, and asks the
+Object Store for their room together: refused up front (``ObjectStoreFullError``, nothing written) when it has none,
+never part way. A write runs under a lock and a write claim in the pointer bucket and moves the pointer
 by compare-and-set. A failed or beaten write retires only its own new objects and keeps what it was asked to write for
 the next one. When the pointer moves, the checkpoint before the previous one is retired, never an object the newest
 or the previous names.
@@ -462,7 +464,8 @@ class CopyCheckpoints:
     :ptype tables: Sequence[FollowedTable]
     :param backend: the copy (each table's schema digest is recorded beside its parts)
     :ptype backend: DuckDBBackend
-    :param store: the Object Store: ``put``, ``get``, ``list_names``
+    :param store: the Object Store: ``put``, ``get``, ``list_names``, and ``require_room`` (a write asks it for all its
+        new parts' room before it puts the first: :meth:`threetears.nats.object_store.NatsObjectStore.require_room`)
     :ptype store: Any
     :param pointers: the pointer bucket: ``get_entry``, ``create``, ``update``, ``delete``, ``list_keys``
     :ptype pointers: Any
@@ -933,8 +936,14 @@ class CopyCheckpoints:
                         return None
                     plans.append(plan)
                 kind = "incremental" if any(plan.prior is not None for plan in plans) else "full"
+                # every new part read and encoded before the first is put, and their room asked for together: put as
+                # each was encoded, a checkpoint the store had no room for was refused part way, after some of its
+                # parts were written (then retired), and the next write met the same. The encoded parts are held
+                # until put (zstd Arrow IPC, the copy's rows compressed), so the copy is read once, as before: read
+                # twice instead (once to measure, once to put), every write would read and encode its rows twice
+                pending: list[tuple[str, bytes]] = []
                 for plan in plans:
-                    parts = await self._write_table(cursor, plan, seq, written, (lock, claim))
+                    parts = await self._write_table(cursor, plan, seq, pending, (lock, claim))
                     derived = self._derived(plan.table.name)
                     tables[plan.table.name] = CheckpointTable(
                         mark=None if derived else marks[plan.table.name],
@@ -942,6 +951,8 @@ class CopyCheckpoints:
                         parts=parts,
                         derived=derived,
                     )
+                await self._store.require_room([(name, len(data)) for name, data in pending])
+                await self._put_pending(pending, written, (lock, claim))
                 followed = {t.name for t in self._tables}
                 for name, entry in (newest.tables if newest is not None else {}).items():
                     if name not in followed:
@@ -1015,7 +1026,7 @@ class CopyCheckpoints:
         return None
 
     async def _write_table(
-        self, cursor: Any, plan: _Plan, seq: int, written: list[str], keys: tuple[str, str]
+        self, cursor: Any, plan: _Plan, seq: int, pending: list[tuple[str, bytes]], keys: tuple[str, str]
     ) -> tuple[tuple[str, str | None, int], ...]:
         """one table's parts: read whole from the read (its cold start, a schema change, or a whole read of it), or
         its touched scopes read again by scope, or its one part patched by the touched keys; every other part named
@@ -1029,14 +1040,14 @@ class CopyCheckpoints:
         if prior is None:
             read = WHOLE_WRITE_READS[plan.kind]
             reader = await asyncio.to_thread(read, cursor, table.name, self._part_rows)
-            parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, written, keys)
+            parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, pending, keys)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
         if table.scope is None:
             if not plan.keys:
                 return prior.parts
             patched = await self._patch(cursor, table, prior, sorted(plan.keys))
-            parts = await self._put_parts(iter([(None, patched)]), table.name, seq, written, keys)
+            parts = await self._put_parts(iter([(None, patched)]), table.name, seq, pending, keys)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
         kept = [part for part in prior.parts if part[1] not in plan.scopes]
@@ -1049,7 +1060,7 @@ class CopyCheckpoints:
             if not scope.startswith(prefix):
                 continue
             batches = _scope_rows(cursor, table.name, column, cast, scope, scope[len(prefix) :], self._part_rows)
-            fresh.extend(await self._put_parts(batches, table.name, seq, written, keys))
+            fresh.extend(await self._put_parts(batches, table.name, seq, pending, keys))
         order = sorted({part[1] or "" for part in [*kept, *fresh]})
         return tuple(part for scope in order for part in [*kept, *fresh] if (part[1] or "") == scope)
 
@@ -1089,10 +1100,11 @@ class CopyCheckpoints:
         batches: Iterator[tuple[str | None, Any]],
         table: str,
         seq: int,
-        written: list[str],
+        pending: list[tuple[str, bytes]],
         keys: tuple[str, str],
     ) -> list[tuple[str, str | None, int]]:
-        """store each (scope, batch) as one part of that scope, renewing the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
+        """encode each (scope, batch) as one part of that scope, held in ``pending`` until the write puts them all
+        (:meth:`_put_pending`), renewing the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
 
         :return: the parts
         :rtype: list[tuple[str, str | None, int]]
@@ -1109,14 +1121,38 @@ class CopyCheckpoints:
             n = counts.get(scope, 0)
             counts[scope] = n + 1
             name = f"{self.base}/{seq}/{self._owner}/{table}/{_scope_segment(scope)}/{n}"
-            await self._store.put(name, data)
-            written.append(name)
+            pending.append((name, data))
             parts.append((name, scope, rows))
             if time.monotonic() - renewed >= _RENEW_EVERY_SECONDS:
                 for key in keys:
                     await self._renew(key)
                 renewed = time.monotonic()
         return parts
+
+    async def _put_pending(self, pending: list[tuple[str, bytes]], written: list[str], keys: tuple[str, str]) -> None:
+        """put each encoded part, in order, each named in ``written`` once put (a failed write retires those), renewing
+        the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
+
+        :param pending: each part's name and bytes
+        :ptype pending: list[tuple[str, bytes]]
+        :param written: the parts put so far
+        :ptype written: list[str]
+        :param keys: the lock and claim
+        :ptype keys: tuple[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        renewed = time.monotonic()
+        # taken from the end of the list reversed: each part's bytes let go as it is put
+        pending.reverse()
+        while pending:
+            name, data = pending.pop()
+            await self._store.put(name, data)
+            written.append(name)
+            if time.monotonic() - renewed >= _RENEW_EVERY_SECONDS:
+                for key in keys:
+                    await self._renew(key)
+                renewed = time.monotonic()
 
     async def _renew(self, key: str) -> None:
         """keep a lock or claim alive while the write goes on.

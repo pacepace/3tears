@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
@@ -24,6 +25,15 @@ def _pid_and(value: bytes) -> tuple[int, bytes]:
     :rtype: tuple[int, bytes]
     """
     return os.getpid(), value[::-1]
+
+
+def _comm() -> str:
+    """
+    :return: this process's name as Linux says it (``/proc/self/comm``); empty elsewhere
+    :rtype: str
+    """
+    comm = Path("/proc/self/comm")
+    return comm.read_text(encoding="utf-8").strip() if comm.exists() else ""
 
 
 def _an_object() -> object:
@@ -65,6 +75,24 @@ async def workers() -> AsyncIterator[ProcessWorkers]:
         yield made
     finally:
         await made.close()
+
+
+async def test_a_pool_s_workers_carry_the_name_it_gives_them() -> None:
+    """Flips if a worker of a pool given ``process_name`` does not name itself so as it starts (Linux, cut to 15
+    bytes), or a worker of a pool given none takes a name: every worker the fork server forks has its command line,
+    so the name is what an operator's fault aims at one pool's workers by."""
+    named = ProcessWorkers(workers=1, name="test", process_name="tt-a-named-worker")
+    plain = ProcessWorkers(workers=1, name="test")
+    try:
+        comms = (await named.run(_comm), await plain.run(_comm))
+    finally:
+        await named.close()
+        await plain.close()
+    if sys.platform.startswith("linux"):
+        assert comms[0] == "tt-a-named-work"
+        assert comms[1] != comms[0]
+    else:
+        assert comms == ("", "")
 
 
 class TestPlainData:

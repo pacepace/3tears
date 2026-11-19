@@ -138,6 +138,25 @@ def test_a_text_numeric_is_stored_as_its_dict_row_is(backend: Any) -> None:
     assert stored.column("share").to_pylist() == [Decimal("0.5000"), Decimal("1.5000"), Decimal("2.1235"), None]
 
 
+def test_the_last_row_of_each_key_is_stored_in_row_order(backend: Any) -> None:
+    """Flips if storage_arrow keeps any row but the last of a key, or reorders the rows it keeps, as a batch of dict
+    rows keeps them (by Arrow's hash kernels: threetears.core.arrow_keys.last_rows, never an Acero group_by)."""
+    rows = pa.Table.from_pylist(
+        [
+            {"id": "a", "share": "1"},
+            {"id": "b", "share": "2"},
+            {"id": "a", "share": "3"},
+            {"id": "c", "share": "4"},
+            {"id": "b", "share": "5"},
+        ]
+    )
+    _, stored = backend.storage_arrow("shares", rows, "id")
+    assert stored.column("id").to_pylist() == ["a", "c", "b"]
+    assert stored.column("share").to_pylist() == [Decimal("3.0000"), Decimal("4.0000"), Decimal("5.0000")]
+    _, unique = backend.storage_arrow("shares", rows, "id", unique_keys=True)
+    assert unique.num_rows == 5
+
+
 def test_text_numerics_the_cast_takes_are_typed_in_arrow(backend: Any) -> None:
     rows = pa.Table.from_pylist([{"id": "a", "share": "0.5000"}, {"id": "b", "share": "1.5"}])
     _, stored = backend.storage_arrow("shares", rows, "id")

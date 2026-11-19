@@ -85,6 +85,10 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; bulk writes bind value by value without it, said once
     _PYARROW = False
 
+if _PYARROW:
+    # 3tears' own module, outside the try: a failure to import it is a failure, never "no Arrow here"
+    from threetears.core.arrow_keys import last_rows
+
 
 log = get_logger(__name__)
 
@@ -1377,11 +1381,12 @@ class DuckDBBackend:
         if absent:
             raise KeyError(absent[0])
         if rows.num_rows and key and not unique_keys:
-            # the last row of each key, as a batch of dict rows keeps it
-            indexed = rows.select(key).append_column("__row", pa.array(range(rows.num_rows), pa.int64()))
-            last = indexed.group_by(key, use_threads=False).aggregate([("__row", "max")]).column("__row_max")
+            # the last row of each key, as a batch of dict rows keeps it: by Arrow's hash kernels, never an Acero
+            # group_by, whose DeclarationToTable can answer a null table with an OK status (reports SG1, 2026-11-18;
+            # threetears.core.arrow_keys has the account)
+            last = last_rows(rows, key)
             if len(last) != rows.num_rows:
-                rows = rows.take(pa.array(sorted(last.to_pylist()), pa.int64()))
+                rows = rows.take(pa.array(last, pa.int64()))
         stored = [self._stored_column(rows.column(c), schema.get(c, "VARCHAR")) for c in columns]
         return columns, pa.table(dict(zip(columns, stored, strict=True))) if columns else pa.table({})
 

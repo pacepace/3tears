@@ -19,6 +19,7 @@ YugabyteDB). What these prove:
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import time
 import uuid
@@ -425,8 +426,12 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
             columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("owner", STRING_TYPE, nullable=True)],
             l1_eviction=TEST_L1_TABLE,
         )
-        # a class this process defines: noted_tables() names its table from here on
-        type(f"Hooked_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
+        # a class this process defines: noted_tables() names its table from here on, while the class lives. The
+        # registry holds classes weakly, so the test holds it: unheld, a garbage collection in a busy worker took it
+        # before the run read noted_tables() and the run gave no triggers (two YugabyteDB gate runs, 2026-11-18). The
+        # collection here makes that moment certain
+        hooked = type(f"Hooked_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
+        gc.collect()
 
         async def create(store: Any) -> None:
             await store.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, owner TEXT)")
@@ -462,6 +467,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
         assert [list(note["keys"]) for note in await _notes(pool, schema, 0)] == [["first"]], (
             "its first write left a note"
         )
+        assert hooked.__name__ == f"Hooked_{table}"  # held to here
 
     async def test_an_agent_schemas_table_from_before_the_hook_gets_its_triggers_at_every_run_start(
         self, db_container: str
@@ -491,7 +497,11 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
                     columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("owner", STRING_TYPE, nullable=True)],
                     l1_eviction=TEST_L1_TABLE,
                 )
-                type(f"Agent_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
+                # held, as above: the registry holds classes weakly, and the collection makes the moment certain
+                agent_class = type(
+                    f"Agent_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION}
+                )
+                gc.collect()
 
                 async def create(store: Any) -> None:
                     await store.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, owner TEXT)")
@@ -543,6 +553,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
                 await pool.execute(f"INSERT INTO {agent}.{table} VALUES ('first', 'o')")
                 current = (await keeper.ring()).current
                 assert [list(note["keys"]) for note in await _notes(pool, platform, current)] == [["first"]]
+                assert agent_class.__name__ == f"Agent_{table}"  # held to here
             finally:
                 await pool.close()
         finally:

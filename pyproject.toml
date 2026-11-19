@@ -661,6 +661,8 @@ module = [
     # and a restore's keyed notes folded in a worker process (Arrow's CSV reader and compute)
     "threetears.core.change_note_fold",
     "threetears.core.change_note_fold_job",
+    # and Arrow rows matched by a key in Arrow's hash kernels (never Acero)
+    "threetears.core.arrow_keys",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped
@@ -689,6 +691,7 @@ module = [
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_pieces",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_publish_cost",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_status",
+    "packages.core.tests.unit.test_arrow_keys",
     "packages.core.tests.unit.test_keyed_changed",
     "packages.core.tests.unit.test_keyed_helpers",
     "packages.datasources.tests.unit.test_counted_partitioned_export",

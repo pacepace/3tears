@@ -44,6 +44,7 @@ from threetears.core.collections.copy_checkpoint import (  # noqa: E402
 from threetears.core.collections.copy_follower import FollowedTable  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join  # noqa: E402
+from threetears.nats import ObjectStoreFullError  # noqa: E402
 
 _VOTES = "votes"
 _RACES = "races"
@@ -120,13 +121,25 @@ def _totals() -> FollowedTable:
 
 
 class _Store:
-    """an Object Store in memory; a put can be made to fail."""
+    """an Object Store in memory; a put can be made to fail, and its room bounded."""
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.fail_put_at: int | None = None
         self.puts = 0
         self.retired: list[str] = []
+        #: the most bytes the objects may hold together; None for no bound
+        self.room: int | None = None
+        #: each room asked for (``require_room``), the objects named in it
+        self.asked: list[list[tuple[str, int]]] = []
+
+    async def require_room(self, objects: Sequence[tuple[str, int]]) -> int:
+        self.asked.append(list(objects))
+        needed = sum(size for _, size in objects)
+        held = sum(len(data) for data in self.objects.values())
+        if objects and self.room is not None and held + needed > self.room:
+            raise ObjectStoreFullError("no room", bucket="objects", name=objects[0][0])
+        return needed
 
     async def put(self, name: str, data: bytes) -> None:
         self.puts += 1
@@ -463,6 +476,38 @@ async def test_a_failed_write_keeps_what_it_was_to_write_for_the_next() -> None:
     assert not checkpoints.due()
     loaded, _, _ = await _stage_fresh(store, pointers)
     assert loaded.held(_VOTES) == copy.held(_VOTES)
+
+
+async def test_a_checkpoint_the_store_has_no_room_for_is_refused_before_its_first_part() -> None:
+    """Flips if a write puts any part of a checkpoint the Object Store cannot hold whole: the store's own refusal,
+    met part way, left some parts written and then retired, and the next write met it again."""
+    store, pointers = _Store(), _Pointers()
+    copy = _Copy()
+    copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10)), "v1", 1)
+    copy.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r1", 1)
+    checkpoints = _checkpoints(copy, store, pointers, "a")
+    store.room = 1
+    before = _writes("full", "failed")
+    with pytest.raises(ObjectStoreFullError):
+        await checkpoints.write(copy.read)
+    assert (store.puts, store.retired, store.objects) == (0, [], {})
+    assert _writes("full", "failed") == before + 1
+    assert await checkpoints.newest() is None
+    store.room = None
+    assert await checkpoints.write(copy.read) is not None
+    # the room asked for is every part the write then put, by name and bytes
+    assert sorted(store.asked[-1]) == sorted((name, len(data)) for name, data in store.objects.items())
+
+
+async def test_an_incremental_write_asks_room_for_its_new_parts_alone() -> None:
+    copy, checkpoints, store, _ = await _written_world()
+    copy.put(_VOTES, _votes(_state("VA", 50, votes=3) + _state("IL", 10)), "v2", 2)
+    checkpoints.applied(50, {_VOTES: frozenset({"state:VA"})})
+    held = set(store.objects)
+    assert await checkpoints.write(copy.read) is not None
+    new = {name: data for name, data in store.objects.items() if name not in held}
+    assert len(new) == 2  # VA's two parts
+    assert sorted(store.asked[-1]) == sorted((name, len(data)) for name, data in new.items())
 
 
 async def test_a_write_beaten_to_the_pointer_keeps_what_it_was_to_write() -> None:

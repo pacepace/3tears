@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
-    PLACEHOLDER,
     SQL_TYPE,
     AnyOf,
     Const,
@@ -180,7 +179,6 @@ __all__ = [
     "Max",
     "Min",
     "NO_MARK_FLOOR",
-    "PLACEHOLDER",
     "PageAfter",
     "Pin",
     "Quoted",

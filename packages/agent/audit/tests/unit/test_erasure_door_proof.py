@@ -51,7 +51,7 @@ class _Answering:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
-    async def request_raw(self, *, subject: object, payload: bytes, timeout: timedelta) -> bytes:
+    async def request_raw(self, *, subject: object, payload: bytes, timeout: timedelta = timedelta(seconds=5)) -> bytes:
         body = json.loads(payload)
         self.sent.append(body)
         return json.dumps(
@@ -68,7 +68,7 @@ class _Answering:
 async def test_a_batch_is_proven_over_its_own_body() -> None:
     nats = _Answering()
     await request_audit_anonymization(
-        nats,  # type: ignore[arg-type]
+        nats,
         identity_token=_token(),
         agent_id=_AGENT,
         actor_user_ids=[uuid7()],
@@ -80,7 +80,7 @@ async def test_a_batch_is_proven_over_its_own_body() -> None:
 
 async def test_a_caller_without_a_key_sends_the_token_alone() -> None:
     nats = _Answering()
-    await request_audit_anonymization(nats, identity_token="bearer", agent_id=_AGENT, actor_user_ids=[uuid7()])  # type: ignore[arg-type]
+    await request_audit_anonymization(nats, identity_token="bearer", agent_id=_AGENT, actor_user_ids=[uuid7()])
     assert "identity_proof" not in nats.sent[0]
     # a hub from before the door proofs reads the request strictly, and reads this one
     _Release066Request.model_validate(nats.sent[0])

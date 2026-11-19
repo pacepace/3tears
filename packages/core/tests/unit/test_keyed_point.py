@@ -363,13 +363,19 @@ async def test_a_text_ranked_read_breaks_rank_ties_by_its_then_terms() -> None:
 async def test_text_ranked_ties_come_back_in_the_then_order(db: duckdb.DuckDBPyConnection) -> None:
     """Flips if rows tied on the rank are not answered in the ``then`` order on a real engine: every row of ``t`` ties
     (a constant rank over a missing text column is not DuckDB's, so the tie is the order's own: ``v`` descending, NULLs
-    last, then the key ``b``)."""
+    last, then the key ``b``).
+
+    Reads a table nothing declares a key for, as the unkeyed tie test above does: a declared primary key makes the read
+    keyed, and the key registry is the process's. ``t`` is declared keyed by ``a`` alone (``TableSchema(name="t",
+    primary_key="a")`` in ``collections/test_to_sqlalchemy_table.py``), and this test failed after it in one pool worker:
+    each kept row read again by ``a`` and answered four times (2026-11-18, two of three whole-core runs)."""
     db.execute("CREATE MACRO ts_rank_cd(a, b) AS 1")
     db.execute("CREATE MACRO websearch_to_tsquery(c, q) AS q")
-    db.execute("ALTER TABLE t ADD COLUMN sv VARCHAR")
+    db.execute("CREATE TABLE ranked_ties_on_engine AS SELECT *, CAST(NULL AS VARCHAR) AS sv FROM t")
+    assert primary_key("ranked_ties_on_engine") is None
     rows = await read_nearest(
         ThreadedDuckDB(db),
-        "t",
+        "ranked_ties_on_engine",
         by={"a": "k1"},
         nearest=TextRank("sv", "x", then=(Sort("v", descending=True, nulls="last"), Sort("b", cast=None))),
         limit=4,

@@ -5,7 +5,14 @@ A listing of one entity type used to admit each row through a correlated EXISTS 
 caller can see are resolved once instead, by one statement of keyed lookups: the caller's memberships, the groups
 they nest in and those groups' grants (:func:`visible_customers` for the listing's namespace type, the same set the per-row clause
 admits), and the page reads its rows by key with ``customer_id = ANY(<those customers>)`` and its
-``LIMIT``. A platform-wide grant (``scope_type='all'``) narrows nothing (its fragment is ``TRUE``).
+``LIMIT``. A platform-wide grant (``scope_type='all'``) whose role acts on the listed type narrows nothing (its
+fragment is ``TRUE``).
+
+**A grant counts only through its role**, as the evaluator reads it (:meth:`threetears.agent.acl.Role.actions_for`,
+:func:`threetears.agent.acl.types.permissions_act_on`): the role binding a grant is read beside it, and a grant whose
+role grants no action where its scope needs one is no grant. Read without its role, any assignment at scope
+``all`` -- a one-action system role, or a role with no action at all -- made every admin listing fleet-wide (the leak
+3tears #1276 closed in :func:`~threetears.agent.acl.caller_visible_customer_clause`, which this set must equal).
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ from uuid import UUID
 from threetears.core.keyed import AnyOf, Const, Fragment, Joined, Sort, keyset_rows, read_reached
 from threetears.core.sql_fragments import quote_identifier
 
-from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH, decode_role_permissions, permissions_act_on
 
 __all__ = ["VISIBLE_LIST_PAGE", "VisibleCustomers", "visible_customers", "visible_rows"]
 
@@ -117,8 +124,13 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
     """the customers ``user_id``'s grants cover for ``namespace_type``: the caller's groups and their grants, by key, in
     one statement.
 
-    The same set :func:`threetears.agent.acl.caller_visible_customer_clause` admits a row of for that type: a
-    platform-wide grant, a ``type_customer`` grant on the type, or a grant on a namespace of the customer. The groups
+    The same set :func:`threetears.agent.acl.caller_visible_customer_clause` admits a row of for that type, each
+    grant through the role it binds (:func:`~threetears.agent.acl.types.permissions_act_on`, the evaluator's rule):
+    a platform-wide grant whose role acts on the type, a ``type_customer`` grant on the type whose role acts on it, or
+    a grant on a namespace of the customer whose role acts on that namespace's own type (a customer admin's grant on
+    the customer namespace opens every list of that customer). ``namespace_type`` None (a listing of no one type): a
+    platform-wide grant counts when its role grants any action at all, a ``type_customer`` grant when its role acts
+    on the grant's own type; a role with no action is no grant anywhere. The groups
     are the caller's own (its memberships, ``idx_group_members_reverse``) and those they nest in, a level each, to
     :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups from the caller (the evaluator's walk); each reached group's grants are
     looked up by its key (``idx_role_assignments_group_scope``), and a namespace grant's namespace by its id
@@ -162,30 +174,42 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
                     "scope_customer_id": "scope_customer_id",
                     "scope_namespace_type": "scope_namespace_type",
                     "scope_namespace_id": "scope_namespace_id",
+                    "role_id": "role_id",
                 },
                 left=True,
             ),
+            # the role each grant binds, by its key: a grant counts only where its role acts
+            Joined("roles", on={"role_id": "role_id"}, columns={"role_permissions": "permissions"}, left=True),
             Joined(
                 "namespaces",
                 on={"namespace_id": "scope_namespace_id"},
                 by={"row_scope": AnyOf(_NAMESPACE_SCOPES, cast=None)},
-                columns={"namespace_customer_id": "customer_id"},
+                columns={"namespace_customer_id": "customer_id", "namespace_type": "namespace_type"},
                 left=True,
             ),
         ],
     )
-    is_all = any(row["scope_type"] == "all" for row in rows)
-    customers = {
-        row["scope_customer_id"]
-        for row in rows
-        if row["scope_type"] == "type_customer"
-        and row["scope_customer_id"] is not None
-        and (namespace_type is None or row["scope_namespace_type"] == namespace_type)
-    } | {
-        row["namespace_customer_id"]
-        for row in rows
-        if row["scope_type"] == "namespace" and row["namespace_customer_id"] is not None
-    }
+    is_all = False
+    customers: set[UUID] = set()
+    for row in rows:
+        scope = row["scope_type"]
+        if scope is None:
+            continue
+        permissions = decode_role_permissions(row["role_permissions"])
+        if scope == "all":
+            is_all = is_all or permissions_act_on(permissions, namespace_type)
+        elif scope == "type_customer":
+            granted = row["scope_namespace_type"]
+            if (
+                row["scope_customer_id"] is not None
+                and granted is not None
+                and (namespace_type is None or granted == namespace_type)
+                and permissions_act_on(permissions, granted)
+            ):
+                customers.add(row["scope_customer_id"])
+        elif scope == "namespace":
+            if row["namespace_customer_id"] is not None and permissions_act_on(permissions, row["namespace_type"]):
+                customers.add(row["namespace_customer_id"])
     return VisibleCustomers(is_all=is_all, customer_ids=tuple(sorted(customers, key=str)))
 
 

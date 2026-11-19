@@ -22,6 +22,7 @@ from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.revisions import RETRACTED_TAG, retract, supersede
 from threetears.agent.memory.tools import load_memory_add_tool, load_memory_keep_tool
 from threetears.agent.memory.types import MemoryConfig
+from threetears.core.collections import NO_L2
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -32,13 +33,20 @@ pytestmark = pytest.mark.integration
 
 
 def _collections(pool: asyncpg.Pool) -> tuple[MemoriesCollection, MemoryConsolidationsCollection]:
+    """the memories and their consolidations over ``pool``, with no L2 by design (one process, nothing to tell).
+
+    Built with no NATS client they were a wiring gap, warned of once a process at their first write (``collection
+    invalidation is silently disabled``): whichever test wrote first in its worker caught the warning, and the test that
+    asserts its tool warns of nothing failed when it was first (two YugabyteDB gate runs, 2026-11-18). ``NO_L2`` says
+    the absence is meant.
+    """
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     memories = MemoriesCollection(
-        registry=registry, config=config, authorizer=MagicMock(spec=MemoryAuthorizerDependencies)
+        registry=registry, config=config, authorizer=MagicMock(spec=MemoryAuthorizerDependencies), nats_client=NO_L2
     )
-    return memories, MemoryConsolidationsCollection(registry=registry, config=config, nats_client=None)
+    return memories, MemoryConsolidationsCollection(registry=registry, config=config, nats_client=NO_L2)
 
 
 async def _row(conn: asyncpg.Connection, memory_id: uuid.UUID) -> dict[str, Any]:
