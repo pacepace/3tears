@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from nats.js.api import Header, StorageType
 
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.errors import KvConfigMismatch
-from threetears.nats.kv import build_kv_stream_config
+from threetears.nats.kv import build_kv_stream_config, reconcile_kv_stream
 from threetears.nats.raw_errors import is_bucket_not_found
 
 pytestmark = pytest.mark.integration
@@ -303,3 +304,60 @@ async def test_an_owner_can_set_an_expiry_shorter_than_the_duplicate_window(nats
         assert live.max_msgs_per_subject == 3
         await bucket.put(key="k", value=b"v")
         assert await bucket.get(key="k") == b"v"
+
+
+class _ReadsAfterAConcurrentDelete:
+    """an owner's JetStream context whose first live-config read lands just after a concurrent owner's delete.
+
+    The window two replicas declaring at once can hit: this owner's create found the name taken (the stale
+    file bucket), and before it reads the live config, the other owner deletes the stream to recreate it.
+    The read then answers not-found. Every other call is the context's own.
+
+    :param js: this owner's JetStream context
+    :ptype js: Any
+    :param concurrent: the other owner's JetStream context, which deletes the stream
+    :ptype concurrent: Any
+    """
+
+    def __init__(self, js: Any, concurrent: Any) -> None:
+        self._js = js
+        self._concurrent = concurrent
+        self._deleted = False
+
+    async def stream_info(self, stream: str) -> Any:
+        if not self._deleted:
+            self._deleted = True
+            await self._concurrent.delete_stream(stream)
+        return await self._js.stream_info(stream)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._js, name)
+
+
+async def test_an_owner_reading_the_bucket_mid_recreate_of_another_owner_succeeds(nats_container: str) -> None:
+    """Flips if an owner whose live-config read lands between a concurrent owner's delete and its create fails:
+    the read answers not-found, and the bucket is coming back, so this owner creates it with the declared shape
+    (or finds the other owner's create already landed) instead of failing its declaration."""
+    namespace = "midrecreate"
+    full_name = f"{namespace}-proxy_assertion_nonces"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-a") as a,
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="hub-b") as b,
+    ):
+        await _create_stale(a, full_name=full_name, max_age_seconds=60, storage=StorageType.FILE)
+        declared = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+
+        await reconcile_kv_stream(
+            js=_ReadsAfterAConcurrentDelete(b.jetstream_context(), a.jetstream_context()),
+            full_name=full_name,
+            config=declared,
+            owns_bucket=True,
+            drop_file_storage=True,
+        )
+
+        live = (await a.jetstream_context().stream_info(f"KV_{full_name}")).config
+        assert live.storage == StorageType.MEMORY
+        assert not live.max_age

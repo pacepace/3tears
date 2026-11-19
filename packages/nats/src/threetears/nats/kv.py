@@ -1052,7 +1052,18 @@ async def reconcile_kv_stream(
         or a concurrent process recreated the bucket with a storage other than the declared one
     :raises StreamSubjectsOverlapError: a recreate found the bucket's subjects owned by another stream
     """
-    live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
+    try:
+        live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
+    except KvBucketNotFoundError:
+        if not owns_bucket:
+            raise
+        # an owner's create found the name taken, and the stream is gone by the time it reads it: a concurrent
+        # owner deleted it to recreate it, and is between its delete and its create. the bucket is coming back,
+        # so this owner creates it with the declared shape -- or, when the other owner's create lands first,
+        # re-reads it and reconciles what it finds
+        created, live = await _create_owned_after_concurrent_delete(js=js, full_name=full_name, config=config)
+        if created:
+            return True
     differences = kv_stream_differences(requested=config, actual=live)
     recreated = False
     if owns_bucket and any(field in differences for field in _OWNED_RECREATE_KV_STREAM_FIELDS):
@@ -1083,6 +1094,46 @@ async def reconcile_kv_stream(
         reconciled_fields=reconciled_fields,
     )
     return recreated
+
+
+async def _create_owned_after_concurrent_delete(
+    *, js: Any, full_name: str, config: StreamConfig
+) -> tuple[bool, StreamConfig]:
+    """create an owned bucket a concurrent owner deleted mid-recreate, or read the one its create made.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param config: the declared config
+    :ptype config: StreamConfig
+    :return: whether this call created the stream, and the stream's config (the declared one when it did, the
+        live one the concurrent owner's create made when it did not)
+    :rtype: tuple[bool, StreamConfig]
+    :raises KvError: the create was refused for any reason but the name being taken again
+    :raises StreamSubjectsOverlapError: another stream owns the bucket's subjects
+    """
+    created = True
+    live = config
+    try:
+        await js.add_stream(config)
+    except _NATS_CALL_FAILURES as exc:
+        _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
+        if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
+            raise _kv_error(
+                f"declaring KV bucket {full_name!r} failed: a concurrent declarer deleted its stream to recreate "
+                f"it, and creating it here was refused: {exc}. {_refusal_remedy(exc, full_name=full_name)}",
+                bucket=full_name,
+                cause=exc,
+            ) from exc
+        # the concurrent owner's create landed first: its bucket is the one that stands, reconciled from here
+        created = False
+        live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
+    log.info(
+        "JetStream KV bucket was mid-recreate by a concurrent declarer when this declarer read it",
+        extra={"extra_data": {"bucket": full_name, "created_here": created}},
+    )
+    return created, live
 
 
 async def _recreate_owned_kv_stream(

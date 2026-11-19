@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: an owner that reads a bucket mid-recreate by another owner declares it instead of failing
+
+**Fixed:** two owners declaring one bucket at once (two replicas of the declaring service) could fail one of them.
+Both found the stale bucket live on file storage; one deleted it to recreate it on memory, and the other's read of
+the live configuration landed between that delete and that create. The read answered not-found, which
+`reconcile_kv_stream` did not handle, so the declaration raised `KvBucketNotFoundError` (the integration suite's
+`test_two_owners_recreating_at_once_both_succeed`, in some runs). An owner whose read finds the bucket gone now
+creates it with the declared configuration, or, when the other owner's create lands first, reads that bucket and
+reconciles it. A declarer that does not own the bucket still raises. Pinned by
+`test_an_owner_reading_the_bucket_mid_recreate_of_another_owner_succeeds`, which puts the read in that window
+against a real broker.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and
