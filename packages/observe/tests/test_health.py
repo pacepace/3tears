@@ -842,3 +842,23 @@ class TestLifecycle:
         await server.start()
         await server.stop()
         await server.stop()
+
+
+class TestTheBoundPort:
+    """a server asked for port 0 binds one the OS picks, and says which: a caller never binds, closes and binds again
+    (the gap another process's connection can take the port in: the SDK's test_health_server, EADDRINUSE 1 in 30)."""
+
+    async def test_a_server_started_on_port_0_reports_the_port_it_bound_and_answers_there(self) -> None:
+        """Flips if ``bound_port`` is not the listener's own, non-zero port, or a client cannot reach it there."""
+        server = HealthServer(port=0, service_name="bound", host="127.0.0.1", checks=[])
+        assert server.bound_port is None, "nothing is bound before start"
+        await server.start()
+        try:
+            bound = server.bound_port
+            assert bound is not None and bound != 0
+            assert server.port == 0, "the configured port stays what was asked for"
+            status, _ = await _http_get("127.0.0.1", bound, "/healthz")
+            assert status == 200
+        finally:
+            await server.stop()
+        assert server.bound_port is None, "nothing is bound once stopped"

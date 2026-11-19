@@ -362,8 +362,20 @@ class HealthServer:
 
     @property
     def port(self) -> int:
-        """return the port the server is configured to bind on."""
+        """return the port the server is configured to bind on (0 asks the OS to pick one: :attr:`bound_port`)."""
         return self._port
+
+    @property
+    def bound_port(self) -> int | None:
+        """return the port the listener bound, while it runs; None before :meth:`start` and after :meth:`stop`.
+
+        For a server configured on port 0 it is the port the OS picked: a caller reads it here rather than binding a
+        free port, closing it and handing the number over, a gap in which another process's connection can take it.
+        """
+        bound: int | None = None
+        if self._server is not None and self._server.sockets:
+            bound = int(self._server.sockets[0].getsockname()[1])
+        return bound
 
     @property
     def service_name(self) -> str:
@@ -464,7 +476,7 @@ class HealthServer:
                     "service": self._service_name,
                     "version": self._version,
                     "host": self._host,
-                    "port": self._port,
+                    "port": self.bound_port,
                     "live_checks": [c.name for c in self._checks if c.tier is HealthTier.LIVE],
                     "ready_checks": [c.name for c in self._checks if c.tier is HealthTier.READY],
                 }

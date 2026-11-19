@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### observe: `HealthServer.bound_port` is the port the listener bound
+
+**Added:** `HealthServer.bound_port` answers the port the server's listener bound while it runs (None before `start()`
+and after `stop()`), so a server configured on port 0 says which port the OS picked; `port` stays the configured one.
+A caller no longer binds a free port, closes it and hands the number over, a gap in which another process's connection
+could take it (the SDK's `test_health_server`, EADDRINUSE 1 run in 30). The start's log line names the bound port.
+
 ### nats: an owner that reads a bucket mid-recreate by another owner declares it instead of failing
 
 **Fixed:** two owners declaring one bucket at once (two replicas of the declaring service) could fail one of them.
