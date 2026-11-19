@@ -6,13 +6,16 @@ warehouse's column decides, never the type a caller keeps the value as: a wareho
 arrives as a number, a warehouse ``numeric`` arrives as text (the driver's ``Decimal``, written by pydantic as its
 digits) and a ``double precision`` as a number. So :func:`warehouse_arrow_types` asks the warehouse's catalogue
 once per relation (:func:`_columns_sql`: ``SVV_COLUMNS`` on Redshift, ``information_schema.columns`` elsewhere), and
-maps each column's type to its JSON's. A value of another form than its column's type is refused by the read
+maps each column's type to its JSON's. :func:`relation_columns_sql` gives the same catalogue statement with the
+relation written in as literals, for a caller whose query binds nothing. A value of another form than its column's type is refused by the read
 (:class:`~threetears.core.backends.arrow_reply.ReplyNotArrowError`), never answered otherwise than the JSON read would.
 
 Needs ``pyarrow`` (the ``export`` extra).
 """
 
 from __future__ import annotations
+
+import re
 
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, assert_never
@@ -25,11 +28,12 @@ except ImportError:  # NOSILENT: the export extra is optional; an Arrow read say
     _PYARROW = False
 
 from threetears.core.keyed import Dialect
+from threetears.datasources.export import sql_string_literal
 
 if TYPE_CHECKING:
     from threetears.datasources.query_client import DatasourceQueryClient
 
-__all__ = ["joined_arrow", "warehouse_arrow_types"]
+__all__ = ["joined_arrow", "relation_columns_sql", "warehouse_arrow_types"]
 
 #: each warehouse column type (the catalogue's ``data_type``: :func:`_columns_sql`'s, Redshift's and PostgreSQL's
 #: spelling) onto
@@ -86,6 +90,9 @@ def _columns_sql(dialect: Dialect) -> str:
     order, from the catalogue that holds every relation's columns in ``dialect``: the one place a warehouse
     relation's columns are read over the rail.
 
+    Its ``$1``/``$2`` spelling is a contract: :func:`relation_columns_sql` writes literals in for exactly those two
+    placeholders, in one pass.
+
     Each member is matched by identity, so a plain string (``"redshift"``) never passes for one, and a member added to
     :class:`Dialect` without a catalogue here is a type error (``assert_never``).
 
@@ -100,6 +107,58 @@ def _columns_sql(dialect: Dialect) -> str:
     if dialect is Dialect.POSTGRES or dialect is Dialect.YUGABYTE or dialect is Dialect.DUCKDB:
         return _STANDARD_COLUMNS_SQL
     assert_never(dialect)
+
+
+def _schema_and_name(relation: str, dialect: Dialect) -> tuple[str, str]:
+    """``relation``'s schema and name: the engine's default schema when it names none (``main`` on DuckDB,
+    ``public`` elsewhere), so a bare name reads the schema the engine would resolve it in.
+
+    :param relation: the relation, ``schema.table`` or a bare name
+    :ptype relation: str
+    :param dialect: the dialect the warehouse's statements are spelled in
+    :ptype dialect: Dialect
+    :return: the schema and the name
+    :rtype: tuple[str, str]
+    """
+    schema, _, table = relation.rpartition(".")
+    return schema or ("main" if dialect is Dialect.DUCKDB else "public"), table
+
+
+#: the characters a quoted literal cannot carry by doubling quotes alone (with ``standard_conforming_strings`` off a
+#: backslash escapes; a NUL ends the string)
+_UNQUOTABLE: Final = ("\\", "\x00")
+
+#: the catalogue statement's placeholders, replaced in ONE pass so a literal written in is never scanned again (a
+#: schema named ``rpt$2x`` must stay that name, not have ``$2`` inside it replaced by the table's literal)
+_PLACEHOLDER: Final = re.compile(r"\$([12])")
+
+
+def relation_columns_sql(relation: str, *, dialect: Dialect) -> str:
+    """the statement reading ``relation``'s columns and their types, in ordinal order, from the catalogue that holds
+    every relation's columns in ``dialect`` (:func:`_columns_sql`: on Redshift ``SVV_COLUMNS``, which holds a
+    late-binding view's columns too), its schema and name written in as quoted literals: for a caller whose query
+    binds nothing (an operator's check holding one login's ``fetch``), which would otherwise hand-write
+    ``information_schema.columns`` and find no column of a late-binding view.
+
+    :param relation: the relation, ``schema.table`` (the engine's default schema when it names none), a TRUSTED
+        identifier: the caller's own constant, never a reader's input (the literals are quoted and refused when no
+        quoting carries them, but a relation name is never taken from a request)
+    :ptype relation: str
+    :param dialect: the dialect the warehouse's statements are spelled in, from its declared engine
+    :ptype dialect: Dialect
+    :return: the statement, answering ``column_name`` and ``data_type``
+    :rtype: str
+    :raises AssertionError: for anything not a :class:`Dialect` member
+    :raises ValueError: when the schema or name holds a backslash or a NUL, which no quoted literal carries safely
+    """
+    schema, table = _schema_and_name(relation, dialect)
+    for part, text in (("schema", schema), ("name", table)):
+        if any(character in text for character in _UNQUOTABLE):
+            raise ValueError(
+                f"{relation!r}: the relation's {part} holds a backslash or a NUL, which a quoted literal cannot carry"
+            )
+    literals = {"1": sql_string_literal(schema), "2": sql_string_literal(table)}
+    return _PLACEHOLDER.sub(lambda found: literals[found.group(1)], _columns_sql(dialect))
 
 
 def _arrow_of(form: str) -> Any:
@@ -161,8 +220,8 @@ async def warehouse_arrow_types(
     """
     if not _PYARROW:
         raise ImportError("a datasource read as Arrow needs pyarrow: install 3tears-datasources[export]")
-    schema, _, table = relation.rpartition(".")
-    result = await client.query(datasource_name, _columns_sql(dialect), params=[schema or "public", table])
+    schema, table = _schema_and_name(relation, dialect)
+    result = await client.query(datasource_name, _columns_sql(dialect), params=[schema, table])
     held = {str(row["column_name"]): str(row["data_type"]) for row in result.rows}
     types: dict[str, Any] = {}
     if columns is None:

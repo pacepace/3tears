@@ -20,7 +20,7 @@ import pytest
 
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, arrow_schema_text
 from threetears.core.keyed import Dialect
-from threetears.datasources.arrow_rows import warehouse_arrow_types
+from threetears.datasources.arrow_rows import relation_columns_sql, warehouse_arrow_types
 from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
     DatasourceQueryClient,
@@ -347,6 +347,29 @@ async def test_a_relation_on_another_engine_is_read_from_information_schema_as_b
     ]
 
 
+@pytest.mark.parametrize(("dialect", "schema"), [(Dialect.DUCKDB, "main"), (Dialect.POSTGRES, "public")])
+async def test_a_bare_name_is_asked_in_the_engines_own_default_schema(dialect: Dialect, schema: str) -> None:
+    """Flips if a bare relation name is asked in another schema than the one its engine resolves it in (``main`` on
+    DuckDB, ``public`` on PostgreSQL): the catalogue would answer no column of a relation that exists."""
+    catalogue = _TwoCatalogues()
+
+    await warehouse_arrow_types(
+        catalogue,  # type: ignore[arg-type]
+        "ds",
+        "results_20261119",
+        None,
+        dialect=dialect,
+    )
+
+    assert catalogue.asked == [
+        (
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+            [schema, "results_20261119"],
+        )
+    ]
+
+
 @pytest.mark.parametrize("named", ["redshift", "postgres", "unnamed"])
 async def test_a_dialect_named_by_a_plain_string_is_refused_before_any_ask(named: str) -> None:
     """Flips if a plain string passes for a dialect (a reader's ``sql_dialect`` for an engine with none, or an engine's
@@ -364,3 +387,59 @@ async def test_a_dialect_named_by_a_plain_string_is_refused_before_any_ask(named
         )
 
     assert catalogue.asked == []
+
+
+def test_a_relations_columns_statement_written_as_literals_reads_the_dialects_catalogue() -> None:
+    """Flips if a caller whose query binds nothing (an operator's check holding one login's ``fetch``) cannot ask the
+    catalogue that holds a late-binding view's columns: on Redshift it must read SVV_COLUMNS, elsewhere
+    information_schema.columns, with the relation's schema and name written in as quoted literals."""
+    assert relation_columns_sql("reporting_prod.report_enr_x", dialect=Dialect.REDSHIFT) == (
+        "SELECT column_name, data_type FROM svv_columns "
+        "WHERE table_schema = 'reporting_prod' AND table_name = 'report_enr_x' ORDER BY ordinal_position"
+    )
+    for dialect in (Dialect.POSTGRES, Dialect.YUGABYTE):
+        assert relation_columns_sql("t", dialect=dialect) == (
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 't' ORDER BY ordinal_position"
+        )
+
+
+def test_a_bare_duckdb_name_reads_duckdbs_own_default_schema() -> None:
+    """Flips if a bare name on DuckDB is looked up in ``public``: DuckDB resolves it in ``main``, so the lookup would
+    find no column of a relation that exists."""
+    assert relation_columns_sql("t", dialect=Dialect.DUCKDB) == (
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = 't' ORDER BY ordinal_position"
+    )
+
+
+def test_a_quote_or_a_placeholder_in_a_name_stays_inside_its_own_literal() -> None:
+    """Flips if a name's quote is not doubled, or a ``$2`` inside the schema is replaced by the table's literal: both
+    are legal identifier text, and either would break the statement or read another relation."""
+    assert relation_columns_sql("s.o'brien", dialect=Dialect.POSTGRES) == (
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = 's' AND table_name = 'o''brien' ORDER BY ordinal_position"
+    )
+    assert relation_columns_sql("rpt$2x.t", dialect=Dialect.REDSHIFT) == (
+        "SELECT column_name, data_type FROM svv_columns "
+        "WHERE table_schema = 'rpt$2x' AND table_name = 't' ORDER BY ordinal_position"
+    )
+    assert relation_columns_sql("$2.t", dialect=Dialect.REDSHIFT) == (
+        "SELECT column_name, data_type FROM svv_columns "
+        "WHERE table_schema = '$2' AND table_name = 't' ORDER BY ordinal_position"
+    )
+
+
+@pytest.mark.parametrize("relation", ["s\\x.t", "s.t\\", "s\x00.t", "s.t\x00"])
+def test_a_name_no_quoted_literal_carries_is_refused_naming_the_relation(relation: str) -> None:
+    """Flips if a backslash or a NUL reaches the statement (a backslash escapes with standard_conforming_strings off;
+    a NUL ends the string), or the refusal names anything but the relation asked."""
+    with pytest.raises(ValueError, match="the relation's (schema|name) holds a backslash or a NUL"):
+        relation_columns_sql(relation, dialect=Dialect.REDSHIFT)
+
+
+@pytest.mark.parametrize("named", ["redshift", "postgres"])
+def test_a_literal_columns_statement_refuses_a_plain_string_dialect(named: str) -> None:
+    """Flips if a plain string passes for a dialect: only a :class:`Dialect` member names a catalogue."""
+    with pytest.raises(AssertionError):
+        relation_columns_sql("s.t", dialect=named)  # type: ignore[arg-type]

@@ -17,6 +17,14 @@ ots login on 2026-11-19 had one spelling in both; a table's `time with time zone
 of each column type the login may read across both catalogues. PostgreSQL, YugabyteDB and DuckDB read
 `information_schema.columns` by the same statement as before.
 
+**Added:** `relation_columns_sql(relation, *, dialect)`, public: the same catalogue statement with the relation's
+schema and name written in as quoted literals, in one pass (a `$2` inside a schema name stays that name), for a caller
+whose query binds nothing, such as an operator's check holding one login's fetch. A name holding a backslash or a NUL
+is refused with a `ValueError` naming the relation. Callers move onto it at their re-pin.
+
+**Fixed:** a bare relation name on DuckDB is looked up in `main`, DuckDB's own default schema, not `public` (both
+`warehouse_arrow_types` and `relation_columns_sql`).
+
 **Changed (breaking):** `warehouse_arrow_types` takes `dialect`, keyword-only and required: the dialect the
 datasource's statements are spelled in (a `threetears.core.keyed.Dialect` member; `dialect_of` over the datasource's
 `DatasourceReader` gives it), which names the catalogue it reads. The engine is the datasource's declared one, never
