@@ -345,6 +345,15 @@ from threetears.evals.kernel.surface import (
     TimeAxisBasis,
     TimePosition,
 )
+from threetears.evals.kernel.entity_extraction import EntityExtractionFailed, EntityExtractor
+from threetears.evals.kernel.set_grade import (
+    EXTRACTED_SET_FAMILY,
+    EntityMatcher,
+    FoldingMatcher,
+    NamedEntity,
+    SetGrade,
+    SetGrader,
+)
 from threetears.evals.kernel.usage_capture import (
     RoleUsageLedger,
     count_substituted,
@@ -610,6 +619,14 @@ __all__ = [
     "ResultCondition",
     "ResultOutcome",
     "RoleUsageLedger",
+    "EXTRACTED_SET_FAMILY",
+    "EntityExtractionFailed",
+    "EntityExtractor",
+    "EntityMatcher",
+    "FoldingMatcher",
+    "NamedEntity",
+    "SetGrade",
+    "SetGrader",
     "RunIndexEntry",
     "RunStore",
     "SeedPrompt",

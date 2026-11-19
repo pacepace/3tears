@@ -32,6 +32,42 @@ then needs `overwrite_customized`). A 17.6 build refuses a corpus file carrying
 `reference` at boot seed (`extra_forbidden`, naming the field). So upgrade the package before shipping keyed corpus
 files, and roll the corpus back with any rollback of the package.
 
+### evals: grade a named set against a case's reference key (#1286)
+
+**Added (provisional, `threetears.evals.kernel`):** `SetGrader(prefix, *, reader_label, matcher=None, extractor=None)`
+grades the entities an output named (`NamedEntity`: a name and the fields that came with it) against a case's
+`ReferenceKey`, in both directions at once: recall over the whole key, recall over its core, and the share of what was
+named that the key holds (`verified_share`, named "found in the key" because a key may be non-exhaustive). A named
+entity the key lacks is unverified, never wrong: it is listed on `SetGrade.unverified_names`. Only recall and core
+recall judge quality. The verified share, the named count and the unverified count are diagnostics with no better
+direction, so no ranking or bar reads them: an unlisted pick lowers the verified share and never counts against an
+arm. Every spelling the matcher finds as one key entity is one pick, and unmatched names that fold alike are one pick,
+so a name written twice never counts twice. Matching is the host's to replace (`EntityMatcher`, which sees the whole
+key); the default, `FoldingMatcher` (`fold-v1`), folds case and Unicode compatibility forms only, reads no word list
+and strips no accent. **One grader declares and grades:** `SetGrader.descriptors()` declares five measures,
+`<prefix>_recall`, `_core_recall`, `_verified_share`, `_named` and `_unverified`, whose formula names the grader's
+matcher and extractor; `SetGrader.grade(named, key)` grades a structured set and `SetGrader.grade_text(text, key, *,
+ledger)` lists a prose answer's entities with the bound extractor first, each with exactly that matcher and
+extractor. The `SetGrade` it returns records both identities and states the same formula, so a cell is never graded
+one way while its measures are declared another, and a changed matcher or extractor is a changed measure definition
+that never pools. `SetGrade.host_measures()` leaves a reading off a cell where it has no value (core recall on a key
+with no core, the verified share where nothing was named), so that cell is outside the measure's n and an empty output
+reads differently from a perfect one. `EntityExtractor(client, entity_kind, fields)` lists the entities prose names
+with one strict-schema model call that never sees the key (each field a string or null, a null dropped, so the model
+never has to invent a value): every completion is billed to the `judge` ledger, a reply cut short raises
+`EntityExtractionFailed` at once, and one that will not parse is asked twice more, then raises. `EntityExtractionFailed`
+is an `ApparatusError`, a fault of the measuring rig: out of a kind's `invoke` the runner excludes the cell as
+`apparatus_failed` and never scores it. The extractor's identity names its declared model; the model that served each
+call is recorded on the `judge` ledger rows. Engine path only; the quick path is a follow-up.
+
+**For hosts:** build one `SetGrader` per graded set and declare its `descriptors()` on the measure registry, with
+`EXTRACTED_SET_FAMILY` beside them when the grader is bound to an `EntityExtractor` (its measures are then
+judge-graded and never ranked on). Grade each cell with that same grader: `grade` for a structured set, `grade_text`
+for prose, passing the cell's `RoleUsageLedger(role="judge")` and putting its rows on `CandidateTelemetry.usage`.
+Grade inside `invoke`: an `EntityExtractionFailed` left to reach the runner excludes the cell as `apparatus_failed`,
+never scored, and registering the ledger's rows through `sink.report_progress` keeps the failed call's spend on it. Change your matcher's
+`identity` whenever its matching changes. No stored shape changes.
+
 ### evals: a comparison's first screen says what to do beside what is proven
 
 **Added:** a quick comparison's first line is now its advice, above the proof: `Advice: switch to v2. At worst it is

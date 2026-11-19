@@ -1111,6 +1111,56 @@ it is under them. Its pass criterion is code's: both arms ran every case, the re
 `regressed`, separated, its interval below 0, the order check stands, and bounces do not separate (a variant that moves
 bounces broke the format, so the run is void). Anything else fails, and nobody re-rolls.
 
+## Grading a named set against a reference key
+
+Some answers are a set: the bands a reply recommends, the sources a summary cites. Code grades the set against the
+case's reference key, and a judge is needed only to read the names out of prose. A `SetGrader` counts both directions
+at once:
+
+| Reading | Value | On which cells | Judges quality |
+|---|---|---|---|
+| recall | key entities named / key size | every graded cell | yes |
+| core recall | core entities named / core size | cells whose key has a core | yes |
+| verified share | named entities the key holds / named | cells that named at least one entity | no (a diagnostic) |
+| named | distinct picks | every graded cell | no (a diagnostic) |
+| unverified | named entities the key does not hold | every graded cell | no (a diagnostic) |
+
+**A pick counts once.** Every spelling the matcher finds as one key entity is one pick, so naming a band and then its
+alias is one pick, not two. Unmatched names that are equal after folding are one pick too.
+
+**Unverified is never wrong.** A key may be non-exhaustive, so a named entity outside it may be a good answer nobody
+listed. It is listed by name for a reader to check. It lowers the verified share, which is why that reading is a
+diagnostic with no better direction, never ranked on and never held to a bar, and why it is not called precision.
+Only recall and core recall judge quality, and an unlisted pick changes neither.
+
+**A cell with no value is outside that reading's n.** An empty answer carries recall 0 and no verified share; a
+perfect one carries recall 1 and verified share 1. The two are never averaged into one number.
+
+**One grader declares and grades.** A host builds one `SetGrader` per graded set, bound to its measure prefix, its
+matcher and, for prose, its extractor. It declares the five measures on the host's registry from that grader, and
+grades every cell with the same one. The measures' formula names the matcher's identity and the extractor's, and each
+grade records the identities it was graded with, so a set graded one way never pools with one graded another, and a
+cell can never be graded with one matcher while its measures name another.
+
+**Where the names come from.** A structured answer (a tool's picks, a list the candidate returned) names its entities
+itself: the kind builds `NamedEntity` values from it in code and grades them with `grade`. Prose goes through
+`grade_text` on a grader bound to an `EntityExtractor`: one model call with a strict reply schema that lists the
+entities of one kind, in order, and never sees the key. Each field asked for is a string or null, and a null is
+dropped, so the model never has to invent a value the text does not state. Its calls are billed to the cell's `judge`
+ledger. A reply cut short fails at once, and one that will not parse is asked twice more. Either failure raises
+`EntityExtractionFailed`, an `ApparatusError`: a fault of the measuring rig, never the candidate's. A kind grades
+inside `invoke`, and out of `invoke` the runner excludes the cell as `apparatus_failed` and never scores it as an
+empty set, so a host that does not catch it is safe by default; a kind that registers its ledger's rows through the
+cell sink's `report_progress` keeps the failed call's spend on the excluded cell. The extractor's identity names the
+model it was declared with, the apparatus, while the model that served each call is recorded per cell on the
+`judge` ledger rows, which the engine's served-model checks guard. Measures over an extracted set
+are in the `extracted_set` family, which is judge-graded and never ranked on; the host declares it on its measure
+registry.
+
+**Matching is the host's to replace.** The default matches a name or alias after folding case and Unicode
+compatibility forms (`É` is `é`, `ﬁ` is `fi`). It keeps accents (`é` is not `e`) and reads no word list, since both
+are rules of a language. A host binds its own normaliser to the grader as an `EntityMatcher`, which sees the whole key.
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the
