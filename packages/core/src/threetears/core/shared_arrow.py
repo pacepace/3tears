@@ -1608,6 +1608,40 @@ def _map_pinned(path: str, pin: _Pin | None) -> Any:
     return ipc.open_file(pa.BufferReader(whole)).read_all()
 
 
+def _free_in_turns(held: list[Any]) -> None:
+    """let go of ``held``'s tables one at a time, last first, emptying the list: between two, any other thread waiting
+    for the interpreter lock (the event loop) takes its turn.
+
+    Freeing a table frees every array it is the last to hold in one cascade of deallocations in C, during which no
+    other thread runs; a dictionary of tables freed whole is one cascade for all of them, as long as every array of a
+    version (its files times their columns). One table at a time is one cascade a table, and the waiting thread takes
+    the lock at the next switch interval between two. The caller drops its own references first, so each table goes
+    here, never with the mapping that held it.
+
+    :param held: the tables, the one to free first last; emptied
+    :ptype held: list[pa.Table]
+    :return: nothing
+    :rtype: None
+    """
+    while held:
+        held.pop()
+
+
+def _free_lent(lent: dict[Any, Any]) -> None:
+    """free the files a :class:`SharedArrowReader` kept to lend its next version and let go of, in turns
+    (:func:`_free_in_turns`), after its lock is released: a table no version took is the last holder of its arrays.
+    The dictionary is the caller's alone and is emptied.
+
+    :param lent: the files, by identity
+    :ptype lent: dict[Any, pa.Table]
+    :return: nothing
+    :rtype: None
+    """
+    held = list(lent.values())
+    lent.clear()
+    _free_in_turns(held)
+
+
 class MappedTables:
     """Arrow tables memory-mapped read-only from a directory: every process mapping it shares its pages, and no row
     is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, and, mapped
@@ -1728,8 +1762,12 @@ class MappedTables:
         :return: nothing
         :rtype: None
         """
+        # freed in turns, a joined table before the parts it joins (:func:`_free_in_turns`): a part freed while a
+        # joined table still holds its arrays frees nothing, and the joined table freed last would free them all at once
+        held = [*self._by_inode.values(), *self.tables.values()]
         self.tables = MappingProxyType({})
         self._by_inode = {}
+        _free_in_turns(held)
         for mapped in self._maps:
             mapped.close()
         self._maps = []
@@ -4621,7 +4659,7 @@ class SharedArrowReader:
         self._held: _HeldVersion | None = None
         #: the files of the version let go that the current one shares, by identity, for its first read to take
         #: (:class:`MappedTables`): mapped already, so keeping them keeps no page the current version does not hold
-        self._lend: Mapping[Any, Any] = {}
+        self._lend: dict[Any, Any] = {}
         self._closed = False
         self._reads = 0
         self._mapped = 0
@@ -4665,6 +4703,7 @@ class SharedArrowReader:
     def _read(self) -> Iterator[SharedRead]:
         """:meth:`read`, its slot taken."""
         let_go: _HeldVersion | None = None
+        lent: dict[Any, Any] = {}
         with self._lock:
             if self._closed:
                 raise RuntimeError("the shared Arrow reader is closed")
@@ -4677,7 +4716,7 @@ class SharedArrowReader:
                 # changed is mapped
                 reuse = self._lend if held is None else held.mapped.by_inode
                 held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare, reuse)
-                self._lend = {}
+                lent, self._lend = self._lend, {}
                 self._mapped += 1
                 let_go = self._supersede()
                 self._held = held
@@ -4688,6 +4727,8 @@ class SharedArrowReader:
             except BaseException:
                 held.reads -= 1
                 raise
+        # what the new version did not take is freed in turns, out of the lock (:func:`_free_lent`)
+        _free_lent(lent)
         if let_go is not None:
             let_go.close()
         clean = False
@@ -4714,15 +4755,21 @@ class SharedArrowReader:
         :return: nothing
         :rtype: None
         """
+        lent: dict[Any, Any] = {}
         with self._lock:
             current = self._store.current
             let_go = None
             if self._held is not None and (current is None or self._held.name != current.name):
                 if current is not None:
-                    self._lend = _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode})
+                    lent, self._lend = (
+                        self._lend,
+                        _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode}),
+                    )
                 let_go = self._supersede()
             elif self._held is None and self._lend and current is not None:
-                self._lend = _shared_files(current.path, self._lend)
+                lent, self._lend = self._lend, _shared_files(current.path, self._lend)
+        # what the current version no longer holds is freed in turns, out of the lock (:func:`_free_lent`)
+        _free_lent(lent)
         if let_go is not None:
             let_go.close()
 
@@ -4734,8 +4781,9 @@ class SharedArrowReader:
         """
         with self._lock:
             self._closed = True
-            self._lend = {}
+            lent, self._lend = self._lend, {}
             let_go = self._supersede()
+        _free_lent(lent)
         if let_go is not None:
             let_go.close()
 

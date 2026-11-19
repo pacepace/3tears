@@ -185,6 +185,7 @@ default_selection = [
     "packages/datasources/tests/integration/test_collection_schema_parity_live.py",
     "packages/datasources/tests/integration/test_index_plans.py",
     "packages/datasources/tests/integration/test_transaction_live.py",
+    "packages/datasources/tests/integration/test_warehouse_arrow_types_live.py",
     "packages/epoch/tests/integration",
     "packages/geo/tests/integration",
     "packages/iam/tests/integration",

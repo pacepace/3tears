@@ -19,6 +19,7 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, arrow_schema_text
+from threetears.core.keyed import Dialect
 from threetears.datasources.arrow_rows import warehouse_arrow_types
 from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
@@ -186,6 +187,7 @@ async def test_the_warehouse_types_are_the_forms_its_columns_reply_in() -> None:
         "ds",
         "reporting.results",
         ["race", "candidate_id", "margin", "share", "called_at", "called"],
+        dialect=Dialect.POSTGRES,
         extra={"row_hash": pa.string()},
     )
 
@@ -199,7 +201,13 @@ async def test_the_warehouse_types_are_the_forms_its_columns_reply_in() -> None:
         "row_hash": pa.string(),
     }
     with pytest.raises(ValueError, match="no column"):
-        await warehouse_arrow_types(_Catalogue(), "ds", "reporting.results", ["absent"])  # type: ignore[arg-type]
+        await warehouse_arrow_types(
+            _Catalogue(),  # type: ignore[arg-type]
+            "ds",
+            "reporting.results",
+            ["absent"],
+            dialect=Dialect.POSTGRES,
+        )
 
 
 async def test_every_column_s_type_is_read_in_one_ask_and_a_column_of_no_json_form_is_left_out() -> None:
@@ -223,8 +231,136 @@ async def test_every_column_s_type_is_read_in_one_ask_and_a_column_of_no_json_fo
         "ds",
         "reporting.results",
         None,
+        dialect=Dialect.REDSHIFT,
         extra={"row_hash": pa.string()},
     )
 
     assert types == {"race": pa.string(), "margin": pa.string(), "row_hash": pa.string()}
     assert _Catalogue.asks == 1
+
+
+class _TwoCatalogues:
+    """a Redshift warehouse's two catalogues of one table and the late-binding view over it (``WITH NO SCHEMA
+    BINDING``, as dbt's ``+bind: false`` makes every view): ``information_schema.columns`` holds the table's columns
+    and none of the view's; ``SVV_COLUMNS`` holds both, spelling a table's ``timetz`` column ``timetz`` (both read
+    on the warehouse, 2026-11-19). Each statement is answered from the catalogue it names, and recorded."""
+
+    _TABLE = [
+        {"column_name": "race", "data_type": "character varying"},
+        {"column_name": "votes", "data_type": "integer"},
+        {"column_name": "margin", "data_type": "numeric"},
+        {"column_name": "called_at", "data_type": "timestamp with time zone"},
+        {"column_name": "polls_close", "data_type": "time with time zone"},
+    ]
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, list[Any] | None]] = []
+
+    async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
+        self.asked.append((query, params))
+        assert params is not None
+        relation = tuple(params)
+        if "information_schema.columns" in query:
+            rows = self._TABLE if relation == ("reporting", "results_20261119") else []
+        elif "svv_columns" in query.lower():
+            rows = {
+                ("reporting", "results_20261119"): [
+                    {**row, "data_type": "timetz"} if row["column_name"] == "polls_close" else row
+                    for row in self._TABLE
+                ],
+                ("reporting", "results"): self._TABLE,
+            }.get(relation, [])
+        else:
+            raise AssertionError(f"not a catalogue read: {query}")
+        return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
+
+
+_RESULTS_TYPES = {
+    "race": pa.string(),
+    "votes": pa.int64(),
+    "margin": pa.string(),
+    "called_at": pa.string(),
+    "polls_close": pa.string(),
+}
+
+
+@pytest.mark.parametrize("columns", [None, list(_RESULTS_TYPES)])
+async def test_a_redshift_late_binding_view_s_columns_are_read_from_the_catalogue_that_holds_them(
+    columns: list[str] | None,
+) -> None:
+    """Flips if a Redshift relation's columns are read from ``information_schema.columns``, which holds no column of a
+    late-binding view: the read of every column answers nothing and a named column is refused, so a datasource
+    whose tables became views over dated tables is refused every load."""
+    catalogue = _TwoCatalogues()
+
+    types = await warehouse_arrow_types(
+        catalogue,  # type: ignore[arg-type]
+        "ds",
+        "reporting.results",
+        columns,
+        dialect=Dialect.REDSHIFT,
+    )
+
+    assert types == _RESULTS_TYPES
+    assert list(types) == list(_RESULTS_TYPES), "in the catalogue's ordinal order"
+    assert len(catalogue.asked) == 1
+    query, params = catalogue.asked[0]
+    assert params == ["reporting", "results"]
+    assert "ORDER BY ordinal_position" in query
+
+
+async def test_a_redshift_table_s_timetz_column_is_text_as_its_view_s_is() -> None:
+    """Flips if ``SVV_COLUMNS``' spelling of a table's ``time with time zone`` column (``timetz``) has no JSON form:
+    the column is left out of every column's read and refused when named, where its view's is read as text."""
+    types = await warehouse_arrow_types(
+        _TwoCatalogues(),  # type: ignore[arg-type]
+        "ds",
+        "reporting.results_20261119",
+        ["polls_close"],
+        dialect=Dialect.REDSHIFT,
+    )
+
+    assert types == {"polls_close": pa.string()}
+
+
+@pytest.mark.parametrize("dialect", [Dialect.POSTGRES, Dialect.YUGABYTE, Dialect.DUCKDB])
+async def test_a_relation_on_another_engine_is_read_from_information_schema_as_before(dialect: Dialect) -> None:
+    """Flips if a PostgreSQL, YugabyteDB or DuckDB relation's columns are read other than from
+    ``information_schema.columns`` (those engines hold no ``SVV_COLUMNS``), or by another statement than before."""
+    catalogue = _TwoCatalogues()
+
+    types = await warehouse_arrow_types(
+        catalogue,  # type: ignore[arg-type]
+        "ds",
+        "reporting.results_20261119",
+        None,
+        dialect=dialect,
+    )
+
+    assert types == _RESULTS_TYPES
+    assert catalogue.asked == [
+        (
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+            ["reporting", "results_20261119"],
+        )
+    ]
+
+
+@pytest.mark.parametrize("named", ["redshift", "postgres", "unnamed"])
+async def test_a_dialect_named_by_a_plain_string_is_refused_before_any_ask(named: str) -> None:
+    """Flips if a plain string passes for a dialect (a reader's ``sql_dialect`` for an engine with none, or an engine's
+    name): ``"redshift"`` would read another catalogue than ``Dialect.REDSHIFT`` names, or a load would run on a guess.
+    Narrowed by ``dialect_of`` first, the caller gets a :class:`Dialect` or its refusal."""
+    catalogue = _TwoCatalogues()
+
+    with pytest.raises(AssertionError):
+        await warehouse_arrow_types(
+            catalogue,  # type: ignore[arg-type]
+            "ds",
+            "reporting.results",
+            None,
+            dialect=named,  # type: ignore[arg-type]
+        )
+
+    assert catalogue.asked == []
