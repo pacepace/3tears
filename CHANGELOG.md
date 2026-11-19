@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `read_joined` answers its joined rows read-only, as the connection answers them (breaking)
+
+**Changed (breaking):** `threetears.core.keyed.read_joined` answers `dict[tuple, list[Mapping[str, Any]]]`: each joined
+row as the connection answers it (an asyncpg `Record` on a direct connection: read by name, `row["col"]`, `row.get`,
+`keys()`, never written), no longer copied into a `dict`. Why: on brooks-5950x (exclusive), 6,000 joined rows, the bare
+statement took 3.54 ms and the helper's own statement 3.32 ms, but a `dict` of each row 2.25 ms more: the read sat at
+2.0-2.1x its 2.0x bar. A caller that writes a joined row, or needs a real `dict` (`isinstance(row, dict)`, `**row`
+into a model, `json.dumps`), converts it there: `dict(row)`. `read_by_joined` still answers dicts (it builds each
+widened row itself), as do 3tears' own callers. Consumers: no call of `read_joined` in the hub, SDK, identity, admin,
+survey or reports release tips; the hub's `read_by_joined` calls are unchanged.
+
 ### observe: `HealthServer.bound_port` is the port the listener bound
 
 **Added:** `HealthServer.bound_port` answers the port the server's listener bound while it runs (None before `start()`

@@ -307,7 +307,7 @@ async def read_joined(
     casts: Mapping[str, str] | None = None,
     by: Mapping[str, Any] | None = None,
     batch: int | None = None,
-) -> dict[tuple[Any, ...], list[dict[str, Any]]]:
+) -> dict[tuple[Any, ...], list[Mapping[str, Any]]]:
     """the rows of ``table`` joined to ``rows`` (a page already read), by a keyed read of the values they name.
 
     A listing with joins, as a page and keyed reads: the page is read by its own key (:func:`keyset_page`), then each
@@ -331,8 +331,11 @@ async def read_joined(
     :ptype by: Mapping[str, Any] | None
     :param batch: the most values a statement names; None: :func:`key_batch_for` the connection
     :ptype batch: int | None
-    :return: the page's values (in ``on``'s order) -> the joined rows holding them; a value no row holds is absent
-    :rtype: dict[tuple[Any, ...], list[dict[str, Any]]]
+    :return: the page's values (in ``on``'s order) -> the joined rows holding them, read-only, as the connection
+        answers them (asyncpg ``Record``s on a direct connection: read by name, never written); a value no row holds
+        is absent. WHY not dicts (2026-11-18, brooks-5950x, 6,000 rows): the bare statement 3.54 ms, the helper's own
+        statement 3.32 ms, but a dict of each row 2.25 ms more, and the read sat at 2.0-2.1x its bar
+    :rtype: dict[tuple[Any, ...], list[Mapping[str, Any]]]
     :raises ValueError: when ``on`` is empty or a column of it is not read
     """
     if not on:
@@ -344,14 +347,14 @@ async def read_joined(
     cast_of = dict(casts or {})
     values = [tuple(row[on[column]] for column in inner) for row in rows]
     named = [value for value in values if all(part is not None for part in value)]
-    joined: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    joined: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     if not named:
         return joined
     keys = KeyBatch(inner, named, tuple(cast_of.get(column, "text") for column in inner))
     # each row's join values by one itemgetter, not a tuple built a column at a time (6,000 rows: 0.6 ms against 1.8)
     getter = itemgetter(*inner)
     key_of = getter if len(inner) > 1 else (lambda row: (getter(row),))
-    for row in await read_keyed(conn, table, keys=keys, columns=columns, by=by, batch=batch):
+    for row in await read_keyed(conn, table, keys=keys, columns=columns, by=by, batch=batch, records=True):
         key = key_of(row)
         held = joined.get(key)
         if held is None:
