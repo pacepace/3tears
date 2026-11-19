@@ -2,14 +2,14 @@
 
 A structured output names its entities itself, and a host builds :class:`~threetears.evals.kernel.set_grade.NamedEntity`
 values from it in code. Prose does not, so :class:`EntityExtractor` asks a model to list them, and code then grades
-the list (:func:`~threetears.evals.kernel.set_grade.grade_set`). The extractor never sees the case's key, so the list
-is not primed by what the key holds.
+the list: a :class:`~threetears.evals.kernel.set_grade.SetGrader` bound to the extractor does both
+(``grade_text``). The extractor never sees the case's key, so the list is not primed by what the key holds.
 
 **It records what it spent, and how the list was made.** Every completion, parsed or not, is folded into the cell's
 ``judge`` ledger, which the kind puts on ``CandidateTelemetry.usage``. Its :attr:`EntityExtractor.identity` names the
 model and a digest of everything that shapes the list (the prompts, the entity kind, the fields, the reply schema),
-and enters the measures' formula through :func:`~threetears.evals.kernel.set_grade.set_grade_descriptors`, so sets
-listed two ways never pool.
+and enters the formula of the measures a grader bound to it declares
+(:meth:`~threetears.evals.kernel.set_grade.SetGrader.descriptors`), so sets listed two ways never pool.
 
 **It fails rather than guesses.** A reply cut short raises at once, since the same request would meet the same cap; a
 reply that will not parse is asked again twice, then raises. Either is :class:`EntityExtractionFailed`, which a kind

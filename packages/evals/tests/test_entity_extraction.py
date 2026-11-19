@@ -19,7 +19,7 @@ from threetears.evals.kernel import (
     EntityExtractor,
     NamedEntity,
     RoleUsageLedger,
-    grade_set,
+    SetGrader,
 )
 from threetears.evals.schema.reference import ReferenceKey
 
@@ -120,16 +120,35 @@ async def test_the_extractor_returns_the_entities_in_the_replys_order_with_the_f
     assert entity["properties"]["fields"]["required"] == ["origin"]
 
 
-async def test_the_extractor_never_sees_the_key_and_its_list_grades_against_it() -> None:
+async def test_a_grader_bound_to_the_extractor_lists_without_the_key_and_grades_under_its_own_formula() -> None:
     key = ReferenceKey.model_validate({"core": [{"name": "Band A"}], "acceptable": [{"name": "Band C"}]})
     client = _FakeScriptedClient([_listing({"name": "Band A"}, {"name": "Band E"})])
+    extractor = _extractor(client, fields=())
+    grader = SetGrader("picks", reader_label="Picks", extractor=extractor)
 
-    named = await _extractor(client, fields=()).extract(_TEXT, ledger=RoleUsageLedger(role="judge"))
+    grade = await grader.grade_text(_TEXT, key, ledger=RoleUsageLedger(role="judge"))
 
     (call,) = client.calls
     assert "Band C" not in call["system"] + call["user"].replace(_TEXT, "")
-    grade = grade_set(named, key)
     assert (grade.found, grade.unverified_names) == (("Band A",), ("Band E",))
+    assert grade.extractor_identity == extractor.identity
+    assert {descriptor.formula for descriptor in grader.descriptors()} == {grade.formula}
+
+
+async def test_a_grader_grades_blank_prose_as_an_empty_set_with_no_call() -> None:
+    key = ReferenceKey.model_validate({"core": [{"name": "Band A"}]})
+    client = _FakeScriptedClient([])
+    grader = SetGrader("picks", reader_label="Picks", extractor=_extractor(client))
+
+    grade = await grader.grade_text("  ", key, ledger=RoleUsageLedger(role="judge"))
+
+    assert client.calls == []
+    assert grade.host_measures() == {
+        "picks_recall": 0.0,
+        "picks_core_recall": 0.0,
+        "picks_named": 0.0,
+        "picks_unverified": 0.0,
+    }
 
 
 async def test_every_completion_is_recorded_on_the_judge_ledger() -> None:

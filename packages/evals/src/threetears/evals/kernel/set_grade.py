@@ -2,24 +2,29 @@
 named the key holds.
 
 An output names entities: a list a host tool returned, or the names a model step lists from prose
-(:class:`~threetears.evals.kernel.entity_extraction.EntityExtractor`). :func:`grade_set` matches each against the
+(:class:`~threetears.evals.kernel.entity_extraction.EntityExtractor`). A :class:`SetGrader` matches each against the
 case's :class:`~threetears.evals.schema.reference.ReferenceKey` and counts both directions at once: recall over the
 full key and over its core, and the share of what was named that the key holds. A named entity the key lacks is
 **unverified, never wrong**: a key is allowed to be non-exhaustive, so an entity outside it may be a good answer the
-key's author did not list. No reading here calls one an error, and :attr:`SetGrade.unverified_names` lists them for a
-reader to check.
+key's author did not list. Only recall and core recall judge quality. The verified share, the named count and the
+unverified count are diagnostics with no better direction, so no ranking or bar reads them and an unlisted pick never
+counts against an output; :attr:`SetGrade.unverified_names` lists those picks for a reader to check.
 
 **Matching is the host's to replace.** :class:`FoldingMatcher` is the default: a name or alias equal after
 :func:`~threetears.evals.schema.reference.fold_name` (Unicode NFKC, case folded, whitespace runs as one space). It
 uses no word list and strips no accent, since both are language-specific. A host with its own normaliser plugs it in
 as an :class:`EntityMatcher`, which sees the whole key, and names it by its ``identity``.
 
+**One grader declares and grades.** A :class:`SetGrader` is bound to its measure prefix, its matcher and its
+extractor. It declares the five measures (:meth:`SetGrader.descriptors`), whose ``formula`` names the matcher and the
+extractor, and it grades with exactly those (:meth:`SetGrader.grade`, :meth:`SetGrader.grade_text`). Each
+:class:`SetGrade` records the identities it was graded with and states the same formula, so a cell can never be
+graded one way while its measures are declared another, and runs graded two ways never pool.
+
 **The measures state their population by absence.** :meth:`SetGrade.host_measures` lands each reading on a kind's
 ``CandidateOutput.host_measures`` under ``<prefix>_<measure>``. A reading with no value on a cell (core recall where the
 key has no core, the verified share where nothing was named) is left off it, so that cell is outside that measure's
-n, and an empty output reads differently from a perfect one. :func:`set_grade_descriptors` declares the five
-measures, and its ``formula`` names the matcher and the extractor, so a changed matcher or extractor is a changed
-measure definition and runs graded two ways never pool.
+n, and an empty output reads differently from a perfect one.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from threetears.evals.schema.reference import ReferenceKey, fold_name
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.entity_extraction import EntityExtractor
+    from threetears.evals.kernel.usage_capture import RoleUsageLedger
 
 #: The family a set grade's measures carry when a model step listed the entities: the numbers are code's, over names
 #: a judge read off prose, so they are a judge's in the sense that decides ranking (``graded_by``). A host that grades
@@ -140,17 +146,34 @@ class FoldingMatcher:
         return None
 
 
+def _formula(matcher_identity: str, extractor_identity: str) -> str:
+    """The one formula a grade states and its measures declare: the grading rule, the matcher and the extractor.
+
+    :param matcher_identity: The matcher's identity.
+    :param extractor_identity: The extractor's identity, or ``structured`` for a set the host supplied.
+    :return: ``set grade v1 | matcher <identity> | extractor <identity>``.
+    """
+    return f"{_GRADE_REVISION} | matcher {matcher_identity} | extractor {extractor_identity}"
+
+
 class SetGrade(EvalBaseModel):
-    """One output's named set graded against one key: the counts, the names behind them, and the readings.
+    """One output's named set graded against one key: the counts, the names behind them, the readings, and what it was
+    graded with.
 
     ``named`` counts distinct picks: every spelling the matcher finds as one key entity is one pick, and unmatched
     names whose folded names are equal are one pick. ``verified`` counts the picks the matcher found in the key, one
     per key entity found, and the rest are unverified: outside a key that may be non-exhaustive, so never counted
-    wrong.
+    wrong. Made by :class:`SetGrader`, which records its own prefix, matcher and extractor here.
     """
 
     model_config = ConfigDict(frozen=True)
 
+    prefix: str = Field(description="The measure prefix of the grader that made this grade.")
+    matcher_identity: str = Field(min_length=1, description="The identity of the matcher this set was graded with.")
+    extractor_identity: str = Field(
+        min_length=1,
+        description="The identity of the extractor that listed the set, or `structured` for a set the host supplied.",
+    )
     named: int = Field(
         ge=0, description="Distinct picks the output made: one per key entity found, one per unmatched name."
     )
@@ -165,7 +188,9 @@ class SetGrade(EvalBaseModel):
 
     @model_validator(mode="after")
     def _counts_agree(self) -> SetGrade:
-        """Refuse counts that contradict each other or the names listed beside them."""
+        """Refuse a prefix that is no measure key's start, and counts that contradict each other or the names listed
+        beside them."""
+        _measure_name(self.prefix, _RECALL)
         if self.verified > self.named:
             raise ValueError(f"{self.verified} verified of {self.named} named: a verified entity is a named one")
         if self.verified != len(self.found):
@@ -182,6 +207,11 @@ class SetGrade(EvalBaseModel):
         if len(self.core_missed) > self.core_size:
             raise ValueError(f"{len(self.core_missed)} core entities missed of a core of {self.core_size}")
         return self
+
+    @property
+    def formula(self) -> str:
+        """The formula this grade's measures are declared under: the grading rule, its matcher and its extractor."""
+        return _formula(self.matcher_identity, self.extractor_identity)
 
     @property
     def unverified(self) -> int:
@@ -202,20 +232,19 @@ class SetGrade(EvalBaseModel):
 
     @property
     def verified_share(self) -> float | None:
-        """The share of what the output named that the key holds, or None when it named nothing."""
+        """The share of what the output named that the key holds, or None when it named nothing. A diagnostic: a
+        pick outside the key lowers it and may still be a good one."""
         if self.named == 0:
             return None
         return self.verified / self.named
 
-    def host_measures(self, prefix: str) -> dict[str, float]:
-        """The readings as a kind lands them on ``CandidateOutput.host_measures``, each under ``<prefix>_<measure>``.
+    def host_measures(self) -> dict[str, float]:
+        """The readings as a kind lands them on ``CandidateOutput.host_measures``, under the grader's prefix.
 
         A reading with no value is left out, so the cell is outside that measure's n: core recall where the key has
         no core, the verified share where nothing was named.
 
-        :param prefix: The prefix :func:`set_grade_descriptors` declared the measures under.
-        :return: Measure key to value.
-        :raises ValueError: The prefix is not a measure key's shape.
+        :return: Measure key to value, each key ``<prefix>_<measure>``.
         """
         readings: dict[str, float | None] = {
             _RECALL: self.recall,
@@ -224,133 +253,202 @@ class SetGrade(EvalBaseModel):
             _NAMED: float(self.named),
             _UNVERIFIED: float(self.unverified),
         }
-        return {_measure_name(prefix, measure): value for measure, value in readings.items() if value is not None}
+        return {_measure_name(self.prefix, measure): value for measure, value in readings.items() if value is not None}
 
 
-def grade_set(named: Sequence[NamedEntity], key: ReferenceKey, *, matcher: EntityMatcher | None = None) -> SetGrade:
-    """Grade the entities an output named against a case's key, in both directions.
+class SetGrader:
+    """One named set's grader: bound to its measure prefix, its matcher and its extractor, it declares the measures and
+    grades with exactly what they name.
 
-    Every named entity is matched, so a host matcher sees each spelling and its fields. One the matcher finds is
-    verified and the key entity it names is found, and every spelling found as the same key entity is one pick: a
-    name repeated or written two ways does not count twice. One it does not find is unverified, and unmatched names
-    whose folded names are equal are one pick, the first spelling kept.
-
-    :param named: What the output named, in its order: a host's structured picks, or an extractor's list.
-    :param key: The case's reference key.
-    :param matcher: How a named entity is found in the key; None is :class:`FoldingMatcher`.
-    :return: The grade.
-    :raises ValueError: The matcher named an entity the key does not hold, which is the matcher's defect.
+    A structured set (a host tool's picks) is graded with :meth:`grade`; prose is graded with :meth:`grade_text`,
+    which lists its entities with the bound extractor first. A grader bound to an extractor refuses a set listed any
+    other way, since its measures name that extractor.
     """
-    matching = matcher if matcher is not None else FoldingMatcher()
-    names = {entity.name for entity in key.entities}
-    found: set[str] = set()
-    unmatched: set[str] = set()
-    unverified: list[str] = []
-    for entity in named:
-        hit = matching.match(entity, key)
-        if hit is None:
-            said = fold_name(entity.name)
-            if said not in unmatched:
-                unmatched.add(said)
-                unverified.append(entity.name)
-            continue
-        if hit not in names:
-            raise ValueError(
-                f"the matcher {matching.identity!r} matched {entity.name!r} to {hit!r}, which the key does not hold; "
-                "a matcher answers a key entity's name or None"
+
+    def __init__(
+        self,
+        prefix: str,
+        *,
+        reader_label: str,
+        matcher: EntityMatcher | None = None,
+        extractor: EntityExtractor | None = None,
+    ) -> None:
+        """Bind the grader.
+
+        :param prefix: The start of each measure key: lower case letters, digits and ``_``, starting with a letter.
+        :param reader_label: What a reader calls the set ("Picks"), which starts each measure's reader name.
+        :param matcher: How a named entity is found in the key; None is :class:`FoldingMatcher`.
+        :param extractor: The extractor that lists the set from prose, or None for a set the host supplies.
+        :raises ValueError: The prefix is not a measure key's shape, or the reader label is blank.
+        """
+        _measure_name(prefix, _RECALL)
+        label = reader_label.strip()
+        if not label:
+            raise ValueError("a set grader's reader label is what a reader calls the set, and it is blank")
+        self._prefix = prefix
+        self._label = label
+        self._matcher: EntityMatcher = matcher if matcher is not None else FoldingMatcher()
+        self._extractor = extractor
+
+    @property
+    def prefix(self) -> str:
+        """The start of each measure key."""
+        return self._prefix
+
+    @property
+    def matcher(self) -> EntityMatcher:
+        """The matcher every grade is made with."""
+        return self._matcher
+
+    @property
+    def extractor(self) -> EntityExtractor | None:
+        """The extractor that lists a prose answer's entities, or None for a grader of structured sets."""
+        return self._extractor
+
+    @property
+    def formula(self) -> str:
+        """The formula every measure declares and every grade states."""
+        return _formula(self._matcher.identity, self._extractor_identity())
+
+    def _extractor_identity(self) -> str:
+        return self._extractor.identity if self._extractor is not None else _STRUCTURED
+
+    def descriptors(self) -> tuple[MetricDescriptor, ...]:
+        """The five measures :meth:`SetGrade.host_measures` lands, for the host's measure registry.
+
+        Each description states its population. Recall and core recall are quality measures with a better end; the
+        verified share, the named count and the unverified count are diagnostics with none, so no ranking or bar reads
+        them and a pick outside a non-exhaustive key never counts against an output. Without an extractor the family
+        is ``mechanical``; with one it is :data:`EXTRACTED_SET_FAMILY`, which the host then declares on its registry.
+
+        :return: Recall, core recall, verified share, named and unverified, in that order.
+        """
+        extracted = self._extractor is not None
+        common: dict[str, object] = {
+            "data_type": "numeric",
+            "family": EXTRACTED_SET_FAMILY.name if extracted else "mechanical",
+            "transferability_class": "judge_mediated" if extracted else "mechanical",
+            "attribution_scope": "end_to_end",
+            "formula": self.formula,
+            "population": "scored",
+        }
+        share: dict[str, object] = {**common, "value_range": (0.0, 1.0), "scale": "ratio"}
+        quality: dict[str, object] = {**share, "higher_is_better": True, "merit_axis": "quality"}
+        count: dict[str, object] = {**common, "diagnostic": True, "nonnegative": True, "unit": "entities"}
+        label = self._label
+        return tuple(
+            MetricDescriptor.model_validate(fields)
+            for fields in (
+                {
+                    **quality,
+                    "name": _measure_name(self._prefix, _RECALL),
+                    "reader_name": f"{label} found, of the key",
+                    "description": "The share of the case's whole key the output named, on every graded cell.",
+                },
+                {
+                    **quality,
+                    "name": _measure_name(self._prefix, _CORE_RECALL),
+                    "reader_name": f"{label} found, of the core",
+                    "description": "The share of the key's core the output named, on the cells whose key has a core.",
+                },
+                {
+                    **share,
+                    "diagnostic": True,
+                    "name": _measure_name(self._prefix, _VERIFIED_SHARE),
+                    "reader_name": f"{label} named, found in the key",
+                    "description": "The share of what the output named that the key holds, on the cells that named "
+                    "at least one; a diagnostic, since a pick outside a non-exhaustive key may be a good one.",
+                },
+                {
+                    **count,
+                    "name": _measure_name(self._prefix, _NAMED),
+                    "reader_name": f"{label} named",
+                    "description": "How many distinct picks the output made, one per key entity found and one per "
+                    "unmatched name, on every graded cell.",
+                },
+                {
+                    **count,
+                    "name": _measure_name(self._prefix, _UNVERIFIED),
+                    "reader_name": f"{label} named, not in the key",
+                    "description": "How many named entities the key does not hold, on every graded cell; a key may be "
+                    "non-exhaustive, so these are unverified, never wrong.",
+                },
             )
-        found.add(hit)
-    return SetGrade(
-        named=len(found) + len(unverified),
-        verified=len(found),
-        core_size=len(key.core),
-        key_size=len(key.entities),
-        found=tuple(entity.name for entity in key.entities if entity.name in found),
-        core_missed=tuple(entity.name for entity in key.core if entity.name not in found),
-        unverified_names=tuple(unverified),
-    )
-
-
-def set_grade_descriptors(
-    prefix: str,
-    *,
-    reader_label: str,
-    matcher: EntityMatcher | None = None,
-    extractor: EntityExtractor | None = None,
-) -> tuple[MetricDescriptor, ...]:
-    """The five measures :meth:`SetGrade.host_measures` lands, for a host's measure registry.
-
-    Each description states its population. The ``formula`` names the grading rule, the matcher's identity and the
-    extractor's (``structured`` when the host supplied the set), so a change to either is a changed definition and
-    a run graded one way never pools with one graded another. Without an extractor the family is ``mechanical``;
-    with one it is :data:`EXTRACTED_SET_FAMILY`, which the host then declares on its registry.
-
-    :param prefix: The start of each measure key, as :meth:`SetGrade.host_measures` is passed it.
-    :param reader_label: What a reader calls the set ("Picks"), which starts each measure's reader name.
-    :param matcher: The matcher the kind grades with; None is :class:`FoldingMatcher`.
-    :param extractor: The extractor that lists the set from prose, or None for a set the host supplies.
-    :return: Recall, core recall, verified share, named and unverified, in that order.
-    :raises ValueError: The prefix is not a measure key's shape, or the reader label is blank.
-    """
-    label = reader_label.strip()
-    if not label:
-        raise ValueError("a set grade's reader label is what a reader calls the set, and it is blank")
-    matching = matcher if matcher is not None else FoldingMatcher()
-    source = extractor.identity if extractor is not None else _STRUCTURED
-    common: dict[str, object] = {
-        "data_type": "numeric",
-        "family": EXTRACTED_SET_FAMILY.name if extractor is not None else "mechanical",
-        "transferability_class": "judge_mediated" if extractor is not None else "mechanical",
-        "attribution_scope": "end_to_end",
-        "formula": f"{_GRADE_REVISION} | matcher {matching.identity} | extractor {source}",
-        "population": "scored",
-    }
-    share: dict[str, object] = {
-        **common,
-        "higher_is_better": True,
-        "value_range": (0.0, 1.0),
-        "merit_axis": "quality",
-        "scale": "ratio",
-    }
-    count: dict[str, object] = {**common, "diagnostic": True, "nonnegative": True, "unit": "entities"}
-    return tuple(
-        MetricDescriptor.model_validate(fields)
-        for fields in (
-            {
-                **share,
-                "name": _measure_name(prefix, _RECALL),
-                "reader_name": f"{label} found, of the key",
-                "description": "The share of the case's whole key the output named, on every graded cell.",
-            },
-            {
-                **share,
-                "name": _measure_name(prefix, _CORE_RECALL),
-                "reader_name": f"{label} found, of the core",
-                "description": "The share of the key's core the output named, on the cells whose key has a core.",
-            },
-            {
-                **share,
-                "name": _measure_name(prefix, _VERIFIED_SHARE),
-                "reader_name": f"{label} named, found in the key",
-                "description": "The share of what the output named that the key holds, on the cells that named "
-                "at least one; the rest are unverified, not wrong.",
-            },
-            {
-                **count,
-                "name": _measure_name(prefix, _NAMED),
-                "reader_name": f"{label} named",
-                "description": "How many distinct picks the output made, one per key entity found and one per "
-                "unmatched name, on every graded cell.",
-            },
-            {
-                **count,
-                "name": _measure_name(prefix, _UNVERIFIED),
-                "reader_name": f"{label} named, not in the key",
-                "description": "How many named entities the key does not hold, on every graded cell; a key may be "
-                "non-exhaustive, so these are unverified, never wrong.",
-            },
         )
-    )
+
+    def grade(self, named: Sequence[NamedEntity], key: ReferenceKey) -> SetGrade:
+        """Grade a structured set, the entities a host built from the output, against a case's key, in both directions.
+
+        Every named entity is matched, so a host matcher sees each spelling and its fields. One the matcher finds is
+        verified and the key entity it names is found, and every spelling found as the same key entity is one pick: a
+        name repeated or written two ways does not count twice. One it does not find is unverified, and unmatched
+        names whose folded names are equal are one pick, the first spelling kept.
+
+        :param named: What the output named, in its order.
+        :param key: The case's reference key.
+        :return: The grade, recording this grader's prefix, matcher and extractor.
+        :raises ValueError: This grader is bound to an extractor, so its measures name a set listed by it
+            (:meth:`grade_text`); or the matcher named an entity the key does not hold, which is the matcher's defect.
+        """
+        if self._extractor is not None:
+            raise ValueError(
+                f"this grader's measures name the extractor {self._extractor.identity!r}, so it grades the sets that "
+                "extractor lists (grade_text); a structured set is graded by a grader with no extractor"
+            )
+        return self._graded(named, key)
+
+    async def grade_text(self, text: str, key: ReferenceKey, *, ledger: RoleUsageLedger) -> SetGrade:
+        """List the entities prose names with the bound extractor, then grade them against a case's key.
+
+        The extractor never sees the key. Blank text names nothing, makes no call and grades as an empty set.
+
+        :param text: The output's prose.
+        :param key: The case's reference key.
+        :param ledger: The cell's ``judge`` ledger, which every extraction call is billed to.
+        :return: The grade, recording this grader's prefix, matcher and extractor.
+        :raises ValueError: This grader has no extractor; the ledger is not the ``judge`` role's; or the matcher named
+            an entity the key does not hold.
+        :raises EntityExtractionFailed: The extractor's reply was cut short, or would not parse after retries.
+        """
+        if self._extractor is None:
+            raise ValueError(
+                "this grader has no extractor, so its measures name a structured set; grade the host's picks with "
+                "grade, or bind an extractor to grade prose"
+            )
+        named = await self._extractor.extract(text, ledger=ledger)
+        return self._graded(named, key)
+
+    def _graded(self, named: Sequence[NamedEntity], key: ReferenceKey) -> SetGrade:
+        names = {entity.name for entity in key.entities}
+        found: set[str] = set()
+        unmatched: set[str] = set()
+        unverified: list[str] = []
+        for entity in named:
+            hit = self._matcher.match(entity, key)
+            if hit is None:
+                said = fold_name(entity.name)
+                if said not in unmatched:
+                    unmatched.add(said)
+                    unverified.append(entity.name)
+                continue
+            if hit not in names:
+                raise ValueError(
+                    f"the matcher {self._matcher.identity!r} matched {entity.name!r} to {hit!r}, which the key does "
+                    "not hold; a matcher answers a key entity's name or None"
+                )
+            found.add(hit)
+        return SetGrade(
+            prefix=self._prefix,
+            matcher_identity=self._matcher.identity,
+            extractor_identity=self._extractor_identity(),
+            named=len(found) + len(unverified),
+            verified=len(found),
+            core_size=len(key.core),
+            key_size=len(key.entities),
+            found=tuple(entity.name for entity in key.entities if entity.name in found),
+            core_missed=tuple(entity.name for entity in key.core if entity.name not in found),
+            unverified_names=tuple(unverified),
+        )
 
 
 __all__ = [
@@ -359,6 +457,5 @@ __all__ = [
     "FoldingMatcher",
     "NamedEntity",
     "SetGrade",
-    "grade_set",
-    "set_grade_descriptors",
+    "SetGrader",
 ]

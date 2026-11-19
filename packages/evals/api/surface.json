@@ -2071,11 +2071,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.grade_set": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.GradedBy": {
       "kind": "literal",
       "signature": "",
@@ -2726,13 +2721,13 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.set_grade_descriptors": {
-      "kind": "function",
+    "threetears.evals.kernel.SetGrade": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.SetGrade": {
-      "kind": "model",
+    "threetears.evals.kernel.SetGrader": {
+      "kind": "class",
       "signature": "",
       "tier": "provisional"
     },

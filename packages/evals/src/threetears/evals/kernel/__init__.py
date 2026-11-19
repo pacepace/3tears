@@ -351,8 +351,7 @@ from threetears.evals.kernel.set_grade import (
     FoldingMatcher,
     NamedEntity,
     SetGrade,
-    grade_set,
-    set_grade_descriptors,
+    SetGrader,
 )
 from threetears.evals.kernel.usage_capture import (
     RoleUsageLedger,
@@ -626,8 +625,7 @@ __all__ = [
     "FoldingMatcher",
     "NamedEntity",
     "SetGrade",
-    "grade_set",
-    "set_grade_descriptors",
+    "SetGrader",
     "RunIndexEntry",
     "RunStore",
     "SeedPrompt",
