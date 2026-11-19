@@ -19,9 +19,10 @@ Running the certification (:data:`COMMAND`, ``packages/evals/scripts/certify_sta
 decide it (:func:`closure`: every repository file the certification imports, derived from the code). ``test_stats_certificate.py`` fails, naming each stale claim and this command, when any of
 those files has changed since; and fails on any claim whose count does not clear its target.
 
-The restated claims run on this machine, side by side in processes; the product claims run on the testament pool as one
-request (``test_certified_simulations.py``, the ``simulation`` suite), each shard recording its counts as metrics the
-command reads back.
+Every shard, restated or through the product, runs on the testament pool as one request
+(``test_certified_simulations.py``, the ``simulation`` suite), each recording its counts as metrics named by the run's
+key, which the command reads back. The command's ``--local`` runs them all on the submitting machine instead, for a
+pool that is down.
 """
 
 from __future__ import annotations
@@ -195,9 +196,12 @@ def current_files() -> dict[str, str]:
 
 # --- the shards ------------------------------------------------------------------------------------------------------
 
-Where = Literal["local", "pool"]
+#: How a shard counts: ``restated`` over the bet alone (:func:`run_restated`), or ``product`` through ``Eval.run`` or the
+#: engine's operator path (:func:`run_product`). Both run on the pool.
+Through = Literal["restated", "product"]
 
-#: The counts a shard returns, each a metric the pool's shard records: ``n`` newcomers or comparisons read; ``hits`` the
+#: The counts a shard returns (an advice shard counts fields of its own, ``advice_nulls.advised``), of which it records
+#: as metrics those its claims read (:func:`recorded_fields`): ``n`` newcomers or comparisons read; ``hits`` the
 #: claim's event (separated, missed, crossed); ``better`` and ``worse`` the strong evidence each way; ``held`` how many
 #: held what an exact claim asserts of each; ``low`` and ``high`` the intervals whose lower end passed the true
 #: difference, and whose upper end fell short of it.
@@ -206,12 +210,12 @@ FIELDS = ("n", "hits", "better", "worse", "held", "low", "high")
 
 @dataclass(frozen=True)
 class Shard:
-    """One unit of a claim group's simulation: its id (a pytest id), the group it counts toward, where it runs, the job
+    """One unit of a claim group's simulation: its id (a pytest id), the group it counts toward, how it counts, the job
     that runs it and that job's arguments."""
 
     id: str
     group: str
-    where: Where
+    through: Through
     job: str
     args: Mapping[str, Any] = field(default_factory=dict)
 
@@ -230,7 +234,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"small-once-{null}-{block.start}",
                     f"small-once-{null}",
-                    "local",
+                    "restated",
                     "small-once",
                     {"null": null, "shards": list(block), "per": 200},
                 )
@@ -241,7 +245,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"small-continued-{null}-{block.start}",
                     f"small-continued-{null}",
-                    "local",
+                    "restated",
                     "small-continued",
                     {"null": null, "shards": list(block), "per": 150},
                 )
@@ -253,7 +257,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"small-planned-onramp-{block.start}",
                 "small-planned-onramp",
-                "local",
+                "restated",
                 "small-planned",
                 {"null": "onramp", "shards": list(block), "per": 150},
             )
@@ -267,7 +271,7 @@ def _shards() -> list[Shard]:
                     Shard(
                         f"small-{asks}{plan}-{block.start}",
                         f"small-{asks}{plan}",
-                        "local",
+                        "restated",
                         "small-asks",
                         {"asks": asks, "plan": plan, "start": block.start, "count": len(block)},
                     )
@@ -275,7 +279,11 @@ def _shards() -> list[Shard]:
     for block in _blocks(20, 5):
         shards.append(
             Shard(
-                f"small-cover-{block.start}", "small-cover", "local", "small-cover", {"shards": list(block), "per": 200}
+                f"small-cover-{block.start}",
+                "small-cover",
+                "restated",
+                "small-cover",
+                {"shards": list(block), "per": 200},
             )
         )
     for block in _blocks(200, 10):
@@ -283,7 +291,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"rereadable-continued-{block.start}",
                 "rereadable-continued",
-                "local",
+                "restated",
                 "rereadable",
                 {"continued": True, "shards": list(block), "per": 50},
             )
@@ -293,7 +301,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"rereadable-rerun-{block.start}",
                 "rereadable-rerun",
-                "local",
+                "restated",
                 "rereadable",
                 {"continued": False, "shards": list(block), "per": 50},
             )
@@ -305,7 +313,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"horizon-k{k}-n{horizon}-{block.start}",
                     f"horizon-k{k}",
-                    "local",
+                    "restated",
                     "horizon",
                     {"k": k, "horizon": horizon, "start": block.start, "count": len(block)},
                 )
@@ -317,7 +325,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"engine-null-{looks}-{cases}-{plus}-{block.start}",
                     f"engine-null-{looks}-{cases}-{plus}",
-                    "local",
+                    "restated",
                     "engine-null",
                     {"cases": cases, "plus": plus, "looks": looks, "start": block.start, "count": len(block)},
                 )
@@ -330,7 +338,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"engine-unpaired-{looks}-{control}-{contrast}-{rate}-{block.start}",
                     f"engine-unpaired-{looks}-{control}-{contrast}-{rate}",
-                    "local",
+                    "restated",
                     "engine-unpaired",
                     {
                         "cases": (control, contrast),
@@ -350,7 +358,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"advice-{family}-{block.start}",
                     f"advice-{family}",
-                    "local",
+                    "restated",
                     "advice",
                     {"family": family, "start": block.start, "count": len(block)},
                 )
@@ -363,7 +371,7 @@ def _shards() -> list[Shard]:
                     Shard(
                         f"{job}-{family}-{block.start}",
                         f"{job}-{family}",
-                        "local",
+                        "restated",
                         job,
                         {"family": family, "start": block.start, "count": len(block)},
                     )
@@ -376,7 +384,7 @@ def _shards() -> list[Shard]:
                     Shard(
                         f"advice-decided-{arms}-{family}-{block.start}",
                         f"advice-decided-{arms}-{family}",
-                        "local",
+                        "restated",
                         "advice-decided",
                         {"family": family, "arms": arms, "start": block.start, "count": len(block)},
                     )
@@ -387,7 +395,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"advice-mixed-{block.start}",
                 "advice-mixed",
-                "local",
+                "restated",
                 "advice-mixed",
                 {"start": block.start, "count": len(block)},
             )
@@ -398,7 +406,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"eq-small-once-{null}",
                 "eq-small-once",
-                "pool",
+                "product",
                 "equivalence",
                 {"flow": "small-once", "null": null, "tags": [f"once-{null}-0-{i}" for i in range(40)]},
             )
@@ -407,7 +415,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"eq-small-continued-{null}",
                 "eq-small-continued",
-                "pool",
+                "product",
                 "equivalence",
                 {"flow": "small-continued", "null": null, "tags": [f"continued-{null}-0-{i}" for i in range(30)]},
             )
@@ -416,7 +424,7 @@ def _shards() -> list[Shard]:
         Shard(
             "eq-small-planned-onramp",
             "eq-small-planned",
-            "pool",
+            "product",
             "equivalence",
             {"flow": "small-planned", "null": "onramp", "tags": [f"planned-onramp-0-{i}" for i in range(30)]},
         )
@@ -433,7 +441,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"eq-small-{asks}{plan}-{part}",
                     f"eq-small-{asks}{plan}",
-                    "pool",
+                    "product",
                     "equivalence",
                     {"flow": f"small-{asks}{plan}", "null": "binary", "tags": [f"{asks}{plan}-{i}" for i in block]},
                 )
@@ -442,7 +450,7 @@ def _shards() -> list[Shard]:
         Shard(
             "eq-small-cover",
             "eq-small-cover",
-            "pool",
+            "product",
             "equivalence",
             {"flow": "small-cover", "tags": [f"cover-0-{i}" for i in range(60)]},
         )
@@ -452,7 +460,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"eq-rereadable-continued-{part}",
                 "eq-rereadable-continued",
-                "pool",
+                "product",
                 "equivalence",
                 {"flow": "rereadable-continued", "tags": [f"continued-{i // 50}-{i % 50}" for i in block]},
             )
@@ -462,7 +470,7 @@ def _shards() -> list[Shard]:
             Shard(
                 f"eq-rereadable-rerun-{part}",
                 "eq-rereadable-rerun",
-                "pool",
+                "product",
                 "equivalence",
                 {"flow": "rereadable-rerun", "tags": [f"rerun-0-{i}" for i in block]},
             )
@@ -480,7 +488,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"quick-drained-{latency}-{block.start}",
                     f"quick-drained-{latency}",
-                    "pool",
+                    "product",
                     "quick-watched",
                     {
                         "tag": tag,
@@ -501,7 +509,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"quick-cut-{latency}-{block.start}",
                     f"quick-cut-{latency}",
-                    "pool",
+                    "product",
                     "quick-watched",
                     {
                         "tag": f"cut-{latency}",
@@ -525,7 +533,7 @@ def _shards() -> list[Shard]:
                     Shard(
                         f"engine-drain-{reading}-{law}-{grader}-{block.start}",
                         f"engine-drain-{reading}-{law}-{grader}",
-                        "pool",
+                        "product",
                         "engine-drained",
                         {"reading": reading, "law": law, "grader": grader, "start": block.start, "count": len(block)},
                     )
@@ -538,7 +546,7 @@ def _shards() -> list[Shard]:
                 Shard(
                     f"engine-{stop}-{reading}-{law}-{grader}-{block.start}",
                     f"engine-{stop}-{reading}-{law}-{grader}",
-                    "pool",
+                    "product",
                     "engine-counted",
                     {
                         "reading": reading,
@@ -561,8 +569,8 @@ def _counts(n: int, hits: int = 0, **more: int) -> dict[str, int]:
     return {"n": n, "hits": hits, **more}
 
 
-def run_local(shard: Shard) -> dict[str, int]:
-    """Run one restated shard here: pure arithmetic over seeded answers, no ``Eval.run``."""
+def run_restated(shard: Shard) -> dict[str, int]:
+    """Run one restated shard: pure arithmetic over seeded answers, no ``Eval.run``."""
     args = shard.args
     if shard.job == "small-once":
         reads = [
@@ -663,10 +671,10 @@ def run_local(shard: Shard) -> dict[str, int]:
             for i in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(separated), sum(separated))
-    raise ValueError(f"shard {shard.id} runs on the pool, not here")
+    raise ValueError(f"shard {shard.id} runs through the product, not restated")
 
 
-async def run_pool(shard: Shard) -> dict[str, int]:
+async def run_product(shard: Shard) -> dict[str, int]:
     """Run one product shard: through ``Eval.run`` or the engine's operator path. A shard holding an exact claim fails
     at the first newcomer or comparison that breaks it, saying where."""
     args = shard.args
@@ -706,7 +714,7 @@ async def run_pool(shard: Shard) -> dict[str, int]:
             args["reading"], args["law"], args["grader"], args["stop"], args["count"], "engine", start=args["start"]
         )
         return _counts(args["count"], separated)
-    raise ValueError(f"shard {shard.id} runs here, not on the pool")
+    raise ValueError(f"shard {shard.id} is restated, not run through the product")
 
 
 async def _equivalence(flow: str, null: quick.Null | None, tags: Sequence[str]) -> dict[str, int]:
@@ -742,11 +750,16 @@ async def _equivalence(flow: str, null: quick.Null | None, tags: Sequence[str]) 
     return _counts(len(tags), decided, held=held)
 
 
+async def run(shard: Shard) -> dict[str, int]:
+    """Run one shard, restated or through the product, inside a running event loop: the pool's test of each shard."""
+    if shard.through == "restated":
+        return run_restated(shard)
+    return await run_product(shard)
+
+
 def run_shard(shard: Shard) -> dict[str, int]:
-    """Run one shard in this process, wherever it belongs (the command's ``--local`` runs the pool's here too)."""
-    if shard.where == "local":
-        return run_local(shard)
-    return asyncio.run(run_pool(shard))
+    """Run one shard in this process with an event loop of its own: each worker of the command's ``--local``."""
+    return asyncio.run(run(shard))
 
 
 # --- the claims ------------------------------------------------------------------------------------------------------
@@ -1281,19 +1294,40 @@ def run_key() -> str:
     return RUN_KEY.read_text().strip() if RUN_KEY.exists() else "unkeyed"
 
 
-def metric_name(key: str, field_name: str) -> str:
-    """The metric a pool shard records one count under."""
-    return f"simcert_{key}_{field_name}"
+#: The most series one ``testament metrics`` call returns (its ``--limit``). A call that returns this many may have cut
+#: some off, so the command refuses it rather than read it as complete.
+METRICS_PER_CALL = 1000
+
+#: How many shards share one bucket of metric names: under :data:`METRICS_PER_CALL`, so one call per bucket and field
+#: reads every shard of the bucket back.
+METRIC_BUCKET = 900
+
+_POSITION = {shard.id: index for index, shard in enumerate(SHARDS)}
 
 
-def pool_shards() -> list[Shard]:
-    """The shards the pool runs."""
-    return [shard for shard in SHARDS if shard.where == "pool"]
+def _read_by_group() -> dict[str, frozenset[str]]:
+    read: dict[str, set[str]] = {}
+    for claim in CLAIMS:
+        read.setdefault(claim.group, set()).add(claim.field)
+    return {group: frozenset(fields) for group, fields in read.items()}
 
 
-def local_shards() -> list[Shard]:
-    """The shards this machine runs."""
-    return [shard for shard in SHARDS if shard.where == "local"]
+_READ_BY_GROUP = _read_by_group()
+
+
+def recorded_fields(shard: Shard) -> tuple[str, ...]:
+    """The counts a shard records: ``n`` and every field a claim of its group reads (:func:`tally`)."""
+    return ("n", *sorted(_READ_BY_GROUP.get(shard.group, frozenset()) - {"n"}))
+
+
+def metric_bucket(shard: Shard) -> int:
+    """The bucket of metric names ``shard`` records its counts under (:data:`METRIC_BUCKET`)."""
+    return _POSITION[shard.id] // METRIC_BUCKET
+
+
+def metric_name(key: str, bucket: int, field_name: str) -> str:
+    """The metric a shard of ``bucket`` records one count under, in the certification run keyed ``key``."""
+    return f"simcert_{key}_{bucket}_{field_name}"
 
 
 def shard_by_id(shard_id: str) -> Shard:
@@ -1313,13 +1347,16 @@ __all__ = [
     "Shard",
     "certificate",
     "judge",
-    "local_shards",
+    "METRIC_BUCKET",
+    "METRICS_PER_CALL",
+    "metric_bucket",
     "metric_name",
-    "pool_shards",
+    "recorded_fields",
     "read",
     "run_key",
-    "run_local",
-    "run_pool",
+    "run",
+    "run_product",
+    "run_restated",
     "run_shard",
     "shard_by_id",
     "stale",

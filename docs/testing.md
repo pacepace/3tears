@@ -356,15 +356,33 @@ writes:
 uv run python packages/evals/scripts/certify_stats.py
 ```
 
-It takes about five minutes and at most fifteen: the restated shards run here, side by side in processes (about two
-minutes), while the product shards run on the testament pool as one request of the `simulation` suite, each shard an
-xdist group of its own so the pool spreads them; each shard records its counts as metrics named by the run's key, which
-the command reads back, asking again for up to ten minutes while the pool's metrics catch up with a request that has
-passed, and naming any shard still missing a count at that limit. A shard that fails fails the command. It exits 1 if a
-claim fails its target, and the certificate it wrote then fails
-`test_stats_certificate.py` too: a claim that fails is reported with its evidence, never re-run until it passes. With
-the pool down, `--local` runs every shard here (an hour or more). A claim added to the certification is a `Claim` and its
-shards in `stats_certificate.py`, with a fast guard beside it that fails for a wrong formula.
+Every shard runs on the testament pool, in one request of the `simulation` suite: the restated shards (pure
+arithmetic over seeded answers) and the product shards (through `Eval.run` or the engine's operator path) alike, each
+an xdist group of its own so the pool spreads them. Nothing runs on this machine but the request, so the certification
+does not load it. Each shard records the counts its claims read as metrics named by the run's key, which the command
+reads back, asking again for up to ten minutes while the pool's metrics catch up with a request that has passed, and
+naming any shard still missing a count at that limit. A shard that fails fails the command. It exits 1 if a claim
+fails its target, and the certificate it wrote then fails `test_stats_certificate.py` too: a claim that fails is
+reported with its evidence, never re-run until it passes. With the pool down, `--local` runs every shard here, each in a
+process of its own (an hour or more, and it loads this machine).
+
+The command never hangs silently. It prints, flushed as it goes: a start line with its pid; the pool request's id once
+testament accepts it; where the request stands every minute (its state, and how many shards are done, passed and
+failed); each round of the metrics read-back; and each phase's start and end. A `testament run` past an hour, a
+`testament metrics` past two minutes, or under `--local` a shard past 25 minutes, is stopped and fails the run, naming
+which and how long it ran. If nothing moves for ten minutes (`--stall-minutes`): no line from testament, no change in
+the request, no shard done, it writes every thread's stack to its log, names the phase it stalled in (`pool request`,
+`metrics read-back` or `local shards`), stops its subprocesses, removes its key file and exits 3. A signal
+(`timeout`'s SIGTERM, a hang-up) stops it with its last line written and its key file removed. A key file left by a
+killed run is replaced at the next run's start, and said so.
+
+**On a stall**, before stopping the run, take its stacks and attach them to the report: `kill -USR1 <pid>` (the pid is
+on its first line) writes every thread's stack into its log, and `py-spy dump --pid <pid>` shows the same from
+outside; under `--local`, also `py-spy dump --pid <worker>` on each worker (`pgrep -f 'certify_stats.py --shard'`).
+Then look at the pool's side: `testament status` shows whether its request reached the coordinator.
+
+A claim added to the certification is a `Claim` and its shards in `stats_certificate.py`, with a fast guard beside it
+that fails for a wrong formula.
 
 ## The integration suite
 

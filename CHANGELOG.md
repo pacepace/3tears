@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals tooling: the statistics certification runs every shard on the pool, and never hangs silently
+
+**Changed:** `packages/evals/scripts/certify_stats.py` sends every shard to the testament pool in its one `simulation`
+request, the restated shards with the product shards; nothing runs on the submitting machine but the request, so the
+certification no longer loads it. `--local` still runs every shard here, for a pool that is down. Each shard records
+only the counts its claims read, under metric names bucketed below what one `testament metrics` call returns, so the
+read-back covers every shard. **Added:** the command prints, flushed as it goes, its start and pid, the pool request's
+id once testament accepts it, where the request stands every minute, the metrics read-back and each phase's end. A
+`testament run` past an hour or a `testament metrics` past two minutes is stopped and fails the run, naming which and
+how long it ran. When nothing moves for ten minutes (`--stall-minutes`) it writes every thread's stack to its log,
+names the phase it stalled in and exits 3; a signal stops it with its last line written; a key file a killed run left
+behind is replaced at the next start. **On a stall:** take the stacks before stopping it, `kill -USR1 <pid>` (into
+its log) or `py-spy dump --pid <pid>`, and attach them (`docs/testing.md`, "Statistical simulations").
+
 ### evals: a comparison's first screen says what to do beside what is proven
 
 **Added:** a quick comparison's first line is now its advice, above the proof: `Advice: switch to v2. At worst it is
