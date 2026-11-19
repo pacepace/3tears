@@ -26,6 +26,15 @@ know as quoted, has its `%` doubled. A statement naming no placeholder is sent w
 does not read for `%`: it is left whole. Read a token at a time as the keyed builders read it (`SQL_TOKEN`, now also
 from `threetears.core.keyed`).
 
+### enforcement: a `$1` or a `%` inside a literal is no parameter to the whole-read rules
+
+**Fixed:** the whole-read rewriter and checks found a statement's placeholders with a bare `$n` regex, so a `$1` inside
+a string literal, a quoted name, a comment or a dollar-quoted body (`'over $1 billion'`) was counted, renumbered and
+bound as a parameter: a fragment's literal came back rewritten, a read's next placeholder was numbered past it, and a
+guard's parameter could be paired with a column named inside a literal (`'geo = $1'`).
+Every reader (`rewrite`, `helpers`, `index_purposes`, `sql`) now reads a token at a time through the keyed builders'
+`SQL_TOKEN`, as `each_placeholder` does, and leaves such text, and any `%` in it, as written.
+
 ### agent-tools, core: the resolvers and JWKS provider a `ToolServer` provisions ask the hub in its namespace
 
 **Fixed:** the object resolver, the engagement-scope resolver and the Hub JWKS provider a `ToolServer` provisions over

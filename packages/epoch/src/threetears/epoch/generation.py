@@ -648,13 +648,13 @@ class _ChangeLogReading:
                 )
             return held
 
-        # #1172 (f96a1a017): before this wait a watch on an undeclared log failed, backed off to a minute and
+        # #1172: before this wait a watch on an undeclared log failed, backed off to a minute and
         # reported the table unwatched -- metallm's production API logged 968 failures in a row per access table
         # until a write declared the log. The pace is kept as #1172 tuned it: one look per absent_log_poll (1 s by
         # default, a follower's first restart delay), first_delay == max_delay so it is NEVER backed off (a backed-off
         # look would bound a lost broadcast's lateness by the ceiling, not the second); no attempt or time bound, since
         # only the first write declares the log. retry_until_done is the shared never-give-up loop, so the class
-        # holds no sleep loop of its own (tests/enforcement no_bespoke_reuse); a close still ends it (c3deddf18).
+        # holds no sleep loop of its own (tests/enforcement no_bespoke_reuse); a close still ends it, as a KvError, as watch promises.
         await retry_until_done(declared, first_delay=poll, max_delay=poll)
 
     async def _watch_keys(self, table_name: str) -> AsyncGenerator[KvKeyUpdate]:

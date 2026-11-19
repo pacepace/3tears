@@ -130,7 +130,7 @@ async def best_seconds_interleaved(
 
 
 # -- the CPU clock: what a test of an operation's own cost bounds (moved from survey's tests/support/cpu_budget.py,
-# d93c8691, beside the wall-clock helpers above)
+# beside the wall-clock helpers above)
 #
 # A unit test that bounds wall-clock time bounds how busy the machine is. Measured 2026-09-26 in survey, three ways
 # with one result: stalled iterations spent 0.14-5 ms of CPU across ALL the process's threads while 101-201 ms of wall

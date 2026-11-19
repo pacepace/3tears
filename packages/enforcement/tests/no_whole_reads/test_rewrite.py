@@ -659,6 +659,16 @@ def test_a_dollar_number_inside_a_literal_is_no_parameter_of_a_set_expression_or
     assert Pin("", "guard", literal="note <> 'costs $9'") in guarded.guards, guarded.guards
 
 
+def test_a_guard_s_parameter_is_paired_with_its_column_and_not_with_one_inside_a_literal() -> None:
+    """Flips if a guard's parameter is paired with a column found beside a ``$n`` inside a quoted literal (``'geo =
+    $1'``) instead of the column it is compared with outside it."""
+    guarded = parse_write("UPDATE t SET v = $1 WHERE id = $2 AND (note <> 'geo = $1' OR n > $3)", guards=True)
+    assert isinstance(guarded, WriteSql), guarded
+    assert guarded.guards == (
+        Pin("", "guard", literal="(note <> 'geo = $1' OR n > $1)", params=(3,), compared=("n",)),
+    ), guarded.guards
+
+
 def test_a_returning_of_plain_columns_is_parsed() -> None:
     """Flips if a write's trailing RETURNING of plain columns is not read as those columns, in order, or is read into
     the WHERE's last pin."""

@@ -887,3 +887,22 @@ def test_a_row_read_beside_a_step_is_judged_by_its_pins(schema: SchemaCatalog) -
     assert _judged(
         'read_row_beside(c, "unindexed", by={"name": s}, columns=["run_id"], beside=step, limit=n, present="p")', schema
     ) == [[("non-key-where", "unindexed")]]
+
+
+def test_a_dollar_number_or_a_percent_inside_a_fragment_s_literal_is_no_parameter() -> None:
+    """Flips if the walk reads a ``$n`` inside a ``where=`` fragment's literal as a parameter: renumbering the literal's
+    text in the statement it judges, or numbering the read's own parameters past it (a race named 'over $1 billion');
+    a ``%`` in a pattern stays as written."""
+    assert _sent(
+        'read_by(c, "results", by={"state": s}, '
+        "where=[Fragment('t.\"note\" <> \\'over $1 billion\\' AND t.\"geo\" = $1 AND t.\"tag\" LIKE \\'40%\\'', (g,))])"
+    ) == [
+        'SELECT * FROM "results" AS t WHERE t."state" = $1 AND '
+        '(t."note" <> \'over $1 billion\' AND t."geo" = $2 AND t."tag" LIKE \'40%\')'
+    ]
+    (ranked,) = _sent(
+        'read_nearest(c, "results", by={"state": s}, nearest=TextRank("search_vector", q), '
+        "where=[Fragment('t.\"note\" <> \\'costs $9\\'')], limit=k)"
+    )
+    assert "(t.\"note\" <> 'costs $9')" in ranked
+    assert ranked.endswith("websearch_to_tsquery('english', $2)) DESC LIMIT $3"), ranked

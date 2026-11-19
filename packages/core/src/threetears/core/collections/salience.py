@@ -100,7 +100,7 @@ class SalienceDecay:
     def reinforced_values(self, bump: float) -> dict[str, Fragment]:
         """the values a reinforcement by key sets (``update_keyed``'s ``values=``): the effective salience so far plus
         ``bump``, clamped to 1, stamped now, so the decay to now is folded into the new base. The same expression
-        :meth:`effective_sql` reads (332872d44), only bound as a value.
+        :meth:`effective_sql` reads, only bound as a value.
 
         :param bump: the increment
         :ptype bump: float

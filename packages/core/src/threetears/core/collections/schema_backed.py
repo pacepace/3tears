@@ -3141,7 +3141,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise
         if reload and written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
             # Only a reload is analysed here, once, after its last request (coordinator 2026-11-15, within Pace's
-            # 11-12 cold-start ruling). Why a reload at all (458a3c671): a table emptied and filled again keeps the
+            # 11-12 cold-start ruling). Why a reload at all: a table emptied and filled again keeps the
             # statistics of what it held before (or none), so YugabyteDB planned its first reads blind -- a state's
             # rows of some geographies took 157 ms on a primary-key scan and a sort, 0.4 ms once analysed
             # (packages/core/tests/integration/test_reload_analyzed_live.py). Why only a reload: YugabyteDB's ANALYZE
