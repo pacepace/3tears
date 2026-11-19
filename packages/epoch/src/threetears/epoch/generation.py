@@ -30,7 +30,7 @@ an absence's stamp needs. A table's sequences are not consecutive -- other table
 them -- so a follower catches up by walking the table's records after its mark
 (:meth:`EpochGenerationReader.changes_after`), never by counting.
 
-**Two databases, one log** (RC9, 2026-11-16). The hub's platform database and identity-core's both advance through
+**Two databases, one log** (2026-11-16). The hub's platform database and identity-core's both advance through
 this log and both note a table of one name (3tears' ``coordination_revocations``). A source built with ``database``
 (its ring's schema) names it on every record it appends, a restore's included, and a reader built with it walks past
 a record naming another database: that database's keys, truncates and notes brackets are not this one's rows. A
@@ -539,7 +539,7 @@ class _ChangeLogReading:
             seq = entry.seq
             change = read_epoch_change_body(entry.value, table_name, _token(state.incarnation, seq))
             if self._another_databases(change):
-                # WHY (RC9, 2026-11-16): another database's table of this name (the hub's and identity-core's
+                # WHY (2026-11-16): another database's table of this name (the hub's and identity-core's
                 # coordination_revocations); its keys, truncates and brackets are not this database's rows. Walked
                 # past, so the mark still reaches the head
                 _other_database_records().labels(table=table_name).inc()

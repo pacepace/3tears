@@ -1062,7 +1062,7 @@ def switched_tables_not_noted() -> dict[str, str]:
 
     Each switched-on table's lost advance is reconciled from its notes (the write-mark reconciler); one with no note
     trigger is answered ``no_notes``, recorded keys unknown with no bracket, and every follower is behind on it until
-    it restarts (RC1, 2026-11-16). The enforcement census (``threetears.enforcement.collection_census``) lists these
+    it restarts (2026-11-16). The enforcement census (``threetears.enforcement.collection_census``) lists these
     so none ships silently.
 
     :return: ``table -> why``, in table order: classes naming it with different keys, or no class naming a key readable

@@ -19,7 +19,7 @@ epoch is the last of them.
 The records live in L2 (a memory bucket, replicated); the writer that advances writes them, and
 core holds only the format and the two protocols, as it does for the generation itself.
 
-**A record names the database it was written in** (:attr:`EpochChange.database`; RC9, Pace 2026-11-16). One log is
+**A record names the database it was written in** (:attr:`EpochChange.database`; Pace 2026-11-16). One log is
 shared by every database whose writers advance through it -- the hub's platform database and identity-core's -- and
 a record names its table by its bare name, so two databases noting a table of one name write records no reader could
 tell apart. They do today: 3tears' coordination tables (``coordination_revocations``) are migrated into each one's
