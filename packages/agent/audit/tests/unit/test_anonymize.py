@@ -525,3 +525,31 @@ class TestProperties:
         anonymize_details(details, event_type=_PLAIN_EVENT)
 
         assert details == before
+
+
+#: a username's keyed digest: pseudonymous, but confirmable by guessing the name and keyed to one person (audit rows
+#: hold ids only)
+_USERNAME_DIGESTS = ("old_username_digest", "new_username_digest", "typed_username_digest", "stored_username_digest")
+
+
+class TestAUsernameDigestNamesAPerson:
+    """a username's digest is held to the rule a username is: never written, masked in a row written before."""
+
+    @pytest.mark.parametrize("key", _USERNAME_DIGESTS)
+    def test_publishing_one_is_refused(self, key: str) -> None:
+        """Flips if an event carrying a username's digest, at any depth, is published."""
+        with pytest.raises(IdentifyingAuditDetail):
+            refuse_identifying_details(
+                {"principal_id": str(uuid7()), key: "a1b2c3"}, event_type="identity.login.denied"
+            )
+        with pytest.raises(IdentifyingAuditDetail):
+            refuse_identifying_details({"change": {key: "a1b2c3"}}, event_type="identity.username.change")
+
+    @pytest.mark.parametrize("key", _USERNAME_DIGESTS)
+    def test_a_row_written_before_is_masked_on_erasure(self, key: str) -> None:
+        """Flips if erasure leaves a username's digest in an older row as written."""
+        principal = str(uuid7())
+        assert anonymize_details({"principal_id": principal, key: "a1b2c3"}, event_type="identity.login.denied") == {
+            "principal_id": principal,
+            key: ANONYMIZED_MARKER,
+        }

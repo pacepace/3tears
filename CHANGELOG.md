@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-audit: a username's digest is an identifying audit detail
+
+**Changed:** `old_username_digest`, `new_username_digest`, `typed_username_digest` and `stored_username_digest` join
+`IDENTIFYING_DETAIL_KEYS` (and `PERSONAL_DETAIL_KEYS`): a username's keyed digest names its person (confirmable by
+guessing the name), and audit rows hold ids only. `publish_audit` and `persist_audit_event` refuse an event carrying
+one, at any depth, and `anonymize_details` masks one in a row written before. Producers at the consumers' release
+tips: identity only (`identity_core/auth/service.py` `typed_username_digest`, `stored_username_digest`;
+`principals/usernames.py` `old_username_digest`, `new_username_digest`), which drops them from its rows.
+
 ### datasources: a `%` reaches Redshift's driver as the driver reads it
 
 **Fixed:** `translate_placeholders(sql, "pyformat")` (every Redshift statement) wrote each `$n` as `%s` and left every
