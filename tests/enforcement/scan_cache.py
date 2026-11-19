@@ -26,7 +26,8 @@ stale verdict. What the audit cannot see: a bare ``stat`` (a scan that decides b
 exists, outside the files and directories it declares); a read on another thread than the one
 computing (recording is per thread, and the scans start none); sockets and other non-file reads; a
 name learned from listing a declared directory, which is not keyed unless the file it names is
-declared; and a C extension reading through ``fopen``, which raises no event.
+declared; and a C extension reading through ``fopen``, which raises no event. What it leaves out on
+purpose: the import system's own listings and opens, while a module the scan imports is loaded.
 
 **The hook costs nothing until a scan computes.** A Python audit hook runs a Python call for every
 audit event in the process (``id``, ``compile``, ``import``, ...) and cannot be removed once added,
@@ -51,6 +52,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import inspect
 import os
 import pickle
 import subprocess
@@ -116,11 +118,27 @@ _RECORDING = threading.local()
 
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
-    """keep a watched event for the computation running on this thread, if one is."""
+    """keep a watched event for the computation running on this thread, if one is.
+
+    an event the import system raises is never kept: loading a module the computation imports for the
+    first time lists each ``sys.path`` directory and opens the module's code, which is the interpreter
+    loading code, not the scan reading an input. Whether it happens depends only on what the process had
+    imported before, so keeping it would refuse a scan in a fresh process and store it in a warm one.
+    """
     if event in _WATCHED_EVENTS:
         log = getattr(_RECORDING, "log", None)
-        if log is not None:
+        if log is not None and not _importing():
             log.append((event, args))
+
+
+def _importing() -> bool:
+    """whether the import system raised the event being audited, so it is the interpreter loading code."""
+    frame = inspect.currentframe()
+    while frame is not None:
+        if frame.f_code.co_filename.startswith("<frozen importlib"):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _install_audit() -> bool:

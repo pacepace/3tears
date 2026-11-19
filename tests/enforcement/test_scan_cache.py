@@ -407,6 +407,31 @@ def test_a_computation_that_lists_an_undeclared_directory_is_not_stored(tmp_path
     assert calls == ["a", "a"]
 
 
+def test_a_module_imported_for_the_first_time_while_computing_does_not_refuse_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the import system lists ``sys.path`` and opens the module; that is the interpreter loading code, not a read.
+
+    a scan whose code imports a module lazily read outside its key only in a process that had not imported it yet,
+    which is every fresh process: CI's unit suite on a cold runner refused a warm-cache test the pool had passed.
+    """
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    (modules / "first_import_only_here.py").write_text("VALUE = 'loaded'\n")
+    monkeypatch.syspath_prepend(str(modules))
+    monkeypatch.delitem(sys.modules, "first_import_only_here", raising=False)
+
+    def imports_lazily(item: str) -> str:
+        import first_import_only_here  # noqa: PLC0415  (the first import is the point)
+
+        assert first_import_only_here.VALUE == "loaded"
+        return (tmp_path / "inputs" / item).read_text().upper()
+
+    cache = _undeclared(tmp_path, imports_lazily)
+
+    assert not cache.unstored, f"a first import refused the scan: {cache.unstored}"
+
+
 def test_a_computation_that_starts_an_undeclared_program_is_not_stored_and_a_declared_one_is(tmp_path: Path) -> None:
     calls: list[str] = []
 
