@@ -173,8 +173,33 @@ def decided_arms_advised(family: ArmsFamily, index: int, arms: int) -> dict[str,
     ``advice-decided-<arms>-<family>-<index>``; ``ever<bar>`` at each bar times the arms."""
     draw = random.Random(f"advice-decided-{arms}-{family}-{index}")
     cases = [_cases_of_arms(family, draw, arms) for _ in range(HORIZON)]
-    control = [case[0] for case in cases]
-    each = [[case[arm] for case in cases] for arm in range(1, arms + 1)]
+    return _decided_advised([case[0] for case in cases], [[case[arm] for case in cases] for arm in range(1, arms + 1)])
+
+
+#: How much better, in a pass rate's share, the one truly better arm of the mixed-arms claims is than the control.
+MIXED_BETTER = 0.25
+
+
+def mixed_arms_advised(index: int) -> dict[str, bool]:
+    """:func:`decided_arms_advised` with one arm truly better: :data:`ARMS` pass/fail arms, the first passing
+    :data:`MIXED_BETTER` more often than the control and the rest exactly as often. Holm steps down, so a decision on the
+    better arm lowers the level the others are held to; the count (``ever<bar>``) is of the null arms alone, and
+    ``better`` counts the better arm decided. Seeded ``advice-mixed-<index>``."""
+    draw = random.Random(f"advice-mixed-{index}")
+    cases = []
+    for _ in range(HORIZON):
+        share = draw.uniform(0.2, 0.7)
+        shares = [share, share + MIXED_BETTER] + [share] * (ARMS - 1)
+        cases.append([Fraction(int(draw.random() < each)) for each in shares])
+    return _decided_advised(
+        [case[0] for case in cases], [[case[arm] for case in cases] for arm in range(1, ARMS + 1)], nulls_from=1
+    )
+
+
+def _decided_advised(control: list[Fraction], each: list[list[Fraction]], *, nulls_from: int = 0) -> dict[str, bool]:
+    """The family read of :func:`decided_arms_advised` over ``each`` arm against ``control``: ``ever<bar>`` counts the
+    arms from ``nulls_from`` on, ``decided`` any of those decided better, ``better`` any arm before them decided."""
+    arms = len(each)
     raws = []
     for values in each:
         p = bounded_separation_p(
@@ -195,8 +220,12 @@ def decided_arms_advised(family: ArmsFamily, index: int, arms: int) -> dict[str,
     said: dict[str, bool] = {}
     for bar in ADVICE_BARS.values():
         paths = [advice_path(control, values, value_range=(0.0, 1.0), bar=bar * arms) for values in each]
-        said[f"ever{bar:g}"] = any(decided or any(path or ()) for decided, path in zip(improved, paths, strict=True))
-    said["decided"] = any(improved)
+        said[f"ever{bar:g}"] = any(
+            decided or any(path or ()) for decided, path in list(zip(improved, paths, strict=True))[nulls_from:]
+        )
+    said["decided"] = any(improved[nulls_from:])
+    if nulls_from:
+        said["better"] = any(improved[:nulls_from])
     return said
 
 
@@ -233,6 +262,7 @@ __all__ = [
     "HORIZON",
     "MARGIN",
     "MARGIN_FAMILIES",
+    "MIXED_BETTER",
     "ONCE_AT",
     "ArmsFamily",
     "Family",
@@ -244,5 +274,6 @@ __all__ = [
     "count",
     "count_of",
     "margin_advised",
+    "mixed_arms_advised",
     "pair",
 ]

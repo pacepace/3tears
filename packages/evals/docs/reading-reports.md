@@ -478,7 +478,8 @@ ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the fi
   against the proof or the gate. With one arm this cannot make the advice say switch more often (a decision of better
   needs the evidence for v2 at 11 or more, past either bar); with several, an arm Holm decides at a later step can be
   switched on less evidence than the bar times the arms, and the certificate's `advice.decided-arms.*` claims hold the
-  promise with that counted.
+  promise with that counted, among them with one arm truly better, whose decision lowers the level Holm holds the rest
+  to.
 - **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
   The advice never says there is not enough to say.
 - **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the

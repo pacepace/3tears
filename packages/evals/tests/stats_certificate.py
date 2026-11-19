@@ -381,6 +381,17 @@ def _shards() -> list[Shard]:
                         {"family": family, "arms": arms, "start": block.start, "count": len(block)},
                     )
                 )
+    # Three arms, one truly better and the rest null, Holm stepping down past the better one: 4,000.
+    for block in _blocks(4_000, 500):
+        shards.append(
+            Shard(
+                f"advice-mixed-{block.start}",
+                "advice-mixed",
+                "local",
+                "advice-mixed",
+                {"start": block.start, "count": len(block)},
+            )
+        )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -594,6 +605,12 @@ def run_local(shard: Shard) -> dict[str, int]:
         return advice.count_of(
             lambda family, index: advice.decided_arms_advised(family, index, arms),  # type: ignore[arg-type]
             args["family"],
+            range(args["start"], args["start"] + args["count"]),
+        )
+    if shard.job == "advice-mixed":
+        return advice.count_of(
+            lambda _, index: advice.mixed_arms_advised(index),
+            "passfail",
             range(args["start"], args["start"] + args["count"]),
         )
     if shard.job in ("advice-margin", "advice-arms"):
@@ -967,6 +984,23 @@ def _claims() -> list[Claim]:
                         f"advice-decided-{arms}-{family}-<index>, 0-3999, on stats.advice_path and the question's bet",
                     )
                 )
+    for undo, bar in ADVICE_BARS.items():
+        tag = f"{bar:g}"
+        claims.append(
+            Claim(
+                f"advice.decided-arms.mixed.{undo}.every-look",
+                f"{advice.ARMS} pass/fail arms against one control, the first {advice.MIXED_BETTER:g} better and the rest "
+                f"none better, the switch {undo} to undo, its bar times the arms read, a decision of better leading the "
+                "advice whatever its evidence (Holm across the arms at α, stepping down past the better arm), read "
+                f"after every case from the second to {advice.HORIZON}: the advice says switch to any of the arms no "
+                f"better at most one time in {tag}.",
+                "advice-mixed",
+                f"ever{tag}",
+                "at_most",
+                1.0 / bar,
+                "advice-mixed-<index>, 0-3999, on stats.advice_path and the question's bet",
+            )
+        )
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),

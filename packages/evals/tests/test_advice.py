@@ -302,9 +302,14 @@ def test_a_decision_of_better_leads_the_advice_after_the_lead_fades() -> None:
 
 
 def test_a_decision_of_worse_leads_the_advice_after_the_arm_recovers() -> None:
-    """On a question with a margin, eight losses decide v2 worse at six cases; ten wins after them put v2 ahead. The
-    decision stands, so the advice keeps v1, saying why, and the gate fails on the regression beside it."""
-    result = _faded([1] * 8 + [0] * 10, [0] * 8 + [1] * 10, "rise", question="Is v2 no worse than v1?", margin=0.05)
+    """On a question with a margin, eight losses decide v2 worse at six cases; thirty wins after them carry v2's
+    evidence past the bar, which alone would say switch. The decision stands, so the advice keeps v1, saying why, and
+    the gate fails on the regression beside it."""
+    result = _faded([1] * 8 + [0] * 30, [0] * 8 + [1] * 30, "rise", question="Is v2 no worse than v1?", margin=0.05)
+    (family,) = result.report.bundle.multiple_comparisons.families
+    (comparison,) = family.comparisons
+    assert family.advice_bar is not None
+    assert (comparison.evidence_better or 0.0) >= family.advice_bar
     first, proof = result.render().splitlines()[:2]
     assert first == "rise: Advice: keep v1. v2 was proven worse than v1, decided at 6 cases."
     assert proof.startswith("rise: Passed score: v2 worse than v1, decided at 6 cases when the evidence reached 24.")
