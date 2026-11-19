@@ -143,15 +143,18 @@ class FoldingMatcher:
 class SetGrade(EvalBaseModel):
     """One output's named set graded against one key: the counts, the names behind them, and the readings.
 
-    ``named`` counts distinct entities, two named entities whose folded names are equal counting once. ``verified``
-    counts those the matcher found in the key, and the rest are unverified: outside a key that may be
-    non-exhaustive, so never counted wrong.
+    ``named`` counts distinct picks: every spelling the matcher finds as one key entity is one pick, and unmatched
+    names whose folded names are equal are one pick. ``verified`` counts the picks the matcher found in the key, one
+    per key entity found, and the rest are unverified: outside a key that may be non-exhaustive, so never counted
+    wrong.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    named: int = Field(ge=0, description="Distinct entities the output named.")
-    verified: int = Field(ge=0, description="How many of them the matcher found in the key.")
+    named: int = Field(
+        ge=0, description="Distinct picks the output made: one per key entity found, one per unmatched name."
+    )
+    verified: int = Field(ge=0, description="How many of them the matcher found in the key: one per key entity found.")
     core_size: int = Field(ge=0, description="Entities in the key's core.")
     key_size: int = Field(ge=1, description="Entities in the whole key, core and acceptable.")
     found: tuple[str, ...] = Field(description="The key entities the output named, by key name, core first.")
@@ -165,6 +168,8 @@ class SetGrade(EvalBaseModel):
         """Refuse counts that contradict each other or the names listed beside them."""
         if self.verified > self.named:
             raise ValueError(f"{self.verified} verified of {self.named} named: a verified entity is a named one")
+        if self.verified != len(self.found):
+            raise ValueError(f"{self.verified} verified for {len(self.found)} key entities found: one pick each")
         if len(self.unverified_names) != self.named - self.verified:
             raise ValueError(
                 f"{len(self.unverified_names)} unverified names listed for {self.named - self.verified} unverified "
@@ -225,8 +230,10 @@ class SetGrade(EvalBaseModel):
 def grade_set(named: Sequence[NamedEntity], key: ReferenceKey, *, matcher: EntityMatcher | None = None) -> SetGrade:
     """Grade the entities an output named against a case's key, in both directions.
 
-    Named entities whose folded names are equal count once, the first spelling kept. Each distinct one is matched:
-    one the matcher finds is verified, and the key entity it names is found; one it does not find is unverified.
+    Every named entity is matched, so a host matcher sees each spelling and its fields. One the matcher finds is
+    verified and the key entity it names is found, and every spelling found as the same key entity is one pick: a
+    name repeated or written two ways does not count twice. One it does not find is unverified, and unmatched names
+    whose folded names are equal are one pick, the first spelling kept.
 
     :param named: What the output named, in its order: a host's structured picks, or an extractor's list.
     :param key: The case's reference key.
@@ -236,29 +243,26 @@ def grade_set(named: Sequence[NamedEntity], key: ReferenceKey, *, matcher: Entit
     """
     matching = matcher if matcher is not None else FoldingMatcher()
     names = {entity.name for entity in key.entities}
-    seen: set[str] = set()
     found: set[str] = set()
-    verified = 0
+    unmatched: set[str] = set()
     unverified: list[str] = []
     for entity in named:
-        said = fold_name(entity.name)
-        if said in seen:
-            continue
-        seen.add(said)
         hit = matching.match(entity, key)
         if hit is None:
-            unverified.append(entity.name)
+            said = fold_name(entity.name)
+            if said not in unmatched:
+                unmatched.add(said)
+                unverified.append(entity.name)
             continue
         if hit not in names:
             raise ValueError(
                 f"the matcher {matching.identity!r} matched {entity.name!r} to {hit!r}, which the key does not hold; "
                 "a matcher answers a key entity's name or None"
             )
-        verified += 1
         found.add(hit)
     return SetGrade(
-        named=len(seen),
-        verified=verified,
+        named=len(found) + len(unverified),
+        verified=len(found),
         core_size=len(key.core),
         key_size=len(key.entities),
         found=tuple(entity.name for entity in key.entities if entity.name in found),
@@ -335,7 +339,8 @@ def set_grade_descriptors(
                 **count,
                 "name": _measure_name(prefix, _NAMED),
                 "reader_name": f"{label} named",
-                "description": "How many distinct entities the output named, on every graded cell.",
+                "description": "How many distinct picks the output made, one per key entity found and one per "
+                "unmatched name, on every graded cell.",
             },
             {
                 **count,

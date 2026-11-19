@@ -13,7 +13,8 @@ output named (`NamedEntity`: a name and the fields that came with it) against a 
 directions at once: recall over the whole key, recall over its core, and the share of what was named that the key holds
 (`verified_share`, named "found in the key" because a key may be non-exhaustive). A named entity the key lacks is
 unverified, never wrong: it is listed on `SetGrade.unverified_names` and counted as a diagnostic, and no reading counts
-it against the output. Two names that fold alike count once. Matching is the host's to replace (`EntityMatcher`, which
+it against the output. Every spelling the matcher finds as one key entity is one pick, and unmatched names that fold
+alike are one pick, so a name written twice never counts twice. Matching is the host's to replace (`EntityMatcher`, which
 sees the whole key); the default, `FoldingMatcher` (`fold-v1`), folds case and Unicode compatibility forms only, reads
 no word list and strips no accent. `SetGrade.host_measures(prefix)` lands five measures,
 `<prefix>_recall`, `_core_recall`, `_verified_share`, `_named` and `_unverified`, and leaves a reading off a cell where
@@ -21,7 +22,8 @@ it has no value (core recall on a key with no core, the verified share where not
 outside the measure's n and an empty output reads differently from a perfect one. `set_grade_descriptors(prefix, *,
 reader_label, matcher=None, extractor=None)` declares them; their formula names the matcher and the extractor, so a
 changed matcher or extractor is a changed measure definition and never pools. `EntityExtractor(client, entity_kind,
-fields)` lists the entities prose names with one strict-schema model call that never sees the key: every completion is
+fields)` lists the entities prose names with one strict-schema model call that never sees the key (each field a
+string or null, a null dropped, so the model never has to invent a value): every completion is
 billed to the `judge` ledger, a reply cut short raises `EntityExtractionFailed` at once, and one that will not parse
 is asked twice more, then raises. Engine path only; the quick path is a follow-up.
 

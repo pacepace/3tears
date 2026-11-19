@@ -1112,8 +1112,11 @@ at once on the kernel's set grader:
 | recall | key entities named / key size | every graded cell |
 | core recall | core entities named / core size | cells whose key has a core |
 | verified share | named entities the key holds / named | cells that named at least one entity |
-| named | distinct entities named | every graded cell (a diagnostic) |
+| named | distinct picks | every graded cell (a diagnostic) |
 | unverified | named entities the key does not hold | every graded cell (a diagnostic) |
+
+**A pick counts once.** Every spelling the matcher finds as one key entity is one pick, so naming a band and then its
+alias is one pick, not two. Unmatched names that are equal after folding are one pick too.
 
 **Unverified is never wrong.** A key may be non-exhaustive, so a named entity outside it may be a good answer nobody
 listed. It is listed by name for a reader to check, counted as a diagnostic with no better end, and no reading counts
@@ -1124,7 +1127,8 @@ perfect one carries recall 1 and verified share 1. The two are never averaged in
 
 **Where the names come from.** A structured answer (a tool's picks, a list the candidate returned) names its entities
 itself, and the kind builds `NamedEntity` values from it in code. Prose goes through `EntityExtractor`: one model call
-with a strict reply schema that lists the entities of one kind, in order, and never sees the key. Its calls are billed
+with a strict reply schema that lists the entities of one kind, in order, and never sees the key. Each field asked
+for is a string or null, and a null is dropped, so the model never has to invent a value the text does not state. Its calls are billed
 to the cell's `judge` ledger. A reply cut short fails at once, and one that will not parse is asked twice more; either
 failure is reported as an infrastructure error, so the cell is excluded and never scored as an empty set. Measures
 over an extracted set are in the `extracted_set` family, which is judge-graded and never ranked on; the host declares

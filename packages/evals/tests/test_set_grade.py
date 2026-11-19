@@ -95,6 +95,16 @@ def test_one_fixture_counts_recall_over_the_key_and_the_core_and_the_share_the_k
     }
 
 
+def test_two_spellings_of_one_key_entity_are_one_pick() -> None:
+    # "Band A" and its alias "The Band A" fold differently and match one key entity; "a DEEP cut" folds as "A deep cut".
+    grade = grade_set(_named("Band A", "The Band A", "A deep cut", "a DEEP cut"), _KEY)
+
+    assert (grade.named, grade.verified, grade.unverified) == (2, 1, 1)
+    assert grade.found == ("Band A",)
+    assert grade.unverified_names == ("A deep cut",)
+    assert grade.verified_share == pytest.approx(1 / 2)
+
+
 def test_an_unverified_name_is_listed_and_never_counted_against_recall() -> None:
     without = grade_set(_named("Band A", "Band C"), _KEY)
     with_more = grade_set(_named("Band A", "Band C", "A deep cut", "Another deep cut"), _KEY)
