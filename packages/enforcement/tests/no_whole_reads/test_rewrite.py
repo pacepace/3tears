@@ -2756,3 +2756,43 @@ def test_a_constant_another_module_binds_under_the_same_name_is_not_named_elsewh
     refused = {refusal.path: refusal.reason for refusal in refusals if refusal.function == "<module>"}
     assert [rewrite.function for rewrite in rewrites] == ["more_origins"], refused
     assert "named elsewhere" in refused["src/pkg/chains.py"], refused
+
+
+def test_a_dollar_number_hidden_in_a_comment_quoted_name_or_dollar_quote_is_no_parameter_of_a_read() -> None:
+    """Flips if a ``$n`` inside a comment, a quoted name or a ``$tag$...$tag$`` body is read as a parameter by the
+    read parsers: a trailing ``-- LIMIT $2`` taken as the page's limit, a select-list item naming ``"a$1"`` refused as
+    binding a parameter, or an aggregate sub-select's dollar-quoted ``$1`` counted among its parameters (refused as
+    not numbered from ``$1``, or renumbered in the statement it sends)."""
+    commented = parse_first("SELECT * FROM geos WHERE state = $1 ORDER BY name -- LIMIT $2")
+    assert isinstance(commented, str) and commented.startswith("no trailing LIMIT"), commented
+    listed = parse_list('SELECT id, "a$1" AS label FROM geos WHERE state = $1', guards=True)
+    assert isinstance(listed, PointSql) and listed.columns == ("id", {"expr": '"a$1"', "alias": "label"}), listed
+    counted = parse_aggregate("SELECT (SELECT COUNT(*) FROM t WHERE a = $2 AND note <> $q$x $1$q$) AS n", guards=True)
+    assert isinstance(counted, PointSql), counted
+    assert [part["sql"] for part in counted.parts] == [
+        "SELECT count(*) AS n FROM t WHERE a = $1 AND note <> $q$x $1$q$"
+    ]
+
+
+def test_a_nearest_read_s_vector_parameter_inside_a_literal_is_not_read_beside_its_order() -> None:
+    """Flips if a nearest-rows read is refused for reading its vector's parameter beside its order when the only other
+    ``$1`` is text inside a quoted literal (``name <> 'over $1'``); a real second use is still refused."""
+    sql = (
+        "SELECT geo_id, 1 - (shape OPERATOR(public.<=>) $1::text::public.vector) AS similarity FROM geos "
+        "WHERE state = $2 AND name <> {} ORDER BY shape OPERATOR(public.<=>) $1::text::public.vector LIMIT $3"
+    )
+    near = parse_first(sql.format("'over $1'"), guards=True)
+    assert isinstance(near, PointSql) and near.nearest is not None and near.nearest["param"] == 1, near
+    beside = parse_first(sql.format("$1"), guards=True)
+    assert isinstance(beside, str) and "read beside its order" in beside, beside
+
+
+def test_a_page_of_a_joined_read_is_sought_only_by_a_guard_binding_a_parameter() -> None:
+    """Flips if a page over a LEFT JOIN whose FROM table's only guard holds a ``$`` inside a quoted literal (no
+    parameter) is taken as sought by its guards: no parameter pins it, so it is refused."""
+    answer = parse_join(
+        "SELECT e.name, (n.id IS NOT NULL) AS live FROM exports e LEFT JOIN namespaces n ON n.id = e.ns_id "
+        "WHERE e.note <> 'costs $1' ORDER BY e.name LIMIT $1",
+        guards=True,
+    )
+    assert answer == "no parameter pins the FROM table (a joined read is keyed by the table its pins bind)", answer
