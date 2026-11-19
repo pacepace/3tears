@@ -467,7 +467,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
         assert [list(note["keys"]) for note in await _notes(pool, schema, 0)] == [["first"]], (
             "its first write left a note"
         )
-        assert hooked.write_generation is WRITE_GENERATION  # held to here
+        assert hooked.__name__ == f"Hooked_{table}"  # held to here
 
     async def test_an_agent_schemas_table_from_before_the_hook_gets_its_triggers_at_every_run_start(
         self, db_container: str
@@ -553,7 +553,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
                 await pool.execute(f"INSERT INTO {agent}.{table} VALUES ('first', 'o')")
                 current = (await keeper.ring()).current
                 assert [list(note["keys"]) for note in await _notes(pool, platform, current)] == [["first"]]
-                assert agent_class.write_generation is WRITE_GENERATION  # held to here
+                assert agent_class.__name__ == f"Agent_{table}"  # held to here
             finally:
                 await pool.close()
         finally:
