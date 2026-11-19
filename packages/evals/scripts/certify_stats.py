@@ -47,6 +47,11 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH", "")]))
 
+if __name__ == "__main__" and "--shard" not in sys.argv:
+    # Said before the certification's modules load, which takes a while: a run that never gets past them still says it
+    # started, and its pid.
+    print(f"certify: loading the certification's modules, pid {os.getpid()}", flush=True)
+
 from packages.evals.tests import stats_certificate as cert  # noqa: E402
 
 SHARD_FILE = "packages/evals/tests/test_certified_simulations.py"
