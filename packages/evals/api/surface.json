@@ -1856,6 +1856,21 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.EntityExtractionFailed": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.EntityExtractor": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.EntityMatcher": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.EvalAnalysis": {
       "kind": "model",
       "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 13, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: VerbatimJsonObject | None, report_plan_id: str | None = None, report_doc_id: str | None = None, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
@@ -1961,6 +1976,11 @@
       "signature": "extract_json_array(text: str) -> list[dict[str, Any]]",
       "tier": "stable"
     },
+    "threetears.evals.kernel.EXTRACTED_SET_FAMILY": {
+      "kind": "constant (MeasureFamily)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.failed_call_output": {
       "kind": "function",
       "signature": "failed_call_output(owner: FailureOwner, description: str, *, refused: str, declined: str, failed: str, log: Callable[[str, int], None], unserved: str | None = None, telemetry: CandidateTelemetry | None = None, host_measures: dict[str, bool | float | str] | None = None, kind_payload: VerbatimJsonObject | None = None) -> CandidateOutput",
@@ -1995,6 +2015,11 @@
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
       "tier": "stable"
+    },
+    "threetears.evals.kernel.FoldingMatcher": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.format_number": {
       "kind": "function",
@@ -2043,6 +2068,11 @@
     },
     "threetears.evals.kernel.GoalView": {
       "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.grade_set": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2353,6 +2383,11 @@
     },
     "threetears.evals.kernel.MIN_TEMPERATURE_REPEATS": {
       "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.NamedEntity": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -2688,6 +2723,16 @@
     },
     "threetears.evals.kernel.SEPARATION_MIN_RESULTS": {
       "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.set_grade_descriptors": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SetGrade": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

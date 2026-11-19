@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: grade a named set against a case's reference key (#1286)
+
+**Added (provisional, `threetears.evals.kernel`):** `grade_set(named, key, *, matcher=None)` grades the entities an
+output named (`NamedEntity`: a name and the fields that came with it) against a case's `ReferenceKey`, in both
+directions at once: recall over the whole key, recall over its core, and the share of what was named that the key holds
+(`verified_share`, named "found in the key" because a key may be non-exhaustive). A named entity the key lacks is
+unverified, never wrong: it is listed on `SetGrade.unverified_names` and counted as a diagnostic, and no reading counts
+it against the output. Two names that fold alike count once. Matching is the host's to replace (`EntityMatcher`, which
+sees the whole key); the default, `FoldingMatcher` (`fold-v1`), folds case and Unicode compatibility forms only, reads
+no word list and strips no accent. `SetGrade.host_measures(prefix)` lands five measures,
+`<prefix>_recall`, `_core_recall`, `_verified_share`, `_named` and `_unverified`, and leaves a reading off a cell where
+it has no value (core recall on a key with no core, the verified share where nothing was named), so that cell is
+outside the measure's n and an empty output reads differently from a perfect one. `set_grade_descriptors(prefix, *,
+reader_label, matcher=None, extractor=None)` declares them; their formula names the matcher and the extractor, so a
+changed matcher or extractor is a changed measure definition and never pools. `EntityExtractor(client, entity_kind,
+fields)` lists the entities prose names with one strict-schema model call that never sees the key: every completion is
+billed to the `judge` ledger, a reply cut short raises `EntityExtractionFailed` at once, and one that will not parse
+is asked twice more, then raises. Engine path only; the quick path is a follow-up.
+
+**For hosts:** declare `set_grade_descriptors(...)` on the measure registry, and `EXTRACTED_SET_FAMILY` beside them
+when the set comes from an `EntityExtractor` (its measures are then judge-graded and never ranked on). Pass the cell's
+`RoleUsageLedger(role="judge")` to `extract` and put its rows on `CandidateTelemetry.usage`; report
+`EntityExtractionFailed` as `infra_errors`, so the cell is excluded rather than scored 0. Change your matcher's
+`identity` whenever its matching changes. No stored shape changes.
+
 ### evals: a comparison's first screen says what to do beside what is proven
 
 **Added:** a quick comparison's first line is now its advice, above the proof: `Advice: switch to v2. At worst it is
