@@ -199,6 +199,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/blind_read.py",
     # The one function reading a lever id as words, which every surface naming a lever calls.
     "schema/lever_words.py",
+    # A case's reference key, which a host fills, and the case material a judge reads it as. No host is named.
+    "schema/reference.py",
+    "kernel/reference.py",
     "kernel/declaration.py",
     "kernel/eval_scope.py",
     # The measure names one result carries, read off the result model, below the declaration and the host profile.

@@ -77,6 +77,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.schema.reading_states import SampleKind
+from threetears.evals.schema.reference import ReferenceKey
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -2603,6 +2604,22 @@ class EvalTestCase(DurableDocumentModel):
         ),
     )
 
+    reference: ReferenceKey | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The case's reference key: the entities its answer is graded against, a required `core` and the "
+            "`acceptable` others that also count, each with its aliases and checkable facts. The package states "
+            "its shape and the host fills it. Never stimulus: a kind never hands it to the candidate, renders it for "
+            "the judges that grade against it (`threetears.evals.kernel.reference_material`, appended to "
+            "`JudgeEvidence.case_material`), and its code measures read it here. Part of the case: a template's own "
+            "case digests it with its content, so an edited key is a new case under a new id that never pools or "
+            "pairs with the old one, and drift reads its corpus case stale. Its parts are sets, kept in one order, so "
+            "writing them in another order is the same key and the same case. None when the case has no key, and "
+            "then left out of the document, so a case without one is stored exactly as before."
+        ),
+    )
+
     stratum: str | None = Field(
         default=None,
         min_length=1,
@@ -2636,10 +2653,12 @@ class EvalTestCase(DurableDocumentModel):
     content_hash: str | None = Field(
         default=None,
         description=(
-            "Digest of this case's generated content (variation_params), pinning the identity of an "
-            "LLM-generated artifact so 'the same cell' cannot silently differ between runs. None when the "
-            "case has no generated content to pin, and its identity is then its template plus its id. Stored rather than computed on read so it is groupable "
-            "in a query."
+            "Digest of this case's content, pinning its identity so 'the same cell' cannot silently differ "
+            "between runs: a generated case's `variation_params` (`kernel.identity.compute_content_hash`), and a "
+            "template's own case's `variation_params`, `host_payload` and `reference`, each left out when empty "
+            "(`threetears.evals.run.template_case_content_digest`, which a host writing its own cases sets it to). "
+            "None when the case has no generated content to pin, and its identity is then its template plus its id. "
+            "Stored rather than computed on read so it is groupable in a query."
         ),
     )
 

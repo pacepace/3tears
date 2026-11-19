@@ -134,6 +134,15 @@ so give it what the candidate answered from. With no `case_material` it sees the
 classifier run (a field grader) every field holding the expected label is left out, so it never grades against the
 answer key by accident. To grade against a reference answer, render the reference through `case_material`.
 
+A case on the engine path can carry its answer key as data: a reference key, the entities a good answer names. It
+holds a required core and the other entities that also count, each with the other names it goes by and checkable facts
+with their sources. The host writes it on the case, or in a `template_cases/*.json` corpus file as `reference`. It is
+part of the case: editing it makes a new case, which drift reads as stale and which never pools with the old one.
+Writing its entities in another order is the same key. Your kind renders it for each judge that grades against it with
+`reference_material` (provisional), appended to the case material. The text opens by telling the judge that an entity
+outside the key is unverified, not wrong, since a key rarely lists everything that counts. Never hand the key to the
+candidate. A code measure reads it from the case directly.
+
 ```python
 from threetears.evals.schema import RubricDim
 from threetears.evals import Judge

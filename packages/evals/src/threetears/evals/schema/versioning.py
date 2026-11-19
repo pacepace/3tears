@@ -185,6 +185,8 @@ the document, so extending one is a major. Each, and why:
 - ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
   (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
   would be counted as neither, and a look erased.
+- ``ReferenceKey.type`` — how a case's reference key is graded against; a key of a type an older build cannot name
+  would be graded as a set of entities it is not.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.
@@ -978,7 +980,14 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   it; neither is in a variant key or measurement context. A v17.5 build reading a campaign at this minor keeps both
 #:   opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 6
+#: - **v17.7** — a test case may carry a reference key, the entities its answer is graded against:
+#:   ``EvalTestCase.reference`` (``ReferenceKey``: ``type``, ``core`` and ``acceptable``, each a set of
+#:   ``ReferenceEntity`` with ``name``, ``aliases`` and ``facts`` of ``ReferenceFact``; default None). Written only when
+#:   set, so a case without a key is stored, digested and identified exactly as v17.6 stored it. A template's own case
+#:   digests its key with its content, so an edited key is a new case under a new id. A v17.6 build reading a case at
+#:   this minor keeps the key opaquely and writes it back; its drift digests that case without the key.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 7
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

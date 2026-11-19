@@ -697,6 +697,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "MembershipChange.change": frozenset({"joined", "left"}),
         "Aspect.undo": frozenset({"hard"}),
         "Aspect.undo_ignored": frozenset({"easy"}),
+        "ReferenceKey.type": frozenset({"entity_set"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),

@@ -162,6 +162,7 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.judge_cases import JUDGE_KIND, AuthoredJudgeCase, AuthoredVerdict, JudgeCase
 from threetears.evals.schema.base import EvalBaseModel, VerbatimObject
+from threetears.evals.schema.reference import ReferenceKey
 from threetears.evals.schema.models import (
     CatalogRubricDim,
     EvalTemplate,
@@ -258,7 +259,7 @@ class SeedTemplateCase(EvalBaseModel):
     A corpus file holds this shape (``template_cases/*.json``): the template by ``name`` (a corpus cannot know the id
     a seeded template is given) and what a stored :class:`~threetears.evals.schema.models.EvalTestCase` carries of the
     case. The seed writes it into its template's current revision, and a reset into the revision it writes. What
-    drift compares is its ``variation_params``, ``host_payload`` and ``stratum``
+    drift compares is its ``variation_params``, ``host_payload``, ``reference`` and ``stratum``
     (:func:`~threetears.evals.run.definition_digests.template_case_digest`), so a relabelled stratum reads
     ``customized``; its ``content_hash`` and id are its content alone, the stratum left out as a generated case's is
     (:func:`~threetears.evals.run.definition_digests.template_case_content_digest`). Its name is the corpus's handle on
@@ -284,6 +285,12 @@ class SeedTemplateCase(EvalBaseModel):
         default_factory=dict,
         description="The case's own stimulus in the host's vocabulary (a scenario, an input set), stored as written "
         "and never read by the engine.",
+    )
+    reference: ReferenceKey | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The case's reference key: the entities its answer is graded against, stored as the case's "
+        "`reference`. Part of the case, so an edited key reads stale and resets into a new case under a new id.",
     )
     stratum: str | None = Field(
         default=None, min_length=1, description="The kind of case it is, which the analysis reads results by."
