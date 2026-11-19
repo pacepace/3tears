@@ -261,6 +261,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/__init__.py": {},
     "schema/versioning.py": {},
     "schema/lever_words.py": {},
+    "schema/reference.py": {},
+    "kernel/reference.py": {},
     "kernel/analysis_measures.py": {},
     "kernel/arguments.py": {},
     "kernel/authored.py": {},

@@ -256,6 +256,7 @@ from threetears.evals.kernel.analyst_gap import (
     GapToolCall,
     GapVerdict,
 )
+from threetears.evals.kernel.reference import reference_material
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot, SnapshotSource
 from threetears.evals.kernel.result_condition import (
@@ -663,6 +664,7 @@ __all__ = [
     "TierCriterion",
     "beside_eval_file",
     "note_spend",
+    "reference_material",
     "prompt_token_bound",
     "turn_prompt_token_bound",
 ]

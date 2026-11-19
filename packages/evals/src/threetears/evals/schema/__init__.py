@@ -248,6 +248,7 @@ from threetears.evals.schema.job_lease import (
     LeasedRecord,
     LostField,
 )
+from threetears.evals.schema.reference import ReferenceEntity, ReferenceFact, ReferenceKey, fold_name
 from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, KnownRefusalKind, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.traces import (
@@ -310,6 +311,10 @@ __all__ = [
     "Coordinate",
     "IdentityState",
     "Maker",
+    "ReferenceEntity",
+    "ReferenceFact",
+    "ReferenceKey",
+    "fold_name",
     "ReadingState",
     "Reason",
     "SampleKind",

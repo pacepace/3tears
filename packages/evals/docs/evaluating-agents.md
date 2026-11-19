@@ -498,7 +498,8 @@ live world handle are different callables that never collide.
   hosts whose world moves on its own.
 - A dimension whose meaning changes under the same name passes every check.
 - Deriving a detection eval's answer key from the planted fact is designed but deferred; host predicates in the goal
-  language are specified but not built.
+  language are specified but not built. A case can carry an answer key the host writes (its reference key; see
+  [judges and calibration](judges-and-calibration.md#step-2-write-a-rubric-dimension)), but nothing derives one.
 - Every fidelity defect the first host found in its October audit came from running and reading cells, none from a
   gate: an unseeded count the subject cited, carried state leaking into cells, a check reading a parameter instead of
   its effect, and others.

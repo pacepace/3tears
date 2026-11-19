@@ -55,24 +55,24 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 6
+PINNED_DURABLE_SCHEMA_MINOR = 7
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    # Re-taken under durable 17.6: every durable type's ``schema_minor`` default moved, and the campaign's shape gained
-    # ``Aspect.undo`` and ``Aspect.undo_ignored``. (Under 17.5 the blind read's shape gained ``BlindPreference.shares``
-    # and ``stake_items``, and its ``p`` and ``verdict`` came to default to None, read off the counts, never written.)
-    "blind_read": "3c92b3e75d55597174bebd7698286ff6124161fc2ac433403945613f0f011312",
-    "calibration_rating": "3281cba815d876119b89711f7eef459f0b2e40cc25fde471bdd01648317a9263",
-    "case_set": "be720c44ae06560fb2a95987171d0dd90b440cb361385192b57ebc2d327ebc99",
-    "eval_analyst_gap": "ebb2c9dd66fe97e7acc577a91a425ebb44d2f0f9f69efb1715e318ebe11f7d0a",
-    "eval_campaign": "e8e1b14bdb7167d66b7871676997b96098f96ab4a5c863a2409dbfd7bebd0a55",
-    "eval_template": "ab6dec13528621790007f7641058a9993e4a5f809dbb31bbe1525dfc6edd362b",
-    "eval_test_case": "00e982a6954e8fdf934e1b38e4d89a2b616be1ce0c60f71291297a218406e2a2",
-    "judge_config": "cd24295b3b9f59e06712878057be75f365ffaef5092b16280aabe539e9acb0ec",
-    "judge_config_tombstone": "c37948d1b8db03cda4a0f1c2a90e63be9b2b8e15db88631d1f803a2a86d336d5",
-    "rubric_dim": "d4a4b29ce53f88270fb280638e01c72b60f87fc93ab128f8a9317214ec8e2176",
-    "rubric_dim_tombstone": "1ab2e0576a15acc7069f904bc36cea87cf1848eadf29a5dd56052e8885016faf",
+    # Re-taken under durable 17.7: every durable type's ``schema_minor`` default moved, and the test case's shape gained
+    # ``reference`` (``ReferenceKey``). (Under 17.6 the campaign's shape gained ``Aspect.undo`` and
+    # ``Aspect.undo_ignored``; under 17.5 the blind read's gained ``BlindPreference.shares`` and ``stake_items``.)
+    "blind_read": "d74a54f02176332327de8efc7efe9920f11d62ec517e01136efbd53dda20a278",
+    "calibration_rating": "6c7ee09c6b5e6ba7607d266926397a8800a832887edf0c0e7dfd05b66484386f",
+    "case_set": "6b596f1b9dc383d17eefb235a5d73312a288d1cdf2137820a012e90a0a351b9d",
+    "eval_analyst_gap": "ef173c0ef7f8b052dcf0fe940fe49bb6cf7705f16f5bd142b9896ce409e8a731",
+    "eval_campaign": "4853515ddcfe8863837d81319624a214685c8369aac25ef7b1ed29734dccfb3f",
+    "eval_template": "7eeb8207c817c6e0f57d58657a0f551e1ba53a1106f8f8be51ac9ec16d8182cb",
+    "eval_test_case": "9c4447ed11e5f75dcd0be108475c742aa25c866fa25853a757a331c3e50a94c6",
+    "judge_config": "0e3b281068fc2be1ec265d27b637a8ee80f5bcaa757b0d2ee4f01cc5158e2dde",
+    "judge_config_tombstone": "433944a65efcb06dd5da2a89cb105107ad9f5f19df217c33fab2899004ae3b3e",
+    "rubric_dim": "e80f41034616da13ba89300929940a7e7c9cf72b3be3e7d00bfaff7df4d83d6a",
+    "rubric_dim_tombstone": "80445305fe59fc3932f1787d6794be644fef1e4a0acf8eae52d7f30bebf2b0ad",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
