@@ -275,44 +275,71 @@ def test_three_scope_columns_embedded_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_visible_customers_query_returns_sql_and_single_user_id_bind() -> None:
+def test_visible_customers_query_returns_sql_and_two_binds() -> None:
     user_id = uuid4()
-    sql, params = caller_visible_customers_query(user_id=user_id)
-    assert params == [user_id]
-    assert "$1" in sql
+    sql, params = caller_visible_customers_query(user_id=user_id, scope_namespace_type="api_key")
+    assert params == [user_id, "api_key"]
+    assert "gm.member_id = $1" in sql
+    assert "= 'api_key'" not in sql, "the type is bound, never embedded"
 
 
 def test_visible_customers_query_mirrors_the_three_scope_arms() -> None:
     # the SET resolver must read the SAME three scope arms as the per-row EXISTS clause, or the
     # RLS GUC would admit a different set of rows than the app-layer visibility rule -- a leak or
     # an over-restriction. pins each arm so an edit to one generator without the other fails loud.
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
+    sql, _ = caller_visible_customers_query(user_id=uuid4(), scope_namespace_type="api_key")
     assert "FROM role_assignments ra" in sql
+    assert "JOIN roles vis_role ON vis_role.role_id = ra.role_id" in sql
     assert "JOIN group_members gm ON gm.group_id = ra.group_id" in sql
     assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in sql
     assert "gm.member_type = 'user'" in sql
     # scope=all -> the is_all flag (becomes the GUC '*' wildcard)
-    assert "bool_or(ra.scope_type = 'all')" in sql
+    assert "(ra.scope_type = 'all' AND EXISTS (" in sql
+    assert "bool_or(held.admits_all)" in sql
     assert "AS is_all" in sql
-    # type_customer + namespace arms feed the concrete customer_ids array
-    assert "ra.scope_type = 'type_customer' THEN ra.scope_customer_id" in sql
-    assert "ra.scope_type = 'namespace' THEN ns.customer_id" in sql
+    # type_customer (of the listed type only) + namespace arms feed the concrete customer_ids array
+    type_arm_at = sql.index("WHEN ra.scope_type = 'type_customer'")
+    assert sql.index("AND ra.scope_namespace_type = $2", type_arm_at) < sql.index("THEN ra.scope_customer_id")
+    namespace_arm_at = sql.index("WHEN ra.scope_type = 'namespace'")
+    assert sql.index("vis_bucket.key IN (ns.namespace_type, '*')", namespace_arm_at) < sql.index("THEN ns.customer_id")
     assert "AS customer_ids" in sql
 
 
 def test_visible_customers_query_is_fail_closed_on_no_grants() -> None:
     # a caller with no grants must yield a non-NULL (empty) array, not NULL -- so the GUC admits
     # only platform (customer_id IS NULL) rows, never silently widening.
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
-    assert "COALESCE(bool_or(ra.scope_type = 'all'), false)" in sql
+    sql, _ = caller_visible_customers_query(user_id=uuid4(), scope_namespace_type="api_key")
+    assert "COALESCE(bool_or(held.admits_all), false)" in sql
     assert "ARRAY[]::uuid[]" in sql
     assert "array_remove(" in sql
 
 
 def test_visible_customers_query_respects_param_offset() -> None:
-    sql, params = caller_visible_customers_query(user_id=uuid4(), param_offset=3)
+    sql, params = caller_visible_customers_query(user_id=uuid4(), scope_namespace_type="api_key", param_offset=3)
     assert "gm.member_id = $3" in sql
-    assert len(params) == 1
+    assert "vis_bucket.key IN ($4, '*')" in sql
+    assert len(params) == 2
+
+
+def test_both_generators_admit_only_a_role_that_grants_where_its_scope_needs() -> None:
+    """the role predicates ride both generators: the listed type's, and the bound namespace's own.
+
+    a fleet-wide or per-type grant admits through a role granting on the listed type; a namespace
+    grant through a role granting on the namespace it is bound to. an assignment failing its arm's
+    predicate admits no row:
+    the semantics are proved against a real database in
+    ``integration/test_query_visibility_roles.py``; this pins that neither
+    generator drops the predicate.
+    """
+    fragment, _ = caller_visible_customer_clause(
+        user_id=uuid4(), customer_id_column="t.customer_id", scope_namespace_type="thing", param_offset=4
+    )
+    sql, _ = caller_visible_customers_query(user_id=uuid4(), scope_namespace_type="thing", param_offset=4)
+    for text in (fragment, sql):
+        assert "JOIN roles vis_role ON vis_role.role_id = ra.role_id" in text
+        assert "vis_bucket.key IN ($5, '*')" in text
+        assert "vis_bucket.key IN (ns.namespace_type, '*')" in text
+        assert "vis_bucket.value <> '[]'::jsonb" in text
 
 
 def test_caller_clause_reaches_through_one_nesting_level() -> None:
@@ -336,7 +363,7 @@ def test_caller_clause_reaches_through_one_nesting_level() -> None:
 
 def test_customers_query_reaches_through_one_nesting_level() -> None:
     """the aggregate customers query carries the identical group-hop arm."""
-    sql, _ = caller_visible_customers_query(user_id=uuid4())
+    sql, _ = caller_visible_customers_query(user_id=uuid4(), scope_namespace_type="thing")
     assert "gm.member_type = 'group'" in sql
     assert "gm2.group_id = gm.member_id" in sql
     assert "gm2.member_type = 'user'" in sql

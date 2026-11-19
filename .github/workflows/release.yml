@@ -380,6 +380,64 @@ jobs:
           packages-dir: dist/
           skip-existing: true
 
+  # The browser packages (web/, @3tears/web-*) at the same version, to npmjs.com. After PyPI, so the
+  # `pypi` approval gate holds both: one tag, one approval, one version everywhere. The lockstep
+  # verify in `build` already held every web/ package.json to the tag.
+  #
+  # npm trusted publishing: an OIDC token from this job (`id-token: write`, a GitHub-hosted runner,
+  # npm 11.5.1 or later, Node 22.14 or later), no stored secret, with provenance, as PyPI's trusted
+  # publisher does. Each package's trusted publisher (organisation pacepace, repository 3tears,
+  # workflow release.yml) is set in that package's own settings on npmjs.com, so it can exist only
+  # once the package does: a new package's first version publishes with the NPM_TOKEN secret, which
+  # is used only while it is set (docs/releasing.md, "A release that adds a web package").
+  #
+  # Idempotent like `skip-existing`: a version already in the registry is skipped, so a republish
+  # dispatch publishes only what is missing.
+  #
+  # Off until the repository variable NPM_PUBLISH is "true"; until then a release publishes PyPI
+  # only, and this job reports skipped.
+  npm-publish:
+    needs: pypi-publish
+    if: vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # npm trusted publishing (OIDC) and provenance
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+
+      # trusted publishing needs npm 11.5.1 or later
+      - name: npm with trusted publishing
+        run: npm install -g npm@11 && npm --version
+
+      - name: Install
+        run: npm ci
+
+      - name: Publish every web/ package not yet published at this version
+        env:
+          # empty unless the NPM_TOKEN secret is set (a new package's first publish): npm then uses
+          # the job's OIDC token
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for manifest in packages/*/package.json; do
+            dir="$(dirname "$manifest")"
+            name="$(node -p "require('./${manifest}').name")"
+            version="$(node -p "require('./${manifest}').version")"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} is already published; skipping."
+              continue
+            fi
+            npm publish --workspace "$dir" --access public --provenance
+          done
+
   github-release:
     needs: pypi-publish
     # Tag pushes only, keyed on the EVENT and not on the ref shape.

@@ -46,7 +46,12 @@ follows is its ordinary reconnect, which drops what is in flight exactly as the 
 Every connection a `NatsClient` opens now carries that callback: on the current connection it
 starts a move to a successor through `renew_connection`, retried every `REAUTH_RETRY_SECONDS`
 while the connection is still current and open (another renewal, or the server's own close, ends
-it). The old connection is kept for `longest_request_seconds` or until the server closes it.
+it). The old connection is kept for `longest_request_seconds` or until the server closes it, but
+each subscription's old half leaves its queue group after one second rather than with the
+connection: the server closes the connection once its `lame_duck_grace_period` is over (10 s by
+default), and a member still in its group then loses whatever was being routed to it. A replaced
+connection is never reconnected: when its server drops it, it closes, because a reconnect would
+replay its subscriptions on another server and rejoin their groups.
 Proven live on a two-node 2.14.2 cluster (`test_lame_duck_handover_live.py`): the pod moved about
 90ms after the notice, and not one request or subscribed message was lost, where the reconnect
 lost several requests and most of the feed.
@@ -109,7 +114,8 @@ first one is closed:
 4. **End each subscription's old half without dropping anything**, and rebind durable push
    consumers.
 5. **Retire the old connection** after `longest_request_seconds` (never later than `ttl - leeway`
-   less the drain bound): until then a reply to a request sent on it still arrives there, a reply
+   less the drain bound): until then, unless its server drops it first (it then closes, see below),
+   a reply to a request sent on it still arrives there, a reply
    owed for a request received there still leaves there, and a JetStream message received there is
    acknowledged there. Then `drain()` and close.
 
@@ -215,6 +221,10 @@ The first two reproduced against a real nats-server.
 - A request, owed reply or per-call subscription that outlives `longest_request_seconds` after the
   handover: the old connection is retired under it. That is the declared longest request being
   wrong; `SYNC_REPLY_BUDGET_SECONDS` routes longer tool calls to the durable result stream.
+- A request still waiting on the old connection, or a reply still owed there, when its server drops
+  that connection before retirement (a lame-duck server's close, a network fault): a replaced
+  connection closes rather than reconnects, so the request gets no reply and times out, and the reply leaves on the
+  current connection.
 - Anything still on the old connection when it is drained at retirement goes through nats-py's
   `Client.drain()`, which carries the first defect above for each remaining subscription. What is
   left there by then is past its declared bound, and the push consumers that could be affected
