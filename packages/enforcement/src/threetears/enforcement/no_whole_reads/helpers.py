@@ -40,6 +40,7 @@ import ast
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_PREFIX
@@ -708,9 +709,14 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
         text = sql.value
         numbers = placeholder_numbers(text)
         # in its own parentheses, as the helper writes it
-        written.append("(" + renumbered_with(text, lambda number, place=place: number + place - 1) + ")")
+        written.append("(" + renumbered_with(text, partial(_shifted, by=place - 1)) + ")")
         place += max(numbers, default=0)
     return written, place
+
+
+def _shifted(number: int, *, by: int) -> int:
+    """a fragment's placeholder ``number`` as numbered after the ``by`` placeholders before it."""
+    return number + by
 
 
 def _keyset_page(call: ast.Call) -> list[str]:

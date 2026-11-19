@@ -16,6 +16,7 @@ import importlib.metadata
 import secrets
 import inspect
 import shutil
+import socket
 import string
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from nats.aio.client import Client
@@ -231,13 +233,49 @@ def test_a_changed_send_path_refuses_the_import() -> None:
     assert "_HAS_SENDMSG: not True" in ran.stderr
 
 
+#: what send_bound_gaps says when an unbounded send took more than the bound
+_OVER_THE_BOUND = re.compile(r"one send of a \d+-byte write took \d+ bytes; the bound is \d+ \(room \d+\)")
+
+
+def _capped_loopback(monkeypatch: pytest.MonkeyPatch, cap: int) -> None:
+    """every socket's send and receive buffer asked for capped at ``cap`` bytes, as a host's kernel caps them (a Linux
+    default: net.core.wmem_max / rmem_max 212992)."""
+    asked = socket.socket.setsockopt
+
+    def capped(self: socket.socket, level: int, option: int, value: Any, *rest: Any) -> None:
+        if level == socket.SOL_SOCKET and option in (socket.SO_SNDBUF, socket.SO_RCVBUF) and isinstance(value, int):
+            value = min(value, cap)
+        asked(self, level, option, value, *rest)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", capped)
+
+
 def test_one_send_on_a_real_socket_takes_no_more_than_the_bound() -> None:
-    """over a loopback socket whose kernel buffers hold all of an 8 MB write, the bounded transport's one send takes at
-    most a megabyte; left as asyncio built it, the same send takes it all (so the check can fail)."""
+    """over a loopback socket, the bounded transport's one send takes at most its bound; left as asyncio built it,
+    the same send takes more (so the check can fail)."""
     assert send_bound_gaps() == []
-    assert send_bound_gaps(bounded=False) == [
-        "one send of a 8388608-byte write took 8388608 bytes; the bound is 1048576"
-    ]
+    (over,) = send_bound_gaps(bounded=False)
+    assert _OVER_THE_BOUND.fullmatch(over), over
+
+
+def test_the_send_bound_is_proved_on_a_host_whose_kernel_caps_loopback_buffers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if the proof needs buffers a host does not grant: under a Linux default's cap (212992 bytes a buffer)
+    the bounded send still holds its bound and an unbounded one still takes more than it."""
+    _capped_loopback(monkeypatch, 212992)
+    assert send_bound_gaps() == []
+    (over,) = send_bound_gaps(bounded=False)
+    assert _OVER_THE_BOUND.fullmatch(over), over
+
+
+def test_a_host_granting_too_little_loopback_room_fails_the_proof_never_passes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if a kernel granting buffers too small to tell a bound from its own cut lets either half pass silently:
+    both say the room was under the floor."""
+    _capped_loopback(monkeypatch, 8 * 1024)
+    for bounded in (True, False):
+        (short,) = send_bound_gaps(bounded=bounded)
+        assert re.fullmatch(r"the kernel granted \d+ bytes of loopback room, under the 65536 a proof .*", short), short
 
 
 def test_a_transport_the_bound_cannot_reach_is_logged_once_never_skipped_unseen(

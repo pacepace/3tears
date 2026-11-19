@@ -656,3 +656,19 @@ def test_the_declared_key_named_at_run_time_is_null_is_its_null_bucket(
     """Flips if a generic read pinning the declared key it names (``{pk}``, from a declared key source) to NULL is
     called whole, or if a NULL test of anything else becomes a key."""
     assert (_kinds(sql, schema) == []) is keyed, _kinds(sql, schema)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT * FROM providers WHERE name = "x$1"',
+        "SELECT * FROM providers WHERE name = $q$ $1 $q$",
+    ],
+)
+def test_a_dollar_number_in_a_quoted_name_or_a_dollar_quoted_body_binds_nothing(
+    sql: str, schema: SchemaCatalog
+) -> None:
+    """Flips if a ``$n`` inside a quoted name or a ``$tag$...$tag$`` body is read as a placeholder: the read, which
+    compares its column with no parameter, would pass as keyed by one."""
+    assert _kinds(sql, schema) == [("unbound-where", "providers")]
+    assert _kinds("SELECT * FROM providers WHERE name = $1", schema) == []

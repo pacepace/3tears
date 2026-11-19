@@ -699,7 +699,7 @@ def _nearest_read(text: str) -> tuple[str, dict[str, Any]] | str | None:
         return (
             f"a nearest-rows read selecting no similarity (1 - its distance): the proof compares rows by it: {text!r}"
         )
-    if re.search(rf"\${param}(?!\d)", body):
+    if int(param) in placeholder_numbers(body):
         return f"the nearest vector's parameter ${param} read beside its order: {text!r}"
     return body, {
         "column": column,
@@ -1289,7 +1289,7 @@ def parse_join(sql: str, *, guards: bool = False) -> PointSql | str:
         base = relations[0]
     elif len(bound_on) == 1 and not left_joined and len(relations) == 2:
         base = bound_on[0]
-    elif limit is not None and any("$" in written for written, _ in relations[0].where):
+    elif limit is not None and any(placeholder_numbers(written) for written, _ in relations[0].where):
         # a page sought by its guards alone (a keyset seek past the page before), the FROM table's
         base = relations[0]
     else:

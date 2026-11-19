@@ -444,3 +444,24 @@ def test_a_read_states_an_or_predicate_by_one_arm_and_a_pin_by_an_enum_value(tmp
     assert "src/either.py::Either.unnoted" in either, either
     live = next(entry for entry in ledger.splitlines() if entry.startswith("items_live_by_owner "))
     assert "src/either.py::Either.live" in live, live
+
+
+def test_a_column_beside_a_dollar_number_inside_a_literal_is_not_also_bound(tmp_path: Path) -> None:
+    """Flips if a ``'col = $n'`` inside a quoted literal of the purpose's read is taken as a column it also binds: the
+    plan test's read would pin ``owner_id`` to a parameter the read never sends."""
+    _repo(tmp_path)
+    reader = tmp_path / "src/items.py"
+    reader.write_text(
+        reader.read_text(encoding="utf-8").replace(
+            "WHERE kind = $1 ORDER BY", "WHERE kind = $1 AND note <> 'owner_id = $2' ORDER BY"
+        ),
+        encoding="utf-8",
+    )
+
+    assert main([str(tmp_path), "support.py", "CONFIG", "--write"]) == 0
+
+    entries = {e["index"]: e for e in json.loads((tmp_path / "tests/integration/index_plan_manifest.json").read_text())}
+    assert (
+        entries["items_by_kind"]["sql"]
+        == 'SELECT * FROM "items" AS t WHERE t."kind" = $1 ORDER BY t."made_at" DESC LIMIT 10'
+    ), entries["items_by_kind"]
