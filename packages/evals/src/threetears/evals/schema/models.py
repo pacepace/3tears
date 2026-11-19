@@ -2655,8 +2655,8 @@ class EvalTestCase(DurableDocumentModel):
         description=(
             "Digest of this case's content, pinning its identity so 'the same cell' cannot silently differ "
             "between runs: a generated case's `variation_params` (`kernel.identity.compute_content_hash`), and a "
-            "template's own case's `variation_params`, `host_payload` and `reference`, each left out when empty "
-            "(`threetears.evals.run.template_case_content_digest`, which a host writing its own cases sets it to). "
+            "template's own case's `variation_params`, `host_payload` and `reference`, each left out when empty, "
+            "which the seed sets when it writes a `SeedTemplateCase` (`SeedTemplateCase.test_case`). "
             "None when the case has no generated content to pin, and its identity is then its template plus its id. "
             "Stored rather than computed on read so it is groupable in a query."
         ),

@@ -30,7 +30,6 @@ from threetears.evals.run.curation import (
     delete_run,
 )
 from threetears.evals.run.ratings import RatingStore, rate_result
-from threetears.evals.run.definition_digests import template_case_content_digest
 from threetears.evals.run.definition_seed import load_seed_corpus, seed_eval_definitions
 from threetears.evals.run.fidelity import FidelityContract, callers_missing_the_constructor, resolve_constructor
 from threetears.evals.run.jobs import (
@@ -331,7 +330,6 @@ __all__ = [
     "list_rubric_dims",
     "list_runs",
     "load_seed_corpus",
-    "template_case_content_digest",
     "metered_cell_tally",
     "plan_judge",
     "price_arms",

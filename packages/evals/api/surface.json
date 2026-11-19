@@ -4166,11 +4166,6 @@
       "signature": "sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport",
       "tier": "stable"
     },
-    "threetears.evals.run.template_case_content_digest": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.TemplateField": {
       "kind": "literal",
       "signature": "'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'",

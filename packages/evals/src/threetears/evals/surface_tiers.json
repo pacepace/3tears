@@ -834,7 +834,6 @@
 "threetears.evals.run.StoredCells": "provisional",
 "threetears.evals.run.SubjectResolver": "host-contract",
 "threetears.evals.run.sweep_abandoned_runs": "stable",
-"threetears.evals.run.template_case_content_digest": "provisional",
 "threetears.evals.run.TemplateField": "stable",
 "threetears.evals.run.TurnDriver": "stable",
 "threetears.evals.run.UnknownSubject": "host-contract",

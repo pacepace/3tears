@@ -31,8 +31,8 @@ from threetears.evals.run import (
     load_seed_corpus,
     reset_definitions,
     seed_eval_definitions,
-    template_case_content_digest,
 )
+from threetears.evals.run.definition_digests import template_case_content_digest, template_case_digest
 from threetears.evals.schema import EvalTemplate, EvalTestCase, ReferenceKey
 from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.factories import memory_storage
@@ -144,10 +144,10 @@ def test_a_name_or_alias_two_entities_fold_alike_to_is_refused_naming_both(
     assert all(repr(name) in message for name in names), f"both entities are named: {message}"
 
 
-def test_an_entity_whose_alias_folds_to_its_own_name_is_one_entity() -> None:
-    key = ReferenceKey.model_validate({"core": [{"name": "Contoso", "aliases": ["CONTOSO"]}]})
+def test_an_entity_whose_alias_folds_to_its_own_name_is_one_entity_and_the_alias_goes() -> None:
+    key = ReferenceKey.model_validate({"core": [{"name": "Contoso", "aliases": ["CONTOSO", "Contoso Ltd"]}]})
 
-    assert [e.name for e in key.entities] == ["Contoso"]
+    assert [(e.name, e.aliases) for e in key.entities] == [("Contoso", ("Contoso Ltd",))]
 
 
 @pytest.mark.parametrize(
@@ -233,8 +233,9 @@ def test_adding_a_key_or_editing_one_alias_moves_the_digest_and_the_id() -> None
 def test_writing_a_key_s_entities_aliases_or_facts_in_another_order_moves_neither() -> None:
     """A key's parts are sets: the key keeps them in one order, so another order is the same key and the same case."""
     template = toyhost_template()
-    written = _key()
+    written = _key(acceptable=[{"name": "Fabrikam"}, {"name": "Litware"}])
     reordered = _key(
+        acceptable=[{"name": "Litware"}, {"name": "Fabrikam"}],
         core=[
             {"name": "Contoso", "aliases": ["Contoso Ltd"]},
             {
@@ -245,9 +246,11 @@ def test_writing_a_key_s_entities_aliases_or_facts_in_another_order_moves_neithe
                     {"claim": "Founded in 1975.", "source_url": "https://example.org/northwind"},
                 ],
             },
-        ]
+        ],
     )
-    assert [e["name"] for e in reordered["core"]] != [e["name"] for e in written["core"]], "the fixture reorders"
+    for part in ("core", "acceptable"):
+        moved = [e["name"] for e in reordered[part]] != [e["name"] for e in written[part]]
+        assert moved, f"the fixture reorders {part}"
 
     first = _case(reference=written).test_case(template)
     second = _case(reference=reordered).test_case(template)
@@ -255,20 +258,33 @@ def test_writing_a_key_s_entities_aliases_or_facts_in_another_order_moves_neithe
     assert (first.content_hash, first.id) == (second.content_hash, second.id)
     assert first.to_dict()["reference"] == second.to_dict()["reference"]
     assert first.reference is not None and [e.name for e in first.reference.core] == ["Contoso", "Northwind Trading"]
+    assert [e.name for e in first.reference.acceptable] == ["Fabrikam", "Litware"]
 
 
-def test_a_host_writing_its_own_case_sets_the_content_hash_the_seed_gives_it() -> None:
+def test_a_key_written_with_a_repeated_alias_a_repeated_fact_or_a_self_alias_is_the_same_case() -> None:
+    """A key's parts are sets, so a repeat is no content: aliases are kept once per folded name, an alias that folds to
+    its entity's own name goes, and a fact is kept once per claim and source."""
     template = toyhost_template()
-    seeded = _case(reference=_key()).test_case(template)
-    written = EvalTestCase(
-        scope_id=TOYHOST_SCOPE,
-        template_id=template.id,
-        variation_params={"invoice": "INV-7"},
-        host_payload={"persona": "a buyer in a hurry"},
-        reference=ReferenceKey.model_validate(_key()),
-    )
+    clean = _case(reference=_key()).test_case(template)
+    northwind = _key()["core"][0]
+    repeated_alias = _key(core=[{**northwind, "aliases": [*northwind["aliases"], "northwind"]}, _key()["core"][1]])
+    repeated_fact = _key(core=[{**northwind, "facts": [*northwind["facts"], northwind["facts"][0]]}, _key()["core"][1]])
+    self_alias = _key(acceptable=[{"name": "Fabrikam", "aliases": ["FABRIKAM"]}])
 
-    assert template_case_content_digest(written) == seeded.content_hash
+    for written in (repeated_alias, repeated_fact, self_alias):
+        case = _case(reference=written).test_case(template)
+        assert (case.content_hash, case.id) == (clean.content_hash, clean.id), written
+        assert case.to_dict()["reference"] == clean.to_dict()["reference"], written
+
+
+def test_a_stored_case_digests_its_key_as_the_corpus_case_it_was_seeded_from_does() -> None:
+    """Drift compares a stored case with its corpus case through the same fields: the key reads alike on both."""
+    corpus_case = _case(reference=_key(), stratum="lookalike")
+    seeded = corpus_case.test_case(toyhost_template())
+    read = EvalTestCase.from_dict(json.loads(json.dumps(seeded.to_dict())))
+
+    assert template_case_content_digest(read) == template_case_content_digest(corpus_case) == seeded.content_hash
+    assert template_case_digest(read) == corpus_case.digest() == seeded.seed_digest
 
 
 # --- 4. drift and reset ----------------------------------------------------------------------------------------------

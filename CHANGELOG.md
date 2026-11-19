@@ -19,12 +19,16 @@ case. Its parts are sets, kept in one order, so writing them in another order is
 case without a key is stored, digested and identified exactly as before. `reference_material(key)`
 (`threetears.evals.kernel`, provisional) renders the key as plain text for a judge, opening on a line that an entity
 outside the key is unverified, not wrong; a kind appends it to `JudgeEvidence.case_material` for every judge grading
-against the key, and never hands the key to the candidate. `template_case_content_digest` is exported from
-`threetears.evals.run` (provisional): a host writing its own cases sets `content_hash` to it. Engine path only.
+against the key, and never hands the key to the candidate. A host writes a keyed case as a `SeedTemplateCase` with
+`reference`, whose seed sets its content hash and id. Repeats are no content: an alias is kept once per folded name
+and never the entity's own name, and a fact once per claim and source. Engine path only.
 
 **For hosts (durable 17.7, additive):** a 17.6 build reads a stored case carrying `reference`, keeps the key opaquely
-and writes it back unchanged (checked by loading a case this build stored through the previous build's stored read);
-its drift digests that case without the key and reads it `customized`. A 17.6 build refuses a corpus file carrying
+and writes it back unchanged (checked by loading a case this build stored through the previous build's stored read).
+Its drift digests that case without the key: after a rollback to a corpus without keys, the case reads `current` where
+the corpus case matches it but for the key, and `customized` where its other content differs too, since the row's
+recorded seed digest includes the key (checked by running the previous build's drift over such a case; a reset of it
+then needs `overwrite_customized`). A 17.6 build refuses a corpus file carrying
 `reference` at boot seed (`extra_forbidden`, naming the field). So upgrade the package before shipping keyed corpus
 files, and roll the corpus back with any rollback of the package.
 

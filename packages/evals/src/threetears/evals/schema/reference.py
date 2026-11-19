@@ -2,7 +2,7 @@
 from __future__ import annotations
 import unicodedata
 from typing import Literal, Self
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
 def fold_name(text: str) -> str:
@@ -22,15 +22,23 @@ class ReferenceEntity(EvalDocumentModel, CoreShapeModel):
 
     @field_validator("aliases", mode="after")
     @classmethod
-    def _aliases_in_one_order(cls, aliases: tuple[str, ...]) -> tuple[str, ...]:
-        """Aliases are a set: kept in one order, so writing them in another is the same key."""
-        return tuple(sorted(aliases, key=lambda alias: (fold_name(alias), alias)))
+    def _aliases_in_one_order(cls, aliases: tuple[str, ...], info: ValidationInfo) -> tuple[str, ...]:
+        """Aliases are a set: kept in one order, once per folded name and never the entity's own, so writing them in
+        another order, twice, or with the name itself is the same key."""
+        own = fold_name(info.data["name"]) if "name" in info.data else None
+        kept: dict[str, str] = {}
+        for alias in sorted(aliases, key=lambda alias: (fold_name(alias), alias)):
+            kept.setdefault(fold_name(alias), alias)
+        return tuple(alias for folded, alias in kept.items() if folded != own)
 
     @field_validator("facts", mode="after")
     @classmethod
     def _facts_in_one_order(cls, facts: tuple[ReferenceFact, ...]) -> tuple[ReferenceFact, ...]:
-        """Facts are a set: kept in one order, so writing them in another is the same key."""
-        return tuple(sorted(facts, key=lambda fact: (fact.claim, fact.source_url)))
+        """Facts are a set: kept in one order and once each, so another order or a repeat is the same key."""
+        kept: dict[tuple[str, str], ReferenceFact] = {}
+        for fact in sorted(facts, key=lambda fact: (fact.claim, fact.source_url)):
+            kept.setdefault((fact.claim, fact.source_url), fact)
+        return tuple(kept.values())
 
 class ReferenceKey(EvalDocumentModel, CoreShapeModel):
     """The entities a case's answer is graded against: a required core and the others that also count."""
