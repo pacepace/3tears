@@ -12,8 +12,10 @@ and enters the formula of the measures a grader bound to it declares
 (:meth:`~threetears.evals.kernel.set_grade.SetGrader.descriptors`), so sets listed two ways never pool.
 
 **It fails rather than guesses.** A reply cut short raises at once, since the same request would meet the same cap; a
-reply that will not parse is asked again twice, then raises. Either is :class:`EntityExtractionFailed`, which a kind
-reports as an infrastructure error so the cell is excluded, never scored as an empty set.
+reply that will not parse is asked again twice, then raises. Either is :class:`EntityExtractionFailed`, an
+:class:`~threetears.evals.kernel.host.apparatus.ApparatusError`: a fault in the measuring rig, never the candidate's.
+Raised out of a kind's ``invoke``, where a kind grades its output, the runner excludes the cell as
+``apparatus_failed`` and never scores it, so a host that does not catch it is safe by default.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from typing import Any, Final
 from pydantic import Field
 
 from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.set_grade import NamedEntity
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
@@ -48,10 +51,11 @@ _SYSTEM_PROMPT: Final = (
 _USER_TEMPLATE: Final = "Kind of entity: {entity_kind}\nFields to give for each: {fields}\n\n# Text\n\n{text}"
 
 
-class EntityExtractionFailed(Exception):
+class EntityExtractionFailed(ApparatusError):
     """The extractor could not list a text's entities: its reply was cut short, or would not parse after retries.
 
-    A kind reports the cell as an infrastructure error, so it is excluded and never scored as a set naming nothing.
+    A fault in the measuring rig, never the candidate's. Out of a kind's ``invoke`` the runner records the cell
+    excluded as ``apparatus_failed`` and goes on, so it is never scored as a set naming nothing.
     """
 
 

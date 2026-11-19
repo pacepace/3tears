@@ -29,14 +29,17 @@ with no core, the verified share where nothing was named), so that cell is outsi
 reads differently from a perfect one. `EntityExtractor(client, entity_kind, fields)` lists the entities prose names
 with one strict-schema model call that never sees the key (each field a string or null, a null dropped, so the model
 never has to invent a value): every completion is billed to the `judge` ledger, a reply cut short raises
-`EntityExtractionFailed` at once, and one that will not parse is asked twice more, then raises. Engine path only; the
-quick path is a follow-up.
+`EntityExtractionFailed` at once, and one that will not parse is asked twice more, then raises. `EntityExtractionFailed`
+is an `ApparatusError`, a fault of the measuring rig: out of a kind's `invoke` the runner excludes the cell as
+`apparatus_failed` and never scores it. The extractor's identity names its declared model; the model that served each
+call is recorded on the `judge` ledger rows. Engine path only; the quick path is a follow-up.
 
 **For hosts:** build one `SetGrader` per graded set and declare its `descriptors()` on the measure registry, with
 `EXTRACTED_SET_FAMILY` beside them when the grader is bound to an `EntityExtractor` (its measures are then
 judge-graded and never ranked on). Grade each cell with that same grader: `grade` for a structured set, `grade_text`
 for prose, passing the cell's `RoleUsageLedger(role="judge")` and putting its rows on `CandidateTelemetry.usage`.
-Report `EntityExtractionFailed` as `infra_errors`, so the cell is excluded rather than scored 0. Change your matcher's
+Grade inside `invoke`: an `EntityExtractionFailed` left to reach the runner excludes the cell as `apparatus_failed`,
+never scored, and registering the ledger's rows through `sink.report_progress` keeps the failed call's spend on it. Change your matcher's
 `identity` whenever its matching changes. No stored shape changes.
 
 ### evals: a comparison's first screen says what to do beside what is proven

@@ -3,24 +3,50 @@
 Every behaviour is driven through a client that answers from a script and records what it was sent, so nothing is
 spent and each reply is chosen: the list comes back in the reply's order, every completion is billed to the ``judge``
 ledger, an unreadable reply is asked again twice and then refused, a cut-short one is refused at once, blank text
-makes no call, and a client that names no model is refused before any call.
+makes no call, and a client that names no model is refused before any call. A refusal is a fault of the measuring
+rig, an ``ApparatusError``: driven through the real runner, the cell whose extraction failed is excluded as
+``apparatus_failed`` and never scored, and the run goes on.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
 
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.kind import (
+    DOCUMENT_PARAM,
+    TOY_EXTRACTOR_KIND,
+    TOYHOST_EXTRACTION_FAMILY,
+    ScriptedExtractionClient,
+    ToyExtractorInstance,
+    ToyExtractorKind,
+)
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
+from packages.evals.tests.fixtures.toyhost.run import (
+    RUN_K,
+    RUN_MODELS,
+    toyhost_run,
+    toyhost_template,
+    toyhost_test_cases,
+)
 from threetears.evals.kernel import (
+    EXTRACTED_SET_FAMILY,
+    CandidateOutput,
+    CellSink,
     EntityExtractionFailed,
     EntityExtractor,
     NamedEntity,
     RoleUsageLedger,
     SetGrader,
 )
+from threetears.evals.kernel.host import ApparatusError, MeasureRegistry
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
+from threetears.evals.run import RunnerOptions, execute_run, run_blocking
+from threetears.evals.schema import EvalTestCase
 from threetears.evals.schema.reference import ReferenceKey
 
 _MODEL = "scripted/extractor"
@@ -242,3 +268,118 @@ def test_the_identity_names_the_model_and_moves_with_how_the_list_is_made() -> N
     }
     assert base.identity not in others
     assert len(others) == 4
+
+
+def test_a_failed_extraction_is_a_fault_of_the_rig() -> None:
+    assert issubclass(EntityExtractionFailed, ApparatusError)
+
+
+# =============================================================================
+# Through the runner: a cell whose extraction fails is excluded as apparatus_failed, never scored
+# =============================================================================
+
+#: The document whose answer the extractor's reply is cut short on.
+_CUT_DOCUMENT = "doc-02"
+
+_RUN_KEY = ReferenceKey.model_validate({"core": [{"name": "Band A"}], "acceptable": [{"name": "Band C"}]})
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+@dataclass
+class _FakeDocumentClient:
+    """Lists Band A and Band E for every answer, and is cut short on the answer about :data:`_CUT_DOCUMENT`."""
+
+    model_name: str = _MODEL
+    calls: int = 0
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+        self.calls += 1
+        listing = json.dumps({"entities": [{"name": "Band A"}, {"name": "Band E"}]})
+        return _Reply(content=listing, stop_reason="max_tokens" if _CUT_DOCUMENT in user else "end_turn")
+
+    async def aclose(self) -> None:
+        """Nothing to release."""
+
+    async def __aenter__(self) -> _FakeDocumentClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+class _ProseGradingKind(ToyExtractorKind):
+    """The toy extractor, whose every cell also grades a prose answer about its document, inside ``invoke``."""
+
+    def __init__(self, *, grader: SetGrader, **toy: Any) -> None:
+        super().__init__(**toy)
+        self._grader = grader
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        output = await super().invoke(instance, test_case, sink)
+        ledger = RoleUsageLedger(role="judge")
+
+        def so_far() -> CandidateOutput:
+            usage = [*output.telemetry.usage, *ledger.rows()]
+            return output.model_copy(update={"telemetry": output.telemetry.model_copy(update={"usage": usage})})
+
+        # Registered before the extraction, so a cell it fails keeps the spend it billed.
+        sink.report_progress(so_far)
+        answer = f"On {test_case.variation_params[DOCUMENT_PARAM]}: Band A, then a deep cut by Band E."
+        grade = await self._grader.grade_text(answer, _RUN_KEY, ledger=ledger)
+        graded = so_far()
+        return graded.model_copy(update={"host_measures": {**output.host_measures, **grade.host_measures()}})
+
+
+async def test_a_cell_whose_extraction_fails_is_excluded_as_apparatus_failed_and_never_scored() -> None:
+    client = _FakeDocumentClient()
+    grader = SetGrader("picks", reader_label="Picks", extractor=EntityExtractor(client=client, entity_kind="bands"))
+    profile = replace(
+        toyhost_profile(),
+        measures=MeasureRegistry(
+            (*TOYHOST_MEASURES, *grader.descriptors()),
+            families=(TOYHOST_EXTRACTION_FAMILY, EXTRACTED_SET_FAMILY),
+        ),
+    )
+    host = toyhost_host(profile=profile)
+    world = host.profile.world
+    assert world is not None, "the toy profile registers a world"
+    template = toyhost_template()
+    kind = _ProseGradingKind(
+        grader=grader,
+        client=ScriptedExtractionClient(),
+        world=world,
+        goal_checks=tuple(template.goal_state_checks),
+    )
+    test_cases = toyhost_test_cases(template)
+    assert _CUT_DOCUMENT in {case.variation_params[DOCUMENT_PARAM] for case in test_cases}
+    run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world)
+    await run_blocking(host.blocking_executor, host.storage.save_eval_run, run)
+
+    await execute_run(
+        host,
+        run=run,
+        template=template,
+        test_cases=test_cases,
+        judge_service=None,
+        options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
+    )
+
+    results = await run_blocking(host.blocking_executor, host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    assert len(results) == len(test_cases) * RUN_K, "the failed extraction ended its cells, not the run"
+    case_of = {case.id: case.variation_params[DOCUMENT_PARAM] for case in test_cases}
+    faulted = [result for result in results if case_of[result.test_case_id] == _CUT_DOCUMENT]
+    graded = [result for result in results if case_of[result.test_case_id] != _CUT_DOCUMENT]
+    assert len(faulted) == RUN_K
+    for result in faulted:
+        assert result.termination == "apparatus_failed"
+        assert result.infra_error is not None
+        assert result.infra_error.startswith("apparatus: EntityExtractionFailed: ")
+        assert result.candidate_error is None
+        assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
+        assert not any(name.startswith("picks_") for name in result.host_measures), "a failed extraction scores nothing"
+        (judged,) = [row for row in result.usage if row.role == "judge"]
+        assert judged.call_count == 1, "the cut-short call was billed and kept on the excluded cell"
+    for result in graded:
+        assert result.termination == "completed"
+        assert result.host_measures["picks_recall"] == pytest.approx(0.5)
+        assert "picks_verified_share" in result.host_measures

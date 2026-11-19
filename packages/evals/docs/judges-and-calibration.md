@@ -1137,8 +1137,13 @@ itself: the kind builds `NamedEntity` values from it in code and grades them wit
 `grade_text` on a grader bound to an `EntityExtractor`: one model call with a strict reply schema that lists the
 entities of one kind, in order, and never sees the key. Each field asked for is a string or null, and a null is
 dropped, so the model never has to invent a value the text does not state. Its calls are billed to the cell's `judge`
-ledger. A reply cut short fails at once, and one that will not parse is asked twice more; either failure is reported
-as an infrastructure error, so the cell is excluded and never scored as an empty set. Measures over an extracted set
+ledger. A reply cut short fails at once, and one that will not parse is asked twice more. Either failure raises
+`EntityExtractionFailed`, an `ApparatusError`: a fault of the measuring rig, never the candidate's. A kind grades
+inside `invoke`, and out of `invoke` the runner excludes the cell as `apparatus_failed` and never scores it as an
+empty set, so a host that does not catch it is safe by default; a kind that registers its ledger's rows through the
+cell sink's `report_progress` keeps the failed call's spend on the excluded cell. The extractor's identity names the
+model it was declared with, the apparatus, while the model that served each call is recorded per cell on the
+`judge` ledger rows, which the engine's served-model checks guard. Measures over an extracted set
 are in the `extracted_set` family, which is judge-graded and never ranked on; the host declares it on its measure
 registry.
 
