@@ -6,6 +6,8 @@ from typing import Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
+__all__ = ["ReferenceEntity", "ReferenceFact", "ReferenceKey", "fold_name"]
+
 
 def fold_name(text: str) -> str:
     """The name folded for matching: Unicode NFKC, case folded, whitespace runs as one space, ends stripped."""
