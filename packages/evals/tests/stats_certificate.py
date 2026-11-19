@@ -1209,15 +1209,25 @@ def judge(claim: Claim, count: int, replicates: int) -> Verdict:
 
 
 def tally(results: Mapping[str, Mapping[str, int]]) -> dict[str, tuple[int, int]]:
-    """Each claim's (count, replicates), summed over its group's shards' ``results`` (by shard id)."""
+    """Each claim's (count, replicates), summed over its group's shards' ``results`` (by shard id). A shard with no
+    result, or a result without the field a claim counts or without ``n``, is refused by name: a count read as 0 would
+    move the claim."""
     out: dict[str, tuple[int, int]] = {}
     for claim in CLAIMS:
         shards = [shard for shard in SHARDS if shard.group == claim.group]
         missing = [shard.id for shard in shards if shard.id not in results]
         if missing:
             raise KeyError(f"claim {claim.id} has no result for shards {missing}")
+        short = [
+            f"{shard.id} ({field})"
+            for shard in shards
+            for field in dict.fromkeys((claim.field, "n"))
+            if field not in results[shard.id]
+        ]
+        if short:
+            raise KeyError(f"claim {claim.id} has no count for {', '.join(short)}")
         out[claim.id] = (
-            sum(int(results[shard.id].get(claim.field, 0)) for shard in shards),
+            sum(int(results[shard.id][claim.field]) for shard in shards),
             sum(int(results[shard.id]["n"]) for shard in shards),
         )
     return out

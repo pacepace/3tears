@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -25,9 +26,11 @@ from packages.evals.tests import stats_certificate as cert
 from packages.evals.tests.script_loader import load_script
 from packages.evals.tests.test_certified_simulations import PARAMS
 
-#: Plays ``testament`` from a JSON plan: ``run`` writes the plan's stderr lines, records the key file it saw and its
-#: arguments, sleeps, then prints the envelope; ``status`` reports the request a step further each call; ``metrics``
-#: answers every name whose bucket and field the plan lists, after an optional sleep.
+#: Plays ``testament`` from a JSON plan: ``run`` writes the plan's stderr lines (``stderr_every`` apart), records the
+#: key file it saw and its arguments, sleeps, then prints the envelope; ``status`` reports the request as the plan's
+#: ``status`` says: ``advance`` (a test further each call), ``queued`` (waiting behind others, nothing running),
+#: ``stuck`` (a batch running, nothing finishing), ``gone`` (not listed) or ``silent`` (the coordinator not answering);
+#: ``metrics`` answers every name whose bucket and field the plan lists, after an optional sleep.
 _STUB = r"""
 import json, sys, time
 from pathlib import Path
@@ -38,14 +41,23 @@ if command == "run":
     Path(plan["seen"]).write_text(json.dumps({"args": args, "key": Path(plan["key_file"]).read_text().strip()}))
     for line in plan.get("stderr", []):
         print(line, file=sys.stderr, flush=True)
+        time.sleep(plan.get("stderr_every", 0))
     time.sleep(plan.get("run_sleep", 0))
     print(json.dumps(plan["envelope"]), flush=True)
 elif command == "status":
+    mode = plan.get("status", "advance")
+    if mode == "silent":
+        print(json.dumps({"status": "coordinator_unreachable", "exit_code": 2,
+                          "error": {"code": "coordinator_unreachable", "message": "TimeoutError"}}))
+        sys.exit(2)
     ticks = Path(plan["ticks"])
     done = int(ticks.read_text()) + 1 if ticks.exists() else 1
     ticks.write_text(str(done))
-    print(json.dumps({"requests": [{"run_id": plan["request"], "state": "running", "done": done,
-                                    "items": plan["items"], "passed": done, "failed": 0}]}))
+    done = done if mode == "advance" else 0
+    batches = [{"batch_id": "b1", "items": 1, "done": 0, "requests": [plan["request"]]}] if mode == "stuck" else []
+    requests = [] if mode == "gone" else [{"run_id": plan["request"], "state": "running", "done": done,
+                                           "items": plan["items"], "passed": done, "failed": 0}]
+    print(json.dumps({"requests": requests, "batches": batches}))
 elif command == "metrics":
     time.sleep(plan.get("metrics_sleep", 0))
     name = args[args.index("--name") + 1]
@@ -182,7 +194,8 @@ def test_the_watchdog_fires_on_a_pool_request_that_blocks(command: ModuleType, t
         command, tmp_path, ["--stall-minutes", "0.02"], testament=testament, worker=_NEVER_HERE, key_file=key_file
     )
     assert stops == [command.STALLED], log
-    assert "stalled: nothing moved in phase pool request for " in log
+    assert "stalled in phase pool request: nothing moved for " in log
+    assert "waiting for testament to accept the request" in log
     assert "most recent call first" in log, log
     assert "certification failed: stalled in phase pool request" in log
     assert not key_file.exists()
@@ -203,7 +216,7 @@ def test_the_watchdog_covers_the_local_shards(command: ModuleType, tmp_path: Pat
         key_file=key_file,
     )
     assert stops == [command.STALLED], log
-    assert "stalled: nothing moved in phase local shards for " in log
+    assert "stalled in phase local shards: nothing moved for " in log
     assert "most recent call first" in log
     assert not key_file.exists()
     assert time.monotonic() - started < 60, "the blocked workers were not stopped"
@@ -316,3 +329,183 @@ def test_a_dropped_connection_says_why_each_time(command: ModuleType, tmp_path: 
         assert f"pool: the connection dropped (attempt {attempt}, exit 0: {why}); trying again in 0s" in log, log
     assert f"pool: the shards did not all pass (exit 0: {why})" in log
     assert code == command.FAILED
+
+
+#: A stall limit of about one second, as ``--stall-minutes`` takes it.
+_ONE_SECOND = ["--stall-minutes", str(1 / 60)]
+
+
+def test_a_run_whose_testament_keeps_talking_never_stalls(command: ModuleType, tmp_path: Path) -> None:
+    """Before the request is accepted, each line testament says is progress: lines a third of a second apart, for three
+    times the stall limit, never trip it."""
+    lines = [f"shipping the tree: part {index}" for index in range(10)]
+    accepted = f"request {_REQUEST} accepted for 3tears at tree 61845b5002b1"
+    testament, key_file = _stub(tmp_path, metrics=_every_metric(command), stderr=[*lines, accepted], stderr_every=0.3)
+    code, log, stops = _run(command, tmp_path, _ONE_SECOND, testament=testament, worker=_NEVER_HERE, key_file=key_file)
+    assert not stops and "stalled" not in log, log
+    assert "pool: testament says: shipping the tree: part 9" in log
+    assert code in (0, 1)
+
+
+def test_a_run_the_pool_keeps_moving_never_stalls(command: ModuleType, tmp_path: Path) -> None:
+    """After the request is accepted, a request the coordinator lists, finishing tests, is alive: three times the
+    stall limit passes with no line from testament and no stall."""
+    testament, key_file = _stub(tmp_path, metrics=_every_metric(command), run_sleep=3.0)
+    code, log, stops = _run(
+        command,
+        tmp_path,
+        _ONE_SECOND,
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"every_s": 0.2},
+    )
+    assert not stops and "stalled" not in log, log
+    assert code in (0, 1)
+
+
+def test_a_request_queued_behind_others_never_stalls(command: ModuleType, tmp_path: Path) -> None:
+    """The pool busy with others' work: the request is listed, nothing of it runs or finishes, for three times the
+    stall limit and past the stuck limit; it is waiting, not stalled."""
+    testament, key_file = _stub(tmp_path, metrics=_every_metric(command), run_sleep=3.0, status="queued")
+    code, log, stops = _run(
+        command,
+        tmp_path,
+        _ONE_SECOND,
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"every_s": 0.2, "stuck_s": 1.0},
+    )
+    assert not stops and "stalled" not in log, log
+    assert f"request {_REQUEST[:8]} running: 0 of {len(cert.SHARDS)} done, 0 batches running" in log
+    assert code in (0, 1)
+
+
+def test_a_silent_coordinator_stalls_saying_it_stopped_answering(command: ModuleType, tmp_path: Path) -> None:
+    """Every ``testament status`` fails: past the stall limit the run stalls, saying the coordinator stopped answering,
+    since when, for how long, and testament's own error."""
+    testament, key_file = _stub(tmp_path, run_sleep=120, status="silent")
+    code, log, stops = _run(
+        command,
+        tmp_path,
+        _ONE_SECOND,
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"every_s": 0.2},
+    )
+    assert stops == [command.STALLED], log
+    assert "stalled in phase pool request: the coordinator stopped answering: testament status has failed since " in log
+    assert "last: exit 2, coordinator_unreachable: TimeoutError" in log
+    assert "most recent call first" in log
+    assert code == command.FAILED
+
+
+def test_a_request_gone_from_the_coordinator_stalls(command: ModuleType, tmp_path: Path) -> None:
+    testament, key_file = _stub(tmp_path, run_sleep=120, status="gone")
+    code, log, stops = _run(
+        command,
+        tmp_path,
+        _ONE_SECOND,
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"every_s": 0.2},
+    )
+    assert stops == [command.STALLED], log
+    assert f"stalled in phase pool request: request {_REQUEST} is gone from the coordinator with no verdict" in log
+    assert code == command.FAILED
+
+
+def test_batches_that_run_and_never_finish_stall_past_the_stuck_limit(command: ModuleType, tmp_path: Path) -> None:
+    testament, key_file = _stub(tmp_path, run_sleep=120, status="stuck")
+    code, log, stops = _run(
+        command,
+        tmp_path,
+        ["--stall-minutes", "1"],
+        testament=testament,
+        worker=_NEVER_HERE,
+        key_file=key_file,
+        pool_options={"every_s": 0.2, "stuck_s": 1.0},
+    )
+    assert stops == [command.STALLED], log
+    assert f"request {_REQUEST} has had batches running (1 now) and none finished for " in log
+    assert code == command.FAILED
+
+
+def test_liveness_at_the_real_limits(command: ModuleType) -> None:
+    """At the command's own limits: a request queued for eleven minutes is alive; one with batches running is alive
+    while tests finish, and stuck once none has finished for thirty minutes; a silent coordinator stalls at ten."""
+    stall_s, stuck_s = command.STALL_MINUTES * 60, command.STUCK_MINUTES * 60
+    queued = command.Standing(answered=True, listed=True, state="running", items=1217, done=0, running=0, waiting=1217)
+    alive = command.Liveness(_REQUEST, stall_s, stuck_s)
+    assert all(alive.stalled(queued, now=float(minute * 60)) == "" for minute in range(12))
+
+    running = command.Liveness(_REQUEST, stall_s, stuck_s)
+    for minute in range(0, 60, 5):
+        moving = command.Standing(answered=True, listed=True, state="running", items=1217, done=minute, running=40)
+        assert running.stalled(moving, now=float(minute * 60)) == ""
+    still = command.Standing(answered=True, listed=True, state="running", items=1217, done=55, running=40)
+    assert running.stalled(still, now=float(84 * 60)) == ""
+    assert "none finished for 1800s" in running.stalled(still, now=float(85 * 60))
+
+    silent = command.Liveness(_REQUEST, stall_s, stuck_s)
+    gone = command.Standing(answered=False, error="exit 2, coordinator_unreachable: TimeoutError")
+    assert silent.stalled(gone, now=0.0) == "" and silent.stalled(gone, now=599.0) == ""
+    assert "the coordinator stopped answering" in silent.stalled(gone, now=600.0)
+
+
+def test_sigusr1_at_once_dumps_the_stacks_and_the_run_goes_on(command: ModuleType) -> None:
+    """The first line gives the pid; a SIGUSR1 sent the moment it appears, while the modules still load, writes every
+    thread's stack and the command carries on (here to its help, and exit 0)."""
+    process = subprocess.Popen(
+        [sys.executable, str(command.__file__), "--help"],
+        cwd=cert.ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert process.stdout is not None
+    first = process.stdout.readline()
+    assert first.startswith(f"certify: loading the certification's modules, pid {process.pid}"), first
+    process.send_signal(signal.SIGUSR1)
+    rest, _ = process.communicate(timeout=300)
+    assert process.returncode == 0, rest
+    assert "most recent call first" in rest and "usage:" in rest
+
+
+def test_a_shard_still_missing_a_count_is_refused_by_name(command: ModuleType, tmp_path: Path) -> None:
+    """The read-back asks again for a count still missing, and past its wait refuses the run naming the shard and the
+    field, never reading it as 0."""
+    answers = _every_metric(command)
+    withheld = cert.SHARDS[0]
+    suffix = f"{cert.metric_bucket(withheld)}_hits"
+    answers[suffix] = [item for item in answers[suffix] if item != command.item_id(withheld.id)]
+    testament, _ = _stub(tmp_path, metrics=answers)
+    with (tmp_path / "log.txt").open("w+") as log:
+        out = command.Out(log)
+        watchdog = command.Watchdog(60.0, out, stop=lambda code: None)
+        with pytest.raises(command.CertificationFailed, match=rf"1 of {len(cert.SHARDS)} shards") as refused:
+            command.counts_of("k", watchdog, out, testament=testament, wait_s=0.3, every_s=0.1)
+    assert f"  {withheld.id}: hits" in str(refused.value)
+
+
+def test_the_tally_refuses_a_missing_count_and_reads_a_present_one_as_it_is() -> None:
+    results = {
+        shard.id: {field: index % 7 + 1 for index, field in enumerate(cert.recorded_fields(shard))}
+        for shard in cert.SHARDS
+    }
+    expected = {
+        claim.id: (
+            sum(results[shard.id][claim.field] for shard in cert.SHARDS if shard.group == claim.group),
+            sum(results[shard.id]["n"] for shard in cert.SHARDS if shard.group == claim.group),
+        )
+        for claim in cert.CLAIMS
+    }
+    assert cert.tally(results) == expected
+    claim = cert.CLAIMS[0]
+    shard = next(shard for shard in cert.SHARDS if shard.group == claim.group)
+    del results[shard.id][claim.field]
+    with pytest.raises(KeyError, match=rf"claim {claim.id} has no count for {shard.id} \({claim.field}\)"):
+        cert.tally(results)

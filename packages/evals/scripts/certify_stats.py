@@ -14,8 +14,11 @@ it) and exits 1 if any claim does not clear its target. Commit the certificate i
 It never hangs silently. It prints, as it goes, its start, the pool request's id once testament accepts it, the
 request's progress every minute, the metrics it reads back and the end of each phase. A ``testament run`` past
 :data:`RUN_TIMEOUT_S` or a ``testament metrics`` past :data:`METRICS_TIMEOUT_S` is stopped and fails the run, naming
-which and how long it ran. If nothing moves for ``--stall-minutes`` it writes every thread's stack, names the phase it
-stalled in and exits 3. ``kill -USR1 <pid>`` writes every thread's stack at any time, and ``py-spy dump --pid <pid>``
+which and how long it ran. A request the pool holds queued behind others' work is alive, however long it waits. The run
+stalls, writing every thread's stack, naming the phase and why, and exiting 3, when the coordinator stops answering for
+``--stall-minutes``, when the request leaves the coordinator with no verdict for as long, when the request has batches
+running and none finishes for :data:`STUCK_MINUTES`, or, anywhere else, when nothing moves for ``--stall-minutes``.
+``kill -USR1 <pid>`` writes every thread's stack at any time from the first line on, and ``py-spy dump --pid <pid>``
 shows the same from outside.
 
     # Run every shard here instead, when the pool can't take them (an hour or more, and it loads this machine):
@@ -38,6 +41,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
@@ -47,12 +51,46 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH", "")]))
 
-if __name__ == "__main__" and "--shard" not in sys.argv:
-    # Said before the certification's modules load, which takes a while: a run that never gets past them still says it
-    # started, and its pid.
-    print(f"certify: loading the certification's modules, pid {os.getpid()}", flush=True)
+#: How long nothing may move before the run is called stalled: no shard done, no line from testament, the coordinator
+#: not answering. The slowest shard takes about three minutes on the pool.
+STALL_MINUTES = 10.0
+
+#: How long a request may have batches running on the pool with none of them finishing before it is called stuck.
+STUCK_MINUTES = 30.0
+
+#: What the run exits with when it stalls, fails before a verdict, or is stopped by a signal (128 plus its number).
+STALLED, FAILED = 3, 2
+
+
+def _watch_loading(stall_s: float) -> threading.Timer:
+    """Stall the run, with every thread's stack, if the certification's modules have not loaded in ``stall_s``."""
+
+    def fire() -> None:
+        print(f"stalled in phase loading: the certification's modules have not loaded in {stall_s:.0f}s", flush=True)
+        faulthandler.dump_traceback(file=sys.stdout, all_threads=True)
+        sys.stdout.flush()
+        print("certification failed: stalled in phase loading", flush=True)
+        os._exit(STALLED)
+
+    timer = threading.Timer(stall_s, fire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+_LOADING: threading.Timer | None = None
+if __name__ == "__main__":
+    # Before anything slow: a stack on demand and the stall clock run from the first line, which gives the pid to send
+    # SIGUSR1 to. The modules below take a while to load, and a run that never gets past them still says so.
+    faulthandler.register(signal.SIGUSR1, file=sys.stdout, all_threads=True)
+    _LOADING = _watch_loading(STALL_MINUTES * 60)
+    if "--shard" not in sys.argv:
+        print(f"certify: loading the certification's modules, pid {os.getpid()}", flush=True)
 
 from packages.evals.tests import stats_certificate as cert  # noqa: E402
+
+if _LOADING is not None:
+    _LOADING.cancel()
 
 SHARD_FILE = "packages/evals/tests/test_certified_simulations.py"
 
@@ -80,15 +118,8 @@ SHARD_TIMEOUT_S = 1500.0
 #: How often the command says where the pool's request stands while it waits.
 PROGRESS_EVERY_S = 60.0
 
-#: How long nothing may move before the run is called stalled: no shard done, no change in the pool's request, no
-#: line from testament. The slowest shard takes about three minutes on the pool.
-STALL_MINUTES = 10.0
-
 #: How long to wait for the pool's metrics once its request has passed, and how often to ask again meanwhile.
 _METRICS_WAIT_S, _METRICS_EVERY_S = 600, 15
-
-#: What the run exits with when it stalls, fails before a verdict, or is stopped by a signal (128 plus its number).
-STALLED, FAILED = 3, 2
 
 
 class CertificationFailed(Exception):
@@ -149,6 +180,7 @@ class Watchdog:
         self._next = 0
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._watch, name="stall-watchdog", daemon=True)
+        self._waiting = ""
         self.fired = False
 
     def start(self) -> Watchdog:
@@ -165,9 +197,19 @@ class Watchdog:
         return self._phase
 
     def beat(self) -> None:
-        """Something moved: a shard finished, the pool's request changed, testament said a line."""
+        """Something moved: a shard finished, the pool's request is alive, testament said a line."""
         with self._lock:
             self._last = time.monotonic()
+
+    def waiting_on(self, what: str) -> None:
+        """Say what the run is waiting on, for the stall line if nothing moves ("" for nothing in particular)."""
+        with self._lock:
+            self._waiting = what
+
+    def stall(self, why: str) -> None:
+        """Stall the run now, saying ``why``: a phase that judged itself stuck (the coordinator silent, the request
+        gone, batches that never finish)."""
+        self._fire(self._phase, why)
 
     @contextmanager
     def phase(self, name: str) -> Iterator[None]:
@@ -198,17 +240,18 @@ class Watchdog:
     def _watch(self) -> None:
         while not self._done.wait(self._every_s):
             with self._lock:
-                idle, phase = time.monotonic() - self._last, self._phase
+                idle, phase, waiting = time.monotonic() - self._last, self._phase, self._waiting
             if idle >= self.stall_s:
-                self._fire(phase, idle)
+                why = f"nothing moved for {idle:.0f}s (the limit is {self.stall_s:.0f}s)"
+                self._fire(phase, why + (f", waiting for {waiting}" if waiting else ""))
                 return
 
-    def _fire(self, phase: str, idle: float) -> None:
-        self.fired = True
-        self.out.say(
-            f"stalled: nothing moved in phase {phase} for {idle:.0f}s (the limit is {self.stall_s:.0f}s); "
-            "every thread's stack follows"
-        )
+    def _fire(self, phase: str, why: str) -> None:
+        with self._lock:
+            if self.fired:
+                return
+            self.fired = True
+        self.out.say(f"stalled in phase {phase}: {why}; every thread's stack follows")
         faulthandler.dump_traceback(file=self.out.stream, all_threads=True)
         self.out.stream.flush()
         with self._lock:
@@ -227,28 +270,126 @@ def _kill(process: subprocess.Popen[str]) -> Callable[[], None]:
     return kill
 
 
-def _status(testament: Sequence[str], request: str) -> tuple[tuple[object, ...] | None, str]:
-    """Where the pool's request stands, as a tuple that changes when it moves, and as a phrase."""
+@dataclass(frozen=True)
+class Standing:
+    """Where the pool's request stood at one ``testament status``: whether the coordinator answered (and if not, what
+    testament said), whether it lists the request, and the request's batches."""
+
+    answered: bool
+    error: str = ""
+    listed: bool = False
+    state: str = ""
+    items: int | None = None
+    done: int = 0
+    passed: int = 0
+    failed: int = 0
+    running: int = 0
+    waiting: int = 0
+
+    def said(self, request: str) -> str:
+        if not self.answered:
+            return f"the coordinator did not answer ({self.error})"
+        if not self.listed:
+            return f"request {request[:8]} is not at the coordinator"
+        if self.items is None:
+            return f"request {request[:8]} {self.state}"
+        return (
+            f"request {request[:8]} {self.state}: {self.done} of {self.items} done, {self.running} batches running, "
+            f"{self.waiting} tests waiting, {self.passed} passed, {self.failed} failed"
+        )
+
+
+def _said_by(error: subprocess.CalledProcessError) -> str:
+    """What a failed ``testament status`` said: its error's code and message, else the last of its stderr."""
+    try:
+        told = json.loads(error.stdout or "")
+    except json.JSONDecodeError:
+        told = None
+    if isinstance(told, dict) and isinstance(told.get("error"), dict):
+        return f"exit {error.returncode}, {told['error'].get('code')}: {told['error'].get('message')}"
+    tail = " / ".join((error.stderr or "").strip().splitlines()[-3:])
+    return f"exit {error.returncode}" + (f": {tail}" if tail else "")
+
+
+def _status(testament: Sequence[str], request: str) -> Standing:
+    """Where the pool's request stands (:class:`Standing`)."""
     command = [*testament, "status", "--json"]
     try:
         asked = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=True, timeout=STATUS_TIMEOUT_S)
-        requests = json.loads(asked.stdout).get("requests") or []
+        told = json.loads(asked.stdout)
     except subprocess.TimeoutExpired:
-        return None, f"testament status gave no answer in {STATUS_TIMEOUT_S:.0f}s"
+        return Standing(answered=False, error=f"testament status gave no answer in {STATUS_TIMEOUT_S:.0f}s")
     except subprocess.CalledProcessError as error:
-        return None, f"testament status failed (exit {error.returncode})"
+        return Standing(answered=False, error=_said_by(error))
     except json.JSONDecodeError:
-        return None, "testament status said no JSON"
-    mine = [entry for entry in requests if str(entry.get("run_id", "")) == request]
+        return Standing(answered=False, error="testament status said no JSON")
+    mine = [entry for entry in told.get("requests") or [] if str(entry.get("run_id", "")) == request]
     if not mine:
-        return None, f"request {request[:8]} not at the coordinator"
+        return Standing(answered=True)
     entry = mine[0]
-    moved = tuple(entry.get(name) for name in ("state", "done", "items", "passed", "failed", "error", "skipped"))
-    done, items = entry.get("done"), entry.get("items")
-    said = f"request {request[:8]} {entry.get('state')}"
-    if items is not None:
-        said += f": {done or 0} of {items} done, {entry.get('passed', 0)} passed, {entry.get('failed', 0)} failed"
-    return moved, said
+    batches = [batch for batch in told.get("batches") or [] if request in (batch.get("requests") or [])]
+    in_flight = sum(int(batch.get("items") or 0) - int(batch.get("done") or 0) for batch in batches)
+    items, done = entry.get("items"), int(entry.get("done") or 0)
+    return Standing(
+        answered=True,
+        listed=True,
+        state=str(entry.get("state")),
+        items=items,
+        done=done,
+        passed=int(entry.get("passed") or 0),
+        failed=int(entry.get("failed") or 0),
+        running=len(batches),
+        waiting=max(0, int(items) - done - in_flight) if items is not None else 0,
+    )
+
+
+class Liveness:
+    """Whether the pool's request is alive, from one :class:`Standing` after another. A request the coordinator lists
+    is alive, queued or running, however long others' work keeps it waiting. It is stalled only when the coordinator
+    stops answering for ``stall_s``, when the request is gone from it for ``stall_s`` with no verdict, or when it has
+    batches running and none finishes for ``stuck_s``."""
+
+    def __init__(self, request: str, stall_s: float, stuck_s: float) -> None:
+        self.request = request
+        self.stall_s = stall_s
+        self.stuck_s = stuck_s
+        self._silent_since: float | None = None
+        self._silent_at = ""
+        self._gone_since: float | None = None
+        self._done = -1
+        self._finished_at = time.monotonic()
+
+    def stalled(self, standing: Standing, now: float | None = None) -> str:
+        """Why the request is stalled, or "" while it is alive."""
+        now = time.monotonic() if now is None else now
+        if not standing.answered:
+            if self._silent_since is None:
+                self._silent_since, self._silent_at = now, f"{datetime.now(UTC):%H:%M:%S} UTC"
+            if now - self._silent_since >= self.stall_s:
+                return (
+                    f"the coordinator stopped answering: testament status has failed since {self._silent_at}, "
+                    f"{now - self._silent_since:.0f}s (the limit is {self.stall_s:.0f}s); last: {standing.error}"
+                )
+            return ""
+        self._silent_since = None
+        if not standing.listed:
+            if self._gone_since is None:
+                self._gone_since = now
+            if now - self._gone_since >= self.stall_s:
+                return (
+                    f"request {self.request} is gone from the coordinator with no verdict, for "
+                    f"{now - self._gone_since:.0f}s (the limit is {self.stall_s:.0f}s)"
+                )
+            return ""
+        self._gone_since = None
+        if standing.done != self._done or not standing.running:
+            self._done, self._finished_at = standing.done, now
+        if now - self._finished_at >= self.stuck_s:
+            return (
+                f"request {self.request} has had batches running ({standing.running} now) and none finished for "
+                f"{now - self._finished_at:.0f}s (the limit is {self.stuck_s:.0f}s)"
+            )
+        return ""
 
 
 def _run_streaming(
@@ -259,6 +400,7 @@ def _run_streaming(
     out: Out,
     timeout_s: float,
     every_s: float,
+    stuck_s: float,
 ) -> tuple[int, str, str, str]:
     """Run ``testament run``: echo each line it says on stderr as it says it, the request's id the moment it is
     accepted, and where the request stands every ``every_s``. Returns the exit code, stdout, stderr and the request's
@@ -289,7 +431,8 @@ def _run_streaming(
     readers = [threading.Thread(target=read, daemon=True) for read in (read_stdout, read_stderr)]
     for reader in readers:
         reader.start()
-    moved: tuple[object, ...] | None = None
+    watchdog.waiting_on("testament to accept the request")
+    liveness: Liveness | None = None
     try:
         while True:
             ran = time.monotonic() - started
@@ -305,12 +448,18 @@ def _run_streaming(
             if not request:
                 out.say(f"pool: {time.monotonic() - started:.0f}s; waiting for testament to accept the request")
                 continue
-            now, where = _status(testament, request[0])
-            if now is not None and now != moved:
-                moved = now
+            if liveness is None:
+                watchdog.waiting_on("")
+                liveness = Liveness(request[0], watchdog.stall_s, stuck_s)
+            standing = _status(testament, request[0])
+            out.say(f"pool: {time.monotonic() - started:.0f}s; {standing.said(request[0])}")
+            stalled = liveness.stalled(standing)
+            if stalled:
+                watchdog.stall(stalled)
+            else:
                 watchdog.beat()
-            out.say(f"pool: {time.monotonic() - started:.0f}s; {where}")
     finally:
+        watchdog.waiting_on("")
         if process.poll() is None:
             process.kill()
             process.wait()
@@ -328,6 +477,7 @@ def pool(
     testament: Sequence[str] = TESTAMENT,
     timeout_s: float = RUN_TIMEOUT_S,
     every_s: float = PROGRESS_EVERY_S,
+    stuck_s: float = STUCK_MINUTES * 60,
     retry_after_s: float = 60.0,
 ) -> tuple[dict[str, dict[str, int]], str]:
     """Run every shard on the pool as one request and read each one's counts back. Returns them by shard id, and the
@@ -339,7 +489,13 @@ def pool(
     with watchdog.phase("pool request"):
         for attempt in range(1, 5):
             code, stdout, stderr, request = _run_streaming(
-                command, testament=testament, watchdog=watchdog, out=out, timeout_s=timeout_s, every_s=every_s
+                command,
+                testament=testament,
+                watchdog=watchdog,
+                out=out,
+                timeout_s=timeout_s,
+                every_s=every_s,
+                stuck_s=stuck_s,
             )
             if not any(word in stdout + stderr for word in _DROPPED) or attempt == 4:
                 break
@@ -564,7 +720,10 @@ def main(
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 4, help="processes for --local")
     parser.add_argument("--out", type=Path, default=cert.CERTIFICATE, help="where to write the certificate")
     parser.add_argument(
-        "--stall-minutes", type=float, default=STALL_MINUTES, help="fail when nothing moves for this long"
+        "--stall-minutes",
+        type=float,
+        default=STALL_MINUTES,
+        help="stall when the coordinator stops answering, or nothing moves, for this long",
     )
     parser.add_argument("--shard", help="run one shard here and print its counts (what each --local worker runs)")
     options = parser.parse_args(argv)
