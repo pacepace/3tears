@@ -151,8 +151,8 @@ class _GrantedPool(ProxyPoolDouble):
     grant tables are not this schema's); every listing statement recorded, unrun.
 
     The grants are one statement (:func:`threetears.agent.acl.visible_customers`: the caller's groups walked from
-    ``group_members`` with each group's ``role_assignments`` beside it), answered here as one group holding a
-    ``type_customer`` grant on each customer; every other statement is a listing page."""
+    ``group_members`` with each group's ``role_assignments`` and their roles beside it), answered here as one group holding
+    a ``type_customer`` grant on each customer through a knowledge reader; every other statement is a listing page."""
 
     def __init__(self, customers: list[uuid.UUID]) -> None:
         self._customers = customers
@@ -171,6 +171,10 @@ class _GrantedPool(ProxyPoolDouble):
                     "scope_namespace_type": "knowledge",
                     "scope_namespace_id": None,
                     "namespace_customer_id": None,
+                    # the role each grant binds: a reader of knowledge, so each grant covers its customer
+                    "role_id": uuid.uuid4(),
+                    "role_permissions": {"knowledge": ["knowledge.read"]},
+                    "namespace_type": None,
                 }
                 for customer in self._customers
             ]
