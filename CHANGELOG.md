@@ -140,7 +140,9 @@ retired; the next write met the same. A write now reads and encodes all its new 
 holding them encoded (zstd Arrow IPC) until put, and asks `NatsObjectStore.require_room` once for them all:
 `ObjectStoreFullError` up front, nothing written. The copy is still read once a write (read twice, once to measure and
 once to put, every write would read and encode its rows twice); the cost is the new parts held at once, a whole
-write's (a cold start's) the size the checkpoint adds to the store. **Added:**
+write's (a cold start's) the size the checkpoint adds to the store: measured cold at the reports pod's copy size
+(2.89 GiB in the process, 15 M rows), 0.308 GiB encoded and the write's peak 0.115 GiB over the copy, under 2% of the
+pod's 16 GiB limit. **Added:**
 `NatsObjectStore.require_room(objects: Sequence[tuple[str, int]]) -> int` refuses several puts the store has no room
 for together (one `STREAM.INFO`) and answers the bytes they add as the server counts them. The store a
 `CopyCheckpoints` is given must answer `require_room` (a test's in-memory store too: reports'

@@ -940,7 +940,11 @@ class CopyCheckpoints:
                 # each was encoded, a checkpoint the store had no room for was refused part way, after some of its
                 # parts were written (then retired), and the next write met the same. The encoded parts are held
                 # until put (zstd Arrow IPC, the copy's rows compressed), so the copy is read once, as before: read
-                # twice instead (once to measure, once to put), every write would read and encode its rows twice
+                # twice instead (once to measure, once to put), every write would read and encode its rows twice.
+                # What holding them costs (2026-11-18, a cold write of a copy of the reports pod's shape at its size,
+                # 2.89 GiB in the process, 15 M rows of 7 columns in 51 scopes): 3,060 parts, 0.308 GiB encoded, the
+                # write's peak 0.115 GiB over the copy's own, 1.9 s. Even all 0.31 GiB held at once is under 2% of the
+                # pod's 16 GiB limit beside its copy: no bound per batch of parts is needed at that size
                 pending: list[tuple[str, bytes]] = []
                 for plan in plans:
                     parts = await self._write_table(cursor, plan, seq, pending, (lock, claim))
