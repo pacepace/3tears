@@ -76,8 +76,8 @@ tests. pytest-split cuts evals into eight runs of about equal recorded duration,
 only cost balance, never a test.
 
 Where `testament` is installed (outside CI), `test.sh` hands the run to its
-runners instead (testament 0.45.1 or later: an older client refuses the manifest's
-`fallback` key and runs nothing; upgrade with
+runners instead (testament 0.57.0 or later: an older client refuses the manifest's
+`fallback` key or the typecheck suite's `[git]` table and runs nothing; upgrade with
 `uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
 where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
 there leaves out the integration and `loop_timing` tests, and the `docker` and `secrets` ones
@@ -114,7 +114,7 @@ pool. Testament names the cause:
   the pool;
 - `machine_not_set_up`: this machine has no key; `unauthorized` or `revoked`: its key was revoked;
 - `bad_manifest` with "a key it doesn't know may need a newer one": this machine's testament is
-  older than 0.45.1.
+  older than 0.57.0.
 
 `testament run --probe` and `testament status` say whether the pool answers.
 
@@ -156,7 +156,7 @@ and variables → Actions → Variables*) and re-run the checks. Delete it when 
   `TESTAMENT_OFF_REASON="no pool here" ./scripts/ci-unit-tests.sh`, and the rest of `check-all.sh`'s
   steps by hand (`lint.sh`, `typecheck.sh`, `test-mcp-v1.sh -q`, `test-otel-floor.sh -q`,
   `test-sidecar.sh`).
-- With testament installed but not enrolled, holding a revoked key, or older than 0.45.1, every
+- With testament installed but not enrolled, holding a revoked key, or older than 0.57.0, every
   run exits 2. Run named files with `TESTAMENT=off TESTAMENT_OFF_REASON="..."`, or upgrade (above)
   and enrol (`testament login --console <the pool's console address>`).
 
@@ -284,12 +284,11 @@ check it once.
   installed, `fallback = "pool-only"` as for `test.sh`. `TESTAMENT=off` with a
   `TESTAMENT_OFF_REASON` runs it here, and so does CI's fallback. Arguments after the package go to
   pytest, not mypy: the tests own their mypy flags.
-- **What the cache keys on.** The tree, the manifest and every `v*` tag in the checkout that ran it.
-  A laptop's run serves CI only from a clean committed checkout (uncommitted and untracked files ship
-  with a run) whose tags match origin's, on a branch that already contains its base, so a pull
-  request's merge commit has the branch's tree. `typecheck.sh` fetches origin's tags first and names
-  any that differ (one only here, one only at origin, one origin moved); it never moves or deletes one.
-  About one result in seven that could be served runs anyway, as the cache's own check.
+- **What the cache keys on.** The tree and the manifest. The suite ships no release tags
+  (`[suites.typecheck.git] tags = []`, testament 0.57.0), so a checkout's tags never split its key from
+  CI's. A laptop's run serves CI from a clean committed checkout (uncommitted and untracked files ship
+  with a run) on a branch that already contains its base, so a pull request's merge commit has the
+  branch's tree. About one result in seven that could be served runs anyway, as the cache's own check.
 - **Why the tests look the way they do.** Testament serves only what its recorder found nothing live
   in: no subprocess, no clock, no entropy, no file outside the tree, the venv and temp. So mypy runs
   in-process (`mypy.api.run`) with `time.time` frozen and `os.urandom` fixed (it uses them only to

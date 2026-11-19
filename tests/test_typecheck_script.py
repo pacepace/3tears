@@ -3,8 +3,8 @@
 The typecheck is testament's ``typecheck`` suite (``typecheck/test_mypy.py``). Where testament is
 installed the script hands the run to the pool, whose cache serves a tree that already passed, so a run
 here and CI's run of the same tree check it once; CI, and ``TESTAMENT=off`` with a stated reason, run the
-same tests here. The cache key holds every release tag in this checkout, so before a pool run the script
-fetches origin's tags and names any local one origin lacks.
+same tests here. The suite ships no release tags (``[suites.typecheck.git] tags = []``), so nothing about
+this checkout's tags matters to the cache, and the script reads none.
 
 Self-contained: the script is staged in a miniature repo under ``tmp_path`` (it derives REPO_ROOT from
 its own location), and ``testament``, ``uv`` and ``git`` are stand-ins on PATH that record their argv, so
@@ -29,23 +29,6 @@ _POOL = ["testament", "run", "--suite", "typecheck", "--"]
 _RECORDER = """#!/bin/sh
 {{ basename "$0"; printf '%s\\n' "$@"; echo; }} >> "{calls}"
 exit "${{{var}:-0}}"
-"""
-
-#: a git that answers the script's tag questions from files the test writes: ``local-tags`` and
-#: ``remote-tags`` hold ``<name> <object>`` lines, served as for-each-ref and ls-remote print them
-_GIT = """#!/bin/sh
-{{ echo git; printf '%s\\n' "$@"; echo; }} >> "{calls}"
-case "$1" in
-    fetch) [ -f "{stage}/fetch.fail" ] && exit 1; exit 0 ;;
-    ls-remote)
-        [ -f "{stage}/ls-remote.fail" ] && exit 128
-        [ -f "{stage}/remote-tags" ] && while read -r name object; do
-            printf '%s\\trefs/tags/%s\\n' "$object" "$name"
-        done < "{stage}/remote-tags"
-        exit 0 ;;
-    for-each-ref) cat "{stage}/local-tags" 2>/dev/null; exit 0 ;;
-esac
-exit 0
 """
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="typecheck.sh is bash; none on this host")
@@ -131,7 +114,7 @@ def _run(
         (bin_dir / name).chmod(0o755)
     if not testament:
         (bin_dir / "testament").unlink(missing_ok=True)
-    (bin_dir / "git").write_text(_GIT.format(calls=calls, stage=stage))
+    (bin_dir / "git").write_text(_RECORDER.format(calls=calls, var="GIT_EXIT"))
     (bin_dir / "git").chmod(0o755)
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "typecheck.sh"), *args],
@@ -155,6 +138,7 @@ class TestThePool:
         assert run.returncode == 0, run.stderr
         assert run.of("testament") == [[*_POOL, "typecheck/"]]
         assert run.of("uv") == [], "a pool run checks nothing here"
+        assert run.of("git") == [], "the suite ships no tags, so the script reads none"
 
     @pytest.mark.parametrize(
         ("package", "selection"),
@@ -229,75 +213,6 @@ class TestThePool:
         assert run.of("uv") == []
 
 
-class TestTheTags:
-    """the release tags join testament's cache key, so a pool run fetches origin's and names those that differ."""
-
-    def _tags(self, repo: Path, here: str, there: str) -> None:
-        (repo.parent / "local-tags").write_text(here)
-        (repo.parent / "remote-tags").write_text(there)
-
-    def test_origin_s_tags_are_fetched_before_the_run(self, repo: Path) -> None:
-        run = _run(repo, [])
-        fetch = [call for call in run.of("git") if call[1] == "fetch"]
-        assert fetch == [["git", "fetch", "--quiet", "--tags", "origin"]]
-        assert run.calls.index(fetch[0]) < run.calls.index(run.of("testament")[0])
-
-    @pytest.mark.parametrize(
-        ("here", "there", "named"),
-        [
-            pytest.param("v1.0.0 aa\nv9.9.9 cc\n", "v1.0.0 aa\n", "v9.9.9", id="only-here"),
-            pytest.param("v1.0.0 aa\n", "v1.0.0 aa\nv1.1.0 bb\n", "v1.1.0", id="only-at-origin"),
-            pytest.param("v1.0.0 aa\n", "", "v1.0.0", id="origin-has-none"),
-            pytest.param("v1.0.0 aa\nv1.1.0 bb\n", "v1.0.0 aa\nv1.1.0 dd\n", "v1.1.0", id="moved-at-origin"),
-        ],
-    )
-    def test_a_tag_that_differs_is_named(self, repo: Path, here: str, there: str, named: str) -> None:
-        """each way a tag set can differ splits the cache key, so each is named, and only that tag.
-
-        :param repo: the miniature repo
-        :ptype repo: Path
-        :param here: this checkout's tags
-        :ptype here: str
-        :param there: origin's tags
-        :ptype there: str
-        :param named: the one tag the warning must name
-        :ptype named: str
-        :return: nothing
-        :rtype: None
-        """
-        self._tags(repo, here, there)
-        run = _run(repo, [])
-        (warning,) = [line for line in run.stderr.splitlines() if "differ from origin" in line]
-        assert f"differ from origin's: {named}. " in warning, warning
-        assert run.of("testament"), "the warning never stops the run"
-        assert not [call for call in run.of("git") if {"-d", "--delete", "--force", "-f"} & set(call)], run.calls
-
-    def test_matching_tags_say_nothing(self, repo: Path) -> None:
-        self._tags(repo, "v1.0.0 aa\n", "v1.0.0 aa\n")
-        run = _run(repo, [])
-        assert "differ from origin" not in run.stderr
-
-    def test_a_refused_fetch_still_compares(self, repo: Path) -> None:
-        """a fetch that refuses a moved tag exits non-zero; the comparison still names the tag.
-
-        :param repo: the miniature repo
-        :ptype repo: Path
-        :return: nothing
-        :rtype: None
-        """
-        (repo.parent / "fetch.fail").write_text("")
-        self._tags(repo, "v1.0.0 aa\n", "v1.0.0 dd\n")
-        run = _run(repo, [])
-        assert "differ from origin's: v1.0.0. " in run.stderr
-        assert run.of("testament") == [[*_POOL, "typecheck/"]]
-
-    def test_origin_unreadable_is_said_and_the_run_goes_on(self, repo: Path) -> None:
-        (repo.parent / "ls-remote.fail").write_text("")
-        run = _run(repo, [])
-        assert "could not read origin's tags" in run.stderr
-        assert run.of("testament") == [[*_POOL, "typecheck/"]]
-
-
 class TestHere:
     """CI, TESTAMENT=off with a reason, and a machine without testament run the same tests here."""
 
@@ -310,7 +225,7 @@ class TestHere:
         ],
     )
     def test_the_suite_runs_here(self, repo: Path, testament: bool, env: dict[str, str]) -> None:
-        """the run here is pytest over the same selection, with no tag fetch (no cache key to match).
+        """the run here is pytest over the same selection.
 
         :param repo: the miniature repo
         :ptype repo: Path

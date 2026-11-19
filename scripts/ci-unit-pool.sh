@@ -10,7 +10,8 @@
 # `unreachable` runs ./scripts/typecheck.sh on the job's own runner instead. Unlike the unit run it takes
 # neither --fresh nor --no-cache: its results are served from testament's cache, so a tree already checked
 # there, from a laptop's ./scripts/typecheck.sh or an earlier CI run, is not checked again. A cached result
-# is a pass recorded on this exact tree, manifest and release tags, by tests the recorder found nothing live in.
+# is a pass recorded on this exact tree and manifest (the suite ships no release tags), by tests the recorder
+# found nothing live in.
 #
 # The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml's unit suite
 # (`default`) selects packages/ and tests/ with -m "not integration and not loop_timing and not docker

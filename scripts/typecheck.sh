@@ -24,9 +24,8 @@ source "$REPO_ROOT/scripts/_tool.sh"
 # Where testament is installed, the run goes to its pool, outside CI and unless TESTAMENT=off: the manifest
 # is `fallback = "pool-only"`, so a pool that can't take it fails it rather than running it here. The pool
 # serves a tree that already passed from its cache, whoever ran it, so a run here and CI's run of the same
-# tree check it once. testament keys that cache on the tree and every release tag in this checkout, so a
-# run here serves CI only from a clean committed checkout whose `v*` tags match origin's: this script
-# fetches origin's tags first and names any tag that differs from origin's (it moves and deletes none).
+# tree check it once: testament keys that cache on the tree and the manifest (the suite ships no release
+# tags), so a run here serves CI from a clean committed checkout. Needs testament 0.57.0 or later.
 #
 # CI, and TESTAMENT=off with a stated reason (TESTAMENT_OFF_REASON), run the same tests here.
 
@@ -48,26 +47,6 @@ if [ -n "$PACKAGE" ]; then
     fi
 fi
 
-# The release tags join testament's cache key, by name and the commit each names: fetch origin's, then name
-# every tag that differs from origin's (one only here, one only there, or one at another commit). A tag
-# origin moved is refused by the fetch ("would clobber existing tag") and stays different until the person
-# moves it here; nothing in this script deletes or moves one.
-check_tags() {
-    local remote here differ
-    git fetch --quiet --tags origin 2>/dev/null || true
-    if ! remote="$(git ls-remote --tags --refs origin 'v[0-9]*' 2>/dev/null)"; then
-        echo "typecheck.sh: could not read origin's tags; if this checkout's differ, CI checks this tree again" >&2
-        return 0
-    fi
-    remote="$(printf '%s\n' "$remote" | sed -nE 's#^([0-9a-f]+)[[:space:]]+refs/tags/(.+)$#\2 \1#p' | sort)"
-    here="$(git for-each-ref --format='%(refname:strip=2) %(objectname)' 'refs/tags/v[0-9]*' | sort)"
-    differ="$(comm -3 <(printf '%s\n' "$here") <(printf '%s\n' "$remote") | tr -d '\t' | sed '/^$/d' | cut -d' ' -f1 |
-        sort -u | paste -sd ' ' -)"
-    if [ -n "$differ" ]; then
-        echo "typecheck.sh: tags that differ from origin's: ${differ}. testament's cache key holds every v* tag, so CI will not reuse this run's results until they match (\`git fetch --tags --force origin\` takes origin's)" >&2
-    fi
-}
-
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" = "off" ]; then
     if [ -z "${TESTAMENT_OFF_REASON:-}" ]; then
         echo "typecheck.sh: TESTAMENT=off needs a reason: drop it to run on the pool, or say why with TESTAMENT_OFF_REASON=\"...\"" >&2
@@ -77,7 +56,6 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
 fi
 
 if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}" != "off" ]; then
-    check_tags
     echo "typecheck.sh: via testament, pool only, suite typecheck (if the pool is down: docs/testing.md, \"When the pool is down\")" >&2
     pool_status=0
     testament run --suite typecheck -- "${SELECTION[@]}" "$@" || pool_status=$?

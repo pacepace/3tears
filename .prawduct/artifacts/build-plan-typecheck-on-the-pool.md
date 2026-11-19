@@ -40,8 +40,12 @@ twice on identical code." Also: "make sure that our typechecks are running".
   Stated here so it is not a silent drop.
 - [DECISION] `typecheck.sh` goes to the pool where testament is installed (outside CI), `fallback =
   "pool-only"` as for test.sh; `TESTAMENT=off` with a stated reason runs it here (cheap, unlike the unit
-  suite). Before a pool run it fetches tags and warns about local `v*` tags origin lacks, since either
-  splits the cache key from CI's. It never deletes a tag.
+  suite).
+- [DECISION] The suite ships no release tags (`[suites.typecheck.git] tags = []`, testament 0.57.0, built
+  for this as brookstalley/testament#886). The project's tags otherwise join every suite's cache key, and
+  a laptop whose tags differ from origin's (this one had four) never shares a result with CI. This
+  replaced a tag check in `typecheck.sh` that fetched origin's tags and named those that differed.
+  Testament 0.57.0 becomes the minimum for the repo.
 - [DECISION] CI: a `typecheck` job beside the unit jobs. On the pool when `route` chose it
   (`ci-unit-pool.sh typecheck`: no `--fresh`, no `--no-cache`, so results are served), else, or when the
   pool is lost, `./scripts/typecheck.sh` on GitHub's runner. `check` needs it and reports its verdict.

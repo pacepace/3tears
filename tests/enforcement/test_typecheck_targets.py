@@ -9,7 +9,8 @@ did disagree once, 28 targets against 21, so a bare mypy skipped six packages th
 - every workspace member is a package the suite checks: a member whose tree the walk cannot read is
   a package nobody checks, while the gate stays green;
 - ``files`` and ``mypy_path`` name exactly those packages' source trees;
-- the unit suite never collects ``typecheck/``, which runs once, as its own suite;
+- the unit suite never collects ``typecheck/``, which runs once, as its own suite, and that suite ships no release
+  tags, so a checkout whose tags differ from CI's still shares its cached results;
 - every workflow typechecks through ``scripts/typecheck.sh``: a workflow with a ``mypy`` list of its own checks
   only what that list names, so a type error anywhere else passes its gate (the release gate's would publish).
 """
@@ -68,6 +69,7 @@ def test_the_typecheck_tests_run_in_their_own_suite_only() -> None:
     """the unit suite selects ``packages/`` and ``tests/``; ``typecheck/`` is the typecheck suite's alone."""
     suites = _MANIFEST["suites"]
     assert suites["typecheck"]["default_selection"] == ["typecheck/"]
+    assert suites["typecheck"].get("git") == {"tags": []}, "the typecheck suite's cache key must hold no tags"
     for name, suite in suites.items():
         if name == "typecheck":
             continue

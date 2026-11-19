@@ -16,11 +16,12 @@
 #
 # `fallback = "pool-only"`: when the pool can't take a run, it fails (exit 2, naming this key)
 # rather than running the suite on the submitting machine. A local run is a choice, made with
-# TESTAMENT=off and a TESTAMENT_OFF_REASON (scripts/test.sh). Needs testament 0.45.1 or later.
+# TESTAMENT=off and a TESTAMENT_OFF_REASON (scripts/test.sh). Needs testament 0.57.0 or later (the typecheck
+# suite's own `[git]` table, below; 0.45.1 for this key alone).
 #
 # Version 3: the suites are tables of their own ([suites.<name>]), each with its command, selection
 # and areas; the keys up to [git] are the project's, shared by every suite (one image, one setup,
-# one workspace per tree). `default` is the unit suite. scripts/test.sh and scripts/ci-unit-pool.sh
+# one workspace per tree) unless a suite sets its own (the typecheck suite's `[git]` ships no tags). `default` is the unit suite. scripts/test.sh and scripts/ci-unit-pool.sh
 # name it (`--suite default`), so a run of theirs stays this suite when another is added. A bare
 # `testament run` (no `--`, no `--suite`) runs every suite, the integration suite included.
 manifest_version = 3
@@ -203,11 +204,16 @@ platform = ["packages/**"]
 # The typecheck suite: strict mypy over every package, one test per package (typecheck/test_mypy.py), run
 # by scripts/typecheck.sh and CI's `typecheck` job. It is pytest, not a `files` suite, because only a suite a
 # recorder watches is served from the cache, and the cache is the point: a tree that passed once, from a
-# laptop or from CI, is not checked again (keyed on the tree and this manifest, so a laptop's run serves CI
-# only from a clean committed checkout holding the same release tags; typecheck.sh warns when they differ).
-# The tests run mypy in-process with the clock frozen, so the recorder finds nothing live in them. CI runs it
-# without --fresh or --no-cache, unlike the unit suite.
+# laptop or from CI, is not checked again. The key is the tree and this manifest, so a laptop's run serves CI
+# from a clean committed checkout. The tests run mypy in-process with nothing live for the recorder to find.
+# CI runs it without --fresh or --no-cache, unlike the unit suite.
 [suites.typecheck]
 adapter = "pytest"
 command = ["uv", "run", "--frozen", "pytest"]
 default_selection = ["typecheck/"]
+
+# No release tags: the project's `[git] tags` ship with every other suite, and join each one's cache key,
+# so a checkout whose tags differ from CI's (one pushed late, one moved upstream) would never share a
+# result. mypy reads no tag, so this suite ships none, keys without them, and runs in a workspace with none.
+[suites.typecheck.git]
+tags = []
