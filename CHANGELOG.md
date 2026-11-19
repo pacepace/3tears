@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: `warehouse_arrow_types` reads a Redshift late-binding view's columns (breaking)
+
+**Fixed:** `warehouse_arrow_types` read a relation's columns from `information_schema.columns`, which on Redshift
+holds none of a late-binding view's (`WITH NO SCHEMA BINDING`, what dbt's `+bind: false` makes of every view): over
+such a view it found no column, and a reader refused every load of it. On Redshift it now reads `SVV_COLUMNS`, which
+holds a table's, a bound view's and a late-binding view's columns alike, in the same spellings (read on the warehouse,
+2026-11-19); a table's `timetz` column, which `SVV_COLUMNS` spells `timetz`, is text as before. PostgreSQL, YugabyteDB
+and DuckDB read `information_schema.columns` by the same statement as before.
+
+**Changed (breaking):** `warehouse_arrow_types` takes `dialect`, keyword-only and required: the dialect the
+datasource's statements are spelled in (`threetears.core.keyed.Dialect`, a `DatasourceReader`'s `sql_dialect`), which
+names the catalogue it reads. The engine is the datasource's declared one, never learned by a statement failing.
+
+### core: a reader lets a superseded shared Arrow version go without holding the event loop
+
+**Fixed:** `MappedTables.close` dropped every mapped table at once: one cascade of deallocations in C, during which no
+other thread can take the interpreter lock until the last array is freed. This is the close behind a
+`SharedArrowStore` reader's let-go of a superseded version after each publish, behind a worker's version and behind a
+claimed result. Cobalt dev's two reports pods stalled their idle event loops for 134 ms and 160 ms in it (2026-11-19,
+15:49Z), reached from `publish -> _tell_readers -> refresh`. The tables are now freed one at a time, each joined table
+before the parts it joins, so the loop takes its turn between two. At the pod's size (2240 files of 200 columns, a
+publish replacing every part) the loop ran 62.7 ms late past the host's own idle loop before, and 11.7 ms after
+(`test_shared_arrow_let_go_loop.py`, a `loop_timing` budget of 20 ms).
+
 ### agent-audit: a username's digest is an identifying audit detail
 
 **Changed:** `old_username_digest`, `new_username_digest`, `typed_username_digest` and `stored_username_digest` join

@@ -1608,6 +1608,28 @@ def _map_pinned(path: str, pin: _Pin | None) -> Any:
     return ipc.open_file(pa.BufferReader(whole)).read_all()
 
 
+def _free_in_turns(held: list[Any]) -> None:
+    """let go of ``held``'s tables one at a time, last first, emptying the list: between two, any other thread waiting
+    for the interpreter lock takes its turn.
+
+    Freeing a table frees every array it is the last to hold, in one cascade of deallocations in C that lets no other
+    thread run until it ends; a dictionary of tables freed whole is one such cascade for all of them. A reports pod's
+    version (2240 files of about 200 columns) is 448k arrays: dropped at once, a reader's let-go of a superseded version
+    on the store's settling thread held cobalt dev's two pods' idle event loops 134 ms and 160 ms (2026-11-19, 15:49Z),
+    and the same version here held a laptop's 62 ms past its host's own idle loop
+    (test_shared_arrow_let_go_loop.py). One file's table at a time is one file's arrays (about 200, ~0.1 ms), and the
+    loop gets the lock at the next switch interval (5 ms). The caller drops its own references first (its mapping),
+    so each table goes here, never with the mapping.
+
+    :param held: the tables, the one to free first last; emptied
+    :ptype held: list[pa.Table]
+    :return: nothing
+    :rtype: None
+    """
+    while held:
+        held.pop()
+
+
 class MappedTables:
     """Arrow tables memory-mapped read-only from a directory: every process mapping it shares its pages, and no row
     is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, and, mapped
@@ -1728,8 +1750,12 @@ class MappedTables:
         :return: nothing
         :rtype: None
         """
+        # freed in turns, a joined table before the parts it joins (:func:`_free_in_turns`): a part freed while a
+        # joined table still holds its arrays frees nothing, and the joined table freed last would free them all at once
+        held = [*self._by_inode.values(), *self.tables.values()]
         self.tables = MappingProxyType({})
         self._by_inode = {}
+        _free_in_turns(held)
         for mapped in self._maps:
             mapped.close()
         self._maps = []
