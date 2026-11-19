@@ -358,22 +358,26 @@ def bounded_send_buffers(buffers: Iterable[bytes | memoryview], bound: int, most
 
 
 class _BoundedSends:
-    """one socket transport's ``_get_sendmsg_buffer``: its write buffer's front, cut at :data:`SEND_BOUND_BYTES`.
+    """one socket transport's ``_get_sendmsg_buffer``: its write buffer's front, cut at its bound.
 
     :ivar buffer: the transport's write buffer (asyncio creates it once per transport and only empties it)
+    :ivar bound: the most bytes one ``sendmsg`` is offered (:data:`SEND_BOUND_BYTES` on a connection)
     """
 
-    __slots__ = ("buffer",)
+    __slots__ = ("bound", "buffer")
 
-    def __init__(self, buffer: deque[bytes | memoryview]) -> None:
-        """hold ``buffer``.
+    def __init__(self, buffer: deque[bytes | memoryview], bound: int) -> None:
+        """hold ``buffer`` and ``bound``.
 
         :param buffer: the transport's write buffer
         :ptype buffer: deque[bytes | memoryview]
+        :param bound: the most bytes one ``sendmsg`` is offered
+        :ptype bound: int
         :return: nothing
         :rtype: None
         """
         self.buffer = buffer
+        self.bound = bound
 
     def __call__(self) -> Iterator[memoryview]:
         """the buffers the next ``sendmsg`` is offered.
@@ -381,7 +385,7 @@ class _BoundedSends:
         :return: views over the front of the write buffer
         :rtype: Iterator[memoryview]
         """
-        return bounded_send_buffers(self.buffer, SEND_BOUND_BYTES, _IOV_MAX)
+        return bounded_send_buffers(self.buffer, self.bound, _IOV_MAX)
 
 
 class _SendmsgTransport(Protocol):
@@ -412,8 +416,8 @@ def _socket_transport(connection: Client) -> asyncio.BaseTransport | None:
     return writer.transport
 
 
-def bound_transport(transport: asyncio.BaseTransport) -> bool:
-    """make every ``sendmsg`` on ``transport`` offer at most :data:`SEND_BOUND_BYTES`, when it is asyncio's socket one.
+def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND_BYTES) -> bool:
+    """make every ``sendmsg`` on ``transport`` offer at most ``bound`` bytes, when it is asyncio's socket one.
 
     A TLS connection writes through asyncio's SSL transport, a websocket one through aiohttp: neither is bounded
     here, by design. Any other plain transport -- another event loop's, such as uvloop's -- cannot be bounded
@@ -422,6 +426,9 @@ def bound_transport(transport: asyncio.BaseTransport) -> bool:
 
     :param transport: the asyncio transport a connection writes to
     :ptype transport: asyncio.BaseTransport
+    :param bound: the most bytes one send is offered; a connection's is always :data:`SEND_BOUND_BYTES`, and only
+        :func:`send_bound_gaps` names a smaller one, to prove the mechanism under a kernel's smaller buffers
+    :ptype bound: int
     :return: True when its sends are bounded (now or before)
     :rtype: bool
     """
@@ -439,7 +446,7 @@ def bound_transport(transport: asyncio.BaseTransport) -> bool:
             )
         return False
     socket_transport = cast("_SendmsgTransport", transport)
-    socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer)
+    socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)
     _BOUNDED.add(transport)
     return True
 
@@ -793,43 +800,62 @@ def _missing(surface: tuple[PrivateAttribute, ...], instances: dict[str, object]
     return missing
 
 
-#: what :func:`send_bound_gaps` queues on its socket: several bounds' worth, so an unbounded send takes more than one
-_PROOF_BYTES: Final[int] = 8 * SEND_BOUND_BYTES
+#: the loopback buffers :func:`send_bound_gaps` asks the kernel for, each: several connection bounds' worth
+_PROOF_ASK_BYTES: Final[int] = 16 * SEND_BOUND_BYTES
+
+#: the least loopback room (send buffer plus receive buffer, as the kernel reports them) a proof of the bound can run
+#: in: below it a quarter of the room is a send of a few kilobytes, too small to tell a bound from the kernel's own
+#: cut. Under a Linux default (net.core.wmem_max / rmem_max 212992) the kernel reports 425984 for each, 851968 of room.
+_PROOF_ROOM_FLOOR: Final[int] = 64 * 1024
 
 
 def send_bound_gaps(*, bounded: bool = True) -> list[str]:
-    """whether one send of a large write on a real socket transport takes at most :data:`SEND_BOUND_BYTES`.
+    """whether one send of a large write on a real socket transport takes at most the bound it was given.
 
-    Builds asyncio's socket transport over a loopback TCP pair whose kernel buffers hold the whole write, bounds it
-    as :func:`bound_socket_sends` does, hands it :data:`_PROOF_BYTES` through ``writelines`` (which sends once at
-    once, as the flusher's write does) and reads how much left the transport's buffer. Nothing is scheduled; the
-    unsent rest is dropped and both sockets are closed.
+    Builds asyncio's socket transport over a loopback TCP pair, asks the kernel for large buffers and reads what it
+    granted (a host caps them: a Linux default at 212992 bytes each). The bound proved is :data:`SEND_BOUND_BYTES`, or
+    a quarter of the granted room when that is smaller, so an unbounded send of the same write takes more than the
+    bound on any kernel: the proof is of the mechanism (:func:`bound_transport`), on every host. It bounds the
+    transport as :func:`bound_socket_sends` does, hands it eight bounds' worth through ``writelines`` (which sends
+    once at once, as the flusher's write does) and reads how much left the transport's buffer. Nothing is scheduled;
+    the unsent rest is dropped and both sockets are closed.
 
     :param bounded: False leaves the transport as asyncio built it, only to show the check can fail
     :ptype bounded: bool
-    :return: one line when the send took more than the bound or nothing at all, empty when the bound held
+    :return: one line when the send took more than the bound or nothing at all, or when the kernel granted less room
+        than :data:`_PROOF_ROOM_FLOOR`; empty when the bound held
     :rtype: list[str]
     """
     with socket.create_server(("127.0.0.1", 0)) as server:
         near = socket.create_connection(server.getsockname())
         far, _ = server.accept()
     try:
-        near.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * _PROOF_BYTES)
-        far.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * _PROOF_BYTES)
+        near.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, _PROOF_ASK_BYTES)
+        far.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _PROOF_ASK_BYTES)
+        room = near.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF) + far.getsockopt(
+            socket.SOL_SOCKET, socket.SO_RCVBUF
+        )
+        if room < _PROOF_ROOM_FLOOR:
+            return [
+                f"the kernel granted {room} bytes of loopback room, under the {_PROOF_ROOM_FLOOR} a proof of the send "
+                "bound needs"
+            ]
+        bound = min(SEND_BOUND_BYTES, room // 4)
+        payload = 8 * bound
         near.setblocking(False)
         transport = _SOCKET_TRANSPORT(_InertLoop(), near, asyncio.Protocol())  # type: ignore[call-arg, arg-type]
         buffer = cast("_SendmsgTransport", transport)._buffer
         try:
-            if bounded and not bound_transport(transport):
+            if bounded and not bound_transport(transport, bound=bound):
                 return [f"{type(transport).__qualname__}: bound_transport did not bound asyncio's own socket transport"]
-            transport.writelines([memoryview(bytes(_PROOF_BYTES))])
-            sent = _PROOF_BYTES - sum(len(view) for view in buffer)
+            transport.writelines([memoryview(bytes(payload))])
+            sent = payload - sum(len(view) for view in buffer)
         finally:
             buffer.clear()
             transport.close()
     finally:
         near.close()
         far.close()
-    if not 0 < sent <= SEND_BOUND_BYTES:
-        return [f"one send of a {_PROOF_BYTES}-byte write took {sent} bytes; the bound is {SEND_BOUND_BYTES}"]
+    if not 0 < sent <= bound:
+        return [f"one send of a {payload}-byte write took {sent} bytes; the bound is {bound} (room {room})"]
     return []
