@@ -295,14 +295,15 @@ check it once.
   in-process (`mypy.api.run`) with `time.time` frozen and `os.urandom` fixed (it uses them only to
   time itself and name files), a `--cache-dir` under pytest's temp, an explicit `--config-file`, and
   its fallback stub directory `/usr/local/lib/mypy` reported missing. A change that makes the suite
-  uncacheable shows in the run's summary (`cache (serving same tree): 0 of N from cache ... can't be
-  cached`); `testament cacheability --project 3tears --suite typecheck` lists the causes.
+  uncacheable still passes, so it is said: locally in the run's summary (`cache (serving same tree): 0
+  of N from cache ... can't be cached`), in CI as a `typecheck cache` warning on the job;
+  `testament cacheability --project 3tears --suite typecheck` lists the causes.
 - **CI.** The `typecheck` job runs `./scripts/ci-unit-pool.sh typecheck` on the pool when `route`
   chose it, without `--fresh` or `--no-cache`, and its summary says how many results were served. On
   the shards' route, or when the pool is lost during the run, it runs `./scripts/typecheck.sh` on its
   own runner. `check` reads its result in a step of its own, so a red unit suite no longer hides a type
   error, and `check`'s later steps (lint, the attribution check, the floor suites) run after a failed
-  verdict too. `release.yml` runs `typecheck.sh` on GitHub's runner.
+  verdict too. `release.yml`'s gate runs `typecheck.sh` on GitHub's runner: every package, as here.
 
 ### Where the unit suite's time goes
 

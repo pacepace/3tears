@@ -47,7 +47,14 @@ twice on identical code." Also: "make sure that our typechecks are running".
   pool is lost, `./scripts/typecheck.sh` on GitHub's runner. `check` needs it and reports its verdict.
 - [DECISION] `check`'s steps after the unit verdict run unless the run was cancelled, so lint and the
   floor suites report beside a red unit suite. The unit verdict stays the first step (pinned by tests).
-- `release.yml` keeps calling `typecheck.sh` on GitHub's runner (CI set): same tests, run locally.
+- [DECISION, alignment-pass miss] `release.yml`'s gate ran its own `mypy` over eight packages, not
+  `typecheck.sh` as this plan first assumed (Critic, cumulative review). It now runs `typecheck.sh` (CI set,
+  so on its runner): every package. An enforcement test holds every workflow to the script.
+- [DECISION] mypy's incremental cache lives under pytest's temp and is dropped with the run: testament's
+  result cache does that work, and a cache carried between runs on a runner is state the key never covers.
+- [DECISION] mypy's fallback stub directory `/usr/local/lib/mypy` (listed on every POSIX run, for a broken
+  install) is reported missing to it: a host's stubs there are a read outside the tree, and would make a
+  result depend on the runner.
 
 ## Chunks
 

@@ -103,11 +103,13 @@ cd "$REPO_ROOT" || exit 2
 if [ "$mode" = typecheck ]; then
     title="typecheck route"
     job="typecheck (testament pool)"
+    heading="typecheck (testament pool)"
     instead="the typecheck on this job's runner"
     instead_said="the typecheck runs on this job's runner instead, and its verdict is the check's."
 else
     title="unit route"
     job="unit (testament pool)"
+    heading="unit + enforcement (testament pool)"
     instead="the GitHub shards"
     instead_said="the GitHub shards run instead, and their verdict is the check's."
 fi
@@ -324,7 +326,7 @@ run() {
             fi
             break
         done
-        report "$OUT/envelope.json" "$job"
+        report "$OUT/envelope.json" "$heading" "$mode"
     fi
     output outcome "$outcome"
     output why "$why"
@@ -348,10 +350,10 @@ run() {
 
 # --- what happened, on the run's page: counts, error, and each failing test
 report() {
-    python3 - "$1" "$2" <<'PY'
+    python3 - "$1" "$2" "$3" <<'PY'
 import json, os, sys
 
-lines = [f"### {'unit + enforcement (testament pool)' if sys.argv[2].startswith('unit') else sys.argv[2]}", ""]
+lines = [f"### {sys.argv[2]}", ""]
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, ValueError) as e:
@@ -363,6 +365,14 @@ if d is not None:
     cache = r.get("cache") or {}
     if cache.get("state"):
         lines.append(f"cache ({cache['state']}): {cache.get('served', 0)} served, {cache.get('ran', 0)} ran")
+    # The typecheck suite exists to be served from the cache, and a suite that stopped being cacheable
+    # still passes: it is checked on every run again, which nothing else would say. So it is a warning.
+    uncacheable = int((cache.get("fates") or {}).get("uncacheable") or 0)
+    if sys.argv[3] == "typecheck" and uncacheable:
+        top = "; ".join(f"{t.get('reason')} at {t.get('at')}" for t in (cache.get("top") or [])[:3])
+        said = f"{uncacheable} typecheck result(s) can't be cached, so CI checks them again on every run: {top}"
+        lines.append(f"**{said}** (`testament cacheability --project 3tears --suite typecheck`)")
+        print(f"::warning title=typecheck cache::{said.replace('%', '%25')}")
     if d.get("fallback"):
         lines.append(f"**Ran on GitHub's runner, not the pool:** {d['fallback'].get('reason')}")
     if d.get("error"):

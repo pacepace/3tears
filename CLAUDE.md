@@ -147,7 +147,7 @@ uv sync                    # install all packages in dev mode
 | `./scripts/test-integration.sh` | Run the integration suite on the testament pool; `--here` runs the docker and credentialed tests on this machine |
 | `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |
 | `./scripts/lint.sh` | ruff check plus format check. `--fix` to auto-fix |
-| `./scripts/typecheck.sh` | Strict mypy on all packages, or one (`./scripts/typecheck.sh evals`), as testament's `typecheck` suite: on the pool, where a tree that already passed is served from the cache instead of checked again |
+| `./scripts/typecheck.sh` | Strict mypy on all packages, or one: `./scripts/typecheck.sh evals`. On the pool, served from its cache ([docs/testing.md](docs/testing.md)) |
 | `./scripts/check-all.sh` | lint plus typecheck plus tests, including CI's mcp-1.x and OpenTelemetry-floor suites |
 
 Extra args pass through: `./scripts/test.sh core -v -k lease`

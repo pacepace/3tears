@@ -124,3 +124,28 @@ def test_evals_example_hosts_typecheck(mypy_cache: Path, monkeypatch: pytest.Mon
     assert len(files) > len(EXAMPLE_HOSTS), f"the example hosts hold no modules: {files}"
     monkeypatch.setenv("MYPYPATH", str(REPO_ROOT))
     _mypy(["--explicit-package-bases", "--namespace-packages", *files], mypy_cache, monkeypatch)
+
+
+def test_a_type_error_fails_the_check(tmp_path: Path, mypy_cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """the harness fails on a finding: a pass here is cached and served to every later run of the tree, so a
+    harness that stopped failing would pass every tree after it.
+
+    The module is written under the test's temp directory, which the recorder reads as the test's own.
+
+    :param tmp_path: the test's temp directory
+    :ptype tmp_path: Path
+    :param mypy_cache: the session's mypy cache directory
+    :ptype mypy_cache: Path
+    :param monkeypatch: the test's monkeypatch
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: nothing
+    :rtype: None
+    """
+    broken = tmp_path / "broken.py"
+    broken.write_text('def half(n: int) -> int:\n    return n / 2\n\n\nhalf("two")\n')
+    with pytest.raises(pytest.fail.Exception) as failed:
+        _mypy([str(broken)], mypy_cache, monkeypatch)
+    said = str(failed.value)
+    assert said.startswith("mypy exit 1"), said
+    assert 'Incompatible return value type (got "float", expected "int")' in said
+    assert 'Argument 1 to "half" has incompatible type "str"' in said

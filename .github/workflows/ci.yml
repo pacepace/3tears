@@ -235,8 +235,6 @@ jobs:
     if: "!cancelled() && needs.route.result == 'success'"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      outcome: ${{ steps.pool.outputs.outcome }}
     steps:
       # fetch-depth 0: the scope step diffs against the PR base, and the client sends the release tags
       # the manifest asks for, which join the cache key

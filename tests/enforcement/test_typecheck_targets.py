@@ -9,13 +9,17 @@ did disagree once, 28 targets against 21, so a bare mypy skipped six packages th
 - every workspace member is a package the suite checks: a member whose tree the walk cannot read is
   a package nobody checks, while the gate stays green;
 - ``files`` and ``mypy_path`` name exactly those packages' source trees;
-- the unit suite never collects ``typecheck/``, which runs once, as its own suite.
+- the unit suite never collects ``typecheck/``, which runs once, as its own suite;
+- every workflow typechecks through ``scripts/typecheck.sh``: a workflow with a ``mypy`` list of its own checks
+  only what that list names, so a type error anywhere else passes its gate (the release gate's would publish).
 """
 
 from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+
+import yaml
 
 from typecheck.targets import REPO_ROOT, packages
 
@@ -69,3 +73,17 @@ def test_the_typecheck_tests_run_in_their_own_suite_only() -> None:
             continue
         for path in suite.get("default_selection", []):
             assert not Path(path).as_posix().startswith("typecheck"), f"suite {name} selects {path}"
+
+
+def test_every_workflow_typechecks_through_the_script() -> None:
+    """no workflow step runs mypy itself, and the release gate runs ``typecheck.sh``."""
+    workflows = REPO_ROOT / ".github" / "workflows"
+    for path in sorted(workflows.glob("*.yml")):
+        for name, job in yaml.safe_load(path.read_text())["jobs"].items():
+            for step in job.get("steps", []):
+                run = str(step.get("run", ""))
+                assert "mypy" not in run, f"{path.name}: job {name} runs mypy itself: {run}"
+    release = yaml.safe_load((workflows / "release.yml").read_text())["jobs"]["check"]["steps"]
+    assert [s for s in release if str(s.get("run", "")).strip() == "./scripts/typecheck.sh"], (
+        "release.yml's check job must typecheck every package through scripts/typecheck.sh"
+    )

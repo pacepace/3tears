@@ -221,10 +221,9 @@ jobs:
           uv run ruff check .
           uv run ruff format . --check
 
+      # every package, as ci.yml's typecheck job checks them off the pool (CI is set, so it runs here)
       - name: Typecheck
-        env:
-          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src
-        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources
+        run: ./scripts/typecheck.sh
 
   # docs/releasing.md, step 4: real structured calls through the real Claude CLI and the session
   # pool's live proofs, on the exact commit being released. Every other test of the subscription

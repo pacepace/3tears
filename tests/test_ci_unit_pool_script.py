@@ -573,6 +573,50 @@ class TestTheTypecheckRun:
         stage.runs((0, envelope))
         run = stage.go("typecheck")
         assert "cache (serving_tree): 31 served, 2 ran" in run.summary
+        assert "can't be cached" not in run.stdout + run.summary
+
+    def test_results_the_cache_cannot_serve_are_a_warning(self, stage: _Stage) -> None:
+        """a typecheck that stopped being cacheable still passes, so the run says so where CI shows it.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        envelope = _envelope(0, counts={"passed": 33})
+        report = envelope["report"]
+        assert isinstance(report, dict)
+        report["cache"] = {
+            "state": "serving_tree",
+            "served": 0,
+            "ran": 33,
+            "fates": {"uncacheable": 33},
+            "top": [{"reason": "clock", "at": "typecheck/test_mypy.py:80", "count": 33}],
+        }
+        stage.runs((0, envelope))
+        run = stage.go("typecheck")
+        assert run.returncode == 0, "an uncacheable pass is still a pass"
+        warning = "::warning title=typecheck cache::33 typecheck result(s) can't be cached"
+        assert warning in run.stdout
+        assert "clock at typecheck/test_mypy.py:80" in run.stdout
+        assert "can't be cached" in run.summary
+
+    def test_the_unit_run_never_warns_about_its_cache(self, stage: _Stage) -> None:
+        """the unit run is ``--no-cache`` on purpose: nothing it runs is served, so nothing is warned about.
+
+        :param stage: the staged script
+        :ptype stage: _Stage
+        :return: nothing
+        :rtype: None
+        """
+        envelope = _envelope(0, counts={"passed": 40})
+        report = envelope["report"]
+        assert isinstance(report, dict)
+        report["cache"] = {"state": "serving_tree", "served": 0, "ran": 40, "fates": {"uncacheable": 12}}
+        stage.runs((0, envelope))
+        run = stage.go("run")
+        assert "typecheck cache" not in run.stdout
+        assert "### unit + enforcement (testament pool)" in run.summary
 
 
 class TestTheClientDownload:
