@@ -63,10 +63,13 @@ QUESTION = "Does v2 read the currency an invoice charges in right more often tha
 CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
+#: What to do, said above the result on the print, the aspect's page and the campaign's.
+_ADVICE = "Advice: keep v1. v2 is behind it."
+
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
     "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
     "was right on 90 for v1 and 89 for v2."
 )
@@ -133,7 +136,7 @@ async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_t
     # guardrail to warn of.
     assert (lines[0], lines[1]) == ("# compare", f'"{QUESTION}"')
     assert lines[3].startswith("v1 (control) vs v2 · ")
-    assert lines[5] == f"**{_LEAD}**"
+    assert lines[5] == f"**{_ADVICE} {_LEAD}**"
     assert page_violations(result.report) == []
 
     assert len(served.calls) == 180
@@ -183,7 +186,7 @@ async def test_3c_offline_it_replays_both_prompts_and_decides_the_guardrail_apar
     assert lines[1] == f'"{QUESTION}"'
     assert lines[3].startswith("v1 (control) vs v2 · ")
     # Never "no difference", never "not separated": the campaign's lead sentence, then what the guardrail means.
-    assert lines[5] == f"**{_LEAD} v2 may do worse than v1 on the No invented total score guardrail.**"
+    assert lines[5] == f"**{_ADVICE} {_LEAD} v2 may do worse than v1 on the No invented total score guardrail.**"
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
     # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost,
     # and its provider routing is said in the methods, not between the result and the scoreboard (owner reading,
@@ -251,7 +254,7 @@ async def test_3c_its_page_leads_on_its_question_s_measure_with_the_guardrail_v2
         "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
-    assert bold == [f"**{_LEAD}**", f"**{warning}**"]
+    assert bold == [f"**{_ADVICE} {_LEAD}**", f"**{warning}**"]
     html = unlinked(campaign_report_html(result.page))
     assert (
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
@@ -411,7 +414,8 @@ async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_sco
     module = load(Path("grid.py"), "grid", monkeypatch)
     result = await module.grid.run(store=":memory:")
     printed = result.render().splitlines()
-    lead, control = printed[0], _SHOWN[_CELLS[0]]
+    # The proof line, under the advice: the advice names the arm it advises on, the proof every arm.
+    lead, control = printed[1], _SHOWN[_CELLS[0]]
     # The lead names every candidate and the control as the scoreboard below it does.
     assert all(_SHOWN[cell] in lead for cell in _CELLS)
     scoreboard = [line.partition(": ")[0] for line in printed if line.endswith(("scored", "failed by the candidate"))]
@@ -435,7 +439,7 @@ async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_sco
     # Read against another control, its name and its page's title name that control the same way.
     again = await result.against(_CELLS[2])
     assert again.name == f"grid, against {_SHOWN[_CELLS[2]]}"
-    assert again.render().splitlines()[1:3] == [UNKEPT_SENTENCE, f"{control}: 90 result(s): 90 scored"]
+    assert again.render().splitlines()[2:4] == [UNKEPT_SENTENCE, f"{control}: 90 result(s): 90 scored"]
 
 
 @pytest.mark.parametrize("example", [COMPARE, MARGIN, GUARDRAIL], ids=lambda path: path.name)

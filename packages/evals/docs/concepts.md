@@ -49,8 +49,8 @@ too, so it is checked against people's labels before its scores are leaned on, a
 A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
 the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
 **verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`v2 ahead of v1,
-undecided`, with the change, its interval and how strong the evidence is: weak, moderate or strong; which never means "no
-difference"), `equivalent` (shown inside a margin you declared), or `untested`. With a question asked, only the
+undecided`, or on the question's own reading `v2 ahead of v1, proof pending`, with the change, its interval and how
+strong the evidence is: weak, moderate or strong; which never means "no difference"), `equivalent` (shown inside a margin you declared), or `untested`. With a question asked, only the
 question's own reading, its first grader's, is decided; every other reading is shown and decides nothing. A guardrail is
 decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.
 
@@ -555,6 +555,16 @@ own unit otherwise. Its **interval** is where the true difference plausibly lies
 tested together holds at once, 95% of the time. The **adjusted p** (Holm's, in the folded Statistics table) is the
 p-value corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that
 excludes zero. See [reading a comparison](reading-reports.md#reading-a-comparison).
+
+#### Advice
+What to do on a comparison, said above its verdict on the first grader's reading: `switch` to the candidate once the
+evidence that it is better reaches moderate (strong where the switch was declared hard to undo, `Eval(undo="hard")`),
+while it is still ahead, and whenever the verdict has decided it better; `keep` the control otherwise. However often
+anyone looks, if the candidate is not really better (on a question with a margin: if it is worse by more than the
+margin), the advice says switch at most one time in three, or one time in ten for a switch declared hard to undo. A
+program reads
+it as `Result.contrasts()`'s `advice`; the gate reads the verdict, never the advice. See
+[reading a comparison](reading-reports.md#a-small-comparison-on-the-quick-path).
 
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `v2 better than v1` or `v2 worse

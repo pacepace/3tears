@@ -190,7 +190,8 @@ the recorded run said: v2 is a point behind v1 on accuracy, the evidence weak an
 are shown with their evidence and decide nothing, since the question asked about currency.
 
 ```text
-compare: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
+compare: Advice: keep v1. v2 is behind it.
+compare: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 ```
 
 One v2 trial failed, its recorded error `the candidate raised ValidationError: 1 validation error for Invoice` on
@@ -219,7 +220,7 @@ reading:
 that fails each trial it fails, with its own held/breached reading against v1 on top, decided apart from the contrasts.
 It grades the fields as compare.py does, with no margin. The guardrail is undecided for v2, so it
 exits 4, its last line saying why in the report's words
-(`exit 4: Accuracy: v2 behind v1, undecided. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+(`exit 4: Accuracy: v2 behind v1, proof pending. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
 it, and reads v2 against v1 in one row
 
@@ -227,7 +228,7 @@ it, and reads v2 against v1 in one row
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
+**Advice: keep v1. v2 is behind it. Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...

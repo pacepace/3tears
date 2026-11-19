@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
+**Advice: keep v1. v2 is behind it. Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -262,7 +262,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
   `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
-  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, undecided.`), its change
+  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, proof pending.` on the question's own reading), its change
   over the paired cases (`Over 30 paired cases, v2 is 1 point behind v1.`), what the interval allows it to be (`The
   interval allows v2 to be as much as 14 points worse or 12 better.`, its level the table's header), how strong the
   evidence is (`The evidence that v2 is worse is weak (1.2).`) and what the measure was on each arm, in its own verb
@@ -461,9 +461,52 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ### A small comparison on the quick path
 
-A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first line leads on where the
-candidate stands on the question's reading, by how much, how far the interval lets it be either way, and how strong
-the evidence is, and it says "decided" only when the evidence clears the bar:
+A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first screen answers two
+questions, each on its own line: what to do (the advice), then what is proven (the proof).
+
+**The advice comes first.** `Advice: switch to v2. At worst it is 25 points behind v1.` or `Advice: keep v1. v2 is
+ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the first grader's reading, asked or not:
+
+- **Switch** once the evidence that v2 is better has reached moderate (3), while v2 is still ahead and the evidence
+  against it has not reached 3. On a question with a margin (`Eval(..., margin=0.05)`, is v2 no worse?), the
+  evidence is that v2 is no worse than the margin below v1, and "ahead" is within the margin: a v2 exactly as good as
+  v1 is meant to be advised switch there. Where the switch would be hard to undo, declare it before anything runs
+  (`Eval(..., undo="hard")`) and the bar is strong (10). With several arms the bar is that times their count, and the
+  advice names the advised arm with the best estimate.
+- **A decision leads.** Once the proof has decided, the advice follows it, for every arm: decided better reads
+  switch, decided worse reads keep, whatever the lead or the evidence has done since, so the advice never points
+  against the proof or the gate. With one arm this cannot make the advice say switch more often (a decision of better
+  needs the evidence for v2 at 11 or more, past either bar); with several, an arm Holm decides at a later step can be
+  switched on less evidence than the bar times the arms, and the certificate's `advice.decided-arms.*` claims hold the
+  promise with that counted, among them with one arm truly better, whose decision lowers the level Holm holds the rest
+  to.
+- **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
+  The advice never says there is not enough to say.
+- **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the
+  margin, on a question with one), or, where it keeps, what the bar needs beside the evidence there is.
+- **The promise.** However often anyone looks, if the candidate is not really better (on a question with a margin: if
+  it is worse than the control by more than the margin), the advice says switch at most one time in three, or one time
+  in ten for a switch declared hard to undo. With several arms it holds for all of them together. It holds for every
+  distribution on the reading's range, read after every case or once (the certificate's `advice.no-better.*`,
+  `advice.margin.*` and `advice.arms.*` claims). Nothing bounds how
+  often it keeps a candidate that is better: on eight cases a moderate gain is often kept, and adding cases is what
+  changes that.
+- **`undo` is declared with the question, before the data, and never lowered after it.** A `"hard"` declared after
+  the results (`Result.against(..., undo="hard")`) is honoured: raising the bar can only make the advice say switch
+  less often. An `"easy"` declared after the results over an earlier `"hard"` is ignored, the `"hard"` kept, and the
+  print and the page say so: a bar lowered once the evidence was seen would be a second look. Where nothing was
+  declared before, `"easy"` is the default already, so nothing is lowered. A comparison continued with another `undo`
+  is a new comparison.
+- **An agent reads it typed.** `Result.contrasts()` rows carry `advice` (`switch` or `keep` on the first grader's
+  reading, None elsewhere) beside `outcome`, and a stored analysis carries it on the family's comparison (`advice`)
+  with the bar it read (`advice_bar`). `gate()` reads the proof, never the advice.
+- **An engine campaign gives no advice.** Its test is read once at a fixed count by a bet tuned to that count, which
+  keeps no running evidence an advice could keep its promise on; its first line says so and leads on the proof.
+
+**The proof comes second.** It leads on where the candidate stands on the question's reading, by how much, how far
+the interval lets it be either way, and how strong the evidence is, and it says "decided" only when the evidence
+clears the bar; until then the question's own reading says `proof pending` and what proving it needs
+(`The evidence that v2 is better is moderate (3.3); proving it needs evidence of 22.`):
 
 - **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
   to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet
@@ -536,8 +579,8 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, and, undecided, `v2 ahead of v1, undecided` (or `behind`, or `level with`) where the quick
-path's bet read it, else `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
+the measure's margin`, and, undecided, `v2 ahead of v1, undecided` (or `behind`, or `level with`; on a question's own
+reading, which its bet can still decide, `v2 ahead of v1, proof pending`) where the quick path's bet read it, else `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
 verdict line names the reading first (`Accuracy: v2 better than v1`).
 
 | Verdict | Means | Do |

@@ -38,7 +38,7 @@ from dataclasses import replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, TypeIs
+from typing import Any, Literal, TypeIs
 
 from threetears.evals.analysis.summary import CaseResult, EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
@@ -82,6 +82,7 @@ from threetears.evals.quick.result import (
     declare,
     read_blind,
     refuse_an_unusable_margin,
+    refuse_an_unusable_undo,
     with_judge_examples,
 )
 from threetears.evals.quick.tools import RECORD_ENV
@@ -362,6 +363,7 @@ class Eval:
     :ivar measure_latency: Declare latency under test: the cases run one at a time, the arms one after another.
     :ivar question: The one sentence the eval answers, filed as its campaign's question; ``None`` asks none.
     :ivar margin: The question's margin in the measure's units, a non-inferiority question's; ``None`` declares none.
+    :ivar undo: How hard switching to a candidate is to undo, which sets the evidence the advice switches at.
     """
 
     def __init__(
@@ -376,6 +378,7 @@ class Eval:
         measure_latency: bool = False,
         question: str | None = None,
         margin: float | None = None,
+        undo: Literal["easy", "hard"] = "easy",
     ) -> None:
         """Declare the eval; nothing runs until :meth:`run`.
 
@@ -403,6 +406,9 @@ class Eval:
             measure's units as ``grader(margin=)``'s are (``0.05`` is 5 points): the author's own, which makes the
             question a non-inferiority one, its pass rate reading no worse than the margin, shown worse or neither.
             Needs ``question``; ``None`` declares none, and the package never assumes one.
+        :param undo: How hard switching to a candidate would be to undo, declared with the question before anything
+            runs. The first line advises what to do on the first grader's reading, beside what is proven (the glossary's "advice"): ``"easy"`` (the default: a prompt, a model, a config a revert undoes) switches at
+            moderate evidence, ``"hard"`` (a migration, a published claim) at strong.
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
@@ -416,6 +422,7 @@ class Eval:
         if question is not None and not question.strip():
             raise ValueError("an eval's question is filed on its campaign, and this one is blank")
         refuse_an_unusable_margin(margin, question)
+        refuse_an_unusable_undo(undo)
         self.cases = load_cases(cases)
         source = Path(cases) if isinstance(cases, str | os.PathLike) else None
         if isinstance(runner, Mapping):
@@ -468,6 +475,7 @@ class Eval:
         self.measure_latency = measure_latency
         self.question = question
         self.margin = margin
+        self.undo: Literal["easy", "hard"] = undo
 
     def __repr__(self) -> str:
         """The eval, by name, cases and arms."""
@@ -636,6 +644,8 @@ class Eval:
                     None,
                     new_comparison_sentence("the graders, the guardrails, the question or its margin changed"),
                 )
+            elif earlier is not None and earlier.undo != self.undo:
+                earlier, said = None, new_comparison_sentence("how hard the switch is to undo changed")
 
         def campaign(
             launched: Launched,
@@ -680,6 +690,7 @@ class Eval:
                     ),
                     question=self.question,
                     margin=self.margin,
+                    undo=self.undo,
                     measure_order=self.plan.readings,
                     runs=runs_of,
                 )

@@ -1,0 +1,14 @@
+   no worse than -5 pts: reached at most 106 (at case 8); now 106
+all wins, 8 cases (pass/fail): evidence for the arm reached at most 73.8 (at case 8); now 73.8; against now 0.0235
+   no worse than -5 pts: reached at most 4.52 (at case 8); now 4.52
++0.3, 8 cases (k=3: 8 vs 15 of 24): evidence for the arm reached at most 3.54 (at case 4); now 3.33; against now 0.175
+   no worse than -5 pts: reached at most 46.9 (at case 24); now 46.9
+on-ramp held-out-1, 24 apps: evidence for the arm reached at most 17.6 (at case 24); now 17.6; against now 0.0504
+   no worse than -5 pts: reached at most 1.13 (at case 19); now 0.928
+no effect, 24 cases: evidence for the arm reached at most 0.962 (at case 3); now 0.477; against now 0.38
+   no worse than -5 pts: reached at most 1.23 (at case 42); now 0.143
+small regression -0.05, 100 cases: evidence for the arm reached at most 0.951 (at case 2); now 0.0382; against now 1.67
+   no worse than -5 pts: reached at most 1.92 (at case 11); now 0.822
+gate, no worse than 5 points, 40 cases: evidence for the arm reached at most 1.4 (at case 8); now 0.304; against now 0.446
+   no worse than -5 pts: reached at most 4.39 (at case 13); now 1.21
+gate, no worse than 5 points, 100 cases: evidence for the arm reached at most 2.72 (at case 13); now 0.173; against now 0.0883

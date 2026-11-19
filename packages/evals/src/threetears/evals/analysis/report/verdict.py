@@ -358,6 +358,9 @@ class VerdictLine:
         the bet read is not one: it says where the arm stands and how strong the evidence is (``graded``).
     :ivar graded: Whether a decision ``text`` says leaves a contrast the bet read undecided, so its words say where the
         arm stands and grade the evidence, and a page links the evidence's definition.
+    :ivar advice: What to do, said above ``text`` (the proof) on every first screen: the advice line over the led
+        contrasts (:func:`~threetears.evals.analysis.report.aspect.contrasts.contrast_advice`); empty where there is
+        none to say.
     """
 
     rule: VerdictRule
@@ -366,6 +369,13 @@ class VerdictLine:
     decisions: tuple[str, ...] = ()
     undecided: bool = False
     graded: bool = False
+    advice: str = ""
+
+    @property
+    def advised(self) -> str:
+        """The first screen's opening: the advice, then the proof, as the page's verdict block and the print say them;
+        ``text`` alone where there is no advice."""
+        return f"{self.advice} {self.text}" if self.advice else self.text
 
     def __post_init__(self) -> None:
         if not self.lead:
@@ -601,7 +611,7 @@ def led_sentences(
     :param also: What else the evidence tells apart, said after the last arm's decision, before its figures.
     :return: One decision per arm, each with its closing stop and its figures after it.
     """
-    led = _led(bundle, verdicts, order)
+    led = led_verdicts(bundle, verdicts, order)
     said = []
     for index, verdict in enumerate(led):
         decision = (
@@ -628,7 +638,7 @@ def graded_contrast(bundle: AnalysisContextBundle, verdict: Verdict) -> bool:
     )
 
 
-def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
+def led_verdicts(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
     """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
     contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
     lead = _lead_measure(bundle, (verdict.name for verdict in contrasts), order)
@@ -643,6 +653,7 @@ def verdict_line(
     verdicts: Sequence[Verdict] = (),
     order: Sequence[str] = (),
     evidence: Callable[[Verdict], str | None] | None = None,
+    advice: Callable[[Sequence[Verdict]], str | None] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -656,6 +667,8 @@ def verdict_line(
         comparison's line leads on the first of (:func:`_lead_measure`).
     :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
         says the decision alone.
+    :param advice: The advice over the lead verdicts, said above the line (:attr:`VerdictLine.advice`); None, or one
+        that says none, leaves the line without.
     :return: The rule and its sentences.
     """
     boards = bundle.scoreboard
@@ -705,7 +718,7 @@ def verdict_line(
     rule: VerdictRule = "declared" if declared_question else "exploratory"
     prefix = "" if declared_question else "Exploratory: "
     if verdicts:
-        if led := _led(bundle, verdicts, order):
+        if led := led_verdicts(bundle, verdicts, order):
             others = _also(bundle, verdicts, {verdict.heading for verdict in led})
             result = " ".join(led_sentences(bundle, verdicts, order, asked=declared_question, evidence=evidence))
             text = " ".join(
@@ -724,6 +737,7 @@ def verdict_line(
                     verdict.outcome == "not_separated" and not graded_contrast(bundle, verdict) for verdict in led
                 ),
                 graded=any(verdict.outcome == "not_separated" and graded_contrast(bundle, verdict) for verdict in led),
+                advice=(advice(led) or "") if advice is not None else "",
             )
     said = (
         _told_apart(bundle, verdicts, asked=declared_question)
@@ -1241,6 +1255,7 @@ __all__ = [
     "guardrail_name",
     "interval_words",
     "led_sentences",
+    "led_verdicts",
     "loss_words",
     "measured_nothing",
     "unfinished_line",

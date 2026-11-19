@@ -299,7 +299,8 @@ async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
     result = await module.compare.run(store=tmp_path / "kept.sqlite")
 
     printed = str(result).splitlines()
-    assert printed[1] == REREAD_SENTENCE and str(result).count(REREAD_SENTENCE) == 1
+    # The advice opens the print, the verdict line under it, and the re-read sentence under that, once.
+    assert printed[2] == REREAD_SENTENCE and str(result).count(REREAD_SENTENCE) == 1
     (family,) = result.report.bundle.multiple_comparisons.families
     assert read_by_bet(family) and family.disclosure.endswith(REREAD_SENTENCE)
     on_t = [comparison for comparison in family.comparisons if comparison.basis == "t"]
@@ -455,7 +456,9 @@ async def test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one() 
     arms = {"a": coin("unkept", "a", 0.5, calls), "b": coin("unkept", "b", 0.5, calls)}
     result = await Eval(_cases(20), arms, [_correct], k=1, name="unkept").run(store=":memory:")
     printed = str(result).splitlines()
-    assert printed[1] == UNKEPT_SENTENCE and REREAD_SENTENCE not in printed
+    # The advice opens the print, the verdict line under it, and this sentence under that.
+    assert printed[0].startswith("unkept: Advice: ")
+    assert printed[2] == UNKEPT_SENTENCE and REREAD_SENTENCE not in printed
     assert REREAD_SENTENCE.startswith("Where its runs are kept in a store that outlives the run")
     (family,) = result.report.bundle.multiple_comparisons.families
     assert read_by_bet(family)

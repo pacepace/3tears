@@ -81,11 +81,12 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
-from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
+from threetears.evals.analysis.report.aspect.contrasts import contrast_advice, contrast_evidence
 from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.verdict import (
     graded_contrast,
     led_sentences,
+    led_verdicts,
     unfinished_line,
     ungraded_sentence,
     ungraded_sentences,
@@ -371,6 +372,12 @@ def _lead_blocks(
         if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=evidence):
             undecided = undecided or any(led_undecided)
             graded_lead = graded_lead or any(led_graded)
+            # What to do first, as the aspect's own page and the print say it; a page of several aspects leaves it to
+            # each aspect's page.
+            advised = contrast_advice(report.bundle, forms=aspect_forms.get(aspect.label))(
+                led_verdicts(report.bundle, report.verdicts, order)
+            )
+            sentences += [advised] if advised and not several else []
             sentences += led
             decisions += [
                 decision.removesuffix(".")

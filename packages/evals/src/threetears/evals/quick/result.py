@@ -40,7 +40,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
@@ -79,7 +79,12 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.comparisons import LATE_QUESTION_SENTENCE, REREAD_SENTENCE, read_by_bet
+from threetears.evals.analysis.bundle.comparisons import (
+    LATE_QUESTION_SENTENCE,
+    REREAD_SENTENCE,
+    read_by_bet,
+    undo_lowering_ignored,
+)
 from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -102,7 +107,7 @@ from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.build import build_code_only_report_in_forms
 from threetears.evals.analysis.report.verdict import VerdictLine
-from threetears.evals.analysis.style import arm_display_name, arm_name
+from threetears.evals.analysis.style import UNDO_LOWERING_IGNORED_SENTENCE, arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
@@ -565,7 +570,7 @@ class Result:
                 ]
             )
         one_arm = len(self.arms) == 1
-        lines = self._stopped_lines() or [self._verdict_line(), *self._reread_line()]
+        lines = self._stopped_lines() or [*self._advice_line(), self._verdict_line(), *self._reread_line()]
         # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
         judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
@@ -790,6 +795,12 @@ class Result:
         """
         return f"{self.name}: {self._verdict().text}"
 
+    def _advice_line(self) -> list[str]:
+        """The print's opening line, above the verdict line: the eval's name, then what to do (:attr:`VerdictLine.advice`,
+        the page's verdict block's first sentences); empty where there is no advice to say."""
+        advice = self._verdict().advice
+        return [f"{self.name}: {advice}"] if advice else []
+
     def _reread_line(self) -> list[str]:
         """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are
         added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`, its family's disclosure on the
@@ -798,12 +809,20 @@ class Result:
         continues it from; where they were kept in memory, that running it again is a new comparison
         (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`), which is what the page's sentence, said of a
         store that keeps the runs, comes to there. Empty for one arm, or a family no bet read. A question set after the
-        results (:data:`~threetears.evals.analysis.bundle.comparisons.LATE_QUESTION_SENTENCE`) says so first, as the
+        results (:data:`~threetears.evals.analysis.bundle.comparisons.LATE_QUESTION_SENTENCE`), and a lowering of how hard the
+        switch is to undo declared after them and ignored
+        (:data:`~threetears.evals.analysis.style.UNDO_LOWERING_IGNORED_SENTENCE`), say so first, as the
         page's disclosure does: its bet leans no way."""
         families = self.report.bundle.multiple_comparisons.families
         if not any(read_by_bet(family) for family in families):
             return []
         late = [LATE_QUESTION_SENTENCE] if any(f.primary is not None and f.lean is None for f in families) else []
+        declared = self.report.bundle.declared
+        late += (
+            [UNDO_LOWERING_IGNORED_SENTENCE]
+            if any(undo_lowering_ignored(family, declared) for family in families)
+            else []
+        )
         return [*late, UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 
     def _stopped_lines(self) -> list[str]:
@@ -940,7 +959,9 @@ class Result:
             delta, simultaneous over the family), ``hedges_g`` (the standardized effect), ``p_adjusted`` (Holm,
             over the campaign's family), ``verdict`` (in words, printed from ``outcome``) and ``outcome`` (the
             typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
-            code branches on); empty when the report tested nothing.
+            code branches on), and ``advice`` (what to do beside that proof, on the first grader's reading: ``switch``
+            or ``keep``, which an agent branches on as it does on ``outcome``; None on any other reading, and where no
+            bet read it); empty when the report tested nothing.
         """
         rows = contrast_rows(self.report.bundle, forms=self._aspect_forms(), arm_labels=self.arm_labels or None)
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
@@ -1101,6 +1122,7 @@ class Result:
         created_by: str = CREATED_BY,
         question: str | None = None,
         margin: float | None = None,
+        undo: Literal["easy", "hard"] | None = None,
     ) -> Result:
         """The same runs read against another control, or a question sharpened once they ran: a second campaign over
         them, with no run repeated.
@@ -1121,6 +1143,11 @@ class Result:
         :param question: The question the new campaign asks; ``None`` asks this result's own, with its margin.
         :param margin: The question's margin, in the measure's units, as :class:`~threetears.evals.Eval`'s ``margin``;
             ``None`` keeps this result's own where no new question is given, and declares none with a new one.
+        :param undo: How hard switching would be to undo, as :class:`~threetears.evals.Eval`'s ``undo``; ``None`` keeps
+            this result's own. Declared here it is declared after the results: ``"hard"`` is honoured (raising the bar
+            can only make the advice say switch less often), while ``"easy"`` on a result declared ``"hard"`` is
+            ignored, the earlier ``"hard"`` kept, and the print and the page say so
+            (:data:`~threetears.evals.analysis.style.UNDO_LOWERING_IGNORED_SENTENCE`).
         :return: A result over the same arms and runs, against ``control``.
         :raises ValueError: ``control`` names no arm; a blank question; a margin outside 0 to 1, or with no question
             to read it under.
@@ -1132,6 +1159,8 @@ class Result:
         asked = question if question is not None else self.question
         held = margin if margin is not None or question is not None else self.margin
         refuse_an_unusable_margin(held, asked)
+        if undo is not None:
+            refuse_an_unusable_undo(undo)
 
         def declared() -> Result:
             campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
@@ -1158,6 +1187,10 @@ class Result:
                 margin=held,
                 measure_order=self.grader_readings,
                 runs=self._arm_runs(),
+                # A bar is never lowered once the results are in: an earlier "hard" stands, and an "easy" asked over it
+                # is recorded as ignored.
+                undo="hard" if campaign.aspects[0].undo == "hard" or undo == "hard" else "easy",
+                undo_ignored=campaign.aspects[0].undo == "hard" and undo == "easy",
             )
             return with_judge_examples(
                 replace(
@@ -1213,6 +1246,16 @@ def refuse_an_unusable_margin(margin: float | None, question: str | None) -> Non
             "margin= is how far a candidate may fall below the control before the question's answer reads it worse, "
             "and this eval asks no question for it to apply to: pass question= with it, or leave margin out"
         )
+
+
+def refuse_an_unusable_undo(undo: object) -> None:
+    """Refuse an ``undo`` no advice could read: one that is neither ``"easy"`` nor ``"hard"``.
+
+    :param undo: How hard the switch would be to undo, as given.
+    :raises ValueError: Naming what it may be.
+    """
+    if undo not in ("easy", "hard"):
+        raise ValueError(f'undo= is "easy" (the default) or "hard", how hard a switch would be to undo, not {undo!r}')
 
 
 def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
@@ -1604,6 +1647,8 @@ def declare(
     margin: float | None = None,
     measure_order: Sequence[str] = (),
     runs: Mapping[str, Sequence[str]] | None = None,
+    undo: Literal["easy", "hard"] = "easy",
+    undo_ignored: bool = False,
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -1611,7 +1656,9 @@ def declare(
     aspect is then read as asked rather than as a lead. ``margin`` (a share of 0 to 1, the measure's units) is the
     author's own, filed on the aspect in points: a non-inferiority question, the pass rate's drop read against it.
     ``None`` files none, and nothing is assumed: a question with no margin is a superiority question, its drop read
-    against zero. ``question`` ``None`` asks none, and a margin without one is refused. ``measure_order`` is each
+    against zero. ``question`` ``None`` asks none, and a margin without one is refused. ``undo`` ``"hard"`` is filed on
+    the aspect (``Aspect.undo``), raising the evidence its advice switches at; ``"easy"`` files nothing; ``undo_ignored``
+    records an ``"easy"`` asked after the results over an earlier ``"hard"``, ignored (``Aspect.undo_ignored``). ``measure_order`` is each
     grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
     the campaign's page leads on the first of them, as the printed line does; empty files none.
 
@@ -1669,8 +1716,13 @@ def declare(
         "design": design,
     }
     refuse_an_unusable_margin(margin, question)
+    refuse_an_unusable_undo(undo)
     if margin is not None:
         aspect["margin"] = round(100 * margin, 10)
+    if undo == "hard":
+        aspect["undo"] = "hard"
+    if undo_ignored:
+        aspect["undo_ignored"] = "easy"
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
     # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`; an arm named as
@@ -1778,5 +1830,6 @@ __all__ = [
     "declare",
     "read_blind",
     "refuse_an_unusable_margin",
+    "refuse_an_unusable_undo",
     "with_judge_examples",
 ]

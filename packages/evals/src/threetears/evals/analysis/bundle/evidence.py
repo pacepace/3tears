@@ -662,6 +662,8 @@ _DECLARATION_EVIDENCE: Final[tuple[str, ...]] = (
     "floors",
     "declared_at",
     "declared_by",
+    "undo",
+    "undo_ignored",
 )
 
 

@@ -148,6 +148,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "schema/models.py:GoalCheckProof",
     ),
     _CLAUSE: (
+        "FamilyComparison.advice",
         "analysis/campaign_readings.py:BarState",
         "analysis/campaign_readings.py:ShownReading",
         "analysis/floors.py:FloorOutcome",

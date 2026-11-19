@@ -329,7 +329,8 @@ compare = Eval(
 What it printed (made at `max_tokens=8192`), first lines and errors:
 
 ```text
-compare: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
+compare: Advice: keep v1. v2 is behind it.
+compare: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -340,8 +341,9 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
 ```
 
 Because the question was asked before the readings were seen, its reading is the answer, set without ", a lead". The
-line says where v2 stands on it (a point behind), how far the interval lets it be either way, and how strong the
-evidence is (weak), and that it is undecided: "undecided" never means the two are the same.
+first line is the advice, what to do: keep v1, since v2 is behind it. The second is the proof: where v2 stands (a point
+behind), how far the interval lets it be either way, how strong the evidence is (weak), and that nothing is proven yet,
+which never means the two are the same.
 
 **The lesson: a small test still gets a fair read, and decides only when the evidence clears the bar.** Every reading
 is read at once: v2's Number score is 17 points ahead of v1's, its interval -1 to +38 points, a secondary reading
@@ -442,7 +444,8 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 What the recording printed, first lines, errors and the last line, which says why it exits 4:
 
 ```text
-invoices: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Advice: keep v1. v2 is behind it.
+invoices: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -451,7 +454,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -462,7 +465,7 @@ guardrail's row, and the trials' census:
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
+**Advice: keep v1. v2 is behind it. Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
 | Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -1 to +38 pts | v2 ahead of v1, undecided (a secondary reading, which the question leaves open) | 30 paired |

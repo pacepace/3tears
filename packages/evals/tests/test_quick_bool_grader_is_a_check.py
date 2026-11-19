@@ -597,7 +597,8 @@ async def test_a_comparison_says_beside_its_figures_how_many_of_each_arm_were_no
 
     result = await Eval(TEN, {"a": classify, "b": also}, [raises_on_three], k=1, name="cmp").run(store=":memory:")
 
-    first = result.render().splitlines()[0]
+    # The verdict line, under the advice the print opens on.
+    first = result.render().splitlines()[1]
     assert "Of 7 trials each" in first
     assert " a's figures are over its graded trials: 3 of 10 were not graded. Not graded on a: c0, c1, c2 (" in first
     assert " b's figures are over its graded trials: 3 of 10 were not graded. Not graded on b: c0, c1, c2 (" in first

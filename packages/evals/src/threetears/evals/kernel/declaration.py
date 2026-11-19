@@ -1130,6 +1130,25 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
             "than the aspect's first stored result. None = declared with the aspect (`asked_at`)."
         ),
     )
+    undo: Literal["hard"] | None = Field(
+        default=None,
+        # Written only when declared, so an aspect declaring none is stored as it was before the field.
+        exclude_if=lambda value: value is None,
+        description=(
+            "How hard switching to a candidate is to undo, declared with the question: `hard` raises the evidence "
+            "the advice switches at from moderate (3) to strong (10). None = easy to undo, the default. A `hard` "
+            "declared after the results is honoured: raising the bar can only make the advice say switch less often."
+        ),
+    )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "An `undo` declared after the results that would have lowered the bar, ignored: `easy` where the aspect "
+            "it was read from declared `hard`, which this aspect keeps (`undo`). The page and the print say so. None = "
+            "nothing was ignored."
+        ),
+    )
 
     @field_validator("label")
     @classmethod

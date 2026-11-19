@@ -179,6 +179,9 @@ the document, so extending one is a major. Each, and why:
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
+- ``Aspect.undo``, ``Aspect.undo_ignored`` — the bar the advice on a question switches at, and a lowering of it that
+  was ignored; a value an older build cannot name would be read at a bar it does not know, so the promise it states
+  would not be the one it keeps.
 - ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
   (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
   would be counted as neither, and a look erased.
@@ -968,7 +971,14 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   The closing sentence is false for a v17.4 build's read of a ``blind_read`` closed at this minor, the recorded
 #:   exception above, and true of every other durable type, whose shape does not move:
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 5
+#: - **v17.6** — an aspect declares how hard its switch is to undo, which sets the bar its advice reads at:
+#:   ``Aspect.undo`` (``"hard"``, default None, the default being easy) and ``Aspect.undo_ignored`` (``"easy"`` where a
+#:   lowering declared after the results was ignored and the earlier ``"hard"`` kept; default None). Both are written
+#:   only when set, so a campaign that declares neither is stored, keyed and fingerprinted exactly as v17.5 stored
+#:   it; neither is in a variant key or measurement context. A v17.5 build reading a campaign at this minor keeps both
+#:   opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 6
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

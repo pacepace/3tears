@@ -14,6 +14,7 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonFamily,
     FamilyComparison,
 )
+from threetears.evals.analysis.bundle.comparisons import read_by_bet
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, unread_arms
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -53,18 +54,29 @@ from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.verdict import MIN_CASES, VerdictLine, verdict_line
 from threetears.evals.analysis.report.words import (
+    NO_ADVICE_SENTENCE,
+    advice_decided_words,
+    advice_held_words,
+    advice_words,
+    advice_worst_words,
     comparison_words,
     decided_words,
     disclosure_words,
     estimate_sentence,
     evidence_sentence,
+    proof_bar_words,
     reading_heading,
     reading_verb,
     reason_words,
     standing_side,
     standing_words,
 )
-from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, EVIDENCE_STEPS, INTERVAL_LEVEL
+from threetears.evals.analysis.stats import (
+    DECLARED_DIRECTION_SHARE,
+    EQUIVALENCE_NEEDS_RANGE,
+    EVIDENCE_STEPS,
+    INTERVAL_LEVEL,
+)
 from threetears.evals.analysis.style import CANNOT_TELL_APART, evidence_grade
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 from threetears.evals.kernel.surface import DecisionSurface
@@ -101,6 +113,7 @@ def aspect_verdict(
         verdicts=_typed_verdicts(bundle, forms, arm_labels=arm_labels),
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),
+        advice=contrast_advice(bundle, forms=forms),
     )
 
 
@@ -185,7 +198,13 @@ def contrast_evidence(
                     now=comparison.decided_at_cases is not None,
                 ),
                 allows,
-                *_evidence_sentences(comparison, verdict, page, lean=family.lean if family.primary else None),
+                *_evidence_sentences(
+                    comparison,
+                    verdict,
+                    page,
+                    lean=family.lean if family.primary else None,
+                    bar=_proof_bar(family, comparison),
+                ),
             ]
             return " ".join([*lead, *said])
         if paired:
@@ -197,19 +216,162 @@ def contrast_evidence(
     return figures
 
 
+def contrast_advice(
+    bundle: AnalysisContextBundle, *, forms: PageForms | None = None
+) -> Callable[[Sequence[Verdict]], str | None]:
+    """The advice line over ``bundle``'s led contrasts, said above their proof: what to do, read off each contrast's
+    stored ``advice`` (:func:`~threetears.evals.analysis.stats.advice_path`), in the advice's words
+    (:func:`~threetears.evals.analysis.report.words.advice_words`) with at most one caveat, the one that matters most:
+
+    - **switch**, to the arm advised whose estimate is best: how far behind the control it could be at worst (the
+      interval's low end), past the margin where a question declares one, or the gain the low end still holds;
+    - **keep**, where no arm is advised: on a question with a margin, how far past it the leading arm could be at worst;
+      otherwise where the leading arm stands, and, where it is ahead, the bar a switch needs beside its evidence.
+
+    Never "not enough to say": with a control in place a tie keeps it. A led contrast that no bet read, on a question
+    (an engine campaign's), says there is no advice and why (:data:`NO_ADVICE_SENTENCE`); one with neither says
+    nothing.
+
+    :param bundle: The aspect's evidence.
+    :param forms: The aspect page's forms, built once for the page; None builds the bundle's own.
+    :return: The advice over the led verdicts given, or None where there is none to say.
+    :raises ValueError: ``forms`` were built from another bundle.
+    """
+    page = forms if forms is not None else PageForms.of_bundle(bundle)
+    if page.bundle is not bundle:
+        raise ValueError("an aspect page's forms were handed in beside a bundle they were not built from")
+    surface = bundle_decision_surface(bundle)
+    rulers = report_rulers(surface, bundle.measure_catalog)
+    tested = {
+        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): (comparison, family)
+        for family in bundle.multiple_comparisons.families
+        for comparison in family.comparisons
+    }
+
+    def size(comparison: FamilyComparison, change: float) -> str:
+        ruler = rulers.of(comparison.name, comparison.reading)
+        form = page.change_money(comparison.name, comparison.reading)
+        places = page.contrast_places(comparison.name, comparison.reading)
+        said = page.ruled_change_size(
+            ruler, change, form=form, places=places, measure=comparison.name, kind=comparison.reading
+        )
+        return f"{said}{'' if ruler.unit != PERCENT else ' point' if said == '1' else ' points'}"
+
+    def advise(led: Sequence[Verdict]) -> str | None:
+        found = [
+            (verdict, *hit)
+            for verdict in led
+            if verdict.control is not None
+            and (hit := tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))) is not None
+        ]
+        read = [(verdict, comparison, family) for verdict, comparison, family in found if comparison.advice is not None]
+        if not read:
+            # An engine campaign's: no bet read any of its families, so nothing keeps a running evidence.
+            engine = not any(read_by_bet(family) for family in bundle.multiple_comparisons.families)
+            tested_once = any(comparison.p_raw is not None for _, comparison, _ in found)
+            return NO_ADVICE_SENTENCE if engine and tested_once and bundle.question_declared else None
+
+        def gain(entry: tuple[Verdict, FamilyComparison, ComparisonFamily]) -> float:
+            delta = entry[1].delta or 0.0
+            return delta if entry[1].higher_is_better else -delta
+
+        switching = [entry for entry in read if entry[1].advice == "switch"]
+        verdict, comparison, family = max(switching or read, key=gain)
+        assert verdict.control is not None
+        # The interval's low end on the better side, and the margin a question with one allows below the control.
+        low = None
+        if comparison.interval is not None:
+            low = comparison.interval[0] if comparison.higher_is_better else -comparison.interval[1]
+        # The margin the advice read, as it read it: the asked question's own, a share of the reading's 0 to 1.
+        declared = bundle.declared
+        margin = (
+            declared.margin / 100.0
+            if declared is not None and declared.margin is not None and bundle.question_declared
+            else None
+        )
+        past = margin is not None and low is not None and low < -margin
+        allowed = size(comparison, margin) if past and margin is not None else None
+        lead = gain((verdict, comparison, family))
+        # A standing decision holding the advice against where the arm stands now is the caveat that matters most.
+        if switching and comparison.verdict == "improved" and lead <= 0:
+            caveat = advice_decided_words(verdict.arm, verdict.control, better=True, cases=comparison.decided_at_cases)
+            return f"{advice_words('switch', verdict.arm, verdict.control)} {caveat}"
+        if not switching and comparison.verdict == "regressed" and lead > 0:
+            caveat = advice_decided_words(verdict.arm, verdict.control, better=False, cases=comparison.decided_at_cases)
+            return f"{advice_words('keep', verdict.arm, verdict.control)} {caveat}"
+        if switching:
+            action = advice_words("switch", verdict.arm, verdict.control)
+            if low is None:
+                return action
+            worst = size(comparison, abs(low))
+            # A low end that prints as no change at all reads level, never "0 points behind".
+            side = "level" if worst.split(" ")[0] in ("0", "$0") else standing_side(low, higher_is_better=True)
+            caveat = advice_worst_words(side, verdict.arm, verdict.control, worst, allowed=allowed)
+            return f"{action} {caveat}"
+        action = advice_words("keep", verdict.arm, verdict.control)
+        if past and low is not None:
+            caveat = advice_worst_words(
+                "behind", verdict.arm, verdict.control, size(comparison, abs(low)), allowed=allowed, keep=True
+            )
+            return f"{action} {caveat}"
+        evidence = comparison.evidence_better
+        bar = family.advice_bar
+        advised = sum(1 for one in family.comparisons if one.advice is not None)
+        if evidence is None or bar is None:
+            return action
+        caveat = advice_held_words(
+            standing_side(gain((verdict, comparison, family)), higher_is_better=True),
+            verdict.arm,
+            grade=evidence_grade(evidence),
+            figure=page.multiple(min(evidence, _EVIDENCE_SHOWN_TO)).text,
+            bar=page.declared(bar).text,
+            hard=bar / max(1, advised) >= EVIDENCE_STEPS[1],
+        )
+        return f"{action} {caveat}"
+
+    return advise
+
+
 #: The largest e-value a sentence states as a figure; past it the evidence is said to be over it, since a bet's capital
 #: on a few dozen agreeing cases runs to many digits that say nothing a reader acts on.
 _EVIDENCE_SHOWN_TO = 1000.0
 
 
+def _proof_bar(family: ComparisonFamily, comparison: FamilyComparison) -> float | None:
+    """The evidence for the better side a question's undecided primary needs to be proven, on the scale its evidence is
+    printed on: the figure at which the bet's tilted capital (staked :data:`DECLARED_DIRECTION_SHARE` toward the better
+    side the question asks about, the even hedge where none leans) reaches one over the level the first arm under Holm
+    is read at, with the evidence the other side holds now. None for any other contrast: a decided one, a secondary
+    reading, a question that leans toward worse (a gate, whose proof is of no worse), or one no bet read."""
+    if (
+        family.primary is None
+        or comparison.name != family.primary
+        or comparison.reading == "trial"
+        or comparison.verdict != "not_separated"
+        or family.lean == "worse"
+        or comparison.evidence_better is None
+        or comparison.evidence_worse is None
+    ):
+        return None
+    share = DECLARED_DIRECTION_SHARE if family.lean == "better" else 0.5
+    level = family.alpha / max(1, family.family_size)
+    return (1.0 / level - (1.0 - share) * comparison.evidence_worse) / share
+
+
 def _evidence_sentences(
-    comparison: FamilyComparison, verdict: Verdict, forms: PageForms, *, lean: Literal["better", "worse"] | None = None
+    comparison: FamilyComparison,
+    verdict: Verdict,
+    forms: PageForms,
+    *,
+    lean: Literal["better", "worse"] | None = None,
+    bar: float | None = None,
 ) -> list[str]:
     """The graded evidence a bet-read contrast holds now: for the side its estimate leans to (better where it is
     level), then for the other side where it reaches the first grade's step, each in its grade's word
     (:func:`~threetears.evals.analysis.style.evidence_grade`) and with its e-value. Where the question leans one way
     (``lean``) and the evidence the estimate leans to points the other, it says so: an interval wholly on that side with
-    strong evidence is never left to read as an answer to the question."""
+    strong evidence is never left to read as an answer to the question. A question's undecided primary says, after its
+    evidence for the better side, what proving it needs (``bar``, :func:`_proof_bar`; :func:`proof_bar_words`)."""
     better, worse = comparison.evidence_better, comparison.evidence_worse
     if better is None or worse is None:
         return []
@@ -225,15 +387,16 @@ def _evidence_sentences(
             continue
         shown = min(evidence, _EVIDENCE_SHOWN_TO)
         figure = forms.multiple(shown).text
-        said.append(
-            evidence_sentence(
-                verdict.arm,
-                "better" if side == "better" else "worse",
-                evidence_grade(evidence),
-                f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure,
-                against_question=lean is not None and side != lean and evidence >= EVIDENCE_STEPS[0],
-            )
+        sentence = evidence_sentence(
+            verdict.arm,
+            "better" if side == "better" else "worse",
+            evidence_grade(evidence),
+            f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure,
+            against_question=lean is not None and side != lean and evidence >= EVIDENCE_STEPS[0],
         )
+        if bar is not None and side == "better" and not (lean is not None and side != lean):
+            sentence = sentence.removesuffix(".") + proof_bar_words(forms.multiple(bar).text) + "."
+        said.append(sentence)
     return said
 
 
@@ -601,7 +764,14 @@ def contrast_verdicts(
                     comparison.name != family.primary or comparison.reading == "trial"
                 )
                 words = _contrast_words(
-                    comparison, (named, control), margin, heading, ruler, forms, secondary=secondary
+                    comparison,
+                    (named, control),
+                    margin,
+                    heading,
+                    ruler,
+                    forms,
+                    secondary=secondary,
+                    provable=family.primary is not None and not secondary,
                 )
             verdicts.append(
                 Verdict(
@@ -661,11 +831,13 @@ def _contrast_words(
     forms: PageForms,
     *,
     secondary: bool = False,
+    provable: bool = False,
 ) -> str:
     """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
     there is more to say, its margin, materiality. An undecided contrast the bet read, and every secondary reading of a
     family decided on its primary, says where the arm stands (``v2 ahead of v1, undecided``), never that the evidence
-    cannot tell the arms apart."""
+    cannot tell the arms apart; a question's undecided primary (``provable``), which its bet can still decide, says its
+    proof is pending (``v2 ahead of v1, proof pending``)."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     undecided_bet = comparison.verdict == "not_separated" and (comparison.evidence_better is not None or secondary)
     return (
@@ -674,6 +846,7 @@ def _contrast_words(
                 standing_side(comparison.delta, higher_is_better=comparison.higher_is_better),
                 *arms,
                 higher_is_better=comparison.higher_is_better,
+                provable=provable and comparison.evidence_better is not None,
             )
             if undecided_bet
             else comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
@@ -935,7 +1108,8 @@ def contrast_rows(
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
         ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
-        ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
+        ``pairing_r``, ``p_adjusted``, ``verdict`` (in words), ``cases`` and ``advice`` (``switch`` or ``keep`` on the
+        reading the advice line reads, beside the proof ``verdict``; None on any other, and where no bet read it).
     """
     surface = bundle_decision_surface(bundle)
     # A program's rows read as the aspect's page does, its forms built once for every row.
@@ -1003,6 +1177,7 @@ def contrast_rows(
                     "p_adjusted": None if small is not None else comparison.p_adjusted,
                     "verdict": verdict.words,
                     "cases": _comparison_cases(comparison),
+                    "advice": comparison.advice,
                 }
             )
     return rows
@@ -1038,6 +1213,7 @@ def report_cell_labels(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str
 
 __all__ = [
     "aspect_verdict",
+    "contrast_advice",
     "contrast_evidence",
     "contrast_rows",
     "contrast_verdicts",

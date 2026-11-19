@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a comparison's first screen says what to do beside what is proven
+
+**Added:** a quick comparison's first line is now its advice, above the proof: `Advice: switch to v2. At worst it is
+25 points behind v1.` or `Advice: keep v1. v2 is ahead, but a switch needs evidence of 3 and this is weak (1.4).` It
+reads the first grader's reading, asked or not: switch once the evidence that the candidate is better has reached
+moderate (3), while it is still ahead and the evidence against it has not reached 3; keep otherwise, a tie keeping the
+control. `Eval(..., undo="hard")` declares a switch hard to undo, and the bar is strong (10); with several arms it is
+that times their count. A question with a margin reads the evidence that the candidate is no worse than the margin.
+Once the proof decides, the advice follows it: decided better reads switch, decided worse keep. At most one caveat
+follows, the one that matters: the worst plausible case (the interval's low end, past the margin where one is
+declared), or the bar a switch needs beside the evidence there is. **Its promise:** however often anyone looks, if the
+candidate is not really better (on a question with a margin: if it is worse by more than the margin), the advice says
+switch at most one time in three, or one time in ten for a switch declared hard to undo, and with several arms for all
+of them together (Ville's inequality on the running maximum of the evidence the bet already holds; the statistics
+certificate counts it: `advice.no-better.*` on pass/fail, on-ramp, full-swing and skewed candidates no better than the
+control, read after every case to 100 and once at 8, 24 and 100; `advice.margin.*` on candidates exactly the margin
+worse; `advice.arms.*` on three arms none better; each asserting its Clopper-Pearson upper bound at most 1/3 or 1/10).
+`undo` is declared before the data and never lowered after it: a `"hard"` declared after the results is honoured, an
+`"easy"` over an earlier `"hard"` is ignored and the print and the page say so; a comparison continued with another
+`undo` is a new comparison. An engine campaign gives no advice: its test is read once at a fixed count,
+keeping no running evidence, and where it asks a question its first line says so. **Changed:** the question's undecided reading says `proof
+pending` (it said `undecided`) and what proving it needs (`The evidence that v2 is better is moderate (3.3); proving it
+needs evidence of 22.`). The page's verdict block, the campaign page's lead of one aspect and the print open on the advice.
+`Result.contrasts()` rows gain `advice` (`switch` or `keep` on the first grader's reading, else None) for an agent to
+branch on. `gate()` is unchanged: it reads the proof, never the advice. The design and its simulations:
+`.prawduct/decide-report.md`.
+
+**For hosts (durable 17.6, additive):** a campaign whose aspect was declared hard to undo stores `undo` (and
+`undo_ignored` where a later lowering was ignored); a 17.5 build reads it, keeping both and writing them back. A stored
+analysis of a quick-path comparison frozen by this build carries `advice` and `advice_bar`, and its bundle's aspect
+`undo`; a build from before this one refuses each by name. Upgrade every reader of stored analyses before any writer;
+after a rollback, regenerate an analysis this build froze. A host pinning a quick comparison's printed first lines or page lead updates its match: the advice line is
+new, and a question's undecided reading says `proof pending`. A host pinning an engine campaign's first line or page
+lead, where the campaign asks a question, updates it too: it now opens on `No advice: ...`. Engine campaigns' bundles
+and fingerprints do not move.
+
 ### evals: an engine campaign reads a reading on 0 to 1 by the bounded test, and an eval of one check holds its check once
 
 **Changed:** an engine campaign's comparison family (a fixed count, or each look of a plan at α/L) reads every reading
