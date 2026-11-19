@@ -26,19 +26,19 @@ worse; `advice.arms.*` on three arms none better; each asserting its Clopper-Pea
 `undo` is declared before the data and never lowered after it: a `"hard"` declared after the results is honoured, an
 `"easy"` over an earlier `"hard"` is ignored and the print and the page say so; a comparison continued with another
 `undo` is a new comparison. An engine campaign gives no advice: its test is read once at a fixed count,
-keeping no running evidence, and where it asks a question its first line says so. **Changed:** the question's undecided reading says `not yet
-proven` (it said `undecided`) and what proving it needs (`The evidence that v2 is better is moderate (3.3); proving it
+keeping no running evidence, and where it asks a question its first line says so. **Changed:** the question's undecided reading says `proof
+pending` (it said `undecided`) and what proving it needs (`The evidence that v2 is better is moderate (3.3); proving it
 needs evidence of 22.`). The page's verdict block, the campaign page's lead of one aspect and the print open on the advice.
 `Result.contrasts()` rows gain `advice` (`switch` or `keep` on the first grader's reading, else None) for an agent to
 branch on. `gate()` is unchanged: it reads the proof, never the advice. The design and its simulations:
 `.prawduct/decide-report.md`.
 
-**For hosts:** a stored analysis of a quick-path comparison frozen by this build carries `advice` and `advice_bar`,
-and a campaign or a bundle whose aspect was declared hard to undo carries `undo` (and `undo_ignored` where a later
-lowering was ignored); a build from before this one refuses each by name. Upgrade every reader of stored campaigns and
-analyses before any writer; after a rollback, regenerate an analysis this build froze and re-declare a `hard` aspect
-without it. A host pinning a quick comparison's printed first lines or page lead updates its match: the advice line is
-new, and a question's undecided reading says `not yet proven`. A host pinning an engine campaign's first line or page
+**For hosts (durable 17.6, additive):** a campaign whose aspect was declared hard to undo stores `undo` (and
+`undo_ignored` where a later lowering was ignored); a 17.5 build reads it, keeping both and writing them back. A stored
+analysis of a quick-path comparison frozen by this build carries `advice` and `advice_bar`, and its bundle's aspect
+`undo`; a build from before this one refuses each by name. Upgrade every reader of stored analyses before any writer;
+after a rollback, regenerate an analysis this build froze. A host pinning a quick comparison's printed first lines or page lead updates its match: the advice line is
+new, and a question's undecided reading says `proof pending`. A host pinning an engine campaign's first line or page
 lead, where the campaign asks a question, updates it too: it now opens on `No advice: ...`. Engine campaigns' bundles
 and fingerprints do not move.
 

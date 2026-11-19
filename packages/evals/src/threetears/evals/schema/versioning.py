@@ -971,7 +971,14 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   The closing sentence is false for a v17.4 build's read of a ``blind_read`` closed at this minor, the recorded
 #:   exception above, and true of every other durable type, whose shape does not move:
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 5
+#: - **v17.6** — an aspect declares how hard its switch is to undo, which sets the bar its advice reads at:
+#:   ``Aspect.undo`` (``"hard"``, default None, the default being easy) and ``Aspect.undo_ignored`` (``"easy"`` where a
+#:   lowering declared after the results was ignored and the earlier ``"hard"`` kept; default None). Both are written
+#:   only when set, so a campaign that declares neither is stored, keyed and fingerprinted exactly as v17.5 stored
+#:   it; neither is in a variant key or measurement context. A v17.5 build reading a campaign at this minor keeps both
+#:   opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 6
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

@@ -215,7 +215,7 @@ def _primary(result: Result) -> Any:
             [1, 0, 1, 2, 0, 1, 2, 1],
             [3, 1, 2, 2, 1, 3, 1, 2],
             "smalln: Advice: switch to v2. At worst it is 24 points behind v1.",
-            "smalln: Passed score: v2 ahead of v1, not yet proven. Over 8 paired cases, v2 is 29 points ahead of v1. "
+            "smalln: Passed score: v2 ahead of v1, proof pending. Over 8 paired cases, v2 is 29 points ahead of v1. "
             "The interval allows v2 to be as much as 24 points worse or 60 better. The evidence that v2 is better is "
             "moderate (3.6); proving it needs evidence of 22. Of 24 trials each, Passed score was met on 8 for v1 and 15 for v2.",
         ),
@@ -224,7 +224,7 @@ def _primary(result: Result) -> Any:
             [1, 2, 1, 0, 2, 1, 1, 0],
             [2, 1, 1, 1, 2, 0, 2, 0],
             "smalln: Advice: keep v1. v2 is ahead, but a switch needs evidence of 3 and this is weak (1.1).",
-            "smalln: Passed score: v2 ahead of v1, not yet proven. Over 8 paired cases, v2 is 4 points ahead of v1. The "
+            "smalln: Passed score: v2 ahead of v1, proof pending. Over 8 paired cases, v2 is 4 points ahead of v1. The "
             "interval allows v2 to be as much as 39 points worse or 44 better. The evidence that v2 is better is weak "
             "(1.1); proving it needs evidence of 22. Of 24 trials each, Passed score was met on 8 for v1 and 9 for v2.",
         ),

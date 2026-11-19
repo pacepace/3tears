@@ -49,7 +49,7 @@ too, so it is checked against people's labels before its scores are leaned on, a
 A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
 the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
 **verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`v2 ahead of v1,
-undecided`, or on the question's own reading `v2 ahead of v1, not yet proven`, with the change, its interval and how
+undecided`, or on the question's own reading `v2 ahead of v1, proof pending`, with the change, its interval and how
 strong the evidence is: weak, moderate or strong; which never means "no difference"), `equivalent` (shown inside a margin you declared), or `untested`. With a question asked, only the
 question's own reading, its first grader's, is decided; every other reading is shown and decides nothing. A guardrail is
 decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.

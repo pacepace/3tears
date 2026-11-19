@@ -411,7 +411,7 @@ def test_the_primary_opens_on_the_package_s_advice_and_a_secondary_on_its_proof_
     (primary,) = [line for line in said if line.startswith(f"  {PRIMARY} (primary): ")]
     assert primary.startswith(
         f"  {PRIMARY} (primary): onramp: Advice: switch to docs@candidate. At worst it is 8 points behind docs@control. "
-        "Measures the app score: docs@candidate ahead of docs@control, not yet proven. Over 8 paired cases"
+        "Measures the app score: docs@candidate ahead of docs@control, proof pending. Over 8 paired cases"
     ), primary
     assert "; proving it needs evidence of 22." in primary
     secondaries = [line for line in said if "(secondary, a lead only): " in line]

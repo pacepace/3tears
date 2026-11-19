@@ -229,9 +229,9 @@ def standing_side(delta: float | None, *, higher_is_better: bool) -> _StandingSi
 #: what to do". Filled by :func:`standing_words`.
 _UNPROVEN_WORDS = worded(
     {
-        "ahead": "{arm} ahead of {control}{better_end}, not yet proven",
-        "behind": "{arm} behind {control}{better_end}, not yet proven",
-        "level": "{arm} level with {control}, not yet proven",
+        "ahead": "{arm} ahead of {control}{better_end}, proof pending",
+        "behind": "{arm} behind {control}{better_end}, proof pending",
+        "level": "{arm} level with {control}, proof pending",
     },
     _StandingSide,
     "an unproven standing",
@@ -242,7 +242,7 @@ def standing_words(
     side: _StandingSide, arm: str, control: str, *, higher_is_better: bool = True, provable: bool = False
 ) -> str:
     """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``; on a question's primary, which the bet
-    can still decide (``provable``), ``v2 ahead of v1, not yet proven``.
+    can still decide (``provable``), ``v2 ahead of v1, proof pending``.
 
     :param side: Where the arm stands (:func:`standing_side`).
     :param arm: The arm read against the control, as the page names it.

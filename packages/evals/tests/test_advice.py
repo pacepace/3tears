@@ -43,9 +43,12 @@ def test_the_bars_are_the_evidence_words_own_steps() -> None:
 
 def test_the_promise_is_said_where_the_advice_is_defined() -> None:
     assert GLOSSARY["advice"] == (
-        "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
-        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better (with a "
-        "margin, worse by more than it) at most one time in three (one in ten), however often anyone looks."
+        "What to do beside the proof: switch while the candidate leads and its evidence has reached moderate (strong "
+        "where the switch is hard to undo), and keep otherwise."
+    )
+    assert GLOSSARY["advice promise"] == (
+        "However often anyone looks, the advice says switch to a candidate no better (with a margin, worse by more "
+        "than it) at most one time in three (one in ten)."
     )
 
 
@@ -146,9 +149,9 @@ def test_moderate_evidence_switches_where_easy_and_keeps_where_hard_to_undo() ->
         "moderate-hard: Advice: keep v1. v2 is ahead, but a switch that is hard to undo needs evidence of 10 and this "
         "is moderate (7.8)."
     )
-    # The proof line says it is not yet proven, and what proving it needs.
+    # The proof line says its proof is pending, and what proving it needs.
     proof = easy.render().splitlines()[1]
-    assert "v2 ahead of v1, not yet proven." in proof
+    assert "v2 ahead of v1, proof pending." in proof
     assert "The evidence that v2 is better is moderate (7.8); proving it needs evidence of 22." in proof
 
 

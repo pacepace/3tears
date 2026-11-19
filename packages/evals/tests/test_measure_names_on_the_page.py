@@ -179,7 +179,12 @@ def test_every_table_names_each_check_by_its_name(page: str) -> None:
 @pytest.mark.parametrize(
     ("page", "lead"),
     [
-        ("campaign", f"{LONG_NAME}: v2 worse than production."),
+        # An engine campaign asking a question opens its lead on why it gives no advice, then names the check.
+        (
+            "campaign",
+            "No advice: this comparison's test is read once at a fixed count, which keeps no running evidence to "
+            f"advise on, so read what is proven. {LONG_NAME}: v2 worse than production.",
+        ),
         ("aspect", f"{LONG_NAME}: v2 worse than production; Pass rate: v2 worse than production."),
     ],
 )

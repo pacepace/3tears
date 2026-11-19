@@ -69,7 +69,7 @@ _ADVICE = "Advice: keep v1. v2 is behind it."
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: v2 behind v1, not yet proven. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
     "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
     "was right on 90 for v1 and 89 for v2."
 )

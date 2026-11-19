@@ -660,9 +660,12 @@ GLOSSARY: dict[str, str] = {
     EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
     # The promise the advice keeps (stats.advice_path), said with what it is.
     "advice": (
-        "What to do beside what is proven: switch once the evidence for the candidate reaches moderate (strong where "
-        "the switch is hard to undo) while it stays ahead, which says switch to a candidate that is not better (with a "
-        "margin, worse by more than it) at most one time in three (one in ten), however often anyone looks."
+        "What to do beside the proof: switch while the candidate leads and its evidence has reached moderate (strong "
+        "where the switch is hard to undo), and keep otherwise."
+    ),
+    "advice promise": (
+        "However often anyone looks, the advice says switch to a candidate no better (with a margin, worse by more "
+        "than it) at most one time in three (one in ten)."
     ),
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",

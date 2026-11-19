@@ -72,9 +72,9 @@ The first line printed is the answer. Rung 1 prints:
 A comparison prints what to do (contrasts()'s "advice": to a v2 no better (worse by more than a
   margin, given one): switch at most 1 time in 3, 1 in 10 with undo="hard"), then what is proven:
   compare: Advice: keep v1. v2 is behind it.
-  compare: Accuracy: v2 behind v1, not yet proven. Over 30 paired cases, v2 is 1 point behind v1.
-    The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is
-    worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
+  compare: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The
+    interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse
+    is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 Run again with cases appended, it continues, its error kept; a runner or grader is known by its name
   (a judge by model and criteria), not its code: rename it to compare an edit.
 Below: each measure's rate, the top misses and why, where the report is. A refusal goes to stderr,
