@@ -7464,7 +7464,7 @@ async def _slow_geos(monkeypatch: pytest.MonkeyPatch) -> tuple[_SqlL3, _Clock, l
     """TX's 50 rows of geos, read 5 to a page, on a clock the test moves; where a status taken mid-read goes, and a
     count of pages."""
     monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 5)
-    clock = _Clock()
+    clock = _Clock(still=True)
     monkeypatch.setattr(scoped_snapshot_module, "time", clock)
     l3 = _SqlL3(
         "geos",
@@ -7523,10 +7523,10 @@ async def test_a_read_from_l3_that_runs_minutes_says_once_a_minute_how_far_it_is
         35,
         50,
     )
-    # the fake clock rides on the real one: a few ms of real time in a minute
-    assert reading.rows_per_second == pytest.approx(0.25, rel=1e-3)
+    # the clock stands still but for the test's own seconds, so the rate is the test's, on any machine
+    assert reading.rows_per_second == pytest.approx(0.25)
     assert reading.eta_seconds == pytest.approx((50 - 35) / reading.rows_per_second, rel=1e-6)
-    assert reading.eta_seconds == pytest.approx(60, rel=1e-3)
+    assert reading.eta_seconds == pytest.approx(60)
     assert reading.partitions_total is None
     assert snapshot.status().reading is None, "a read that ended was still shown under way"
 
@@ -7624,13 +7624,16 @@ async def test_a_scope_read_a_value_at_a_time_of_a_column_that_does_not_lead_the
 
 class _Clock:
     """the scoped snapshot's clock, which a test moves on: ``time`` as the module uses it, ``monotonic`` ahead by
-    ``ahead`` seconds."""
+    ``ahead`` seconds. ``still`` holds it where it started, so only the test moves it: a test that asserts on a
+    rate measured over this clock asserts on the test's own seconds, not on how fast the machine ran it."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, still: bool = False) -> None:
         self.ahead = 0.0
+        self._still_at = time.monotonic() if still else None
 
     def monotonic(self) -> float:
-        return time.monotonic() + self.ahead
+        base = time.monotonic() if self._still_at is None else self._still_at
+        return base + self.ahead
 
     def __getattr__(self, name: str) -> Any:
         return getattr(time, name)

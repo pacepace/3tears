@@ -2,7 +2,7 @@
 
 Five rules, one gate each (:data:`RULES`): no whole drops, no swallowed L2 failure, no expiry as a
 safety net, no write around the epoch path, no whole re-read to recover. Each repo runs
-:func:`epoch_discipline_findings` per rule over its own source, with its own shrinking allowlists
+:func:`epoch_discipline_findings` per rule over its own source, with its own count-pinned allowlists
 and waivers, and :func:`epoch_violation_counts` measures a repo that has not adopted the gates yet.
 The rules are in :mod:`threetears.enforcement.epoch_discipline.config`, the detectors in
 :mod:`threetears.enforcement.epoch_discipline.walkers`, the ledgers in

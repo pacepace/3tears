@@ -23,8 +23,11 @@ exactly those, and nothing reloads a whole table to be safe.
 
 Each repo keeps one allowlist per rule of the violations it still has, each tagged with the fix
 that removes it, and one waiver file for the sites where a detector's shape is legitimately not
-the thing the rule forbids. Both are pinned by count in both directions: a new site fails, and a
-line whose site shrank or vanished fails until it is lowered or deleted, so the lists only shrink.
+the thing the rule forbids. An allowlist is debt, pinned by count in both directions: an unlisted
+site fails, and a line whose site shrank or vanished fails until it is lowered or deleted. A new
+line is allowed only when the code genuinely needs the violation and its fix is not feasible now;
+its fix text names what would remove it. The easy way out is never a reason. A false positive is
+a waiver, not an allowlist line.
 """
 
 from __future__ import annotations

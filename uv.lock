@@ -99,6 +99,7 @@ dev = [
     { name = "google-cloud-bigquery", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx2" },
+    { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "langchain-anthropic", specifier = ">=1.4" },
     { name = "langchain-claude-code", specifier = ">=0.1.0" },

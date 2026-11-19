@@ -23,7 +23,7 @@ from typing import Any, Final
 
 import pytest
 
-from packages.evals.tests.offline_support import refuse_connects
+from packages.evals.tests.offline_support import assert_no_connects, refuse_connects
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
 from threetears.evals.kernel.numbers import spell_count
@@ -49,7 +49,7 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     attempts = refuse_connects(monkeypatch)
     yield
-    assert attempts == []
+    assert_no_connects(attempts)
 
 
 async def _replayed(tmp_path: Path) -> WriterResult:

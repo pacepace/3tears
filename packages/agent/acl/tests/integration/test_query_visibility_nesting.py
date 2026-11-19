@@ -39,11 +39,22 @@ from threetears.agent.acl.types import (
 
 pytestmark = pytest.mark.integration
 
+#: the one role every grant here binds: it carries an action on the listed type, so the role half of
+#: the clause admits it and these tests measure the membership walk alone. the probe seeds the same id.
+READER_ROLE_ID = uuid.UUID("5f0c2d4e-7a1b-4c3d-9e8f-0a1b2c3d4e5f")
+
 
 _DDL = (
     """
+    CREATE TABLE roles (
+        role_id uuid PRIMARY KEY,
+        permissions jsonb NOT NULL
+    )
+    """,
+    """
     CREATE TABLE role_assignments (
         assignment_id uuid PRIMARY KEY,
+        role_id uuid NOT NULL,
         group_id uuid NOT NULL,
         scope_type varchar(16) NOT NULL,
         scope_namespace_id uuid,
@@ -63,6 +74,7 @@ _DDL = (
     """
     CREATE TABLE namespaces (
         namespace_id uuid PRIMARY KEY,
+        namespace_type varchar(20),
         customer_id uuid
     )
     """,
@@ -77,7 +89,7 @@ _DDL = (
 
 @pytest.fixture
 async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool over the four tables the visibility clause touches."""
+    """per-test pool over the five tables the visibility clause touches, the reader role seeded."""
     from threetears.core.collections import init_connection
 
     pool: asyncpg.Pool = await asyncpg.create_pool(
@@ -88,21 +100,27 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     )
     try:
         async with pool.acquire() as conn:
-            for table in ("listed_things", "namespaces", "group_members", "role_assignments"):
+            for table in ("listed_things", "namespaces", "group_members", "role_assignments", "roles"):
                 await conn.execute(f"DROP TABLE IF EXISTS {table}")
             for ddl in _DDL:
                 await conn.execute(ddl)
+            await conn.execute(
+                "INSERT INTO roles (role_id, permissions) VALUES ($1, $2::text::jsonb)",
+                READER_ROLE_ID,
+                json.dumps({"thing": ["read"]}),
+            )
         yield pool
     finally:
         await pool.close()
 
 
 async def _seed_grant(conn: asyncpg.Connection, *, group_id: uuid.UUID, customer_id: uuid.UUID) -> None:
-    """seed one type_customer assignment held by ``group_id`` over ``customer_id``."""
+    """seed one type_customer assignment of the reader role held by ``group_id`` over ``customer_id``."""
     await conn.execute(
-        "INSERT INTO role_assignments (assignment_id, group_id, scope_type, scope_customer_id, scope_namespace_type) "
-        "VALUES ($1, $2, 'type_customer', $3, 'thing')",
+        "INSERT INTO role_assignments (assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type) VALUES ($1, $2, $3, 'type_customer', $4, 'thing')",
         uuid.uuid4(),
+        READER_ROLE_ID,
         group_id,
         customer_id,
     )

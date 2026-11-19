@@ -1,0 +1,5 @@
+/* The root background is the colour at the bottom of the backdrop (safe-area.css), never the
+ * body's: a body background would paint over the backdrop, which sits behind the page. */
+:root { --safe-background: #14161a; }
+body { margin: 0; color: #f6f4ff; font: 16px/1.4 system-ui, sans-serif; --safe-gutter: 16px; }
+.app-backdrop { background: linear-gradient(#262a40, #14161a); }

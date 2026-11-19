@@ -29,6 +29,7 @@ them -- so a follower catches up by walking the table's records after its mark
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -79,6 +80,13 @@ EPOCH_CHANGES_BUCKET: Final = "epoch-changes"
 #: to raise it or find what fills it. Alert on ``threetears_epoch_changes_fill_ratio`` above this.
 EPOCH_CHANGES_FILL_WARN_RATIO: Final = 0.75
 _FILL_WARN_RATIO: Final = EPOCH_CHANGES_FILL_WARN_RATIO
+
+#: how often a watch on a log not yet declared looks again. A follower starts before the first write
+#: declares the log, and an absent log is a table with no epoch, not a failure: the watch waits for it.
+#: Nothing is missed meanwhile -- a key watch pushes the key's newest record first -- but an epoch whose
+#: broadcasts were lost is caught only once the watch binds, so this bounds how late that is: one
+#: second, a follower's first restart delay, never backed off.
+_ABSENT_LOG_POLL: Final = timedelta(seconds=1)
 
 #: the key restore fills a sequence the L3 log holds nothing for, so every restored record keeps its number
 _RESTORE_FILLER_KEY: Final = "_restored-gap"
@@ -189,15 +197,18 @@ def _token(incarnation: str, seq: int) -> str:
 class _ChangeLogReading:
     """what a source and a reader share: reading the change log, never declaring it."""
 
-    def __init__(self, nats_client: Any) -> None:
+    def __init__(self, nats_client: Any, *, absent_log_poll: timedelta = _ABSENT_LOG_POLL) -> None:
         """capture the client; no I/O.
 
         :param nats_client: a connected client that binds change logs
         :ptype nats_client: Any
+        :param absent_log_poll: how often a watch on a log not yet declared looks again
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         """
         self._nats = nats_client
+        self._absent_log_poll = absent_log_poll
 
     def _log(self) -> _ChangeLogLike:
         """the change log, bound through the client.
@@ -344,12 +355,22 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the generation tokens, in order
         :rtype: AsyncGenerator[str | None]
-        :raises GenerationUnavailableError: when the log is absent, or cannot be read or watched
+        :raises GenerationUnavailableError: when the log cannot be read or watched
         :raises KvError: when the connection closes, so nothing can ever be delivered again
         """
         state = await self._state()
         if state is None:
-            raise GenerationUnavailableError(f"write generation for {table_name!r} could not be watched: no log")
+            log.info(
+                "the epoch change log is not declared yet; the table is watched once its first write declares it",
+                extra={"extra_data": {"table": table_name, "poll_seconds": self._absent_log_poll.total_seconds()}},
+            )
+        while state is None:
+            await asyncio.sleep(self._absent_log_poll.total_seconds())
+            if self.closed:
+                # the close the docstring promises as KvError: a read through a closed client would
+                # surface as GenerationUnavailableError, which a caller takes for a log it may retry
+                raise KvError(f"the connection closed while {table_name!r} waited for the change log")
+            state = await self._state()
         async with aclosing(self._log().watch(generation_kv_key(table_name))) as updates:
             async for update in updates:
                 # the incarnation is read with each push: a log lost and declared again numbers from
@@ -604,15 +625,21 @@ class EpochGenerationReader(_ChangeLogReading):
     with, and "no generation yet" is itself something its mark records.
     """
 
-    def __init__(self, nats_client: Any, *, create_if_missing: bool = False) -> None:
+    def __init__(
+        self, nats_client: Any, *, create_if_missing: bool = False, absent_log_poll: timedelta = _ABSENT_LOG_POLL
+    ) -> None:
         """capture the client; no I/O.
 
         :param nats_client: connected client able to bind the change log
         :ptype nats_client: Any
         :param create_if_missing: kept for the callers that pass it; a reader never creates the log
         :ptype create_if_missing: bool
+        :param absent_log_poll: how often a watch on a log not yet declared looks again; a second by
+            default, which bounds how late an epoch whose broadcasts were lost is caught after the log's
+            first write
+        :ptype absent_log_poll: timedelta
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client)
+        super().__init__(nats_client, absent_log_poll=absent_log_poll)
         self._create_if_missing = create_if_missing

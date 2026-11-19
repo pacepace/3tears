@@ -19,6 +19,15 @@ on:
   push:
     branches: [develop]
 
+# A newer run of the same ref makes an older one meaningless, so it cancels it: two merges into develop
+# seconds apart (2026-11-12) ran the whole suite twice, a fresh uncached unit run each on the testament
+# pool, and only the newer head's result is ever read -- the release PR is gated on develop's head, which
+# contains the older commit. A PR's second push does the same. The group is per event and ref, so runs of
+# different refs never cancel each other, and a PR run never cancels develop's.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The unit + enforcement suite takes one of two routes:
   # - `unit-pool`, the testament pool (scripts/ci-unit-pool.sh run), when `route` chose it: the repo

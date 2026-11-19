@@ -1,0 +1,80 @@
+/* @3tears/web-pwa: safe-area insets for pages that draw edge to edge.
+ *
+ * Needs viewport-fit=cover in the viewport meta (VIEWPORT from @3tears/web-pwa); without it every inset
+ * is 0 and the browser letterboxes the page instead. On iOS with the status bar style
+ * black-translucent, an installed page draws under the status bar, the notch or Dynamic Island,
+ * and the home indicator; in landscape also under the sensor housing on one side.
+ *
+ * Use the custom properties, adding the inset to a region's own spacing, on whatever sits at an
+ * edge: the body's padding, and every position: fixed or sticky element at an edge (they ignore
+ * the body's padding). The utility classes do the common cases.
+ *
+ *   .topbar { padding-top: calc(12px + var(--safe-top)); }
+ *   .dock   { position: fixed; bottom: 0; padding-bottom: max(16px, var(--safe-bottom)); }
+ *
+ * max() keeps a gutter where there is no inset and uses the inset where it is larger; calc(+)
+ * keeps the gutter clear of the inset. Height: 100dvh (the dynamic viewport) for a page that
+ * fills the screen, not 100vh, which on iOS is the largest viewport and runs under the toolbar.
+ *
+ * Installed on iOS, WebKit can lay the page out short of the home indicator's strip at launch
+ * (WebKit bug 301994: the layout viewport ends the bottom inset, 34 px on an iPhone, above the
+ * screen's edge until something re-runs layout). Whatever paints below the layout shows there.
+ * Two rules keep that strip the app's own colour:
+ * - Any fixed full-screen background (a backdrop, a gradient, a canvas) is .safe-area-backdrop, or
+ *   has height: var(--safe-full-height): the large viewport plus the bottom inset, so it runs on
+ *   under the strip. Fixed elements add no scroll height, so the page scrolls no further.
+ * - Set --safe-background to the colour at the bottom of the app's background: it becomes the
+ *   root background, which paints the whole screen, the strip included, behind everything.
+ *
+ *   :root { --safe-background: #14161a; }
+ *   <div class="safe-area-backdrop app-backdrop"></div>   (first in <body>)
+ */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-full-height: calc(100lvh + env(safe-area-inset-bottom, 0px));
+}
+
+/* The root background, under everything and on every pixel of the screen. Unset, the property is
+ * invalid at computed time and the root stays transparent, so a body background still propagates
+ * to the canvas as usual. :where() gives it no specificity: an app's own html background wins,
+ * whichever stylesheet loads first. */
+:where(html) { background-color: var(--safe-background); }
+
+/* Padding on all four edges, at least --safe-gutter (default 0). */
+.safe-area-pad {
+  padding-top: max(var(--safe-gutter, 0px), var(--safe-top));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+  padding-bottom: max(var(--safe-gutter, 0px), var(--safe-bottom));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+}
+
+/* A fixed bar at the top or bottom edge: clear of the status bar or the home indicator, and of
+ * the sides in landscape. */
+.safe-area-top {
+  padding-top: max(var(--safe-gutter, 0px), var(--safe-top));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+}
+.safe-area-bottom {
+  padding-bottom: max(var(--safe-gutter, 0px), var(--safe-bottom));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+}
+
+/* A full-screen surface: the dynamic viewport's height, never 100vh. */
+.safe-area-fill { min-height: 100dvh; }
+
+/* A fixed full-screen background: the large viewport plus the bottom inset, behind the page, so it
+ * also covers the strip WebKit can leave below the layout at launch. Adds no scroll height. */
+.safe-area-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--safe-full-height);
+  z-index: -1;
+  pointer-events: none;
+}

@@ -20,7 +20,7 @@ import shutil
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from concurrent.futures.process import BrokenProcessPool
+from concurrent.futures.process import BrokenProcessPool, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1006,6 +1006,43 @@ class TestAWorkerDeathIsSaid:
             await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
         assert caplog.text.count("worker died") == 1
 
+    async def test_closing_while_the_dead_workers_pool_is_reaped_shuts_it_down_once_at_a_time(
+        self, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the reaper and close() both shut the broken executor down; two at once closed its result pipe twice
+        # (OSError: [Errno 9] Bad file descriptor in close(), seen on the pool's runners)
+        shutdown = ProcessPoolExecutor.shutdown
+        in_flight: set[int] = set()
+        overlapped: list[int] = []
+        guard = threading.Lock()
+
+        def watched(executor: ProcessPoolExecutor, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            if not wait:
+                shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+                return
+            with guard:
+                if id(executor) in in_flight:
+                    overlapped.append(id(executor))
+                in_flight.add(id(executor))
+            try:
+                time.sleep(0.3)  # widen the window two unserialised shutdowns would share
+                shutdown(executor, wait=wait, cancel_futures=cancel_futures)
+            finally:
+                with guard:
+                    in_flight.discard(id(executor))
+
+        monkeypatch.setattr(ProcessPoolExecutor, "shutdown", watched)
+        with pytest.raises(BrokenProcessPool):
+            await single.run(jobs.die_mid_write, read=False, result_bytes=1 << 20)
+
+        await single.close()
+        await _until(
+            lambda: not any(t.name == "shared-arrow-reap-single" and t.is_alive() for t in threading.enumerate()),
+            "the reaper finishing",
+        )
+
+        assert overlapped == []
+
 
 class TestAWorkersResultBecomesAPart:
     def test_a_claimed_result_is_linked_into_a_version_never_copied(self, store: SharedArrowStore) -> None:
@@ -1192,3 +1229,92 @@ class TestASweepNeverTakesAnOpenSlotsStaging:
         store.discard(slot)
 
         assert _hidden(store) == []
+
+
+class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
+    """#1167 / prod 2026-10-31: reads x their engine threads past the process's usable cores leave a read thread that
+    holds the interpreter lock preempted, and the event loop waits for it (2 CPUs, 4 reads of 2 threads: 12.6-15.8 ms
+    late, the host's idle loop on time). A reader admits reads only while reads x engine threads fit the cores."""
+
+    @pytest.mark.parametrize(
+        ("cores", "threads", "slots"), [(2, 2, 1), (4, 2, 2), (10, 2, 5), (8, None, 4), (3, None, 1), (3, 4, 1)]
+    )
+    def test_its_slots_are_the_usable_cores_over_the_engine_threads(
+        self, store: SharedArrowStore, cores: int, threads: int | None, slots: int
+    ) -> None:
+        """Flips if a reader admits more reads than keep reads x engine threads within the usable cores (an unset
+        ``threads`` is 2), or fewer than one."""
+        reader = store.reader(config=None if threads is None else {"threads": threads}, cores=cores)
+
+        assert reader.status()["slots"] == slots
+        reader.close()
+
+    @pytest.mark.parametrize(("config", "threads"), [(None, 2), ({"threads": None}, 2), ({"threads": 3}, 3)])
+    def test_its_connection_runs_on_the_threads_its_slots_are_counted_from(
+        self, store: SharedArrowStore, config: dict[str, Any] | None, threads: int
+    ) -> None:
+        """Flips if a reader whose caller names no ``threads`` leaves DuckDB's default (every core) on its connection
+        while counting its slots from 2, or runs on other threads than the caller named."""
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader = store.reader(config=config)
+        with reader.read() as read:
+            assert read.cursor.execute("SELECT current_setting('threads')").fetchone() == (threads,)
+        reader.close()
+
+    def test_a_reader_refuses_engine_threads_below_one(self, store: SharedArrowStore) -> None:
+        """Flips if a reader takes ``threads`` below 1, whose slots could not be counted."""
+        with pytest.raises(ValueError, match="at least 1"):
+            store.reader(config={"threads": 0})
+
+    def test_a_read_past_the_slots_waits_its_turn_and_runs_when_one_frees(self, store: SharedArrowStore) -> None:
+        """Flips if a read past the slots runs beside the one holding the slot, or never runs once it frees; the
+        waiting read shows as queued."""
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader = store.reader(config={"threads": 2}, cores=2)
+        order: list[str] = []
+        first = reader.read()
+        first.__enter__()
+        order.append("first in")
+
+        def second() -> None:
+            with reader.read():
+                order.append("second in")
+
+        waiting = threading.Thread(target=second)
+        waiting.start()
+        deadline = time.monotonic() + 5
+        while reader.status()["queued"] != 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (1, 1)
+        assert order == ["first in"]
+        order.append("first out")
+        first.__exit__(None, None, None)
+        waiting.join(timeout=5)
+
+        assert order == ["first in", "first out", "second in"]
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        reader.close()
+
+    def test_a_read_that_waits_past_its_bound_fails_naming_the_reads_ahead(self, store: SharedArrowStore) -> None:
+        """Flips if a starved read waits without bound, or fails without saying what held the slots; a slot it
+        never took is not given back."""
+        store.publish("v1", {TABLE: _table(1, rows=10)})
+        reader = store.reader(config={"threads": 1}, admit_wait=0.05, cores=1)
+        with reader.read():
+            failed: list[BaseException] = []
+
+            def late() -> None:
+                try:
+                    with reader.read():
+                        pass
+                except TimeoutError as exc:
+                    failed.append(exc)
+
+            thread = threading.Thread(target=late)
+            thread.start()
+            thread.join(timeout=5)
+        assert len(failed) == 1 and "1 running" in str(failed[0]), failed
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        with reader.read():
+            pass
+        reader.close()

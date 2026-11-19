@@ -46,20 +46,53 @@ class BuildOnce[K: Hashable, V]:
     a worker process that exited. *is_current* says whether a stored value may still be handed
     out; one that is not is rebuilt, under the lock, exactly as a missing one would be.
 
+    a cache of many values can be bounded: *cost* prices each built value and *max_cost* caps
+    what the stored values may cost together. a value that would take the total past the cap is
+    handed to its caller and not stored, so the next :meth:`get` for that key builds it again;
+    nothing already stored is evicted for it. that admission rule, rather than evicting the least
+    recently used, is what a caller walking the same keys in the same order again and again
+    wants: there, eviction drops each value just before it is asked for again and nothing is ever
+    found stored, while a full cache that keeps what it has still answers that share of every walk.
+
     :param is_current: whether a stored value may still be handed out; ``None`` means always
     :ptype is_current: Callable[[V], bool] | None
+    :param cost: what storing a value costs, e.g. its size; needs *max_cost*
+    :ptype cost: Callable[[V], int] | None
+    :param max_cost: the most the stored values may cost together; needs *cost*
+    :ptype max_cost: int | None
+    :raises ValueError: when only one of *cost* and *max_cost* is given, or *max_cost* is negative
     """
 
-    def __init__(self, *, is_current: Callable[[V], bool] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        is_current: Callable[[V], bool] | None = None,
+        cost: Callable[[V], int] | None = None,
+        max_cost: int | None = None,
+    ) -> None:
         """
         prepares an empty cache.
 
         :param is_current: whether a stored value may still be handed out; ``None`` means always
         :ptype is_current: Callable[[V], bool] | None
+        :param cost: what storing a value costs, e.g. its size; needs *max_cost*
+        :ptype cost: Callable[[V], int] | None
+        :param max_cost: the most the stored values may cost together; needs *cost*
+        :ptype max_cost: int | None
+        :raises ValueError: when only one of *cost* and *max_cost* is given, or *max_cost* is
+            negative
         """
+        if (cost is None) != (max_cost is None):
+            raise ValueError("BuildOnce bounds by cost and max_cost together: give both or neither")
+        if max_cost is not None and max_cost < 0:
+            raise ValueError(f"BuildOnce max_cost must be 0 or more, got {max_cost}")
         self._values: dict[K, V] = {}
+        self._costs: dict[K, int] = {}
+        self._total_cost = 0
         self._lock = threading.Lock()
         self._is_current = is_current
+        self._cost = cost
+        self._max_cost = max_cost
 
     def _usable(self, value: object) -> bool:
         """whether *value*, as read from storage, may be handed out.
@@ -78,7 +111,8 @@ class BuildOnce[K: Hashable, V]:
         """the value for *key*, built by *build* when there is none or it is no longer current.
 
         *build* runs while this instance's lock is held, so it must not call back into this
-        same instance.
+        same instance. under a *max_cost* a value that does not fit is returned without being
+        stored, and a stale value it replaces is dropped either way.
 
         :param key: which value
         :ptype key: K
@@ -93,9 +127,38 @@ class BuildOnce[K: Hashable, V]:
                 found = self._values.get(key, _MISSING)
                 if not self._usable(found):
                     built = build()
-                    self._values[key] = built
+                    self._store(key, built)
                     found = built
         return cast("V", found)
+
+    def _store(self, key: K, value: V) -> None:
+        """store *value* for *key* when it fits the cost bound; called with the lock held.
+
+        :param key: which value
+        :ptype key: K
+        :param value: the value just built
+        :ptype value: V
+        """
+        if self._cost is None or self._max_cost is None:
+            self._values[key] = value
+            return
+        self._drop(key)
+        price = self._cost(value)
+        if self._total_cost + price <= self._max_cost:
+            self._values[key] = value
+            self._costs[key] = price
+            self._total_cost += price
+
+    def _drop(self, key: K) -> object:
+        """take *key*'s value and its cost out; called with the lock held.
+
+        :param key: which value
+        :ptype key: K
+        :return: the value that was stored, or the missing marker
+        :rtype: object
+        """
+        self._total_cost -= self._costs.pop(key, 0)
+        return self._values.pop(key, _MISSING)
 
     def peek(self, key: K) -> V | None:
         """the value stored for *key*, current or not, without building one.
@@ -120,7 +183,7 @@ class BuildOnce[K: Hashable, V]:
         :rtype: V | None
         """
         with self._lock:
-            value: object = self._values.pop(key, _MISSING)
+            value = self._drop(key)
         return None if value is _MISSING else cast("V", value)
 
     def clear(self, dispose: Callable[[V], object] | None = None) -> None:
@@ -139,3 +202,5 @@ class BuildOnce[K: Hashable, V]:
                 for value in self._values.values():
                     dispose(value)
             self._values.clear()
+            self._costs.clear()
+            self._total_cost = 0

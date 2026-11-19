@@ -1,4 +1,4 @@
-"""the shrinking ledgers of the epoch-discipline domain, and the findings each rule's gate reports.
+"""the count-pinned ledgers of the epoch-discipline domain, and the findings each rule's gate reports.
 
 Allowlist grammar, one file per rule, one line per (module, function, symbol)::
 
@@ -183,7 +183,7 @@ def epoch_discipline_findings(config: EpochDisciplineConfig, rule: str) -> list[
                 findings.append(
                     f"{ledger}:{line.file_line}: {' :: '.join(line.key)} pins {line.count} but the code has {have} -- "
                     + ("delete the line" if have == 0 else f"lower the count to {have}")
-                    + ": the list only shrinks"
+                    + ": a line never pins more than the code has"
                 )
     for key, sites in sorted(by_key.items()):
         if len(sites) > pinned[key]:

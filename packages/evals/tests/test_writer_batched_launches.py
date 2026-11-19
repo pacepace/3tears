@@ -32,7 +32,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     default_cases,
     dry_sessions,
 )
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import JUDGE, FakeScoringJudge, ScoredReply, lay_recording
 from threetears.evals.analysis import EvalSummary, summarize_run
@@ -241,7 +241,7 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
     # The pass asked the six cases up to the stop, each in both orders, once.
     assert report.calls_made == 2 * LANDSLIDE_AT == judge.calls.count(preference_rubric().name)
     assert "across 6 held-out cases" in result.page.model_dump_json()
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_case_reads(
@@ -283,7 +283,7 @@ async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_cas
     )
     assert said in batched.disclosures
     assert batched.decisions == whole.decisions
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_the_cap_and_says_so(
@@ -321,7 +321,7 @@ async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_t
     )
     assert said in result.disclosures
     assert f"pairwise pass of {CANDIDATE}: {stopping.line}" in result.render()
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_so(
@@ -338,7 +338,7 @@ async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_s
     assert result.resolution == line and line in result.disclosures
     assert all(summary.status == "completed" for summary in result.arms.values())
     assert result.pairwise_unread == {}
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_second_batched_run_in_the_scope_reuses_its_batch_sets(tmp_path: Path, offline: list[Connect]) -> None:
@@ -357,7 +357,7 @@ async def test_a_second_batched_run_in_the_scope_reuses_its_batch_sets(tmp_path:
     assert [name.rsplit(" batch ", 1)[1] for name, _ in batches] == ["1 of 3", "2 of 3"]
     assert all(version == 1 for _, version in batches)
     assert len(await _runs(second)) == 2 * len(arms)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 def _rename_batch(storage: EvalStorage, runs: Collection[str], batch: str, ref: CaseSetRef) -> None:
@@ -412,7 +412,7 @@ async def test_a_one_launch_set_that_is_no_batch_of_the_held_out_set_is_still_re
         await asyncio.to_thread(
             writer_promotion, result.host, result.campaign_id, SCOPE, candidate=CANDIDATE, pairwise_job=status
         )
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_are_read_there_once(
@@ -444,7 +444,7 @@ async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_
     assert said in result.disclosures
     # Every pair was asked once: six of the stopped candidate's, seven of the twin's, each in both orders.
     assert judge.calls.count(preference_rubric().name) == 2 * (LANDSLIDE_AT + CASES)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refused(
@@ -478,7 +478,7 @@ async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refuse
         await asyncio.to_thread(summarize_runs, host, runs, SCOPE)
     with pytest.raises(ValueError, match="at least one run"):
         await asyncio.to_thread(summarize_runs, host, [], SCOPE)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge
@@ -547,7 +547,7 @@ async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_
         "stopped it (the pass's line says where), so the gated readings and guardrails were read once, on those 4."
     ]
     assert result.pairwise_unread == {}
-    assert offline == []
+    assert_no_connects(offline)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -596,7 +596,7 @@ async def test_an_arm_s_spend_counts_what_its_runs_dropped_sends_may_have_billed
         dropped = sum(maybe_billed_usd(row.usage, row.cost_roles) for row in priced)
         assert dropped > 0
         assert spent == pytest.approx(sum(row.cost_usd or 0.0 for row in priced) + dropped, abs=1e-4)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def _runs_by_arm(result: WriterResult) -> dict[str, list[EvalRun]]:
@@ -679,7 +679,7 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
     # Every batch run joins its arm's one test setup. A case the cap set aside wrote its report: Report finished counts
     # it as finished, and only the judged readings leave it out, under the cap's own cause.
     await _finished_reads_every_case(result, judged_per_arm=2)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def _rows_by_arm(result: WriterResult) -> dict[str, list[EvalResult]]:
@@ -740,7 +740,7 @@ async def test_an_unwritten_report_and_cases_the_cap_set_aside_share_a_run_and_r
     assert any(row.host_measures.get(FINISHED_MEASURE) is False for row in rows), "an unwritten report ran"
     assert any(row.judging_set_aside for row in rows), "and the cap set cases aside"
     await _finished_reads_every_case(result)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_judging_billed_far_above_its_floor_with_room_in_the_arm_is_judged_in_every_batch(
@@ -765,7 +765,7 @@ async def test_judging_billed_far_above_its_floor_with_room_in_the_arm_is_judged
         assert all(not run.budget_stops for run in runs[skill])
         assert await _scored_by_run(result, runs[skill]) == [BATCH, BATCH, CASES - 2 * BATCH]
     assert _scoring_calls(judge) == len(arms) * CASES * len(writer_scoring_rubric())
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_judging_billed_far_above_its_floor_ends_each_batch_within_one_call_of_its_cap(
@@ -799,7 +799,7 @@ async def test_judging_billed_far_above_its_floor_ends_each_batch_within_one_cal
         assert scored == [BATCH, 1, 0]
         judged += sum(scored)
     assert _scoring_calls(judge) == judged * len(writer_scoring_rubric())
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_would(
@@ -819,7 +819,7 @@ async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_wo
     )
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
-    assert offline == []
+    assert_no_connects(offline)
 
 
 #: Seeded fixtures prototype 5 wrote no page over: each arm writes nothing on them, so nothing of theirs is judged.
@@ -923,7 +923,7 @@ async def test_a_batch_that_stored_no_page_on_either_arm_joins_its_arms_setup_an
     assert finished.delta == pytest.approx(0.0), "both arms left the same four reports unwritten"
     bounced = await _finished(result, BOUNCES_MEASURE)
     assert bounced.delta == pytest.approx(0.0), "both arms sent back the same submissions on the four cases"
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no_second_one(
@@ -969,7 +969,7 @@ async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no
     await asyncio.to_thread(_witnessed, storage, await run_of(judged[1].control_result_id))
     with pytest.raises(ValidationFailedError, match="a pair compares two pages written under one rig"):
         await writer_pairwise(reading, result.campaign_id, SCOPE, candidate=CANDIDATE)
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_batch_run_that_stored_no_page_on_one_arm_lowers_that_arm_s_report_finished_and_is_named(
@@ -1004,7 +1004,7 @@ async def test_a_batch_run_that_stored_no_page_on_one_arm_lowers_that_arm_s_repo
     assert result.disclosures.count(said) == 1
     assert said in result.render()
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
-    assert offline == []
+    assert_no_connects(offline)
 
 
 async def test_a_batch_run_that_stored_no_result_at_all_is_named_by_its_arm_and_count(
@@ -1042,4 +1042,4 @@ async def test_a_batch_run_that_stored_no_result_at_all_is_named_by_its_arm_and_
     }
     assert sum(1 for results in stored.values() if not results) == 1, "the precondition: one run stored no result"
     assert [line for line in result.disclosures if "stored no page on at least one arm" in line] == [said]
-    assert offline == []
+    assert_no_connects(offline)

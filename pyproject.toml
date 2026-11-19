@@ -17,6 +17,9 @@ lockstep-files = ["packages/*/pyproject.toml", "packages/agent/*/pyproject.toml"
 smoke-tests = ["packages/*/tests/test_smoke.py", "packages/agent/*/tests/test_smoke.py"]
 bake-file = "docker-bake.hcl"
 family-prefix = "3tears"
+# The browser packages (web/, @3tears/*) carry the same version as the Python family: one tag, one
+# release run publishes both (release.yml: PyPI, then npm).
+npm-lockstep-files = ["web/packages/*/package.json", "web/package-lock.json"]
 notes = "CHANGELOG.md"
 notes-style = "3tears"
 
@@ -131,6 +134,9 @@ dev-dependencies = [
     # ``now`` across DST-transition test cases. Time-sensitive logic
     # cannot be tested deterministically otherwise.
     "freezegun>=1.5",
+    # huggingface_hub is otherwise only transitive (voyageai -> tokenizers); the evals offline guard's own test
+    # imports it to prove the session keeps it off the Hub (the root conftest sets HF_HUB_OFFLINE).
+    "huggingface-hub>=1.0",
     # datasources backend libs installed in dev so the redshift / snowflake /
     # bigquery driver test modules collect and run rather than erroring at
     # import. declared as 3tears-datasources extras (datasources[redshift] /

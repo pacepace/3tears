@@ -57,7 +57,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 from uuid import UUID
 
@@ -95,9 +95,12 @@ from threetears.langgraph.serde import UUIDSafeSerializer
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "DELTA_COUNTERS_METADATA_KEY",
     "CheckpointCacheError",
+    "CheckpointPruneResult",
     "CheckpointPurgeIncompleteError",
     "ThreeTierCheckpointSaver",
+    "keep_latest_survivors_sql",
 ]
 
 log = get_logger(__name__)
@@ -119,9 +122,9 @@ class CheckpointCacheError(RuntimeError):
 class CheckpointPurgeIncompleteError(CheckpointCacheError):
     """a purge deleted the durable rows, but at least one cache delete or sweep failed.
 
-    raised by :meth:`ThreeTierCheckpointSaver.adelete_thread` and
-    :meth:`~ThreeTierCheckpointSaver.adelete_customer_threads` once every tier has been
-    tried, so an erasure that left cached bundles behind says so instead of reporting
+    raised by :meth:`ThreeTierCheckpointSaver.adelete_thread`,
+    :meth:`~ThreeTierCheckpointSaver.adelete_customer_threads` and
+    :meth:`~ThreeTierCheckpointSaver.aprune` once every tier has been tried, so an erasure that left cached bundles behind says so instead of reporting
     success. it is a :class:`CheckpointCacheError`, and told apart from a failed READ by its
     type and :attr:`l3_committed`.
 
@@ -179,6 +182,92 @@ _DEFAULT_ANONYMIZE_BATCH = 200
 
 #: below every ``checkpoint_writes.idx``, control channels' negative ones included.
 _MIN_WRITE_IDX = -(2**31)
+
+#: the strategies :meth:`ThreeTierCheckpointSaver.aprune` accepts, LangGraph's two names.
+_PRUNE_STRATEGIES: Final = ("keep_latest", "delete")
+
+#: the turn-metadata key LangGraph writes while a ``DeltaChannel`` holds updates that the checkpoint
+#: itself does not: such a channel is rebuilt by walking the checkpoint's ancestors and their writes,
+#: so the ancestors of a checkpoint carrying this key must not be pruned. LangGraph drops the key once
+#: every delta channel has been snapshotted. The serializer writes map keys as their UTF-8 text (msgpack
+#: and JSON alike), so the stored ``metadata_`` bytes contain it verbatim and SQL can test for it
+#: without decoding a row.
+DELTA_COUNTERS_METADATA_KEY: Final = "counters_since_delta_snapshot"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointPruneResult:
+    """what one :meth:`ThreeTierCheckpointSaver.aprune` call deleted.
+
+    LangGraph's ``aprune`` returns ``None``; returning this instead is compatible with every
+    caller written against that signature and lets an operator say what a prune bought.
+
+    :ivar strategy: ``"keep_latest"`` or ``"delete"``
+    :ivar threads: distinct threads named in the call
+    :ivar checkpoints_deleted: ``checkpoints`` rows deleted
+    :ivar writes_deleted: ``checkpoint_writes`` rows deleted
+    :ivar namespaces_held: namespaces ``keep_latest`` left whole because their newest checkpoint
+        still needs its ancestors (:data:`DELTA_COUNTERS_METADATA_KEY`); always 0 for ``delete``
+    """
+
+    strategy: str
+    threads: int
+    checkpoints_deleted: int
+    writes_deleted: int
+    namespaces_held: int
+
+
+def keep_latest_survivors_sql(*, marker_param: int, threads_param: int | None = None, held: bool = False) -> str:
+    """the SELECT naming, per thread and namespace, the checkpoint ``keep_latest`` keeps.
+
+    One row per ``(thread_id, checkpoint_ns)`` with columns ``thread_id``, ``checkpoint_ns`` and
+    ``checkpoint_id``: the namespace's newest checkpoint, decided by ``max(checkpoint_id)`` -- the
+    same column and collation :meth:`ThreeTierCheckpointSaver.aget_tuple` and
+    :meth:`~ThreeTierCheckpointSaver.alist` order by (``ORDER BY checkpoint_id DESC``), so "the one
+    kept" and "the one a resume reads" cannot disagree. Every row of that namespace with a smaller
+    ``checkpoint_id``, in either table, is what ``keep_latest`` removes.
+
+    By default only namespaces ``keep_latest`` may prune are named: those whose newest checkpoint's
+    metadata does not carry :data:`DELTA_COUNTERS_METADATA_KEY`. With ``held=True`` it names the
+    others instead, the namespaces left whole. One builder serves the saver's prune and the
+    maintenance report, so a report's "would remove" is computed by the predicate the prune runs.
+
+    :param marker_param: the bind position holding ``DELTA_COUNTERS_METADATA_KEY`` as bytes
+    :ptype marker_param: int
+    :param threads_param: the bind position holding the stored thread ids (a text array) to limit
+        to, or None for every thread in the table
+    :ptype threads_param: int | None
+    :param held: name the namespaces kept whole instead of those that may be pruned
+    :ptype held: bool
+    :return: SQL text for use as a subquery
+    :rtype: str
+    """
+    thread_filter = f"WHERE thread_id = ANY(${threads_param}::text[]) " if threads_param is not None else ""
+    marker = f"position(${marker_param}::bytea IN c.metadata_)"
+    delta_test = f"{marker} > 0" if held else f"(c.metadata_ IS NULL OR {marker} = 0)"
+    return (
+        "SELECT c.thread_id, c.checkpoint_ns, c.checkpoint_id FROM checkpoints c "
+        "JOIN (SELECT thread_id, checkpoint_ns, max(checkpoint_id) AS checkpoint_id FROM checkpoints "
+        f"{thread_filter}GROUP BY thread_id, checkpoint_ns) newest "
+        "ON c.thread_id = newest.thread_id AND c.checkpoint_ns = newest.checkpoint_ns "
+        "AND c.checkpoint_id = newest.checkpoint_id "
+        f"WHERE {delta_test}"
+    )
+
+
+def _affected_rows(tag: str) -> int:
+    """the row count at the end of an asyncpg-style status tag such as ``"DELETE 3"``.
+
+    :param tag: the status tag :meth:`AsyncQueryExecutor.execute` returned
+    :ptype tag: str
+    :return: rows the statement affected
+    :rtype: int
+    :raises ValueError: when the tag carries no count, so a prune never reports a number it did not read
+    """
+    count = tag.rsplit(" ", 1)[-1]
+    if not count.isdigit():
+        raise ValueError(f"the executor's status tag {tag!r} carries no row count")
+    return int(count)
 
 
 #: what an unreadable blob's report says, for a serializer that cannot decode or re-encode it
@@ -491,6 +580,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     # ------------------------------------------------------------------
     # Tenancy helpers
     # ------------------------------------------------------------------
+
+    @property
+    def scope(self) -> CheckpointScope:
+        """the tenancy decision this saver was built with.
+
+        :return: the scope passed at construction
+        :rtype: CheckpointScope
+        """
+        return self._scope
 
     def customer_for_config(self, config: Mapping[str, Any] | None) -> UUID | None:
         """the customer a config-bearing call addresses, per this saver's scope.
@@ -1903,40 +2001,228 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             storage_thread_id,
         )
 
-        # L2 is exact-key, so the root-namespace entry needs its own delete and
-        # every ``thread.checkpoint_ns`` entry needs a sweep. A cache that
-        # cannot sweep leaves those namespaced bundles cached -- the gap this
-        # method carried as a comment until an L2 was actually wired in front of
-        # it. It is reported rather than assumed away: a purge that answers an
-        # erasure request has to say what it could not reach.
-        # every cache step is tried; their failures are raised together once all have run, so one
-        # failed delete never leaves another tier holding the thread too
         failures: list[CheckpointCacheError] = []
+        swept = await self._evict_thread_caches(thread_id, storage_thread_id, customer=resolved, failures=failures)
+        if not swept:
+            log.warning(
+                "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
+                "survive this purge. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
+                extra={"l2_bucket": self._l2_bucket},
+            )
+        if failures:
+            raise CheckpointPurgeIncompleteError(f"purge of thread {thread_id!r}", failures)
+
+    async def _evict_thread_caches(
+        self,
+        thread_id: str,
+        storage_thread_id: str,
+        *,
+        customer: UUID | None,
+        failures: list[CheckpointCacheError],
+    ) -> bool:
+        """drop every cached bundle of one thread after its L3 rows changed, collecting failures.
+
+        L2 is exact-key, so the root-namespace entry needs its own delete and
+        every ``thread.checkpoint_ns`` entry needs a sweep. A cache that
+        cannot sweep leaves those namespaced bundles cached; the return value
+        says so, and the caller reports it rather than assuming it away: a purge
+        that answers an erasure request has to say what it could not reach. L1
+        drops the thread across every namespace by its own protocol.
+
+        Every step is tried; a failure is appended to ``failures`` rather than
+        raised, so one failed delete never leaves another tier holding the
+        thread too. The thread is put on this saver's purge bypass when any step
+        failed (it is then read from L3 alone) and taken off it when all
+        succeeded -- the bypass is lifted only by an eviction that lands.
+
+        :param thread_id: the thread as the caller knows it
+        :ptype thread_id: str
+        :param storage_thread_id: its stored id
+        :ptype storage_thread_id: str
+        :param customer: the resolved customer
+        :ptype customer: UUID | None
+        :param failures: the purge's cache failures, appended to
+        :ptype failures: list[CheckpointCacheError]
+        :return: False when a wired L2 cannot sweep by prefix, so namespaced bundles may survive;
+            True otherwise
+        :rtype: bool
+        """
+        failed_before = len(failures)
         try:
             swept = await self.l2_delete_prefix(f"{storage_thread_id}.")
         except CheckpointCacheError as exc:
             failures.append(exc)
             swept = True
         try:
-            await self.l2_delete(thread_id, "", customer=resolved)
+            await self.l2_delete(thread_id, "", customer=customer)
         except CheckpointCacheError as exc:
             failures.append(exc)
-        if not swept and self._l2 is not None:
-            log.warning(
-                "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
-                "survive this purge. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
-                extra={"l2_bucket": self._l2_bucket},
-            )
-
-        # L1 drops the thread across every namespace by its own protocol.
         try:
-            await self.l1_delete(thread_id, customer=resolved)
+            await self.l1_delete(thread_id, customer=customer)
         except CheckpointCacheError as exc:
             failures.append(exc)
-        if failures:
+        if len(failures) > failed_before:
             self._cache_bypassed_threads.add(storage_thread_id)
-            raise CheckpointPurgeIncompleteError(f"purge of thread {thread_id!r}", failures)
-        self._cache_bypassed_threads.discard(storage_thread_id)
+        else:
+            self._cache_bypassed_threads.discard(storage_thread_id)
+        return swept or self._l2 is None
+
+    async def aprune(  # type: ignore[override] # LangGraph's returns None; a caller ignoring the result is unaffected
+        self,
+        thread_ids: Sequence[str],
+        *,
+        strategy: str = "keep_latest",
+        customer: UUID | None = None,
+    ) -> CheckpointPruneResult:
+        """prune the named threads' checkpoints at every tier: LangGraph's ``aprune`` contract.
+
+        - ``keep_latest`` keeps, in every namespace of every named thread (the root and each
+          nested subgraph namespace), the newest checkpoint and the pending writes recorded
+          against it, and deletes every older checkpoint and every write recorded against one.
+          "Newest" is the largest ``checkpoint_id``, the order :meth:`aget_tuple` and
+          :meth:`alist` read in, so a paused run resumes from the checkpoint kept, with its
+          interrupt and resume writes. What goes is history: ``alist`` / ``get_state_history``
+          and a read pinned to a pruned ``checkpoint_id`` no longer find it.
+        - ``delete`` calls :meth:`adelete_thread` for each thread, so the purge is that method's,
+          statements and cache eviction alike. The counts it reports are read just before, by the
+          same stored ids; a write landing between the count and the purge is deleted uncounted.
+
+        **DeltaChannel.** LangGraph warns that a naive ``keep_latest`` corrupts a graph using
+        ``DeltaChannel``: such a channel is rebuilt by walking the kept checkpoint's ancestors and
+        their writes, so dropping them reconstructs it as empty with no error. A namespace whose
+        newest checkpoint still needs its ancestors carries :data:`DELTA_COUNTERS_METADATA_KEY` in
+        its metadata, and ``keep_latest`` leaves such a namespace whole and counts it in
+        ``namespaces_held``. A graph without delta channels never writes the key.
+
+        **Set-based, two statements** (``keep_latest``). The writes go first, then the checkpoints, each one
+        ``DELETE`` over every named thread, matching :meth:`adelete_thread`'s order. Each
+        statement decides "newest" at the moment it runs, so a checkpoint written between the
+        two can only make the second delete a checkpoint whose writes the first kept: those
+        writes then belong to no checkpoint, read by nothing, and the next prune removes them. The
+        other order could leave a stored checkpoint without its writes. Plain ``DELETE``
+        statements rather than one data-modifying CTE because the executor's proxied transport
+        routes a statement by its leading verb.
+
+        **Caches.** After the L3 rows are gone every named thread's cached bundles are evicted
+        -- by :meth:`adelete_thread` itself under ``delete``, and under ``keep_latest`` by the
+        eviction it uses: the L2 root key, the L2 namespaced keys by prefix sweep, and this pod's
+        L1. Failures are collected and raised together once every thread and tier was tried. Under ``keep_latest`` a cached bundle is normally the kept checkpoint already, but
+        an L1 that missed another pod's write can hold an older one; evicting means the next read
+        refills from L3 rather than serving a pruned checkpoint. Another pod's L1 is not reached
+        (the protocol has no broadcast).
+
+        **Customer.** LangGraph hands this method no ``RunnableConfig``, so the customer arrives
+        as a keyword-only argument reconciled against the scope exactly as on
+        :meth:`adelete_thread`: required under ``from_config``, optional and checked under
+        ``for_customer``, refused under ``unscoped``.
+
+        :param thread_ids: the threads, as the caller knows them
+        :ptype thread_ids: Sequence[str]
+        :param strategy: ``"keep_latest"`` (the default) or ``"delete"``
+        :ptype strategy: str
+        :param customer: whose threads these are; required under a config-resolved scope,
+            refused when it contradicts any other scope
+        :ptype customer: UUID | None
+        :return: how many rows each table lost, and how many namespaces were left whole
+        :rtype: CheckpointPruneResult
+        :raises TypeError: when thread_ids is a bare string, or customer is neither None nor a UUID
+        :raises ValueError: when the strategy is unknown, or the customer cannot be reconciled with
+            the scope
+        :raises CheckpointPurgeIncompleteError: when a cache eviction failed; raised after every tier
+            was tried, the L3 rows deleted. retrying is safe, and until a retry succeeds this saver
+            reads the affected threads from L3 alone
+        """
+        if isinstance(thread_ids, str):
+            raise TypeError(f"thread_ids must be a collection of thread ids, not the bare string {thread_ids!r}")
+        if strategy not in _PRUNE_STRATEGIES:
+            raise ValueError(f"unknown prune strategy {strategy!r}; expected one of {', '.join(_PRUNE_STRATEGIES)}")
+        resolved = self._scope.customer_for_operation(customer, operation="aprune")
+        # caller id -> stored id, each thread once
+        threads = {thread_id: self.storage_thread_id(thread_id, customer=resolved) for thread_id in thread_ids}
+        storage_thread_ids = list(threads.values())
+        held = writes_deleted = checkpoints_deleted = 0
+        failures: list[CheckpointCacheError] = []
+        if storage_thread_ids and strategy == "delete":
+            # counted before the purge, by the same stored ids, so the result says what went
+            counts = await self._exec.fetchrow(
+                "SELECT (SELECT count(*) FROM checkpoints WHERE thread_id = ANY($1::text[])) AS checkpoints, "
+                "(SELECT count(*) FROM checkpoint_writes WHERE thread_id = ANY($1::text[])) AS writes",
+                storage_thread_ids,
+            )
+            if counts is not None:
+                checkpoints_deleted, writes_deleted = int(counts["checkpoints"]), int(counts["writes"])
+            for thread_id in threads:
+                try:
+                    await self.adelete_thread(thread_id, customer=resolved)
+                except CheckpointPurgeIncompleteError as exc:
+                    # every thread is still purged; the cache failures are raised together below
+                    failures.extend(exc.failures)
+        elif storage_thread_ids:
+            marker = DELTA_COUNTERS_METADATA_KEY.encode()
+            held_row = await self._exec.fetchrow(
+                "SELECT count(*) AS held FROM ("
+                + keep_latest_survivors_sql(threads_param=1, marker_param=2, held=True)
+                + ") held",
+                storage_thread_ids,
+                marker,
+            )
+            held = int(held_row["held"]) if held_row is not None else 0
+            survivors = keep_latest_survivors_sql(threads_param=1, marker_param=2)
+            writes_deleted = _affected_rows(
+                await self._exec.execute(
+                    f"DELETE FROM checkpoint_writes pruned USING ({survivors}) kept "
+                    "WHERE pruned.thread_id = kept.thread_id AND pruned.checkpoint_ns = kept.checkpoint_ns "
+                    "AND pruned.checkpoint_id < kept.checkpoint_id",
+                    storage_thread_ids,
+                    marker,
+                )
+            )
+            checkpoints_deleted = _affected_rows(
+                await self._exec.execute(
+                    f"DELETE FROM checkpoints pruned USING ({survivors}) kept "
+                    "WHERE pruned.thread_id = kept.thread_id AND pruned.checkpoint_ns = kept.checkpoint_ns "
+                    "AND pruned.checkpoint_id < kept.checkpoint_id",
+                    storage_thread_ids,
+                    marker,
+                )
+            )
+            swept_all = True
+            for thread_id, storage_thread_id in threads.items():
+                swept = await self._evict_thread_caches(
+                    thread_id, storage_thread_id, customer=resolved, failures=failures
+                )
+                swept_all = swept_all and swept
+            if not swept_all:
+                log.warning(
+                    "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
+                    "survive this prune. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
+                    extra={"l2_bucket": self._l2_bucket},
+                )
+        result = CheckpointPruneResult(
+            strategy=strategy,
+            threads=len(threads),
+            checkpoints_deleted=checkpoints_deleted,
+            writes_deleted=writes_deleted,
+            namespaces_held=held,
+        )
+        log.info(
+            "checkpoint threads pruned",
+            extra={
+                "strategy": strategy,
+                "threads": result.threads,
+                "checkpoints_deleted": result.checkpoints_deleted,
+                "writes_deleted": result.writes_deleted,
+                "namespaces_held": result.namespaces_held,
+                "cache_failures": len(failures),
+            },
+        )
+        if failures:
+            raise CheckpointPurgeIncompleteError(
+                f"prune ({strategy}) of {result.threads} thread(s), {result.checkpoints_deleted} checkpoint(s) "
+                f"and {result.writes_deleted} write(s) deleted",
+                failures,
+            )
+        return result
 
     async def adelete_customer_threads(self, *, customer: UUID | None = None) -> None:
         """delete every checkpoint and write belonging to this saver's customer.
@@ -2546,4 +2832,19 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         raise NotImplementedError(
             "ThreeTierCheckpointSaver is async-only. Use adelete_thread().",
+        )
+
+    def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
+        """not supported. use :meth:`aprune`.
+
+        :param thread_ids: ignored
+        :ptype thread_ids: Sequence[str]
+        :param strategy: ignored
+        :ptype strategy: str
+        :return: never returns
+        :rtype: None
+        :raises NotImplementedError: always
+        """
+        raise NotImplementedError(
+            "ThreeTierCheckpointSaver is async-only. Use aprune().",
         )

@@ -22,6 +22,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, latest, ticks_while, trusted
 
 #: past the count from which an eviction leaves the loop (64)
 _MANY = 200
@@ -155,36 +156,38 @@ class TestManyKeysLeaveL1OffTheLoop:
         assert heard == [(key, False) for key in keys]
 
 
-async def _ticker(stop: asyncio.Event, late: list[float], every: float = 0.002) -> None:
-    """sleep ``every`` over and over, keeping how much later than asked each wake came."""
-    while not stop.is_set():
-        asked = time.perf_counter()
-        await asyncio.sleep(every)
-        late.append(time.perf_counter() - asked - every)
+#: what each tick of the loop's ticker asks to sleep
+_TICK = 0.002
+
+
+async def _evicted(keys: list[str]) -> tuple[list[Tick], list[Tick], list[bool]]:
+    """the loop's ticks and the host's idle loop's (:class:`HostTicker`, in a process of its own) while ``keys`` leave
+    a fresh collection's L1, and whether the first ten are still held after."""
+    collection, l1 = _cached_collection()
+    _cache(l1, keys, payload="x" * 200)
+    with HostTicker() as host:
+        ticks = await ticks_while(lambda: collection.invalidate_cache_many(keys), every=_TICK)
+    return ticks, host.ticks, _held(collection, keys[:10])
 
 
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileManyKeysLeaveL1:
     async def test_a_ticker_is_never_held_while_100k_keys_leave_l1(self) -> None:
-        collection, l1 = _cached_collection()
         keys = _keys(100_000)
-        _cache(l1, keys, payload="x" * 200)
         # how long the delete alone takes here, so the bound below is in proportion to this machine
         _, timing_l1 = _cached_collection()
         _cache(timing_l1, keys, payload="x" * 200)
         started = time.perf_counter()
         timing_l1.delete_many_by_id("rows", [(key,) for key in keys], ("id",))
         one_delete = time.perf_counter() - started
-        stop = asyncio.Event()
-        late: list[float] = []
-        ticking = asyncio.create_task(_ticker(stop, late))
-        await asyncio.sleep(0.01)
-        await collection.invalidate_cache_many(keys)
-        stop.set()
-        await ticking
-        assert _held(collection, keys[:10]) == [False] * 10
-        worst = max(late)
-        assert worst < max(0.05, one_delete / 3), (
-            f"the loop was held {worst * 1000:.0f} ms while 100k keys left L1 "
-            f"(the delete alone takes {one_delete * 1000:.0f} ms)"
+        bound = max(0.05, one_delete / 3)
+        # judged past the host's own idle loop at the same moments, and only over a window it was on time for
+        ticks, host, held = await trusted(
+            lambda: _evicted(keys), lambda measured: (measured[0], measured[1]), host_may_be_late=bound
+        )
+        assert held == [False] * 10
+        worst = added_lateness(ticks, host, every=_TICK)
+        assert worst < bound, (
+            f"the loop was held {worst * 1000:.0f} ms past the host's idle loop while 100k keys left L1 "
+            f"({latest(ticks, every=_TICK) * 1000:.0f} ms in all; the delete alone takes {one_delete * 1000:.0f} ms)"
         )

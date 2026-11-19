@@ -40,7 +40,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     read_candidate_skill,
     refuse_unlike_editors,
 )
-from packages.evals.tests.offline_support import Connect, refuse_connects
+from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, MUST_FIX_OPEN_MEASURE
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
@@ -178,7 +178,7 @@ def test_the_shipped_skill_as_its_own_candidate_reads_not_separated(
     like_against_like: tuple[Acceptance, list[Connect]],
 ) -> None:
     found, attempts = like_against_like
-    assert attempts == []
+    assert_no_connects(attempts)
     assert list(found.result.arms) == [SHIPPED, "shipped-again"]
     assert found.candidate.analyst().digest == found.shipped.analyst().digest
     assert found.candidate.editor().digest == found.shipped.editor().digest
@@ -200,7 +200,7 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     out = tmp_path / "out"
     assert writer_acceptance.main(["--dry", "--candidate-skill", str(HEADLINE_ANSWERS), "--out", str(out)]) == 0
     printed = capsys.readouterr().out
-    assert attempts == []
+    assert_no_connects(attempts)
     digest = AnalystSkill.at(HEADLINE_ANSWERS).digest
     record = json.loads((out / "acceptance.json").read_text(encoding="utf-8"))
     assert record["variant"] == "headline-answers"
