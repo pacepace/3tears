@@ -20,7 +20,7 @@ import pytest
 
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, arrow_schema_text
 from threetears.core.keyed import Dialect
-from threetears.datasources.arrow_rows import warehouse_arrow_types
+from threetears.datasources.arrow_rows import relation_columns_sql, warehouse_arrow_types
 from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
     DatasourceQueryClient,
@@ -364,3 +364,26 @@ async def test_a_dialect_named_by_a_plain_string_is_refused_before_any_ask(named
         )
 
     assert catalogue.asked == []
+
+
+def test_a_relations_columns_statement_written_as_literals_reads_the_dialects_catalogue() -> None:
+    """Flips if a caller whose query binds nothing (an operator's check holding one login's ``fetch``) cannot ask the
+    catalogue that holds a late-binding view's columns: on Redshift it must read SVV_COLUMNS, elsewhere
+    information_schema.columns, with the relation's schema and name written in as quoted literals."""
+    redshift = relation_columns_sql("reporting_prod.report_enr_x", dialect=Dialect.REDSHIFT)
+    assert redshift == (
+        "SELECT column_name, data_type FROM svv_columns "
+        "WHERE table_schema = 'reporting_prod' AND table_name = 'report_enr_x' ORDER BY ordinal_position"
+    )
+    for dialect in (Dialect.POSTGRES, Dialect.YUGABYTE, Dialect.DUCKDB):
+        assert relation_columns_sql("t", dialect=dialect) == (
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 't' ORDER BY ordinal_position"
+        )
+    assert "'o''brien'" in relation_columns_sql("s.o'brien", dialect=Dialect.POSTGRES)
+
+
+@pytest.mark.parametrize("named", ["redshift", "postgres"])
+def test_a_literal_columns_statement_refuses_a_plain_string_dialect(named: str) -> None:
+    with pytest.raises(AssertionError):
+        relation_columns_sql("s.t", dialect=named)  # type: ignore[arg-type]

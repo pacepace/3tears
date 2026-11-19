@@ -17,6 +17,10 @@ ots login on 2026-11-19 had one spelling in both; a table's `time with time zone
 of each column type the login may read across both catalogues. PostgreSQL, YugabyteDB and DuckDB read
 `information_schema.columns` by the same statement as before.
 
+**Added:** `relation_columns_sql(relation, *, dialect)`, public: the same catalogue statement with the relation's
+schema and name written in as quoted literals, for a caller whose query binds nothing (an operator's check holding
+one login's fetch), so no caller hand-writes `information_schema.columns` and misses a late-binding view's columns.
+
 **Changed (breaking):** `warehouse_arrow_types` takes `dialect`, keyword-only and required: the dialect the
 datasource's statements are spelled in (a `threetears.core.keyed.Dialect` member; `dialect_of` over the datasource's
 `DatasourceReader` gives it), which names the catalogue it reads. The engine is the datasource's declared one, never

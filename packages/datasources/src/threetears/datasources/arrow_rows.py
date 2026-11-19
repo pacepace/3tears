@@ -25,11 +25,12 @@ except ImportError:  # NOSILENT: the export extra is optional; an Arrow read say
     _PYARROW = False
 
 from threetears.core.keyed import Dialect
+from threetears.datasources.export import sql_string_literal
 
 if TYPE_CHECKING:
     from threetears.datasources.query_client import DatasourceQueryClient
 
-__all__ = ["joined_arrow", "warehouse_arrow_types"]
+__all__ = ["joined_arrow", "relation_columns_sql", "warehouse_arrow_types"]
 
 #: each warehouse column type (the catalogue's ``data_type``: :func:`_columns_sql`'s, Redshift's and PostgreSQL's
 #: spelling) onto
@@ -100,6 +101,27 @@ def _columns_sql(dialect: Dialect) -> str:
     if dialect is Dialect.POSTGRES or dialect is Dialect.YUGABYTE or dialect is Dialect.DUCKDB:
         return _STANDARD_COLUMNS_SQL
     assert_never(dialect)
+
+
+def relation_columns_sql(relation: str, *, dialect: Dialect) -> str:
+    """the statement reading ``relation``'s columns and their types, in ordinal order, from the catalogue that holds
+    every relation's columns in ``dialect`` (:func:`_columns_sql`: on Redshift ``SVV_COLUMNS``, which holds a
+    late-binding view's columns too), its schema and name written in as quoted literals: for a caller whose query
+    binds nothing (an operator's check holding one login's ``fetch``), which would otherwise hand-write
+    ``information_schema.columns`` and find no column of a late-binding view.
+
+    :param relation: the relation, ``schema.table`` (``public`` when it names no schema), a TRUSTED identifier
+    :ptype relation: str
+    :param dialect: the dialect the warehouse's statements are spelled in, from its declared engine
+    :ptype dialect: Dialect
+    :return: the statement, answering ``column_name`` and ``data_type``
+    :rtype: str
+    :raises AssertionError: for anything not a :class:`Dialect` member
+    :raises ExportRefusedError: when the schema or name holds a backslash or a NUL
+    """
+    schema, _, table = relation.rpartition(".")
+    bound = _columns_sql(dialect)
+    return bound.replace("$1", sql_string_literal(schema or "public")).replace("$2", sql_string_literal(table))
 
 
 def _arrow_of(form: str) -> Any:
