@@ -7,6 +7,7 @@ reaching into submodule paths.
 
 from threetears.enforcement.common.ast_helpers import (
     clear_parse_cache,
+    clear_with_parse_cache,
     iter_python_files,
     nodes_by_type,
     note_unscanned,
@@ -86,6 +87,7 @@ __all__ = [
     "argument_spellings",
     "callee_names",
     "clear_parse_cache",
+    "clear_with_parse_cache",
     "collect_class_base_graph",
     "constructed_registries",
     "constructed_registry_lines",

@@ -6,9 +6,21 @@ from pathlib import Path
 
 import pytest
 
+from tests.enforcement.scan_cache import ScanCache
 from threetears.enforcement.common import clear_parse_cache
 
 _HERE = Path(__file__).parent
+_REPO_ROOT = _HERE.resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def scan_cache() -> ScanCache:
+    """the on-disk memo the workspace scans share, keyed by the content they read.
+
+    :return: the cache under this checkout's ``.cache/enforcement-scans``
+    :rtype: ScanCache
+    """
+    return ScanCache.for_repo(_REPO_ROOT)
 
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:

@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import itertools
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import UUID, uuid4, uuid7
+from uuid import UUID
 
 import pytest
 from sqlalchemy import MetaData
@@ -59,6 +60,15 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 from .fake_loaders import FakeBatchingStore
+
+
+_IDS = itertools.count(1)
+
+
+def _fresh_id() -> uuid.UUID:
+    """the next id in a fixed sequence: unique within the run, and no entropy read."""
+    return uuid.UUID(int=next(_IDS))
+
 
 _SCOPE = "hub-shapes"
 _TABLE = "access_shape_answers"
@@ -105,13 +115,13 @@ class _Estate:
     """readers in a bundle nested in two states, a reader in a third state, and a signing agent."""
 
     def __init__(self, store: _Store) -> None:
-        self.customer = uuid4()
-        self.reader, self.twin, self.other, self.agent = uuid7(), uuid7(), uuid7(), uuid4()
-        self.role = store.add_role(Role(uuid4(), "Reader", {"tool": frozenset({"read"})}, is_built_in=True)).id
-        self.other_role = store.add_role(Role(uuid4(), "Other", {"tool": frozenset({"read"})}, is_built_in=True)).id
-        self.bundle = store.add_group(Group(uuid4(), "bundle", self.customer)).id
-        self.states = [store.add_group(Group(uuid4(), f"state-{i}", self.customer)).id for i in range(3)]
-        self.signers = store.add_group(Group(uuid4(), "signers", None)).id
+        self.customer = _fresh_id()
+        self.reader, self.twin, self.other, self.agent = _fresh_id(), _fresh_id(), _fresh_id(), _fresh_id()
+        self.role = store.add_role(Role(_fresh_id(), "Reader", {"tool": frozenset({"read"})}, is_built_in=True)).id
+        self.other_role = store.add_role(Role(_fresh_id(), "Other", {"tool": frozenset({"read"})}, is_built_in=True)).id
+        self.bundle = store.add_group(Group(_fresh_id(), "bundle", self.customer)).id
+        self.states = [store.add_group(Group(_fresh_id(), f"state-{i}", self.customer)).id for i in range(3)]
+        self.signers = store.add_group(Group(_fresh_id(), "signers", None)).id
         for person in (self.reader, self.twin):
             store.add_membership(GroupMembership(self.bundle, MemberType.USER, person, self.customer))
         store.add_membership(GroupMembership(self.states[2], MemberType.USER, self.other, self.customer))
@@ -120,7 +130,11 @@ class _Estate:
         store.add_membership(GroupMembership(self.signers, MemberType.AGENT, self.agent, None))
         self.namespaces = [
             Namespace(
-                id=uuid4(), customer_id=self.customer, namespace_type="tool", owner_agent_id=None, owner_namespace=None
+                id=_fresh_id(),
+                customer_id=self.customer,
+                namespace_type="tool",
+                owner_agent_id=None,
+                owner_namespace=None,
             )
             for _ in range(3)
         ]
@@ -129,7 +143,7 @@ class _Estate:
             for group in (self.states[index], self.signers):
                 store.add_assignment(
                     RoleAssignment(
-                        id=uuid4(),
+                        id=_fresh_id(),
                         role_id=role,
                         group_id=group,
                         scope_type=ScopeType.NAMESPACE,
@@ -176,7 +190,7 @@ def _sighted(registry: CollectionRegistry, token: str = "inc:0") -> None:
 
 
 async def _replica(bus: FakeNatsClient, store: _Store, *, token: str = "inc:0") -> _Replica:
-    l1 = SQLiteBackend(db_name=f"shapes-l1-{uuid.uuid4().hex}")
+    l1 = SQLiteBackend(db_name=f"shapes-l1-{_fresh_id().hex}")
     l1.initialize(MetaData())
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
@@ -238,7 +252,7 @@ async def _ask(
 def _row(
     table: str, *, generation: str | None, ids: list[str] | None = None, **columns: str
 ) -> CacheInvalidationMessage:
-    ids = ids if ids is not None else [f"{uuid4()}"]
+    ids = ids if ids is not None else [f"{_fresh_id()}"]
     return CacheInvalidationMessage(
         table=table, ids=ids, columns=columns, generation=generation, bump_rows=1 if generation else None
     )
@@ -247,7 +261,7 @@ def _row(
 def _assignment_row(group: UUID, generation: str | None = "inc:1") -> CacheInvalidationMessage:
     return CacheInvalidationMessage(
         table="role_assignments",
-        ids=[f"{uuid4()}"],
+        ids=[f"{_fresh_id()}"],
         columns={"group_id": f"{group}"},
         generation=generation,
         bump_rows=1 if generation else None,
@@ -427,7 +441,7 @@ class TestAChangeDropsOnlyWhatItReaches:
         await _ask(replica, estate, reader, _Computer())
         await _ask(replica, estate, other, _Computer())
         # the agent's group holds both roles, so the signer side reaches both; a role neither holds
-        replica.hear(_row("roles", generation="inc:1", ids=[f"{uuid4()}"]))
+        replica.hear(_row("roles", generation="inc:1", ids=[f"{_fresh_id()}"]))
         assert replica.answers.held == 2
         replica.hear(_row("roles", generation="inc:2", ids=[f"{estate.other_role}"]))
         assert replica.answers.held == 0
@@ -488,7 +502,7 @@ class TestADropThatMovedNoMark:
         compute = _Computer()
         assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.UNCACHED
         assert compute.calls == 1
-        replica.hear(_row("groups", generation="inc:1", ids=["platform", f"{uuid4()}"]))
+        replica.hear(_row("groups", generation="inc:1", ids=["platform", f"{_fresh_id()}"]))
         assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.DERIVED
         assert (await _ask(replica, estate, shape, compute)).outcome is ShapeAnswerOutcome.L1
 
@@ -656,31 +670,33 @@ def _reached(message: CacheInvalidationMessage) -> list[frozenset[str] | None]:
 
 
 _PERSON, _AGENT, _CHILD = (UUID(f"00000000-0000-4000-8000-00000000000{n}") for n in (1, 2, 3))
+#: the row ids of a change whose ids the reach does not read: fixed, so nothing is drawn at collection
+_ROW_IDS = ["00000000-0000-4000-8000-000000000004"]
 
 
 class TestWhatARowReaches:
     @pytest.mark.parametrize(
         ("message", "expected"),
         [
-            (_row("group_members", generation=None, member_type="user", member_id=f"{_PERSON}"), []),
+            (_row("group_members", generation=None, ids=_ROW_IDS, member_type="user", member_id=f"{_PERSON}"), []),
             (
-                _row("group_members", generation=None, member_type="agent", member_id=f"{_AGENT}"),
+                _row("group_members", generation=None, ids=_ROW_IDS, member_type="agent", member_id=f"{_AGENT}"),
                 [frozenset({f"a:{_AGENT.hex}"})],
             ),
             (
-                _row("group_members", generation=None, member_type="group", member_id=f"{_CHILD}"),
+                _row("group_members", generation=None, ids=_ROW_IDS, member_type="group", member_id=f"{_CHILD}"),
                 [frozenset({f"g:{_CHILD.hex}"})],
             ),
-            (_row("group_members", generation=None), [frozenset({"t:group_members"})]),
+            (_row("group_members", generation=None, ids=_ROW_IDS), [frozenset({"t:group_members"})]),
             (
-                _row("role_assignments", generation=None, group_id=f"{_CHILD}"),
+                _row("role_assignments", generation=None, ids=_ROW_IDS, group_id=f"{_CHILD}"),
                 [frozenset({f"g:{_CHILD.hex}"})],
             ),
-            (_row("role_assignments", generation=None), [frozenset({"t:role_assignments"})]),
+            (_row("role_assignments", generation=None, ids=_ROW_IDS), [frozenset({"t:role_assignments"})]),
             (_row("roles", generation=None, ids=[f"{_AGENT}"]), [frozenset({f"r:{_AGENT.hex}", "r:*"})]),
             (_row("groups", generation=None, ids=["platform", f"{_CHILD}"]), [frozenset({f"g:{_CHILD.hex}"})]),
             (_row("namespaces", generation=None, ids=["platform", f"{_PERSON}"]), [frozenset({"t:namespaces"})]),
-            (_row(_EXTRA, generation=None), [frozenset({f"t:{_EXTRA}"})]),
+            (_row(_EXTRA, generation=None, ids=_ROW_IDS), [frozenset({f"t:{_EXTRA}"})]),
         ],
     )
     def test_each_table(self, message: CacheInvalidationMessage, expected: list[frozenset[str] | None]) -> None:

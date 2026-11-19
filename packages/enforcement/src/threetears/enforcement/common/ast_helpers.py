@@ -23,7 +23,7 @@ know about before comparing their outputs.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -33,6 +33,7 @@ from threetears.observe import BuildOnce, get_logger
 __all__ = [
     "SKIP_DIRS",
     "clear_parse_cache",
+    "clear_with_parse_cache",
     "iter_python_files",
     "nodes_by_type",
     "note_unscanned",
@@ -397,8 +398,29 @@ def parse_python_file(path: Path) -> ast.Module | None:
         return None
 
 
+#: what else :func:`clear_parse_cache` releases: caches built from parses, each registered by the
+#: module that keeps it through :func:`clear_with_parse_cache`.
+_ALSO_CLEARED: list[Callable[[], object]] = []
+
+
+def clear_with_parse_cache(clear: Callable[[], object]) -> None:
+    """have :func:`clear_parse_cache` also call *clear*, for a cache built from parsed source.
+
+    a caller that clears the parse cache expects the next scan to read the source afresh; a cache
+    of what was read from the trees, kept beside them, has to go with them. the module that keeps
+    one registers its clear here once, at import.
+
+    :param clear: releases that cache
+    :ptype clear: Callable[[], object]
+    :return: nothing
+    :rtype: None
+    """
+    _ALSO_CLEARED.append(clear)
+
+
 def clear_parse_cache() -> None:
-    """release every tree :func:`parse_python_path` has cached, and every :func:`nodes_by_type` index.
+    """release every tree :func:`parse_python_path` has cached, every :func:`nodes_by_type` index,
+    and every cache registered through :func:`clear_with_parse_cache`.
 
     a whole repository's trees run to hundreds of megabytes; a process that
     has finished scanning, and goes on to other work, calls this to give them
@@ -409,6 +431,8 @@ def clear_parse_cache() -> None:
     """
     _PARSES.clear()
     _NODE_INDEXES.clear()
+    for clear in tuple(_ALSO_CLEARED):
+        clear()
 
 
 def relative_posix_path(path: Path, root: Path) -> str:

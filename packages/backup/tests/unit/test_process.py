@@ -7,6 +7,7 @@ These exercise the real streaming/error paths (a subprocess is spawned) without 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -25,6 +26,19 @@ from threetears.backup.process import (
 async def _emit(data: bytes, *, chunk: int = 4) -> AsyncIterator[bytes]:
     for i in range(0, len(data), chunk):
         yield data[i : i + chunk]
+
+
+def _open_pipes() -> set[str]:
+    """This process's open pipe descriptors, each with the pipe it reads or writes."""
+    pipes = set()
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except FileNotFoundError:  # the descriptor listdir itself held, closed once the listing ended
+            continue
+        if target.startswith("pipe:"):
+            pipes.add(f"{fd} {target}")
+    return pipes
 
 
 async def _collect(stream: AsyncIterator[bytes]) -> bytes:
@@ -92,6 +106,22 @@ async def test_stream_stdout_abort_does_not_hang() -> None:
     first = await anext(gen)
     assert first
     await asyncio.wait_for(gen.aclose(), timeout=5)  # regressions here would hang the suite
+
+
+#: a flood from a child that closed its stderr first: an abort's stderr drain is then already done, so nothing lets
+#: the loop see the kill land before the abort waits on the child
+_FLOOD_WITH_NO_STDERR = "exec 2>&-; yes 3tears | head -c 50000000"
+
+
+@pytest.mark.asyncio
+async def test_stream_stdout_abort_does_not_hang_when_the_child_s_exit_is_seen_after_its_wait_begins() -> None:
+    """#1168: ``wait()`` that began before the loop saw the kill returned only once every pipe closed, and the
+    stopped consumer had left stdout's reader paused on a full buffer, so it never returned."""
+    gen = stream_stdout(["sh", "-c", _FLOOD_WITH_NO_STDERR])
+    assert await anext(gen)
+    # the hazard, not a wait for an outcome: the flood fills the reader until it pauses, and the closed stderr is read
+    await asyncio.sleep(0.1)
+    await asyncio.wait_for(gen.aclose(), timeout=5)
 
 
 @pytest.mark.asyncio
@@ -256,3 +286,35 @@ class TestPipeThrough:
         gen = pipe_through(["cat"], _emit(b"y" * (50 * 1024 * 1024), chunk=64 * 1024))
         assert await anext(gen)
         await asyncio.wait_for(gen.aclose(), timeout=5)
+
+    async def test_a_consumer_that_stops_after_the_source_failed_gets_the_failure_and_leaves_no_pipe_open(
+        self, tmp_path: Path
+    ) -> None:
+        """The source's failure was raised before the killed child was drained or waited on, so its stdout, paused
+        on a full buffer, stayed open behind the error."""
+        stopped = asyncio.Event()
+
+        async def failing_once_the_consumer_stops() -> AsyncIterator[bytes]:
+            yield b"start of an archive"
+            await stopped.wait()
+            raise RuntimeError("object store read failed")
+
+        before = _open_pipes()
+        # the child says its pid, then puts a megabyte on stdout at once, so its reader is paused on a full buffer
+        # when the consumer stops
+        pid_file = tmp_path / "pid"
+        child = f"echo $$ > {pid_file}; head -c 1048576 /dev/zero; cat >/dev/null"
+        gen = pipe_through(["sh", "-c", child], failing_once_the_consumer_stops())
+        assert await anext(gen)
+        pid = int(pid_file.read_text())
+        stopped.set()
+        # the pump kills the child in the same step it takes the failure, so once the child is gone the failure is
+        # the pump's outcome. The deadline fails only a pump that never kills it, however slow the runner
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 60
+        while Path(f"/proc/{pid}").exists():
+            assert loop.time() < deadline, "the source failed and the pump never killed the child"
+            await asyncio.sleep(0.01)
+        with pytest.raises(RuntimeError, match="object store read failed"):
+            await asyncio.wait_for(gen.aclose(), timeout=5)
+        assert _open_pipes() - before == set()
