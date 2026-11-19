@@ -1261,20 +1261,22 @@ def _advised(family: ComparisonFamily, tested: Sequence[_Tested], rule: _AdviceR
 def _advice_of(one: _Tested, bar: float, margin: float, verdict: ComparisonVerdict) -> Literal["switch", "keep"] | None:
     """The advice on a primary the bet read (:func:`~threetears.evals.analysis.stats.advice_path`), toward the contrast
     arm's better side: switch once its evidence has reached ``bar`` while it is still ahead (within ``margin``); keep
-    otherwise. A standing decision leads it (``verdict``): decided worse keeps the control, decided better switches once
-    the evidence has reached the bar, so the advice never points against the proof. None where the bet cannot read
-    it."""
+    otherwise. A standing decision leads it (``verdict``), for every arm: decided better switches, decided worse keeps,
+    so the advice never points against the proof or the gate. For one arm a decision of better already holds its
+    evidence past either bar (the tilted capital at 1/α, carried by the upward side, puts that side's evidence at 10
+    over its share, at least 11); for several, an arm Holm decides at a later step may not have reached the bar times
+    the arms, and the advice still follows the decision (the certificate's ``advice.decided-arms`` claims measure what
+    that does to the family's switch rate). None where the bet cannot read it."""
     if one.bet_samples is None or one.value_range is None:
         return None
     control, contrast = one.bet_samples
     # The arm's better side is the falling mean where lower is better: read with the arms' roles swapped.
     pair = (control, contrast) if one.comparison.higher_is_better else (contrast, control)
-    standing: Literal["better", "worse"] | None = (
-        "better" if verdict == "improved" else "worse" if verdict == "regressed" else None
-    )
-    path = advice_path(*pair, value_range=one.value_range, bar=bar, margin=margin, standing=standing)
+    path = advice_path(*pair, value_range=one.value_range, bar=bar, margin=margin)
     if not path:
         return None
+    if verdict in ("improved", "regressed"):
+        return "switch" if verdict == "improved" else "keep"
     return "switch" if path[-1] else "keep"
 
 

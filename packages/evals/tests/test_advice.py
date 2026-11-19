@@ -312,17 +312,35 @@ def test_a_decision_of_worse_leads_the_advice_after_the_arm_recovers() -> None:
     assert result.gate().failed
 
 
-def test_a_standing_decision_never_raises_how_often_the_advice_switches() -> None:
-    """Decided worse keeps; decided better only drops the withdrawals, so a switch still needs the bar reached."""
-    a, b = [0] * 6 + [1] * 10, [1] * 6 + [0] * 10
-    plain = advice_path(a, b, value_range=(0, 1), bar=3)
-    better = advice_path(a, b, value_range=(0, 1), bar=3, standing="better")
-    worse = advice_path(a, b, value_range=(0, 1), bar=3, standing="worse")
-    assert plain is not None and better is not None and worse is not None
-    assert better == [False, False] + [True] * 14 and not any(worse)
-    assert all(said or not was for said, was in zip(better, plain, strict=True))
-    never = advice_path([0, 1] * 4, [0, 1] * 4, value_range=(0, 1), bar=3, standing="better")
-    assert never == [False] * 8, "decided better never switches before the evidence reached the bar"
+def test_with_several_arms_an_arm_the_proof_decided_better_is_advised_switch_whatever_its_evidence() -> None:
+    """Three arms, hard to undo, so the bar is 30. v3 leads for eleven cases and then plays level; Holm decides it
+    better at its last step, where its evidence (24) sits under the bar. The decision leads the advice for every arm, so
+    no row says keep beside an arm the proof decided better, and the gate, which passes, never contradicts it."""
+    n = 24
+    control = [index % 2 for index in range(n)]
+    arms = {"v1": control, "v2": [1] * n, "v3": [1] * 11 + control[11:], "v4": [1] * n}
+    cases = [{"id": f"c{index:02d}", **{arm: values[index] for arm, values in arms.items()}} for index in range(n)]
+
+    def runner(arm: str) -> Any:
+        def run(case: dict[str, Any]) -> int:
+            return int(case[arm])
+
+        run.__name__ = arm
+        return run
+
+    def passed(case: dict[str, Any], out: int) -> bool:
+        return out == 1
+
+    ev = Eval(cases, {arm: runner(arm) for arm in arms}, passed, k=1, name="decided", question=_QUESTION, undo="hard")
+    result = asyncio.run(ev.run(store=":memory:"))
+    (family,) = result.report.bundle.multiple_comparisons.families
+    assert family.advice_bar == 30.0
+    rows = sorted((row["contrast"], row["outcome"], row["advice"]) for row in result.contrasts())
+    assert rows == [("v2", "improved", "switch"), ("v3", "improved", "switch"), ("v4", "improved", "switch")]
+    # v3 is the one decided on the least evidence, under the bar: the decision, not its evidence, switches it.
+    least = min(comparison.evidence_better or 0.0 for comparison in family.comparisons if comparison.advice)
+    assert least < 30
+    assert result.gate().outcome == "passed"
 
 
 def test_undo_is_stored_on_the_aspect_only_where_hard() -> None:

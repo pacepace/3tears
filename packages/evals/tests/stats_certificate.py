@@ -368,6 +368,19 @@ def _shards() -> list[Shard]:
                         {"family": family, "start": block.start, "count": len(block)},
                     )
                 )
+    # Several arms with a standing decision leading the advice, at three and five arms: 4,000 a family.
+    for arms in advice.DECIDED_ARMS:
+        for family in advice.ARMS_FAMILIES:
+            for block in _blocks(4_000, 500):
+                shards.append(
+                    Shard(
+                        f"advice-decided-{arms}-{family}-{block.start}",
+                        f"advice-decided-{arms}-{family}",
+                        "local",
+                        "advice-decided",
+                        {"family": family, "arms": arms, "start": block.start, "count": len(block)},
+                    )
+                )
     # Through the product, on the pool: the restatement held to it, read for read, on the certified claims' own seeds.
     for null in nulls:
         shards.append(
@@ -576,6 +589,13 @@ def run_local(shard: Shard) -> dict[str, int]:
         return _counts(len(reads), sum(read[-1].decided for read in reads))
     if shard.job == "advice":
         return advice.count(args["family"], range(args["start"], args["start"] + args["count"]))
+    if shard.job == "advice-decided":
+        arms = int(args["arms"])
+        return advice.count_of(
+            lambda family, index: advice.decided_arms_advised(family, index, arms),  # type: ignore[arg-type]
+            args["family"],
+            range(args["start"], args["start"] + args["count"]),
+        )
     if shard.job in ("advice-margin", "advice-arms"):
         advised_of = advice.margin_advised if shard.job == "advice-margin" else advice.arms_advised
         return advice.count_of(advised_of, args["family"], range(args["start"], args["start"] + args["count"]))
@@ -929,6 +949,24 @@ def _claims() -> list[Claim]:
                     f"advice-arms-{family}-<index>, 0-3999, on stats.advice_path",
                 )
             )
+    for arms in advice.DECIDED_ARMS:
+        for family in advice.ARMS_FAMILIES:
+            for undo, bar in ADVICE_BARS.items():
+                tag = f"{bar:g}"
+                claims.append(
+                    Claim(
+                        f"advice.decided-arms.{arms}.{family}.{undo}.every-look",
+                        f"{arms} arms against one control, none better ({family}), the switch {undo} to undo, its bar "
+                        "times the arms read, a decision of better leading the advice whatever its evidence (Holm "
+                        f"across the arms at α), read after every case from the second to {advice.HORIZON}: the advice "
+                        f"says switch to any of them at most one time in {tag}.",
+                        f"advice-decided-{arms}-{family}",
+                        f"ever{tag}",
+                        "at_most",
+                        1.0 / bar,
+                        f"advice-decided-{arms}-{family}-<index>, 0-3999, on stats.advice_path and the question's bet",
+                    )
+                )
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),

@@ -2098,7 +2098,6 @@ def advice_path(
     value_range: tuple[float, float],
     bar: float,
     margin: float = 0.0,
-    standing: Literal["better", "worse"] | None = None,
 ) -> list[bool] | None:
     """Whether the advice says switch from ``a`` to ``b`` after each pair, over paired samples read in the order given.
 
@@ -2109,13 +2108,8 @@ def advice_path(
     reached ``bar`` now. Read off the path, a reader who looks once gets the advice a reader who looked after every pair
     would have got.
 
-    **A standing decision leads it** (``standing``): where the proof has decided ``b`` worse, the advice keeps ``a``;
-    where it has decided ``b`` better, the advice switches once its evidence has reached ``bar``, whatever the lead or
-    the evidence against it now, so the two never point opposite ways. Neither can raise how often it says switch: the
-    first only removes switches, and the second only drops the withdrawals, so every switch still needs the evidence to
-    have reached ``bar``. (A one-arm decision of better already has: the tilted capital at 1/α, carried by the upward
-    side, holds that side's evidence at 1/(2α) over its share, at least 11, above either bar, and against ``-margin``
-    the evidence is larger still, each stake's factor ``1 - c + c z / m`` growing as the null ``m`` falls.)
+    A comparison's family lets a standing decision lead it (``FamilyComparison.advice``): decided better reads switch and
+    decided worse keep, whatever this path says.
 
     **Its promise.** Under any mean difference at or below ``-margin`` the upward mixture is a nonnegative
     supermartingale started at 1, so its running maximum reaches ``bar`` at most ``1/bar`` of the time, at every count,
@@ -2129,7 +2123,6 @@ def advice_path(
     :param bar: The evidence the advice switches at (:data:`ADVICE_BARS`, times the arms read).
     :param margin: How far below ``a`` the declared question lets ``b`` fall, in the reading's units; 0 for a question
         that asks whether ``b`` does better.
-    :param standing: The proof's decision on ``b``, where one stands: ``better`` or ``worse``; None where none does.
     :return: The advice after each pair (True for switch), in order; None with fewer than two pairs, samples of
         different lengths, a value outside the declared range, or a margin as wide as the range.
     :raises ValueError: ``bar`` is not above 1, or ``margin`` is negative.
@@ -2161,9 +2154,7 @@ def advice_path(
         reached = max(reached, u)
         total += diff
         ahead = total / (index + 1) > floor
-        advice.append(
-            standing != "worse" and reached >= threshold and (standing == "better" or (ahead and d < threshold))
-        )
+        advice.append(reached >= threshold and ahead and d < threshold)
     return advice
 
 

@@ -26,7 +26,15 @@ from collections.abc import Callable, Sequence
 from fractions import Fraction
 from typing import Literal
 
-from threetears.evals.analysis.stats import ADVICE_BARS, advice_path
+from threetears.evals.analysis.stats import (
+    ADVICE_BARS,
+    DECLARED_DIRECTION_SHARE,
+    SIGNIFICANCE_ALPHA,
+    advice_path,
+    bet_decided_at,
+    bounded_separation_p,
+    holm_adjust,
+)
 
 #: The families of not-better candidates (the module docstring).
 Family = Literal["passfail", "onramp", "swing", "skewed"]
@@ -141,6 +149,57 @@ def _arms_case(family: ArmsFamily, draw: random.Random) -> list[Fraction]:
     return [Fraction(sum(draw.random() < share for _ in range(3)), 3) for share in shares]
 
 
+#: How many arms the decided-arms claims read against one control.
+DECIDED_ARMS: tuple[int, ...] = (3, 5)
+
+
+def _cases_of_arms(family: ArmsFamily, draw: random.Random, arms: int) -> list[Fraction]:
+    """One case's values for the control and ``arms`` arms, every arm exactly as good as the control."""
+    if family == "passfail":
+        share = draw.uniform(0.2, 0.7)
+        return [Fraction(int(draw.random() < share)) for _ in range(arms + 1)]
+    base = draw.uniform(0.1, 0.6)
+    shares = [min(1.0, max(0.0, base + draw.gauss(0.0, 0.1))) for _ in range(arms + 1)]
+    return [Fraction(sum(draw.random() < share for _ in range(3)), 3) for share in shares]
+
+
+def decided_arms_advised(family: ArmsFamily, index: int, arms: int) -> dict[str, bool]:
+    """Whether any of ``arms`` arms, none better than the control, was advised switch at any count from two to
+    :data:`HORIZON`, where a standing decision leads the advice as a family reads it: an arm the proof decided better is
+    advised switch whatever its evidence. The proof is the question's, each arm's bet staked
+    :data:`~threetears.evals.analysis.stats.DECLARED_DIRECTION_SHARE` toward better and Holm across the arms at α, a
+    decision standing once made (so one by the last count is one the advice followed from where it was made, and the
+    count is of every arm decided better at the last count, or advised switch by its evidence at any count). Seeded
+    ``advice-decided-<arms>-<family>-<index>``; ``ever<bar>`` at each bar times the arms."""
+    draw = random.Random(f"advice-decided-{arms}-{family}-{index}")
+    cases = [_cases_of_arms(family, draw, arms) for _ in range(HORIZON)]
+    control = [case[0] for case in cases]
+    each = [[case[arm] for case in cases] for arm in range(1, arms + 1)]
+    raws = []
+    for values in each:
+        p = bounded_separation_p(
+            control, values, paired=True, value_range=(0.0, 1.0), mixture=True, toward=DECLARED_DIRECTION_SHARE
+        )
+        raws.append(1.0 if p is None else p)
+    adjusted = holm_adjust(raws, max_true=arms)
+    improved = []
+    for raw, adjusted_p, values in zip(raws, adjusted, each, strict=True):
+        if adjusted_p >= SIGNIFICANCE_ALPHA:
+            improved.append(False)
+            continue
+        level = SIGNIFICANCE_ALPHA * raw / adjusted_p if adjusted_p > 0 else SIGNIFICANCE_ALPHA
+        held = bet_decided_at(
+            control, values, value_range=(0.0, 1.0), toward=DECLARED_DIRECTION_SHARE, alpha=min(1.0, level)
+        )
+        improved.append(held is not None and held[1])
+    said: dict[str, bool] = {}
+    for bar in ADVICE_BARS.values():
+        paths = [advice_path(control, values, value_range=(0.0, 1.0), bar=bar * arms) for values in each]
+        said[f"ever{bar:g}"] = any(decided or any(path or ()) for decided, path in zip(improved, paths, strict=True))
+    said["decided"] = any(improved)
+    return said
+
+
 def arms_advised(family: ArmsFamily, index: int) -> dict[str, bool]:
     """Whether any of :data:`ARMS` arms, none better than the control, was advised switch at any count from two to
     :data:`HORIZON`, at each bar times the arms read (``ever<bar>``), seeded ``advice-arms-<family>-<index>``."""
@@ -169,6 +228,7 @@ def count_of(advised_of: Callable[[str, int], dict[str, bool]], family: str, ind
 __all__ = [
     "ARMS",
     "ARMS_FAMILIES",
+    "DECIDED_ARMS",
     "FAMILIES",
     "HORIZON",
     "MARGIN",
@@ -180,6 +240,7 @@ __all__ = [
     "advised",
     "arms_advised",
     "comparison",
+    "decided_arms_advised",
     "count",
     "count_of",
     "margin_advised",

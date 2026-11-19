@@ -473,9 +473,12 @@ ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the fi
   v1 is meant to be advised switch there. Where the switch would be hard to undo, declare it before anything runs
   (`Eval(..., undo="hard")`) and the bar is strong (10). With several arms the bar is that times their count, and the
   advice names the advised arm with the best estimate.
-- **A decision leads.** Once the proof has decided, the advice follows it: decided better reads switch, decided worse
-  reads keep, whatever the lead has done since. Neither can make the advice say switch more often: a one-arm decision
-  of better needs the evidence for v2 at 11 or more, past either bar.
+- **A decision leads.** Once the proof has decided, the advice follows it, for every arm: decided better reads
+  switch, decided worse reads keep, whatever the lead or the evidence has done since, so the advice never points
+  against the proof or the gate. With one arm this cannot make the advice say switch more often (a decision of better
+  needs the evidence for v2 at 11 or more, past either bar); with several, an arm Holm decides at a later step can be
+  switched on less evidence than the bar times the arms, and the certificate's `advice.decided-arms.*` claims hold the
+  promise with that counted.
 - **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
   The advice never says there is not enough to say.
 - **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the
