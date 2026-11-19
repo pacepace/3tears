@@ -349,6 +349,17 @@ def _ns() -> str:
     return get_default_namespace()
 
 
+def _ns_or(namespace: str | None) -> str:
+    """the namespace a builder was given, or the process's default when it was given none.
+
+    :param namespace: the caller's own namespace, or None
+    :ptype namespace: str | None
+    :return: namespace prefix
+    :rtype: str
+    """
+    return namespace if namespace is not None else get_default_namespace()
+
+
 class Subjects:
     """factory for every canonical 3tears / 3tears NATS subject family.
 
@@ -584,16 +595,19 @@ class Subjects:
     # ------------------------------------------------------------------
 
     @classmethod
-    def tools_register(cls) -> Subject:
+    def tools_register(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for tool-pod registration with registry.
 
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.register``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.register", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.tools.register", kind="point")
 
     @classmethod
-    def tools_heartbeat(cls, pod_id: str | UUID) -> Subject:
+    def tools_heartbeat(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
         """publish subject for one tool-pod's heartbeat.
 
         ``pod_id`` is a single UUID token for a Tool Pod, or the
@@ -604,10 +618,13 @@ class Subjects:
 
         :param pod_id: tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.heartbeat.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.heartbeat.{_routing_token(pod_id)}", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.tools.heartbeat.{_routing_token(pod_id)}", kind="point")
 
     @classmethod
     def tools_heartbeat_wildcard(cls) -> Subject:
@@ -644,13 +661,16 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.heartbeat.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
-    def tools_discover(cls) -> Subject:
+    def tools_discover(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for agent -> registry tool catalog discovery.
 
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.discover``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.discover", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.tools.discover", kind="point")
 
     @classmethod
     def tools_call(cls) -> Subject:
@@ -662,7 +682,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.call", kind="point")
 
     @classmethod
-    def tools_internal(cls, pod_id: str | UUID) -> Subject:
+    def tools_internal(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
         """request/reply subject for registry -> tool-pod proxied call.
 
         ``pod_id`` is a single UUID token for a Tool Pod, or the
@@ -676,10 +696,13 @@ class Subjects:
 
         :param pod_id: target tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.internal.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.internal.{_routing_token(pod_id)}", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.tools.internal.{_routing_token(pod_id)}", kind="point")
 
     @classmethod
     def tools_internal_wildcard(cls) -> Subject:
@@ -716,7 +739,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.internal.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
-    def tools_probe(cls, pod_id: str | UUID) -> Subject:
+    def tools_probe(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
         """request/reply subject for liveness probe against one tool pod.
 
         ``pod_id`` is a single UUID token for a Tool Pod, or the
@@ -725,10 +748,13 @@ class Subjects:
 
         :param pod_id: target tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the process's default when omitted. explicit for a server that
+            knows its own (:class:`threetears.agent.tools.ToolServer`), so two in one process never share one
+        :ptype namespace: str | None
         :return: subject ``{ns}.tools.probe.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.probe.{_routing_token(pod_id)}", kind="point")
+        return Subject(path=f"{_ns_or(namespace)}.tools.probe.{_routing_token(pod_id)}", kind="point")
 
     @classmethod
     def tools_probe_wildcard(cls) -> Subject:

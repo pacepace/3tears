@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools, nats: a `ToolServer` builds its subjects from its own namespace and never writes the process's
+
+**Fixed:** `ToolServer.serve` and every `publish_registration` called `set_default_namespace(self._namespace)`, and
+the server's other subjects read the process's default back. With two tool servers in one process on namespaces A
+and B, whichever registered last won it, and every subject built after without a namespace landed in that one (the
+hub met it as `NoRespondersError` on `intg_*.tools.discover`: a pod left over from an earlier test rebinding the global
+under a later one). The server now names its namespace on every subject it builds (its call, probe, heartbeat,
+registration and discovery subjects) and neither reads nor writes the default. `NatsClient.connect` still binds the
+process default: one connection is one deployment's namespace. **Added:** `Subjects.tools_register`, `tools_discover`,
+`tools_heartbeat`, `tools_internal` and `tools_probe` take `namespace=` (the default when omitted), as
+`Subjects.audit_event` does. The resolvers and the JWKS provider a server provisions over its connection
+(`HubObjectResolver`, `HubEngagementScopeResolver`, `CachedHubJwksProvider`) still build their hub subjects from the
+default: a process of servers on several namespaces needs them given one too.
+
 ### agent-acl: `visible_customers` counts a grant only through a role that acts where its scope needs one
 
 **Fixed (security):** `threetears.agent.acl.visible_customers` read every grant without the role it binds: `is_all`

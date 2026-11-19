@@ -433,9 +433,9 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             jwks,
             _there("sdk:src/aibots_agents/runtime/gateway_model.py:419", str(Subjects.gateway_completion())),
             _there("sdk:src/aibots_agents/runtime/gateway_embedding.py:257", str(Subjects.gateway_embedding())),
-            _here(server, "Subjects.tools_discover()", str(Subjects.tools_discover())),
+            _here(server, "Subjects.tools_discover(namespace=self._namespace)", str(Subjects.tools_discover())),
             _there("sdk:src/aibots_agents/runtime/tools.py:508", str(Subjects.tools_call())),
-            _here(server, "Subjects.tools_register()", str(Subjects.tools_register())),
+            _here(server, "Subjects.tools_register(namespace=self._namespace)", str(Subjects.tools_register())),
             _here(server, "Subjects.tools_heartbeat(", str(Subjects.tools_heartbeat(inprocess))),
             # the in-process server's durable result, a JetStream publish
             _here(server, "jetstream_publish(", str(Subjects.tools_result(inprocess, uuid.uuid4()))),
@@ -466,10 +466,10 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             invalidate,
         ),
         Principal.TOOL_POD: (
-            _here(server, "Subjects.tools_register()", str(Subjects.tools_register())),
+            _here(server, "Subjects.tools_register(namespace=self._namespace)", str(Subjects.tools_register())),
             _here(server, "Subjects.tools_heartbeat(", str(Subjects.tools_heartbeat(_TOOL_POD_ID))),
             # wait_until_ready polls discovery
-            _here(server, "Subjects.tools_discover()", str(Subjects.tools_discover())),
+            _here(server, "Subjects.tools_discover(namespace=self._namespace)", str(Subjects.tools_discover())),
             # tool_pod_identity.py:425 drives the handshake for a pod's own token
             _there("sdk:src/aibots_agents/runtime/handshake.py:284", str(Subjects.hub_handshake())),
             l3,
