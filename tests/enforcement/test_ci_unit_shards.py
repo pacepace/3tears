@@ -430,3 +430,91 @@ def test_check_is_green_iff_the_route_that_ran_to_a_verdict_passed(
 def test_the_release_build_waits_for_check() -> None:
     """``build`` publishes nothing until ``check`` -- and through it every shard -- passed."""
     assert "check" in _needs(_jobs("release.yml")["build"])
+
+
+#: the typecheck job's own runner takes the typecheck when route chose the shards or the pool was lost
+_TYPECHECK_HERE = (
+    "!cancelled() && steps.scope.outputs.needed == 'true' && "
+    "(needs.route.outputs.pool != 'true' || steps.pool.outputs.outcome == 'unreachable')"
+)
+
+
+def test_the_typecheck_runs_on_the_route_unit_chose() -> None:
+    """``typecheck`` runs the pool script's ``typecheck`` on route's pool, else ``typecheck.sh`` on its runner.
+
+    The pool step carries the gated key; every step of the run here (Python, the install, the script) is
+    gated on the shards' route or a lost pool, so the typecheck runs exactly once either way.
+    """
+    job = _jobs("ci.yml")["typecheck"]
+    assert _needs(job) == ["route"]
+    assert job.get("if") == "!cancelled() && needs.route.result == 'success'"
+    pool = _step("typecheck", "./scripts/ci-unit-pool.sh typecheck")
+    assert pool.get("id") == "pool"
+    assert pool.get("if") == "steps.scope.outputs.needed == 'true' && needs.route.outputs.pool == 'true'"
+    env = pool["env"]
+    assert isinstance(env, dict)
+    assert env["TESTAMENT_KEY"] == _GATED_KEY
+    assert env["TESTAMENT_COORDINATOR"] == "${{ vars.TESTAMENT_COORDINATOR }}"
+    here = _step("typecheck", "./scripts/typecheck.sh")
+    assert here.get("if") == _TYPECHECK_HERE
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    between = steps[steps.index(pool) + 1 : steps.index(here)]
+    assert [s.get("run") for s in between], "the run here needs Python and the install before the script"
+    assert all(s.get("if") == _TYPECHECK_HERE for s in between), between
+
+
+def test_check_reports_the_typecheck_whatever_the_unit_suite_did() -> None:
+    """``check`` needs ``typecheck`` and reads its result in a step that runs after a failed unit verdict.
+
+    Before the typecheck had a job of its own it was a step after the unit verdict, which a red unit
+    suite skipped: a pull request could not show its type errors until its tests passed.
+    """
+    check = _jobs("ci.yml")["check"]
+    assert "typecheck" in _needs(check)
+    steps = check["steps"]
+    assert isinstance(steps, list)
+    readers = [s for s in steps if "needs.typecheck.result" in str(s.get("env", ""))]
+    assert len(readers) == 1, "check reads the typecheck job's result in one step"
+    (verdict,) = readers
+    assert verdict.get("if") == "!cancelled()"
+    assert not [s for s in steps if "typecheck.sh" in str(s.get("run", ""))], "check runs no typecheck itself"
+
+
+def test_checks_steps_after_the_unit_verdict_run_when_it_failed() -> None:
+    """a red unit suite skips nothing else in ``check``: lint, the attribution check and the floor suites report."""
+    steps = _jobs("ci.yml")["check"]["steps"]
+    assert isinstance(steps, list)
+    gated = [
+        str(s.get("name") or s.get("uses")) for s in steps[1:] if not str(s.get("if", "")).startswith("!cancelled()")
+    ]
+    assert gated == [], f"steps a failed unit verdict would skip: {gated}"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="the workflow step is bash; none on this host")
+@pytest.mark.parametrize(
+    ("result", "green"),
+    [("success", True), ("failure", False), ("skipped", False), ("cancelled", False), ("", False)],
+)
+def test_check_is_green_on_the_typecheck_only_when_it_passed(result: str, green: bool) -> None:
+    """runs ``check``'s typecheck step: only a typecheck job that succeeded passes it.
+
+    :param result: the typecheck job's result
+    :ptype result: str
+    :param green: whether the step must pass
+    :ptype green: bool
+    :return: nothing
+    :rtype: None
+    """
+    steps = _jobs("ci.yml")["check"]["steps"]
+    assert isinstance(steps, list)
+    (verdict,) = [s for s in steps if "needs.typecheck.result" in str(s.get("env", ""))]
+    run = subprocess.run(
+        ["bash", "-e", "-c", str(verdict["run"])],
+        env={"PATH": "/usr/bin:/bin", "TYPECHECK_RESULT": result},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (run.returncode == 0) is green, run.stdout + run.stderr

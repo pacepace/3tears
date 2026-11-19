@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### testing: the typecheck runs on the testament pool, served from its cache
+
+**Changed:** strict mypy is testament's `typecheck` suite (`[suites.typecheck]` in `.testament.toml`):
+`typecheck/test_mypy.py` runs mypy in-process, one test per package plus the evals example hosts, so the pool's
+result cache serves a tree that already passed instead of checking it again. A run of `./scripts/typecheck.sh` and
+CI's run of the same tree (a clean committed checkout) check it once: the suite ships no release tags
+(`[suites.typecheck.git] tags = []`), so a checkout's tags never split its cache key from CI's. **Needs testament
+0.57.0 or later** on every machine that runs the suites: an older client refuses the manifest. The packages
+are read off the tree, replacing the script's hard-coded list (the same 32), and
+`tests/enforcement/test_typecheck_targets.py` holds `[tool.mypy] files` and `mypy_path` to them.
+
+`./scripts/typecheck.sh` goes to the pool where testament is installed (pool-only, as `test.sh`), and runs here under
+CI or `TESTAMENT=off` with a stated reason. Arguments after the
+package now go to pytest; raw mypy flags such as `--no-incremental` no longer pass through. `check-all.sh` reports a
+typecheck the pool gave no verdict on at the end, as it does the unit suite.
+
+CI's typecheck is a job of its own on the unit suite's route (`./scripts/ci-unit-pool.sh typecheck`, cache on), with
+`./scripts/typecheck.sh` on GitHub's runner as its fallback. `check` needs it and reads its result in a step that runs
+whatever the unit suite did; before, the typecheck was a step after the unit verdict, which a red unit suite skipped.
+`check`'s lint, attribution and floor-suite steps now run after a failed verdict too.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and

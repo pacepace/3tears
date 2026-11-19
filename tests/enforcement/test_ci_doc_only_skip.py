@@ -14,7 +14,7 @@ it is the reason the workflow classifies with shell ``case`` rather than
 differ exactly here.
 
 The classifier lives in ``scripts/ci-scope.sh``, the one file both the
-``check`` job, every ``unit`` shard and the ``unit-pool`` job run as their
+``check`` job, every ``unit`` shard, the ``unit-pool`` job and the ``typecheck`` job run as their
 ``scope`` step: a unit job that ran a different rule could skip a suite
 ``check`` believes ran. This test pins that those jobs' ``scope`` steps run that script, then runs the script
 itself rather than restating its logic -- a copy of the rule here could agree
@@ -36,7 +36,7 @@ _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _SCOPE_SCRIPT = "scripts/ci-scope.sh"
 
 #: the jobs whose suite the doc-only skip governs; each must classify with the shared script.
-_SCOPED_JOBS = ("check", "unit", "unit-pool")
+_SCOPED_JOBS = ("check", "unit", "unit-pool", "typecheck")
 
 #: changesets and whether the suite MUST run for them. The mixed entries are
 #: the point of the file; the pure-docs ones stop the skip from becoming a

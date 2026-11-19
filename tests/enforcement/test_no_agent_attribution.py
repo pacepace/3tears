@@ -133,9 +133,9 @@ class TestTheGate:
         (step,) = gate
         assert "github.event.pull_request.base.sha" in step["run"]
         assert "github.event.pull_request.head.sha" in step["run"]
-        # not skipped with the suite for a documentation-only PR
+        # not skipped with the suite for a documentation-only PR, nor behind a failed verdict step above it
         assert "steps.scope" not in str(step.get("if", ""))
-        assert step.get("if") == "github.event_name == 'pull_request'"
+        assert step.get("if") == "!cancelled() && github.event_name == 'pull_request'"
 
     def test_every_exemption_is_a_full_hash(self) -> None:
         entries = [line for line in _EXEMPTIONS.read_text().splitlines() if line and not line.startswith("#")]

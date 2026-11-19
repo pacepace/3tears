@@ -10,7 +10,13 @@ echo "=== Lint ==="
 
 echo ""
 echo "=== Typecheck ==="
-"$REPO_ROOT/scripts/typecheck.sh"
+# On the pool where testament is installed, like test.sh, and the same rule: exit 2 is no verdict,
+# reported at the end; a type error stops the gate here.
+typecheck_status=0
+"$REPO_ROOT/scripts/typecheck.sh" || typecheck_status=$?
+if [ "$typecheck_status" -ne 0 ] && [ "$typecheck_status" -ne 2 ]; then
+    exit "$typecheck_status"
+fi
 
 echo ""
 echo "=== Tests ==="
@@ -69,8 +75,12 @@ echo ""
 echo "=== Tests (nodriver sidecar) ==="
 "$REPO_ROOT/scripts/test-sidecar.sh"
 
-if [ "$unit_status" -eq 2 ] || [ "$integration_status" -eq 2 ] || [ -n "$integration_skipped" ]; then
+if [ "$typecheck_status" -eq 2 ] || [ "$unit_status" -eq 2 ] || [ "$integration_status" -eq 2 ] ||
+    [ -n "$integration_skipped" ]; then
     echo ""
+    if [ "$typecheck_status" -eq 2 ]; then
+        echo "=== Typecheck NOT run: testament gave no verdict (exit 2); TESTAMENT=off TESTAMENT_OFF_REASON=\"...\" ./scripts/typecheck.sh runs it here. ===" >&2
+    fi
     if [ "$unit_status" -eq 2 ]; then
         echo "=== Unit suite NOT run: testament gave no verdict (exit 2). ===" >&2
     fi

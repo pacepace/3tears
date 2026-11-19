@@ -1,6 +1,6 @@
 # Sourced by lint.sh and typecheck.sh; not run directly.
 #
-# run_tool <name> [args...] runs a dev tool (ruff, mypy) from a venv instead of through
+# run_tool <name> [args...] runs a dev tool (ruff, pytest) from a venv instead of through
 # ``uv run``, which re-resolves the workspace on every call. Lookup order: the repository's own
 # ``.venv``, then the active ``$VIRTUAL_ENV``; the first that holds the binary wins. The checkout's
 # ``.venv`` comes first because that is the environment uv itself uses here (it ignores, with a

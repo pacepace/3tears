@@ -3,6 +3,15 @@
 #
 #   ./scripts/ci-unit-pool.sh route   choose the route: the pool if it answers a probe, else the GitHub shards
 #   ./scripts/ci-unit-pool.sh run     run the suite on the pool; say whether it passed, failed, or was lost
+#   ./scripts/ci-unit-pool.sh typecheck   run the typecheck suite on the pool (ci.yml's `typecheck` job), likewise
+#
+# THE TYPECHECK (`typecheck`): .testament.toml's `typecheck` suite, strict mypy one test per package
+# (typecheck/test_mypy.py), on the route `route` chose for the unit suite. Its outcomes are the run's, and
+# `unreachable` runs ./scripts/typecheck.sh on the job's own runner instead. Unlike the unit run it takes
+# neither --fresh nor --no-cache: its results are served from testament's cache, so a tree already checked
+# there, from a laptop's ./scripts/typecheck.sh or an earlier CI run, is not checked again. A cached result
+# is a pass recorded on this exact tree and manifest (the suite ships no release tags), by tests the recorder
+# found nothing live in.
 #
 # The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml's unit suite
 # (`default`) selects packages/ and tests/ with -m "not integration and not loop_timing and not docker
@@ -81,15 +90,30 @@ set -uo pipefail
 
 mode="${1:-}"
 case "$mode" in
-    route | run) ;;
+    route | run | typecheck) ;;
     *)
-        echo "usage: $0 route|run" >&2
+        echo "usage: $0 route|run|typecheck" >&2
         exit 2
         ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT" || exit 2
+
+# what this mode's messages name: the annotation title, the job, and what runs when the pool is lost
+if [ "$mode" = typecheck ]; then
+    title="typecheck route"
+    job="typecheck (testament pool)"
+    heading="typecheck (testament pool)"
+    instead="the typecheck on this job's runner"
+    instead_said="the typecheck runs on this job's runner instead, and its verdict is the check's."
+else
+    title="unit route"
+    job="unit (testament pool)"
+    heading="unit + enforcement (testament pool)"
+    instead="the GitHub shards"
+    instead_said="the GitHub shards run instead, and their verdict is the check's."
+fi
 
 # one line for $GITHUB_OUTPUT: newlines and carriage returns become spaces
 oneline() { printf '%s' "$*" | tr '\r\n' '  '; }
@@ -101,7 +125,7 @@ annotate() {
     local message
     message="$(oneline "${*:2}")"
     message="${message//%/%25}"
-    echo "::$1 title=unit route::${message}"
+    echo "::$1 title=${title}::${message}"
 }
 
 summary() {
@@ -285,8 +309,13 @@ run() {
     else
         for attempt in 1 2; do
             code=0
-            testament run --suite default --fresh --no-cache --no-fallback --json=summary \
-                --junit-xml "$OUT/unit.xml" -- -m "not loop_timing" >"$OUT/envelope.json" || code=$?
+            if [ "$mode" = typecheck ]; then
+                testament run --suite typecheck --no-fallback --json=summary \
+                    --junit-xml "$OUT/typecheck.xml" >"$OUT/envelope.json" || code=$?
+            else
+                testament run --suite default --fresh --no-cache --no-fallback --json=summary \
+                    --junit-xml "$OUT/unit.xml" -- -m "not loop_timing" >"$OUT/envelope.json" || code=$?
+            fi
             verdict="$(classify "$code" "$OUT/envelope.json")"
             outcome="${verdict%% *}"
             verdict="${verdict#* }"
@@ -298,7 +327,7 @@ run() {
             fi
             break
         done
-        report "$OUT/envelope.json"
+        report "$OUT/envelope.json" "$heading" "$mode"
     fi
     output outcome "$outcome"
     output why "$why"
@@ -308,12 +337,12 @@ run() {
             exit 0
             ;;
         unreachable)
-            annotate warning "pool unreachable during the run (${why}): running the GitHub shards"
-            summary "" "**Pool unreachable during the run** (${why}): the GitHub shards run instead, and their verdict is the check's."
+            annotate warning "pool unreachable during the run (${why}): running ${instead}"
+            summary "" "**Pool unreachable during the run** (${why}): ${instead_said}"
             exit 0
             ;;
         *)
-            echo "::error title=unit (testament pool)::$(oneline "$why")"
+            echo "::error title=${job}::$(oneline "$why")"
             summary "" "**Failed on the pool:** $(oneline "$why")"
             exit 1
             ;;
@@ -322,10 +351,10 @@ run() {
 
 # --- what happened, on the run's page: counts, error, and each failing test
 report() {
-    python3 - "$1" <<'PY'
+    python3 - "$1" "$2" "$3" <<'PY'
 import json, os, sys
 
-lines = ["### unit + enforcement (testament pool)", ""]
+lines = [f"### {sys.argv[2]}", ""]
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, ValueError) as e:
@@ -334,6 +363,17 @@ except (OSError, ValueError) as e:
 if d is not None:
     r = d.get("report") or {}
     lines.append(f"exit {d.get('exit_code')}; counts {r.get('counts')}")
+    cache = r.get("cache") or {}
+    if cache.get("state"):
+        lines.append(f"cache ({cache['state']}): {cache.get('served', 0)} served, {cache.get('ran', 0)} ran")
+    # The typecheck suite exists to be served from the cache, and a suite that stopped being cacheable
+    # still passes: it is checked on every run again, which nothing else would say. So it is a warning.
+    uncacheable = int((cache.get("fates") or {}).get("uncacheable") or 0)
+    if sys.argv[3] == "typecheck" and uncacheable:
+        top = "; ".join(f"{t.get('reason')} at {t.get('at')}" for t in (cache.get("top") or [])[:3])
+        said = f"{uncacheable} typecheck result(s) can't be cached, so CI checks them again on every run: {top}"
+        lines.append(f"**{said}** (`testament cacheability --project 3tears --suite typecheck`)")
+        print(f"::warning title=typecheck cache::{said.replace('%', '%25')}")
     if d.get("fallback"):
         lines.append(f"**Ran on GitHub's runner, not the pool:** {d['fallback'].get('reason')}")
     if d.get("error"):
@@ -357,4 +397,8 @@ else:
 PY
 }
 
-"$mode"
+if [ "$mode" = typecheck ]; then
+    run
+else
+    "$mode"
+fi
