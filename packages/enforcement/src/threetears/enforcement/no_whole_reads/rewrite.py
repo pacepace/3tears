@@ -101,6 +101,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
+from threetears.core.keyed import each_placeholder
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, _hits, _producers, _undeclared_statements
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
 from threetears.enforcement.no_whole_reads.use_the_helper import _helper_hits
@@ -1649,11 +1650,7 @@ def _guard(conjunct: str, qualifiers: set[str | None], row: str = "t") -> Pin | 
             return f"a column of another relation: {conjunct!r}"
     # an EXISTS keeps its qualifiers (its own aliases, and ``t.`` for the helper's row); any other guard reads one relation
     text = conjunct if exists is not None else "".join(_unqualified(conjunct, masked))
-    order: list[int] = []
-    for number in _PARAMETER.findall(text):
-        if int(number) not in order:
-            order.append(int(number))
-    renumbered = _PARAMETER.sub(lambda found: f"${order.index(int(found.group(1))) + 1}", text)
+    order, renumbered = _first_use_order(text)
     # a row comparison (a keyset seek, ``(date_created, id) > ($1, $2)``): each parameter compared with the column in
     # its place
     in_rows: dict[int, str] = {}
@@ -1989,7 +1986,6 @@ _SET_INCREMENT: Final[re.Pattern[str]] = re.compile(
     rf"^(?P<column>{_IDENT})\s*=\s*(?P<same>{_IDENT})\s*(?P<sign>[-+])\s*(?P<amount>\d+)$", re.IGNORECASE
 )
 _SET_EXPRESSION: Final[re.Pattern[str]] = re.compile(rf"^(?P<column>{_IDENT})\s*=\s*(?P<expression>.+)$", re.DOTALL)
-_PARAMETER: Final[re.Pattern[str]] = re.compile(r"\$(\d+)")
 
 
 def _top_level_commas(masked: str) -> list[int]:
@@ -2013,12 +2009,29 @@ def _fragment(column: str, expression: str) -> Pin | str:
     masked = _QUOTED.sub(lambda found: "'" + "x" * (len(found.group()) - 2) + "'", expression)
     if re.search(r"\bselect\b", masked, re.IGNORECASE):
         return f"a SET subquery: {column} = {expression!r}"
-    order: list[int] = []
-    for number in _PARAMETER.findall(masked):
-        if int(number) not in order:
-            order.append(int(number))
-    renumbered = _PARAMETER.sub(lambda found: f"${order.index(int(found.group(1))) + 1}", expression)
+    order, renumbered = _first_use_order(expression)
     return Pin(column, "fragment", literal=" ".join(renumbered.split()), params=tuple(order))
+
+
+def _first_use_order(text: str) -> tuple[list[int], str]:
+    """``text``'s placeholders in first-use order, and the text with each renumbered from ``$1`` in that order: read
+    as the keyed builders read a statement (:func:`threetears.core.keyed.each_placeholder`), so a ``$n`` inside a
+    quoted literal, a quoted name or a comment is text, never a parameter (a guard naming 'over $1 billion').
+
+    :param text: an expression or a guard
+    :ptype text: str
+    :return: the numbers it names, first use first, and the renumbered text
+    :rtype: tuple[list[int], str]
+    """
+    order: list[int] = []
+
+    def seen(number: int) -> str:
+        if number not in order:
+            order.append(number)
+        return f"${number}"
+
+    each_placeholder(text, seen)
+    return order, each_placeholder(text, lambda number: f"${order.index(number) + 1}")
 
 
 _RETURNING: Final[re.Pattern[str]] = re.compile(r"\s+returning\s+(?P<columns>[^;]+?)\s*;?\s*$", re.IGNORECASE)

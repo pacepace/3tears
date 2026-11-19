@@ -118,8 +118,8 @@ read a token at a time as SQL reads it (`threetears.interfaces.keyed.filters.SQL
 an `E'...'` with its escapes, `$$...$$` or `$tag$...$tag$`), a quoted name or a comment holds no placeholder. The same
 reading moves to every other site that moves or fills placeholders: `one_use_each`, `sqlite_numbered`,
 `literal_select`'s literals, `Pin.expr` and `Selected` (which refuse an expression naming a placeholder),
-`threetears.core.cache.duckdb_binds` and `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
-now also leaves a dollar-quoted body and a comment alone). **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
+`threetears.core.cache.duckdb_binds`, `threetears.datasources.drivers.sql_fragments.translate_placeholders` (which
+now also leaves a dollar-quoted body and a comment alone) and the no_whole_reads rewriter's SET expressions and guards. **Added:** `SQL_TOKEN` and `each_placeholder(sql, replace)`
 (also from `threetears.core.keyed`). **Removed:** `threetears.interfaces.keyed.PLACEHOLDER` (new in this release:
 read alone it is the bug), its one caller on `each_placeholder`.
 
