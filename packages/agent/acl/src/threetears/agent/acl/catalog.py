@@ -83,7 +83,7 @@ from typing import Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
-from threetears.agent.acl.types import WILDCARD_RESOURCE_TYPE
+from threetears.agent.acl.types import ACTION_ARGUMENT_SEPARATOR, WILDCARD_RESOURCE_TYPE
 
 __all__ = [
     "ActionDescriptor",
@@ -97,12 +97,11 @@ __all__ = [
 ]
 
 
-#: separator between a parameterized action's stem and its argument, as
-#: :data:`~threetears.agent.acl.evaluator.READ_FILE_MATCHING_PREFIX`
-#: already spells it (``read_file_matching:**/*.yaml``). a stem ends with
-#: this character so a prefix match cannot run past the boundary and
-#: admit an unrelated action that merely starts with the same letters.
-ACTION_ARGUMENT_SEPARATOR = ":"
+# :data:`~threetears.agent.acl.types.ACTION_ARGUMENT_SEPARATOR` separates a
+# parameterized action's stem from its argument (``read_file_matching:**/*.yaml``).
+# a stem ends with it so a prefix match cannot run past the boundary and admit an
+# unrelated action that merely starts with the same letters. one definition, in
+# types, because caller visibility reads an action's stem by the same character.
 
 
 class CatalogViolationKind(StrEnum):

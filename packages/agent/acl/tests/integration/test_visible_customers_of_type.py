@@ -196,47 +196,57 @@ async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_gra
 _GROUPS = 26
 
 
-def _old_member_reaches_caller(alias: str, edges_left: int) -> str:
+def _old_member_reaches_caller(alias: str, edges_left: int, customer_sql: str) -> str:
     """the old statement's caller-reaches-this-group predicate, as it was generated before the keyed rewrite
-    (7c7936732): the membership row ``alias`` names the caller ($1), directly or through up to ``edges_left`` group
-    edges, one nested ``EXISTS`` an edge."""
+    (7c7936732), with the evaluator's cross-customer wall on every edge: the membership row ``alias`` names the caller
+    ($1), directly or through up to ``edges_left`` group edges, one nested ``EXISTS`` an edge, each row naming no
+    customer or ``customer_sql``'s (``NULL``: no customer, a platform namespace)."""
+    wall = f"({alias}.customer_id IS NULL OR {alias}.customer_id = {customer_sql})"
     direct = f"({alias}.member_type = 'user' AND {alias}.member_id = $1)"
     if edges_left <= 0:
-        return f"({direct})"
+        return f"({wall} AND {direct})"
     child = f"gm{MAX_GROUP_MEMBERSHIP_DEPTH - edges_left + 1}"
-    nested = _old_member_reaches_caller(child, edges_left - 1)
-    return f"""({direct}
+    nested = _old_member_reaches_caller(child, edges_left - 1, customer_sql)
+    return f"""({wall} AND ({direct}
              OR ({alias}.member_type = 'group' AND EXISTS (
                     SELECT 1
                       FROM group_members {child}
                      WHERE {child}.group_id = {alias}.member_id
                        AND {nested}
-                )))"""
+                ))))"""
 
 
 def _old_customers_query(typed: bool) -> str:
-    """the visible-customer set as it was read before the keyed rewrite (7c7936732): every grant joined to its
-    group's memberships, the caller matched on each, directly or through the nested hops, at this deployment's depth.
-    """
+    """the visible-customer set as it was read before the keyed rewrite (7c7936732), with the evaluator's
+    cross-customer wall on each membership edge (the seed's groups and role are platform rows): every grant joined to
+    its group's memberships, the caller matched on each, directly or through the nested hops, at this deployment's
+    depth. A fleet-wide grant reached through platform edges alone is every customer; one reached only through edges
+    naming a customer is that customer."""
     of_type = " AND ra.scope_namespace_type = $2" if typed else ""
+    depth = MAX_GROUP_MEMBERSHIP_DEPTH - 1
+    joined = "FROM role_assignments ra JOIN group_members gm ON gm.group_id = ra.group_id"
     return f"""SELECT
-        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
-        COALESCE(
-            array_remove(
-                array_agg(DISTINCT
-                    CASE
-                        WHEN ra.scope_type = 'type_customer'{of_type} THEN ra.scope_customer_id
-                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
-                    END
-                ),
-                NULL
-            ),
-            ARRAY[]::uuid[]
-        ) AS customer_ids
-      FROM role_assignments ra
-      JOIN group_members gm ON gm.group_id = ra.group_id
-      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-     WHERE {_old_member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1)}"""
+        EXISTS (SELECT 1 {joined} WHERE ra.scope_type = 'all' AND {_old_member_reaches_caller("gm", depth, "NULL")})
+            AS is_all,
+        ARRAY(
+            SELECT DISTINCT arm.customer_id FROM (
+                SELECT ra.scope_customer_id AS customer_id {joined}
+                 WHERE ra.scope_type = 'type_customer'{of_type}
+                   AND {_old_member_reaches_caller("gm", depth, "ra.scope_customer_id")}
+                UNION ALL
+                SELECT ns.customer_id {joined} JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
+                 WHERE ra.scope_type = 'namespace' AND {_old_member_reaches_caller("gm", depth, "ns.customer_id")}
+                UNION ALL
+                SELECT named.customer_id {joined}
+                 CROSS JOIN (SELECT DISTINCT customer_id FROM group_members WHERE customer_id IS NOT NULL) named
+                 WHERE ra.scope_type = 'all' AND {_old_member_reaches_caller("gm", depth, "named.customer_id")}
+                   AND NOT EXISTS (
+                        SELECT 1 FROM group_members gmx
+                         WHERE gmx.group_id = ra.group_id AND {_old_member_reaches_caller("gmx", depth, "NULL")}
+                   )
+            ) arm
+             WHERE arm.customer_id IS NOT NULL
+        ) AS customer_ids"""
 
 
 async def _granting_groups(conn: asyncpg.Connection) -> list[uuid.UUID]:

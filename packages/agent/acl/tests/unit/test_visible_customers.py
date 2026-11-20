@@ -57,6 +57,7 @@ class _Conn:
                 "scope_namespace_id": None,
                 "role_id": _ROLE,
                 "role_permissions": role,
+                "role_customer_id": None,
                 "namespace_type": None,
             }
             for customer in self.grants["customer_ids"]
@@ -70,6 +71,7 @@ class _Conn:
                     "scope_namespace_id": None,
                     "role_id": _ROLE,
                     "role_permissions": role,
+                    "role_customer_id": None,
                     "namespace_type": None,
                 }
             )
@@ -90,7 +92,10 @@ class _Conn:
             return [{"v": "PostgreSQL 16.15"}]
         if sql.startswith("WITH RECURSIVE reached"):
             self.grant_reads.append((sql, params))
-            return [{"group_id": _GROUP, "namespace_customer_id": None, **grant} for grant in self._grant_rows()]
+            # the caller's one membership edge, a platform row, beside each grant of its platform group
+            (caller,) = [param for param in params if isinstance(param, UUID)]
+            edge = {"member_id": caller, "group_id": _GROUP, "customer_id": None, "group_customer_id": None}
+            return [{**edge, "namespace_customer_id": None, **grant} for grant in self._grant_rows()]
         self.page_reads.append((sql, params))
         return self.pages.pop(0) if self.pages else []
 
@@ -234,8 +239,10 @@ async def test_a_wildcard_role_or_one_double_encoded_counts_as_the_evaluator_rea
         assert visible == VisibleCustomers(is_all=True, customer_ids=(customer,)), role
 
 
-def test_the_role_rule_is_the_evaluators() -> None:
-    """``permissions_act_on`` is :meth:`Role.actions_for` non-empty; for no one type, any action anywhere."""
+def test_the_role_rule_is_permissions_act_on_narrower_than_the_evaluators() -> None:
+    """``permissions_act_on`` reads :meth:`Role.actions_for`'s buckets as the evaluator decodes them, counting an
+    action only on its own type (``test_action_types.py`` pins which); for no one type, an action of its own type
+    anywhere."""
     reader = decode_role_permissions({"knowledge": ["read"], "tool": [], "skill": "x"})
     assert reader == {"knowledge": frozenset({"read"}), "tool": frozenset()}
     assert permissions_act_on(reader, "knowledge")

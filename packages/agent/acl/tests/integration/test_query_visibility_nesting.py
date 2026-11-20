@@ -48,7 +48,14 @@ _DDL = (
     """
     CREATE TABLE roles (
         role_id uuid PRIMARY KEY,
-        permissions jsonb NOT NULL
+        permissions jsonb NOT NULL,
+        customer_id uuid
+    )
+    """,
+    """
+    CREATE TABLE groups (
+        group_id uuid PRIMARY KEY,
+        customer_id uuid
     )
     """,
     """
@@ -89,7 +96,7 @@ _DDL = (
 
 @pytest.fixture
 async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool over the five tables the visibility clause touches, the reader role seeded."""
+    """per-test pool over the six tables the visibility clause touches, the reader role seeded."""
     from threetears.core.collections import init_connection
 
     pool: asyncpg.Pool = await asyncpg.create_pool(
@@ -100,7 +107,7 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     )
     try:
         async with pool.acquire() as conn:
-            for table in ("listed_things", "namespaces", "group_members", "role_assignments", "roles"):
+            for table in ("listed_things", "namespaces", "group_members", "groups", "role_assignments", "roles"):
                 await conn.execute(f"DROP TABLE IF EXISTS {table}")
             for ddl in _DDL:
                 await conn.execute(ddl)

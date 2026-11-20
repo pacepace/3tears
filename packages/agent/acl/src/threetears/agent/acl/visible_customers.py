@@ -8,9 +8,10 @@ admits), and the page reads its rows by key with ``customer_id = ANY(<those cust
 ``LIMIT``. A platform-wide grant (``scope_type='all'``) whose role acts on the listed type narrows nothing (its
 fragment is ``TRUE``).
 
-**A grant counts only through its role**, as the evaluator reads it (:meth:`threetears.agent.acl.Role.actions_for`,
-:func:`threetears.agent.acl.types.permissions_act_on`): the role binding a grant is read beside it, and a grant whose
-role grants no action where its scope needs one is no grant. Read without its role, any assignment at scope
+**A grant counts only through its role**, by :func:`threetears.agent.acl.types.permissions_act_on`'s rule: the role
+binding a grant is read beside it, decoded as the evaluator decodes it (:meth:`threetears.agent.acl.Role.actions_for`),
+and a grant whose role grants no action of the type's own where its scope needs one is no grant -- narrower than the
+evaluator, which authorizes any action a bucket holds. Read without its role, any assignment at scope
 ``all`` -- a one-action system role, or a role with no action at all -- made every admin listing fleet-wide (the leak
 3tears #1276 closed in :func:`~threetears.agent.acl.caller_visible_customer_clause`, which this set must equal).
 """
@@ -119,18 +120,26 @@ _GROUP: Final[Const] = Const("group")
 #: the partitions a namespace is written in: a namespace grant's namespace is read by its id in either
 _NAMESPACE_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 
+#: the partitions a group is written in: a grant's group is read by its id in either
+_GROUP_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
+
 
 async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | None) -> VisibleCustomers:
     """the customers ``user_id``'s grants cover for ``namespace_type``: the caller's groups and their grants, by key, in
     one statement.
 
     The same set :func:`threetears.agent.acl.caller_visible_customer_clause` admits a row of for that type, each
-    grant through the role it binds (:func:`~threetears.agent.acl.types.permissions_act_on`, the evaluator's rule):
-    a platform-wide grant whose role acts on the type, a ``type_customer`` grant on the type whose role acts on it, or
-    a grant on a namespace of the customer whose role acts on that namespace's own type (a customer admin's grant on
-    the customer namespace opens every list of that customer). ``namespace_type`` None (a listing of no one type): a
-    platform-wide grant counts when its role grants any action at all, a ``type_customer`` grant when its role acts
-    on the grant's own type; a role with no action is no grant anywhere. The groups
+    grant through the role it binds (:func:`~threetears.agent.acl.types.permissions_act_on`: an action of the type's
+    own, each counted only on its own type): a platform-wide grant whose role acts on the type, a
+    ``type_customer`` grant on the type whose role acts on it, or a grant on a namespace of the customer whose role
+    acts on that namespace's own type (a customer admin's grant on the customer namespace opens every list of that
+    customer; ``{"customer": ["group.read"]}`` there holds an action on groups, and opens nothing). ``namespace_type``
+    None (a listing of no one type): a platform-wide grant counts when its role holds an action of its own type
+    anywhere, a ``type_customer`` grant when its role acts on the grant's own type; a role with none is no grant
+    anywhere. Every grant passes the evaluator's cross-customer wall first (:class:`_CustomerWall`): a membership edge,
+    the granting group or the role naming another customer counts for nothing on a customer's namespaces, so a
+    customer-B group's grant on customer A's namespace opens nothing, and a fleet-wide grant reached through a
+    customer's rows opens that customer alone. The groups
     are the caller's own (its memberships, ``idx_group_members_reverse``) and those they nest in, a level each, to
     :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups from the caller (the evaluator's walk); each reached group's grants are
     looked up by its key (``idx_role_assignments_group_scope``), and a namespace grant's namespace by its id
@@ -163,7 +172,8 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
         on="member_id",
         to="group_id",
         by={"member_type": _GROUP},
-        columns=("group_id",),
+        # each membership edge: who is in which group, and the customer the row names (the wall's input)
+        columns=("member_id", "group_id", "customer_id"),
         depth=MAX_GROUP_MEMBERSHIP_DEPTH,
         joins=[
             Joined(
@@ -178,8 +188,22 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
                 },
                 left=True,
             ),
-            # the role each grant binds, by its key: a grant counts only where its role acts
-            Joined("roles", on={"role_id": "role_id"}, columns={"role_permissions": "permissions"}, left=True),
+            # the role each grant binds, by its key: a grant counts only where its role acts, and a customer-authored
+            # role only on its own customer
+            Joined(
+                "roles",
+                on={"role_id": "role_id"},
+                columns={"role_permissions": "permissions", "role_customer_id": "customer_id"},
+                left=True,
+            ),
+            # the granting group, by its key: a customer's group counts only on its own customer
+            Joined(
+                "groups",
+                on={"group_id": "group_id"},
+                by={"row_scope": AnyOf(_GROUP_SCOPES, cast=None)},
+                columns={"group_customer_id": "customer_id"},
+                left=True,
+            ),
             Joined(
                 "namespaces",
                 on={"namespace_id": "scope_namespace_id"},
@@ -189,6 +213,7 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
             ),
         ],
     )
+    wall = _CustomerWall(user_id, rows)
     is_all = False
     customers: set[UUID] = set()
     for row in rows:
@@ -197,7 +222,11 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
             continue
         permissions = decode_role_permissions(row["role_permissions"])
         if scope == "all":
-            is_all = is_all or permissions_act_on(permissions, namespace_type)
+            if permissions_act_on(permissions, namespace_type):
+                if wall.passes(row, None):
+                    is_all = True
+                else:
+                    customers.update(c for c in wall.named(row) if wall.passes(row, c))
         elif scope == "type_customer":
             granted = row["scope_namespace_type"]
             if (
@@ -205,12 +234,98 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
                 and granted is not None
                 and (namespace_type is None or granted == namespace_type)
                 and permissions_act_on(permissions, granted)
+                and wall.passes(row, row["scope_customer_id"])
             ):
                 customers.add(row["scope_customer_id"])
         elif scope == "namespace":
-            if row["namespace_customer_id"] is not None and permissions_act_on(permissions, row["namespace_type"]):
+            if (
+                row["namespace_customer_id"] is not None
+                and permissions_act_on(permissions, row["namespace_type"])
+                and wall.passes(row, row["namespace_customer_id"])
+            ):
                 customers.add(row["namespace_customer_id"])
     return VisibleCustomers(is_all=is_all, customer_ids=tuple(sorted(customers, key=str)))
+
+
+class _CustomerWall:
+    """the evaluator's cross-customer wall over the walk's rows: which customers' namespaces a reached grant counts on.
+
+    The evaluator drops, against a namespace of customer X, every membership edge naming a customer other than X (on
+    the caller's own row and each nesting edge: ``evaluator._filter_memberships``), a granting group naming one, and a
+    customer-authored role naming one (``evaluator._walk_assignments``); a row naming no customer passes everywhere.
+    A grant counts on X when its group is reached from the caller through edges X admits, at most
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups up as the evaluator walks, and its group and role X admits too. Checked
+    for X None (a platform namespace: every row a platform row), a grant counts on every customer.
+
+    A grant whose group row is absent is walled by its edges and its role alone: the schema's foreign key from
+    ``role_assignments`` to ``groups`` means a real grant always has one.
+    """
+
+    def __init__(self, user_id: UUID, rows: Sequence[dict[str, Any]]) -> None:
+        """index the walk's membership edges by member.
+
+        :param user_id: the caller, the walk's first member
+        :ptype user_id: UUID
+        :param rows: the walk's rows, each a membership edge beside a grant of its group
+        :ptype rows: Sequence[dict[str, Any]]
+        """
+        self._user_id = user_id
+        self._edges: dict[UUID, set[tuple[UUID, UUID | None]]] = {}
+        for row in rows:
+            self._edges.setdefault(row["member_id"], set()).add((row["group_id"], row["customer_id"]))
+        self._reached: dict[UUID | None, frozenset[UUID]] = {}
+
+    def _reached_for(self, customer: UUID | None) -> frozenset[UUID]:
+        """the groups the caller reaches through edges that admit ``customer``.
+
+        :param customer: the namespace's customer, or None for a platform namespace
+        :ptype customer: UUID | None
+        :return: the groups
+        :rtype: frozenset[UUID]
+        """
+        if customer not in self._reached:
+            reached: set[UUID] = set()
+            frontier: set[UUID] = {self._user_id}
+            for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH):
+                admitted = {
+                    group
+                    for member in frontier
+                    for group, named in self._edges.get(member, ())
+                    if named is None or named == customer
+                }
+                frontier = admitted - reached
+                reached |= frontier
+            self._reached[customer] = frozenset(reached)
+        return self._reached[customer]
+
+    def passes(self, row: dict[str, Any], customer: UUID | None) -> bool:
+        """whether the grant on ``row`` counts on a namespace of ``customer``.
+
+        :param row: a walk row holding a grant
+        :ptype row: dict[str, Any]
+        :param customer: the namespace's customer, or None for a platform namespace
+        :ptype customer: UUID | None
+        :return: whether the wall lets it through
+        :rtype: bool
+        """
+        return (
+            row["group_id"] in self._reached_for(customer)
+            and row["group_customer_id"] in (None, customer)
+            and row["role_customer_id"] in (None, customer)
+        )
+
+    def named(self, row: dict[str, Any]) -> set[UUID]:
+        """every customer a fleet-wide grant on ``row`` can count on short of every customer: one some row of its chain
+        names (a customer no row names is refused by the row naming another).
+
+        :param row: a walk row holding a grant
+        :ptype row: dict[str, Any]
+        :return: the customers
+        :rtype: set[UUID]
+        """
+        edges = {named for links in self._edges.values() for _, named in links if named is not None}
+        own = {row["group_customer_id"], row["role_customer_id"]} - {None}
+        return edges | own
 
 
 async def visible_rows(

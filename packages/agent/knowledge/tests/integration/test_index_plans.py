@@ -163,9 +163,15 @@ class _GrantedPool(ProxyPoolDouble):
         if "group_members" in sql:
             assert "role_assignments" in sql, sql
             group = uuid.uuid4()
+            (caller,) = [param for param in params if isinstance(param, uuid.UUID)]
             return [
                 {
+                    # the caller's one membership edge into a platform group, a platform row
+                    "member_id": caller,
                     "group_id": group,
+                    "customer_id": None,
+                    "group_customer_id": None,
+                    "role_customer_id": None,
                     "scope_type": "type_customer",
                     "scope_customer_id": customer,
                     "scope_namespace_type": "knowledge",
