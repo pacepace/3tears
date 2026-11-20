@@ -72,7 +72,11 @@ def _is_open_setup_stmt(sql: str) -> bool:
 
 #: the privilege test every catalog query applies: the datasource's own user can SELECT the table,
 #: named schema-qualified and quoted so a mixed-case or keyword name resolves to itself
-_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+_SELECTABLE = (
+    "CASE WHEN has_schema_privilege(current_user, table_schema, 'USAGE') "
+    "THEN has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') "
+    "ELSE FALSE END"
+)
 
 #: the error a relation dropped between SVV_TABLES' listing and the privilege check raises
 _UNDEFINED_RELATION = {"S": "ERROR", "C": "42P01", "M": 'relation "s1.doomed" does not exist'}
@@ -1004,6 +1008,27 @@ class TestQueryRouting:
         (sql,) = [sql for sql, _binds in statements if "has_table_privilege(" in sql]
         assert "CASE WHEN table_type" in sql
         assert sql.index("CASE WHEN table_type") < sql.index("has_table_privilege(")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_the_privilege_test_only_reaches_tables_in_a_schema_the_user_can_use(
+        self, redshift_config: RedshiftConnectionConfig, method: str
+    ) -> None:
+        """``has_table_privilege`` raises ``42501`` on a table in a schema the user has no USAGE on.
+
+        ``SVV_TABLES`` lists such tables anyway (the ``ots`` login and ``geospatial_data``,
+        2026-11-19), and one row failed the catalog read for every schema in scope. the table check
+        therefore sits inside a ``CASE`` on the schema's USAGE, which answers false instead of raising.
+
+        Flips if: the table check is reached for a schema without USAGE, or the guard moves into an
+        ``AND``, whose operands Redshift may evaluate in any order.
+        """
+        _result, statements = await self._catalog_statements(redshift_config, method, ["s1"])
+        (sql,) = [sql for sql, _binds in statements if "has_table_privilege(" in sql]
+        guard = "CASE WHEN has_schema_privilege(current_user, table_schema, 'USAGE') THEN "
+        assert guard in sql
+        assert sql.index(guard) < sql.index("has_table_privilege(")
+        assert sql.index("has_table_privilege(") < sql.index("ELSE FALSE END")
 
     @pytest.mark.asyncio
     async def test_list_columns_drops_the_columns_of_a_table_the_user_cannot_select(

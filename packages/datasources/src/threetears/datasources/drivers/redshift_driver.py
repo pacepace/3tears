@@ -238,11 +238,22 @@ log = get_logger(__name__)
 #: the query for every table in scope. so each use sits behind a ``CASE`` on ``table_type``: SQL
 #: takes a ``CASE`` branch only when it applies, where the operands of an ``AND`` have no order.
 #:
+#: ``has_table_privilege`` also RAISES (``42501 permission denied for schema``) on a table in a
+#: schema the user has no USAGE on, and ``SVV_TABLES`` lists such tables all the same (seen on the
+#: warehouse 2026-11-19: the ``ots`` login, without USAGE on ``geospatial_data``, was shown its 190
+#: tables, and one row failed ``list_tables`` for the whole allow-list). so the table check runs only
+#: inside a ``CASE`` on ``has_schema_privilege(..., 'USAGE')``, which never raises for a schema that
+#: exists: a table in a schema the user cannot use is not selectable, and is logged as left out.
+#:
 #: the name is resolved against the CURRENT catalog, not the statement's snapshot, so a relation
 #: dropped or renamed mid-read raises ``42P01``; :func:`_privilege_rows` runs the statement again.
 #: the answer is a column (``selectable``), not a WHERE filter, so the driver can say what it left
 #: out for want of a grant (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
-_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+_SELECTABLE = (
+    "CASE WHEN has_schema_privilege(current_user, table_schema, 'USAGE') "
+    "THEN has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') "
+    "ELSE FALSE END"
+)
 
 
 #: list tables visible inside the schema allow-list.

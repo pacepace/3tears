@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a catalog read leaves out a table in a schema its login cannot use
+
+`list_tables`, `list_columns` and `table_hashes` keep only the tables the datasource's login can
+SELECT. On Redshift, `has_table_privilege` raises `42501 permission denied for schema` for a table
+in a schema the login has no USAGE on, and `SVV_TABLES` lists such tables anyway, so one schema
+failed the whole read (the `ots` login and `geospatial_data`, 2026-11-19). The table check now runs
+only inside a `CASE` on the schema's USAGE, and those tables are logged as left out. On
+PostgreSQL and YugabyteDB the same table was listed as readable, since its grant answers true while
+every read of it fails; the check there now requires the schema's USAGE as well.
+
 ### datasources: `warehouse_arrow_types` reads a Redshift late-binding view's columns (breaking)
 
 **Fixed:** `warehouse_arrow_types` read a relation's columns from `information_schema.columns`, which on Redshift
