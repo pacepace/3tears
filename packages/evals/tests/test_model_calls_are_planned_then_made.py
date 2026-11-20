@@ -32,6 +32,8 @@ import pytest
 
 from threetears.evals import gen, kernel, run
 from threetears.evals.kernel import AdmittedCall, PlannedCall
+from threetears.evals.run import blind_review
+from threetears.evals.run.judge_second import estimate_second_judge
 
 _SOURCE = Path(kernel.__file__).resolve().parent.parent
 
@@ -106,13 +108,17 @@ def _takes(function: Callable[..., Any]) -> list[Any]:
 OUT_OF_RUN_CALLERS: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
     "rubric proposer (capability and boundary)": (gen.plan_draft, gen.propose_draft),
     "case generation (an llm variation axis)": (kernel.plan_variation_calls, gen.generate_variations),
+    "a model reading a blind read (the quick path and a host's review job)": (
+        blind_review.plan_review,
+        blind_review.answer_sheet,
+    ),
 }
 
 #: Out-of-run work the engine itself starts as a job: its builder admits every call before the first is made and
 #: returns work that only makes them, and its estimate quotes the same plan. A host calls the builder in its call. (An
 #: analysis generation is the report writer's, whose turns its report budget admits, not the out-of-run cap.)
 ADMITTED_IN_THE_CALL: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
-    "second judge and drift check": (run.estimate_second_judge, run.second_judge_work),
+    "second judge and drift check": (estimate_second_judge, run.second_judge_work),
     "judge repeat": (run.estimate_judge_repeat, run.judge_repeat_work),
     "judge temperature comparison": (run.estimate_judge_temperature_comparison, run.judge_temperature_work),
 }

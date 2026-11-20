@@ -35,11 +35,18 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.kernel.phase_log import charged, phase_logged
+from threetears.evals.kernel.list_pages import (
+    LIST_PAGE_SIZE,
+    NEXT_DESCRIPTION,
+    check_page_limit,
+    decode_list_cursor,
+    encode_list_cursor,
+)
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arms
-from threetears.evals.analysis.report_doc_store import stored_headline
+from threetears.evals.analysis.report.doc_page.store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -106,6 +113,7 @@ from threetears.evals.kernel.job_leases import (
 from threetears.evals.kernel.inner_ceilings import writer_turns
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.storage import CampaignsPage
 from threetears.evals.kernel.provider import describe_failure, traceback_is_safe
 from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.kernel.host import EvalHost, HostProfile
@@ -115,6 +123,8 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, g
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored, ReportWritten
+from threetears.evals.ops.runs import attested_person
+from threetears.evals.schema.reading_states import Maker
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
@@ -162,6 +172,12 @@ class CampaignLineCall(EvalBaseModel):
 
     arm: str = Field(description="The label of the arm the call names.")
     reason: str = Field(description="Why, in the words it was recorded with.")
+    made_by: Maker | None = Field(
+        default=None,
+        description="A person or a model; None where the call recorded neither, which is never read as a person's.",
+    )
+    model: str | None = Field(default=None, description="The model that made a model's call, by id.")
+    on_behalf_of: str | None = Field(default=None, description="Who a model made its call for, where it said.")
 
 
 class CampaignLineReport(EvalBaseModel):
@@ -262,7 +278,8 @@ class CampaignLine(EvalBaseModel):
             "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
             "<arm>` for the control and `Adopt <arm>` for a candidate; else from the one arm its report document "
             "recommends (`EvalAnalysis.recommended_variant_key`), the same way, a draft's marked `Draft: ` as its "
-            "headline is (`Draft: Keep <arm>`); `No call` for a report recommending no arm or more than one; None "
+            "headline is (`Draft: Keep <arm>`); `No call` for a report recommending no arm or more than one, and for "
+            "one written over a run that did not finish; None "
             "with neither a call nor a report. report.headline is the long form."
         ),
     )
@@ -277,6 +294,9 @@ class CampaignLine(EvalBaseModel):
             "improved` (a candidate shown worse, or every one shown within its margin). A choice: `<arm> ahead` "
             "where one arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
             "tell apart` where the evidence tells no pair apart. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "`Did not finish` where a run the report was written over did not finish and still has not, whatever "
+            "its readings: its headline says what stopped it. None once that run has finished or left the campaign: "
+            "the report needs regeneration. "
             "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
             "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
             "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
@@ -307,9 +327,10 @@ class CampaignLine(EvalBaseModel):
 
 
 class CampaignListing(EvalBaseModel):
-    """A scope's campaigns, newest first."""
+    """One page of a scope's campaigns, newest first by created_at and id."""
 
     campaigns: list[CampaignLine]
+    next: str | None = Field(description=NEXT_DESCRIPTION)
 
 
 #: How long a start waits for an in-process generation whose attempt has already ended to finish unwinding (releasing
@@ -538,7 +559,8 @@ class AnalysisLine(EvalBaseModel):
         default=None,
         description=(
             "Why this build cannot read the analysis, and what to do. A report document that no longer reads (its "
-            "shape moved, or it was deleted apart from it) is rendered code-only by report_read: its line is the one "
+            "shape moved, it was deleted apart from it, or its snapshot is gone) is rendered code-only by report_read: "
+            "its line is the one "
             "regenerate line, then why in parentheses where there is more to say, and it counts no findings. Every "
             "memo and every report plan is rendered code-only too, its line the retired writer's (which writer wrote "
             "it, and to regenerate). None when it reads."
@@ -694,7 +716,15 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         question_short=_whole_question(campaign.question),
         arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
         call=(
-            CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
+            CampaignLineCall(
+                arm=campaign.call.arm,
+                reason=campaign.call.reason,
+                made_by=campaign.call.made_by,
+                model=campaign.call.model,
+                on_behalf_of=campaign.call.on_behalf_of,
+            )
+            if campaign.call is not None
+            else None
         ),
     )
 
@@ -778,6 +808,27 @@ def _lever_names(campaign: EvalCampaign, frozen: CampaignBundle | None, profile:
         profile,
     )
 
+
+#: Why a report written over a run that did not finish needs regeneration once that run has finished or left the
+#: campaign: what it froze is no longer the campaign's evidence.
+FINISHED_SINCE = (
+    "the report was written over a run that had not finished, which has since finished or left the campaign; "
+    "generate it again (analysis_generate)"
+)
+
+
+def _finished_since(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
+    """Whether every run the report's frozen evidence names as unfinished has since completed, been archived or left
+    the campaign: read off the store, one batch read of those runs, and only for a report written over one."""
+    unfinished = {run_id for aspect in frozen.aspects for run_id in aspect.incomplete_runs}
+    held = unfinished & set(campaign.run_ids)
+    runs = host.storage.load_eval_runs(sorted(held), campaign.scope_id) if held else []
+    return not any(run.status != "completed" and not run.archived for run in runs)
+
+
+#: What a listing line says the evidence shows where a run its report was written over did not finish
+#: (:attr:`CampaignLine.outcome_short`): no reading in a few words, since a verdict over such a run is none.
+DID_NOT_FINISH = "Did not finish"
 
 #: The undecided reading as a listing line says it: the glossary's phrase
 #: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), capitalised.
@@ -913,6 +964,15 @@ def _with_report(
         why = f"{NO_LONGER_READS} ({unread})"
     if why is None and read.bundle is not None and _runs_moved(analysis, campaign, read.bundle):
         why = "the campaign holds other runs than the report was written over; generate it again (analysis_generate)"
+    # Written over a run that did not finish. While that run still stands unfinished the line says so; once every such
+    # run has finished or left the campaign, the report's frozen evidence is no longer the campaign's, and the line
+    # says to generate it again, never that a run now finished did not finish.
+    stopped = reading.lead is not None and reading.lead.stopped
+    finished_since = stopped and read.bundle is not None and _finished_since(host, campaign, read.bundle)
+    if finished_since:
+        if why is None:
+            why = FINISHED_SINCE
+        headline = f"Needs regeneration: {FINISHED_SINCE}"
     caveats = list(reading.lead.caveats) if reading.lead is not None else []
     attempt = next(
         (
@@ -938,9 +998,19 @@ def _with_report(
             "report_state": "written" if why is None else "needs_regeneration",
             "report": report,
             "outcome_short": (
-                _outcome(read.bundle.readings, _reader_arms(read.bundle)) if read.bundle is not None else None
+                # No reading of the evidence in a few words where a run did not finish: the headline says what stopped it.
+                None
+                if finished_since
+                else DID_NOT_FINISH
+                if stopped
+                else _outcome(read.bundle.readings, _reader_arms(read.bundle))
+                if read.bundle is not None
+                else None
             ),
-            "verdict_short": line.verdict_short or _drafted(_recommended(analysis, campaign, read.bundle), report),
+            # A person's recorded call stands. A report written over a run that did not finish recommends no arm a
+            # row may lead with: its recommendation was drawn from the results recorded before the run stopped.
+            "verdict_short": line.verdict_short
+            or _drafted("No call" if stopped else _recommended(analysis, campaign, read.bundle), report),
         }
     )
 
@@ -956,12 +1026,16 @@ def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | Non
     """What a listed report says in one line, and why its document no longer reads where it was found not to.
 
     Its stored document's headline, every figure key written out
-    (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
+    (:func:`~threetears.evals.analysis.report.doc_page.store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
     where the document and the frozen bundle read; else code's verdict alone, or the regenerate line where the bundle
     does not read. A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why
     is returned, so the line says to regenerate as the report read does. Blocking."""
     code = reading.lead.verdict if reading.lead is not None else reading.line.verdict
     if reading.doc is None or reading.lead is None:
+        return code, None
+    if reading.lead.stopped:
+        # Written over a run that did not finish: listed by what stopped it, in code's words, never by the headline a
+        # writer drew from the results recorded before it stopped.
         return code, None
     try:
         headline = stored_headline(host.storage, reading.doc)
@@ -1011,15 +1085,15 @@ def _line_title(host: EvalHost, campaign: EvalCampaign, frozen: CampaignBundle |
     )
 
 
-def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | None = None) -> CampaignLine:
-    """A campaign's whole line: its title, declared fields, report, and what it feeds among ``every`` campaign of its
-    scope.
+def _listed(host: EvalHost, campaign: EvalCampaign, holders: list[EvalCampaign] | None = None) -> CampaignLine:
+    """A campaign's whole line: its title, declared fields, report, and the declared campaigns it feeds.
 
     Its reported analysis is read once, and its frozen bundle put back together once, for the verdict, the title, the
     short verdict, the outcome and the report's state alike. Its runs are read only for a campaign that declares no
-    arm, whose title names their candidate models or counts its judges. ``every`` is read here only where the
-    campaign is exploratory, the one kind that feeds another: a declared campaign feeds none, so a write of one lists
-    nothing else."""
+    arm, whose title names their candidate models or counts its judges. ``holders`` are declared campaigns of the
+    scope holding a run of it (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), read once
+    for a whole page by a listing; they are read here only where the campaign is exploratory, the one kind that feeds
+    another, and none is given: a declared campaign feeds none, so a write of one reads nothing else."""
     line = _campaign_line(campaign)
     analysis = host.storage.load_reported_analysis(campaign.id, campaign.scope_id)
     read = _frozen(analysis) if analysis is not None else _Frozen(None, None)
@@ -1027,9 +1101,9 @@ def _listed(host: EvalHost, campaign: EvalCampaign, every: list[EvalCampaign] | 
         line = line.model_copy(update={"verdict_short": _decided(campaign.call, campaign, read.bundle, host.profile)})
     if analysis is not None:
         line = _with_report(host, line, analysis, campaign, read)
-    if campaign.exploratory and every is None:
-        every = list_campaigns(host.storage, campaign.scope_id, archived=None)
-    feeds = _feeds(campaign, every) if campaign.exploratory and every is not None else []
+    if campaign.exploratory and holders is None:
+        holders = host.storage.declared_campaigns_holding(campaign.run_ids, campaign.scope_id)
+    feeds = _feeds(campaign, holders) if campaign.exploratory and holders is not None else []
     return line.model_copy(update={"feeds": feeds, "title": _line_title(host, campaign, read.bundle)})
 
 
@@ -1042,42 +1116,55 @@ def _feeds(campaign: EvalCampaign, campaigns: list[EvalCampaign]) -> list[str]:
     return [other.id for other in sorted(held, key=lambda other: (other.created_at, other.id))]
 
 
-def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing:
-    """The scope's campaigns.
+def campaigns_list(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    archived: bool | None = None,
+    cursor: str | None = None,
+    limit: int = LIST_PAGE_SIZE,
+) -> CampaignListing:
+    """One page of the scope's campaigns, newest first, and the next page's cursor.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
-    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both.
-    :ptype archived: bool | None
-    :return: The listing: each campaign with its question, declared arms, recorded call, its report's state, headline
+    :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both. A predicate of
+        the store's read, so every page is full but the last.
+    :param cursor: The ``next`` of the page before; ``None`` reads the first page.
+    :param limit: The campaigns a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
+    :return: The page: each campaign with its question, declared arms, recorded call, its report's state, headline
         and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
-        archived or not. The scope's campaigns are read once. Per campaign: one read of its reported analysis, whose
-        frozen bundle is put back together once for everything the line reads off it, and one of its analysis
-        attempts where it has a report; for a campaign declaring no arm, one read of its runs, which its title names.
-        An analysis that does not read back (a bundle of another shape, a corrupt record) lists its report as
-        needing regeneration, with why, and fails nothing else.
-    :rtype: CampaignListing
+        archived or not, on any page. One read of the page's campaigns, and where the page holds an exploratory
+        campaign, one of the declared campaigns holding its runs
+        (:meth:`~threetears.evals.kernel.EvalStorage.declared_campaigns_holding`), whatever page they are on. Per
+        campaign: one read of its reported analysis, whose frozen bundle is put back together once for everything the
+        line reads off it, and one of its analysis attempts where it has a report; for a campaign declaring no arm,
+        one read of its runs, which its title names. An analysis that does not read back (a bundle of another shape,
+        a corrupt record) lists its report as needing regeneration, with why, and fails nothing else.
+    :raises ValidationFailedError: ``cursor`` is not one ``campaigns_list`` returned, or ``limit`` is out of range.
     """
-    every = list_campaigns(host.storage, scope_id, archived=None)
-    listed = [c for c in every if archived is None or c.archived == archived]
-    return CampaignListing(campaigns=[_listed(host, campaign, every) for campaign in listed])
+    page: CampaignsPage = host.storage.list_campaigns_page(
+        scope_id,
+        limit=check_page_limit(limit),
+        after=None if cursor is None else decode_list_cursor("campaigns_list", {"archived": archived}, cursor),
+        archived=archived,
+    )
+    explored = [run_id for campaign in page.campaigns if campaign.exploratory for run_id in campaign.run_ids]
+    holders = host.storage.declared_campaigns_holding(explored, scope_id)
+    return CampaignListing(
+        campaigns=[_listed(host, campaign, holders) for campaign in page.campaigns],
+        next=None if page.after is None else encode_list_cursor("campaigns_list", {"archived": archived}, *page.after),
+    )
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:
     """Create a campaign over runs already in the scope, declared as it is created when the definition says so.
 
     :param host: The host whose store the campaign is written to.
-    :ptype host: EvalHost
     :param definition: What the campaign is.
-    :ptype definition: CampaignDefinition
     :param scope_id: The scope it lives in, with its runs.
-    :ptype scope_id: str
     :param created_by: Who is creating it, as the calling surface knows them.
-    :ptype created_by: str
     :return: The campaign as created.
-    :rtype: CampaignLine
     :raises NotFoundError: A campaign it adopts from, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition declares neither a design nor ``exploratory``, or both; fails
         campaign validation; holds a run outside the scope or in two aspects; declares an aspect without a margin, or
@@ -1107,17 +1194,11 @@ def campaign_update(
     declaration and its control are written together, so a refused designation leaves the declaration as it was.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param changes: What to change.
-    :ptype changes: CampaignChanges
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param updated_by: Who is amending it, as the calling surface knows them; recorded on a declaration this writes.
-    :ptype updated_by: str
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ConflictError: The campaign holds a run, and the change writes its declaration or re-points or clears its
         control.
@@ -1161,17 +1242,11 @@ def campaign_runs_add(
     run outside the scope, or held by another aspect, is refused, all-or-nothing, as at creation.
 
     :param host: The host whose store holds the campaign and the runs.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param run_ids: The runs to add.
-    :ptype run_ids: list[str]
     :param scope_id: The scope they all live in.
-    :ptype scope_id: str
     :param aspect: The aspect they join, by label; None routes each by its template.
-    :ptype aspect: str | None
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: No run is named; the aspect is not the campaign's; a run does not exist in the
         scope, is held by another aspect, or ran a template no aspect or several aspects are gathered on.
@@ -1187,21 +1262,15 @@ def campaign_runs_remove(
     """Take runs out of a campaign — membership only: the runs and their results stay, in any other campaign too.
 
     A run the campaign (or the named aspect) does not hold is refused, all-or-nothing
-    (:func:`~threetears.evals.analysis.remove_runs_from_campaign`). An arm is a variant, not a run, so removing the
+    (:func:`~threetears.evals.analysis.campaigns.remove_runs_from_campaign`). An arm is a variant, not a run, so removing the
     run it was named from leaves it named; where no remaining run carries it, the report says the arm is unobserved.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param run_ids: The runs to take out; every one must be in the campaign.
-    :ptype run_ids: list[str]
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param aspect: The aspect holding them, by label; None takes each from wherever it is held.
-    :ptype aspect: str | None
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: No run is named, or one is not in the campaign (or the aspect); nothing was removed.
     :raises StorageError: The write failed.
@@ -1228,38 +1297,65 @@ def campaign_record(
     floors_overridden: list[str] | None = None,
     bars_overridden: list[OverriddenBar] | None = None,
     analysis_id: str | None = None,
+    made_by: Maker | None = None,
+    person: str | None = None,
+    model: str | None = None,
+    on_behalf_of: str | None = None,
 ) -> CampaignCallLine:
-    """Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+    """Record a call on a campaign — the arm decided, why, who made it, and each broken floor and missed bar it
+    overrides.
+
+    **Who made it.** A person's call (``made_by="person"``) is recorded only when the host attests the caller for
+    that person (``EvalHost.attests_person``, the check a person's blind-read answer and rating pass), and is stored
+    under the host's name for them; without the host's word it is refused (403) and nothing is written. A model's call
+    (``made_by="model"``) names its model, and whom it acted for where it did, and needs no attestation. A call that
+    says neither is stored as before and reads as not recorded, never as a person's.
 
     Read against code's readings of the evidence as it stands, never a memo's words
-    (:func:`~threetears.evals.analysis.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
+    (:func:`~threetears.evals.analysis.service.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
     only when the call names each one as overridden, and an override of one the arm did not break or miss is refused.
     A new call replaces the earlier one.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param arm: The decided arm, by the label its page shows or by its variant key.
-    :ptype arm: str
     :param called_by: Who made the call, as the calling surface knows them.
-    :ptype called_by: str
     :param reason: Why, in the decider's words.
-    :ptype reason: str
     :param floors_overridden: The key of each broken floor the call overrides.
-    :ptype floors_overridden: list[str] | None
     :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
-    :ptype bars_overridden: list[OverriddenBar] | None
     :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
-    :ptype analysis_id: str | None
+    :param made_by: A person or a model; None records neither.
+    :param person: Whose call it is, a person's call only, in the caller's spelling.
+    :param model: The model that made a model's call, by id.
+    :param on_behalf_of: Who a model made its call for.
     :return: The call as stored.
-    :rtype: CampaignCallLine
+    :raises EvalServiceError: Status 403: a person's call the host does not attest the caller for; nothing is
+        written.
     :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
-    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.record_campaign_call`.
+    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.service.record_campaign_call`.
     :raises ConflictError: The campaign changed while its readings were read.
     """
+    if (made_by == "person") != (person is not None):
+        raise ValidationFailedError(
+            "a person's call names the person, and only a person's call names one",
+            remedy="record a person's call with person=<who decided>, or a model's with model=<its id>",
+        )
+    if made_by == "person":
+        assert person is not None
+        called_by = attested_person(
+            host,
+            scope_id=scope_id,
+            collected_by=called_by,
+            person=person,
+            operation="campaign_record",
+            what="campaign call",
+            unchecked_remedy=(
+                "record the call as a model's (made_by=model, model=<its id>, on_behalf_of=<who it acted for>); a "
+                "host that relays people's calls is built with attests_person=<its check>"
+            ),
+            refused_remedy="record the call as a caller the host attests for that person, or as a model's",
+        )
     campaign = record_campaign_call(
         host,
         campaign_id,
@@ -1270,6 +1366,9 @@ def campaign_record(
         floors_overridden=floors_overridden or (),
         bars_overridden=bars_overridden or (),
         analysis_id=analysis_id,
+        made_by=made_by,
+        model=model,
+        on_behalf_of=on_behalf_of,
     )
     assert campaign.call is not None  # just recorded and re-read
     return CampaignCallLine(campaign_id=campaign.id, call=campaign.call)
@@ -1279,15 +1378,10 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     """Archive or restore a campaign — retired from listings, nothing destroyed.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises StorageError: The write failed.
     """
@@ -1384,9 +1478,10 @@ def _doc_claims(
     """How many claims a ``doc`` analysis's document holds, whether it is a draft, why it does not read when it does
     not, and its record when it does. Blocking.
 
-    A document that no longer reads (its shape moved, or it was deleted apart from its analysis) counts no claims, is
-    no draft (its line leads with the regenerate line) and says why, never refusing the listing of every other
-    analysis.
+    A document that no longer reads (its shape moved, it was deleted apart from its analysis, or the snapshot it was
+    written from is gone) counts no claims, is no draft (its line leads with the regenerate line) and says why, never
+    refusing the listing of every other analysis. The snapshot is only checked for (one read of its id alone), never
+    read: a snapshot stored but no longer reading is left to the report read.
     """
     try:
         stored = host.storage.load_report_doc(report_doc_id, scope_id)
@@ -1400,6 +1495,15 @@ def _doc_claims(
         )
     if stored is None:
         return 0, False, f"its report document {report_doc_id!r} was deleted apart from it", None
+    # Only that the snapshot is still stored, never the snapshot itself: reading every listed analysis's snapshot was
+    # judged not worth its cost (#1020), and a gone one is what the report read would render code-only for.
+    if not host.storage.report_snapshot_stored(stored.snapshot_id, scope_id):
+        return (
+            0,
+            False,
+            f"its report document {report_doc_id!r} was written from snapshot {stored.snapshot_id!r}, which is gone",
+            None,
+        )
     return len(ReportDoc.model_validate(stored.doc).claims), stored.draft, None, stored
 
 
@@ -1410,20 +1514,14 @@ def analysis_archive(
 
     Archived, the analysis stays readable and marked, and the insights it minted are retracted from every
     later generation's context for as long as it stays archived; restored, they return
-    (:func:`~threetears.evals.run.set_analysis_archived`).
+    (:func:`~threetears.evals.run.curation.set_analysis_archived`).
 
     :param host: The host whose store holds the analysis.
-    :ptype host: EvalHost
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :param reason: Why it is archived; cleared on restore.
-    :ptype reason: str | None
     :return: The analysis as persisted.
-    :rtype: AnalysisLine
     :raises NotFoundError: No analysis with that id in the scope.
     :raises StorageError: The write failed.
     """
@@ -1436,16 +1534,12 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     """A campaign's stored analyses.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The listing, newest first. The campaign's analyses are read a page at a time
         (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_analyses_by_campaign`), each kept only as its line,
         so the listing holds one page of whole analyses at once however many the campaign has archived. Each line's
         verdict and title are written by code from the bundle frozen with its analysis, so no lighter read serves it.
-    :rtype: AnalysisListing
     """
     return AnalysisListing(
         campaign_id=campaign_id,
@@ -1486,11 +1580,8 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
     can still be read and restored.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :return: The listing. Each campaign's analyses are read a page at a time, as :func:`analyses_list` reads them.
-    :rtype: UndescribableArmsListing
     """
     lines: list[UndescribableArmsLine] = []
     read = 0
@@ -1661,15 +1752,10 @@ async def analysis_estimate(
     depends on the conversation before it.
 
     :param host: The host: its generation settings and its clients.
-    :ptype host: OpsHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param model: The writer model, or ``None`` for the host's default.
-    :ptype model: str | None
     :return: The estimate.
-    :rtype: AnalysisGenerationEstimate
     :raises ValidationFailedError: The host generates no analyses here, has set no report budget, supplies no clients,
         or the writer model is not one the host allows.
     :raises NotFoundError: No campaign with that id in the scope.
@@ -1740,19 +1826,13 @@ async def analysis_generate(
     report budget is the only admission. The attempt's and the analysis's provenance is the analyst skill's digest.
 
     :param host: The host: its generation settings, its clients and the job manager the task runs under.
-    :ptype host: OpsHost
     :param campaign_id: The campaign to analyse.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param writer: What writes the report, bound to the caller who started it (the action's
         :func:`~threetears.evals.actions.report_writing.campaign_report_writer`).
-    :ptype writer: ReportWriter
     :param model: The writer model, or ``None`` for the host's default.
-    :ptype model: str | None
     :return: The generation's one job. Poll it: a refusal its preparation met ends the job refused rather than raising
         here.
-    :rtype: JobsStarted
     :raises ValidationFailedError: The host generates no analyses here, has set no report budget, or the named writer
         model is not one the host allows (``HostProfile.analysis_writer_models``).
     :raises ConflictError: A generation of this campaign is already running — in this process, or in any process:
@@ -2162,8 +2242,14 @@ async def _write_doc_analysis(
             if not_stored is not None
             else outcome.reason or "it stored nothing"
         )
-        why: EvalServiceError
-        if outcome.failure is not None:
+        why: EvalServiceError | None
+        if outcome.defect is not None:
+            # The package's own failure, not the client's: no refusal of the work and never the provider's, so the job
+            # carries no refusal kind, and its error names the type, where it was raised and the last tool call, which
+            # the loop's log record carries with the traceback.
+            error = f"the report writer ended {written.ending} on {outcome.defect.line()}"
+            why = None
+        elif outcome.failure is not None:
             # The client's failure: its text may hold a provider's account, so the record keeps what the host's
             # describer says is safe, as a planned generation's does, and a withheld payload is the provider's refusal.
             failure = describe_failure(
@@ -2275,21 +2361,13 @@ async def link_written_report(
     No generation slot is claimed and nothing is ledgered: the caller ran the writing and holds its spend.
 
     :param host: The host whose store holds the campaign, the document and its snapshot.
-    :ptype host: OpsHost
     :param written: The writing, which stored a document.
-    :ptype written: ReportWritten
     :param campaign_id: The campaign the document is about.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param writer_model: The model the report was written with.
-    :ptype writer_model: str
     :param started_at: When the writing started (ISO-8601).
-    :ptype started_at: str
     :param tally: The tally every turn of the writing was counted in.
-    :ptype tally: Tally
     :return: The analysis stored.
-    :rtype: EvalAnalysis
     :raises ValueError: The writing stored no document.
     :raises StorageError: The snapshot holds no bundle, or the analysis or an insight could not be stored.
     """
@@ -2353,7 +2431,6 @@ def _refuse_unstartable(host: EvalHost, campaign_id: str, scope_id: str, model: 
     The checks a start makes in its call. Everything that reads the campaign's runs is its job's.
 
     :return: The campaign.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: ``model`` is not one the host allows.
     """
@@ -2399,15 +2476,10 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
     lands; the other's is refused, re-reads, and finds the winner's attempt — recorded before its claim — live.
 
     :param host: Where the slot and the attempts live.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param attempt_id: The attempt claiming it, already recorded ``running`` with its lease.
-    :ptype attempt_id: str
     :return: ``None`` when the slot is claimed; otherwise the live attempt that holds it.
-    :rtype: str | None
     :raises ConflictError: The slot kept changing under every attempt to claim it.
     """
     for _ in range(LEASE_WRITE_ATTEMPTS):
@@ -2480,29 +2552,20 @@ def report_read(
     page draws its stored snapshot).
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or
         ``json`` (the page's machine form: code's readings across the campaign's aspects, the call, each aspect's
         bundle by its fingerprint, as ``campaign.json`` beside a written page holds it, and ``report_doc``, the stored
         report document the page draws, or None).
-    :ptype format: ReportFormat
     :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
-    :ptype trials: TrialDetail
     :param static: For ``html``, the static page, for a host whose policy lets a page neither run nor load anything:
         no ``<script>``, no ``<link>``, the system faces, every chart its table of values. Markdown and JSON are
         the same either way.
-    :ptype static: bool
     :param report_doc_id: One of the campaign's stored report documents, any version, to read in place of the
         campaign's report; None for the campaign's report.
-    :ptype report_doc_id: str | None
     :param include_sessions: With ``json``, add the transcripts of the report document the page draws.
-    :ptype include_sessions: bool
     :return: The report in that form.
-    :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
     :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or the page refuses what it is
@@ -2597,13 +2660,9 @@ def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposal
     mutation API.
 
     :param host: The host whose measures, bars and store this reads.
-    :ptype host: EvalHost
     :param campaign_id: The baseline campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The proposals.
-    :rtype: BarProposals
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The campaign measured no cell or more than one: a baseline is one configuration
         under one rig.
@@ -2653,15 +2712,10 @@ def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm:
     """Destroy a stored analysis — its insights stay; archive is the reversible answer.
 
     :param host: The host whose store holds the analysis.
-    :ptype host: EvalHost
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``analysis_id``.
-    :ptype confirm: str | None
     :return: What was removed.
-    :rtype: AnalysisDeleted
     :raises NotFoundError: No analysis with that id in the scope — refused before ``confirm`` is read.
     :raises ValidationFailedError: ``confirm`` does not echo the id.
     :raises StorageError: The delete failed.
@@ -2675,19 +2729,14 @@ def insights_list(
 ) -> InsightListing:
     """The scope's insight ledger, newest observation first, each with where it stands.
 
-    Over :func:`~threetears.evals.analysis.list_insights`: both filters match ids exactly, and an id that
+    Over :func:`~threetears.evals.analysis.service.list_insights`: both filters match ids exactly, and an id that
     matches nothing is an answer (that campaign minted no insights), not a refusal.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param scope_id: The scope whose ledger is read.
-    :ptype scope_id: str
     :param subject_id: Only insights about this subject.
-    :ptype subject_id: str | None
     :param source_campaign_id: Only insights an analysis of this campaign minted.
-    :ptype source_campaign_id: str | None
     :return: The listing.
-    :rtype: InsightListing
     """
     insights = list_insights(host.storage, scope_id, subject_id=subject_id, source_campaign_id=source_campaign_id)
     standing = _insight_standing(host, insights, scope_id)
@@ -2716,13 +2765,9 @@ def insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail
     """One insight in full: everything stored on it, and where it stands.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param insight_id: The insight.
-    :ptype insight_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The insight and its standing.
-    :rtype: InsightDetail
     :raises NotFoundError: No insight with that id in the scope.
     """
     insight = host.storage.load_insight(insight_id, scope_id)
@@ -2735,19 +2780,14 @@ def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: s
     """Destroy one insight — the intended answer to a wrong one, since an insight has no archive.
 
     A live insight is fed to every later generation over its subject as prior context, so a wrong one keeps
-    steering analyses until it is gone (:func:`~threetears.evals.run.delete_insight`). Archiving its analysis
+    steering analyses until it is gone (:func:`~threetears.evals.run.curation.delete_insight`). Archiving its analysis
     retracts every insight that analysis minted; this removes one.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param insight_id: The insight.
-    :ptype insight_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``insight_id``.
-    :ptype confirm: str | None
     :return: What was removed.
-    :rtype: InsightDeleted
     :raises NotFoundError: No insight with that id in the scope — refused before ``confirm`` is read.
     :raises ValidationFailedError: ``confirm`` does not echo the id.
     :raises StorageError: The delete failed.

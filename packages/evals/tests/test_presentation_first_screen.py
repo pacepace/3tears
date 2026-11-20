@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import build_campaign_report, campaign_report_html, campaign_report_markdown
+from threetears.evals.analysis import campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.campaign.provenance import caveat_blocks
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
@@ -118,12 +120,13 @@ def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_q
     # Directly under the question and the line of what the page compares.
     assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[2] is lead
     assert said[1].text == "shipped vs lead-first · report-writing"
-    assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61%")
+    assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68%")
 
 
 def test_one_arm_measured_leads_on_its_pass_rate_as_a_count(rungs: dict[str, _Rung]) -> None:
     (lead,) = [block for block in _said(rungs["rung2"].page.blocks) if block.source == "verdict"]
-    assert lead.text == "reply passed 40 of 40 trials on 20 cases."
+    # Rung 2's judge, re-recorded under the grounded wording ruled on 2026-11-16, fails one trial.
+    assert lead.text == "reply passed 39 of 40 trials on 20 cases."
 
 
 async def test_both_g2_fixtures_have_an_answer_block() -> None:

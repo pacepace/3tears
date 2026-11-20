@@ -10,7 +10,7 @@ the other:
 - :func:`complete_chart`: a chart as chosen to the chart as stored, with the reference key, interval level, unit and
   value axis code reads off the input (below);
 - :func:`chart_faults` and :func:`small_multiple_faults`: what refuses one chart on its input (below);
-- :func:`block_look`: the look a chart is drawn with when no plan orders the arms or recommends one.
+- :func:`block_look`: the look every chart is drawn with.
 
 The analyst's ``block_render`` (:func:`~threetears.evals.analysis.analyst.blocks.block_render`) and the document
 page's evidence blocks call these for every chart they draw.
@@ -27,7 +27,7 @@ page's evidence blocks call these for every chart they draw.
 
 No such criterion, or several, is a fault at completion, naming why, and so is any other kind of line.
 
-What the chart reads is :mod:`~threetears.evals.analysis.report_rows`' selection (:func:`query_aspect`,
+What the chart reads is :mod:`~threetears.evals.analysis.report.rows`' selection (:func:`query_aspect`,
 :func:`query_rows`), the one the checks and the page read too.
 
 **A chart's interval level** is the one its rows carry: a reading's nominal level (its ``within_interval``, the one
@@ -66,7 +66,7 @@ the fault names each aspect to draw a block of, naming it in ``query.aspect``; a
 two arms, a ``compare`` or ``levers`` query naming other than one measure, or a ``levers`` query naming more than one
 place; and a query over rows an analysis computes (``compare``, ``settle``, ``levers``) that selects none, naming the
 analysis function's own refusal where it refuses the call. A configs chart on an input holding no configs reads the
-grid its arms' settings make (:func:`~threetears.evals.analysis.report_rows.config_grid`). A chart of two arms
+grid its arms' settings make (:func:`~threetears.evals.analysis.report.rows.config_grid`). A chart of two arms
 compared or of lever effects prints its rows' level, marked unpaired where their spreads were combined as independent;
 a chart of bar reads the pipeline's interval level (:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`), at which
 it reads bars *(inferred: a bar read states no level of its own)*. :func:`small_multiple_faults` refuses
@@ -83,16 +83,11 @@ from typing import TYPE_CHECKING, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import KIT_CHARTS
-from threetears.evals.analysis.report.figure_keys import (
-    DIRECTION_WORDS,
-    format_figure,
-    on_lead_aspect,
-    parse_key,
-    price_frontier,
-    reader_names,
-    resolve,
-    figure_unit,
-)
+from threetears.evals.analysis.report.keys.figure import DIRECTION_WORDS
+from threetears.evals.analysis.report.keys.names import reader_names
+from threetears.evals.analysis.report.keys.prices import price_frontier
+from threetears.evals.analysis.report.keys.resolve import figure_unit, format_figure, parse_key, resolve
+from threetears.evals.analysis.report.keys.vocabulary import on_lead_aspect
 from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
 from threetears.evals.analysis.analyst.settle import settle_cases
@@ -106,10 +101,10 @@ from threetears.evals.analysis.report.parts.charting import (
 )
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
-from threetears.evals.analysis.report_decision import control_arm
+from threetears.evals.analysis.report.call import control_arm
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
-from threetears.evals.analysis.report_rows import (
+from threetears.evals.analysis.report.rows import (
     OVERALL,
     PriceStep,
     SourceRow,
@@ -123,7 +118,7 @@ from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
 if TYPE_CHECKING:  # an arm's facts are read by type only: the module that defines them sits above the page's parts.
-    from threetears.evals.analysis.report_arms import FactArm
+    from threetears.evals.analysis.report.fact_arms import FactArm
 
 #: ``bare_key_faults`` and ``contrast_level`` are this module's own steps: nothing outside it reads them.
 __all__ = [
@@ -204,7 +199,7 @@ _COMPARED_PAIR = 2
 #: two arms' difference and the lever effects on one measure.
 _ONE_MEASURE = {"prices": "gain axis", "compare": "measure", "levers": "measure"}
 
-#: The sources an analysis function computes the rows of (``report_rows``), each to the call that reads them.
+#: The sources an analysis function computes the rows of (``report.rows``), each to the call that reads them.
 _ANALYSED = {"compare": "arms_compare", "settle": "settle_cases", "levers": "levers_effects"}
 
 #: The sources whose places a query keeps by ``strata``, overall among them.
@@ -227,9 +222,7 @@ def line_statistics(kind: str) -> frozenset[str]:
     """The statistics a chart of ``kind`` draws a measure at, which a floor or budget line's criterion must read.
 
     :param kind: The chart's kind.
-    :ptype kind: str
     :return: ``p50`` and ``p95`` for range bars; the mean for every other kind.
-    :rtype: frozenset[str]
     """
     return _KIND_STATISTICS.get(kind, _MEAN)
 
@@ -239,11 +232,8 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
     for none. A chart of contrasts carries one (GENERATOR §5.2).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
     :return: The level, as the input writes it.
-    :rtype: str
     """
     families = report_input.contrast_families
     by_aspect = {family.aspect: family.level for family in families}
@@ -252,27 +242,18 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
 
 
 def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
-    """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
-    facts give them, the arms in the input's order, the reader names, and no arm recommended.
+    """The look one chart is drawn with: each arm's tag, name, colour and mark as code's facts give them, the arms in
+    the input's order, and the reader names.
 
-    It is :func:`~threetears.evals.analysis.report.parts.look.page_look` with nothing a plan chooses: the document's
-    page and the analyst's blocks draw with it, and a chart whose query lists its arms draws them in that order.
+    The document's page and the analyst's blocks draw with it, and a chart whose query lists its arms draws them in
+    that order.
 
     :param report_input: The report input the chart reads.
-    :ptype report_input: ReportInput
     :param arms: Each arm as code's facts give it
-        (:func:`~threetears.evals.analysis.report_arms.fact_arms`).
-    :ptype arms: Sequence[FactArm]
+        (:func:`~threetears.evals.analysis.report.fact_arms.fact_arms`).
     :return: The look.
-    :rtype: PageLook
     """
-    return page_look(
-        arms,
-        {arm.id: arm.color_slot for arm in arms},
-        order=(),
-        recommended=None,
-        names={str(kind): found for kind, found in reader_names(report_input).items()},
-    )
+    return page_look(arms, names={str(kind): found for kind, found in reader_names(report_input).items()})
 
 
 # --- completing a chart ----------------------------------------------------------------------------------------
@@ -285,14 +266,10 @@ def complete_chart(
     account), and every part code could not complete.
 
     :param chart: The chart as the planner or the analyst chose it.
-    :ptype chart: PlannedChart
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :param path: The field path the chart sits at; each fault's path is under it.
-    :ptype path: str
     :param forms: The forms of the page the chart is drawn on (a reader's own, off any page), built from
         ``report_input``: they state its interval level.
-    :ptype forms: PageForms
     :return: The chart as stored (a reference line code could not key is left out), and each fault as
         ``(field path, why)``: its reference lines', then its level's, then its unit's.
     :rtype: tuple[ChartSpec, list[tuple[str, str]]]
@@ -734,14 +711,10 @@ def chart_faults(
     less a control the input does not name.
 
     :param path: The field path the chart sits at; each fault's path is under it.
-    :ptype path: str
     :param chart: The chart, completed.
-    :ptype chart: ChartSpec
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :param options: What else the chart may stress beside the input's arms, strata and tasks: the options a plan's
         table lists.
-    :ptype options: Iterable[str]
     :return: Each fault as ``(field path, why)``.
     :rtype: Iterator[tuple[str, str]]
     """
@@ -753,7 +726,7 @@ def chart_faults(
 
 
 #: The sources that read one aspect where a query names none: the lead aspect's figures and scoreboard, the one asked
-#: aspect's readings (:mod:`~threetears.evals.analysis.report_rows`).
+#: aspect's readings (:mod:`~threetears.evals.analysis.report.rows`).
 _ONE_ASPECT_SOURCES = frozenset({"measures", "judged", "scoreboard", "readings"})
 
 
@@ -764,11 +737,8 @@ def held_aspects(query: ChartQuery, report_input: ReportInput) -> list[str]:
     keeps. Empty where the query names an aspect or its source reads every aspect's rows.
 
     :param query: The query.
-    :ptype query: ChartQuery
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The aspect ids, in the input's order after the lead.
-    :rtype: list[str]
     """
     source = query.source
     if query.aspect or source not in _ONE_ASPECT_SOURCES:
@@ -817,9 +787,7 @@ def small_multiple_faults(path: str, chart: ChartSpec) -> Iterator[_Fault]:
     """A chart repeating its panel where the kit draws no small multiples of its kind.
 
     :param path: The field path the chart sits at.
-    :ptype path: str
     :param chart: The chart.
-    :ptype chart: ChartSpec
     :return: The fault, where there is one, at its ``query.small_multiples_by``.
     :rtype: Iterator[tuple[str, str]]
     """
@@ -838,11 +806,8 @@ def bare_key_faults(path: str, key: str, report_input: ReportInput) -> Iterator[
     """A figure key written without braces that does not parse, resolve on the input, or suit its filters.
 
     :param path: The field path the key sits at.
-    :ptype path: str
     :param key: The key, its filters after ``|``.
-    :ptype key: str
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :return: The fault, where there is one.
     :rtype: Iterator[tuple[str, str]]
     """

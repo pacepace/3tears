@@ -20,7 +20,8 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.stats import wilson_interval
 from threetears.evals.schema import EvalResult
-from threetears.evals.kernel import MetricDescriptor, classifier_label_measure, classifier_label_of, confusion_cell
+from threetears.evals.kernel import MetricDescriptor, classifier_label_measure, confusion_cell
+from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import confusion_of, describe_measure, measure_value_misfit

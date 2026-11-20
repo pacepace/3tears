@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "previews.py"}
+{"tool": "read", "path": "data/signed_off.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom previews import preview\n\n\ndef show(case):\n    \"\"\"The preview the phone shows on the message's channel.\"\"\"\n    return {\"preview\": preview(case[\"body\"], case[\"channel\"])}\n\n\ndef as_signed_off(case, out):\n    \"\"\"The preview is the one the design team signed off.\"\"\"\n    return out[\"preview\"] == case[\"approved\"]\n\n\nsigned_off = Eval(\"data/signed_off.jsonl\", runner=show, grader=[as_signed_off], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_signed_off\", \"pass_rate\": 0.6739, \"finished\": true}"}

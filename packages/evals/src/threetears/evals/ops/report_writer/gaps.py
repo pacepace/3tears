@@ -35,11 +35,11 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import keys_in, render
+from threetears.evals.analysis.report.keys.resolve import keys_in, render
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report_doc_checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.kernel.analyst_gap import (
     EvalAnalystGap,
     GapBounce,
@@ -86,9 +86,7 @@ class CheckedDrafts:
         """Check ``doc`` and keep it with what was found.
 
         :param doc: A draft.
-        :ptype doc: ReportDoc
         :return: The checker's verdicts.
-        :rtype: list[DocVerdict]
         """
         verdicts = self.check(doc)
         self.checked.append((doc, tuple(verdicts)))
@@ -134,26 +132,16 @@ def write_gaps(
     """Every gap and notice a write noted (the module docstring), ready to store.
 
     :param scope_id: The scope the report was written in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot it was written from.
-    :ptype snapshot_id: str
     :param report_doc_id: The report the write stored; ``None`` for a write that stored none.
-    :ptype report_doc_id: str | None
     :param model: The model every session ran on.
-    :ptype model: str
     :param created_by: Who asked for the report, as the host names the caller.
-    :ptype created_by: str
     :param outcome: The writing loop's outcome: its sessions and its reviews.
-    :ptype outcome: WritingOutcome
     :param tally: The write's tally as JSON, whose ``transcripts`` hold each session's digest.
-    :ptype tally: Mapping[str, Any]
     :param drafts: The write's checker, holding every draft it checked.
-    :ptype drafts: CheckedDrafts
     :param report_input: The snapshot's report input, which a key is read against.
-    :ptype report_input: ReportInput
     :return: The records, the calls first (session by session, in call order), then the key notices, then the low
         scores; each id once.
-    :rtype: list[EvalAnalystGap]
     """
     provenance = _Provenance(
         scope_id=scope_id,

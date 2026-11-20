@@ -10,9 +10,23 @@ parameters without a cycle.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from pydantic import BeforeValidator, Field
+
+
+@dataclass(frozen=True, slots=True)
+class NullIsOmitted:
+    """An optional parameter's declaration, in its ``Annotated`` metadata, that ``null`` sent for it is the parameter
+    not given: the call reads exactly as one that left it out (its default, the fields it set, its next page's call).
+
+    Declared parameter by parameter, never assumed: without it ``null`` is a value, which the action receives as sent
+    where the parameter admits it (``campaign_update`` tells ``control_from_run_id: null``, which clears the control,
+    from leaving it out) and refuses as ``validation_failed`` where it does not. Only a parameter with a default may
+    declare it (:class:`~threetears.evals.actions.Action` refuses a required one).
+    """
+
 
 #: The most rows one page of a listing may ask for: a page is read into an agent's context.
 _PAGE_MAX = 200
@@ -49,9 +63,7 @@ def written_arm(written: Any) -> Any:
     result cites an arm as ``arm:<id>``.
 
     :param written: The value the call gave.
-    :ptype written: Any
     :return: The arm's id, where ``written`` is a string; else ``written`` unchanged.
-    :rtype: Any
     """
     if not isinstance(written, str):
         return written
@@ -67,10 +79,14 @@ ARM_FORMS = "by its id in the snapshot, or as results print it (arm:<id>, or the
 #: One arm, as any action takes it: read to its id by :func:`written_arm`.
 ArmId = Annotated[str, BeforeValidator(written_arm), Field(min_length=1, description=f"An arm, {ARM_FORMS}.")]
 
+#: An arm a call may leave out: read to its id by :func:`written_arm` where one is given, and ``null`` declared the
+#: arm not given (:class:`NullIsOmitted`), which reads every arm. The arm's own constraints sit on the string, inside
+#: the optional, so they are never applied to ``null``: on the optional as a whole, pydantic measured ``null``'s
+#: length and raised TypeError where a refusal was due (#1249).
 ArmFilter = Annotated[
-    str | None,
-    BeforeValidator(written_arm),
-    Field(min_length=1, description=f"Read only this arm, {ARM_FORMS}; omitted reads every arm."),
+    Annotated[str, BeforeValidator(written_arm), Field(min_length=1)] | None,
+    Field(description=f"Read only this arm, {ARM_FORMS}; omitted reads every arm."),
+    NullIsOmitted(),
 ]
 AspectFilter = Annotated[
     str | None,
@@ -89,6 +105,7 @@ __all__ = [
     "CampaignId",
     "Limit",
     "MeasureKey",
+    "NullIsOmitted",
     "Offset",
     "SizedLimit",
     "SnapshotId",

@@ -442,12 +442,25 @@ async def test_a_floor_the_host_cannot_raise_a_cap_to_names_the_hosts_operator()
     assert "which a launch cannot raise" in arm.remedy
 
 
-async def test_a_judge_client_that_cannot_price_leaves_the_arm_to_its_other_rules() -> None:
+async def test_a_judge_client_that_cannot_price_refuses_the_arm_under_a_cap_naming_the_call_and_why() -> None:
+    # Unknown is not $0: the arm's every judged case makes that call, and one such call could pass the cap alone.
     subject = off_loop(_Subject, judge_usd=None)
 
     arm = await subject.estimate(0.5)
     assert arm.plan.call_ceiling is None
-    assert arm.outcome == "admitted"
+    assert arm.plan.call_unpriced is not None
+    assert arm.outcome == "refused"
+    assert f"cannot be held to its $0.50 cap: the {_DIM!r} judge call every judged case makes on {_JUDGE!r}" in (
+        arm.refusal
+    )
+    assert f"the host's client for {_JUDGE!r} answered no price ceiling and gave no reason" in arm.refusal
+
+    reported = await subject.ops_estimate(0.5)
+    assert (reported.outcome, reported.refusal) == ("refused", arm.refusal)
+    with pytest.raises(ValidationFailedError) as refused:
+        await subject.launch(0.5)
+    assert refused.value.message == arm.refusal
+    assert subject.launched == [] and subject.calls() == []
 
 
 async def test_a_dims_floor_is_priced_on_the_model_its_config_pins() -> None:
@@ -508,13 +521,16 @@ async def test_the_larger_floor_of_the_judge_and_the_simulated_user_is_the_arms(
 async def test_the_simulated_users_floor_is_unknown_when_one_actors_call_is() -> None:
     subject = off_loop(
         _Subject,
-        judge_usd=None,
+        judge_usd=0.01,
         simulator_usd=None,
         conversation=off_loop(ConversationSpec, actors=_ACTORS, max_turns=3),
     )
 
     arm = await subject.estimate(0.5)
-    assert arm.plan.call_ceiling is None
+    assert arm.plan.call_ceiling is None, "a priced judge floor does not stand in for the unknown utterance"
+    assert arm.plan.call_unpriced is not None
+    assert arm.plan.call_unpriced.call == f"a simulated-user utterance (actor 'alice') on {_SIMULATOR!r}"
+    assert arm.outcome == "refused"
 
 
 @pytest.mark.parametrize(

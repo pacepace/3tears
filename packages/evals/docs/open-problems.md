@@ -58,6 +58,36 @@ a good arm, which is the lesser harm, and refusing every breach without a range 
 unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
+### An interval on a mean cost is wide, and holds only up to the skew tested (accepted limit)
+
+No issue filed yet. The interval on the mean of a spend or a time is the
+union of the clipped t interval and a log-scale interval
+([measuring soundly](measuring-soundly.md#variance-k-and-how-many-cases)). Three limits come with it.
+
+- **No interval on a mean holds its level when the cost is dominated by rare large cases the sample may not
+  contain.** An agent that occasionally loops is that shape. The interval holds on lognormal-like values (tested:
+  lognormal to log-SD 1.5, gamma, exponential, normal). With one case in ten 30 times the rest it is the t interval
+  and covers as it does: 40%, 66%, 89% and 94% at 5, 10, 30 and 100 cases against the 95% it states
+  (`tests/test_simulated_floored_mean.py` pins it as a strict xfail). Nothing on the page says which shape the cases
+  have; a cost's maximum and p95 beside its mean are the reader's only sign.
+- **Cases all equal above zero state an interval of no width.** Ten identical cheap calls say nothing of a dear
+  one: where one case in ten is 30 times the rest, 59% of 5-case samples and 35% of 10-case samples hold only the
+  cheap kind. Every case at zero states no interval; this one was left as every equal sample reads.
+- **Off the lognormal with values near zero it stays wide.** On uniform or exponential values it is about three
+  times the t interval's width at 100 cases, and does not narrow to it.
+- **A case far below the rest widens the upper end.** The log scale reads spread in either direction as skew, so
+  one near-free case (a refusal, a cache hit) among ordinary ones gives an upper end well past what the mean could
+  reach. It errs wide, never narrow. A fix would read the spread from the upper tail alone; none is built.
+- **Under five cases above zero there is no interval**, where a t interval used to be stated. Bounds that
+  hold their level there span orders of magnitude. A readings cell, an evidence row and a bar proposal say so, and
+  that five cases above zero give one.
+
+**Three intervals beside it are still t intervals, and none is checked on skewed values.** A count's (tokens, turns,
+calls, findings), clipped at zero: counts are skewed too, and one that is zero on most cases has too few cases above
+zero for the log-scale reading, so it was left as it was. A difference between two arms on a spend or a time: it is
+paired, so most of the skew cancels within a case. And the launch estimate's fallback band for a history holding a
+zero cost, which says on the band that it assumes symmetric costs.
+
 ## Reporting
 
 ### Latency read under concurrency is withheld rather than reported with a flag
@@ -92,6 +122,33 @@ Since `.30` the boot seed never adds a case to a judge template that already hol
 `judge_case_author` or `judge_cases_freeze` into such a template still adds to the revision in place, so runs of that
 judge template before and after the write share a revision id while their cases differ. Fix: an operator's write into
 a judge template that holds cases writes the next revision, as the reset does.
+
+### Two results of one case count as two
+
+Not decided; found by simulation with the blind read (2026-11-14), which is the first door that rates two results
+of one case as a matter of course: a pair item gives one from each arm.
+
+A judge's tier is decided on an interval that treats each rated result as its own cluster. Where a case's two
+results draw judge errors that coincide (a hard case is hard for both arms), the interval is too narrow. At the
+worst case, errors coinciding outright, a judge exactly at the bar (kappa 0.6) is awarded `calibrated` more often
+than the 5% the bound claims, and the gap grows with the number of cases:
+
+| Cases, two results each | Pass/fail | 1-5 | The same, errors independent |
+|---|---|---|---|
+| 10 | 2.7% | 1.9% | 1.1%, 0.6% |
+| 20 | 5.3% | 3.8% | 2.8%, 1.9% |
+| 30 | 5.9% | 4.4% | 3.2%, 2.6% |
+| 60 | 6.7% | 5.2% | 3.9%, 3.4% |
+| 120 | 7.0% | 5.7% | 4.2%, 3.7% |
+
+Measured over 20,000 reads a cell; `tests/test_simulated_agreement.py` holds the cells that hold, pins the 60-case
+pass/fail cell between 5.9% and 8%, and carries a strict xfail at the 5% bar. A read of one arm gives one result a
+case and is unaffected. A model that answers a blind read always rates both outputs of every case, so it sits in
+this scenario by construction; a person's read of pairs does too.
+
+Fix, known: take the interval over cases, summing a case's results. Measured the same way it awards the tier 1.2%
+to 1.8% of the time at the worst case and 0.4% to 0.7% with independent errors, so it holds the bound and costs
+power. Until then every agreement line states its cases beside its results.
 
 ### A tier's bounds are conservative on a 1-5 scale
 

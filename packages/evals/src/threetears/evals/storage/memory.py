@@ -15,7 +15,9 @@ in one pass at the call, and passes every case of the readings conformance kit.
 It is for tests, examples and a host's first afternoon — nothing persists past the process — and it
 is the shape to compare a real adapter against. It injects nothing into a stored document, so it has
 nothing to strip on the way out: the etag lives beside the document, not in it. Documents are copied
-in and out, so a caller mutating what it wrote or read never reaches the stored copy.
+in and out, so a caller mutating what it wrote or read never reaches the stored copy. A copy is only as deep as
+that needs: each object and list is copied, and a string, number, boolean or null is shared, since nothing can
+change one in place (:func:`~threetears.evals.schema.store_port.copy_json`).
 
 **One lock over every method.** The engine calls its store from a blocking-I/O executor, so two
 threads can write one document at once; a conditional write's compare and its write happen under
@@ -25,7 +27,6 @@ without a conflict — exactly what the etag exists to prevent.
 
 from __future__ import annotations
 
-import copy
 import itertools
 import threading
 from collections.abc import Iterator, Mapping, Sequence
@@ -35,11 +36,14 @@ from typing import Any
 from threetears.evals.schema.store_port import (
     GroupMeasure,
     StoreConflict,
+    check_after,
+    copy_json,
     field_in_values,
     fold_groups,
     keep_fields,
     narrow_items,
     omit_paths,
+    order_and_page,
 )
 
 __all__ = ["InMemoryDocumentStore"]
@@ -81,32 +85,26 @@ class InMemoryDocumentStore:
         """Return one document by id within a scope, or ``None`` if absent.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: A copy of the stored document, or ``None``.
-        :rtype: dict[str, Any] | None
         """
         with self._lock:
             document = self.documents.get((scope_id, doc_id))
-            return copy.deepcopy(document) if document is not None else None
+            return copy_json(document) if document is not None else None
 
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """Return one document plus the token a conditional write must present.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: ``(document, etag)``, or ``(None, None)`` when there is no such document.
-        :rtype: tuple[dict[str, Any] | None, str | None]
         """
         key = (scope_id, doc_id)
         with self._lock:
             document = self.documents.get(key)
             if document is None:
                 return None, None
-            return copy.deepcopy(document), self._etags[key]
+            return copy_json(document), self._etags[key]
 
     def get_many(
         self,
@@ -120,17 +118,11 @@ class InMemoryDocumentStore:
         """Return the documents of one type whose ids are in ``doc_ids``, within a scope.
 
         :param doc_type: The discriminator every returned document carries.
-        :ptype doc_type: str
         :param doc_ids: The ids to fetch; an absent one is skipped, and one named twice is returned once.
-        :ptype doc_ids: Sequence[str]
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths left out of every returned document.
-        :ptype exclude: Sequence[str]
         :param keep: When given, the only top-level fields each returned document carries.
-        :ptype keep: Sequence[str]
         :return: The matching documents, projected as asked.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: Both ``exclude`` and ``keep`` were given.
         """
         if exclude and keep:
@@ -142,7 +134,7 @@ class InMemoryDocumentStore:
                 if (document := self.documents.get((scope_id, doc_id))) is not None
                 and document.get("doc_type") == doc_type
             ]
-            return [copy.deepcopy(keep_fields(d, keep) if keep else omit_paths(d, exclude)) for d in found]
+            return [copy_json(keep_fields(d, keep) if keep else omit_paths(d, exclude)) for d in found]
 
     def by_doc_type(
         self,
@@ -152,6 +144,7 @@ class InMemoryDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
@@ -162,40 +155,33 @@ class InMemoryDocumentStore:
         number never matches its text. A ``None`` predicate matches a field that is absent or null. A membership
         predicate (``field_in``) matches a field equal, by the same comparison, to any of its values, and one with no
         values matches nothing. Under ``order_by``, documents without the field (or with it null) sort as lower than
-        every document that has it.
+        every document that has it, and ties sort by ``id`` in the same direction; ``after`` starts past a place in
+        that order (:func:`~threetears.evals.schema.store_port.order_and_page`).
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param order_by: The field to sort by, or ``None`` for insertion order.
-        :ptype order_by: str | None
         :param descending: Sort direction when ``order_by`` is given.
-        :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
-        :ptype limit: int | None
+        :param after: The last document of the page before, as ``(its order_by value, its id)``; ``None`` reads from
+            the start. Only with ``order_by``.
         :param exclude: Dotted paths left out of every returned document.
-        :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: The matching documents.
-        :rtype: list[dict[str, Any]]
-        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
+        :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
+            ``order_by``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
-            not a scalar.
+            not a scalar; or ``after`` is not a pair of a scalar and a string id.
         """
+        check_after(after, order_by)
         with self._lock:
             rows = self._matching(doc_type, scope_id, field_in, field_eq)
             if order_by is not None:
-                rows.sort(
-                    key=lambda d: (d.get(order_by) is not None, d.get(order_by)),
-                    reverse=descending,
-                )
-            if limit is not None:
+                rows = order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
+            elif limit is not None:
                 rows = rows[:limit]
-            return [copy.deepcopy(omit_paths(d, exclude)) for d in rows]
+            return [copy_json(omit_paths(d, exclude)) for d in rows]
 
     def _matching(
         self, doc_type: str, scope_id: str, field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]
@@ -240,25 +226,18 @@ class InMemoryDocumentStore:
         and copied as it is yielded. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths left out of every row.
-        :ptype exclude: Sequence[str]
         :param exclude_in_items: List-field path → dotted paths left out of each object item of that list.
-        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: The narrowed rows, in insertion order.
-        :rtype: Iterator[dict[str, Any]]
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or holds a value that is
             not a scalar.
         """
         rows = self._matching(doc_type, scope_id, field_in, field_eq)
-        return (copy.deepcopy(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
+        return (copy_json(narrow_items(omit_paths(row, exclude), exclude_in_items)) for row in rows)
 
     def grouped(
         self,
@@ -267,6 +246,7 @@ class InMemoryDocumentStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
@@ -277,19 +257,14 @@ class InMemoryDocumentStore:
         :meth:`~threetears.evals.schema.ResultReadings.grouped` for the measures and their refusals.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param by: Dotted paths to group by.
-        :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
-        :ptype measures: Mapping[str, GroupMeasure]
+        :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, in every
+            row before it is folded.
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: One dict per group, in the order each group was first seen.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: The grouping is refused, or a field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
             predicate is refused.
@@ -297,7 +272,8 @@ class InMemoryDocumentStore:
 
         def matching() -> Iterator[dict[str, Any]]:
             # Lazy, so fold_groups refuses a grouping before any document is read.
-            yield from self._matching(doc_type, scope_id, field_in, field_eq)
+            for row in self._matching(doc_type, scope_id, field_in, field_eq):
+                yield narrow_items(row, exclude_in_items) if exclude_in_items else row
 
         return fold_groups(matching(), by=by, measures=measures)
 
@@ -305,12 +281,9 @@ class InMemoryDocumentStore:
         """Yield the id of every document of one type within a scope.
 
         :param doc_type: The discriminator to sweep.
-        :ptype doc_type: str
         :param scope_id: The scope to sweep.
-        :ptype scope_id: str
         :yield: Document ids, from a snapshot taken when iteration starts, so deleting each as it is
             yielded is safe.
-        :rtype: Iterator[str]
         """
         with self._lock:
             ids = [
@@ -324,12 +297,9 @@ class InMemoryDocumentStore:
         """Write a document under the scope and id it carries, creating or replacing it.
 
         :param document: The document to store; it supplies its own ``scope_id`` and ``id``.
-        :ptype document: dict[str, Any]
         :param if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
             stored document still carries it.
-        :ptype if_match: str | None
         :param create_only: When True, the write lands only if nothing is stored under its scope and id.
-        :ptype create_only: bool
         :raises StoreConflict: ``if_match`` was given and the stored document no longer carries it,
             or is gone; or ``create_only`` was set and a document is stored there.
         :raises ValueError: Both ``if_match`` and ``create_only`` were given.
@@ -340,7 +310,7 @@ class InMemoryDocumentStore:
             raise ValueError("a write is conditional on an etag or on absence, never both")
         scope_id, doc_id = document["scope_id"], document["id"]
         key = (scope_id, doc_id)
-        stored = copy.deepcopy(document)
+        stored = copy_json(document)
         with self._lock:
             if if_match is not None and self._etags.get(key) != if_match:
                 raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
@@ -353,13 +323,9 @@ class InMemoryDocumentStore:
         """Set top-level fields on one stored document, leaving every other field as stored.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :param fields: Top-level fields and their new values.
-        :ptype fields: dict[str, Any]
         :return: ``True`` when the document was written; ``False`` when there is no such document.
-        :rtype: bool
         :raises ValueError: ``fields`` is empty or names a field that locates the document.
         """
         if not fields:
@@ -367,7 +333,7 @@ class InMemoryDocumentStore:
         if locating := sorted(_LOCATING_FIELDS & fields.keys()):
             raise ValueError(f"merge_fields cannot set the fields that locate a document: {locating}")
         key = (scope_id, doc_id)
-        merged = copy.deepcopy(fields)
+        merged = copy_json(fields)
         with self._lock:
             document = self.documents.get(key)
             if document is None:
@@ -380,11 +346,8 @@ class InMemoryDocumentStore:
         """Delete one document by id within a scope.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: ``True`` when a document was deleted, ``False`` when there was none.
-        :rtype: bool
         """
         key = (scope_id, doc_id)
         with self._lock:

@@ -1,0 +1,46 @@
+{"stop": "Carina Shops", "asked_at": "2026-03-02T05:22:45+10:00", "source": "sign", "shown": ["2026-03-02T05:56", "2026-03-02T06:08", "2026-03-02T06:19"]}
+{"stop": "Coorparoo Junction", "asked_at": "2026-03-02T05:49:55+10:00", "source": "sign", "shown": ["2026-03-02T05:49", "2026-03-02T06:01", "2026-03-02T06:12"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-01T20:41:21Z", "source": "app", "shown": ["2026-03-02T06:44", "2026-03-02T06:56", "2026-03-02T07:08"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-02T07:27:49Z", "source": "app", "shown": ["2026-03-02T17:36", "2026-03-02T17:47", "2026-03-02T17:58"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-02T17:52:34", "source": "sms", "shown": ["2026-03-02T17:58", "2026-03-02T18:11", "2026-03-02T18:23"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-02T22:07:28Z", "source": "app", "shown": ["2026-03-03T08:07", "2026-03-03T08:18", "2026-03-03T08:30"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-03T08:20:32", "source": "sms", "shown": ["2026-03-03T08:22", "2026-03-03T08:34", "2026-03-03T08:46"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-03T00:46:42Z", "source": "app", "shown": ["2026-03-03T10:55", "2026-03-03T11:08", "2026-03-03T11:20"]}
+{"stop": "Coorparoo Junction", "asked_at": "2026-03-03T13:40:33", "source": "sms", "shown": ["2026-03-03T13:40", "2026-03-03T13:53", "2026-03-03T14:05"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-03T07:24:35Z", "source": "app", "shown": ["2026-03-03T17:36", "2026-03-03T17:47", "2026-03-03T17:58"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-03T18:12:10", "source": "sms", "shown": ["2026-03-03T18:12", "2026-03-03T18:23", "2026-03-03T18:35"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-03T18:22:20+10:00", "source": "sign", "shown": ["2026-03-03T18:27", "2026-03-03T18:39", "2026-03-03T18:51"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-05T00:28:36Z", "source": "app", "shown": ["2026-03-05T10:35", "2026-03-05T10:47", "2026-03-05T10:59"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-05T02:18:09Z", "source": "app", "shown": ["2026-03-05T12:20", "2026-03-05T12:32", "2026-03-05T12:45"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-06T05:24:17", "source": "sms", "shown": ["2026-03-06T05:41", "2026-03-06T05:53", "2026-03-06T06:04"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-05T23:12:44Z", "source": "app", "shown": ["2026-03-06T09:22", "2026-03-06T09:35", "2026-03-06T09:47"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-07T05:43:45", "source": "sms", "shown": ["2026-03-07T06:14", "2026-03-07T06:34", "2026-03-07T06:54"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-07T06:40:38+10:00", "source": "sign", "shown": ["2026-03-07T06:50", "2026-03-07T07:10", "2026-03-07T07:30"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-07T10:13:52", "source": "sms", "shown": ["2026-03-07T10:21", "2026-03-07T10:41", "2026-03-07T11:01"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-07T16:18:36+10:00", "source": "sign", "shown": ["2026-03-07T16:21", "2026-03-07T16:41", "2026-03-07T17:01"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-07T07:09:11Z", "source": "app", "shown": ["2026-03-07T17:14", "2026-03-07T17:34", "2026-03-07T17:54"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-07T20:57:30Z", "source": "app", "shown": ["2026-03-08T07:26", "2026-03-08T07:56", "2026-03-08T08:26"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-07T22:48:39Z", "source": "app", "shown": ["2026-03-08T09:00", "2026-03-08T09:30", "2026-03-08T10:00"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-08T12:45:41", "source": "sms", "shown": ["2026-03-08T13:00", "2026-03-08T13:30", "2026-03-08T14:00"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-08T15:20:27+10:00", "source": "sign", "shown": ["2026-03-08T15:26", "2026-03-08T15:56", "2026-03-08T16:26"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-09T06:27:57Z", "source": "app", "shown": ["2026-03-09T16:38", "2026-03-09T16:50", "2026-03-09T17:03"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-09T19:10:38Z", "source": "app", "shown": ["2026-03-10T05:41", "2026-03-10T05:53", "2026-03-10T06:04"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-10T18:05:14", "source": "sms", "shown": ["2026-03-10T18:12", "2026-03-10T18:23", "2026-03-10T18:35"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-10T20:04:30", "source": "sms", "shown": ["2026-03-10T20:10", "2026-03-10T20:22", "2026-03-10T20:33"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-11T04:19:53Z", "source": "app", "shown": ["2026-03-11T14:21", "2026-03-11T14:33", "2026-03-11T14:46"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-11T08:20:33Z", "source": "app", "shown": ["2026-03-11T18:23", "2026-03-11T18:34", "2026-03-11T18:46"]}
+{"stop": "Coorparoo Junction", "asked_at": "2026-03-12T13:26:19", "source": "sms", "shown": ["2026-03-12T13:27", "2026-03-12T13:40", "2026-03-12T13:53"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-12T07:15:47Z", "source": "app", "shown": ["2026-03-12T17:25", "2026-03-12T17:36", "2026-03-12T17:47"]}
+{"stop": "Coorparoo Junction", "asked_at": "2026-03-12T08:22:48Z", "source": "app", "shown": ["2026-03-12T18:31", "2026-03-12T18:42", "2026-03-12T18:54"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-12T20:44:57", "source": "sms", "shown": ["2026-03-12T20:45", "2026-03-12T20:56", "2026-03-12T21:07"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-12T21:20:17+10:00", "source": "sign", "shown": ["2026-03-12T21:29", "2026-03-12T21:42", "2026-03-12T21:53"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-13T07:40:20", "source": "sms", "shown": ["2026-03-13T07:45", "2026-03-13T07:57", "2026-03-13T08:10"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-13T20:08:03+10:00", "source": "sign", "shown": ["2026-03-13T20:18", "2026-03-13T20:29", "2026-03-13T20:41"]}
+{"stop": "Coorparoo Junction", "asked_at": "2026-03-13T13:25:03Z", "source": "app", "shown": ["2026-03-14T06:29", "2026-03-14T06:49", "2026-03-14T07:09"]}
+{"stop": "Queen Street Bay 2", "asked_at": "2026-03-13T23:50:34+10:00", "source": "sign", "shown": ["2026-03-14T06:14", "2026-03-14T06:34", "2026-03-14T06:54"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-14T00:03:43Z", "source": "app", "shown": ["2026-03-14T10:21", "2026-03-14T10:41", "2026-03-14T11:01"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-14T20:43:00+10:00", "source": "sign", "shown": ["2026-03-14T21:01", "2026-03-14T21:21", "2026-03-14T21:41"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-14T18:23:45Z", "source": "app", "shown": ["2026-03-15T07:11", "2026-03-15T07:41", "2026-03-15T08:11"]}
+{"stop": "Carina Shops", "asked_at": "2026-03-14T23:19:24Z", "source": "app", "shown": ["2026-03-15T09:26", "2026-03-15T09:56", "2026-03-15T10:26"]}
+{"stop": "Roma Street Station", "asked_at": "2026-03-15T10:04:45", "source": "sms", "shown": ["2026-03-15T10:30", "2026-03-15T11:00", "2026-03-15T11:30"]}
+{"stop": "Kangaroo Point Ferry", "asked_at": "2026-03-15T11:25:47+10:00", "source": "sign", "shown": ["2026-03-15T11:41", "2026-03-15T12:11", "2026-03-15T12:41"]}

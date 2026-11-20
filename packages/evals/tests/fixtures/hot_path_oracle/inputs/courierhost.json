@@ -62,6 +62,7 @@
   "effective_judges": null,
   "effective_judges_source": null,
   "error_details": [],
+  "exhausted_because": null,
   "failed_because": null,
   "faults": [],
   "goal_check_proof_rules": null,
@@ -90,6 +91,21 @@
   "max_cost_usd_origin": null,
   "max_metered_calls": null,
   "max_metered_calls_origin": null,
+  "measure_attestation": {
+   "attested_at": "2026-07-20T00:00:00.000001+00:00",
+   "attested_by": "fixture: the host's upgrade step",
+   "definitions": {
+    "detour_km": "7adcd8b8307364e8897d436d7233c5dfa52bca1df4614c4a459880e715e2c0ed",
+    "field_accuracy": "86dcbd94c7baf14a6da2f285861b5ac55d343dc90d9f4efabf9470946ef0b457",
+    "on_time_rate": "90b00ba7af926766fd34ae087b230324fa596ae25a5f1870c9a42d9f9c6a7690"
+   },
+   "note": "captured before runs recorded measure definitions; made under the host's current measures"
+  },
+  "measure_definitions": {
+   "detour_km": "7adcd8b8307364e8897d436d7233c5dfa52bca1df4614c4a459880e715e2c0ed",
+   "field_accuracy": "86dcbd94c7baf14a6da2f285861b5ac55d343dc90d9f4efabf9470946ef0b457",
+   "on_time_rate": "90b00ba7af926766fd34ae087b230324fa596ae25a5f1870c9a42d9f9c6a7690"
+  },
   "measure_latency": null,
   "metered_calls_refused": null,
   "model_role_provenance": null,
@@ -100,7 +116,7 @@
   "resolved_tools_allowed": null,
   "resolved_world_seed": {},
   "rubric_scales": {},
-  "schema_minor": 11,
+  "schema_minor": 21,
   "schema_version": 15,
   "scope_id": "courier-depot-north",
   "simulator_asked_settings": null,
@@ -775,6 +791,7 @@
   "effective_judges": null,
   "effective_judges_source": null,
   "error_details": [],
+  "exhausted_because": null,
   "failed_because": null,
   "faults": [],
   "goal_check_proof_rules": null,
@@ -803,6 +820,21 @@
   "max_cost_usd_origin": null,
   "max_metered_calls": null,
   "max_metered_calls_origin": null,
+  "measure_attestation": {
+   "attested_at": "2026-07-20T00:00:00.000001+00:00",
+   "attested_by": "fixture: the host's upgrade step",
+   "definitions": {
+    "detour_km": "7adcd8b8307364e8897d436d7233c5dfa52bca1df4614c4a459880e715e2c0ed",
+    "field_accuracy": "86dcbd94c7baf14a6da2f285861b5ac55d343dc90d9f4efabf9470946ef0b457",
+    "on_time_rate": "90b00ba7af926766fd34ae087b230324fa596ae25a5f1870c9a42d9f9c6a7690"
+   },
+   "note": "captured before runs recorded measure definitions; made under the host's current measures"
+  },
+  "measure_definitions": {
+   "detour_km": "7adcd8b8307364e8897d436d7233c5dfa52bca1df4614c4a459880e715e2c0ed",
+   "field_accuracy": "86dcbd94c7baf14a6da2f285861b5ac55d343dc90d9f4efabf9470946ef0b457",
+   "on_time_rate": "90b00ba7af926766fd34ae087b230324fa596ae25a5f1870c9a42d9f9c6a7690"
+  },
   "measure_latency": null,
   "metered_calls_refused": null,
   "model_role_provenance": null,
@@ -813,7 +845,7 @@
   "resolved_tools_allowed": null,
   "resolved_world_seed": {},
   "rubric_scales": {},
-  "schema_minor": 11,
+  "schema_minor": 21,
   "schema_version": 15,
   "scope_id": "courier-depot-north",
   "simulator_asked_settings": null,

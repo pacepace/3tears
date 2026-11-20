@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.kernel.host import schema_violations
+from threetears.evals.kernel.host.world_schema import schema_violations
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError
 
 

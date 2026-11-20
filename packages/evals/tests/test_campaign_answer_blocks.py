@@ -6,17 +6,12 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis import (
-    CampaignReport,
-    build_code_only_report,
-    build_campaign_report,
-    campaign_readings,
-    campaign_report_html,
-    campaign_report_markdown,
-)
-from threetears.evals.analysis.report.campaign.names import measure_name_of
+from threetears.evals.analysis import CampaignReport, build_code_only_report, campaign_readings, campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
+from threetears.evals.analysis.style import measure_name_of
 
 from packages.evals.tests.style_support import unlinked
 from packages.evals.tests.campaign_support import (
@@ -38,12 +33,12 @@ from packages.evals.tests.campaign_page_support import (
 
 
 #: The lead on billing and tone: each aspect's decision, what Accuracy was on each arm, what the interval allows, at
-#: the whole points its intervals of about 37 points set (number policy, rule 2).
+#: the whole points its intervals of about 35 points set (number policy, rule 2).
 _LEAD = (
     "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
-    "18 for v2. Over 20 paired cases, the interval puts v2 between 17 and 92 points worse. Accuracy on tone: v2 "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 20 and 91 points worse. Accuracy on tone: v2 "
     "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
-    "paired cases, the interval puts v2 between 21 and 96 points better."
+    "paired cases, the interval puts v2 between 24 and 95 points better."
 )
 
 

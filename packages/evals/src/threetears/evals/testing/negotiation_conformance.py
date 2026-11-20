@@ -48,7 +48,8 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
-from threetears.evals.schema import REASONING_EFFORTS, CompletionClient, sent_settings_of
+from threetears.evals.schema import REASONING_EFFORTS, CompletionClient
+from threetears.evals.schema.completion import sent_settings_of
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -99,7 +100,6 @@ class NegotiationConformanceFailure(AssertionError):
         """Name every mistake.
 
         :param mistakes: The mistakes, in the order the check met them.
-        :ptype mistakes: list[str]
         """
         self.mistakes = tuple(mistakes)
         super().__init__("the client does not negotiate a router's refusals as it must:\n  " + "\n  ".join(mistakes))
@@ -329,7 +329,6 @@ async def check_refusal_negotiation(build_client: Callable[[RouterTransport], Co
     in order and reported as served; the second must go out as what the first proved, at once.
 
     :param build_client: Builds the host's client over a scripted router (see the module docstring for how).
-    :ptype build_client: Callable[[RouterTransport], CompletionClient]
     :raises NegotiationConformanceFailure: Naming every mistake: the setup's (a first request without a temperature, an
         output cap, an effort word or enforcement), the resending's (none, out of order, too many, a refused
         setting sent again), the reporting's (a temperature, cap, effort word or enforcement reported that the
@@ -355,7 +354,6 @@ async def _run(
 
     :return: What a call raised first, or ``None``; and whether the client's requests can be read at all (it sent one,
         and the first asked for everything the routers refuse).
-    :rtype: tuple[Exception | None, bool]
     """
     client = build_client(router)
     raised: Exception | None = None

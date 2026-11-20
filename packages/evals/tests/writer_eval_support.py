@@ -17,7 +17,7 @@ from typing import Any, Final
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.report_writer_support import call, reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.schema.completion import StopReason
 from threetears.evals.schema.turns import TurnReply
 from threetears.evals.testing import RecordedTurns

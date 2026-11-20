@@ -44,7 +44,7 @@ from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.harness import WriterResult
@@ -188,10 +188,10 @@ def test_a_forest_shows_the_controls_level_where_its_rows_share_one() -> None:
     # Each measure's level at its one precision on the page (number policy, rule 1), in the order the forest asks them.
     assert heads == [
         f"Pass rate · September {rate}",
-        "Persona holds character · September 91%",
-        "Persona booth stays offstage · September 93%",
+        "Persona holds character · September 91.5%",
+        "Persona booth stays offstage · September 93.0%",
     ], heads
-    assert rate == "85%"
+    assert rate == "85.3%"
     assert cost.data.zero_label == "no change vs P · September ($1.89, mean of 294 cases)"
     assert "Production cost, per 1,000 replies, in dollars." in cost_notes
 

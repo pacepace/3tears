@@ -76,6 +76,8 @@ from threetears.evals.schema.versioning import (
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
+from threetears.evals.schema.reading_states import SampleKind
+from threetears.evals.schema.reference import ReferenceKey
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -94,9 +96,7 @@ def _current_schema_only(version: int) -> int:
     """Refuse a regenerable document written under any schema version but this build's.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`.
     """
     if version != REGENERABLE_SCHEMA_VERSION:
@@ -122,9 +122,7 @@ def _current_cassette_only(version: int) -> int:
     so a bump of the regenerable version, which every analysis shape change makes, leaves a recorded corpus readable.
 
     :param version: The cassette's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`.
     """
     if version != CASSETTE_SCHEMA_VERSION:
@@ -148,9 +146,7 @@ def _current_core_only(version: int) -> int:
     so this refuses only a construction or a payload naming an old or future version.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CORE_SCHEMA_VERSION`.
     """
     if version != CORE_SCHEMA_VERSION:
@@ -173,9 +169,7 @@ def _current_durable_only(version: int) -> int:
     (:data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`).
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`.
     """
     if version != DURABLE_SCHEMA_VERSION:
@@ -414,7 +408,6 @@ class ConversationSpec(EvalDocumentModel, CoreShapeModel):
         """Refuse a block a driver could not run as written.
 
         :return: The block, unchanged.
-        :rtype: ConversationSpec
         :raises ValueError: Two actors share an id, an actor's id is one the scheduler or the transcript
             reserves, or ``sessions`` exceeds ``max_turns`` and so names a session with no turn in it.
         """
@@ -488,9 +481,7 @@ class WorldSeed(EvalDocumentModel, CoreShapeModel):
         """Refuse a turn named twice: perturbation is applied once per named turn, so a repeat states nothing.
 
         :param value: The turns.
-        :ptype value: list[int]
         :return: They, unchanged.
-        :rtype: list[int]
         :raises ValueError: A turn appears more than once.
         """
         if len(set(value)) != len(value):
@@ -548,9 +539,7 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
         was doing.
 
         :param value: The expression text.
-        :ptype value: str
         :return: It unchanged.
-        :rtype: str
         :raises ValueError: The expression is malformed or uses something outside the grammar, or reads
             ``fired()``.
         """
@@ -572,7 +561,6 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
 
         :return: Dotted paths for a world registry to resolve. Case parameters are deliberately not
             here: ``variation.tone`` is an input the case carries, not state anything seeds.
-        :rtype: tuple[str, ...]
         """
         return extract_paths(self.expression).world
 
@@ -729,7 +717,6 @@ class GoalCheckControls(EvalDocumentModel, CoreShapeModel):
         """Refuse a block whose own references do not close: a duplicate check, a missing or an unused end state.
 
         :return: The block, unchanged.
-        :rtype: GoalCheckControls
         :raises ValueError: A check is listed twice, names an end state the block does not hold, or an
             end state is named by no check — data nothing would evaluate, which reads as proof
             and is not.
@@ -854,11 +841,8 @@ def rubric_dim_scale(dim: str, scales: Mapping[str, RubricScale]) -> RubricScale
     ``EvalRun.rubric_scales``, captured at launch from its template, or the scales its scores carried.
 
     :param dim: The dimension, or a reserved axis id.
-    :ptype dim: str
     :param scales: The scales recorded for the template's dims, by dim.
-    :ptype scales: Mapping[str, RubricScale]
     :return: The scale.
-    :rtype: RubricScale
     :raises ValueError: ``dim`` is no reserved axis and no scale was recorded for it.
     """
     if dim in RESERVED_DIM_IDS:
@@ -891,7 +875,6 @@ def require_namespaced_dim_name(name: str) -> None:
     persist.
 
     :param name: The dim name or ``rubric_dim_id`` being checked.
-    :ptype name: str
     :raises ValueError: ``name`` is not namespaced. Reserved dual-score axis ids
         (:data:`RESERVED_DIM_IDS`) are exempt and raise nothing.
     """
@@ -919,9 +902,7 @@ def _namespaced_dim_name(name: str) -> str:
     """Pass a namespaced dim name (or a reserved axis id) through; refuse any other.
 
     :param name: The name being validated.
-    :ptype name: str
     :return: ``name``, unchanged.
-    :rtype: str
     :raises ValueError: ``name`` is not namespaced — see :func:`require_namespaced_dim_name`.
     """
     require_namespaced_dim_name(name)
@@ -1030,14 +1011,16 @@ def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
     nothing is normalised), which is what "byte-identical judged output" means here. The scenario's intent,
     variation and goal-state outcomes, which the engine places beside the evidence in a judge prompt, are the
     case's context rather than the output and are not part of it; nor is the judge's prompt, which is the
-    judge's, not the output's.
+    judge's, not the output's. Nor is the evidence's ``inputs``, which names what the strings were rendered from
+    for a replay's key and is not what was read, so a fingerprint is what it was before the field existed.
+    Recording keys are over the inputs (what was asked) and label keys over what was read, so a label does not
+    carry across a re-render: a page reworded is another judged output, and a label pairs with exactly what its
+    labeller read.
 
     :param evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
-    :ptype evidence: JudgeEvidence
     :return: A 64-character sha256 hex digest, domain-separated from every other digest the package takes.
-    :rtype: str
     """
-    return canonical_digest({"judged_output": evidence.model_dump(mode="json")})
+    return canonical_digest({"judged_output": evidence.model_dump(mode="json", exclude={"inputs"})})
 
 
 def fingerprint_criterion(dim: RubricDim | str) -> str:
@@ -1055,9 +1038,7 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     the engine states it — so its criterion is its id and its 1-5 scale.
 
     :param dim: A template rubric dimension, or a reserved axis id.
-    :ptype dim: RubricDim | str
     :return: A 64-character sha256 hex digest.
-    :rtype: str
     :raises ValueError: ``dim`` is a string that is not a reserved axis id: a template dimension's name alone does
         not say what it asks.
     """
@@ -1087,11 +1068,8 @@ def label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey:
     criterion) pair and wants the labels people gave it (``EvalStorage.query_calibration_ratings(label_key=...)``).
 
     :param evidence: What was read.
-    :ptype evidence: JudgeEvidence
     :param dim: The template dimension, or reserved axis id, it was read on.
-    :ptype dim: RubricDim | str
     :return: The key.
-    :rtype: LabelKey
     """
     return LabelKey(fingerprint_judged_output(evidence), fingerprint_criterion(dim))
 
@@ -1378,16 +1356,11 @@ def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str, rater_ki
     judge — and an id without the kind would let either silently overwrite the other.
 
     :param result_id: The rated result.
-    :ptype result_id: str
     :param rubric_dim: The rated dimension.
-    :ptype rubric_dim: str
     :param rater: Who rated it.
-    :ptype rater: str
     :param rater_kind: Whether a ``person`` or an ``agent`` wrote it.
-    :ptype rater_kind: str
     :return: ``rating:`` and the digest of the four, so it can never collide with the result's own id or
         its trace sibling's in a shared partition.
-    :rtype: str
     """
     return "rating:" + canonical_digest([result_id, rubric_dim, rater, rater_kind])
 
@@ -1598,9 +1571,7 @@ class CalibrationRating(DurableDocumentModel):
         a later major's first minor (v16.0) included: only v15.0 predates the field.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The rating.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if (
@@ -1706,11 +1677,8 @@ def declared_name(name: str, *, what: str) -> str:
     """Refuse a declared display name that is blank or longer than :data:`DECLARED_NAME_CHARS`.
 
     :param name: The name, as declared.
-    :ptype name: str
     :param what: What it names, as the refusal says it.
-    :ptype what: str
     :return: The name, unchanged.
-    :rtype: str
     :raises ValueError: The name is blank, or longer than the cap.
     """
     if not name.strip():
@@ -1950,9 +1918,7 @@ class EvalTemplate(DurableDocumentModel):
         author naming a check the template does not declare is still refused.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The template.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if isinstance(data, Mapping) and isinstance(names := data.get("goal_check_names"), Mapping):
@@ -2008,9 +1974,7 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
     the order a store returned the records in.
 
     :param revisions: The records of one name, in any order.
-    :ptype revisions: Iterable[EvalTemplate]
     :return: The current revision, or None for no records.
-    :rtype: EvalTemplate | None
     """
     ordered = sorted(revisions, key=lambda t: (not t.archived, t.revision, t.created_at, t.id))
     return ordered[-1] if ordered else None
@@ -2023,11 +1987,11 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
 #: What every built-in judge prompt's identity starts with, in the place a versioned :class:`JudgeConfig`'s id
 #: stands (``EvalResult.judge_config_ids``, and every ``judge_config_id`` read from it). A config's id is a uuid
 #: and may never start with it (:class:`JudgeConfig` refuses one that does), so the two cannot be confused.
-BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
+_BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
 
 
 def builtin_judge_config_id(wording: str) -> str:
-    """The identity of a built-in judge prompt: :data:`BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
+    """The identity of a built-in judge prompt: :data:`_BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
 
     A dimension with no :class:`JudgeConfig` is judged with the engine's own wording, and that wording is an
     instrument as much as an operator's prompt is: change it and the judge is a different judge. So it has an id,
@@ -2041,11 +2005,9 @@ def builtin_judge_config_id(wording: str) -> str:
     :mod:`~threetears.evals.schema.versioning`).
 
     :param wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
-    :ptype wording: str
     :return: ``builtin:<sha12>``.
-    :rtype: str
     """
-    return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+    return _BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
 
 
 #: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
@@ -2066,11 +2028,9 @@ def is_builtin_judge_config_id(config_id: str | None) -> bool:
     """Whether a recorded judge config id names a built-in prompt rather than a versioned :class:`JudgeConfig`.
 
     :param config_id: A recorded config id, or ``None`` for a dim no judge asked.
-    :ptype config_id: str | None
     :return: True for a :func:`builtin_judge_config_id`.
-    :rtype: bool
     """
-    return config_id is not None and config_id.startswith(BUILTIN_JUDGE_CONFIG_PREFIX)
+    return config_id is not None and config_id.startswith(_BUILTIN_JUDGE_CONFIG_PREFIX)
 
 
 #: A configured judge's recorded identity: its config's id, ``@``, and the fingerprint of the reply-format wording the
@@ -2089,11 +2049,8 @@ def configured_judge_config_id(config_id: str, reply_format: str) -> str:
     (:func:`builtin_judge_config_id`). :func:`judge_config_of` reads the config's id back.
 
     :param config_id: The :class:`JudgeConfig`'s id.
-    :ptype config_id: str
     :param reply_format: The suffix's fixed wording, as the judge service renders it for the dimension's family.
-    :ptype reply_format: str
     :return: ``<config id>@<sha12>``.
-    :rtype: str
     """
     return f"{config_id}@{bytes_digest(reply_format.encode('utf-8'))[:12]}"
 
@@ -2105,9 +2062,7 @@ def judge_config_of(recorded: str | None) -> str | None:
     prompt's identity, or ``None`` (a dim no judge asked), names no config.
 
     :param recorded: A recorded judge config id, or ``None``.
-    :ptype recorded: str | None
     :return: The config's id, or ``None``.
-    :rtype: str | None
     :raises ValueError: ``recorded`` is neither a built-in prompt's identity nor a configured judge's: a bare config id
         is the config, not the prompt that was sent, so it is no judge's recorded identity.
     """
@@ -2223,7 +2178,7 @@ class JudgeConfig(DurableDocumentModel):
         """Refuse an id spelled as a built-in prompt's, which a recorded score could not tell from one."""
         if is_builtin_judge_config_id(v):
             raise ValueError(
-                f"judge config id {v!r} starts with {BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
+                f"judge config id {v!r} starts with {_BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
                 "built-in prompts; give the config another id, or leave it to the default"
             )
         if _CONFIGURED_JUDGE_ID.match(v):
@@ -2315,9 +2270,7 @@ class CatalogRubricDim(DurableDocumentModel):
         unreadable, and the direction that never lets a guardrail be averaged with capability is the safe one.
 
         :param data: The raw input.
-        :ptype data: Any
         :return: The input with both axes set alike.
-        :rtype: Any
         """
         if not isinstance(data, dict) or "dim" not in data:
             return data
@@ -2350,9 +2303,7 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     here, so it reads the types a real case holds and cannot pass on one no case could have.
 
     :param params: The parameters, by name.
-    :ptype params: Mapping[str, Any]
     :return: The same names, each value a string: verbatim when it already is one.
-    :rtype: dict[str, str]
     """
     return {
         name: value if isinstance(value, str) else json.dumps(value, sort_keys=True) for name, value in params.items()
@@ -2430,11 +2381,8 @@ def case_set_doc_id(name: str, version: int) -> str:
     """The stored id of version ``version`` of the case set ``name`` — one document per ``(scope, name, version)``.
 
     :param name: The set's name.
-    :ptype name: str
     :param version: Its version.
-    :ptype version: int
     :return: The id.
-    :rtype: str
     """
     return f"case_set:{name}:v{version}"
 
@@ -2445,22 +2393,31 @@ calls (``max_metered_calls``). Closed: a new currency changes how an older build
 
 
 class BudgetStop(EvalBaseModel, CoreShapeModel):
-    """One per-run ceiling that stopped a run between cells: the numbers it was stopped on, from the counters.
+    """One per-run ceiling that stopped a run: the numbers it was stopped on, from the counters.
 
-    A ceiling never refuses a call inside a cell. It is read between cells, against what has LANDED — the
-    cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
-    finish, so the run ends past the ceiling by up to the width's worth of cells; that overshoot is
+    A ceiling never refuses a candidate's call inside a cell. It is read between cells, against what has LANDED —
+    the cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
+    finish, so the run can end past the ceiling by what their candidates go on to spend; that overshoot is
     ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
-    counter's reading, never parsed from prose. A run stopped by both ceilings at one boundary carries one
-    record for each (``EvalRun.budget_stops``).
+    counter's reading, never parsed from prose. The cost cap also admits each cell's judge phase before any of its
+    calls is paid for, so judging stays within it wherever its price ceiling bounds the bill; a cell whose judging
+    it could not admit is set
+    aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
+    one boundary carries one record for each (``EvalRun.budget_stops``). A run the account's refusal or the
+    unserved-model circuit stopped first, whose running cell's judging the cap then set aside, ends ``exhausted`` and
+    carries the cap's record all the same, so its ``cells_not_judged`` is kept.
 
     :ivar currency: What the ceiling counts.
     :ivar ceiling: The ceiling, in the currency.
-    :ivar landed_at_stop: The landed amount when the stop was decided, which is when the next cell would have
-        started. Dollars are the priced spend of the recorded cells.
+    :ivar landed_at_stop: The landed amount when the stop was decided: when the next cell would have started, or
+        when the cost cap first set a cell's judging aside. Dollars are the priced spend of the recorded cells.
     :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
+    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap refused, having too little left
+        for it, so nothing judged them. A cell whose deadline struck while its judging waited for the cap's room is
+        marked the same way but not counted here: the cap's shortage was never established for it. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
+        under its own cause (``cost_cap``), never failed; its other readings count it, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -2474,6 +2431,11 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     landed_final: int | float = Field(ge=0, description="The landed amount once the in-flight cells finished.")
     cells_in_flight: int = Field(ge=0, description="Cells running when the stop was decided.")
     cells_not_started: int = Field(ge=0, description="Cells that never started because of the stop.")
+    cells_not_judged: int = Field(
+        default=0,
+        ge=0,
+        description="Cost stops only: cells that ran but whose judging the cap had too little left for.",
+    )
     unpriced_results: int = Field(
         default=0, ge=0, description="Cost stops only: recorded results whose spend could not be priced."
     )
@@ -2642,6 +2604,22 @@ class EvalTestCase(DurableDocumentModel):
         ),
     )
 
+    reference: ReferenceKey | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The case's reference key: the entities its answer is graded against, a required `core` and the "
+            "`acceptable` others that also count, each with its aliases and checkable facts. The package states "
+            "its shape and the host fills it. Never stimulus: a kind never hands it to the candidate, renders it for "
+            "the judges that grade against it (`threetears.evals.kernel.reference_material`, appended to "
+            "`JudgeEvidence.case_material`), and its code measures read it here. Part of the case: a template's own "
+            "case digests it with its content, so an edited key is a new case under a new id that never pools or "
+            "pairs with the old one, and drift reads its corpus case stale. Its parts are sets, kept in one order, so "
+            "writing them in another order is the same key and the same case. None when the case has no key, and "
+            "then left out of the document, so a case without one is stored exactly as before."
+        ),
+    )
+
     stratum: str | None = Field(
         default=None,
         min_length=1,
@@ -2675,10 +2653,12 @@ class EvalTestCase(DurableDocumentModel):
     content_hash: str | None = Field(
         default=None,
         description=(
-            "Digest of this case's generated content (variation_params), pinning the identity of an "
-            "LLM-generated artifact so 'the same cell' cannot silently differ between runs. None when the "
-            "case has no generated content to pin, and its identity is then its template plus its id. Stored rather than computed on read so it is groupable "
-            "in a query."
+            "Digest of this case's content, pinning its identity so 'the same cell' cannot silently differ "
+            "between runs: a generated case's `variation_params` (`kernel.identity.compute_content_hash`), and a "
+            "template's own case's `variation_params`, `host_payload` and `reference`, each left out when empty, "
+            "which the seed sets when it writes a `SeedTemplateCase` (`SeedTemplateCase.test_case`). "
+            "None when the case has no generated content to pin, and its identity is then its template plus its id. "
+            "Stored rather than computed on read so it is groupable in a query."
         ),
     )
 
@@ -2727,7 +2707,9 @@ class EvalTestCase(DurableDocumentModel):
             "The id of the case this one is a copy of, when a definition reset carried it into its template's next "
             "revision (`run.reset_definitions(..., carry_live_cases=True)`): a live case of the superseded revision "
             "the seed corpus does not carry, copied with its content, payload, labels, stratum, name and seed record "
-            "unchanged. The source stays on the archived revision with every run measured against it; the copy's "
+            "unchanged; or when an operator's judge-case write into a judge template that held cases wrote its next "
+            "revision (`judge_case_author`, `judge_cases_freeze`), which carries every case of the superseded one. "
+            "The source stays on the archived revision with every run measured against it; the copy's "
             "own runs are the new revision's, and the two never pool. In no digest pre-image and no identity key. "
             "None for a case written any other way."
         ),
@@ -2877,6 +2859,19 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
             "equal."
         ),
     )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the run's host declared when the run was launched, measure key "
+            "-> digest (EvalRun.measure_definitions): what each of the host's measures counted when the run's "
+            "values were read. Its own component because a host changes what a measure counts and keeps its key, "
+            "and runs read under two definitions of one measure are not repeats of one condition. Kept as the map, "
+            "as subject_state is, so a badge names WHICH measure moved. Additive: None where the run recorded none "
+            "or an empty map (stored before runs recorded it, assembled without a launch, or a host with no measure "
+            "of its own), and then left out of the key, which is what it was before the component existed."
+        ),
+    )
     scope: str | None = Field(
         default=None,
         description="Storage scope the run executed in, kept raw so a mismatch badges as a value.",
@@ -2892,10 +2887,12 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: budget, ``EvalRun.budget_stop_reason`` says which: a designed stop that keeps what the run delivered,
 #: never ``failed``.
 #:
-#: ``exhausted`` is the account-side twin of ``budget_stopped``: the provider account paying for the
-#: run refused a candidate call (out of credit, or the key refused), so every later cell would be
-#: refused the same way. The run stops, keeps what it delivered, and names the account — not the
-#: harness and not the candidate — as the reason it is short.
+#: ``exhausted`` is the account-side twin of ``budget_stopped``: something every later cell would meet
+#: gave out, outside both the harness and the candidate — the provider account paying for the run
+#: refused a call (out of credit, or the key refused), or the provider does not serve the model the
+#: run's candidate names (retired, or a model id it does not know). ``EvalRun.exhausted_because``
+#: says which. The run stops, keeps what it delivered, names the cause as the reason it is short, and
+#: is resumable once the account is funded or the model served.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
 
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
@@ -3111,6 +3108,28 @@ FAILED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownFailedBecause)
 #: value that minor added.
 StoredFailedBecause = Annotated[FailedBecause, known_unless_newer_minor("failed-because reason", FAILED_BECAUSE)]
 
+#: Why a run the job manager filed ``exhausted`` stopped (:attr:`EvalRun.exhausted_because`): ``account_refused`` —
+#: the provider refused the account paying for the run (:class:`~threetears.evals.run.AccountExhaustedError`);
+#: ``model_unserved`` — the provider does not serve the model the run's candidate names
+#: (:class:`~threetears.evals.run.ModelUnservedError`). Either is resumable once its cause is cleared.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`EXHAUSTED_BECAUSE`, read as
+#: :data:`FailedBecause` is: a reader that branches on it names a value a newer minor added rather than folding it
+#: into one it knows.
+ExhaustedBecause = str
+
+#: A value of :data:`ExhaustedBecause` this build knows, as a type: what this build writes.
+KnownExhaustedBecause = Literal["account_refused", "model_unserved"]
+
+#: The values of :data:`ExhaustedBecause` this build knows.
+EXHAUSTED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownExhaustedBecause)
+
+#: The type of the stored field: one of :data:`EXHAUSTED_BECAUSE`, or, on the stored read of a newer minor's document,
+#: a value that minor added.
+StoredExhaustedBecause = Annotated[
+    ExhaustedBecause, known_unless_newer_minor("exhausted-because reason", EXHAUSTED_BECAUSE)
+]
+
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
     """Every dim a judged cell of this kind is scored on, in the order the judge phase calls them.
@@ -3122,11 +3141,8 @@ def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact)
     judge phase that asks them and the re-judge that asks again.
 
     :param rubric_dim_names: The template's rubric dim names, in template order.
-    :ptype rubric_dim_names: list[str]
     :param judged_artifact: What the kind's judge reads (:class:`JudgedArtifact`).
-    :ptype judged_artifact: JudgedArtifact
     :return: The dim ids, reserved axes first for a conversation; empty for an unjudged kind.
-    :rtype: list[str]
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
         return []
@@ -3150,17 +3166,13 @@ def resolve_effective_judges(
     the result alone without re-deriving the cascade against ``judge_model``.
 
     :param dim_ids: The dims to attribute, from :func:`scored_dim_ids`.
-    :ptype dim_ids: list[str]
     :param judge_config_for_dim: Resolves a dim id to the governing config, or
         ``None``. Injected so the launch path can pass the same frozen config
         load it built the judge service from, without reaching for storage
         here.
-    :ptype judge_config_for_dim: Callable[[str], JudgeConfig | None]
     :param judge_pin: The run's resolved run-level judge, used wherever no config
         names a model.
-    :ptype judge_pin: str
     :return: ``{dim_id: resolved_model}`` over exactly ``dim_ids``.
-    :rtype: dict[str, str]
     """
     effective = {}
     for dim_id in dim_ids:
@@ -3419,7 +3431,6 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
         """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
 
         :return: The settings, unchanged.
-        :rtype: Self
         :raises ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set, or a budget is named both as
             sent and as unsent.
         """
@@ -3443,9 +3454,7 @@ def request_settings_order(settings: ClientRequestSettings) -> str:
     is a model and not hashable, and its fields have no natural order of their own.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: Its canonical JSON.
-    :rtype: str
     """
     return json.dumps(settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
@@ -3459,9 +3468,7 @@ def request_settings_words(settings: ClientRequestSettings) -> str:
     two requests.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: The phrase.
-    :rtype: str
     """
     parts = [f"max_tokens={settings.max_tokens}"]
     if settings.reasoning_effort is not None:
@@ -3480,10 +3487,8 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
     """A judge's sent settings as the clause a sentence naming the judge carries.
 
     :param settings: What its calls were sent with (``None`` = unverified).
-    :ptype settings: ClientRequestSettings | None
     :return: ``"sent {...}"`` (:func:`request_settings_words`), or ``"request settings
         unconfirmed"`` when its client did not report them.
-    :rtype: str
     """
     return "request settings unconfirmed" if settings is None else f"sent {request_settings_words(settings)}"
 
@@ -3572,9 +3577,7 @@ def run_label_problem(label: str) -> str | None:
     """Why ``label`` cannot name a run, or None when it can.
 
     :param label: A candidate label, as given.
-    :ptype label: str
     :return: The reason, as a clause, or None.
-    :rtype: str | None
     """
     if not label.strip():
         return "is blank"
@@ -3583,6 +3586,86 @@ def run_label_problem(label: str) -> str | None:
     if len(label) > RUN_LABEL_MAX_LENGTH:
         return f"is {len(label)} characters, longer than {RUN_LABEL_MAX_LENGTH}"
     return None
+
+
+class MeasureRemeasure(EvalBaseModel, CoreShapeModel):
+    """One re-measure of a run, recorded on the run it re-read (``threetears.evals.run.remeasure_run``).
+
+    A re-measure reads the run's stored results again, from what each cell stored, under the host's current
+    definition of every measure whose definition the run did not record or recorded otherwise. Nothing is
+    interpolated: a stored value the host's reader cannot read again refuses the whole re-measure. This entry is the
+    mark: a run that carries one joined the cell of the definitions it names by being read again, not by being
+    launched under them.
+    """
+
+    remeasured_at: str = Field(default_factory=utc_now_iso)
+    completed_at: str | None = Field(
+        default=None,
+        description=(
+            "When the re-measure finished: every result written, then the run's measure_definitions moved to "
+            "``now``. None = it began and has not finished (it is written on the run before any result is), so the "
+            "run's results may hold values read under two definitions and the run pools with nothing until a "
+            "re-measure finishes it."
+        ),
+    )
+    was: dict[str, str] | None = Field(
+        description=(
+            "The run's measure_definitions before this re-measure, measure key -> digest. None = it recorded none."
+        )
+    )
+    now: dict[str, str] = Field(description="Its measure_definitions after: the host's, when it was re-measured.")
+    reread: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The measures whose stored values were read again, sorted. A measure whose definition moved and of which "
+            "no result of the run held a value is not here: there was nothing to read again."
+        ),
+    )
+    results_reread: int = Field(default=0, ge=0, description="How many of the run's results had a value read again.")
+
+
+class MeasureAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the measure definitions a stored run ran under.
+
+    Written by ``threetears.evals.run.attest_measure_definitions`` on a run that recorded none. It is the host's word
+    and never the engine's guess: the host knows which revision of its reading code was live when the run was made.
+    No result is touched. The run's ``measure_definitions`` then hold the attested map, and this entry is what tells
+    it from a map the launch recorded.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    definitions: dict[str, str] = Field(
+        min_length=1, description="The definitions stated, measure key -> digest: the run's measure_definitions."
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
+
+
+class ServedModelAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the model that answered a stored run's candidate calls whose responses
+    named none.
+
+    Written by the ``runs_attest`` action (coordinate ``served_model``) on a run some of whose candidate usage rows
+    name no served model. It is the host's word and never the engine's guess: the id a run asked for
+    (``RoleUsage.model``) is not evidence of what answered, and nothing else a silent run stores is. No row is
+    touched: the rows stay as the responses left them, so a reading still tells a model a response named from one a
+    host stated, and the identity disclosure stays true. A reading that pools by answering model (a campaign's cells,
+    pass^k) reads the silent rows of the results named here THROUGH the statement, and says it was stated.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    served_model: str = Field(
+        min_length=1, description="The model stated as having answered the run's candidate calls that named none."
+    )
+    result_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "The results whose candidate rows named no model when the statement was made, sorted: what it covers. A "
+            "result written after it (a take-up) is not covered, and its silence stays a silence."
+        ),
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
 
 
 class RunLifetime(EvalBaseModel, CoreShapeModel):
@@ -3606,7 +3689,8 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar reason: Why it ended, when something said: the cancellation's reason, the budget stop's, or the error an
         exhausted or failed holding recorded.
     :ivar lost: The loss, for a holding that was lost.
-    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
+    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped; for one that ended exhausted,
+        the cost cap's record of the cells it refused judging beside that stop.
     :ivar completeness: The run's completeness when it ended, over the whole matrix.
     :ivar cells_stored: The result rows stored for the run when it ended.
     :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
@@ -3617,6 +3701,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar template_edited_at: When the run's template was last edited, for a holding that began after an edit made
         after the run was created: an edit in nothing the run froze of it, which measures alike and is disclosed here
         rather than refused. ``None`` when the template was not edited since the run was created.
+    :ivar goal_check_proof_rules: The goal-check proof rules (``GOAL_CHECK_PROOF_RULES``) the run's goal checks were
+        proved under for this holding: the launch's, on the run's first holding, and the rules a take-up re-proved the
+        run's own checks under, on each holding a take-up began. A take-up whose re-proof under newer rules matched
+        the run's own proofs moves the run's ``goal_check_proof_rules`` forward to them, so a ``proven`` the launch
+        recorded reads as proven again, and its lifetimes say which rules proved the checks in which holding.
+        ``None`` when the run recorded no proofs, or the holding was recorded before holdings recorded their rules.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -3636,7 +3726,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     )
     lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
     budget_stops: list[BudgetStop] | None = Field(
-        default=None, description="The per-run ceilings that stopped the holding, for one they stopped."
+        default=None,
+        description=(
+            "The per-run ceilings that stopped the holding, for one they stopped; on a holding that ended exhausted, "
+            "the cost cap's record of the cells whose judging it refused after the account or the model had stopped "
+            "it, which is a count beside that stop, never the stop."
+        ),
     )
     completeness: RunCompleteness | None = Field(
         default=None, description="The run's completeness when the holding ended, over the whole matrix."
@@ -3663,6 +3758,16 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
             "created — an edit in nothing the run froze of it, disclosed rather than refused; None when it was not."
         ),
     )
+    goal_check_proof_rules: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The goal-check proof rules the run's goal checks were proved under for this holding: the launch's on "
+            "the first holding, the rules a take-up re-proved them under on each later one. None when the run "
+            "recorded no proofs, or the holding was recorded before holdings recorded their rules."
+        ),
+    )
 
 
 def ended_lifetimes(
@@ -3684,24 +3789,15 @@ def ended_lifetimes(
     closes it here. Lifetimes with no open holding are returned as they are.
 
     :param lifetimes: The run's lifetimes.
-    :ptype lifetimes: Sequence[RunLifetime]
     :param status: The status the run ended with.
-    :ptype status: EvalRunStatus
     :param at: When it ended.
-    :ptype at: str
     :param reason: Why, when something said.
-    :ptype reason: str | None
     :param lost: The loss, when it was lost.
-    :ptype lost: JobLoss | None
     :param budget_stops: The per-run ceilings that stopped it.
-    :ptype budget_stops: list[BudgetStop] | None
     :param completeness: Its completeness when it ended.
-    :ptype completeness: RunCompleteness | None
     :param cells_stored: The result rows stored for the run, when the writer counted them; else the completeness's
         persisted cells.
-    :ptype cells_stored: int | None
     :return: The lifetimes, the last one closed when it was open.
-    :rtype: list[RunLifetime]
     """
     if not lifetimes or lifetimes[-1].status != "running":
         return list(lifetimes)
@@ -3728,9 +3824,7 @@ def run_ending_reason(run: EvalRun) -> str | None:
     stop's reason, or the error an exhausted or failed run recorded last.
 
     :param run: The run, ended.
-    :ptype run: EvalRun
     :return: The reason, or None when its record gives none.
-    :rtype: str | None
     """
     if run.lost is not None:
         return run.lost.cause
@@ -3773,7 +3867,6 @@ class EvalRun(CoreDocumentModel):
         """Record that ``paths`` were left out of this copy's ``host_payload`` by the read.
 
         :param paths: Dotted paths relative to ``host_payload``.
-        :ptype paths: frozenset[str]
         """
         self._elided_payload_paths = frozenset(paths)
 
@@ -4081,8 +4174,10 @@ class EvalRun(CoreDocumentModel):
         ge=1,
         description=(
             "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
-            "they are. A `proven` recorded under rules older than the current ones reads as unproven "
-            "(`goal_check_proofs_as_read`), and is counted as needing re-proof."
+            "they are. The launch's, or the newer rules a take-up re-proved the run's checks under when they proved "
+            "alike; each holding names its own (`RunLifetime.goal_check_proof_rules`). A `proven` recorded under "
+            "rules older than the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as "
+            "needing re-proof."
         ),
     )
     refused_goal_checks: dict[str, str] | None = Field(
@@ -4233,7 +4328,8 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a run the ceiling stopped is visible either way through the budget_stopped "
             "status and budget_stops. The cap is read between cells against the spend of the cells already "
             "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
-            "land past it by up to the width's worth of cells."
+            "land past it by what their candidates spend. Each cell's judging is admitted against it before any "
+            "judge call is paid for, so judging stays within it wherever its price ceiling bounds the bill."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -4397,6 +4493,49 @@ class EvalRun(CoreDocumentModel):
             "regrouped. None exactly when context_key is."
         ),
     )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the host declared when this run was launched, measure key -> "
+            "digest (MeasureRegistry.definition_digests()): what each host measure on this run's results counted "
+            "when it was read. Stamped by the launch before the context key, which composes it "
+            "(ContextComponents.measure_definitions) when it is non-empty, and moved afterwards only by a host's "
+            "attestation (measure_attestation) or a re-measure (measure_remeasures). None = NOT RECORDED: stored "
+            "before runs recorded it, or assembled by its host without a launch. Where such a run's results hold a "
+            "host measure it pools with nothing, since nothing says which definition its values were read under; "
+            "where they hold none it pools as it always did. {} is a recording: the host declared no measure of "
+            "its own."
+        ),
+    )
+    measure_attestation: MeasureAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the definitions this run ran under, made after the run by "
+            "attest_measure_definitions on a run that recorded none. None = never attested: measure_definitions, "
+            "where set, is the launch's own record."
+        ),
+    )
+    measure_remeasures: list[MeasureRemeasure] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each re-measure of this run, oldest first (MeasureRemeasure). Empty for a run whose values are as its "
+            "cells wrote them. A run carrying one has its context identity derived at read, from "
+            "measure_definitions as the re-measure left them, never read off the key its launch stamped."
+        ),
+    )
+    served_model_attestation: ServedModelAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the model that answered this run's candidate calls whose responses named none, "
+            "made after the run by the runs_attest action. The rows are never rewritten: a reading that pools by "
+            "answering model reads the silent rows of the results it names through it, as attested, not recorded. "
+            "None = never attested: a row naming no model is unknown, which pools with nothing."
+        ),
+    )
 
     # Contestant identity's PRE-IMAGE, stamped at launch beside the context key's.
     variant_levers: dict[str, SweepableValue] | None = Field(
@@ -4479,12 +4618,16 @@ class EvalRun(CoreDocumentModel):
         description=(
             "The per-run ceilings that stopped this run between cells, one record per ceiling, each with the "
             "counters' numbers: the ceiling, what had landed when the stop was decided and once the cells in "
-            "flight finished, how many were running and how many never started. Both the cost cap and the "
-            "metered-call ceiling are read between cells against what has landed; neither refuses a call inside a "
-            "cell, so the cells running at the stop finish whole and the run may land past a ceiling by up to the "
-            "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
-            "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
-            "budget (``budget_stop_reason``) and one whose writer predates the field."
+            "flight finished, how many were running, how many never started and how many ran but were not judged. "
+            "Both the cost cap and the metered-call ceiling are read between cells against what has landed; neither "
+            "refuses a candidate's call inside a cell, so the cells running at the stop finish and the run may land "
+            "past a ceiling by what they add. The cost cap also admits each cell's judging before it is paid for, "
+            "and stops the run at the first cell whose judging it sets aside. Both are recorded when both tripped at "
+            "the same boundary. Written with the "
+            "``budget_stopped`` status, and with ``exhausted`` when the cost cap set a running cell's judging aside "
+            "after the account's refusal or the unserved-model circuit had stopped the run, so the cells it left "
+            "unjudged are counted however the run stopped. None on a run no ceiling stopped, including a run stopped "
+            "by its wall-clock budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
     )
     failed_because: StoredFailedBecause | None = Field(
@@ -4495,6 +4638,16 @@ class EvalRun(CoreDocumentModel):
             "sweep goes on past such an arm). Written once, by the job manager, with the ``failed`` status. None on "
             "every other run: one that did not fail, one that failed for any other reason, and one stored before "
             "the field existed."
+        ),
+    )
+    exhausted_because: StoredExhaustedBecause | None = Field(
+        default=None,
+        description=(
+            "Why the run stopped `exhausted`, beside its `error_details` entry: `account_refused` when the provider "
+            "refused the account paying for it, `model_unserved` when the provider does not serve the model its "
+            "candidate names (the entry names the model and quotes the provider). Written once, by the job manager, "
+            "with the `exhausted` status; cleared when the run is taken up again. None on every other run, and on an "
+            "exhausted run stored before the field existed, which only the account could stop."
         ),
     )
     error_details: list[str] = Field(
@@ -4567,7 +4720,6 @@ class EvalRun(CoreDocumentModel):
 
         :return: The promised cell count. Never zero — ``test_case_ids`` is ``min_length=1`` and
             ``k_runs`` is ``ge=1``.
-        :rtype: int
         """
         return len(self.test_case_ids) * self.k_runs
 
@@ -4712,13 +4864,13 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped under older rules may hold a ``proven`` its control
     earned under a rule since found wrong. It cannot be re-derived when read — the controls are editable
     and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
-    run graded — so it is read as ``unproven`` until the template is launched again.
+    run graded — so it is read as ``unproven`` until the template is launched again, or the run is taken up again:
+    a take-up goes ahead only while the template's measured content, its controls included, is as the run froze it,
+    re-proves the run's checks under the rules in force, and moves the run to them when they prove alike.
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The proofs as read, or None when the run recorded none.
-    :rtype: dict[str, GoalCheckProof] | None
     """
     if run.goal_check_proofs is None:
         return None
@@ -4731,9 +4883,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     """The checks whose ``proven`` the run recorded under an older proof rule — read as unproven, needing re-proof.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The checks, sorted; empty when the run's proofs are current or it recorded none.
-    :rtype: list[str]
     """
     if run.goal_check_proofs is None or (run.goal_check_proof_rules or 0) >= GOAL_CHECK_PROOF_RULES:
         return []
@@ -4747,9 +4897,7 @@ def refused_goal_checks(checks: Sequence[str]) -> dict[str, str]:
     grading it raises in every cell. Read at launch, so the run grades its cells without the check and names it.
 
     :param checks: The template's goal checks.
-    :ptype checks: Sequence[str]
     :return: Each refused check -> why; empty when the grammar reads every one.
-    :rtype: dict[str, str]
     """
     refused: dict[str, str] = {}
     for check in checks:
@@ -4923,7 +5071,6 @@ class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
         so the two cannot disagree about what the work reported.
 
         :return: The same report as an :class:`~threetears.evals.schema.external_spend.ExternalSpend`.
-        :rtype: ExternalSpend
         """
         return ExternalSpend(
             provider=self.provider,
@@ -5006,6 +5153,19 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             "its own entry). Never set on a substituted delivery, which ran on no model."
         ),
     )
+    # Left out of the document when unset, so an entry naming none is stored as it was before the field existed.
+    served_provider: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the work's responses named as having served its calls (the provider a router "
+            "sent them to), as the work's client reported it; the host fills it, and it is folded into the "
+            "inner_agent role's `RoleUsage.served_provider`, a key of the row. None = not recorded: the responses named none (a direct provider names "
+            "none), named more than one (report each upstream's work as its own entry), or the entry was stored "
+            "before the field existed. Never set on a substituted delivery, which ran on no model."
+        ),
+    )
     acknowledged_turn: int | None = Field(
         default=None,
         ge=0,
@@ -5064,7 +5224,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
 
         :raises ValueError: An error without a failure or a failure without one; a delivery's own
             fields on an entry that delivered nothing; a delivery before its acknowledgement;
-            a substituted entry naming the model it supposedly ran on or reporting spend; or a
+            a substituted entry naming the model it supposedly ran on, the provider that served it, or reporting
+            spend; or a
             price source for a cost nobody reported.
         """
         defects: list[str] = []
@@ -5091,6 +5252,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             defects.append(f"a substituted delivery ran on no model, yet names {self.model!r}")
         if self.substituted and self.served_model is not None:
             defects.append(f"a substituted delivery was answered by no model, yet names {self.served_model!r}")
+        if self.substituted and self.served_provider is not None:
+            defects.append(f"a substituted delivery was served by no provider, yet names {self.served_provider!r}")
         if self.substituted and (spent := self.reported_spend):
             defects.append(f"a substituted delivery spent nothing, yet reports {', '.join(spent)}")
         if self.price_source is not None and self.cost_usd is None:
@@ -5190,13 +5353,15 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
-    tokens on more than one model — a run whose per-dim judge configs pin different
+    Rows are keyed by **(role, model, served model, served provider, price source)**, not role alone: a role that
+    spent tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
     two ways stay in two rows for the same reason, and so do calls one requested alias had
     answered by two different models: ``served_model`` is the evidence of which model produced
-    the numbers, and a blended row could name neither.
+    the numbers, and a blended row could name neither. Calls a router sent to two upstream providers are two rows
+    too (``served_provider``): one model's cost differs by who served it, so a row naming one provider never holds
+    another's calls.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -5232,6 +5397,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
             "None = not recorded: the responses named no model. "
             "Never read the alias in `model` in its place."
+        ),
+    )
+    # Left out of the document when unset, so a row whose replies named no upstream is stored as it was before the
+    # field existed, and an older build reading one that names it keeps it unread.
+    served_provider: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the RESPONSE named as having served this row's token-metered calls (OpenRouter's "
+            "reply names the provider it routed to). None = not recorded: the replies named none, a direct "
+            "provider's never do, or the row was stored before the field existed; never a guess. A different field "
+            "from provider, which names who was called for an external contribution."
         ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
@@ -5340,6 +5517,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "reason is counted there and not here. None = no reasons were counted."
         ),
     )
+    maybe_billed_sends: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Sends of this row's calls whose connection broke before any response began and that were sent again: "
+            "the provider may have served and billed each, and this row's `cost_usd` holds none of it, so the row's "
+            "dollars may undercount by that many calls. Beside `call_count` and never in it. Counted per row. None = "
+            "none counted: no send met such a drop, its client counts none, or the row was stored before the field "
+            "existed."
+        ),
+    )
 
     unpriced_reasons: list[str] | None = Field(
         default=None,
@@ -5357,7 +5546,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons beside a known cost, an empty list, or an empty reason.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
         """
         if self.unpriced_reasons is None:
@@ -5372,16 +5560,21 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
 
     @property
     def answers_nothing(self) -> bool:
-        """Whether the row holds only unanswered calls: it counts no answered call, no token and no dollar, and counts
-        calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
+        """Whether the row holds only unanswered calls: it counts no answered call, no token, no dollar and no unit,
+        and counts calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
 
         Such a row is no spend at all, so it neither prices nor unprices a total (owner, 2026-10-27: unanswered calls
         add nothing to cost and never unprice it): :func:`~threetears.evals.kernel.usage_capture.blended_cost` and the
-        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census.
+        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census. It is no answer
+        either (#1238): every reader that reads a row as one skips it.
+
+        The one statement of the rule: a reading of the row (``UsageReading``) carries this value, never restates it.
         """
+        # The dollars first: the field every reader of a row reads, so a row that spent some is decided without
+        # reading a field its reader never otherwise reads (``test_result_reading_fields.py`` pins what each reads).
         return (
-            self.call_count is None
-            and self.cost_usd is None
+            self.cost_usd is None
+            and self.call_count is None
             and self.prompt_tokens is None
             and self.completion_tokens is None
             and self.reasoning_tokens is None
@@ -5394,7 +5587,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unanswered_reasons`` is set with neither count, counts a reason zero times or less, or
             accounts for more calls than ``unanswered_retried`` and ``unanswered_lost`` count.
         """
@@ -5425,9 +5617,7 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         value once, so a writer repeating one has counted calls where it was asked for values.
 
         :param sent: The values as written, or ``None`` (unverified).
-        :ptype sent: list[ClientRequestSettings] | None
         :return: The values in canonical order, or ``None``.
-        :rtype: list[ClientRequestSettings] | None
         :raises ValueError: ``sent`` is empty, or repeats a value.
         """
         if sent is None:
@@ -5444,7 +5634,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse an actor or a purpose on a row of any role but ``simulator``.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``.
         """
         if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
@@ -5526,6 +5715,12 @@ CellTermination = Literal[
     "apparatus_failed",
     "cancelled",
 ]
+
+#: What a row a run taken up again wrote over its cell's stored row had replaced (``EvalResult.written_over``): ``cut``
+#: where some attempt it replaces was cut while it ran (termination ``cancelled``), else ``unanswered`` (a call the
+#: account refused, or a model the provider did not serve), each a row that recorded no answer
+#: (:func:`~threetears.evals.kernel.result_condition.runs_again`).
+WrittenOver = Literal["cut", "unanswered"]
 
 
 class ConversationStopCause(StrEnum):
@@ -5634,6 +5829,19 @@ class JudgeEvidence(CoreShapeModel):
     """The candidate's output as the judge should read it: a document, or a conversation's
     transcript in whatever form the kind renders turns, tool calls and their results."""
 
+    inputs: VerbatimJsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
+    """What the three strings were rendered from, as structured values, where the kind renders them from inputs it
+    can name: the report writer's page names its stored document's digest, the content-derived snapshot id it was
+    written over and its open findings' digest. ``None`` (left out of the document) where the strings are the
+    input themselves, as a conversation's transcript is.
+
+    A recorded judge call over evidence that names its inputs is keyed by them instead of by its prompt
+    (:class:`~threetears.evals.testing.RecordedCompletions`), so a word the package prints differently on the page
+    moves no recording. These inputs, together with the package's own rendering code, must determine all three
+    strings: anything else that can change them belongs in ``inputs``, or a changed question replays a stale answer.
+    It is in no fingerprint: :func:`fingerprint_judged_output` hashes the three strings alone. Recording keys are over
+    the inputs (what was asked) and label keys over what was read, so a label does not carry across a re-render."""
+
 
 def eval_trace_doc_id(result_id: str) -> str:
     """Doc id for a result's :class:`EvalTrace` sibling.
@@ -5727,6 +5935,27 @@ class EvalTrace(CoreDocumentModel):
         if self.judged_artifact is JudgedArtifact.UNJUDGED:
             raise ValueError("an unjudged kind renders no judge evidence, so none is stored for it")
         return self
+
+
+class MeasureReread(EvalDocumentModel, CoreShapeModel):
+    """One re-read of a result's host measures under another definition, recorded on the result it changed.
+
+    Written by a re-measure of the result's run (``threetears.evals.run.remeasure_run``). It keeps what the cell
+    wrote, so a re-read result is never indistinguishable from one whose cell wrote the value it holds.
+    """
+
+    reread_at: str = Field(default_factory=utc_now_iso)
+    definitions: dict[str, str] = Field(
+        min_length=1,
+        description="measure key -> the definition digest its value was read again under, for each measure re-read.",
+    )
+    was: dict[str, bool | float | str] = Field(
+        default_factory=dict,
+        description=(
+            "measure key -> the value the result held before, for each re-read measure it held one of. A measure "
+            "absent here and present in host_measures was first read by this re-read."
+        ),
+    )
 
 
 class JudgeRescore(EvalDocumentModel, CoreShapeModel):
@@ -5876,6 +6105,16 @@ class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
         description=(
             "dim -> the versioned JudgeConfig that answered the repeat, or a ``builtin:`` id = the built-in prompt, by "
             "its wording, for every dim the repeat asked."
+        ),
+    )
+    sample: SampleKind | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the result was chosen for the repeat: ``random`` = asked of every result of the run, in an order the "
+            "engine drew, so the results repeated before any stop are a random draw from the run's; ``selected`` = "
+            "named by id. None = a repeat stored before this was recorded. Only a random draw stands for an arm's "
+            "results, so only it is read into the arm's re-score noise."
         ),
     )
 
@@ -6039,7 +6278,7 @@ StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "e
 #: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
 #: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
 #: a fault of the rig.
-OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+_OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
 
 
 class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
@@ -6085,8 +6324,8 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
 
     @property
     def out_of_room(self) -> bool:
-        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
-        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
+        """Whether the reply ran out of room (:data:`_OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in _OUT_OF_ROOM_STOP_REASONS
 
 
 #: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
@@ -6104,15 +6343,10 @@ def cell_result_id(run_id: str, test_case_id: str, model: str, k_iteration: int)
     Readers order a run's results by when they were stored, never by id, so an id carries no order.
 
     :param run_id: The run.
-    :ptype run_id: str
     :param test_case_id: The cell's case.
-    :ptype test_case_id: str
     :param model: The cell's candidate model.
-    :ptype model: str
     :param k_iteration: Which repetition, from 1.
-    :ptype k_iteration: int
     :return: The id, as a uuid string.
-    :rtype: str
     """
     name = json.dumps([run_id, test_case_id, model, k_iteration], separators=(",", ":"))
     return str(uuid.uuid5(CELL_RESULT_ID_NAMESPACE, name))
@@ -6185,6 +6419,37 @@ class EvalResult(CoreDocumentModel):
             "refused), which ends the run exhausted. The cell is excluded as an apparatus fault, and a run taken up "
             "again once the account is topped up runs it again, written over this row. False on a row stored before "
             "the field existed."
+        ),
+    )
+    model_unserved: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider answered this cell's candidate call that it does not serve the model the call named "
+            "(retired, or a model id it does not know). The trial is lost to the test setup, never judged, and its "
+            "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
+            "again once the model is served runs this cell again, written over this row. False on a row stored "
+            "before the field existed."
+        ),
+    )
+    written_over: WrittenOver | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What this row was written over: a row of its cell that recorded no answer (cut while it ran, its call "
+            "refused for the account, or its model not served), which a run taken up again runs again under the same "
+            "row. `cut` where some attempt it replaces was cut while it ran, else `unanswered`. A cell cut and taken "
+            "up again keeps no row of its cut, so this is how many cells ran again is still counted "
+            "(`redrawn_cells`). None on a row written over nothing, and on one stored before the field existed."
+        ),
+    )
+    judging_set_aside: bool = Field(
+        default=False,
+        description=(
+            "Whether the run's cost cap had too little left for this cell's judging, so the dims it had not asked were "
+            "not asked: each names the cap in `judge_error`. The trial ran whole and is never scored low: its judged "
+            "readings leave it out under the `cost_cap` exclusion cause, while its measures, checks and cost count as "
+            "measured, and a re-judge, which reads the evidence the cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
+            "stored before the field existed."
         ),
     )
 
@@ -6298,6 +6563,10 @@ class EvalResult(CoreDocumentModel):
     # Re-judges of this result's failed judge dimensions, oldest first — see
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
     judge_rescores: list[JudgeRescore] = Field(default_factory=list)
+
+    # Re-reads of this result's host measures under another definition, oldest first: see
+    # :class:`MeasureReread`. Empty, and left out of the document, for a result whose measures are as its cell wrote them.
+    measure_rereads: list[MeasureReread] = Field(default_factory=list, exclude_if=lambda value: not value)
 
     # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
     # of the judge, never a change to the scores above. Empty for a result nobody repeated.
@@ -6579,9 +6848,7 @@ class EvalResult(CoreDocumentModel):
         write and every agreement read find the same score.
 
         :param dim: The dimension, as its score spells it.
-        :ptype dim: str
         :return: The score, or ``None`` when this result carries none on that dimension.
-        :rtype: RubricScore | None
         """
         return next((score for score in self.judge_scores() if score.dim == dim), None)
 
@@ -6592,7 +6859,6 @@ class EvalResult(CoreDocumentModel):
         axis is never on one of those surfaces and missing from another.
 
         :return: The scores as the judge gave them, in that order; empty for a result no judge scored.
-        :rtype: list[RubricScore]
         """
         return [
             score for score in (*self.rubric_scores, self.transcript_score, self.outcome_score) if score is not None
@@ -6760,21 +7026,13 @@ class EvalCassette(EvalDocumentModel):
         """Construct a cassette with its key's document id.
 
         :param key: The ask this recording answers.
-        :ptype key: CassetteKey
         :param scope_id: The scope the corpus lives in.
-        :ptype scope_id: str
         :param seam: Which seam recorded it.
-        :ptype seam: CassetteSeam
         :param captured_model: The capture run's candidate model.
-        :ptype captured_model: str
         :param response: The action's result, or the delivered payload.
-        :ptype response: dict[str, Any] | None
         :param outcome: How the background work ended (delivery seam only).
-        :ptype outcome: CassetteDeliveryOutcome | None
         :param error: Why it failed (delivery seam only).
-        :ptype error: str | None
         :return: The unsaved cassette.
-        :rtype: EvalCassette
         """
         return cls(
             id=key.doc_id,
@@ -6805,6 +7063,7 @@ __all__ = [
     "FailedBecause",
     "FAILED_BECAUSE",
     "StoredFailedBecause",
+    "KnownExhaustedBecause",
     "KnownReasoningEffort",
     "KnownUsageRole",
     "KnownSimulatorPurpose",
@@ -6868,6 +7127,7 @@ __all__ = [
     "CassetteSeam",
     "CatalogRubricDim",
     "CellTermination",
+    "WrittenOver",
     "ClientRequestSettings",
     "RunDisclosure",
     "CompletenessSource",
@@ -6880,7 +7140,11 @@ __all__ = [
     "RUN_LABELS_MAX",
     "RUN_LABEL_MAX_LENGTH",
     "run_label_problem",
+    "MeasureAttestation",
     "MeasureDeclaration",
+    "MeasureRemeasure",
+    "MeasureReread",
+    "ServedModelAttestation",
     "EvalRunStatus",
     "ArmSchedule",
     "EvalTemplate",
@@ -6889,7 +7153,6 @@ __all__ = [
     "GoalCheckControls",
     "GoalCheckIntent",
     "GoalStateOutcome",
-    "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
     "JUDGE_WORDING_CHANGE_SENTENCE",

@@ -13,8 +13,6 @@ from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
     SIMULATOR_MAX_TOKENS,
-    SIMULATOR_REASONING_ALLOWANCE_TOKENS,
-    SIMULATOR_REASONING_EFFORT,
     SIMULATOR_REQUEST_SETTINGS,
     CandidateTurn,
     SimulatorReplyInvalid,
@@ -668,11 +666,13 @@ def test_the_simulator_asks_for_its_reasoning_by_effort_under_a_derived_cap() ->
     reasoned through the whole cap, so the simulator names the lowest widely accepted effort and sends no token
     budget — and its cap is still derived as room for that reasoning plus room for the reply. Its calls all send a
     strict reply schema, so it asks for the enforcement they carry."""
-    assert SIMULATOR_REQUEST_SETTINGS.reasoning_effort == SIMULATOR_REASONING_EFFORT == "low"
+    assert SIMULATOR_REQUEST_SETTINGS.reasoning_effort == "low"
     assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens is None
     assert SIMULATOR_REQUEST_SETTINGS.strict_output is True
     assert SIMULATOR_REQUEST_SETTINGS.max_tokens == SIMULATOR_MAX_TOKENS
-    assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+    assert SIMULATOR_MAX_TOKENS == 1024 + SIMULATOR_ANSWER_BUDGET_TOKENS, (
+        "room for 1,024 reasoning tokens, then the reply"
+    )
 
 
 def test_a_candidate_turn_carries_only_what_the_simulator_reads():

@@ -27,10 +27,10 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    get_campaign,
     report_html,
-    report_markdown,
 )
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import (
     NO_AXIS_EXPLORATORY,
     NO_QUESTION_EXPLORATORY,
@@ -40,7 +40,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     FloorOutcome,
     aspect_pass_rate,
     evaluate_floor,
@@ -230,10 +230,13 @@ async def test_a_candidate_costing_more_on_its_whole_interval_breaks_the_cost_fl
 
 
 async def test_the_floor_reads_its_interval_at_the_nominal_level_with_no_correction() -> None:
-    bundle, control, candidate = await _shape(7)
+    # A cost that varies from case to case, so the family holds two comparisons: the label's accuracy, which an eval of
+    # one label passes on exactly (its pass rate, read once), and the cost.
+    bundle, control, candidate = await _shape(7, spread=0.0001)
     (family,) = bundle.multiple_comparisons.families
     assert family.family_size > 1 and family.interval_level is not None and family.interval_level > INTERVAL_LEVEL
-    (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (passed,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
     assert passed.case_values is not None and passed.bounded_interval is not None
     nominal = bounded_difference_interval(
         *passed.case_values, paired=passed.test == "paired", value_range=(0.0, 1.0), confidence=INTERVAL_LEVEL
@@ -341,15 +344,17 @@ async def test_an_asked_aspect_with_no_margin_compares_its_pass_rate_and_its_flo
     None
 ):
     """Owner, 2026-11-06: a question with no margin is a superiority question, and its pass rate is a hypothesis it
-    asks, so the family holds it beside the label check's rate, Holm-corrected as a pair."""
+    asks. An eval of one label passes a trial exactly where the label matched, so the family holds that hypothesis once,
+    as the label's accuracy, alone and uncorrected."""
     bundle, control, candidate = await _shape(5, floors=(RateDrop(max_points=10, reading="match"), CostLower()))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
     assert family.aspect == bundle.aspect
-    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
-    assert family.family_size == 2 and compared.verdict == "not_separated"
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
+    assert family.family_size == 1 and compared.verdict == "not_separated"
     assert compared.delta == pytest.approx(-0.05) and compared.p_raw is not None
-    assert compared.p_adjusted == pytest.approx(2 * compared.p_raw)
+    assert compared.p_adjusted == pytest.approx(compared.p_raw)
     (trial,) = [contrast for contrast in bundle.floor_contrasts if contrast.reading == "trial"]
     assert (trial.control.variant_key, trial.contrast.variant_key, trial.test) == (control, candidate, "paired")
     rate = aspect_pass_rate(bundle, control, candidate)
@@ -364,8 +369,12 @@ async def test_a_question_asked_after_the_first_result_compares_its_pass_rate_as
     (after,) = late.multiple_comparisons.families
     (asked,) = early.multiple_comparisons.families
     assert after.aspect == late.aspect and asked.aspect == early.aspect
-    assert [comparison.reading for comparison in after.comparisons].count("trial") == 1
-    assert [comparison.reading for comparison in asked.comparisons].count("trial") == 1
+    # An eval of one label: the pass rate's hypothesis is read once, as the label's accuracy, either way.
+    assert [comparison.name for comparison in after.comparisons].count("accuracy") == 1
+    assert [comparison.name for comparison in asked.comparisons].count("accuracy") == 1
+    assert not [
+        comparison for family in (after, asked) for comparison in family.comparisons if comparison.reading == "trial"
+    ]
     assert after.family_size == asked.family_size
     assert late.floor_contrasts == early.floor_contrasts, "the floors read the same values either way"
     said = {late.criterion: late.set_at for late in late.reading_scope.late_criteria}
@@ -382,6 +391,18 @@ async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> No
     assert (nominal.confidence, stricter.confidence) == (INTERVAL_LEVEL, 0.99)
     assert nominal.interval is not None and stricter.interval is not None
     assert stricter.interval[0] < nominal.interval[0] and stricter.interval[1] > nominal.interval[1]
+
+
+@pytest.mark.parametrize("confidence", [INTERVAL_LEVEL, 0.99])
+async def test_the_aspect_pass_rate_is_the_floor_readings_pass_rate(confidence: float) -> None:
+    """One rate under two doors: what ``aspect_pass_rate`` reads alone is the overall rate the floor readings carry
+    (``FloorReadings.pass_rate``, which a campaign's readings take from the readings they hold), at every level, and
+    neither is read for an arm off the scoreboard (#1053)."""
+    bundle, control, candidate = await _shape(5)
+    readings = floor_readings(bundle, control, candidate, confidence=confidence)
+    assert len(readings.rates) > 1, "the control: the readings carry more rates than the pass rate"
+    assert aspect_pass_rate(bundle, control, candidate, confidence=confidence) == readings.pass_rate()
+    assert floor_readings(bundle, control, "no-such-arm").pass_rate() is None
 
 
 # =============================================================================

@@ -558,10 +558,10 @@ function kHLine(s,x1,x2,y,clear,attrs){const cuts=clear.filter(b=>b[1]-K_CLEAR/2
 const kTextBox=(x,y,t,anchor,strong)=>{const w=textW(t,12,strong?600:400),a=anchor==="end"?x-w:anchor==="middle"?x-w/2:x;return [a,y-10,a+w,y+3];};
 // where a chart's head (its level) ends: over the plot's right end, else, where it is wider than everything left of
 // that, as far right as it must go to start inside the chart, never past its edge
-const kLevelX=(w,r,level)=>level?Math.min(w,Math.max(w-r,textW(kLevelHead(level),12))):w-r;
+const kLevelX=(w,r,head)=>head?Math.min(w,Math.max(w-r,textW(head,12))):w-r;
 // the labels in a chart's head row a vertical line keeps clear of: the interval level, ending at lx, and the
 // reference's label, on the row above the plot (mt)
-function kHeadClear(lx,mt,level,rl){const c=[];if(level)c.push(kTextBox(lx,mt-8,kLevelHead(level),"end"));
+function kHeadClear(lx,mt,head,rl){const c=[];if(head)c.push(kTextBox(lx,mt-8,head,"end"));
   if(rl){const y=mt-8-(rl.raised||0)*K_RAISED;c.push(kRefBox(rl,y-(rl.lines.length-1)*13));}return c;}
 // each group's heading, by the row it opens, wrapped at its spaces to the chart's width w, so a heading wider than a
 // phone's chart takes a second line rather than running off its edge (a word wider than the chart is a line of its own,
@@ -597,9 +597,10 @@ function kNoteWords(t){const s=String(t);if(!s.includes(" · "))return s.split("
 // the words
 function kWrapNote(t,room){const lines=[],wds=kNoteWords(t);let cur="";for(const wd of wds){const nx=cur?cur+" "+wd:wd;
   if(cur&&nx.length*6.4>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
-  if(lines.length>2){let at=2,best=Infinity;
-    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first
-    for(let i=2;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
+  if(lines.length>2){const first=String(t).includes(" · ")?1:2;let at=first,best=Infinity;
+    // two lines at most, split where the longer is shortest, the figure with its unit kept on the first: its first two
+    // words, or a note's first run, which holds them already
+    for(let i=first;i<wds.length;i++){const lg=Math.max(wds.slice(0,i).join(" ").length,wds.slice(i).join(" ").length);if(lg<best){best=lg;at=i;}}
     return [wds.slice(0,at).join(" "),wds.slice(at).join(" ")];}return lines;}
 // a row label in its column of maxC characters: whole, else wrapped at its spaces onto two lines, else its short label
 // so, else wrapped onto as many lines as it takes; never cut, so no two rows read alike that their labels tell apart.
@@ -640,6 +641,9 @@ function kLogTicks(a,b,f,x){const at=st=>{const t=[];for(let k=Math.floor(Math.l
 // an interval level as a chart's head prints it: "95% intervals"; a level glossed in parentheses keeps its gloss last,
 // "99.7% intervals (95% across 16 comparisons)"
 const kLevelHead=l=>{const m=/^(\S+) (\(.+\))$/.exec(l);return m?`${m[1]} intervals ${m[2]}`:`${l} intervals`;};
+// what a chart's head prints of its level: what its page decided (level_head: empty for nothing, a later chart at the
+// page's main level; or the head marking another level), else its level's own head (#1128)
+const kHead=d=>d.level_head!=null?d.level_head:d.level?kLevelHead(d.level):"";
 // marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
 function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
   if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
@@ -714,13 +718,13 @@ function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H
 // ---------- horizontal bars (optionally diverging, stacked, grouped, with whiskers and a reference line) ----------
 // rows:[{label, sl?, value | segments:[{value,color}], lo?, hi?, color, strong?, muted?, note?, tip?, group?}]; lo without hi
 // is an interval open above
-// opt:{domain:[a,b], fmt, tickFmt?, ticks?, log?, ref?:{value,label}, origin?, originLabel?, zeroLabel?, better?, dots?, level?, labelW?, rowH?}
+// opt:{domain:[a,b], fmt, tickFmt?, ticks?, log?, ref?:{value,label}, origin?, originLabel?, zeroLabel?, better?, dots?, head?, labelW?, rowH?}
 function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0;
   // a log axis draws each row as a dot, never a bar: a bar's length from a log axis's low end measures nothing
   const dots=!!(opt.dots||opt.log);
   // a dot strip's column, and room for the tags beside its labels
   const lw=opt.labelW||(dots?kDotLabelW(rows,w)+tagW:narrow?Math.min(130,w*.36):Math.min(220,w*.3));
-  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.head||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;
   // every note whole, wrapped at its spaces to two lines at most, the margin as wide as its widest line: a dot's note
   // at the right edge, a bar's past its bar's end
   if(rows.some(r=>r.note!=null))m.r=dots?kNoteMargin(rows,w):Math.max(m.r,kNoteMargin(rows,w));
@@ -728,14 +732,14 @@ function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?
   // what zero is on a change chart (the control), on lines of its own above every other label
   const zl=opt.zeroLabel&&d0<=0&&0<=d1?kZeroPlace(x(0),opt.zeroLabel,w):null;if(zl)m.t+=16+(zl.lines.length-1)*13;
   const bw=kBetterWords(opt.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
-  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.level?w-textW(kLevelHead(opt.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.head?w-textW(opt.head,12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
   // one label form for the chart, every label whole on one line or two, else every row its short label, never a tag
   // alone; rows apart by the lines a label takes, so it clears a group's heading
   const lines=kRowLines(rows,Math.floor((m.l-14-tagW)/6.6)),rowH=kRowH(rows,lines,opt.rowH||28);
   const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
   const heads=kGroupHeads(rows,w,true),h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0)+kHeadsH(heads);const s=svgIn(el,w,h);
   // every label a vertical line would cross: the chart's head, the reference's label and each group's heading
-  const clear=[...kHeadClear(w,m.t,opt.level,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
+  const clear=[...kHeadClear(w,m.t,opt.head,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
   // each bar's note, past its bar's end, which the reference line drawn after the rows keeps clear of
   const notes=[];
   const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
@@ -777,17 +781,17 @@ function barsH(el,w,rows,opt){const narrow=w<480,tagW=rows.some(r=>r.tag!=null)?
     const lo=r.lo==null?"":kAs(r.lo_text,opt.fmt,r.lo);
     hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,opt.fmt,val)+(r.lo==null?"":open?` (from ${lo} up, no upper bound)`:` (${lo} to ${kAs(r.hi_text,opt.fmt,r.hi)})`)]));});
   if(opt.ref){const rx=x(opt.ref.value);kVLine(s,rx,m.t-6,h-m.b,[...clear,...notes],{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
-  if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  if(opt.head)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:opt.head},s);
   return s;}
 
 // ---------- line chart over ordered categories ----------
-// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, level?}
-function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.level?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, head?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.head?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
   const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
   for(const v of kFmtTicks(d0,d1,5,opt.fmt)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
   cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
   if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
-  if(opt.level)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  if(opt.head)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:opt.head},s);
   const ends=[];const obs=[];
   for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
@@ -805,7 +809,7 @@ function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narr
   return s;}
 
 // ---------- forest plot: change against a control, with interval and an optional margin ----------
-// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?, zeroLabel?, better?}
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), head?, zeroLabel?, better?}
 // every row's end label is its note where every row has one, else its value, so the labels read alike; a note too wide
 // for the margin wraps at its spaces, never cut to a coarser number than it states
 function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
@@ -818,19 +822,19 @@ function forest(el,w,rows,opt){const narrow=w<480,need=Math.max(...rows.map(r=>r
   let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
   const zl=opt.zeroLabel&&d0<=0&&0<=d1?kZeroPlace(x(0),opt.zeroLabel,w):null;if(opt.zeroLabel&&!zl)m.t-=14;if(zl)m.t+=(zl.lines.length-1)*13;
   const bw=kBetterWords(opt.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
-  const hx=kLevelX(w,m.r,opt.level);
-  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?hx-textW(kLevelHead(opt.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  const hx=kLevelX(w,m.r,opt.head);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.head?hx-textW(opt.head,12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
   // one label form for the chart: every label whole on one line or two, else every row its short label, never cut
   // while a whole form fits
   const lines=kRowLines(rows,Math.floor((m.l-14)/6.6)),rowH=kRowH(rows,lines,opt.rowH||30);
   const heads=kGroupHeads(rows,w,false),h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0)+kHeadsH(heads);const s=svgIn(el,w,h);
   // every label a vertical line would cross: the chart's head, the margin's label and each group's heading
-  const clear=[...kHeadClear(hx,m.t,opt.level,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
+  const clear=[...kHeadClear(hx,m.t,opt.head,rl),...kGroupClear(heads,rows.length,m.t,rowH)];
   if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
     kVLine(s,mx,m.t-4,h-m.b,clear,{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
   for(const v of kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16)),opt.fmt,x)){kVLine(s,x(v),m.t,h-m.b,clear,{class:"grid"});S("text",{x:x(v),y:h-6-bh,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
   kVLine(s,x(0),m.t-4,h-m.b,clear,{class:"axis",style:"stroke-width:1.5"});
-  if(opt.level)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(opt.level)},s);
+  if(opt.head)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:opt.head},s);
   if(zl)kZeroDraw(s,x(0),zl,m.t-4,"stroke-width:1.5",clear);kBetter(s,bw,m.l,w-m.r,h-6);
   let y0=m.t+(rows.some(r=>r.group)?14:0);
   rows.forEach((r,i)=>{if(i in heads){if(i)y0+=14;y0+=(heads[i].length-1)*13;kGroupHead(s,heads[i],y0);}
@@ -856,24 +860,24 @@ function kBars(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNee
   barsH(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id),
       segments:r.segments&&r.segments.map(sg=>({value:sg.value,color:kTok(sg.color,null),pattern:sg.pattern}))})),
     {domain:d.domain,fmt:f,tickFmt:d.tick_fmt?namedFmt(d.tick_fmt):null,ticks:d.ticks,ref:ref&&!pref?ref:null,origin:pref?ref.value:0,originLabel:pref?ref.label:null,zeroLabel:pref?null:d.zero_label||null,
-     better:d.better,dots:!!d.dots,level:d.level,labelW:kLabelW(d,w),rowH:d.row_height,log:d.log});}
+     better:d.better,dots:!!d.dots,head:kHead(d),labelW:kLabelW(d,w),rowH:d.row_height,log:d.log});}
 
 function kForest(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");
   forest(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id)})),
-    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,level:d.level,zeroLabel:d.zero_label||null,better:d.better,labelW:kLabelW(d,w),rowH:d.row_height});}
+    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,head:kHead(d),zeroLabel:d.zero_label||null,better:d.better,labelW:kLabelW(d,w),rowH:d.row_height});}
 
 function kLines(el,w,d){kNeed(d,["domain","fmt"]);const series=kList(d,"series");const cats=kList(d,"categories");
   if(!d.level&&series.some(se=>se.lo||se.hi))throw new Error(`series carry bands, so "level" is required`);
-  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,level:d.level});}
+  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,head:kHead(d)});}
 
 // scatter: two measures that trade off. gate=true shades where both references pass (gate_scatter).
 function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);const pts=kList(d,"points");
   if(!d.level&&pts.some(p=>p.x_lo!=null||p.x_hi!=null||p.y_lo!=null||p.y_hi!=null))throw new Error(`points carry intervals, so "level" is required`);
   if(gate&&(!d.reference||!d.x_reference))throw new Error(`gate_scatter needs "reference" (y) and "x_reference" (x)`);
-  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560;const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
+  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560,head=kHead(d);const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
   const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
   // a y title takes a line of its own above the plot, top left, so no mark is ever drawn over it
-  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:(d.level?22:16)+(d.y_title?16:0),b:40};const s=svgIn(el,w,h);
+  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:(head?22:16)+(d.y_title?16:0),b:40};const s=svgIn(el,w,h);
   const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[],refs=[];
   const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
   if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
@@ -919,7 +923,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   for(const p of pts){const [px,py]=at(p),c=kTok(p.color,"--s1"),st=`stroke:var(${c});stroke-width:1.5;stroke-linecap:round`;
     if(p.x_lo!=null&&p.x_hi!=null){S("line",{x1:cx(p.x_lo),x2:cx(p.x_hi),y1:py,y2:py,style:st},s);obs.push([cx(p.x_lo),py-2,cx(p.x_hi),py+2,1]);whiskered=true;}
     if(p.y_lo!=null&&p.y_hi!=null){S("line",{x1:px,x2:px,y1:cy(p.y_hi),y2:cy(p.y_lo),style:st},s);obs.push([px-2,cy(p.y_hi),px+2,cy(p.y_lo),1]);whiskered=true;}}
-  if(whiskered&&d.level)S("text",{x:w-m.r,y:m.t-4,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
+  if(whiskered&&head)S("text",{x:w-m.r,y:m.t-4,"text-anchor":"end",class:"tick",text:head},s);
   for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
     if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
     hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${kAs(p.x_text,xf,p.x)} · ${kAs(p.y_text,yf,p.y)}`]));}
@@ -940,12 +944,12 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
 function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows").map(r=>({...r,sl:r.short_label}));kNeedLevel(d,rows);const f=namedFmt(d.fmt),tf=kTickFmt(d.fmt);const [d0,d1]=d.domain;
   const m={l:kLabelW(d,w)||kDotLabelW(rows,w),r:14,t:22,b:22},lines=kRowLines(rows,Math.floor((m.l-12)/6.6)),rowH=kRowH(rows,lines,d.row_height||28);
   if(rows.some(r=>r.note!=null))m.r=kNoteMargin(rows,w);
-  const x=lin(d0,d1,m.l,w-m.r);const hx=kLevelX(w,m.r,d.level);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,d.level?hx-textW(kLevelHead(d.level),12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
+  const x=lin(d0,d1,m.l,w-m.r);const head=kHead(d);const hx=kLevelX(w,m.r,head);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,head?hx-textW(head,12)-8:w,w):null;if(rl)m.t+=(rl.lines.length-1)*13+(rl.raised||0)*K_RAISED;
   const zl=d.zero_label&&d0<=0&&0<=d1?kZeroPlace(x(0),d.zero_label,w):null;if(zl)m.t+=14+(zl.lines.length-1)*13;
   const bw=kBetterWords(d.better),bh=kBetterH(bw,m.l,w-m.r);m.b+=bh;
   const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);
   // every label a vertical line would cross: the chart's head and the reference's label
-  const clear=kHeadClear(hx,m.t,d.level,rl);
+  const clear=kHeadClear(hx,m.t,head,rl);
   const tw=Math.max(tf(d0).length,tf(d1).length)*6.4+16;
   const tv=d.ticks?kThinTicks(d.ticks,x,tf):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x),tl=kTickLabels(d.fmt,tv);
   for(const v of tv){kVLine(s,x(v),m.t,h-m.b,clear,{class:"grid"});S("text",{x:x(v),y:h-6-bh,"text-anchor":"middle",class:"tick",text:tl(v)},s);}
@@ -954,7 +958,7 @@ function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows
     kLabelText(g,lines(r),m.l-8,cy,st);kDotRow(g,x,d0,d1,r,cy,c,kShape(r.shape),r.hollow,w-m.r+8,m.r-10,st);
     hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,kAs(r.value_text,f,r.value)+(r.lo!=null&&r.hi!=null?` (${kAs(r.lo_text,f,r.lo)} to ${kAs(r.hi_text,f,r.hi)})`:"")]));});
   if(d.reference){const rx=x(d.reference.value);kVLine(s,rx,m.t-4,h-m.b,clear,{class:"floor"});if(rl)kRefText(s,rl,m.t-8-(rl.raised||0)*K_RAISED,true);}
-  if(d.level)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:kLevelHead(d.level)},s);
+  if(head)S("text",{x:hx,y:m.t-8,"text-anchor":"end",class:"tick",text:head},s);
   kBetter(s,bw,m.l,w-m.r,h-6);
   return s;}
 

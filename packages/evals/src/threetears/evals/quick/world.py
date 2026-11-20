@@ -19,7 +19,7 @@ and drives the same machinery:
   why, as a ``ValueError`` (:class:`ToolRefused`).
 - **What a grader sees** is a :class:`WorldOutcome`: the agent's ``answer``, the ``state`` it left (an instance of the
   state model) and the ``calls`` it made. An expression grader is a goal-state check over the same, graded by the
-  engine's own :func:`~threetears.evals.run.evaluate_goal_state`. A tool that raises is the rig's fault and excludes
+  engine's own :func:`~threetears.evals.run.runner.evaluate_goal_state`. A tool that raises is the rig's fault and excludes
   the cell; a check that cannot be evaluated does too.
 - **A world with no state** (``World(tools=[search])``) is a set of lookups: plain functions of their keyword
   arguments returning JSON. Handed ``recording=``, its answers are recorded once and replayed after
@@ -46,15 +46,9 @@ from typing import Any, NoReturn, get_type_hints
 from pydantic import BaseModel, ConfigDict, PydanticSchemaGenerationError, TypeAdapter, ValidationError
 
 from threetears.evals.quick.answer import Answer
-from threetears.evals.schema import (
-    CallLedger,
-    RecordedCall,
-    EvalTestCase,
-    JudgedArtifact,
-    WorldSeed,
-    extract_paths,
-    referenced_actions,
-)
+from threetears.evals.schema import CallLedger, RecordedCall, EvalTestCase, JudgedArtifact, WorldSeed
+from threetears.evals.schema.goal_grammar import extract_paths
+from threetears.evals.schema.goal_grammar import referenced_actions
 from threetears.evals.kernel import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -65,9 +59,11 @@ from threetears.evals.kernel import (
     WorldSession,
 )
 from threetears.evals.kernel.eval_file import beside_eval_file
-from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed, schema_violations
+from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed
+from threetears.evals.kernel.host.world_schema import schema_violations
 from threetears.evals.schema import SubjectSnapshot
-from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
+from threetears.evals.run import CellContext, GoalCheckUnevaluable, grade_goal_checks
+from threetears.evals.run.runner import evaluate_goal_state
 from threetears.evals.run.check_controls import idle_end_state
 from threetears.evals.schema.logs import get_logger
 
@@ -116,9 +112,7 @@ class WorldTool:
         """Declare ``act`` as a tool, its parameters read from its type hints.
 
         :param act: The function. With a ``state`` model, its first parameter is the state.
-        :ptype act: Callable[..., Any]
         :param state: The world's state model, or ``None`` for a world of lookups.
-        :ptype state: type[BaseModel] | None
         :raises ValueError: ``act`` has no name a tool can carry, takes no state where the world has one, or has a
             parameter with no type annotation, a default, or a type no JSON Schema describes.
         """
@@ -248,15 +242,12 @@ class World:
 
         :param state: The state, a pydantic model: each field one dimension a case seeds and a goal check reads, its
             ``Field(description=...)`` why it matters. ``None`` for a world of lookups.
-        :ptype state: type[BaseModel] | None
         :param tools: What the agent can do: functions of the state and their typed parameters, or, with no state,
             functions of their keyword arguments returning JSON.
-        :ptype tools: Sequence[Callable[..., Any]]
         :param recording: For a world of lookups: a file their answers are recorded to on the first run and replayed
             from after (``RECORD=1`` records it again). A world with state takes none: its tools move the state
             they are graded on, so they run in every cell. A relative path is read beside the eval file being
             loaded, else in the working directory.
-        :ptype recording: str | os.PathLike[str] | None
         :raises ValueError: A state that is not a pydantic model, a field with no description, no tools for a world of
             lookups, two tools of one name, a recording for a world with state, or a declaration the engine's
             registry refuses.
@@ -312,9 +303,7 @@ class World:
         """The runner hosting ``agent`` on this world.
 
         :param agent: ``async def agent(case, tools)``, handed each case and the tools on its cell's world.
-        :ptype agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]]
         :return: The runner.
-        :rtype: WorldRunner
         :raises ValueError: ``agent`` is not callable.
         """
         if not callable(agent):
@@ -330,13 +319,9 @@ class World:
         """What graders see of one cell: the answer, the state as the state model, and the calls.
 
         :param answer: The agent's answer.
-        :ptype answer: Any
         :param state: The cell's end state, by dimension; ``None`` for a world of lookups.
-        :ptype state: Mapping[str, Any] | None
         :param calls: The calls that succeeded.
-        :ptype calls: Sequence[RecordedCall]
         :return: The outcome.
-        :rtype: WorldOutcome
         """
         model = None if self.state is None or state is None else self.state.model_construct(**dict(state))
         return WorldOutcome(answer=answer, state=model, calls=list(calls))
@@ -377,11 +362,8 @@ class World:
         unset would read back as ``None`` — a value nobody seeded, which a goal check would grade as though one had.
 
         :param values: The case's ``world``.
-        :ptype values: Any
-        :param case: What the refusal calls the case: its name, or its position.
-        :ptype case: int | str
+        :param case: What the refusal calls the case: its id, or its place in the list from 1.
         :return: The state, every field as JSON.
-        :rtype: dict[str, Any]
         :raises ValueError: The state is not a mapping, the state model refuses it, or the seed walk refuses it.
         """
         assert self.state is not None, "only a world with state is seeded"
@@ -413,11 +395,8 @@ class World:
         states no do-nothing figure, and the warning logged here names the check and why.
 
         :param checks: The goal checks.
-        :ptype checks: Sequence[str]
         :param cases: Per case, its starting state and its variation parameters (``variation.*``).
-        :ptype cases: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
         :return: Check -> cases passed, for every check evaluable against every case's starting state.
-        :rtype: dict[str, int]
         """
         assert self.registry is not None, "only a world with state has goal checks"
         passes = dict.fromkeys(checks, 0)
@@ -453,11 +432,8 @@ class World:
         string is a reading of what the model wrote, refused as authoring refuses it.
 
         :param tool: The carrier a check names, this world's name for one of its tools.
-        :ptype tool: str
         :param action: The tool's name.
-        :ptype action: str
         :return: The tool's ``input_schema``, or None.
-        :rtype: Mapping[str, Any] | None
         """
         declared = self.tools.get(action) if tool == self.name else None
         return None if declared is None else declared.input_schema
@@ -468,9 +444,7 @@ class World:
         The host's :attr:`~threetears.evals.kernel.host.HostProfile.tool_actions` reader for a quick world.
 
         :param tool: The carrier a check names.
-        :ptype tool: str
         :return: The tools' names; empty for a carrier that is not this world.
-        :rtype: frozenset[str]
         """
         return frozenset(self.tools) if tool == self.name else frozenset()
 
@@ -596,6 +570,12 @@ def world_case_payload(seed: dict[str, Any]) -> dict[str, Any]:
     return {SEED_KEY: seed}
 
 
+def carries_a_starting_state(test_case: EvalTestCase) -> bool:
+    """Whether a stored case carries a world's starting state (:data:`SEED_KEY`, from its author's reserved ``world``
+    key): this module's key, so this module answers for it."""
+    return SEED_KEY in test_case.host_payload
+
+
 class WorldCellKind:
     """One cell of a world with state: seeds the case's world, runs the callable kind over it, grades the end state.
 
@@ -618,14 +598,10 @@ class WorldCellKind:
         """Bind the world, the candidate, and the cell.
 
         :param world: The world every cell seeds.
-        :ptype world: World
         :param candidate: The world candidate.
-        :ptype candidate: WorldAgent
         :param inner: Builds the callable kind over a one-argument candidate — the scorers, the expected
             labels and the judge, exactly as a world-less run grades.
-        :ptype inner: Callable[[Callable[[Mapping[str, Any]], Awaitable[Any]]], Any]
         :param cell: The cell this kind drives.
-        :ptype cell: CellContext
         """
         self._world = world
         self._cell = cell

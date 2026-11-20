@@ -62,16 +62,13 @@ def measurement_window(run_id: str, results: Iterable[ResultView | ResultKey]) -
     give, and a reader holding no results reads none to say when the run was measured.
 
     :param run_id: The run the window describes.
-    :ptype run_id: str
     :param results: That run's stored results, or their keys. Callers filter to one run; nothing
         here checks ``eval_run_id``, so passing another run's results
         produces a window describing a population that never existed.
-    :ptype results: Iterable[ResultView | ResultKey]
     :return: The window, or ``None`` when the run produced no results. ``None`` is an
         honest absence and never a zero-length span at some arbitrary instant: a
         run that measured nothing did not measure it "at" a time, and a synthetic
         point would compare against other windows as though it had.
-    :rtype: MeasurementWindow | None
     """
     stamps = [r.scored_at for r in results if r.scored_at]
     if not stamps:
@@ -107,14 +104,11 @@ def _gap_seconds(earlier_end: str, later_start: str) -> tuple[float | None, str 
     and why rather than failing.
 
     :param earlier_end: The last ``scored_at`` of the run that finished first.
-    :ptype earlier_end: str
     :param later_start: The first ``scored_at`` of the run that began after it.
-    :ptype later_start: str
     :return: ``(seconds, None)`` with the non-negative gap; or ``(None, why)`` when it cannot
         be computed honestly — an unparseable stamp, a naive/aware mix, or a parsed order that
         contradicts the lexicographic one (which means the two stamps are not on a shared clock
         and no duration between them is meaningful) — ``why`` naming which.
-    :rtype: tuple[float | None, str | None]
     """
     try:
         end = datetime.fromisoformat(earlier_end)
@@ -160,7 +154,6 @@ class WindowPairs(NamedTuple):
         """How many pairs the run set has.
 
         :return: The P a partial disclosure counts its disjoint pairs against.
-        :rtype: int
         """
         return len(self.disjoint) + len(self.overlapping)
 
@@ -191,11 +184,9 @@ def classify_window_pairs(windows: Sequence[MeasurementWindow]) -> WindowPairs:
     conditions, and the whole point of the question is whether they were.
 
     :param windows: The resolved windows of the runs being compared.
-    :ptype windows: Sequence[MeasurementWindow]
     :return: The pairs, split. Both halves are in the order the pairs are enumerated from
         ``windows``, and both are empty for fewer than two windows — one run cannot be
         measured apart from itself, and it cannot overlap itself either.
-    :rtype: WindowPairs
     """
     # Checked exhaustively over every pair. A sorted single pass is the shape that
     # answers "do ALL of them overlap", which is a different question and the one
@@ -225,11 +216,9 @@ def disjoint_window_pairs(windows: Sequence[MeasurementWindow]) -> list[WindowGa
     this question, and reading ``.disjoint`` at every call site would say less.
 
     :param windows: The resolved windows of the runs being compared.
-    :ptype windows: Sequence[MeasurementWindow]
     :return: One :class:`WindowGap` per non-overlapping pair, in the order the pairs are
         enumerated from ``windows``. Empty when every pair overlaps, and for fewer than
         two windows — one run cannot be measured apart from itself.
-    :rtype: list[WindowGap]
     """
     return classify_window_pairs(windows).disjoint
 
@@ -276,9 +265,7 @@ def format_window_gap(seconds: float | None) -> str:
     threshold to declare and is not this function's.
 
     :param seconds: The gap, or ``None`` when it could not be computed.
-    :ptype seconds: float | None
     :return: The magnitude, or :data:`UNCOMPUTABLE_GAP_CLAUSE` when there is none.
-    :rtype: str
     """
     if seconds is None:
         return UNCOMPUTABLE_GAP_CLAUSE
@@ -348,15 +335,12 @@ def measurement_window_disclosure(windows: Sequence[MeasurementWindow], *, full:
     pair; both say how much they did not name and where to get it.
 
     :param windows: The resolved windows of the runs being compared.
-    :ptype windows: Sequence[MeasurementWindow]
     :param full: List every span regardless of count. For surfaces whose consumer
         can collapse the text itself, and for an operator who asked. The pair
         list still caps at :data:`MAX_RENDERED_WINDOW_GAPS`, because pairs grow
         quadratically where spans grow linearly.
-    :ptype full: bool
     :return: The disclosure, rendered verbatim by every surface, or ``None`` when every
         pair of runs overlaps or there are too few windows to ask.
-    :rtype: str | None
     """
     pairs = disjoint_window_pairs(windows)
     if not pairs:

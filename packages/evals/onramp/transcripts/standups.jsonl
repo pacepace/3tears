@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "recur.py"}
+{"tool": "read", "path": "data/series.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom recur import Series, invites\n\ndef send(case):\n    \"\"\"The UTC invites the calendar server gets for the series.\"\"\"\n    return {\"invites\": invites(Series.from_json(case))}\n\n\ndef matches_old_calendar(case, out):\n    \"\"\"Every invite is the one the old calendar sent.\"\"\"\n    return out[\"invites\"] == case[\"old_calendar\"]\n\nseries = Eval(\"data/series.jsonl\", runner=send, grader=[matches_old_calendar], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_old_calendar\", \"pass_rate\": 0.375, \"finished\": true}"}

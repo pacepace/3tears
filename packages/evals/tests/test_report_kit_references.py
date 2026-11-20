@@ -45,7 +45,7 @@ from packages.evals.tests.report_kit_support import (
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartQuery
 
 #: The plan the Kairo page was written from, as the retired report planner's reference plan stored it.
@@ -209,7 +209,7 @@ def _kairo_plan() -> dict[str, Any]:
 
 def _example_rows(plan: dict[str, Any], report_input: ReportInput) -> list[str]:
     """The trials the plan's examples section selects, as a page reads its query
-    (:func:`~threetears.evals.analysis.report_rows.query_rows`)."""
+    (:func:`~threetears.evals.analysis.report.rows.query_rows`)."""
     (query,) = [s["chart"]["query"] for s in plan["sections"] if s["chart"]["query"]["source"] == "examples"]
     return [row.label for row in query_rows(ChartQuery.model_validate(query), report_input)]
 

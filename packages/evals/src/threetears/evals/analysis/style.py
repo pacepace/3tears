@@ -26,9 +26,13 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+from threetears.evals.analysis.arms import arm_names
+from threetears.evals.analysis.stats import EVIDENCE_STEPS
+from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import MATCH_MEASURE, MetricDescriptor, goal_check_of
+from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.schema.goal_grammar import (
     ACTION_BUILTINS,
@@ -37,6 +41,10 @@ from threetears.evals.schema.goal_grammar import (
     REFUSAL_BUILTINS,
     WORLD_ROOT,
 )
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 #: What :func:`humanize` names.
 HumanizeKind = Literal["model", "arm", "dimension", "case", "provider"]
@@ -64,9 +72,7 @@ def page_date(stamp: str) -> str:
     not parse.
 
     :param stamp: The date or instant, as stored.
-    :ptype stamp: str
     :return: The date as a page prints it.
-    :rtype: str
     """
     try:
         moment = datetime.fromisoformat(stamp)
@@ -80,15 +86,12 @@ def humanize(kind: HumanizeKind, identifier: str) -> str:
     """An identifier as a reader is shown it after its first mention.
 
     :param kind: What the identifier names.
-    :ptype kind: HumanizeKind
     :param identifier: The identifier as stored.
-    :ptype identifier: str
     :return: A model id without its vendor prefix; an arm by its given label (else its model id, vendor dropped), its
         ``axis=level`` pairs read as words; a dimension with its underscores as spaces, but a check expression (a
         call, a comparison, a quote) as written, since it is code; a case label where it reads as a name someone
         gave (``double-charge``: one token, not a generated id, not a bare number — empty for a dump, a sentence or
         an id, so the caller names the case by number); a provider as given.
-    :rtype: str
     """
     if (kind, identifier) in HUMANIZE_OVERRIDES:
         return HUMANIZE_OVERRIDES[(kind, identifier)]
@@ -126,13 +129,9 @@ def check_held(name: str, descriptor: MetricDescriptor, *, failed: bool = False)
 
     :param name: The check measure's key: the label (``match``), or a measure its descriptor calls a check
         (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`).
-    :ptype name: str
     :param descriptor: Its descriptor.
-    :ptype descriptor: MetricDescriptor
     :param failed: Word the value that fails the trial rather than the one that passes it.
-    :ptype failed: bool
     :return: The check at that value.
-    :rtype: str
     """
     passes = (name == MATCH_MEASURE or descriptor.higher_is_better is not False) != failed
     if name == MATCH_MEASURE or descriptor.data_type == "boolean":
@@ -155,17 +154,27 @@ def measure_name(name: str, reader_name: str | None = None, *, declared: str | N
     key humanized; ``declared`` names checks only.
 
     :param name: The measure's key.
-    :ptype name: str
     :param reader_name: Its reader-facing name, when the catalog carries one. Never read for a goal check.
-    :ptype reader_name: str | None
     :param declared: A goal check's name on its aspect, or None for none given.
-    :ptype declared: str | None
     :return: The name.
-    :rtype: str
     """
     if (check := goal_check_of(name)) is not None:
         return declared if declared is not None else check_names([check], {})[check]
     return reader_name or humanize("dimension", name)
+
+
+def judged_name(dimension: str, declared: str | None = None) -> str:
+    """A judged dimension's name, the one rule every surface names it by: the label its input declares for it
+    (``Judged.label``) wherever one is declared, on a chart, a table, a figure key and in prose alike; else its name as
+    :func:`measure_name` spells it (``reply stays on topic``). Unmarked: a heading adds the judged mark
+    (:func:`~threetears.evals.analysis.report.words.judged_heading`), and a label its capital
+    (:func:`~threetears.evals.analysis.report.words.label_case`).
+
+    :param dimension: The dimension, as the rubric names it.
+    :param declared: The label its input declares, or None for none.
+    :return: The name.
+    """
+    return declared or measure_name(dimension)
 
 
 def _action_word(builtin: str | None) -> str | None:
@@ -341,9 +350,7 @@ def _check_subject(expression: str) -> str | None:
     dotted identifier, never from other text.
 
     :param expression: The check, verbatim.
-    :ptype expression: str
     :return: The subject, capitalised, or None.
-    :rtype: str | None
     """
     for text in (expression.strip(), f"({expression.strip()})"):
         try:
@@ -364,11 +371,8 @@ def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str,
     (``Ticket status check 1``, ``Ticket status check 2``), so a check added beside it can move its number.
 
     :param checks: The checks a page names, by expression, in any order and with repeats.
-    :ptype checks: Iterable[str]
     :param declared: Declared display names, by expression.
-    :ptype declared: Mapping[str, str]
     :return: Each check's name, by expression, declared ones included, in sorted order.
-    :rtype: dict[str, str]
     """
     every = sorted({*checks, *declared})
     taken = {name.casefold() for name in declared.values()}
@@ -411,14 +415,10 @@ def check_definition(
 
     :param by_aspect: Each expression the name stands for, with the aspect it does so on, or None where it stands for
         one expression on every aspect the page reads.
-    :ptype by_aspect: Sequence[tuple[str, str | None]]
     :param span: Sets an expression as code in the page's form: a backtick span (the default, :func:`code`), a
         Markdown span no backtick inside can close, or escaped HTML.
-    :ptype span: Callable[[str], str]
     :param words: Sets an aspect's name as the page's form prints text: as written, or escaped HTML.
-    :ptype words: Callable[[str], str]
     :return: The sentence.
-    :rtype: str
     """
     said = [span(_check_expression(check)) + (f" on {words(aspect)}" if aspect else "") for check, aspect in by_aspect]
     checks = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
@@ -429,11 +429,8 @@ def declared_check_name(names: Mapping[str, str], measure: str) -> str | None:
     """The display name ``names`` (a check's expression to its name) declares for the goal check ``measure`` reads.
 
     :param names: Declared display names, by check expression (``AnalysisContextBundle.goal_check_names``).
-    :ptype names: Mapping[str, str]
     :param measure: Any measure key.
-    :ptype measure: str
     :return: The declared name, or None when ``measure`` is no goal check's or its check is not named.
-    :rtype: str | None
     """
     check = goal_check_of(measure)
     return names.get(check) if check is not None else None
@@ -471,14 +468,10 @@ def arm_name(display: str, *, control: bool = False, declared: Mapping[str, str]
     """Read an arm's display (``model=deepseek-v4.1-flash (production)``, ``candidate=v1``) as an :class:`ArmName`.
 
     :param display: The arm's name as :func:`~threetears.evals.analysis.arms.arm_names` spells it.
-    :ptype display: str
     :param control: Whether it is the control.
-    :ptype control: bool
     :param declared: Each lever's stored reader name, by id (:func:`lever_reader_name`), which an arm named by several
         levers is spelled with.
-    :ptype declared: Mapping[str, str] | None
     :return: The arm's given label and model, never as ``key=value``.
-    :rtype: ArmName
     """
     pairs = [_PAIR.match(part.strip()) for part in display.split(", ")]
     if len(pairs) > 1 and all(pairs):
@@ -499,11 +492,8 @@ def level_arm_name(level: str, *, control: bool = False) -> ArmName:
     (:func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled`), so a level holding ``, `` is read whole.
 
     :param level: The level, as a name spells it (cut as a name cuts it).
-    :ptype level: str
     :param control: Whether it is the control.
-    :ptype control: bool
     :return: The arm's name.
-    :rtype: ArmName
     """
     if labelled := _LABELLED.match(level):
         return ArmName(label=labelled["label"], model=labelled["model"], control=control)
@@ -518,13 +508,9 @@ def lever_spelled(levers: Sequence[str], levels: Sequence[str], declared: Mappin
     a page prints it by (each lever by its stored name), from the levers and levels the arm carries, never from text.
 
     :param levers: The levers, by id, in the name's order.
-    :ptype levers: Sequence[str]
     :param levels: Each lever's level as the name spells it, in the same order.
-    :ptype levels: Sequence[str]
     :param declared: Each lever's stored reader name, by id (:func:`lever_reader_name`); None names each by its id.
-    :ptype declared: Mapping[str, str] | None
     :return: The name.
-    :rtype: str
     :raises ValueError: ``levers`` and ``levels`` differ in length.
     """
     if len(levers) != len(levels):
@@ -544,11 +530,8 @@ def lever_reader_name(lever: str, declared: Mapping[str, str] | None = None) -> 
     named, or one its host no longer declares.
 
     :param lever: The lever, by id.
-    :ptype lever: str
     :param declared: Each lever's stored reader name, by id; None or empty where nothing declares one.
-    :ptype declared: Mapping[str, str] | None
     :return: Its reader name.
-    :rtype: str
     """
     return (declared or {}).get(lever) or lever_id_words(lever)
 
@@ -565,14 +548,10 @@ def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, st
     key and :func:`~threetears.evals.analysis.arms.arm_names`' ``axis=level`` names are unchanged.
 
     :param name: The computed name, as code spelled it.
-    :ptype name: str
     :param levers: The levers it was spelled from, by id; their reader names (:func:`lever_reader_name`) are what
         may open it.
-    :ptype levers: Iterable[str]
     :param declared: Each lever's declared name, by id, as :func:`lever_reader_name` reads it.
-    :ptype declared: Mapping[str, str] | None
     :return: The name as printed.
-    :rtype: str
     """
     for lever in levers:
         reader = lever_reader_name(lever, declared)
@@ -591,6 +570,41 @@ CANNOT_TELL_APART = "cannot tell apart"
 CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b", re.IGNORECASE)
 
 
+#: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
+EVIDENCE_TERM = "evidence"
+
+#: What a quick-path comparison says, in its family's disclosure and under its first line, where a switch declared hard
+#: to undo before its results was declared easy after them: the lowering is ignored, since a bar lowered once the
+#: evidence was seen would be a second look, and the advice reads strong evidence. A bar raised after the results is
+#: honoured, which can only make the advice say switch less often, and says nothing.
+UNDO_LOWERING_IGNORED_SENTENCE = (
+    "The switch was declared easy to undo after these results were in, and that was ignored: it was declared hard to "
+    "undo before them, so the advice reads strong evidence."
+)
+
+#: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
+#: :data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS` weak, from it moderate, from the second strong.
+_EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
+
+
+def evidence_grade(evidence: float) -> str:
+    """The word every surface says an e-value's strength in (:data:`_EVIDENCE_GRADES`): ``weak`` below 3,
+    ``moderate`` from 3, ``strong`` from 10 (:data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS`). Never a
+    verdict: a decision is the comparison's ``verdict``, read off the bet's capital at ``1/α``.
+
+    :param evidence: The e-value.
+    :return: The word.
+    """
+    moderate, strong = EVIDENCE_STEPS
+    return (
+        _EVIDENCE_GRADES[2]
+        if evidence >= strong
+        else _EVIDENCE_GRADES[1]
+        if evidence >= moderate
+        else _EVIDENCE_GRADES[0]
+    )
+
+
 def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
     """The undecided reading as a sentence says it, each arm by name and the control last: ``the evidence cannot tell
     v2 and v1 apart``; with several arms ``the evidence cannot tell v2 or v3 apart from v1``.
@@ -599,11 +613,8 @@ def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
     undecided says it so, and never "not separated" or "nothing separated".
 
     :param arms: The arms read against the control, as the page names them; at least one.
-    :ptype arms: Sequence[str]
     :param control: The control, as the page names it.
-    :ptype control: str
     :return: The clause, with no closing stop.
-    :rtype: str
     """
     if len(arms) == 1:
         return f"the evidence cannot tell {arms[0]} and {control} apart"
@@ -646,6 +657,16 @@ GLOSSARY: dict[str, str] = {
         "means the two are the same."
     ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
+    EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
+    # The promise the advice keeps (stats.advice_path), said with what it is.
+    "advice": (
+        "What to do beside the proof: switch while the candidate leads and its evidence has reached moderate (strong "
+        "where the switch is hard to undo), and keep otherwise."
+    ),
+    "advice promise": (
+        "However often anyone looks, the advice says switch to a candidate no better (with a margin, worse by more "
+        "than it) at most one time in three (one in ten)."
+    ),
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
     "depth": "How many times an arm ran each case: the fewest, the median and the most.",
@@ -755,13 +776,9 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     """Every rule ``text`` breaks.
 
     :param text: A sentence, a paragraph or a header.
-    :ptype text: str
     :param question: The declared question; a sentence of it repeated verbatim is a violation.
-    :ptype question: str | None
     :param header: Whether ``text`` is a header, held to :data:`MAX_HEADER_WORDS` words.
-    :ptype header: bool
     :return: The violations, in the order found; empty when the text passes.
-    :rtype: list[StyleViolation]
     """
     found: list[StyleViolation] = []
     lowered = text.casefold()
@@ -791,9 +808,118 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     return found
 
 
+#: How a trial's drill-down names a reserved judge axis, where a reader sees it: never by its stored id.
+_RESERVED_AXIS_WORDS: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: "outcome"}
+
+
+def trial_dimension(dimension: str) -> str:
+    """A judged dimension as a trial's drill-down and its examples name it: a reserved axis by its word (``outcome``),
+    any other by its id as the rubric names it. A bundle's trials hold every dimension by its id
+    (:attr:`~threetears.evals.analysis.bundle.schema.TrialJudgement.dim`); this names it when a page is rendered.
+
+    :param dimension: The dimension's id.
+    :return: What a trial prints for it.
+    """
+    return _RESERVED_AXIS_WORDS.get(dimension, dimension)
+
+
+def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
+    """The short name each arm declares (``CampaignArm.short_name``), by every variant key that names its cells: its
+    own, and those it resolves to under this build's identity predicate. A declared name is what a page prints for
+    the arm in its tight places, ahead of any short name a page would compute (GENERATOR.md §6.1); an arm declaring
+    none is absent.
+
+    :param arms: A campaign's arms.
+    :return: Variant key -> declared short name.
+    """
+    return {
+        key: arm.short_name
+        for arm in arms
+        if arm.short_name is not None
+        for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)
+    }
+
+
+def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
+    """The name every page prints for each arm of a campaign, by every variant key a label names: the one display-name
+    rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
+    the campaign page's folds and readings, and the plan page alike.
+
+    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code. One code
+    spelled from several levers is printed from the spelling the bundle carries for it
+    (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), each lever by the
+    name every page calls it (``lever_names``), never by reading its frozen label's text back; the bundle refuses a
+    spelling that does not spell the label. Any other arm, a person's or one labelled by a single level, keeps its label
+    as written. The labels themselves, which name the arms as ids and are frozen and fingerprinted with the evidence,
+    are unchanged: a name is applied here, at render time only.
+
+    :param bundle: The campaign's evidence.
+    :return: Variant key -> the name a page prints.
+    """
+    return {
+        key: arm_display_name(label, levers, bundle.lever_names)
+        for key, (label, levers) in named_arm_labels(bundle).items()
+    }
+
+
+def named_arm_labels(bundle: CampaignBundle) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Each arm's label by every variant key a label names, a derived arm code spelled from several levers printed
+    from its spelling with each lever named as every page names it (:attr:`CampaignBundle.arm_spellings`), and the
+    levers code spelled it from (none for a label a person gave): what :func:`printed_arm_labels` prints by the display
+    rule, and
+    :func:`~threetears.evals.analysis.report.words.reader_arms` names an arm by.
+
+    :param bundle: The campaign's evidence.
+    :return: Variant key -> the label and the levers code spelled it from.
+    """
+    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
+    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
+    spelled = arm_names(list(entries.values()))
+    spellings = {
+        key: spelling
+        for arm in bundle.arms
+        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
+        for key in bundle.arm_keys(arm)
+    }
+    keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
+    labels: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for key in dict.fromkeys(keys):
+        if (spelling := spellings.get(key)) is not None:
+            labels[key] = (spelling.label(bundle.lever_names), tuple(spelling.levers))
+            continue
+        levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
+        labels[key] = (bundle.label_of(key), levers)
+    return labels
+
+
+def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
+    """What the page calls ``measure`` on the aspect ``bundle`` reads.
+
+    A goal check's measure by the display name the aspect's template declares for it, else by what it tests
+    (``Refund amount check``, ``AnalysisContextBundle.check_name``); any other measure by its catalog reader
+    name, else its key humanized
+    (:func:`~threetears.evals.analysis.style.measure_name`).
+
+    :param bundle: The aspect's evidence.
+    :param measure: The measure's key, as the bundle's readings carry it.
+    :return: Its name on the page.
+    """
+    described = bundle.measure_catalog.get(measure)
+    return measure_name(
+        measure, described.reader_name if described is not None else None, declared=bundle.check_name(measure)
+    )
+
+
 __all__ = [
+    "declared_arm_names",
+    "measure_name_of",
+    "named_arm_labels",
+    "printed_arm_labels",
+    "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
+    "EVIDENCE_TERM",
+    "UNDO_LOWERING_IGNORED_SENTENCE",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "CHECK_LINK_TITLE",
@@ -805,16 +931,17 @@ __all__ = [
     "MAX_WORDS",
     "ArmName",
     "HumanizeKind",
-    "StyleViolation",
     "arm_display_name",
     "arm_name",
     "cannot_tell_apart",
+    "evidence_grade",
     "check_definition",
     "check_held",
     "check_names",
     "code",
     "declared_check_name",
     "humanize",
+    "judged_name",
     "is_dump",
     "lever_reader_name",
     "lever_spelled",
@@ -823,4 +950,5 @@ __all__ = [
     "measure_name",
     "page_date",
     "sentences",
+    "StyleViolation",
 ]

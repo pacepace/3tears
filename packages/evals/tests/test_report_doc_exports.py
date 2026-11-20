@@ -1,11 +1,11 @@
 """The report document's modules export a name once production code calls it, and not before.
 
 ``kernel/report_doc.py``'s ``__all__`` holds :class:`~threetears.evals.kernel.report_doc.EvalReportDoc`, whose caller
-is the store, and the names its production callers read: the invariants (``analysis/report_doc_checks.py``), the
-editor's facts (``analysis/report_doc_facts.py``), the claims renderer (``analysis/report/doc_page/build.py``) and the
+is the store, and the names its production callers read: the invariants (``analysis/report/doc_page/checks.py``), the
+editor's facts (``analysis/report/doc_page/facts.py``), the claims renderer (``analysis/report/doc_page/build.py``) and the
 analyst's session (``ops/report_writer``). Its other public names are this build's first ``report-doc/1`` surface,
-waiting for their production callers. ``analysis/report_doc_checks.py`` exports ``check_report_doc``,
-``DocVerdict`` and ``InvariantNumber``, whose callers are the store gate (``analysis/report_doc_store.py``), the one
+waiting for their production callers. ``analysis/report/doc_page/checks.py`` exports ``check_report_doc``,
+``DocVerdict`` and ``InvariantNumber``, whose callers are the store gate (``analysis/report/doc_page/store.py``), the one
 checker, and the ``report_check`` action's operation (``ops/analyst.py``), which groups its verdicts; its row here holds no name, so a
 public name added to it later joins ``__all__`` or this list. ``CLAUDE.md`` holds that no
 public API exists only for a test, and the caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) reads a
@@ -23,7 +23,7 @@ from types import ModuleType
 
 import pytest
 
-import threetears.evals.analysis.report_doc_checks as report_doc_checks
+import threetears.evals.analysis.report.doc_page.checks as report_doc_checks
 import threetears.evals.kernel.report_doc as report_doc
 
 #: Every workspace member's ``src`` tree.

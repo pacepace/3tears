@@ -3,7 +3,7 @@ difference heatmaps, confusion matrices and the plain table.
 
 Held over every r1–r5 anchor and current run, and the Kairo reference plan, each against its own input; kinds no
 stored plan draws are held on charts of the same inputs. The expected side is always read from the input (the
-rows a query selects, :func:`~threetears.evals.analysis.report_rows.query_rows`, the criteria, the target matrix,
+rows a query selects, :func:`~threetears.evals.analysis.report.rows.query_rows`, the criteria, the target matrix,
 the gate check), never typed in.
 
 - **The pin.** Every (kind, source) pair the chart checks accept (read through ``chart_faults``, which refuses a kind
@@ -33,7 +33,6 @@ from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
     StoredCharts,
-    anchor_look,
     charts_html,
     charts_markdown,
     drawn_charts,
@@ -59,14 +58,14 @@ from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
-from threetears.evals.analysis.report_decision import control_arm
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.call import control_arm
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, small_multiple_faults
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
@@ -155,11 +154,8 @@ _PIN_INPUTS = [
 
 @functools.cache
 def _look(name: str) -> PageLook:
-    """The look the page builder gives the input's anchor plan's page: its arms, order, survivors and names; a shape
-    campaign, which has no anchor plan, the look one block is drawn with."""
-    if name in SHAPE_NAMES:
-        return block_look(_variant(name), fact_arms(_variant(name)))
-    return anchor_look(_anchor(name.partition("+")[0].partition("-")[0]), _variant(name))
+    """The look every page draws with on the input: its arms' looks, in its order, and its reader names."""
+    return block_look(_variant(name), fact_arms(_variant(name)))
 
 
 def _draw(name: str, spec: ChartSpec) -> PageChart:
@@ -895,7 +891,7 @@ def test_a_config_frontier_colours_each_config_by_its_first_factors_level_and_na
     [("r2", "configs", ["pass_rate", "cost_per_1k"]), ("r4", "judged", ["persona", "facts"])],
     ids=["many-points", "few-points"],
 )
-def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_recommended(
+def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed(
     name: str, source: str, measures: list[str]
 ) -> None:
     plan = _anchor(name)
@@ -905,7 +901,7 @@ def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_re
         )
     )
     assert isinstance(data, ScatterChart) and data.points
-    stressed = {data.emphasis, plan.recommended} - {None, ""}
+    stressed = {data.emphasis} - {None, ""}
     labelled = {point.id for point in data.points if point.label}
     if len(data.points) <= 8:
         assert labelled == {point.id for point in data.points}

@@ -13,6 +13,13 @@ send, and its failure ends the whole report, so one transient fault would cost e
 sent again after a wait, up to ``turn_failure_attempts`` attempts in all, within the same time bound as a decline's
 resends. A completion is not: its failure stays the call's outcome, as before. When the last attempt fails too, its
 answer is raised and stays the candidate's, as any failure is charged.
+
+**A first send whose connection broke before any response began is sent again once**, a completion's or a tool
+turn's, whatever ``turn_failure_attempts`` says (``httpx.RemoteProtocolError`` out of sending it, "Server disconnected
+without sending a response"). The request changes nothing but what it bills, so the resend costs at most a second
+call, where an unretried drop would end a whole report. The provider may have served and billed the first, so the
+resend names the drop, with its own text, and the completion or turn carries it (``resent_after``). A response that
+began and was cut short while its body was read was served and billed: it is raised as it came, never resent.
 """
 
 from __future__ import annotations
@@ -76,11 +83,8 @@ class DeclinedRetry:
         """How long to wait before the next attempt, after ``made`` attempts, or ``None`` to send no more.
 
         :param made: Attempts made so far, the first is one.
-        :ptype made: int
         :param retry_after: The answer's ``retry-after`` header, or ``None``.
-        :ptype retry_after: str | None
         :return: Seconds, at most ``max_wait_s``; ``None`` when the provider asked for longer than that.
-        :rtype: float | None
         """
         asked = _seconds(retry_after)
         if asked is not None:

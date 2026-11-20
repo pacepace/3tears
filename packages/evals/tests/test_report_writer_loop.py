@@ -58,7 +58,7 @@ from threetears.evals.actions.report_writing import ReportNotStored, write_repor
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.report_doc import (

@@ -1,0 +1,1 @@
+Partner API calls failed with rate-limit errors for 35 minutes on Wednesday. A partner's new integration sent approx. 900 requests a second, i.e. ten times its limit, and the limiter applied the block to every partner on the shared key. The partner throttled their client at 14:50 and errors stopped. Each partner now has its own key and limit.

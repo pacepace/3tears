@@ -22,13 +22,13 @@ import re
 from pathlib import Path
 
 import threetears.evals
-from threetears.evals.actions.engine import engine_actions
+from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
 
 _SRC = Path(threetears.evals.__file__).parent
 
 
 def _catalogue() -> set[str]:
-    return {action.name for action in engine_actions()}
+    return {action.name for action in engine_actions_in_catalogue()}
 
 
 #: Catalogue nouns spelled in two words. Split at the first underscore, ``case_set_mint`` would read as the

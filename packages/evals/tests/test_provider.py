@@ -16,7 +16,6 @@ import pytest
 
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
-    JSON_OBJECT_RESPONSE_FORMAT,
     USAGE_LEDGER_ATTRIBUTES,
     StopReason,
 )
@@ -71,11 +70,6 @@ class TestSumOptionalTokens:
     def test_a_reported_zero_is_an_observation(self):
         assert sum_optional_tokens(0, 0) == 0
         assert sum_optional_tokens(None, 0) == 0
-
-
-class TestJsonObjectResponseFormat:
-    def test_is_the_provider_wire_literal(self):
-        assert JSON_OBJECT_RESPONSE_FORMAT == {"type": "json_object"}
 
 
 class TestExtractJsonArray:

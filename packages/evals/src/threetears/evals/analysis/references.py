@@ -47,13 +47,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.quantities import PERCENT, is_money
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.kernel.metrics import MeritAxis, classifier_label_of
+from threetears.evals.kernel.numbers import format_number, spell_share
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -119,9 +118,7 @@ def cell_aliases(cells: Iterable[CellFacts]) -> dict[str, str]:
     every alias to the full ``cell_ref`` before anything is stored.
 
     :param cells: The cells, in the order to number them.
-    :ptype cells: Iterable[CellFacts]
     :return: ``alias -> cell_ref``, in minted order.
-    :rtype: dict[str, str]
     """
     aliases: dict[str, str] = {}
     seen: set[str] = set()
@@ -140,11 +137,8 @@ def cell_of_alias(surface: DecisionSurface, alias: str) -> str:
     all come through here.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param alias: The cell as the writer named it.
-    :ptype alias: str
     :return: The cell's full ``cell_ref``.
-    :rtype: str
     :raises UnresolvableReference: No cell carries that alias.
     """
     aliases = cell_aliases(surface.cells)
@@ -177,9 +171,7 @@ def campaign_cell_aliases(aspects: Sequence[tuple[str, Iterable[CellFacts]]]) ->
     does. The one mint for a campaign: its writer's view and its resolver both read it.
 
     :param aspects: ``(label, cells)`` per aspect, in the campaign's order; each aspect's cells in its bundle's order.
-    :ptype aspects: Sequence[tuple[str, Iterable[CellFacts]]]
     :return: ``alias -> (aspect, cell_ref)``, in minted order.
-    :rtype: dict[str, CellAddress]
     """
     addresses: dict[str, CellAddress] = {}
     for label, cells in aspects:
@@ -192,9 +184,7 @@ def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
     """Key a surface's cells by the ``cell_ref`` a reference carries.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :return: ``cell_ref -> CellFacts`` for every cell.
-    :rtype: dict[str, CellFacts]
     """
     return {cell_ref(cell.variant_key, cell.apparatus_class_id): cell for cell in surface.cells}
 
@@ -203,11 +193,8 @@ def require_cell(surface: DecisionSurface, ref: str) -> CellFacts:
     """Return the cell a reference names, or refuse naming the cells that exist.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param ref: The reference's cell (a ``cell_ref``).
-    :ptype ref: str
     :return: The cell's facts.
-    :rtype: CellFacts
     :raises UnresolvableReference: No cell carries that ref.
     """
     cells = cell_index(surface)
@@ -226,16 +213,11 @@ def resolve_reading(
     """Read one numeric reading off the surface.
 
     :param surface: The analysis's decision surface.
-    :ptype surface: DecisionSurface
     :param ref: The cell the reference names (a ``cell_ref``).
-    :ptype ref: str
     :param measure_id: The measure (or judged dimension) it names.
-    :ptype measure_id: str
     :param reading: Which of the cell's two namespaces to read — already a :data:`ReadingKind`, because
         every model-authored kind is validated against the authored models before it gets here.
-    :ptype reading: ReadingKind
     :return: The resolved reading.
-    :rtype: ResolvedReading
     :raises UnresolvableReference: The cell, or the reading in it, does not exist; the measure is
         categorical (it has no point estimate); or it has no mean (nothing was scored).
     :raises ValueError: ``reading`` is neither kind — a caller that bypassed the authored models,
@@ -401,17 +383,14 @@ def _find_judged(cell: CellFacts, dimension: str) -> JudgedReading | None:
     return next((j for j in cell.judged if j.dimension == dimension), None)
 
 
-def _dispersion(
-    sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None, unit: str = ""
-) -> str:
+def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None) -> str:
     """State a reading's spread in words, including when there is none to state.
 
     The interval it states is already computed over the cases, so a clustered cell needs no caveat
-    beside it; the one case it explains is the interval a single case cannot have. The figures are spelled in
-    ``unit`` where the row states one — a percent's interval reads ``[88.1%, 100%]`` — and bare otherwise.
+    beside it; the one case it explains is the interval a single case cannot have. The figures are bare, by the
+    number rule: the row states its unit beside its value.
 
     :return: The dispersion text an evidence row carries.
-    :rtype: str
     """
     if ci_low is None or ci_high is None:
         if n_cases == 1 and n > 1:
@@ -420,21 +399,17 @@ def _dispersion(
         # beside it. A reading with no case count recorded states none rather than its observations.
         if n_cases is None:
             return "unestimable"
+        if sem is not None:
+            # A standard error with no interval is a spend or a time on too few cases above zero: the spread is
+            # estimable and the interval that holds its level is not usable, which "unestimable" would misstate.
+            return f"{stats.SKEWED_INTERVAL_WITHHELD} ({n_cases} case{'' if n_cases == 1 else 's'})"
         return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
-    # The unit on each end where it sits on the number (``[88.1%, 100%]``); a spaced unit is the value's, and the
-    # interval beside it stays bare (``[0.8, 1.1]`` under ``0.95 s``), as it always read.
     # An evidence row is read off any page, so it takes the fixed forms of no page's measure.
-    forms = PageForms.off_page()
-    on_the_number = unit == PERCENT or is_money(unit)
-    low, high = (
-        (forms.in_unit(bound, unit, role="interval") if on_the_number else forms.lone(bound)).text
-        for bound in (ci_low, ci_high)
-    )
-    text = f"{forms.share(stats.INTERVAL_LEVEL).text} CI [{low}, {high}]"
+    text = f"{spell_share(stats.INTERVAL_LEVEL)} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
     if sem is not None:
-        text = f"sem {forms.in_unit(sem, unit, role='half_width').digits}; {text}"
+        text = f"sem {format_number(sem)}; {text}"
     return text
 
 

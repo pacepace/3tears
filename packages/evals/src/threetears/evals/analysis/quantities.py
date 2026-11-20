@@ -46,7 +46,7 @@ MONEY = "usd"
 #: The package's own units, each with the names a sentence spells it by: its symbol, its abbreviations and its words.
 #: A closed vocabulary, the package's and never read from an input, so that prose writing a unit right after a figure
 #: that already prints it (``513 ms milliseconds``, ``3 s seconds``, ``45%%``) can be refused
-#: (:func:`threetears.evals.analysis.report_doc_prose.unit_faults`). Matched in any case.
+#: (:func:`threetears.evals.analysis.report.doc_page.prose.unit_faults`). Matched in any case.
 UNIT_NAMES: dict[str, tuple[str, ...]] = {
     "ms": ("ms", "msec", "msecs", "millisecond", "milliseconds"),
     "s": ("s", "sec", "secs", "second", "seconds"),
@@ -64,16 +64,12 @@ def display_scale(values: Sequence[float], unit: str | None, *, share: bool = Fa
     for every surface that renders it.
 
     :param values: Every value the chart will draw in this unit.
-    :ptype values: Sequence[float]
     :param unit: The payload's declared unit, or ``None`` when it carried none.
-    :ptype unit: str | None
     :param share: Whether a unitless quantity is a share on 0–1 — a rate — which is stated as a percent.
-    :ptype share: bool
     :return: ``(factor, unit)`` — multiply each value by the factor and label the axis
         with the unit. ``(100.0, "%")`` for a share. ``(1.0, "")`` when no unit was declared: a quantity whose
         unit is unknown is drawn as it was given and labelled by its measure's
         name alone, because restating an unknown unit would be inventing one.
-    :rtype: tuple[float, str]
     """
     if not unit:
         return (100.0, PERCENT) if share else (1.0, "")

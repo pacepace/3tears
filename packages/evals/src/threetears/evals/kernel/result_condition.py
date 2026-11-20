@@ -22,10 +22,8 @@ and live here:
 * **scoring** — how the result participates in aggregates, off the error taxonomy.
 
 The fourth, **per-role capture** (were the rows observed whole, cut short by a deadline, or
-never made?), deliberately stays with :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`, which
-already owns it and returns it with its own provenance. Re-carrying it here would create
-exactly the second copy this module exists to remove — a surface wanting it calls that
-resolver, and both of them read the same stored ``termination``.
+never made?), is not carried here: a surface showing one result's spend reads its stored rows and the same
+stored ``termination`` this reads.
 
 **A fourth thing this returns is prose.** ``disclosure`` is the canonical sentence for
 whatever a reader must not miss. It is here rather than at the surfaces because three
@@ -38,7 +36,9 @@ rebuild it.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+from pydantic import field_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY
@@ -66,6 +66,7 @@ __all__ = [
     "counted_score",
     "delivered_a_turn",
     "resolve_result_condition",
+    "runs_again",
 ]
 
 
@@ -94,7 +95,7 @@ class ResultOutcome(str, Enum):
 
 #: What the judge produced for this result.
 #:
-#: Four arms because a judge scores per dimension and can therefore half-succeed:
+#: Four arms because a judge scores per dimension and can therefore half-succeed, and a fifth for the run's cost cap:
 #:
 #:   ``scored``         at least one judge output landed and nothing errored.
 #:   ``partial``        outputs landed AND something errored — some dimensions scored,
@@ -103,13 +104,20 @@ class ResultOutcome(str, Enum):
 #:   ``failed``         the judge ran and errored, producing nothing.
 #:   ``not_attempted``  no judge output and no judge error: no judge service, an empty
 #:                      transcript, or a cell that never reached judging.
+#:   ``not_asked``      the run's cost cap had too little left for the judging, so the judge was not asked on
+#:                      some or all of the dimensions (``EvalResult.judging_set_aside``); nothing errored. Spelled
+#:                      ``set_aside`` before the shared reading states took that word for a reading set aside: a
+#:                      condition handed back under the old spelling reads as ``not_asked``.
 #:
 #: Derived from the judge's own outputs, which is a real evidence trail rather than a
 #: correlate — a score exists only because a judge produced it. ``judge_model`` is
 #: deliberately not consulted: it is the run-level pin, present on cells that never
 #: reached a judge at all, and reading it as evidence of judging is one of the
 #: disagreeing predicates this module replaced.
-JudgingState = Literal["scored", "partial", "failed", "not_attempted"]
+JudgingState = Literal["scored", "partial", "failed", "not_attempted", "not_asked"]
+
+#: The judging state's earlier spellings, each read as the one it became.
+_JUDGING_RENAMED: Final[dict[str, JudgingState]] = {"set_aside": "not_asked"}
 
 #: Why a result is a candidate failure. ``model_failed``: a model the configuration runs
 #: failed, recorded in ``candidate_error``. ``turn_budget``: the host's turn budget ended one of
@@ -124,8 +132,7 @@ CandidateFailureCause = Literal["model_failed", "turn_budget", "output_cap"]
 class ResultCondition(EvalBaseModel):
     """The condition one result is in, on every axis that is a property of the result.
 
-    Returned as a value and never assigned back onto the result — the same rule
-    :class:`~threetears.evals.kernel.usage_capture.ResolvedUsage` holds, and for the same reason:
+    Returned as a value and never assigned back onto the result, because
     two of these three axes are derived, and writing a derivation into the document would
     make it indistinguishable from an observation the next time the document is saved.
     ``termination`` is the exception that proves it — it is stored precisely because it
@@ -141,6 +148,16 @@ class ResultCondition(EvalBaseModel):
     #: The one sentence a surface must show, or ``None`` when the result is in no
     #: condition a reader needs warning about. Render it verbatim.
     disclosure: str | None = None
+
+    @field_validator("judging", mode="before")
+    @classmethod
+    def _judging_as_renamed(cls, value: object) -> object:
+        """Read a judging state handed back under an earlier spelling as the one it became.
+
+        :param value: The judging state as given.
+        :return: Its current spelling.
+        """
+        return _JUDGING_RENAMED.get(value, value) if isinstance(value, str) else value
 
 
 def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
@@ -159,9 +176,7 @@ def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
     it, as it does the cap.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The cause, or ``None``.
-    :rtype: CandidateFailureCause | None
     """
     if result.candidate_error:
         return "model_failed"
@@ -179,12 +194,14 @@ def classify_result(result: ResultView) -> ResultOutcome:
 
     Candidate failures take precedence over infra: a broken candidate FAILS even
     if an infra hiccup also occurred, so it can't launder a failure into an
-    exclusion. ``judge_error`` is infra (always). Reads only structured
-    fields — never re-parses ``runner_error`` (fragile-parse rule).
+    exclusion. ``judge_error`` is infra, except on a result whose judging the run's cost cap set aside
+    (``judging_set_aside``): its candidate ran whole and its answer, measures and checks were measured, so it counts
+    wherever they are read, and only the judged readings leave it out (:func:`trial_exclusion`'s ``cost_cap``). Reads
+    only structured fields — never re-parses ``runner_error`` (fragile-parse rule).
     """
     if candidate_failure_cause(result) is not None:
         return ResultOutcome.CANDIDATE_FAIL
-    if result.infra_error or result.judge_error:
+    if result.infra_error or (result.judge_error and not result.judging_set_aside):
         return ResultOutcome.INFRA_EXCLUDE
     return ResultOutcome.OK
 
@@ -230,9 +247,7 @@ def delivered_a_turn(result: ResultView) -> bool:
     generator call that returned), and a conversing kind through its stamped turn records.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: True when the result's time and spend describe a turn the candidate took.
-    :rtype: bool
     """
     if harness_faulted(result):
         return False
@@ -273,10 +288,8 @@ def counted_goal_verdicts(result: ResultView) -> list[tuple[GoalView, bool]] | N
     - Otherwise each check counts as it evaluated.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: ``(outcome, counted_passed)`` per check in stored order, or ``None`` when the result is
         excluded from every rate.
-    :rtype: list[tuple[GoalView, bool]] | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -302,11 +315,8 @@ def counted_score(result: ResultView, score: ScoreView) -> int | None:
     - Otherwise the score counts as judged.
 
     :param result: The result the score sits on.
-    :ptype result: ResultView
     :param score: One of its rubric scores, or its transcript or outcome axis.
-    :ptype score: ScoreView
     :return: The counted score on the score's own scale, or ``None`` when it enters no measure.
-    :rtype: int | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
@@ -320,10 +330,8 @@ def counted_rubric_scores(result: ResultView) -> list[tuple[ScoreView, int]] | N
     """Each judged rubric dim on ``result`` paired with what it counts as (:func:`counted_score`).
 
     :param result: The result.
-    :ptype result: ResultView
     :return: ``(score, counted)`` per judged dim in stored order, or ``None`` when the result is in no
         per-dimension measure (a harness fault).
-    :rtype: list[tuple[ScoreView, int]] | None
     """
     if classify_result(result) is ResultOutcome.INFRA_EXCLUDE:
         return None
@@ -346,6 +354,10 @@ def _classify_judging(result: EvalResult) -> JudgingState:
         or result.rubric_scores
         or result.judge_cannot_tell
     )
+    if result.judge_error and result.judging_set_aside:
+        # The cost cap kept the judge from being asked: nothing errored, so a judge never asked is not one that failed,
+        # whether or not it had answered on some dimensions first.
+        return "not_asked"
     if result.judge_error:
         return "partial" if scored else "failed"
     return "scored" if scored else "not_attempted"
@@ -455,6 +467,10 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
     "not_attempted": "No judge produced output for this result, so it carries no scores.",
     "partial": "The judge errored partway: some dimensions were scored and some were not.",
     "failed": "The judge ran and errored, so this result carries no scores.",
+    "not_asked": (
+        "The run's cost cap had too little left for this result's judging, so the judge was not asked on every"
+        " dimension and the judged readings leave it out; a re-judge, or a launch with a higher cap, judges it."
+    ),
 }
 
 
@@ -464,9 +480,16 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
 #: it did not name), which was not re-bought (:func:`judge_truncated_dims`). Not the rig faulting but the judge's
 #: request running out of room, so a report names the cap it was sent rather than calling the trial faulted.
 #: ``judge_cannot_tell``: the judge answered it could not score a dim, which leaves it out of that dim's measure
-#: and out of the measures needing every dim (pass^k, the composite), and nowhere else. Counted per cause wherever
-#: exclusions are counted, so a shrunken ``n`` always says why.
-ExclusionCause = Literal["infra", "truncated", "judge_cannot_tell"]
+#: and out of the measures needing every dim (pass^k, the composite), and nowhere else. ``model_unserved``: excluded as
+#: ``infra`` is, and for one cause apart: the provider does not serve the model the candidate's call named
+#: (``EvalResult.model_unserved``), so the trial measured the setup's choice of model, never the candidate, and its
+#: remedy is a model the provider serves rather than a repair of the rig. ``cost_cap``: the run's cost cap had too
+#: little left to judge the trial (``EvalResult.judging_set_aside``), so its candidate ran whole and nothing scored
+#: it. Narrowed as ``judge_cannot_tell`` is: it leaves the trial out of the judged readings (its dims, pass^k and the
+#: composite, unless a failed check already decided it) and nowhere else, so its host measures, goal checks and cost
+#: count as measured, whether its report was finished among them. Its remedy is a re-judge, never a repair. Counted
+#: per cause wherever exclusions are counted, so a shrunken ``n`` always says why.
+ExclusionCause = Literal["infra", "model_unserved", "cost_cap", "truncated", "judge_cannot_tell"]
 
 #: The share of one arm's trials a single exclusion cause may take before the arm is flagged as excluded
 #: differentially (the bundle's ``differential_exclusions``): above it, the arms of a comparison are no longer read
@@ -481,28 +504,52 @@ DIFFERENTIAL_EXCLUSION_SHARE: float = 0.10
 JUDGE_CANNOT_TELL_OUTCOME = "judge_cannot_tell"
 
 
+def runs_again(result: ResultView) -> bool:
+    """Whether a stored row's cell runs again when its run, or the comparison it belongs to, is continued: the one rule
+    the engine's take-up (:func:`~threetears.evals.run.resume.take_up_run`) and the quick path's continuation
+    (:mod:`threetears.evals.quick.continuation`) both read.
+
+    A row cut short by a cancel (termination ``cancelled``: an attempt a shutdown or a second interrupt abandoned), one
+    whose call the provider account paying for the run refused (``account_refused``), and one whose model the provider
+    did not serve (``model_unserved``) each record no answer the cell would have given: an uninterrupted run on a
+    funded account and a served model stores none of them. Every other row is what that run would also have stored, so
+    its cell is done.
+
+    :param result: The stored row.
+    :return: Whether its cell runs again.
+    """
+    return result.termination == "cancelled" or result.account_refused or result.model_unserved
+
+
 def trial_exclusion(result: ResultView) -> ExclusionCause | None:
     """Why ``result`` is left out of the measures that need every rubric dim, or ``None``.
 
     The one classification pass^k, the composite and their counts read. A candidate failure is
     never excluded: it fails, whatever the judge could or could not tell, and whatever cut its judge off. An
     excluded result is ``truncated`` when a judge reply ran out of room on it (:func:`judge_truncated_dims`) and the
-    harness recorded no fault of its own, else ``infra``. pass^k narrows the
+    harness recorded no fault of its own, ``model_unserved`` when the provider does not serve the candidate's model,
+    else ``infra``. A result the harness did not fault is ``cost_cap`` when the run's cost cap set its judging aside,
+    which leaves it out of the judged readings alone. pass^k narrows the
     ``judge_cannot_tell`` arm further — a trial a failed check or a sub-bar dim has already decided
     counts as failed there (``scoring._already_failed``) — which needs the bar and so cannot live
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The cause, or ``None`` when the result counts.
-    :rtype: ExclusionCause | None
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
+        # A cause the result records as a flag of its own outranks the generic ``infra``: the flag is the structured
+        # record of why the setup lost the trial, and the remedy the report gives follows it.
+        if result.model_unserved:
+            return "model_unserved"
         # A harness fault outranks a cut-off judge reply: the cell's own evidence is in doubt, whatever the judge did.
         if result.infra_error or not judge_truncated_dims(result):
             return "infra"
         return "truncated"
+    # A judge error on a result the harness did not fault is the cost cap's set-aside (:func:`classify_result`).
+    if outcome is ResultOutcome.OK and result.judge_error is not None and result.judging_set_aside:
+        return "cost_cap"
     if outcome is ResultOutcome.OK and not judged_on_every_dim(result):
         return "judge_cannot_tell"
     return None
@@ -514,13 +561,11 @@ def judge_truncated_dims(result: ResultView) -> list[str]:
     An entry is read only for a dim that carries no score while ``judge_error`` is set
     (:class:`~threetears.evals.schema.models.JudgeCutShort`): an older build that re-judged the dim wrote its score,
     or cleared the error, without touching the field, so an entry beside either is stale. Only a reply out of room
-    counts (:data:`~threetears.evals.schema.models.OUT_OF_ROOM_STOP_REASONS`): one the provider filtered or failed is
+    counts (a ``max_tokens`` or ``truncated`` stop): one the provider filtered or failed is
     recorded on the entry and stays a fault of the rig.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The dims, sorted; empty when none, or when ``judge_error`` is unset.
-    :rtype: list[str]
     """
     if result.judge_error is None or not result.judge_cut_short:
         return []
@@ -538,7 +583,6 @@ def judged_on_every_dim(result: ResultView) -> bool:
     reserved transcript/outcome axes are in neither whole-trial measure.
 
     :param result: The result.
-    :ptype result: ResultView
 
 
     **A boundary dim is not one of them.** pass^k and the composite read capability dims alone
@@ -547,7 +591,6 @@ def judged_on_every_dim(result: ResultView) -> bool:
     move the capability pillar.
 
     :return: ``False`` when the judge answered it could not tell on at least one capability rubric dim.
-    :rtype: bool
     """
     boundary = set(result.judge_cannot_tell_boundary)
     return not any(dim not in RESERVED_DIM_IDS and dim not in boundary for dim in result.judge_cannot_tell)
@@ -585,9 +628,7 @@ def resolve_result_condition(result: EvalResult) -> ResultCondition:
 
     :param result: The result to resolve. Pure function of the stored record: no joins, no
         run lookup, no I/O — so an aggregate can call it per row.
-    :ptype result: EvalResult
     :return: The resolved condition, including the canonical ``disclosure`` line.
-    :rtype: ResultCondition
     """
     judging = _classify_judging(result)
     scoring = classify_result(result)

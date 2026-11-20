@@ -14,7 +14,8 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, serialize_report
+from threetears.evals.analysis import campaign_report_html, serialize_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,

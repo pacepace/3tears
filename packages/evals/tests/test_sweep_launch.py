@@ -134,6 +134,9 @@ async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finishe
         executing,
     )
     assert second_running.progress["arms"] == {"terse": "completed", "standard": "running", "verbose": "not_launched"}
+    # The first cancel lets the arm's cells in flight finish (each takes 50 ms); the second, landing meanwhile, cuts them.
+    await job_cancel(host, job.job_id, TOYHOST_SCOPE)
+    await asyncio.sleep(0.01)
     await job_cancel(host, job.job_id, TOYHOST_SCOPE)
     ended = await _watch(host, job.job_id, lambda status: status.done, executing)
 

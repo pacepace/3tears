@@ -74,6 +74,23 @@ def test_a_router_of_two_stores_conforms(case: StoreConformanceCase) -> None:
     case.run(router)
 
 
+class _StoreBeforeAfter(InMemoryDocumentStore):
+    """A store written before ``after``: it reads an ``after=`` it is handed as an equality predicate, which a tuple
+    is refused as, so the router must never hand it one."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if "after" in kwargs:
+            raise TypeError(f"by_doc_type compares a field to a scalar, not tuple: after={kwargs['after']!r}")
+        return super().by_doc_type(doc_type, scope_id, **kwargs)
+
+
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_a_router_over_stores_written_before_after_conforms(case: StoreConformanceCase) -> None:
+    """The router pages an ordered read of such a store itself, ties by id, and never hands it ``after``."""
+    router, _ = _router({"evidence": _StoreBeforeAfter(), "scratch": _StoreBeforeAfter()})
+    case.run(router)
+
+
 def test_the_engine_type_case_spread_over_both_stores() -> None:
     """The positive control for the conformance run: it did exercise two stores, each holding its lifecycle."""
     router, stores = _router()

@@ -42,7 +42,9 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
-from threetears.evals.analysis import assemble_campaign_bundle, campaign_report, report_markdown, serialize_report
+from threetears.evals.analysis import campaign_report, serialize_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.arms import ELISION
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -54,18 +56,18 @@ from threetears.evals.analysis.report.figure_keys import render, written_arm
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
-    printed_arm_labels,
     reader_arm_labels,
     reader_arm_name,
     told_apart,
 )
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_doc_store import read_report_doc
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.doc_page.store import read_report_doc
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.ops import CampaignDefinition, CampaignLine, campaign_create, campaigns_list, report_read
 from threetears.evals.ops.analysis import analyses_list
+from threetears.evals.analysis.style import printed_arm_labels
 
 #: The stored campaign whose report ``analysis_generate`` wrote: the hot path oracle's ``toyhost_doc`` capture.
 _CAPTURE = Path(__file__).parent / "fixtures" / "hot_path_oracle" / "inputs" / "toyhost_doc.json"
@@ -267,13 +269,15 @@ def _analysed(host: EvalHost, campaign_id: str) -> CampaignLine:
 #: at bundle shape 66: the shape-65 bundle the old pin was taken over, moved by
 #: ``fixtures/report_inputs/migrate_bundle_shape_66.py``, computes this one and is this build's bundle leaf for leaf,
 #: less ``lever_names``. It was re-pinned at campaign bundle shape 4 the same way as ``test_declared_names``'s: this
-#: build's bundle, read as the build before it fingerprinted a shape-3 frame, computes the old pin.
+#: build's bundle, read as the build before it fingerprinted a shape-3 frame, computes the old pin. It was re-pinned when
+#: a mean spend or time took the interval that holds its level on skewed data: the ends of those intervals moved, and
+#: the labels and every other figure did not.
 _FROZEN_LABELS = [
     "Read every invoice line twice an…endor's own wo…",
     "Read every invoice line once and…ndor's own wor…",
     "(none)",
 ]
-_FROZEN_FINGERPRINT = "v3:8c3c29f48b94b1c5366f8a54e55e77c5947f601b41720fb899aa7e04b54bd678"
+_FROZEN_FINGERPRINT = "v3:34142c7a0a2c00f07883d3b52de93d5402d5686d0a9286f60ef56b08bf3c45b4"
 
 
 def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None:
@@ -281,7 +285,9 @@ def test_the_bundle_freezes_the_labels_and_fingerprint_it_froze_before() -> None
     bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
 
     assert [arm.label for arm in bundle.arms] == _FROZEN_LABELS
-    assert bundle.fingerprint() == _FROZEN_FINGERPRINT
+    # In the version the pin was taken in: the campaign's frame, readings and all, each aspect named by its `v2:`
+    # fingerprint. (`v4:` is over the evidence, #1062.)
+    assert bundle.fingerprint(like="v3:") == _FROZEN_FINGERPRINT
 
 
 def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:

@@ -57,10 +57,25 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from threetears.evals.analysis.checks import Check, Corrected, Looks
+from threetears.evals.analysis.significance import SeparationTest, Unquoted
+from threetears.evals.schema.reading_states import (
+    ArmIdentity,
+    CaveatClass,
+    CaveatReach,
+    Coordinate,
+    Maker,
+    ReadingState,
+    Reason,
+    StateOf,
+    check_state,
+)
+from threetears.evals.analysis.cells import NextExperiment
+from threetears.evals.kernel.evidence_tiers import CriterionState
 from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.schema.hashing import bytes_digest
 
@@ -125,6 +140,27 @@ class Arm(_Part):
     )
     reasoning_ratio: Number | None = Field(default=None, description="The share of output spent reasoning.")
     description: str | None = Field(default=None, description="What kind of candidate the arm is, in a few words.")
+    # The four below are left out of the document when unset, so an input built before they existed digests as it did.
+    arm_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The id that names the arm apart from its label; names one cell where the arm is split.",
+    )
+    cell: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The one cell the arm id names, where the arm is split over several.",
+    )
+    spelling: dict[str, SettingValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The levers code spelled the arm's computed name from, each with its level, in order.",
+    )
+    identity: ArmIdentity | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether the arm is one thing, a state per coordinate.",
+    )
 
 
 class Precision(_Part):
@@ -162,6 +198,17 @@ class Reading(_Part):
     confirmatory: bool | None = Field(default=None, description="Whether the reading answers the asked question.")
     why: str | None = Field(default=None, description="Why, in one plain sentence.")
     precision: Precision | None = Field(default=None, description="What limits the interval.")
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The reading's state where it is not counted, with its reason; none reads counted.",
+    )
+    flip_margin: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The margin at which the reading would read the other way, in points.",
+    )
 
 
 class Depth(_Part):
@@ -227,8 +274,16 @@ class Pricing(_Part):
     )
     providers: list[str] = Field(
         default_factory=list,
-        description="Each provider its model calls name as serving them (RoleUsage.provider on every role but "
-        "external), sorted; empty where none does.",
+        description="Each provider its model calls name as serving them (RoleUsage.served_provider, else "
+        "RoleUsage.provider, on every role but external), sorted; empty where none does: not recorded.",
+    )
+    # Left out of the document while False, so an input whose arms' providers were all or none recorded digests as it
+    # did.
+    providers_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Some of its model calls named no provider beside calls that named one: providers names who "
+        "served part of them, and the rest are not recorded.",
     )
     # Left out of the document while empty, so an input whose rows named no tool provider digests as it did.
     tool_providers: list[str] = Field(
@@ -270,6 +325,20 @@ class ScoreboardRow(_Part):
         description="How the arm's cost was priced: its price sources, serving providers and priced calls; none where "
         "the input does not say.",
     )
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    cost: Stat | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The arm's one cost reading, the fallback from cost per reply decided once.",
+    )
+    # Left out of the document when unset, so an input built before the field existed digests as it did, and its row
+    # reads counted whatever counts it states or leaves out.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The row's state where its passes and failures are not counted, with its reason: withheld where "
+        "the cells keep the arm apart on a coordinate, which it names; none reads counted.",
+    )
 
 
 class PairRead(_Part):
@@ -286,6 +355,12 @@ class PairRead(_Part):
     cases: tuple[int, int] | None = Field(default=None, description="Each arm's usable cases.")
     why: str | None = Field(default=None, description="Why, in one plain sentence.")
     precision: Precision | None = Field(default=None, description="What limits the interval.")
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The pair's state where it is not counted, with its reason; none reads counted.",
+    )
 
 
 class PassRule(_Part):
@@ -355,6 +430,21 @@ class Aspect(_Part):
         exclude_if=lambda value: value is None,
         description="How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none "
         "where the input does not say.",
+    )
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    margin_informative: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether any margin a reader could plausibly hold changes a reading on the aspect.",
+    )
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts "
+            "about the campaign (its launches, membership, re-judges), never an input the author gave, so never part "
+            "of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
+        ),
     )
 
 
@@ -439,6 +529,22 @@ class Stat(_Part):
     p95: Number | None = Field(default=None, description="The 95th percentile.")
     change: Number | None = Field(default=None, description="The arm minus the control, where only that is given.")
     shares: list[Number] | None = Field(default=None, description="The share in each of the measure's bins, percent.")
+    # The three below are left out of the document when unset, so an input built before they existed digests as it did.
+    spread: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The spread of the arm's per-case values, in the measure's units.",
+    )
+    no_variation: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The one value every case took, where the cases did not vary.",
+    )
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The interval's state where it is not counted, with its reason; none reads counted.",
+    )
 
 
 class Level(_Part):
@@ -493,6 +599,12 @@ class Judged(_Part):
     agreement: Number | None = Field(default=None, description="The judge's agreement with those ratings.")
     level: str | None = Field(default=None, description="The confidence level of the intervals per_arm carries.")
     per_arm: dict[str, Stat] = Field(default_factory=dict, description="Each arm's mean, by arm.")
+    # Left out of the document while empty, so an input built before the field existed digests as it did.
+    checks: list[Check] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The judge's checks: what it was checked against, on what sample, with what result.",
+    )
     by_aspect: dict[str, dict[str, Stat]] = Field(
         default_factory=dict,
         description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
@@ -541,6 +653,43 @@ class Contrast(_Part):
         default=None,
         exclude_if=lambda value: value is None,
         description="The arms' correlation across the paired cases: how much pairing narrowed the interval.",
+    )
+    # Every field below is left out of the document when unset, so an input built before it existed digests as it did.
+    # The typed state is `state`: `reason` above is the pipeline's sentence, which a stored input carries.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast's state where it is not counted, with its reason; none reads counted.",
+    )
+    baseline: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The control's mean over the cases the test paired: what the delta is a change from.",
+    )
+    baseline_n_cases: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The cases that baseline is the mean of.",
+    )
+    family: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The family the contrast was corrected in, by id.",
+    )
+    delta_note: Literal["paired_cases", "adjusted"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the delta is not the difference of the two means printed beside it, where it is not.",
+    )
+    corrected: Corrected | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast as what its judge was checked against would read it: a check's result, never a second verdict.",
+    )
+    aa: Check | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The A/A check covering the contrast: identical arms read on the same reading.",
     )
 
 
@@ -665,6 +814,16 @@ class Caveats(_Part):
     latency: str | None = Field(default=None, description="Why latency is not compared, when it is not.")
     short_runs: list[ShortRun] = Field(default_factory=list, description="Runs short of usable measurements.")
     unreported: list[str] = Field(default_factory=list, description="Observations recorded but not reported.")
+    # Left out of the document while empty, so an input over runs that all finished reads, and is keyed, as one did
+    # before the field existed.
+    unfinished: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda said: not said,
+        description=(
+            "What stopped each run that did not finish, a sentence each in code's words, then what the readings "
+            "cover: what a page opens with in place of a verdict. Empty where every run completed."
+        ),
+    )
 
 
 class RequestSettings(_Part):
@@ -758,6 +917,12 @@ class Factor(_Part):
     id: str = Field(description="The factor's id, as configs and settings key it.")
     name: str | None = Field(default=None, description="What a reader calls it.")
     levels: list[Level] = Field(min_length=1, description="Its levels, in order.")
+    # Left out of the document while False, so an input built before the field existed digests as it did.
+    ordered: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether the levels are points on one scale, so a line may be drawn across them.",
+    )
 
 
 class Config(_Part):
@@ -809,6 +974,456 @@ class HumanPreference(_Part):
     arm: str = Field(description="The arm rated against it.")
     n: int = Field(description="Rated items.")
     rows: list[PreferenceRow] = Field(min_length=1, description="The preference in each slice.")
+    # The five below are left out of the document when unset, so an input built before they existed digests as it did.
+    read_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The blind read the ratings come from.",
+    )
+    person: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Who rated, where the read records it.",
+    )
+    test: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The test the preference was read by.",
+    )
+    p: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Its p.",
+    )
+    verdict: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The contrast verdict it comes to.",
+    )
+
+
+#: The states that change the answer: what a class A caveat is raised by.
+_CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
+
+
+class FalseSeparation(_Part):
+    """A reference figure for one test the aspect's readings are read by: how often a test with no true difference
+    separated at some look in a simulation of that test, plan and count, in the setting stated beside it
+    (:func:`~threetears.evals.analysis.significance.looks_false_separation`). It is never this campaign's own rate,
+    which is not known, and it is no limit on it: a campaign launched smaller, extended by more cases a step, or
+    reading several claims at once can err more. For a claim of held (one tail) it is the two-sided separation rate."""
+
+    test: SeparationTest = Field(description="The test the reference simulates: bounded or t.")
+    rate: float | None = Field(
+        description=(
+            "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside "
+            "it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
+        )
+    )
+    upper: float | None = Field(
+        default=None,
+        description=(
+            "The reference simulation's own uncertainty about ``rate``: the one-sided 97.5% Wilson upper confidence "
+            "limit from its replicates. Nothing about this campaign's error. None with no rate."
+        ),
+    )
+    row: str | None = Field(
+        default=None, description="The row of `significance.FALSE_SEPARATION` the rate is read from; None with no rate."
+    )
+    looks: int = Field(ge=1, description="The looks the reference rate is for.")
+    setting: str | None = Field(
+        default=None,
+        description=(
+            "What the reference simulated, in one line: a single contrast, the test, the per-case values, the launch "
+            "and the extends. None where no row measured the situation."
+        ),
+    )
+    launched: list[int] = Field(
+        default_factory=list, description="The cases the simulated first looks read; empty where no row measured it."
+    )
+    largest_step: int | None = Field(
+        default=None, description="The most cases one later look added in the simulation; None where no row did."
+    )
+    unquoted: Unquoted | None = Field(
+        default=None,
+        description=(
+            "Why no rate is quoted: not_measured (no row for this test, plan and count) or outside_setting (the "
+            "aspect's own first-look cases or largest step, from stored facts, fall outside the simulated setting, "
+            "so the reference does not cover it). None with a rate."
+        ),
+    )
+
+
+class CaveatEntry(_Part):
+    """One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.
+
+    Every first-screen qualification is one of these. ``against`` and ``criterion`` say what a caveat about an
+    instrument's check was checked against and on which criterion, which is what lets a check against people silence a
+    check against a model, and what ranks a judge checked against a model only.
+    """
+
+    id: str = Field(description="The caveat's stable id, as a report document names it.")
+    kind: str = Field(description="The id's kind, which decides its class.")
+    cls: CaveatClass | None = Field(
+        default=None, alias="class", description="What it does to the answer, A to E; none for a method-reach kind."
+    )
+    reach: CaveatReach = Field(description="report, scoped or method.")
+    state: ReadingState | None = Field(default=None, description="The non-counted state that raised it, where one did.")
+    reason: Reason | None = Field(default=None, description="That state's reason, or the reason a check is not met.")
+    coordinate: Coordinate | None = Field(
+        default=None, description="The coordinate a split or an unrecorded identity names."
+    )
+    arms: list[str] = Field(default_factory=list, description="The arm ids it touches; empty for all.")
+    readings: list[str] = Field(
+        default_factory=list,
+        description="The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
+    )
+    asked: bool = Field(
+        default=False,
+        description="Whether it touches an asked aspect: one of its readings is on one, or it is scoped to the whole "
+        "report and the report asks about one.",
+    )
+    deciding: bool = Field(
+        default=False,
+        description="Whether the answer turns on a reading it names: a class E caveat reaches the first screen only "
+        "where it does.",
+    )
+    immaterial: bool | None = Field(
+        default=None, description="True once code proved it changes no answer; none where code cannot say."
+    )
+    subsumed_by: str | None = Field(default=None, description="The caveat that silences it, by id.")
+    against: Literal["people", "model"] | None = Field(
+        default=None, description="For a caveat about an instrument's check: what the instrument was checked against."
+    )
+    criterion: str | None = Field(
+        default=None,
+        description="For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a "
+        "borderline figure: the gate, by id.",
+    )
+    same_family: bool = Field(
+        default=False, description="For a check against a model: whether the model is of a candidate's family."
+    )
+    check: CriterionState | None = Field(
+        default=None,
+        description="For a caveat about an instrument's check: the check's result. Only a result that decides (met or "
+        "not met) speaks for the instrument, so only such a check against people silences one against a model.",
+    )
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
+    cases: int | None = Field(
+        default=None, description="The cases the readings it names rest on, where one count says it."
+    )
+    # The two below are left out when unset, so an entry of every other kind dumps as it did.
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded "
+            "(`Aspect.looks`)."
+        ),
+    )
+    false_separation: list[FalseSeparation] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from "
+            "a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. "
+            "A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where "
+            "the looks counted are a lower count (more may have been taken, so no row is the situation's: the count "
+            "is shown alone), or were not recorded."
+        ),
+    )
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _belongs_together(self) -> Self:
+        if self.state is not None:
+            check_state(self.state, self.reason, self.coordinate)
+        if self.cls == "A" and self.state not in _CHANGES_THE_ANSWER:
+            raise ValueError("a class A caveat is a reading set aside or withheld, and carries that state")
+        return self
+
+
+class GateRun(_Part):
+    """One run a gate names."""
+
+    run: str = Field(description="The run's id.")
+    status: str = Field(description="Its stored status.")
+    ended_because: str | None = Field(
+        default=None, description="Why it ended, in its record's own words; never one of the shared reasons."
+    )
+
+
+class Gate(_Part):
+    """What stops a campaign from being read at all; a campaign that can be read has none."""
+
+    rule: Literal["setup", "unfinished", "too_small"] = Field(description="Which rule stopped the read.")
+    runs: list[GateRun] = Field(default_factory=list, description="The runs the rule names.")
+    fewest_cases: int | None = Field(
+        default=None, ge=0, description="For too few cases: the fewest usable cases an arm read holds."
+    )
+    waiting: int = Field(default=0, ge=0, description="The open report-wide caveats waiting below the gate.")
+
+
+class CallRead(_Part):
+    """The call on a campaign, as of the freeze: the arm decided, who decided, and what has moved since."""
+
+    arm: str = Field(description="The decided arm's id.")
+    made_by: Maker | None = Field(default=None, description="A person or a model; none where the call recorded none.")
+    model: str | None = Field(default=None, description="The model that made it, by id.")
+    on_behalf_of: str | None = Field(default=None, description="Who a model made it for.")
+    runs_joined_since: int | None = Field(default=None, description="Runs that joined the evidence after the call.")
+    identity_changed: bool | None = Field(
+        default=None, description="Whether the evidence's fingerprint differs from the one the call was read against."
+    )
+
+
+#: The one act that would close a caveat, as a closed kind; ``no_action`` where nothing the package knows of closes it,
+#: with the reason the step states (:data:`NoActionReason`).
+Remedy = Literal[
+    "resume_or_rerun",
+    "rerun_on_one_cell",
+    "remeasure_or_attest",
+    "rerun_serially",
+    "rerun_balanced",
+    "check_against_people",
+    "replace_instrument",
+    "sharpen_criterion",
+    "repair_rig",
+    "add_cases",
+    "confirm_on_fresh_cases",
+    "record_and_rerun",
+    "run_live",
+    "draw_at_random",
+    "finish_read",
+    "declare_looks",
+    "declare_criteria",
+    "name_control",
+    "no_action",
+]
+
+#: Why a step that is more evidence states no planned size, and so makes no call: ``no_interval``, the figure it would
+#: settle states no interval or standard error; ``no_spread``, every case read alike, so at today's estimate no added
+#: case is expected to differ and no size can be promised; ``on_the_line``, today's estimate sits exactly on its line,
+#: so no finite size settles it there; ``no_count``, no count says how many cases the figure rests on;
+#: ``nothing_to_settle``, the caveat names no figure with a line, a margin or a floor a size could be read against.
+UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "nothing_to_settle"]
+
+#: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
+#: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
+#: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
+#: enough cases that still states none), so no added case gives it one; ``lift_not_shown``, a step no sequence of the
+#: catalogue's actions has been driven, followed as written, to lift, so it names its remedy and makes no call: a
+#: re-run whose fault (an answering model split by the provider, a rig, recording, a replay, a confound no launch
+#: setting holds alike) is not a parameter a launch sets; the serial re-run of cases run at once, which a launch can
+#: ask for (``measure_latency``) but which has not been driven; and more cases on a contrast where every arm the
+#: caveat names but the control would run in a call of its own, which adds no pair (``unpaired_arms``).
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown"]
+
+#: A value one argument of a catalogue action's call takes.
+StepArgument = str | bool | int | list[str]
+
+
+class RemedyStep(_Part):
+    """What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as
+    a value a person reads and an agent can take.
+
+    Where an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the
+    step makes, every argument named and typed as the action's own parameters (a step that adds cases passes its
+    planned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the
+    caveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the
+    reading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except
+    the dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.
+    Where one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same
+    shape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a
+    confirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.
+    A step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown
+    to do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has
+    been shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).
+    Where the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated
+    before it runs, never "until it separates"; where no size can be read, ``unsized`` says why and the step makes no
+    call, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names
+    the action that prices it first; code never takes a step.
+    """
+
+    remedy: Remedy = Field(description="What would close it.")
+    closes: str | None = Field(
+        default=None,
+        description="The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create "
+        "closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it "
+        "creates (limits: this_report_stays_flagged).",
+    )
+    action: str | None = Field(
+        default=None, description="The catalogue action that takes it; none where a host or a person acts."
+    )
+    calls: list[dict[str, StepArgument]] = Field(
+        default_factory=list,
+        description="Each call of the action the step makes, its arguments by the action's own parameter names; empty "
+        "where no action takes it.",
+    )
+    needs: list[str] = Field(
+        default_factory=list,
+        description="The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+    )
+    as_launched: list[str] = Field(
+        default_factory=list,
+        description="For a launch: the parameters that set an arm up which the reading holds no value for, by the "
+        "action's own names; the taker sets each as the runs of the arms it launches were launched, never to its "
+        "default, or the new runs are not more of those arms. The one exception is a dimension alike names, which "
+        "the taker sets to one value on every call.",
+    )
+    alike: list[str] = Field(
+        default_factory=list,
+        description="For a re-run that balances a confound: each apparatus dimension the confound is in, by its "
+        "apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm "
+        "was launched: the arms then differ only in what is compared.",
+    )
+    call_arms: list[list[str]] = Field(
+        default_factory=list,
+        description="For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does "
+        "not hold the arms' runs.",
+    )
+    after: dict[str, Literal["launched_runs", "launched_control_run", "created_campaign"]] = Field(
+        default_factory=dict,
+        description="For a call that follows another of the step: each parameter only an earlier call's result holds, "
+        "and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); "
+        "launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and "
+        "before any result is scored, or the campaign reads its control as named late; created_campaign, the id the "
+        "step's campaign_create returned.",
+    )
+    then: list[RemedyStep] = Field(
+        default_factory=list,
+        description="The calls that finish the act after this step's own, in order, each of one action and of this "
+        "shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken "
+        "out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that "
+        "follows another.",
+    )
+    arms: list[str] = Field(default_factory=list, description="The arms it is about, by id; empty for all.")
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
+    planned_cases: int | None = Field(
+        default=None,
+        ge=1,
+        description="For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from "
+        "the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign "
+        "that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted "
+        "by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did "
+        "not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control "
+        "(limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created "
+        "campaign reads, never this report's.",
+    )
+    unsized: UnsizedReason | None = Field(
+        default=None, description="For more evidence no size can be read for: why. Such a step makes no call."
+    )
+    size_bias: Literal["picked_best_of_n"] | None = Field(
+        default=None,
+        description="Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's "
+        "own estimate, which reads high because the pick was the best of several, so fewer than four designs in five "
+        "of that size clear.",
+    )
+    declared_look: bool = Field(
+        default=False,
+        description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
+        "stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or "
+        "within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a "
+        "reference false-separation rate from a simulated setting.",
+    )
+    results_needed: int | None = Field(
+        default=None, ge=1, description="For a check: how many more results it needs before it can decide."
+    )
+    recording: list[NextExperiment] = Field(
+        default_factory=list, description="What recording an unrecorded coordinate would pool, cell by cell."
+    )
+    spends: bool = Field(default=False, description="Whether it costs money to take.")
+    priced_by: str | None = Field(
+        default=None, description="For a step that spends: the catalogue action that prices it before it is taken."
+    )
+    no_action: NoActionReason | None = Field(
+        default=None,
+        description="Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action "
+        "takes, or no sequence has been shown to finish, why not.",
+    )
+    limits: list[
+        Literal["unpaired_arms", "axis_may_not_generate", "this_report_stays_flagged", "control_may_read_late"]
+    ] = Field(
+        default_factory=list,
+        description="What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the "
+        "control beyond its model would run in a launch call of its own, whose new cases the control does not run; a "
+        "contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A "
+        "step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it "
+        "names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned "
+        "size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. "
+        "axis_may_not_generate: n_variations writes unseen cases only on a template "
+        "axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the "
+        "same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds "
+        "no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; "
+        "for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat "
+        "is read off this report's own results (a criterion set after them, a pick among them), which nothing added "
+        "anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to "
+        "trust. control_may_read_late: the control is named from a launched run, which exists only once the launch "
+        "starts; named after the first result is scored, the created campaign reads its control as named late.",
+    )
+    unpaired_arms: list[str] = Field(
+        default_factory=list,
+        description="For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: "
+        "launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
+    )
+
+    @model_validator(mode="after")
+    def _priced_and_planned(self) -> Self:
+        if self.spends and self.priced_by is None:
+            raise ValueError("a step that spends names the action that prices it")
+        if self.planned_cases is not None and self.unsized is not None:
+            raise ValueError("a step states its planned size, or why it has none, and not both")
+        if self.size_bias is not None and self.planned_cases is None:
+            raise ValueError("a size bias qualifies a planned size")
+        if self.declared_look and self.planned_cases is None:
+            raise ValueError("a step that is one more look states its planned size")
+        if self.unsized is not None and self.action is not None:
+            raise ValueError("a step with no planned size makes no call: it is never taken open-ended")
+        if self.remedy == "no_action" and self.no_action is None:
+            raise ValueError("a step that takes no action says why none does")
+        if self.no_action is not None and self.action is not None:
+            raise ValueError("a step an action takes has no reason no action takes it")
+        if (self.action is None) != (not self.calls):
+            raise ValueError("a step an action takes makes at least one call of it, and a step none takes makes none")
+        if self.action is None and (self.then or self.after or self.as_launched):
+            raise ValueError("a step no action takes makes no call, and none follows it")
+        named = [*self.needs, *self.as_launched, *self.after]
+        if len(set(named)) != len(named) or any(set(call) & set(named) for call in self.calls):
+            raise ValueError("each parameter is filled by a call, left to the taker, or read off an earlier call: once")
+        if any(step.then for step in self.then):
+            raise ValueError("a call that follows another holds no calls of its own to follow it")
+        if bool(self.unpaired_arms) != ("unpaired_arms" in self.limits):
+            raise ValueError("a step names the arms it cannot pair exactly where it states that it cannot")
+        if self.call_arms and len(self.call_arms) != len(self.calls):
+            raise ValueError("a step that says which arms its calls run says it for every call")
+        if self.alike and "apparatus_settings" not in self.as_launched:
+            raise ValueError("a dimension held alike is one the taker sets in apparatus_settings")
+        return self
+
+
+class FirstScreen(_Part):
+    """What a report's first screen holds beside the answer, in four fixed slots, as typed values and no text.
+
+    The gate (can this be read at all), the trust slot's reasons (at most three caveats, ranked, with the count past
+    them), and the call. The answer slot holds no field: it is the verdicts and warnings the input already carries.
+    Computed by one function over the caveat list
+    (:func:`~threetears.evals.analysis.first_screen.first_screen`), and left out of the input's digest, since it is a
+    function of the rest of the input and of a call that may be made after the freeze.
+    """
+
+    gate: Gate | None = Field(default=None, description="What stopped the read; none when the campaign can be read.")
+    reasons: list[str] = Field(default_factory=list, max_length=3, description="The ranked caveats shown, by id.")
+    remainder: int = Field(default=0, ge=0, description="The eligible caveats past the three shown.")
+    open_report_caveats: int = Field(default=0, ge=0, description="Every open report-wide caveat, shown or not.")
+    called_arms: list[str] = Field(
+        default_factory=list, description="The arms code's own read of the options calls: what ranks a caveat on them."
+    )
+    call: CallRead | None = Field(default=None, description="The call, where one was made.")
+    steps: list[RemedyStep] = Field(
+        default_factory=list,
+        description="What would change each reason shown, in their order; under a gate, what would lift it.",
+    )
 
 
 class ReportInput(_Part):
@@ -876,15 +1491,35 @@ class ReportInput(_Part):
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
         "declaring nothing; none where no run did, or the bundle carried none.",
     )
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    caveat_list: list[CaveatEntry] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Every qualification of the answer, each once, typed; none on an input built before the list. "
+        "Derived, so never part of the input's digest.",
+    )
+    first_screen: FirstScreen | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The first screen's slots, as shown when the input was frozen; never part of the input's digest.",
+    )
+
+
+#: The keys of the document no digest reads: each a function of the rest of the input, of the bundle the input was
+#: built from (whose own fingerprint a snapshot holds) and of a call made later. Identity is over inputs only, so a
+#: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
+_OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
+
+#: The keys of each aspect no digest reads, for the same reason: its looks are counted from stored facts about the
+#: campaign at read time (a run joining, a re-judge), which move no input the author gave.
+_ASPECT_OUTSIDE_THE_DIGEST = frozenset({"looks"})
 
 
 def report_input_digest(report_input: ReportInput) -> str:
     """The digest of a report input: sha256 of its canonical JSON (keys sorted, by alias).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     return report_input_document_digest(report_input.model_dump(mode="json", by_alias=True))
 
@@ -896,9 +1531,15 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     model the running build holds, which may have moved since the freeze.
 
     :param document: ``ReportInput.model_dump(mode="json", by_alias=True)``, or a document read back from one.
-    :ptype document: Mapping[str, Any]
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
+    document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
+    if isinstance(aspects := document.get("aspects"), list):
+        document["aspects"] = [
+            {key: value for key, value in aspect.items() if key not in _ASPECT_OUTSIDE_THE_DIGEST}
+            if isinstance(aspect, Mapping)
+            else aspect
+            for aspect in aspects
+        ]
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))

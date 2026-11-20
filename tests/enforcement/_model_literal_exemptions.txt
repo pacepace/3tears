@@ -71,3 +71,8 @@ packages/evals/tests/test_providers_pricing.py::pins the default pricer's publis
 packages/evals/tests/test_report_writer_pricing.py::drives the shipped client on the Claude id the report writer's default pricer prices; the model id is the subject under test, not a default
 packages/evals/tests/test_writer_acceptance_dry.py::the 2026-11-06 acceptance incident's writer, whose published rates price the launch refusal under test; the subject under test, not a default
 packages/evals/tests/test_report_budget_fewest_turns.py::the 2026-11-06 acceptance incident's writer, a dearer editor and a model no acceptance run was recorded on, whose published rates price the writer eval's launch refusal and warning under test; the subject under test, not a default
+
+# evals rung 2 (examples/2-replies): the test pins facts of the shipped recordings and reads, which a constant would
+# break the moment the default model moved: the judge stronger_eval's recording was made on, and the model reader
+# named on the shipped adjudication read.
+packages/evals/tests/test_rung_two_replies.py::rung 2 pins the recorded judge its stronger_eval replays were made on (claude-sonnet-5-5) and the model reader named on the shipped adjudication read (claude-fable-5-2); recorded-run facts under test, not a default

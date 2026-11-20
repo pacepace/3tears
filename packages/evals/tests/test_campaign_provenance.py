@@ -13,12 +13,12 @@ from pydantic import ValidationError
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     CampaignReport,
-    build_campaign_report,
     build_code_only_report,
     campaign_report_html,
-    campaign_report_markdown,
-    report_markdown,
 )
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import CellCoordinate, CriterionKind, LateCriterion
 from threetears.evals.analysis.style import lint_prose
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT

@@ -49,6 +49,7 @@ from public_surface import (
     factory_name,
     field_rows,
     first_sentence,
+    md_text,
     one_line,
     own_doc,
     paragraphs,
@@ -78,26 +79,6 @@ GAPS: list[tuple[str, str]] = []
 
 # --- text --------------------------------------------------------------------------------------------------------
 
-_ROLE = re.compile(r":[a-z]+(?::[a-z]+)?:`(?:[^`<]*<)?~?([^`>]+)>?`")
-_DOUBLE_TICK = re.compile(r"``(.+?)``")
-
-
-def _role_target(match: re.Match[str]) -> str:
-    """A Sphinx cross-reference as a code span: the last dotted part when it was ``~``-shortened."""
-    whole = match.group(0)
-    target = match.group(1)
-    if "`~" in whole:
-        target = target.rsplit(".", 1)[-1]
-    return f"`{target}`"
-
-
-def md_text(text: str) -> str:
-    """Docstring reStructuredText as Markdown: roles and double backticks become code spans, ``<`` is escaped."""
-    text = _ROLE.sub(_role_target, text)
-    text = _DOUBLE_TICK.sub(lambda m: f"`{m.group(1)}`", text)
-    parts = re.split(r"(`[^`]*`)", text)
-    return "".join(p if p.startswith("`") else p.replace("<", "&lt;") for p in parts)
-
 
 def cell(text: str) -> str:
     """Text safe inside a Markdown table cell."""
@@ -124,8 +105,9 @@ def api_section() -> Iterator[str]:
         "declared surface, mapped by rung in [the surface](surface.md). "
         "Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A "
         "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. "
-        "A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every "
-        "other name listed may move in any release, recorded in `MIGRATIONS.toml`. A root also exports "
+        "A name marked *host contract* is one a host writes against: it moves only with a `MIGRATIONS.toml` record "
+        "naming its replacement, in a single cut-over. Every other name listed may move in any release, recorded in "
+        "`MIGRATIONS.toml`. A root also exports "
         "*provisional* names, not listed here: most are types a signature below names, importable so your code can "
         "annotate them, and none is promised; `packages/evals/api/surface.json` lists them "
         "([stability tiers](adopting-a-host.md#stability-tiers))."
@@ -386,9 +368,12 @@ def _json_type(schema: dict[str, Any]) -> str:
 
 
 def actions_section() -> Iterator[str]:
-    from threetears.evals.actions import PERMISSION_CLASSES, engine_actions, standard_tools
+    from threetears.evals.actions import PermissionClass, standard_tools
+    from threetears.evals.actions import eval_catalogue
+    from threetears.evals.actions.analyst import analyst_actions
 
-    actions = engine_actions()
+    analyst = {action.name for action in analyst_actions()}
+    actions = [action for action in eval_catalogue().actions if action.name not in analyst]
     yield anchor("actions")
     yield "## The action catalogue (MCP)"
     yield ""
@@ -402,7 +387,7 @@ def actions_section() -> Iterator[str]:
     yield "| Tool (default prefix) | Classes it mounts | Description |"
     yield "|---|---|---|"
     for tool in standard_tools():
-        classes = ", ".join(f"`{c}`" for c in PERMISSION_CLASSES if c in tool.permissions)
+        classes = ", ".join(f"`{c}`" for c in typing.get_args(PermissionClass) if c in tool.permissions)
         yield f"| `{tool.name}` | {classes} | {cell(md_text(tool.description))} |"
     yield ""
     params: dict[tuple[str, str, str], list[str]] = {}
@@ -467,13 +452,15 @@ def cli_section() -> Iterator[str]:
         yield f"### `{name}`"
         yield ""
         yield "```text"
-        yield command_help(cli.build_parser(cli.DEFAULT_PROG), name)
+        yield command_help(name)
         yield "```"
         yield ""
 
 
-def command_help(parser: argparse.ArgumentParser, command: str) -> str:
+def command_help(command: str) -> str:
     """What ``<command> --help`` prints, at a fixed width and without colour, so it is the same on every machine."""
+    from threetears.evals.quick import cli
+
     saved = {key: os.environ.get(key) for key in ("COLUMNS", "NO_COLOR", "FORCE_COLOR", "PYTHON_COLORS")}
     os.environ.update({"COLUMNS": str(HELP_WIDTH), "NO_COLOR": "1"})
     for key in ("FORCE_COLOR", "PYTHON_COLORS"):
@@ -481,7 +468,7 @@ def command_help(parser: argparse.ArgumentParser, command: str) -> str:
     printed = io.StringIO()
     try:
         with contextlib.redirect_stdout(printed), contextlib.suppress(SystemExit):
-            parser.parse_args([command, "--help"])
+            cli.run_cli([command, "--help"])
     finally:
         for key, value in saved.items():
             if value is None:

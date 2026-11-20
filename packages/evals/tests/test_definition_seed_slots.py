@@ -26,12 +26,14 @@ corpus template as given; and ``admit_template`` with its ``refuse_unsupplied_wo
 
 from __future__ import annotations
 
+import copy
+import logging
 from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
 
-from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel import EvalStorage, StorageError, ValidationFailedError
 from threetears.evals.kernel.host import TemplateChecks
 from threetears.evals.schema import EvalTemplate
 from threetears.evals.run import (
@@ -45,7 +47,7 @@ from threetears.evals.run import (
 )
 from packages.evals.tests.factories import make_judge_config, make_rubric_dim, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, toyhost_template
 
 SCOPE = toyhost_template().scope_id
 DIM = "play.pacing"
@@ -371,3 +373,102 @@ def test_a_template_whose_slot_is_occupied_is_still_admitted() -> None:
 
     with pytest.raises(ValidationFailedError, match="names no dimension this host's world declares"):
         _seed(storage, templates=[typo])
+
+
+# =============================================================================
+# A stored template is given the corpus's presentation names it lacks, never one it holds
+# =============================================================================
+
+
+def _named_in_the_corpus(**stratum_names: str) -> EvalTemplate:
+    """The toy template as a corpus that later named its goal check and two strata declares it."""
+    return toyhost_template().model_copy(
+        update={
+            "goal_check_names": {EVERY_FIELD_EMITTED: "All fields emitted"},
+            "stratum_names": stratum_names or {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"},
+        }
+    )
+
+
+def _stored_with(storage: EvalStorage, **names: Any) -> EvalTemplate:
+    """Seed the toy template bare, then give it ``names`` as an operator's ``update_template`` would."""
+    _seed(storage, templates=[toyhost_template()])
+    (stored,) = storage.query_templates(SCOPE)
+    if names:
+        storage.save_template(stored.model_copy(update=names))
+    (stored,) = storage.query_templates(SCOPE)
+    return stored
+
+
+def test_a_stored_template_is_given_the_presentation_names_it_lacks_and_keeps_every_one_it_holds() -> None:
+    storage, store = memory_storage()
+    before = _stored_with(storage, stratum_names={"lookalike": "Operator's lookalikes"})
+
+    outcome = _seed(storage, templates=[_named_in_the_corpus()])
+
+    (after,) = storage.query_templates(SCOPE)
+    assert after.goal_check_names == {EVERY_FIELD_EMITTED: "All fields emitted"}
+    assert after.stratum_names == {"lookalike": "Operator's lookalikes", "plain": "Plain invoices"}, "never overwritten"
+    assert (after.id, after.updated_at, after.seed_digest) == (before.id, before.updated_at, before.seed_digest)
+    assert after.model_dump(exclude={"goal_check_names", "stratum_names"}) == before.model_dump(
+        exclude={"goal_check_names", "stratum_names"}
+    ), "only the two presentation fields are written"
+    assert outcome.presentation_named == {
+        "eval_template": {after.name: [f"goal check {EVERY_FIELD_EMITTED}", "stratum plain"]}
+    }
+    assert outcome.skipped["eval_template"] == 1 and "1 given presentation names from the corpus" in outcome.summary()
+
+    written = copy.deepcopy(store.documents)
+    again = _seed(storage, templates=[_named_in_the_corpus()])
+    assert store.documents == written, "a second pass writes nothing"
+    assert again.presentation_named == {} and "presentation" not in again.summary()
+
+
+def test_a_name_the_stored_template_gives_another_entry_or_a_check_it_lacks_is_not_given() -> None:
+    storage, _ = memory_storage()
+    _stored_with(storage, stratum_names={"other": "Plain invoices"}, goal_state_checks=[], goal_check_controls=None)
+    held = _named_in_the_corpus(plain="Plain invoices")
+
+    outcome = _seed(storage, templates=[held])
+
+    (after,) = storage.query_templates(SCOPE)
+    assert (after.goal_check_names, after.stratum_names) == ({}, {"other": "Plain invoices"})
+    assert outcome.presentation_named == {}
+
+
+def test_a_template_the_pass_creates_carries_the_corpus_names_and_is_not_filled_again() -> None:
+    storage, _ = memory_storage()
+
+    outcome = _seed(storage, templates=[_named_in_the_corpus()])
+
+    (stored,) = storage.query_templates(SCOPE)
+    assert stored.stratum_names == {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"}
+    assert outcome.created["eval_template"] == 1 and outcome.presentation_named == {}
+
+
+class _TemplateRefusingStorage(EvalStorage):
+    """A store down for template writes."""
+
+    def save_template(self, template: EvalTemplate) -> None:
+        raise StorageError("the document store is read-only for maintenance")
+
+
+def test_a_presentation_fill_the_store_refuses_is_recorded_with_its_reason_and_the_next_boot_fills_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    storage, store = memory_storage()
+    _stored_with(storage)
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.definition_seed"):
+        refused = _seed(_TemplateRefusingStorage(store), templates=[_named_in_the_corpus()])
+
+    name = toyhost_template().name
+    assert refused.presentation_fill_failed == {
+        "eval_template": {name: "the document store is read-only for maintenance"}
+    }
+    assert refused.presentation_named == {} and "1 PRESENTATION NAMES REFUSED BY STORAGE" in refused.summary()
+    assert any(r.levelno == logging.WARNING and name in r.getMessage() for r in caplog.records)
+    (stored,) = storage.query_templates(SCOPE)
+    assert stored.stratum_names == {}, "nothing was written"
+
+    assert set(_seed(storage, templates=[_named_in_the_corpus()]).presentation_named["eval_template"]) == {name}

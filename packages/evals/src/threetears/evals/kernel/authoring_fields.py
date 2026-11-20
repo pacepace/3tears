@@ -41,13 +41,9 @@ def reject_unknown_authoring_fields(
     something reasonable that a refusal would break.
 
     :param action: The action name, for the message.
-    :ptype action: str
     :param fields: The caller's partial field map.
-    :ptype fields: dict[str, Any]
     :param model: The model the merge will construct — the authority on what is declared.
-    :ptype model: type[BaseModel]
     :param server_fields: Names ignored without error.
-    :ptype server_fields: tuple[str, ...]
     :raises ValidationFailedError: ``fields`` names something the model does not declare.
     """
     declared = set(model.model_fields)
@@ -78,16 +74,11 @@ def edited_core_document[M: CoreDocumentModel](
     caller sends is. Only the second validation's result is returned; the first only refuses.
 
     :param model: The core document's model.
-    :ptype model: type[M]
     :param existing: The document as its stored read returned it.
-    :ptype existing: M
     :param changes: The fields to set, each to its new value: the caller's (already checked by name) and the
         surface's own (``updated_at``, a re-stamped design).
-    :ptype changes: Mapping[str, Any]
     :param drop: Fields to leave out of the result, so their defaults are taken (a new version's fresh ``id``).
-    :ptype drop: Collection[str]
     :return: The edited document, ready to write.
-    :rtype: M
     :raises ValidationError: ``changes`` makes a document this build refuses.
     """
     as_declared = {

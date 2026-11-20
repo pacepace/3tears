@@ -10,7 +10,7 @@ one user message holds what :func:`review_report` builds from the document and t
   only for a stored page, so it is the page the analyst's ``report_check`` shows, line for line;
 - the document's ``omitted``, what the analyst saw and left out, with why;
 - the computed facts code finds for the editor to weigh
-  (:func:`~threetears.evals.analysis.report_doc_facts.editor_facts`), labelled as facts and never as verdicts;
+  (:func:`~threetears.evals.analysis.report.doc_page.facts.editor_facts`), labelled as facts and never as verdicts;
 - from the second round, the editor's own earlier findings, each with code's stable id (``f<round>.<n>``).
 
 **Nothing of the analyst's session reaches the editor.** :func:`review_report` takes the document, the snapshot's
@@ -61,12 +61,12 @@ from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report_doc_facts import editor_facts
+from threetears.evals.analysis.report.doc_page.facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.rubric import EditorRubric, editor_rubric, shipped_rubric
-from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
+from threetears.evals.ops.report_writer.session import PackageDefect, SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
@@ -98,9 +98,7 @@ def _pass_total(items: int) -> int:
     rounded up (the module docstring), so 11 for the shipped seven.
 
     :param items: The rubric's item count.
-    :ptype items: int
     :return: The pass total.
-    :rtype: int
     """
     return math.ceil(_PASS_SHARE * items * _TOP_SCORE)
 
@@ -119,9 +117,7 @@ def editor_session(round: int) -> str:
     """The name of the editor's session for a round, which its tally entries and recorded turns are kept under.
 
     :param round: The round reviewed.
-    :ptype round: int
     :return: ``editor-<round>``.
-    :rtype: str
     """
     return f"editor-{round}"
 
@@ -165,7 +161,6 @@ class RubricScore:
         """The item as JSON.
 
         :return: ``{"n", "name", "score", "reason"}``.
-        :rtype: dict[str, Any]
         """
         return {"n": self.n, "name": self.name, "score": self.score, "reason": self.reason}
 
@@ -236,7 +231,6 @@ class Review:
 
         :return: ``{"round", "items", "findings", "resolved", "total", "passes", "must_fix", "blocking"}``,
             ``blocking`` the ids of the findings that block (:attr:`blocking`).
-        :rtype: dict[str, Any]
         """
         return {
             "round": self.round,
@@ -257,8 +251,9 @@ class EditorOutcome:
 
     :ivar ending: ``reviewed``, a review was read; ``review_failed``, the answer could not be read twice;
         ``over_budget``, the report's budget refused a turn; ``failed``, the model refused, its reply stopped
-        short for a cause other than the output cap, or the client failed (the provider's failure, after its
-        retries, or a reply the client refused after it was paid for).
+        short for a cause other than the output cap, the client failed (the provider's failure, after its
+        retries, or a reply the client refused after it was paid for), or the package's own code raised
+        (:attr:`defect`).
     :ivar round: The round reviewed.
     :ivar review: The review; ``None`` unless ``reviewed``.
     :ivar faults: What kept the last answer from being read; empty unless ``review_failed``.
@@ -267,6 +262,8 @@ class EditorOutcome:
         is resumable, never thrown away.
     :ivar failure: The client's failure a ``failed`` round ended on, when one did, so a caller that records it can
         ask the host what of it is safe to keep (its text may carry a provider's account); never stored.
+    :ivar defect: The package's own failure a ``failed`` round ended on, when one did: an internal error, never the
+        client's, so never handed to the host's describer; ``failure`` is then ``None``. Never stored.
     """
 
     ending: Literal["reviewed", "review_failed", "over_budget", "failed"]
@@ -276,6 +273,7 @@ class EditorOutcome:
     reason: str = ""
     session: dict[str, Any] = field(default_factory=dict)  # Any: a JSON object
     failure: Exception | None = field(default=None, compare=False, repr=False)
+    defect: PackageDefect | None = field(default=None, compare=False, repr=False)
 
 
 async def review_report(
@@ -298,33 +296,21 @@ async def review_report(
     The parameters are everything the editor is given; none carries the analyst's session (the module docstring).
 
     :param doc: The document, which passed validity and the invariants.
-    :ptype doc: ReportDoc
     :param report_input: The report input of the snapshot it was written from.
-    :ptype report_input: ReportInput
     :param round: The round reviewed: the analyst's round that submitted the document.
-    :ptype round: int
     :param snapshot: The snapshot's id, which every tool call names.
-    :ptype snapshot: str
     :param earlier: The previous round's findings; empty in round 1.
-    :ptype earlier: Sequence[ReportFinding]
     :param model: The model id the client sends to.
-    :ptype model: str
     :param client: The client this round's session goes through (``turn_session(editor_session(round), ...)``).
-    :ptype client: ToolTurnClient
     :param mount: The ``evals_analyst`` tool on the editor's cut, bound to its host and caller.
-    :ptype mount: ToolMount
     :param skill: The editor's system text (``load_skill().editor()``), whose rubric its answers are read against.
-    :ptype skill: SkillText
     :param tally: The report's tally.
-    :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns).
-    :ptype budget: ReportBudget
     :param limits: What the round is held to; :class:`EditorLimits`' defaults when ``None``.
-    :ptype limits: EditorLimits | None
     :return: How the round ended, with its session as a stored value. A failure of the client is the ``failed``
         ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in
-        the tally.
-    :rtype: EditorOutcome
+        the tally. So is a failure the package's own code raised in the round, carried as its ``defect`` (an internal
+        error, never described as the client's).
     :raises ValueError: ``skill`` states no rubric that reads; refused before anything is sent (and before the report's
         first turn by the kind's preparation and ``write_report``).
     """
@@ -347,10 +333,18 @@ async def review_report(
             session, doc, report_input, rubric, round=round, snapshot=snapshot, earlier=earlier, limits=held
         )
     except Exception as exc:
-        # The client's failure (a provider's, after its retries; a reply refused after it was paid for), which the
-        # engine cannot name by type: reported as this round's `failed` ending, so the session is kept beside it.
-        contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
-        ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        # Reported as this round's `failed` ending, so the session is kept beside it, and told apart by where it was
+        # raised: the client's failure (a provider's, after its retries; a reply refused after it was paid for),
+        # which the engine cannot name by type, or the package's own defect, which is never described as the client's.
+        defect = session.defect(exc)
+        if defect is None:
+            contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
+            ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        else:
+            contain(
+                exc, log=log, what=f"the report editor's round {round} ends failed on {defect.line()}", level="error"
+            )
+            ended = EditorOutcome(ending="failed", round=round, reason=defect.line(), defect=defect)
     return replace(ended, session=session.to_json())
 
 
@@ -425,11 +419,8 @@ def computed_facts(doc: ReportDoc, report_input: ReportInput) -> str:
     """The facts code computes from the snapshot about a document, as the editor reads them: one line each.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param report_input: Its snapshot's report input.
-    :ptype report_input: ReportInput
     :return: The facts, one ``- [kind] path: fact`` line each, or ``- none``.
-    :rtype: str
     """
     facts = editor_facts(doc, report_input)
     if not facts:
@@ -482,17 +473,11 @@ def _read_review(
     """The review an editor's answer holds: its last fenced JSON block, read against the session's rubric.
 
     :param text: The answer's text.
-    :ptype text: str
     :param rubric: The rubric of the editor text the session started from.
-    :ptype rubric: EditorRubric
     :param claims: The claim ids of the document reviewed, which a finding may name.
-    :ptype claims: frozenset[str]
     :param round: The round reviewed.
-    :ptype round: int
     :param earlier: The previous review's findings, which each finding continues or the review resolves.
-    :ptype earlier: Sequence[ReportFinding]
     :return: The review, or every fault that keeps it from being read.
-    :rtype: Review | tuple[str, ...]
     """
     blocks = [match["body"] for match in _FENCE.finditer(text)]
     if not blocks:

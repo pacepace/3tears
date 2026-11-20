@@ -58,12 +58,9 @@ def contestant_key(result: ResultView, run: EvalRun) -> ContestantKey:
     whose run recorded its map; only a key nothing here can reproduce keeps its stamped version.
 
     :param result: The observation to place.
-    :ptype result: ResultView
     :param run: The run the result belongs to, whose recorded lever map verifies its key.
-    :ptype run: EvalRun
     :return: ``(variant_key, identity_version)`` — the key the runner stamped, and this build's version where
         the run's map reproduces it, else the version stamped beside it.
-    :rtype: ContestantKey
     """
     if (
         result.identity_version != IDENTITY_VERSION
@@ -82,9 +79,7 @@ def identity_version_disclosure(version: int) -> str | None:
     to have and disagreed on the one it exists for would be worse than none.
 
     :param version: The identity version the contestant is placed at (:func:`contestant_key`).
-    :ptype version: int
     :return: The sentence, or ``None`` when the key is this build's.
-    :rtype: str | None
     """
     if version == IDENTITY_VERSION:
         return None
@@ -103,9 +98,7 @@ def identity_version_span(keys: Iterable[ContestantKey]) -> list[int]:
         points: an answer whose subjects were all filtered out still spanned what it
         spanned, and a span derived downstream goes missing exactly when the reader
         most needs it.
-    :ptype keys: Iterable[ContestantKey]
     :return: The versions, ascending.
-    :rtype: list[int]
     """
     return sorted({version for _, version in keys})
 
@@ -119,10 +112,8 @@ def identity_span_disclosure(versions: Sequence[int]) -> str | None:
     the second half of the same defect and the one a per-row flag cannot answer.
 
     :param versions: The span from :func:`identity_version_span`.
-    :ptype versions: Sequence[int]
     :return: The sentence, or ``None`` when the answer rests on a single predicate — where
         there is no split to explain.
-    :rtype: str | None
     """
     if len(versions) < 2:
         return None

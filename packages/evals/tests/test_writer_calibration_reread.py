@@ -42,7 +42,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
 )
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
-from threetears.evals.kernel import judge_criterion_digest
+from threetears.evals.kernel.judge_cases import judge_criterion_digest
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE
 from threetears.evals.schema import JudgeEvidence

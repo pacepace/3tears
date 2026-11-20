@@ -93,7 +93,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import FAITHFULNESS_DIM, toyhost_judged_template
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND, toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, TOY_EXTRACTOR_KIND, toyhost_template
 from packages.evals.tests.clock_support import frozen_clock
 
 
@@ -1551,6 +1551,8 @@ def test_a_carry_reset_writes_the_corpus_battery_beside_a_copy_of_every_live_cas
     kept = {c.id: c for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=first.id)}
     assert all(kept[c.id] == c for c in live), "the source cases stay on the archived revision, unedited"
     assert reset.carried == {source.id: carried[source.id].id for source in live}
+    rendered = reset.render().splitlines()
+    assert all(f"carried {source.id} -> {carried[source.id].id}" in rendered for source in live), reset.render()
     (entry,) = [e for e in reset.reset if e.key == TEMPLATE_J]
     assert entry.written == f"revision 2, carrying {LIVE} live case(s)", reset.render()
     assert f"{TEMPLATE_J}: stale -> revision 2, carrying {LIVE} live case(s)" in reset.render()
@@ -1634,6 +1636,93 @@ def test_under_carry_a_pulled_case_reading_unknown_beside_live_cases_is_still_re
     then = corpus_digests(toyhost_host(storage=storage), _full_corpus())
     reset = _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True, seeded_digests=then)
     assert len(reset.carried) == LIVE and set(_states(reset.after).values()) == {"current"}
+
+
+def test_the_first_remedy_for_live_cases_beside_an_unrecorded_case_names_the_host_s_digests_with_the_carry() -> None:
+    """Followed as written, the remedy for a pre-.30 battery holding live cases is the carry that succeeds: it names
+    the host's ``seeded_digests`` with it, since the carry alone meets the corpus case reading unknown. That second
+    refusal names them too, ahead of the overwrite."""
+    storage = _seeded_before_30()
+    _with_live_cases(storage)
+
+    with pytest.raises(ConflictError) as first:
+        _reset(storage, _grown(), [TEMPLATE_J])
+    with pytest.raises(ConflictError) as second:
+        _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True)
+
+    for refused in (first.value, second.value):
+        remedy = refused.remedy
+        assert "seeded_digests=run.corpus_digests(host, " in remedy and GROWN_KEY in remedy, remedy
+        assert remedy.index("seeded_digests") < remedy.index("overwrite_customized=True"), remedy
+    assert first.value.remedy.startswith(
+        f"run.reset_definitions(..., [{TEMPLATE_J!r}], carry_live_cases=True, seeded_digests="
+    ), first.value.remedy
+    then = corpus_digests(toyhost_host(storage=storage), _full_corpus())
+    reset = _reset(storage, _grown(), [TEMPLATE_J], carry_live_cases=True, seeded_digests=then)
+    assert len(reset.carried) == LIVE, "the call the first remedy names succeeds"
+
+
+def test_live_cases_beside_a_customized_template_are_refused_naming_both_flags_then_the_overwrite_alone() -> None:
+    """A battery refused both for live cases and for a definition that may be an operator's is answered by the two
+    flags together, which keep every live case, and second by the overwrite alone, which leaves them archived."""
+    storage, store = _seeded()
+    judge = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert judge is not None
+    storage.save_template(judge.model_copy(update={"intent": "an operator's own wording"}))
+    live = _with_live_cases(storage)
+    grown = _grown_with_its_set()
+    keys = _drift(storage, grown).keys("stale", "customized")
+    before = copy.deepcopy(store.documents)
+
+    with pytest.raises(ConflictError) as refused:
+        _reset(storage, grown, keys)
+
+    assert store.documents == before
+    said, remedy = str(refused.value), refused.value.remedy
+    assert f"{TEMPLATE_J}: it reads customized" in said and all(case.id in said for case in live), said
+    both = remedy.index("carry_live_cases=True, overwrite_customized=True)")
+    alone = remedy.index("], overwrite_customized=True)")
+    assert both < alone, remedy
+    assert "leaves the live cases only on the archived revision" in remedy[alone:], remedy
+    assert remedy.count(repr(TEMPLATE_J)) == 2, "each call names the template once, though two refusals name it"
+    reset = _reset(storage, grown, keys, carry_live_cases=True, overwrite_customized=True)
+    assert set(reset.carried) == {case.id for case in live}
+
+
+class _CarryRefusingStorage(EvalStorage):
+    """A store that refuses every carried copy after the first, as a store failing part-way through a carry does."""
+
+    copies = 0
+
+    def save_test_case(self, test_case: EvalTestCase, *, if_match: str | None = None) -> None:
+        if test_case.carried_from is not None:
+            if self.copies:
+                raise StorageError("the document store went away")
+            self.copies += 1
+        super().save_test_case(test_case, if_match=if_match)
+
+
+def test_a_carry_failing_part_way_names_each_live_case_left_only_on_the_archived_revision() -> None:
+    """A retried reset reads the new revision, so it never finds the cases a failed carry left behind: the failure
+    names them."""
+    storage, store = _seeded()
+    first = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert first is not None
+    live = _with_live_cases(storage)
+    grown = _grown_with_its_set()
+
+    with pytest.raises(StorageError) as failed:
+        _reset(_CarryRefusingStorage(store), grown, _drift(storage, grown).keys("stale"), carry_live_cases=True)
+
+    said = str(failed.value)
+    second = storage.load_template_by_name(JUDGE_NAME, TOYHOST_SCOPE)
+    assert second is not None and second.revision == 2
+    copied = {c.carried_from for c in storage.query_test_cases(TOYHOST_SCOPE, template_id=second.id) if c.carried_from}
+    left = [case.id for case in live if case.id not in copied]
+    assert len(left) == LIVE - 1, copied
+    assert "the document store went away" in said and f"{JUDGE_NAME!r} revision 2 ({second.id})" in said, said
+    assert f"{LIVE - 1} live case(s) not yet carried stay only on the archived revision" in said, said
+    assert all(case_id in said for case_id in left) and not any(source in said for source in copied), said
 
 
 def test_a_template_s_own_live_cases_are_carried_into_its_next_revision() -> None:
@@ -1723,8 +1812,9 @@ def test_a_corpus_case_s_unrecorded_predecessor_is_written_over_under_both_flags
     assert (reading.state, reading.stored_id) == ("unknown", old_b.id), reading.line
 
     for flags in ({}, {"carry_live_cases": True}):
-        with pytest.raises(ConflictError, match=re.escape(f"{_own_key('b')}: it is written with its judge template")):
+        with pytest.raises(ConflictError, match=re.escape(f"{_own_key('b')}: it is written with its template")) as no:
             _reset(storage, now, [TEMPLATE_KEY], **flags)
+        assert "judge template" not in str(no.value), "a template case's template is no judge template"
     reset = _reset(storage, now, [TEMPLATE_KEY], carry_live_cases=True, overwrite_customized=True)
 
     cases = _cases_on(storage, _subject(storage))
@@ -1755,3 +1845,118 @@ async def test_the_reset_action_carries_live_cases_on_asking() -> None:
     assert refused.is_error and "carry_live_cases" in refused.text, refused.text
     assert not carried.is_error and f"carrying {LIVE} live case(s)" in carried.text, carried.text
     assert carried.text.splitlines()[-1] == "drift: 0 stale, 0 customized, 0 unknown, 0 absent, 9 current"
+
+
+# =============================================================================
+# A template the reset leaves current is given the corpus's presentation names it lacks, never one it holds
+# =============================================================================
+
+
+def _named_in_the_corpus() -> EvalTemplate:
+    """The toy template as a corpus that later named its goal check and two strata declares it."""
+    return _template().model_copy(
+        update={
+            "goal_check_names": {EVERY_FIELD_EMITTED: "All fields emitted"},
+            "stratum_names": {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"},
+        }
+    )
+
+
+def _seeded_bare_then_named_by_an_operator() -> tuple[EvalStorage, InMemoryDocumentStore, EvalTemplate]:
+    """The toy template seeded with no names, then given one stratum's name as an operator's ``update_template``
+    would: a corpus naming it later still reads current, since no digest reads the names."""
+    storage, store = memory_storage()
+    _seed(storage, _corpus(_template()))
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    storage.save_template(stored.model_copy(update={"stratum_names": {"lookalike": "Operator's lookalikes"}}))
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    return storage, store, stored
+
+
+def test_a_template_the_reset_leaves_current_is_given_the_names_it_lacks_and_a_second_reset_writes_nothing() -> None:
+    storage, store, before = _seeded_bare_then_named_by_an_operator()
+    named = _corpus(_named_in_the_corpus())
+    assert _states(_drift(storage, named)) == {TEMPLATE_KEY: "current"}
+
+    reset = _reset(storage, named, [TEMPLATE_KEY])
+
+    (after,) = storage.query_templates(TOYHOST_SCOPE)
+    assert after.goal_check_names == {EVERY_FIELD_EMITTED: "All fields emitted"}
+    assert after.stratum_names == {"lookalike": "Operator's lookalikes", "plain": "Plain invoices"}, (
+        "an entry the store holds is never overwritten"
+    )
+    assert after.model_dump(exclude={"goal_check_names", "stratum_names"}) == before.model_dump(
+        exclude={"goal_check_names", "stratum_names"}
+    ), "only the two presentation fields are written: same id, revision, seed record and updated_at"
+    assert [(entry.key, entry.written_id) for entry in reset.reset] == [(TEMPLATE_KEY, "")], "left as it is"
+    assert reset.presentation_named == {
+        "eval_template": {after.name: [f"goal check {EVERY_FIELD_EMITTED}", "stratum plain"]}
+    }
+    assert reset.presentation_fill_failed == {}
+    assert (
+        f"{TEMPLATE_KEY}: given presentation names from the corpus (goal check {EVERY_FIELD_EMITTED}, stratum plain)"
+        in reset.render().splitlines()
+    ), reset.render()
+    assert set(_states(reset.after).values()) == {"current"}
+
+    written = copy.deepcopy(store.documents)
+    again = _reset(storage, named, [TEMPLATE_KEY])
+    assert store.documents == written, "a second reset writes nothing"
+    assert (again.presentation_named, again.presentation_fill_failed) == ({}, {})
+    assert "presentation" not in again.render()
+
+
+def test_a_template_the_reset_was_not_named_is_filled_when_it_reads_current_after() -> None:
+    storage, _, _ = _seeded_bare_then_named_by_an_operator()
+
+    reset = _reset(storage, _corpus(_named_in_the_corpus()), [])
+
+    assert reset.reset == []
+    assert set(reset.presentation_named["eval_template"]) == {toyhost_template().name}
+
+
+def test_a_template_the_reset_writes_carries_the_corpus_names_and_is_not_filled_again() -> None:
+    storage, _, _ = _seeded_bare_then_named_by_an_operator()
+    moved = _corpus(_named_in_the_corpus().model_copy(update={"description": "now five cases"}))
+
+    reset = _reset(storage, moved, [TEMPLATE_KEY])
+
+    written = storage.load_template_by_name(toyhost_template().name, TOYHOST_SCOPE)
+    assert written is not None and written.revision == 2
+    assert written.stratum_names == {"lookalike": "Corpus lookalikes", "plain": "Plain invoices"}
+    assert reset.presentation_named == {}, "the new revision was written with the corpus's names"
+
+
+class _TemplateRefusingStorage(EvalStorage):
+    """A store down for template writes."""
+
+    def save_template(self, template: EvalTemplate) -> None:
+        raise StorageError("the document store is read-only for maintenance")
+
+
+def test_a_presentation_fill_the_store_refuses_is_reported_with_its_reason_and_the_next_reset_fills_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    storage, store, _ = _seeded_bare_then_named_by_an_operator()
+    named = _corpus(_named_in_the_corpus())
+    name = toyhost_template().name
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.definition_seed"):
+        refused = _reset(_TemplateRefusingStorage(store), named, [TEMPLATE_KEY])
+
+    assert refused.presentation_fill_failed == {
+        "eval_template": {name: "the document store is read-only for maintenance"}
+    }
+    assert refused.presentation_named == {}
+    assert (
+        f"{TEMPLATE_KEY}: PRESENTATION NAMES REFUSED BY STORAGE (the document store is read-only for maintenance)"
+        in refused.render().splitlines()
+    ), refused.render()
+    assert any(
+        r.levelno == logging.WARNING and "eval.reset_definitions" in r.getMessage() and name in r.getMessage()
+        for r in caplog.records
+    )
+    (stored,) = storage.query_templates(TOYHOST_SCOPE)
+    assert stored.stratum_names == {"lookalike": "Operator's lookalikes"}, "nothing was written"
+
+    assert set(_reset(storage, named, [TEMPLATE_KEY]).presentation_named["eval_template"]) == {name}

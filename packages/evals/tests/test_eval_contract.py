@@ -20,12 +20,17 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals import Eval, Example, Judge, Log, Model, Result, World, grader
-from threetears.evals.analysis import campaign_report_markdown, get_campaign
+from threetears.evals.analysis import scope_out_of_run_spend
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED
-from threetears.evals.quick.one_call import CallableArm, callable_host, run_arms
-from threetears.evals.quick.result import LABEL_COLUMNS, TO_LABEL
+from threetears.evals.quick.one_call import CallableArm, callable_host, launch_arms
+from threetears.evals.quick.blind import SHEET_COLUMNS
+from threetears.evals.quick.result import read_blind
+from threetears.evals.schema import CalibrationRating
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import StopReason
 from packages.evals.tests.off_loop import off_loop
@@ -123,17 +128,19 @@ async def test_the_reserved_keys_name_and_sort_each_case_and_reach_no_runner_or_
 async def test_a_field_grader_is_the_classifier_expected_was_with_the_same_figures() -> None:
     by_field = (await Eval(TICKETS, keywords, ["label", short_label], k=2).run(store=":memory:")).summary
     host = callable_host([short_label])
-    (by_expected,) = await run_arms(
-        TICKETS,
-        [CallableArm(keywords)],
-        [short_label],
-        scope_id="expected",
-        host=host,
-        template_name="expected",
-        expected=lambda case: str(case["label"]),
-        label_field="label",
-        k=2,
-    )
+    (by_expected,) = (
+        await launch_arms(
+            TICKETS,
+            [CallableArm(keywords)],
+            [short_label],
+            scope_id="expected",
+            host=host,
+            template_name="expected",
+            expected=lambda case: str(case["label"]),
+            label_field="label",
+            k=2,
+        )
+    ).summaries
 
     assert by_field.confusion == by_expected.confusion
     assert by_field.labels == by_expected.labels
@@ -266,7 +273,10 @@ def test_several_arms_with_no_name_and_no_cases_file_are_refused(tmp_path: Path)
     """An eval's name is where its runs are kept. One built from its arms (``keywords vs crash-first``) would move
     them, and split the comparison's history, each time an arm is added, renamed or dropped, so it is never built."""
     arms = {"keywords": keywords, "crash-first": crash_first}
-    with pytest.raises(ValueError, match=r'^name this eval \(name="invoices"\): its name is where its runs are kept'):
+    # The refusal names both fixes: a stable name=, or a cases file whose stem names it.
+    with pytest.raises(
+        ValueError, match=r'^name this eval: pass name="\.\.\." .*or give its cases as a file, whose stem names it'
+    ):
         Eval(TICKETS, arms, ["label"])
     with pytest.raises(ValueError, match="'prompt=v1', 'prompt=v2'"):
         Eval(TICKETS, {"prompt=v1": keywords, "prompt=v2": crash_first}, ["label"])  # factors are arms too
@@ -367,6 +377,7 @@ async def test_a_world_of_lookups_records_its_answers_once_and_replays_them_afte
 
     changed = [{**ticket, "text": ticket["text"] + "!"} for ticket in TICKETS[:1]]
     missed = await Eval(changed, lookups(agent), [found], k=1).run(store=":memory:")
+    assert missed.summary.status == "failed", "a lookup its recording does not hold fails the run (#1162)"
     assert missed.summary.n_excluded == 1 and "holds no answer" in missed.render()
 
 
@@ -488,7 +499,29 @@ class FakeJudge:
         await self.aclose()
 
 
-async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as_its_calibration(
+def _blind(result: Result) -> tuple[BlindRead, tuple[CalibrationRating, ...]]:
+    """The result's blind read as the engine draws it: the read, closed over the labels as they are now, and the
+    labels that are not on its draw. The result itself carries only the files and the lines."""
+    closed, loose = off_loop(
+        read_blind, result.judge, result.host, result.arms, result.control, result.scope_id, result.name
+    )
+    assert closed is not None and closed.read.report is not None
+    return closed.read, loose
+
+
+def _sheet_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as read:
+        return list(csv.DictReader(read))
+
+
+def _save(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as filled:
+        writer = csv.DictWriter(filled, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_back_as_its_calibration(
     tmp_path: Path,
 ) -> None:
     labels = tmp_path / "labels.csv"
@@ -497,34 +530,305 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
-        "to_label.csv the report writes, which holds 4 per dimension, without looking at the judge's verdict; the "
-        "calibrated tier's floor is 20 per dimension, so it needs 16 more judged answers per dimension"
+        f"judge: 0 of 4 cases read blind: judge not checked ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}"
     ]
     written = first.write(tmp_path / "report")
-    assert written["to_label"].name == TO_LABEL
-    with written["to_label"].open(encoding="utf-8", newline="") as read:
-        rows = list(csv.DictReader(read))
-    assert len(rows) == 4 and list(rows[0]) == list(LABEL_COLUMNS)
-    assert all(row["label"] == "" for row in rows), "the judge's verdict is withheld from the person"
+    assert (written["blind_read"].name, written["blind_read_csv"].name) == ("blind_read.html", "blind_read.csv")
+    assert "to_label" not in written and not (tmp_path / "report" / "to_label.csv").exists()
+    rows = _sheet_rows(written["blind_read_csv"])
+    assert len(rows) == 4 and list(rows[0]) == list(SHEET_COLUMNS)
+    assert all(row["label"] == "" for row in rows), "no verdict is on the sheet"
+    # No run or result of the store is named on either file, and the judge's model is on neither.
+    drawn = [output.result_id for item in _blind(first)[0].items for output in item.outputs]
+    ids = [first.run_id, *drawn, "scripted/judge"]
+    for path in (written["blind_read"], written["blind_read_csv"]):
+        data = path.read_text(encoding="utf-8")
+        assert not [mark for mark in ids if mark in data], path.name
 
-    # The person agrees with the judge on every answer.
+    # The person agrees with the judge on every answer, reading from the top.
     for row in rows:
         row["label"] = "pass" if "billing" in row["answer"] else "fail"
         row["rater"] = "owner"
-    with labels.open("w", encoding="utf-8", newline="") as filled:
-        writer = csv.DictWriter(filled, fieldnames=LABEL_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+    _save(labels, rows)
 
     again = await ev.run(store=tmp_path / "evals.sqlite")
     (calibration,) = again.calibrations
     # Each label pairs once with the judge's score of the byte-identical answer in the replayed run.
     assert (calibration.dimension, calibration.labels) == ("answer.billing", 4)
     assert calibration.kappa == pytest.approx(1.0)
-    assert again.calibration_lines()[0].startswith(
-        f"judge against {labels.name}: answer.billing: 4 label(s), kappa 1.00"
+    read, _ = _blind(again)
+    assert read is not None and read.report is not None
+    assert [(s.rater, s.made_by, s.sample, s.answered) for s in read.report.samples] == [
+        ("owner", "person", "random", 4)
+    ]
+    lines = again.calibration_lines()
+    assert lines[0] == "judge: 4 of 4 cases read blind by owner, in the drawn order (a random sample)"
+    # Counts and exact rates (#1208): no kappa, tier word or count of results still needed.
+    assert lines[1] == (
+        "  answer billing (judged)  4 results from 4 cases: the judge caught 2 of the 2 the reader failed "
+        "(exact 95% interval 16 to 100%); the judge failed 0 of the 2 the reader passed (exact 95% interval 0 to 84%)"
     )
+    assert len(lines) == 2
+
+    # Answered out of order, the same labels read as not drawn at random.
+    _save(labels, [row if n in (1, 3) else {**row, "label": ""} for n, row in enumerate(rows)])
+    hunted = await ev.run(store=tmp_path / "evals.sqlite")
+    assert hunted.calibration_lines()[0] == (
+        "judge: 2 of 4 cases read blind by owner, out of the drawn order (not drawn at random)"
+    )
+
+
+async def test_an_older_to_label_sheet_still_reads_and_counts_as_not_drawn_at_random(tmp_path: Path) -> None:
+    labels = tmp_path / "labels.csv"
+    judge = Judge(FakeJudge(), {"billing": "The answer says the ticket is about billing."}, labels=labels)
+    ev = Eval(TICKETS, keywords, ["label", judge], k=1)
+    first = await ev.run(store=":memory:")
+    # The sheet an earlier version wrote: store order, a row per judged answer, the run's and the result's ids on it.
+    sheet = _sheet_rows(first.write(tmp_path / "report")["blind_read_csv"])
+    old = [
+        {
+            "case": str(n),
+            "repeat": "1",
+            "dimension": row["dimension"],
+            "case_material": row["case_material"],
+            "answer": row["answer"],
+            "label": "pass" if "billing" in row["answer"] else "fail",
+            "reason": "",
+            "rater": "owner",
+            "run_id": "a-run-since-gone",
+            "result_id": f"a-result-since-gone-{n}",
+            "output_fingerprint": row["output_fingerprint"],
+            "criterion_fingerprint": row["criterion_fingerprint"],
+        }
+        for n, row in enumerate(sheet)
+    ]
+    _save(labels, old)
+
+    again = await ev.run(store=":memory:")
+
+    (calibration,) = again.calibrations
+    assert (calibration.labels, calibration.kappa) == (4, pytest.approx(1.0))
+    read, loose = _blind(again)
+    assert len(loose) == 4 and read.report is not None and read.report.samples == []
+    (reading,) = read.report.agreement
+    assert (reading.pairs, reading.blind_pairs, reading.random_pairs) == (4, 0, 0)
+    assert again.calibration_lines()[0] == (
+        f"judge: 4 label(s) in {labels.name} by owner are not on this run's draw (the answers changed since, or it is "
+        "an older sheet): kept, each paired with the same output, and not drawn at random"
+    )
+
+
+#: Eight tickets two prompts answer differently, so every item of their blind read is a pair.
+PAIRED = [{"id": f"t{n}", "text": f"ticket {n} about a refund"} for n in range(8)]
+
+
+async def terse(case: Mapping[str, Any]) -> str:
+    return f"billing: {case['text']}"
+
+
+async def wordy(case: Mapping[str, Any]) -> str:
+    return f"This one is a billing matter, I believe: {case['text']}"
+
+
+async def test_two_arms_are_read_as_pairs_and_the_preference_is_printed_once_the_read_is_finished(
+    tmp_path: Path,
+) -> None:
+    labels = tmp_path / "labels.csv"
+    judge = Judge(FakeJudge(), {"billing": "The answer says the ticket is about billing."}, labels=labels)
+    ev = Eval(PAIRED, {"terse": terse, "wordy": wordy}, [judge], k=1, name="tickets")
+
+    first = await ev.run(store=":memory:")
+    read, _ = _blind(first)
+    assert read is not None and [(arm.key, arm.role) for arm in read.arms] == [
+        ("terse", "control"),
+        ("wordy", "candidate"),
+    ]
+    assert len(read.items) == 8 and all(len(item.outputs) == 2 for item in read.items)
+    written = first.write(tmp_path / "report")
+    for path in (written["blind_read"], written["blind_read_csv"]):
+        data = path.read_text(encoding="utf-8")
+        assert "terse" not in data and "wordy" not in data, f"{path.name} names an arm"
+    rows = _sheet_rows(written["blind_read_csv"])
+    wordy_slot = {item.item: next(o.slot for o in item.outputs if o.arm == "wordy") for item in read.items}
+
+    def answered(upto: int) -> list[dict[str, str]]:
+        filled, seen = [], set()
+        for row in rows:
+            if int(row["position"]) <= upto:
+                row = {**row, "label": "pass", "prefer": "" if row["item"] in seen else wordy_slot[row["item"]]}
+                seen.add(row["item"])
+            filled.append(row)
+        return filled
+
+    # Part way through, the line says how far the read is and nothing about which arm is ahead.
+    _save(labels, answered(5))
+    partial = (await ev.run(store=":memory:")).calibration_lines()
+    assert "preference: shown when the first 8 cases are answered (5 of 8)" in partial
+    assert partial[-1] == "next: keep going from case 6 in blind_read.html"
+    assert not any("wordy" in line or "sign test" in line for line in partial)
+
+    _save(labels, answered(8))
+    done = await ev.run(store=":memory:")
+    assert "preference: wordy over terse on 8 of 8, sign test p 0.008: wordy preferred" in done.calibration_lines()
+    report = _blind(done)[0].report
+    assert report is not None
+    (preference,) = report.preferences
+    assert (preference.anchor, preference.random, preference.verdict) == ("person", True, "improved")
+    assert "judge: 8 of 8 cases read blind by a person, in the drawn order (a random sample)" in str(done)
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class FakeReviewer:
+    """A model that answers a blind read: it passes every output and prefers A; ``broken`` scripts a reply that is
+    not the answer asked for, by the call's position."""
+
+    def __init__(self, model_name: str, *, broken: frozenset[int] = frozenset()) -> None:
+        self.model_name = model_name
+        self.calls = 0
+        self.broken = broken
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Verdict:
+        self.calls += 1
+        if self.calls - 1 in self.broken:
+            return _Verdict("no", model=self.model_name, served_model=self.model_name)
+        slots = [line.removeprefix("# Output ") for line in user.splitlines() if line.startswith("# Output ")]
+        verdicts = {slot: {"answer.billing": "pass"} for slot in slots}
+        reply = {"verdicts": verdicts, "prefer": "A" if len(slots) == 2 else "none", "reason": "read it"}
+        return _Verdict(json.dumps(reply), model=self.model_name, served_model=self.model_name)
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+def _rubric() -> dict[str, str]:
+    return {"billing": "The answer says the ticket is about billing."}
+
+
+async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_person() -> None:
+    reviewer = FakeReviewer("scripted/reviewer")
+    judge = Judge(FakeJudge(), _rubric(), reviewer=reviewer)
+    result = await Eval(PAIRED, {"terse": terse, "wordy": wordy}, [judge], k=1, name="tickets").run(store=":memory:")
+
+    assert reviewer.calls == 8, "one call per case"
+    assert result.calibrations == (), "agreement with a model is never agreement with people"
+    assert sorted(result.blind_read_files) == ["blind_read.csv", "blind_read.html"]
+    # What the read found is typed data on the result, for a script to read: how much was read and how it was
+    # sampled, the agreement, the preference with its test, and what the model's reading cost.
+    found = result.blind_read
+    assert found is not None and found.cases == 8
+    assert [(s.rater, s.made_by, s.sample, s.answered) for s in found.samples] == [
+        ("scripted/reviewer", "model", "random", 8)
+    ]
+    assert [(a.dim, a.anchor, a.anchor_names, a.pairs, a.cases) for a in found.agreement] == [
+        ("answer.billing", "model", ["scripted/reviewer"], 16, 8)
+    ]
+    assert [(p.anchor, p.verdict, p.test, p.prefer_candidate) for p in found.preferences] == [
+        ("model", "not_separated", "exact_sign", 4)
+    ]
+    assert [(r.reviewer, r.calls, r.reused, r.cost_usd) for r in found.reviews] == [
+        ("scripted/reviewer", 8, 0, pytest.approx(0.0008))
+    ]
+    # No person has read, so the person's first step leads, never dropped beside a model's read.
+    assert result.calibration_lines()[0].startswith("judge: 0 of 8 cases read blind by a person: judge not checked (")
+    lines = result.calibration_lines()[1:]
+    assert lines[0] == (
+        "judge: 8 of 8 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample)"
+    )
+    assert lines[1] == "  checked against a model (scripted/reviewer), not yet against people:"
+    assert "scripted/reviewer and the judge are one provider's models" in "\n".join(lines)
+    assert not any(line.startswith("preference: ") or line.startswith("next:") for line in lines)
+    assert not any("calibrated" in line or "reference reviewer" in line for line in lines)
+    # It chose output A every time, whatever was in it: the slots are balanced, so that reads as no preference, said.
+    assert (
+        "preference of a model (scripted/reviewer), not a person: wordy over terse on 4 of 8, output A chosen on 8 "
+        "of 8, sign test p 1.00: cannot tell apart"
+    ) in lines
+    # Its calls are spend: on the ledger under their own purpose, and on the print with what they cost.
+    assert (
+        "reviewer: a model (scripted/reviewer) read the blind read for $0.00080 over 8 call(s); the cost of checking "
+        "the judge, in no candidate's cost"
+    ) in str(result).splitlines()
+    ledger = off_loop(scope_out_of_run_spend, result.host, result.scope_id, purpose="reviewer")
+    assert len(ledger.rows) == 8 and {row.model for row in ledger.rows} == {"scripted/reviewer"}
+    assert sum(row.cost_usd or 0.0 for row in ledger.rows) == pytest.approx(0.0008)
+
+    # The judge's own model answers nothing a repeat would not: it is not read as a check, and said.
+    same = Judge(FakeJudge(), _rubric(), reviewer=FakeReviewer("scripted/judge"))
+    refused = await Eval(PAIRED, {"terse": terse, "wordy": wordy}, [same], k=1, name="tickets").run(store=":memory:")
+    assert not any(line.startswith("  checked against") for line in refused.calibration_lines())
+    assert refused.blind_read is not None and refused.blind_read.agreement == []
+    assert list(refused.blind_read.not_checked) == ["scripted/judge"]
+    assert (
+        "  not checked against a model (scripted/judge): the reviewer is the judge's own model, so its answers repeat "
+        "the judge and are not read as a check of it"
+    ) in refused.calibration_lines()
+
+
+async def test_a_model_s_reading_is_held_to_the_eval_s_cost_cap_and_a_bad_reply_does_not_fail_the_run() -> None:
+    # The arms and the judge land $0.0016 (16 judge calls); a cap of $0.0018 leaves room for two reviewer calls, and
+    # the third would be made over it.
+    capped = Judge(FakeJudge(), _rubric(), reviewer=FakeReviewer("scripted/reviewer"))
+    result = await Eval(
+        PAIRED, {"terse": terse, "wordy": wordy}, [capped], k=1, name="tickets", max_cost_usd=0.00185
+    ).run(store=":memory:")
+    assert any(" over 3 call(s); the cost of checking the judge" in line for line in str(result).splitlines())
+    assert any(
+        line.startswith("  stopped before every case was asked, since the eval's cost cap stopped it")
+        for line in str(result).splitlines()
+    )
+
+    # A reply that is not the answer asked for: the run still returns its result, and the case is said not answered.
+    broken = Judge(FakeJudge(), _rubric(), reviewer=FakeReviewer("scripted/reviewer", broken=frozenset({1})))
+    done = await Eval(PAIRED, {"terse": terse, "wordy": wordy}, [broken], k=1, name="tickets").run(store=":memory:")
+    assert sum(summary.n_scored for summary in done.arms.values()) == 16
+    lines = done.calibration_lines()
+    assert lines[1].endswith("(a random sample of the cases answered; 1 skipped)")
+    assert "  1 case(s) not answered: case 2: its reply is not JSON (Expecting value)" in lines
+
+
+async def test_a_case_a_model_answered_is_not_asked_again_on_the_same_draw(tmp_path: Path) -> None:
+    store = tmp_path / "evals.sqlite"
+
+    def judged(reviewer: FakeReviewer) -> Eval:
+        return Eval(
+            PAIRED,
+            {"terse": terse, "wordy": wordy},
+            [Judge(FakeJudge(), _rubric(), reviewer=reviewer)],
+            k=1,
+            name="tickets",
+        )
+
+    first = FakeReviewer("scripted/reviewer", broken=frozenset({2}))
+    once = await judged(first).run(store=store)
+    assert first.calls == 8
+    (kept,) = (tmp_path / "blind_reads").glob("*.csv")
+    assert kept.name.startswith(_blind(once)[0].id) and once.reviews_kept == kept
+    # The same answers draw the same order, so the second run reads the kept answers and makes no call: the case the
+    # first reading could not answer is kept as not answered, and is not paid for again either.
+    second = FakeReviewer("scripted/reviewer")
+    again = await judged(second).run(store=store)
+    assert second.calls == 0
+    # The kept answers are the model's, each with the model that served it; the unanswered case is kept as a skip.
+    kept_rows = _sheet_rows(kept)
+    assert {(row["rater"], row["rater_kind"]) for row in kept_rows} == {("scripted/reviewer", "reference")}
+    assert sorted({row["served_model"] for row in kept_rows}) == ["", "scripted/reviewer"]
+    assert [row["label"] for row in kept_rows].count("skip") == 1
+    assert again.calibration_lines()[1].endswith("(a random sample of the cases answered; 1 skipped)")
+    assert (
+        f"reviewer: a model (scripted/reviewer) read the blind read for 0 call(s), 8 case(s) read from {kept.name} and "
+        "not asked again; the cost of checking the judge, in no candidate's cost"
+    ) in again.calibration_lines()
+    # Another model is another reading: it is asked, and kept under its own file.
+    other = FakeReviewer("scripted/other")
+    await judged(other).run(store=store)
+    assert other.calls == 8 and len(list((tmp_path / "blind_reads").glob("*.csv"))) == 2
 
 
 def test_a_judge_takes_a_client_that_names_its_model_and_guards_only_its_own_dimensions() -> None:

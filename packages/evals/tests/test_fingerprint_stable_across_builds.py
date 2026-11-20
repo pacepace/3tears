@@ -1,4 +1,9 @@
-"""A bundle's fingerprint and the page JSON are the same across Python builds.
+"""A version 2 fingerprint and the page JSON are the same across Python builds.
+
+A bundle's fingerprint is now ``v3:``, over the evidence it was assembled from, which no computed float reaches
+(``test_evidence_fingerprint.py``). What this file holds is what was stored before that and what is still served: a
+``v2:`` fingerprint, asked for through ``like="v2:"``, hashes the bundle's own document with every float rounded, and
+the campaign bundle's fingerprint and the page JSON round theirs the same way.
 
 The bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
 whose last bits differ between two builds of one Python: a uv-managed CPython 3.14.6 and Debian's give
@@ -32,11 +37,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import (
-    assemble_campaign_bundle,
-    campaign_report,
-    serialize_report,
-)
+from threetears.evals.analysis import campaign_report, serialize_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
@@ -167,7 +169,10 @@ def test_every_float_of_a_bundle_moved_one_ulp_leaves_its_fingerprint(toward: fl
     assert len(_floats(document)) > 100, "the toy corpus's bundle carries its statistics"
     assert _v1_aspect(nudged) != _v1_aspect(document), "a ULP moves the unrounded digest: the defect"
 
-    assert bundle.fingerprint().startswith("v2:")
+    v2 = bundle.fingerprint(like="v2:")
+    assert v2.startswith("v2:")
+    assert evidence_digest(nudged, like="v2:") == evidence_digest(document, like="v2:") == v2
+    # Version 3 reads no computed float at all.
     assert evidence_digest(nudged) == evidence_digest(document) == bundle.fingerprint()
 
 
@@ -185,7 +190,11 @@ def test_every_float_of_a_campaign_bundle_moved_one_ulp_leaves_its_fingerprint(t
     ]
     frame = _nudged(bundle.frame(), toward)
     assert frame != bundle.frame(), "the frame's readings carry floats"
-    assert CampaignBundle.from_frame(frame, bundle.aspects).fingerprint() == bundle.fingerprint()
+    # In version 3 of the campaign's numbering, which hashes the frame with every float rounded; `v4:` is over the
+    # evidence and reads no computed float (`test_evidence_fingerprint.py`).
+    nudged_bundle = CampaignBundle.from_frame(frame, bundle.aspects)
+    assert nudged_bundle.fingerprint(like="v3:") == bundle.fingerprint(like="v3:")
+    assert bundle.fingerprint(like="v3:").startswith("v3:")
 
 
 @pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
@@ -300,7 +309,8 @@ if step != "none":
     NormalDist.inv_cdf = nudged(NormalDist.inv_cdf)
     NormalDist.cdf = nudged(NormalDist.cdf)
 
-from threetears.evals.analysis import assemble_campaign_bundle, campaign_report
+from threetears.evals.analysis import campaign_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.run import rate_result
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.report_support import toy_campaign_host
@@ -317,7 +327,7 @@ for run_id in campaign.run_ids:
             )
 bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
 print(json.dumps({
-    "fingerprint": bundle.fingerprint(),
+    "fingerprint": bundle.fingerprint(like="v3:"),
     "document": bundle.to_dict(),
     "page": campaign_report(host, campaign.id, campaign.scope_id).json_document(),
 }))
@@ -355,7 +365,9 @@ def test_a_build_whose_c_maths_answers_one_ulp_off_fingerprints_and_serves_alike
 # =============================================================================
 
 
-def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> None:
+def test_a_statistic_changed_in_its_tenth_figure_is_another_version_2_fingerprint() -> None:
+    """The version 2 pre-image is the bundle's document, so a statistic past the rounding moves it. A ``v3:``
+    fingerprint is over the evidence, which a statistic is not: it stays (#1062)."""
     bundle = toyhost_bundle()
     document = bundle.to_dict()
     moved = False
@@ -377,7 +389,8 @@ def test_a_statistic_changed_in_its_tenth_figure_is_another_fingerprint() -> Non
 
     changed = change_one(document)
     assert moved
-    assert evidence_digest(changed) != bundle.fingerprint()
+    assert evidence_digest(changed, like="v2:") != bundle.fingerprint(like="v2:")
+    assert evidence_digest(changed) == bundle.fingerprint()
 
 
 # =============================================================================

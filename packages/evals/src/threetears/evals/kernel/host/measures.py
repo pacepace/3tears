@@ -24,7 +24,8 @@ descriptor's shape.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.host.attribution import HostAttributed
@@ -32,11 +33,40 @@ from threetears.evals.kernel.metrics import (
     ENGINE_FAMILIES,
     METRIC_DESCRIPTORS,
     containment_defects,
+    measure_definition_digests,
     reader_name_defects,
 )
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTrace
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureRereadRequest:
+    """One stored result a re-measure asks the host to read again, and the measures to read.
+
+    :ivar run: The result's run, as stored.
+    :ivar result: The stored result (one trial), holding the values its cell wrote.
+    :ivar trace: What the cell stored beside it (its transcript, call ledger, end state, judge evidence), or ``None``
+        for a result that stored no trace.
+    :ivar measures: The keys of the host measures to read again, sorted: each one the host declares now, and whose
+        definition the run did not record or recorded otherwise.
+    """
+
+    run: EvalRun
+    result: EvalResult
+    trace: EvalTrace | None
+    measures: tuple[str, ...]
+
+
+#: Read a stored result's host measures again, under the host's CURRENT definition of each, from what the cell stored
+#: and nothing else. Host code the engine calls from a re-measure (``threetears.evals.run.remeasure_run``) and never
+#: inspects. It answers ``{measure key: value}`` for each requested measure it read; a requested measure it leaves out
+#: is one this result has no value of under the current definition. A measure the result HOLDS a value of must be
+#: answered: the re-measure refuses the run otherwise, since the stored value was read under another definition and
+#: nothing may guess the new one. Raise to refuse a result outright.
+MeasureRereader = Callable[[MeasureRereadRequest], "Mapping[str, bool | float | str]"]
 
 
 class MeasureRegistrationError(ValueError):
@@ -62,11 +92,9 @@ class MeasureRegistry(HostAttributed):
         """Validate and store one host's measure catalogue.
 
         :param descriptors: The measures this host can see.
-        :ptype descriptors: Iterable[MetricDescriptor]
         :param families: The host's own measure families, beyond the engine's
             (:data:`~threetears.evals.kernel.metrics.ENGINE_FAMILIES`). A descriptor may name one of
             these or an engine family, and nothing else.
-        :ptype families: Iterable[MeasureFamily]
         :raises MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
         """
         self._init_attribution()
@@ -156,11 +184,8 @@ class MeasureRegistry(HostAttributed):
         """Build a registry from an existing ``{name: descriptor}`` catalogue.
 
         :param catalog: The descriptors, keyed by name.
-        :ptype catalog: Mapping[str, MetricDescriptor]
         :param families: The host's own measure families.
-        :ptype families: Iterable[MeasureFamily]
         :return: A validated registry over the catalogue's values.
-        :rtype: MeasureRegistry
         """
         return cls(catalog.values(), families=families)
 
@@ -182,6 +207,17 @@ class MeasureRegistry(HostAttributed):
         """The descriptor for ``name``, or None when this host cannot see that measure."""
         return self._by_name.get(name)
 
+    def definition_digests(self) -> dict[str, str]:
+        """Each declared measure's definition digest, by its key: what a run records as its ``measure_definitions``.
+
+        :func:`~threetears.evals.kernel.metrics.measure_definition_digests` over this catalogue. The launch stamps it
+        on every run; a host that assembles a run itself (a witnessed one) stamps it the same way, since a run that
+        records none pools with nothing.
+
+        :return: Measure key to digest, sorted; ``{}`` for a host that declares no measure.
+        """
+        return measure_definition_digests(self._descriptors)
+
     def merit_axis(self, name: str) -> MeritAxis | None:
         """Which merit axis ``name`` serves, when its host declared one.
 
@@ -194,9 +230,7 @@ class MeasureRegistry(HostAttributed):
         latency column is what leaving them unassigned produced.
 
         :param name: A declared measure name.
-        :ptype name: str
         :return: The declared axis, or None when the measure serves none.
-        :rtype: MeritAxis | None
         :raises KeyError: This host declared no such measure.
         """
         return self._require(name).merit_axis
@@ -209,4 +243,4 @@ class MeasureRegistry(HostAttributed):
         return descriptor
 
 
-__all__ = ["MeasureRegistrationError", "MeasureRegistry"]
+__all__ = ["MeasureRegistrationError", "MeasureRegistry", "MeasureRereadRequest", "MeasureRereader"]

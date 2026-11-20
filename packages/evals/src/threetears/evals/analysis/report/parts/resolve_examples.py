@@ -1,6 +1,6 @@
 """Example cards: what the failures look like, a card per example the query selects.
 
-The cards are the examples the query selects (:func:`~threetears.evals.analysis.report_rows.query_rows`: the arms,
+The cards are the examples the query selects (:func:`~threetears.evals.analysis.report.rows.query_rows`: the arms,
 strata and aspect it keeps, the first ``limit``, in the input's order), so the cards are the ones the section's
 headline speaks of. Each card's meta line holds the trial and the case (mono, as ids a reader can look up), the
 aspect by its reader name where the input holds more than one (so a block over two aspects' failures says which each
@@ -119,11 +119,8 @@ def _readable_fields(term: str, text: str) -> list[ExampleField]:
     gives none.
 
     :param term: The field's term, ``Input`` or ``Expected``, which a pair's key follows.
-    :ptype term: str
     :param text: The case's input or expectation, as the example carries it.
-    :ptype text: str
     :return: The fields; none for a text with nothing to say.
-    :rtype: list[ExampleField]
     """
     if not text.lstrip().startswith("{"):
         return [ExampleField(term=term, text=text)] if text.strip() else []

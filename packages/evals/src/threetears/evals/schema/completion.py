@@ -3,8 +3,7 @@
 The port is :class:`CompletionClient` — ``async generate(*, system, user, response_format=None)``
 plus a lifecycle — built by the host and handed to the engine; the engine never builds one and
 never names a provider. Beside it sit what a completion hands back (:class:`CompletionResult`) and
-why it stopped (:data:`StopReason`); the one-key wire directive for JSON-object output
-(:data:`JSON_OBJECT_RESPONSE_FORMAT`); and the failure half of the port (:class:`ProviderFailure` /
+why it stopped (:data:`StopReason`); and the failure half of the port (:class:`ProviderFailure` /
 :class:`ProviderFailureDescriber`): the client says what a call returns, and the describer says what
 the engine may know when the call raised. The engine never reads an exception's own text, because
 on an OpenAI-shaped provider ``str(exc)`` is the parsed response envelope, account fields included.
@@ -20,13 +19,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol, Self, get_args
 
 from threetears.evals.schema.models import ClientRequestSettings, StopReason
-
-#: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
-#: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
-#: variation writer, the simulated user) sends that shape as a strict ``json_schema`` directive
-#: (:func:`~threetears.evals.kernel.strict_response_format`). Kept for a host's own calls, and for its client's
-#: translation of the strict directive to a provider that has only JSON mode.
-JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
 
 #: The longest one request capped at ``max_tokens`` output tokens can take on the host's client, in
@@ -176,15 +168,11 @@ class CompletionProtocolDefect(TypeError):
         """Name the completion's type, the member it lacks or fills wrong, and why the engine reads that member.
 
         :param completion: The completion as the client returned it.
-        :ptype completion: object
         :param member: The :class:`CompletionResult` member it does not carry, or the optional member
             (:data:`OPTIONAL_COMPLETION_ATTRIBUTES`) it holds a value of the wrong type in.
-        :ptype member: str
         :param why: What the engine reads the member for, or what is wrong with its value, as a clause.
-        :ptype why: str
         :param optional: ``member`` is an optional member the completion carries with a wrong value, not a protocol
             member it lacks.
-        :ptype optional: bool
         """
         self.completion_type = type(completion).__name__
         self.member = member
@@ -196,11 +184,15 @@ class CompletionProtocolDefect(TypeError):
         self.calls = 0
         self.model: str | None = None
         self.served_model: str | None = None
+        self.served_provider: str | None = None
         self.input_tokens: int | None = None
         self.output_tokens: int | None = None
         self.reasoning_tokens: int | None = None
         self.cost_usd: float | None = None
         self.price_source: str | None = None
+        #: Sends of those calls that broke before any response began and were resent, which the provider may have
+        #: billed and ``cost_usd`` does not hold; ``None`` when none was counted.
+        self.maybe_billed_sends: int | None = None
         problem = (
             f"{self.completion_type}'s optional `{member}` is not what the CompletionResult protocol documents: {why}"
             if optional
@@ -222,9 +214,7 @@ def sent_settings_of(completion: object) -> ClientRequestSettings | None:
     protocol member is.
 
     :param completion: A completion, as a client returned it (or a usage record standing for one).
-    :ptype completion: object
     :return: The settings the request was sent with, or ``None`` when the client does not report them.
-    :rtype: ClientRequestSettings | None
     :raises CompletionProtocolDefect: ``sent_settings`` is present and is neither ``None`` nor a
         :class:`~threetears.evals.schema.ClientRequestSettings`.
     """
@@ -400,13 +390,9 @@ class PricedCompletion(Protocol):
         call under an enforced cap is then refused rather than made, since unknown is not $0.
 
         :param system: The system prompt the call would send.
-        :ptype system: str
         :param user: The user message the call would send.
-        :ptype user: str
         :param response_format: The provider directive the call would send, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The ceiling in dollars, or ``None``.
-        :rtype: float | None
         """
         ...
 
@@ -477,9 +463,13 @@ class VariationLLM(SimulatorLLM, Protocol):
 #: Whose failure a raised completion call was, as the host's describer reads it
 #: (:attr:`ProviderFailure.owner`): the calling ``account`` (refused for every model behind
 #: the key), the ``provider`` (it declined to serve the call at that moment: a rate limit, 429, or
-#: the provider overloaded or unavailable, 529 or 503), or the ``candidate`` (anything else,
-#: charged to whoever made the call).
-FailureOwner = Literal["account", "provider", "candidate"]
+#: the provider overloaded or unavailable, 529 or 503), ``unserved`` (the provider does not serve the
+#: model the call named: retired, unknown, or not a valid model id, so every call naming it gets the
+#: same answer), or the ``candidate`` (anything else, charged to whoever made the call).
+#:
+#: ``unserved`` is an option a host's own describer may return, never one it must: a describer that
+#: never returns it keeps working, and a retired model's calls are then charged as the candidate's.
+FailureOwner = Literal["account", "provider", "unserved", "candidate"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,7 +504,10 @@ class ProviderFailure:
     answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
     ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
     the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
-    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    meet any request, so a caller excludes the cell and the run goes on. ``"unserved"``: the provider
+    does not serve the model the call named (retired, unknown, not a valid model id), so every call
+    naming that model meets the same answer: the cell is lost to the test setup, never judged, and a
+    run whose cells keep meeting it stops (``CandidateOutput.model_unserved``). ``"candidate"``:
     anything else, charged to whoever made the call. It is a field of the port rather than a
     type eval matches on because only the host knows its client's error types; a describer that
     cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner
@@ -532,6 +525,37 @@ class ProviderFailure:
             raise ValueError(
                 f"ProviderFailure.owner is {self.owner!r}; it is one of {', '.join(get_args(FailureOwner))}"
             )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelListing:
+    """What a provider's own list of the models it serves said of one model, read as a launch was admitted.
+
+    The answer a host's client factory gives when it offers ``async model_listing(model, *, role)``: the engine asks
+    it of every model an arm names before the arm is priced, and refuses an arm naming a model its provider no longer
+    lists, since every call to it would fail. ``listed`` is ``None`` when the list could not be read now: the launch
+    goes ahead and says the check was skipped, and why. A factory answers ``None`` instead of a listing for a model
+    whose provider it reads no list of, and a factory without the method answers nothing: there is no check to make.
+    A price taken from past runs never stands in for a listing.
+
+    :ivar provider: The provider whose list was read, as the factory names it.
+    :ivar listed: Whether the list names the model; ``None`` when no current list could be read.
+    :ivar detail: The list and when it was read, or why no current one could be.
+    """
+
+    provider: str
+    listed: bool | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        """Refuse a listing that names no provider or says nothing.
+
+        :raises ValueError: ``provider`` or ``detail`` is blank.
+        """
+        if not self.provider.strip():
+            raise ValueError("a model listing names the provider whose list was read; provider is blank")
+        if not self.detail.strip():
+            raise ValueError("a model listing says which list it read, or why none could be; detail is blank")
 
 
 class ProviderFailureDescriber(Protocol):
@@ -565,7 +589,7 @@ __all__ = [
     "CompletionProtocolDefect",
     "CompletionResult",
     "FailureOwner",
-    "JSON_OBJECT_RESPONSE_FORMAT",
+    "ModelListing",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",
     "ProviderFailure",

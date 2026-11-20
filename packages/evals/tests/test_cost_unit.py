@@ -25,7 +25,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import cost_basis, cost_ruler, literal_numbers, render, resolve
-from threetears.evals.analysis.report_gates import task_costs
+from threetears.evals.analysis.report.gates import task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery

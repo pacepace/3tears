@@ -50,18 +50,18 @@ from threetears.evals.analysis.report.doc_page.words import (
     NEXT_TITLE,
     OMITTED_TITLE,
 )
-from threetears.evals.analysis.report.md_parts import markdown_table, one_line
+from threetears.evals.analysis.report.md_parts import one_line, pipe_table
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, OPTIONS_TITLE, RUN_TEMPLATE, SYNTHETIC
 
 #: The entry points, with their callers: the analyst's ``report_check`` (``ops/analyst.py``) returns a draft's
-#: ``doc_page_text``, and the writing loop's editor reads it; the store gate (``analysis/report_doc_store.py``), the one
+#: ``doc_page_text``, and the writing loop's editor reads it; the store gate (``analysis/report/doc_page/store.py``), the one
 #: checker, checks ``above_appendix_text`` for internal ids.
 __all__ = ["above_appendix_text", "doc_page_text"]
 
 
 def _table(block: ChartBlock | TableBlock) -> list[str]:
     headers, rows = values_table(block)
-    return markdown_table(headers, rows) if rows else ["(no rows)"]
+    return pipe_table(headers, rows) if rows else ["(no rows)"]
 
 
 def _cards(evidence: DocEvidence) -> bool:
@@ -160,6 +160,8 @@ def _above(page: DocPage, *, editor: bool) -> Iterator[list[str]]:
             if part
         )
     ]
+    if page.stopped:
+        yield [one_line(page.stopped)]
     if page.draft:
         yield [draft_line(page)]
     if opened := open_findings_line(page):
@@ -226,9 +228,7 @@ def doc_page_text(page: DocPage) -> str:
     """The whole page as text, every block as its values table, each claim by its id (this module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The text, ending in a newline.
-    :rtype: str
     """
 
     def parts() -> Iterator[list[str]]:
@@ -243,8 +243,6 @@ def above_appendix_text(page: DocPage) -> str:
     module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The text, ending in a newline.
-    :rtype: str
     """
     return _joined(_above(page, editor=False))

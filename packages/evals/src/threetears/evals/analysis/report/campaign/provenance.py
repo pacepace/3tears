@@ -35,9 +35,9 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.contention import reader_latency_sentence
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.warnings import listed, where
-from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
@@ -49,9 +49,11 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TableColumn,
 )
-from threetears.evals.analysis.report.words import judged_name
+from threetears.evals.analysis.report.words import label_case
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import ArmName
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "aspect_provenance_blocks",
@@ -127,11 +129,8 @@ def question_blocks(campaign: EvalCampaign, *, compares: bool) -> list[ReportBlo
     asks none of one arm measured, nothing: the lead says what the page is, the arm's figure and its count.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param compares: Whether the page compares arms (a change or a choice), not one arm measured.
-    :ptype compares: bool
     :return: The question's line, the line saying the page is exploratory, or nothing.
-    :rtype: list[ReportBlock]
     """
     if not campaign.question.strip():
         if not compares:
@@ -232,11 +231,8 @@ def timing_caveats(bundles: Sequence[AnalysisContextBundle], names: AspectNames 
     can be ordered. An analysis's listing line says these after its warnings.
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :param names: What the page calls each aspect; None names each by :func:`aspect_name`.
-    :ptype names: AspectNames | None
     :return: The lines; none where every criterion came before its readings and every result is timed.
-    :rtype: list[str]
     """
     return [line for kind, line in _lines(bundles, names) if kind in ("late", "untimed")]
 
@@ -249,14 +245,10 @@ def caveat_blocks(
     whole page, naming where it holds; each carries the id its kind marks it by.
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :param section: The first-screen section they sit in: ``warnings`` on a campaign's page, ``header`` on an
         aspect's.
-    :ptype section: ReportSection
     :param names: What the page calls each aspect; None names each by :func:`aspect_name`.
-    :ptype names: AspectNames | None
     :return: The lines; none where nothing holds.
-    :rtype: list[ReportBlock]
     """
     return [
         DisclosureBlock(
@@ -284,9 +276,7 @@ def priced_aspects(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
     figure and the writer's view hands one.
 
     :param bundles: Each aspect's evidence, in the campaign's order.
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :return: The labels; none where no arm on any aspect was priced.
-    :rtype: list[str]
     """
     return [
         bundle.aspect
@@ -307,15 +297,10 @@ def setup_disclosure(
     is its runs' provider routing's; None where it does not hold.
 
     :param kind: Which disclosure.
-    :ptype kind: Literal['latency', 'settings', 'cost']
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: An arm's name on the page, by its variant key.
-    :ptype arm: Callable[[str], str]
     :param forms: The page's forms, which print the counts a stored sentence holds.
-    :ptype forms: PageForms
     :return: The line, folded in the methods' disclosures, or None.
-    :rtype: DisclosureBlock | None
     """
     text = _setup_detail(kind, bundle, arm, forms)
     if text is None:
@@ -331,9 +316,7 @@ def calibration_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     judge is calibrated or has met or missed its criterion.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: The line, or nothing.
-    :rtype: list[ReportBlock]
     """
     said = _calibration_sentences(bundle)
     if not said:
@@ -439,16 +422,11 @@ def provenance_blocks(
     time, latency, request settings, each judge not yet calibrated, cost as routed); nothing where none holds.
 
     :param bundles: Each aspect's evidence, in the campaign's order.
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :param labels: The campaign's label for each arm, by variant key, which the detail names arms by.
-    :ptype labels: Mapping[str, str]
     :param names: What the page calls each aspect, and where each one's fold is, which a cell of one aspect links.
-    :ptype names: AspectNames
     :param forms: The page's forms, which state each floor's margin, the counts a stored sentence holds, and a count a
         detail states (results with no ordered time).
-    :ptype forms: PageForms
     :return: The tables, each only where it has a row.
-    :rtype: list[ReportBlock]
     """
 
     def aspects(held: Sequence[str]) -> TableCell:
@@ -495,7 +473,7 @@ def provenance_blocks(
 def _label(words: str) -> str:
     """A row's label as a table prints it: its words, starting with a capital (``Latency read under concurrency``,
     ``Aspect; control; margin``); each starts with a word of code's, never a name or an expression."""
-    return words[:1].upper() + words[1:]
+    return label_case(words)
 
 
 def _namer(named: Mapping[str, ArmName]) -> Callable[[str], str]:
@@ -508,11 +486,8 @@ def aspect_provenance_blocks(bundle: AnalysisContextBundle, *, forms: PageForms)
     methods: the detail its first screen's one line on them points at.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param forms: The page's forms, which state each floor's margin.
-    :ptype forms: PageForms
     :return: The table, or nothing where every criterion came before its readings.
-    :rtype: list[ReportBlock]
     """
     names = AspectNames.of([bundle])
     return _criteria_table(
@@ -583,11 +558,8 @@ def for_the_campaign(report: Report, *, alone: bool = False) -> Report:
     the judge, its dimensions or how many of its outputs to rate.
 
     :param report: The aspect's own page.
-    :ptype report: Report
     :param alone: Whether the fold is laid out without the campaign's own blocks.
-    :ptype alone: bool
     :return: The page without them.
-    :rtype: Report
     """
     marks = {*_CAVEAT_ANCHORS.values(), *_SETUP_ANCHORS.values()} - ({_SETUP_ANCHORS["judge"]} if alone else set())
     kept = [

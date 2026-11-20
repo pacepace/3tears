@@ -32,15 +32,11 @@ from threetears.evals.quick.one_call import (
     JUDGED_CALLABLE_KIND_CONTRACT,
     callable_host,
 )
-from threetears.evals.analysis import campaign_report, campaign_report_markdown, summarize_run
-from threetears.evals.run import (
-    get_result_trace,
-    get_template,
-    list_results,
-    list_runs,
-    list_templates,
-    update_template,
-)
+from threetears.evals.analysis import campaign_report, summarize_run
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.run import get_result_trace, list_results, list_runs, update_template
+from threetears.evals.run.authoring import get_template
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.clock_support import frozen_clock
@@ -586,7 +582,7 @@ async def test_a_miss_is_said_with_its_verdicts_in_the_print_and_on_the_page_bes
     lines = str(result).splitlines()
     said = "judge: 1 of 2 examples graded as they must be on every one of 2 repeats ($0.0012 over 4 call(s))"
     at = lines.index(said)
-    assert lines[at - 1].startswith("judge: 0 labels: judge uncalibrated"), "read beside its labels, never pooled"
+    assert lines[at - 1].startswith("judge: 0 of 2 cases read blind: judge not checked"), "read beside its labels"
     assert lines[at + 1] == f"  missed: {miss}"
     (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
     assert block.section == "provenance" and block.source == "calibration"

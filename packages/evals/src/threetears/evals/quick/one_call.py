@@ -42,6 +42,7 @@ import asyncio
 import inspect
 import json
 import math
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -49,12 +50,15 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import drain_then_cut, run_blocking, wait_through_cancellation
+from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
+from threetears.evals.kernel.metrics import declaration_of
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
+    CandidateKindDefect,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
     JUDGE_KIND,
@@ -83,8 +87,8 @@ from threetears.evals.schema import (
     KnownUsageRole,
     ProviderFailureDescriber,
     WorldSeed,
-    canonical_digest,
 )
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.schema.models import PASS_FAIL_SCORES, RubricScale, stored_variation
 from threetears.evals.kernel.host import (
@@ -104,7 +108,7 @@ from threetears.evals.kernel.host import (
 from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run, summarize_runs
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
@@ -117,9 +121,10 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    StoredCell,
+    StoredCells,
     TemplateField,
     UnknownSubject,
-    build_judge_context,
     build_judge_service,
     freeze_judge_cases,
     get_result_trace,
@@ -128,6 +133,8 @@ from threetears.evals.run import (
     list_results,
     start_run,
 )
+from threetears.evals.run.runner import build_judge_context
+from threetears.evals.run.curation import set_run_archived
 from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
@@ -139,14 +146,31 @@ from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import Answer, unwrap_answer
+from threetears.evals.quick.continuation import (
+    EarlierComparison,
+    canonical_json,
+    continued_sentence,
+    launched_as,
+    new_comparison_sentence,
+)
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.trials import RedrawnCells, committed_order, redrawn_cells
+from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
-from threetears.evals.quick.graders import UNUSABLE_ANSWER, predicted_label
+from threetears.evals.quick.graders import UNUSABLE_ANSWER, declares_a_check, predicted_label
 from threetears.evals.quick.tools import CellTools, Tool, ToolRecording, ToolUsingCandidate
-from threetears.evals.quick.world import World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
+from threetears.evals.quick.world import (
+    World,
+    WorldAgent,
+    WorldCellKind,
+    WorldOutcome,
+    carries_a_starting_state,
+    world_case_payload,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 
 log = get_logger(__name__)
@@ -168,12 +192,6 @@ ExpectedLabel = Callable[[Mapping[str, Any]], str]
 #: (``accuracy``). No scorer may take one: it would collide with a classifier's own measure, or be read
 #: under the core descriptor of a measure it is not.
 _CLASSIFIER_NAMES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE, ACCURACY_MEASURE})
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches, as its template names it.
-CALLABLE_KIND = "callable"
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches when it is handed a judge: the callable, its answers judged as documents.
-JUDGED_CALLABLE_KIND = "callable-judged"
 
 #: The host :func:`callable_host` builds, by the id the engine prints in its logs and errors.
 CALLABLE_HOST_ID = "eval"
@@ -296,9 +314,7 @@ def _scorer_reader_name(name: str) -> str:
     score".
 
     :param name: The scorer's ``__name__``.
-    :ptype name: str
     :return: The reader-facing name its descriptor carries.
-    :rtype: str
     """
     words = " ".join(name.replace("_", " ").split())
     return f"{words[:1].upper()}{words[1:]} score"
@@ -313,11 +329,14 @@ def scorer_measure(
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
-    A scorer whose return is annotated ``bool`` is a pass/fail — a check, ``pass_fail``, whose 0 fails the trial it is
-    on — and is declared on the range 0 to 1, margin or not: its intervals stay inside what a pass rate can be, and
-    with a margin its equivalence test is the bounded one that holds its error rate at any n. Any other scorer is on
-    the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its values can
-    be: its intervals are then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
+    A scorer its author declares a check (:func:`~threetears.evals.quick.graders.declares_a_check`: annotated
+    ``-> bool``, or declaring no number) is a
+    pass/fail — ``pass_fail``, whose 0 fails the trial it is on — and is declared on the range 0 to 1, margin or not:
+    its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the bounded one that
+    holds its error rate at any n. A scorer declared to grade a number (annotated ``-> float`` or ``-> int``, or given
+    a range) is on the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its
+    values can be: its intervals are then the unclipped t intervals, and it takes no margin
+    (:func:`refuse_unusable_margins`).
 
     Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
     joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
@@ -325,22 +344,20 @@ def scorer_measure(
 
     :param scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
         when it has one, describes it.
-    :ptype scorer: Scorer
     :param margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
         still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
         and no contrast on it can.
-    :ptype margin: float | None
-    :param value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
-    :ptype value_range: tuple[float, float] | None
+    :param value_range: The lowest and highest value a scorer grading a number can return, or ``None``; given, it
+        declares the scorer grades a number, unless its return is annotated ``-> bool``.
     :param guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
         A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
-    :ptype guardrail: Guardrail | None
     :return: The descriptor :func:`callable_host` registers for it.
-    :rtype: MetricDescriptor
-    :raises ValueError: Both ``margin`` and ``guardrail`` are given.
+    :raises ValueError: Both ``margin`` and ``guardrail`` are given, or its return annotation is read as both kinds or
+        neither (:func:`~threetears.evals.quick.graders.declares_a_check`).
     """
     name = _scorer_name(scorer)
     doc = inspect.getdoc(scorer)
+    check = declares_a_check(scorer, ranged=value_range is not None)
     if guardrail is not None:
         if margin is not None:
             raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
@@ -356,8 +373,8 @@ def scorer_measure(
             guardrail=True,
             population="scored",
             materiality_threshold=guardrail.margin,
-            value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
-            pass_fail=_returns_bool(scorer),
+            value_range=(0.0, 1.0) if check else value_range,
+            pass_fail=check,
         )
     return MetricDescriptor(
         name=name,
@@ -372,8 +389,8 @@ def scorer_measure(
         merit_axis="quality",
         population="scored",
         materiality_threshold=margin,
-        value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
-        pass_fail=_returns_bool(scorer),
+        value_range=(0.0, 1.0) if check else value_range,
+        pass_fail=check,
     )
 
 
@@ -382,13 +399,27 @@ def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
     return None if bounds is None else (float(bounds[0]), float(bounds[1]))
 
 
-def _returns_bool(scorer: Scorer) -> bool:
-    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not."""
-    try:
-        returned = inspect.signature(scorer).return_annotation
-    except TypeError, ValueError:
-        return False
-    return returned is bool or returned == "bool"
+class _GraderContradictsItsDeclaration(CandidateKindDefect):
+    """A function grader returned a value its declared kind cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`): anything but True, False, 0 or 1 from a check (a
+    number, ``None``, a numpy bool), or a bool from a grader declared to grade a number.
+
+    The grader is the eval's own code, the rig, and the measure it lands under says something its value contradicts.
+    Excluding the cell would drop a verdict the grader gave and shrink the count every reading states over the rest,
+    so, as for a kind contradicting its declaration, the run fails at the first such answer, naming the declaration to
+    write. The cell is recorded with what it spent.
+    """
+
+    def __init__(self, message: str, *, kind: str, declared: JudgedArtifact, has_evidence: bool) -> None:
+        """Say what the grader returned and the declaration that fixes it.
+
+        :param message: What it returned, how it is declared, and what to write.
+        :param kind: The kind whose grader it is.
+        :param declared: The kind's ``judged_artifact``.
+        :param has_evidence: Whether the cell carried judge evidence.
+        """
+        super().__init__(kind, declared=declared, has_evidence=has_evidence)
+        self.args = (message,)
 
 
 def refuse_unusable_margins(
@@ -399,18 +430,16 @@ def refuse_unusable_margins(
     """Refuse a margin or a range no scorer's measure could carry, naming what can carry one.
 
     A margin is what lets a contrast read ``equivalent``, and the equivalence test needs the measure's range
-    (#695). A ``bool`` scorer is on 0 to 1; any other has the range ``ranges`` declares for it, or none, and a
-    margin on it with none is refused here rather than accepted and never tested.
+    (#695). A check (:func:`~threetears.evals.quick.graders.declares_a_check`) is on 0 to 1; a scorer declared to grade a number has the range ``ranges``
+    declares for it, or none, and a margin on it with none is refused here rather than accepted and never tested.
 
     :param scorers: The scorers whose measures the margins are declared on.
-    :ptype scorers: Sequence[Scorer]
     :param margins: Each margin, by the name of the scorer it is declared on.
-    :ptype margins: Mapping[str, float]
-    :param ranges: Each non-``bool`` scorer's range, by its name.
-    :ptype ranges: Mapping[str, tuple[float, float]] | None
+    :param ranges: Each range declared on a scorer, by its name: it declares the scorer grades a number.
     :raises ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
-        measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
-        one that is not two finite numbers, low below high, or a margin on a scorer with no range.
+        measure among them), a margin that is not a positive finite number, a range on a scorer annotated
+        ``-> bool`` or one that is not two finite numbers, low below high, or a margin on a scorer annotated to
+        return a number with no range.
     """
     ranges = dict(ranges or {})
     names = [_scorer_name(scorer) for scorer in scorers]
@@ -421,7 +450,7 @@ def refuse_unusable_margins(
                 f"a range names {name!r}, which no grader reports; a range is declared on a grader "
                 f"(grader(<function>, range=(1, 5))): {', '.join(map(repr, names)) or 'none were given'}"
             )
-        if _returns_bool(by_name[name]):
+        if declares_a_check(by_name[name], ranged=True):
             raise ValueError(
                 f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare range= only on a "
                 "grader returning a number"
@@ -455,13 +484,13 @@ def refuse_unusable_margins(
                 f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
                 f"pass rate), not {margin!r}"
             )
-        if not _returns_bool(by_name[name]) and name not in ranges:
+        if name not in ranges and not declares_a_check(by_name[name]):
             raise ValueError(
-                f"a margin on {name!r} needs its range too: {name!r} does not return a bool, so nothing says what "
-                "its scores can be, and with no range no test can show two arms inside a margin (one rare large "
-                f"score can hide a move). Declare the lowest and highest score it can return beside the margin: "
-                f"grader({name}, margin=..., range=(1, 5)) for a 1-to-5 score. A pass/fail grader annotated -> bool "
-                "needs none"
+                f"a margin on {name!r} needs its range too: {name!r} is annotated to return a number, so nothing "
+                "says what its scores can be, and with no range no test can show two arms inside a margin (one rare "
+                f"large score can hide a move). Declare the lowest and highest score it can return beside the margin: "
+                f"grader({name}, margin=..., range=(1, 5)) for a 1-to-5 score. A pass/fail grader (annotated -> bool, "
+                "or not annotated) needs none"
             )
 
 
@@ -485,13 +514,9 @@ def refuse_unusable_guardrails(
     (``Judge(guard=...)``); this holds a function grader's.
 
     :param scorers: The graders whose measures a guardrail may be declared on.
-    :ptype scorers: Sequence[Scorer]
     :param guardrails: Each guardrail, by the name of the grader it is declared on.
-    :ptype guardrails: Mapping[str, Guardrail]
     :param margins: The margins declared beside them, by grader.
-    :ptype margins: Mapping[str, float] | None
     :param ranges: The ranges declared for graders returning a number, by grader.
-    :ptype ranges: Mapping[str, tuple[float, float]] | None
     :raises ValueError: A guardrail that is not a :class:`~threetears.evals.quick.guardrails.Guardrail`; on an engine
         core measure, or a name no grader has; on a grader also given a margin; or a margin as wide as the grader's
         range (0 to 1 for a pass/fail).
@@ -514,7 +539,9 @@ def refuse_unusable_guardrails(
             )
         if margins and name in margins:
             raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
-        bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
+        bounds = (
+            (0.0, 1.0) if declares_a_check(by_name[name], ranged=name in (ranges or {})) else (ranges or {}).get(name)
+        )
         if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
             forms = PageForms.off_page()
             low, high = (forms.echoed(end, measure=name).text for end in bounds)
@@ -536,9 +563,7 @@ def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, K
     take an arm's levers.
 
     :param levers: The levers' names.
-    :ptype levers: Sequence[str]
     :return: The unjudged kind's contract, then the judged kind's.
-    :rtype: tuple[KindContract, KindContract]
     :raises ValueError: A lever name no overlay field could carry, ``model``, or one given twice.
     """
     if not levers:
@@ -561,6 +586,14 @@ def _arm_of_run(run: EvalRun) -> str:
     """The arm a run is, by name: what its launch stated, else its candidate model's label."""
     named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
     return named if isinstance(named, str) and named else run.candidate_model
+
+
+def launched_as_run(run: EvalRun) -> tuple[str | None, str, str]:
+    """How a stored run's arm was launched, as a continued comparison compares it
+    (:func:`~threetears.evals.quick.continuation.launched_as`): the arm's name its launch stated on the run's payload
+    under this module's key (``None`` for an arm named by its model), its candidate model and its levers."""
+    named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
+    return launched_as(named if isinstance(named, str) and named else None, run.candidate_model, run.overlays)
 
 
 def _arm_levels(run: EvalRun) -> dict[str, SweepableValue]:
@@ -605,42 +638,32 @@ def callable_host(
     alike.
 
     :param scorers: The scorer functions whose measures the host declares.
-    :ptype scorers: Sequence[Scorer]
     :param levers: The levers every run in this host states a level of beside its model
         (:func:`callable_kind_contracts`), each handed to :class:`~threetears.evals.quick.contract.Eval` as ``levers=``.
-    :ptype levers: Sequence[str]
     :param world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
         profile; ``None`` declares none.
-    :ptype world: World | None
     :param arms: Declare :data:`ARM_LEVER`, the lever a comparison (an eval whose runner is a mapping of arms)
         names its arms on, so its report reads ``candidate=<name>``; what a comparison builds when handed no
         host. A run that states no arm (an eval of one arm in this host) is at its candidate model's label.
-    :ptype arms: bool
     :param margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
         contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
-    :ptype margins: Mapping[str, float] | None
     :param ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
-        (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
-        scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
-    :ptype ranges: Mapping[str, tuple[float, float]] | None
+        (``{"rating": (1, 5)}``), which declares that it grades a number: its intervals stay inside it, and a margin on
+        it can be tested. A check is on 0 to 1 already (:func:`~threetears.evals.quick.graders.declares_a_check`). A
+        score outside its range fails the run, naming the scorer and the case.
     :param store: Where every document is stored (any :class:`~threetears.evals.schema.DocumentStore`):
         :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
         :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
-    :ptype store: DocumentStore | None
     :param clients: The completion clients the engine's own model calls use after the run (a re-judge, an
         analysis), as :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none,
         and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
-    :ptype clients: CompletionClients | None
     :param trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.kernel.host.EvalHost` takes
         it; ``None`` traces nothing.
-    :ptype trace_sink: TraceSink | None
     :param guardrails: The scorers declared guardrails, by name, each with its margin and direction
         (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
         every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
         :class:`~threetears.evals.quick.judged.Judge`'s, not a host's. ``None`` declares none.
-    :ptype guardrails: Mapping[str, Guardrail] | None
     :return: The host.
-    :rtype: EvalHost
     :raises ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
         any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
         is not a positive number or is on a scorer with no range; a range is unusable
@@ -732,27 +755,21 @@ def callable_kind(
     (:data:`JUDGED_CALLABLE_KIND` with a judge). Each cell calls the candidate with its case, read from the stored test
     case's ``host_payload["case"]``, where the quick path stores it, and each scorer with the case and the answer,
     landing each score as a host measure under the scorer's name. A candidate that raises fails its cell; a scorer that
-    raises, returns no number, or returns one outside its range excludes it.
+    raises excludes it; one returning a value its declaration cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`: no finite number, one outside its range, or anything but
+    a bool from a check) fails the run, naming the case by its ``name``, else by its stored id.
 
     :param candidate: The callable under test.
-    :ptype candidate: Candidate | ToolUsingCandidate
     :param scorers: The grades: plain functions, or :class:`~threetears.evals.quick.Measure` objects declaring their own
         measure (``@measure(...)``), each reported under its name.
-    :ptype scorers: Sequence[Scorer]
     :param classifies: Whether each case carries an expected label (``host_payload["expected"]``), landing ``match``
         and ``confusion_cell``.
-    :ptype classifies: bool
     :param label_field: The field of the answer its label is read from; ``None`` reads the answer itself.
-    :ptype label_field: str | None
     :param judge: The judge whose evidence each answer carries, for the judged kind; ``None`` for an unjudged one.
-    :ptype judge: Judge | None
     :param tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
-    :ptype tools: Mapping[str, Tool] | None
     :param ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
         named here.
-    :ptype ranges: Mapping[str, tuple[float, float]] | None
     :return: The kind: one instance serves every cell of a run.
-    :rtype: CandidateKind
     """
     _refuse_unnamed_or_repeated(scorers)
     held = {
@@ -789,9 +806,13 @@ class CallableKind:
     ``invoke`` calls the candidate with the case it was given and each scorer with that case and the
     answer, and reports the scores as host measures, and an :class:`~threetears.evals.quick.answer.Answer`'s
     spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
-    candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
-    returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test; so does a score outside the range its measure declares. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or a
+    :class:`~threetears.evals.quick.Measure` returning something that is not a number, EXCLUDES it, because the grader
+    is the rig rather than the thing under test. A function grader's value its declaration cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`: anything but True, False, 0 or 1 from a check, ``None``
+    and a numpy bool among them; from a grader of a number, a bool, anything that is no finite number, or a score
+    outside the range declared for it) FAILS THE RUN at the first such answer, naming the case and the fix: dropping
+    the cell would drop a verdict the grader gave and shrink the count, or the mean, every reading states. A classifying kind also lands ``match`` and ``confusion_cell`` against the
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
@@ -818,33 +839,40 @@ class CallableKind:
         tools: Mapping[str, Tool] | None = None,
         recording: ToolRecording | None = None,
         ranges: Mapping[str, tuple[float, float]] | None = None,
+        positions: Mapping[str, int] | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
         :param candidate: The callable under test.
-        :ptype candidate: Candidate | ToolUsingCandidate
         :param scorers: The grades, each reported under its own name.
-        :ptype scorers: Sequence[Scorer]
         :param classifies: Whether the candidate is a classifier, whose every case carries its expected label.
-        :ptype classifies: bool
         :param label_field: The field of the answer its label is read from; ``None`` reads the answer itself, which is
             a label only as a non-blank string.
-        :ptype label_field: str | None
         :param judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
-        :ptype judge: Judge | None
         :param tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
             called with the case alone. A candidate handed tools answers a
             :class:`~threetears.evals.quick.world.WorldOutcome`: its answer, and the calls it made.
-        :ptype tools: Mapping[str, Tool] | None
         :param recording: Where the tools' answers are recorded or replayed from, or ``None`` to call them live.
-        :ptype recording: ToolRecording | None
         :param ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
-        :ptype ranges: Mapping[str, tuple[float, float]] | None
+        :param positions: Each case's index in the case list its runs store (``EvalRun.test_case_ids``), by its stored
+            id, which an error line names a case given no ``id`` by (:func:`_case_called`): the quick path passes the
+            cases it stores, in their order. ``None`` (a host's own kind, :func:`callable_kind`) names such a case by
+            its stored id.
         """
         self._candidate = candidate
+        self._positions = dict(positions or {})
         self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
+        # What each function grader declares it grades, which every value it returns is held to (a Measure declares
+        # itself): the checks, each by how it declares it (annotated -> bool, or declaring nothing), and the numbers.
+        functions = {_scorer_name(scorer): scorer for scorer in self._scorers if not isinstance(scorer, Measure)}
+        self._checks = {
+            name: "annotated -> bool" if declares_a_check(scorer, ranged=True) else "not annotated and given no range"
+            for name, scorer in functions.items()
+            if declares_a_check(scorer, ranged=name in self._ranges)
+        }
+        self._numbers = frozenset(functions) - set(self._checks)
         self._classifies = classifies
         self._label_field = label_field
         self._recording = recording
@@ -869,20 +897,13 @@ class CallableKind:
         """Records the arm's model label, and builds the cell's tools, wired to its cassettes when it has any.
 
         :param subject_snapshot: The run's subject, unused.
-        :ptype subject_snapshot: SubjectSnapshot | None
         :param variant_config: The cell's variant; its candidate model labels the arm.
-        :ptype variant_config: VariantConfig
         :param world_seed: The template's seed, which this kind has no world to write.
-        :ptype world_seed: WorldSeed
         :param span_window: The cell's trace windows, unused.
-        :ptype span_window: CellSpanWindow
         :param cassettes: The cell's cassettes in a capture or replay run, which only a kind with tools is
             launched with, and ``None`` with cassettes off.
-        :ptype cassettes: CellCassettes | None
         :param world: Unread — a callable has no world to seed, so the cell opens none.
-        :ptype world: WorldSession | None
         :return: The prepared candidate.
-        :rtype: _Prepared
         """
         tools = CellTools(self._tools, recording=self._recording) if self._tools is not None else None
         if cassettes is not None and tools is not None:
@@ -893,15 +914,11 @@ class CallableKind:
         """Run the candidate on one case, grade its answer, and report the grades.
 
         :param instance: What ``prepare`` returned.
-        :ptype instance: _Prepared
         :param test_case: The cell's case; the caller's case rides on its ``host_payload``.
-        :ptype test_case: EvalTestCase
         :param sink: The cell's sink. What an :class:`~threetears.evals.quick.answer.Answer` reports it cost is
             counted the moment it returns; the run's cost cap is read between cells, so the call is never refused.
-        :ptype sink: CellSink
         :return: The answer as the stored trace, and each scorer's grade as a host measure, beside a
             classifier's ``match`` and ``confusion_cell``, and a judged kind's evidence.
-        :rtype: CandidateOutput
         """
         case = test_case.host_payload[_CASE_KEY]
         if instance.tools is not None:
@@ -912,26 +929,33 @@ class CallableKind:
                 answer, telemetry = unwrap_answer(await _call_candidate(self._candidate, case, instance.tools))
             telemetry = spent(ledger, telemetry)
         except ApparatusError:
-            raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
+            raise  # the rig's fault under the candidate (a replay miss fails the run) is the engine's to record
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account was refused or the provider declined the call
         except Exception as raised:
             owner = _owner_of(raised)
             if owner != "candidate":
-                # A call the package's client made that the provider refused or declined says nothing about the
-                # candidate: the cell is excluded, and the account's refusal also stops the run, since every later
-                # call meets it.
-                said = "was refused for the calling account" if owner == "account" else "was declined by the provider"
+                # A call the package's client made that the provider refused, declined, or answered for a model it
+                # does not serve says nothing about the candidate: the cell is excluded, never judged. The account's
+                # refusal also stops the run, since every later call meets it, and a model not served stops it once
+                # its cells keep meeting that.
+                said = {
+                    "account": "was refused for the calling account",
+                    "provider": "was declined by the provider",
+                    "unserved": "named a model the provider does not serve",
+                }[owner]
                 excluded = f"apparatus: the candidate's provider call {said}: {raised}"
                 contain(raised, log=log, what=excluded)
                 return CandidateOutput(
                     infra_errors=[excluded],
                     account_refused=owner == "account",
+                    model_unserved=owner == "unserved",
                     telemetry=CandidateTelemetry(turns_delivered=0),
                 )
-            contain(raised, log=log, what=f"the candidate raised {type(raised).__name__}: {raised}")
+            said = _raised_words("the candidate", raised, test_case)
+            contain(raised, log=log, what=said)
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
-                candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"],
+                candidate_errors=[said],
                 host_measures=missed,
                 # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
                 telemetry=CandidateTelemetry(turns_delivered=0),
@@ -965,34 +989,150 @@ class CallableKind:
                 score = scorer(case, answer)
             # prawduct:ok-broad-except — a scorer is the caller's grader, the rig: a raise excludes the cell and says which scorer
             except Exception as raised:
-                contain(raised, log=log, what=f"the scorer {name} raised {type(raised).__name__}: {raised}")
+                said = _raised_words(f"the grader {name}", raised, test_case)
+                contain(raised, log=log, what=said)
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} raised {type(raised).__name__}: {raised}"],
+                    infra_errors=[said],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
-            # ``bool`` is an ``int``, so True and False pass here as 1 and 0.
+            # Held to its declaration first: a function grader's every value is a verdict or a reading, never a cell
+            # to drop, so one its declaration cannot hold fails the run.
+            if (contradicted := self._contradiction(name, score, _case_called(test_case, self._positions))) is not None:
+                raise _GraderContradictsItsDeclaration(
+                    contradicted,
+                    kind=CALLABLE_KIND if self._judge is None else JUDGED_CALLABLE_KIND,
+                    declared=self.judged_artifact,
+                    has_evidence=evidence is not None,
+                )
+            # Only a Measure, which declares itself, reaches here with no number; a function grader's True and False
+            # (``bool`` is an ``int``) pass as 1 and 0.
             if not isinstance(score, int | float) or not math.isfinite(score):
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
-                    judge_evidence=evidence,
-                    telemetry=telemetry,
-                )
-            if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
-                forms = PageForms.off_page()
-                low, high = (forms.echoed(end, measure=name).text for end in self._ranges[name])
-                return CandidateOutput(
-                    output=trace,
-                    infra_errors=[
-                        f"the scorer {name} returned {score!r}, outside the range {low} to {high} declared for it"
-                    ],
+                    infra_errors=[f"the grader {name} returned {score!r}, not a finite number or a bool"],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
             measures[name] = float(score)
         return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence, telemetry=telemetry)
+
+    def _contradiction(self, name: str, score: object, case: str) -> str | None:
+        """What is wrong with a function grader's value on ``case``, by what it declares it grades, and the fix;
+        ``None`` where its declaration allows the value.
+
+        A check allows Python's ``True`` and ``False``, and the plain numbers 0 and 1, alone: ``None`` (a function that
+        falls off its end), a numpy bool or integer, a string or any other number is no verdict. A grader of a number
+        allows a finite number, never a bool, inside the range declared for it when one is: ``None``, NaN, infinity, a
+        string or a score off its scale is no reading, and a mean over the cells left would misstate it.
+        """
+        if name in self._checks:
+            if type(score) is bool or (type(score) in (int, float) and score in (0, 1)):
+                return None
+            read = f"it is read as pass or fail (it is {self._checks[name]}), so it returns True or False"
+            if score is None:
+                return (
+                    f"the grader {name} returned None on case {case}, and {read}: return one on every path (a "
+                    "function that ends without a return returns None)"
+                )
+            if type(score) in (int, float):
+                return (
+                    f"the grader {name} returned {score!r} on case {case}, and {read}: declare what it grades, "
+                    f"def {name}(case, out) -> float or grader({name}, range=(low, high)) for a number, or return a "
+                    "bool for pass or fail"
+                )
+            kind = f"{type(score).__module__}.{type(score).__qualname__}"
+            return (
+                f"the grader {name} returned {score!r}, a {kind}, on case {case}, and {read}, Python's own: return "
+                f"bool(...) of it to grade pass or fail, or declare a number, def {name}(case, out) -> float, to "
+                "grade one"
+            )
+        if name not in self._numbers:
+            return None
+        declared = "given a range" if name in self._ranges else "annotated to return a number"
+        if isinstance(score, bool):
+            return (
+                f"the grader {name} returned {score!r} on case {case}, a pass or fail, but it is {declared}, so its "
+                f"False would read as a low score, never as a failed case: annotate it def {name}(case, out) -> bool "
+                "to grade pass or fail, or return float(...) to grade a number"
+            )
+        if not isinstance(score, int | float) or not math.isfinite(score):
+            read = f"it is {declared}, so it returns a finite number on every path"
+            if score is None:
+                return (
+                    f"the grader {name} returned None on case {case}, and {read}: return one from every branch (a "
+                    "function that ends without a return returns None)"
+                )
+            if isinstance(score, int | float):
+                return (
+                    f"the grader {name} returned {score!r} on case {case}, and {read}: NaN and infinity are no score, "
+                    "so return a finite one, or raise where no score can be given"
+                )
+            kind = f"{type(score).__module__}.{type(score).__qualname__}"
+            return (
+                f"the grader {name} returned {score!r}, a {kind}, on case {case}, and {read}: return float(...) of "
+                "it, a Python number"
+            )
+        if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
+            forms = PageForms.off_page()
+            low, high = (forms.echoed(end, measure=name).text for end in self._ranges[name])
+            return (
+                f"the grader {name} returned {score!r} on case {case}, outside the range {low} to {high} declared for "
+                f"it: return a score on that scale, or declare the scale its scores have, "
+                f"grader({name}, range=(low, high))"
+            )
+        return None
+
+
+#: What each reserved case key (:data:`RESERVED_CASE_KEYS`) is and that it is withheld, said where a function raised
+#: ``KeyError`` looking one up in a case that held it. ``id`` gives no reason beyond what it is: the remedy is enough.
+_WITHHELD_WHY: dict[str, str] = {
+    "id": (
+        "names the case: the package reads it and withholds it from the runner and every grader; if your function "
+        "needs the value, copy it into the case under another key as well"
+    ),
+    STRATUM_KEY: "is the kind of case, which the runner must not be told, so it is withheld from the runner and every grader",
+    WORLD_KEY: (
+        "is the case's starting state, which the agent reads through its world's tools, so it is withheld from the "
+        "runner and every grader"
+    ),
+}
+
+
+def _raised_words(whose: str, raised: Exception, test_case: EvalTestCase) -> str:
+    """What a function the author wrote raised, as its cell's error says it: ``the candidate raised KeyError: 'x'``.
+
+    A ``KeyError`` on a reserved key the case held (:data:`RESERVED_CASE_KEYS`) says the key is the package's and
+    withheld, and why: the case as the author wrote it holds it, and the function was handed the case without it.
+    """
+    said = f"{whose} raised {type(raised).__name__}: {raised}"
+    key = raised.args[0] if isinstance(raised, KeyError) and len(raised.args) == 1 else None
+    if isinstance(key, str) and key in _reserved_keys_held(test_case):
+        said += f"; the case's {key!r} {_WITHHELD_WHY[key]}"
+    return said
+
+
+def _reserved_keys_held(test_case: EvalTestCase) -> frozenset[str]:
+    """The reserved keys (:data:`RESERVED_CASE_KEYS`) the case as its author wrote it held, each asked of the module
+    that owns where it is kept: ``id`` and ``stratum`` this module stores as the test case's ``name`` and ``stratum``;
+    ``world`` the world module keeps on the case's payload (:func:`~threetears.evals.quick.world.carries_a_starting_state`)."""
+    held = {
+        "id": test_case.name is not None,
+        STRATUM_KEY: test_case.stratum is not None,
+        WORLD_KEY: carries_a_starting_state(test_case),
+    }
+    return frozenset(key for key, carried in held.items() if carried)
+
+
+def _case_called(test_case: EvalTestCase, positions: Mapping[str, int]) -> str:
+    """What a case is called in an error line: its own ``id`` (``name``), else its place from 1 in the case list its
+    runs store, read off ``positions`` (:func:`_case_names` calls it the same), else, where the kind was handed no
+    order (a host's own kind), its stored id. No number is read off a case's id."""
+    if test_case.name is not None:
+        return test_case.name
+    position = positions.get(test_case.id)
+    return test_case.id if position is None else _place(position)
 
 
 def _missed(expected: str) -> dict[str, bool | float | str]:
@@ -1005,9 +1145,7 @@ def _missed(expected: str) -> dict[str, bool | float | str]:
     none of its precision or recall.
 
     :param expected: The case's expected label.
-    :ptype expected: str
     :return: The measures to land beside the failure.
-    :rtype: dict[str, bool | float | str]
     """
     return {MATCH_MEASURE: False, CONFUSION_CELL_MEASURE: confusion_cell(expected, UNUSABLE_ANSWER)}
 
@@ -1043,9 +1181,7 @@ def _is_async_callable(candidate: object) -> bool:
     its ``__call__``.
 
     :param candidate: The callable.
-    :ptype candidate: object
     :return: ``True`` for an async callable; ``False`` for a plain function, which a call runs to its end.
-    :rtype: bool
     """
     if inspect.iscoroutinefunction(candidate):
         return True
@@ -1057,10 +1193,8 @@ def _refuse_a_sync_candidate_handed_tools(arms: Sequence[CallableArm], *, why: s
     """Refuse, before anything runs, a synchronous candidate that would be handed async tools it cannot await.
 
     :param arms: The arms.
-    :ptype arms: Sequence[CallableArm]
     :param why: What the candidates are handed (``"tools"``, ``"a world's tools"``), or ``None`` when nothing is,
         and a synchronous candidate is called in a thread.
-    :ptype why: str | None
     """
     if why is None:
         return
@@ -1201,27 +1335,34 @@ def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> No
         )
 
 
+def _place(index: int) -> str:
+    """A case called by its place in the list given, from 1: the line of a cases file it is on, and the number the
+    report page calls it by (:func:`~threetears.evals.analysis.report.aspect.common.case_namer`), never its index."""
+    return str(index + 1)
+
+
 def _case_names(cases: list[dict[str, Any]]) -> list[str]:
-    """What each case is called in its results and in every error line: its own ``id``, else its position.
+    """What each case is called in its results and in every error line: its own ``id``, else its place from 1
+    (:func:`_place`).
 
     :raises ValueError: An ``id`` that is not a non-blank string or an int, or two cases called alike.
     """
     names: list[str] = []
     for index, case in enumerate(cases):
         if "id" not in case:
-            names.append(str(index))
+            names.append(_place(index))
             continue
         given = case["id"]
         if isinstance(given, bool) or not isinstance(given, str | int) or not str(given).strip():
             raise ValueError(
-                f"case {index}'s id is {given!r}; a case's id names it in its results and errors, so it is a "
+                f"case {_place(index)}'s id is {given!r}; a case's id names it in its results and errors, so it is a "
                 "non-blank string or an int"
             )
         names.append(str(given))
     if repeated := sorted({name for name in names if names.count(name) > 1}):
         raise ValueError(
             f"more than one case is called {', '.join(map(repr, repeated))}; a case is called by its id, or by its "
-            "position in the list when it has none, and each name must be one case's"
+            "place in the list (from 1) when it has none, and each name must be one case's"
         )
     return names
 
@@ -1233,7 +1374,7 @@ def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     plain: list[dict[str, Any]] = []
     for index, case in enumerate(cases):
         if not isinstance(case, Mapping) or not all(isinstance(key, str) for key in case):
-            raise ValueError(f"case {index} is not a mapping with string keys: {case!r}")
+            raise ValueError(f"case {_place(index)} is not a mapping with string keys: {case!r}")
         plain.append(dict(case))
     return plain
 
@@ -1326,6 +1467,12 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
         host.storage.save_template(
             template if stored is None else template.model_copy(update={"created_at": stored.created_at})
         )
+    _save_cases_unless_unchanged(host, test_cases)
+
+
+def _save_cases_unless_unchanged(host: EvalHost, test_cases: Sequence[EvalTestCase]) -> None:
+    """Store each case the store does not already hold unchanged (:func:`_save_unless_unchanged`'s cases): a stored
+    case's ``name`` is fill-only, and one that differs in anything but its stamps is saved with its ``created_at``."""
     for test_case in test_cases:
         kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
         if kept is not None and kept.name is not None:
@@ -1336,6 +1483,126 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
             host.storage.save_test_case(
                 test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
             )
+
+
+def _what_changed(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    control_index: int,
+    k: int,
+    declared: str,
+    cases: Sequence[EvalTestCase],
+    names: Sequence[str],
+    first_address: str,
+) -> str | None:
+    """What makes this launch another comparison than ``earlier``, as a clause; ``None`` where it continues it.
+
+    ``declared`` is how this launch's host declares its measures and margins, as a run freezes them
+    (``EvalRun.declared_measures``, ``declared_margins``). ``cases`` are this launch's cases as ``earlier``'s case set
+    would store them, each at its place, and
+    ``first_address`` the address of the cases ``earlier`` first ran, read off this launch's (``_template_id``, which
+    covers their content, labels, seeds, rubric, intent and goal checks). Every case ``earlier`` ran must be stored at
+    its place as this launch holds it, and a case appended must not be stored there otherwise (another comparison in
+    the scope appended other cases to the same case set). Reads the store.
+    """
+    if k != earlier.k:
+        return "the repeats per case changed"
+    if set(keys) != set(earlier.arms) or len(keys) != len(earlier.arms):
+        return "the arms changed"
+    if keys[control_index] != earlier.control:
+        return "the control changed"
+    if any(arm.declared != declared for arm in earlier.arms.values()):
+        return "a grader's margin, range or guard changed"
+    if len(cases) < len(earlier.case_ids):
+        return "a case run before was removed"
+    unrun = set(earlier.unrun)
+    for index, case in enumerate(cases):
+        kept = host.storage.load_test_case(case.id, case.scope_id)
+        held = index < len(earlier.case_ids)
+        if held and earlier.case_ids[index] != case.id:
+            return "the cases run before are not in the order they ran"
+        if (held or kept is not None) and (
+            kept is None
+            or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+            != case.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+        ):
+            if held and case.id in unrun:
+                return f"case {names[index]}, which the run that stopped held, was edited, moved or removed"
+            if held:
+                return f"case {names[index]} was edited, moved or removed"
+            return f"another comparison in this scope added another case {names[index]} to the same cases"
+    if first_address != earlier.template_id:
+        return "the judge's rubric, the intent or the goal checks changed"
+    return None
+
+
+def _reads_otherwise(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    runs: Sequence[EvalRun],
+    scope_id: str,
+) -> bool:
+    """Whether a run launched to continue ``earlier`` is not its arm's earlier runs measured alike: another variant
+    key, another measurement context (which holds the graders' and the judge's definitions), or other declarations
+    of the graders. Reads the store."""
+    for key, run in zip(keys, runs, strict=True):
+        arm = earlier.arms[key]
+        stored = host.storage.load_eval_run(run.id, scope_id)
+        if stored is None:
+            return True
+        declared = canonical_json(
+            {
+                "measures": {
+                    name: declared.model_dump(mode="json") for name, declared in stored.declared_measures.items()
+                },
+                "margins": stored.declared_margins,
+            }
+        )
+        # A run whose every cell its arm's earlier runs recorded holds no result to read a variant from.
+        variant = variant_key_of_run(list_results(host.storage, run.id, scope_id))
+        if (
+            (variant is not None and variant != arm.variant_key)
+            or stored.context_key != arm.context_key
+            or declared != arm.declared
+        ):
+            return True
+    return False
+
+
+def _recorded_cells(
+    host: EvalHost, run_ids: Sequence[tuple[str, ...]], cases: set[str], scope_id: str
+) -> list[StoredCells | None]:
+    """Each arm's cells of ``cases`` its runs ``run_ids`` recorded, as the done cells its continuation's run counts and
+    never runs again (``KindWiring.observed``); ``None`` for an arm with none. A row that records no answer is not
+    recorded and its cell runs again, by the take-up's own rule
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell an interrupt cut, a call the account refused,
+    a model the provider did not serve.
+
+    :param host: The host whose store holds the runs.
+    :param run_ids: Each arm's earlier runs, in arm order.
+    :param cases: The cases the continuation runs.
+    :param scope_id: The scope.
+    :return: Each arm's recorded cells, in arm order.
+    """
+    observed: list[StoredCells | None] = []
+    for held in run_ids:
+        done = tuple(
+            StoredCell.from_result(result)
+            for run_id in held
+            for result in list_results(host.storage, run_id, scope_id)
+            if result.test_case_id in cases and not runs_again(result)
+        )
+        observed.append(StoredCells(done=done) if done else None)
+    return observed
+
+
+def _archive_run_ids(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> None:
+    """Archive runs launched to continue a comparison they could not: kept, and restorable, but out of every listing
+    and reading."""
+    for run_id in run_ids:
+        set_run_archived(host.storage, run_id, scope_id, archived=True, profile=host.profile)
 
 
 def _seed_judge_examples(
@@ -1376,11 +1643,8 @@ def _examples_as_judged(judge: Judge, expected: ExpectedLabel | None) -> list[tu
     label has none to hide: a cell's case always holds one, and an example's need not.
 
     :param judge: The judge, with its examples.
-    :ptype judge: Judge
     :param expected: The label a case expects, as the eval's cells read it; ``None`` on an eval with no classifier.
-    :ptype expected: ExpectedLabel | None
     :return: Each example's case and evidence, in order.
-    :rtype: list[tuple[dict[str, Any], JudgeEvidence]]
     :raises ValueError: The judge's ``case_material`` raised on an example's case, or rendered no text.
     """
     judged: list[tuple[dict[str, Any], JudgeEvidence]] = []
@@ -1444,24 +1708,15 @@ async def grade_judge_examples(
     grading's, and reaches the caller.
 
     :param host: The host the run ran in, whose store holds its template and takes the ledger rows.
-    :ptype host: EvalHost
     :param judge: The judge, with at least one example.
-    :ptype judge: Judge
     :param template_id: The template every arm ran, whose intent and rubric the judge read.
-    :ptype template_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param k: How many times each example is graded: the eval's repeats.
-    :ptype k: int
     :param expected: The label a case expects, as the eval's cells read it (left out of what the judge reads), or
         ``None`` on an eval with no classifier.
-    :ptype expected: ExpectedLabel | None
     :param max_cost_usd: The eval's cost cap, over every arm and these calls; ``None`` for none.
-    :ptype max_cost_usd: float | None
     :param landed_usd: What the arms' results cost, summed; ``None`` where any went unpriced.
-    :ptype landed_usd: float | None
     :return: Each example's grades, in order, and what the calls cost.
-    :rtype: JudgeExamples
     """
     budget = OutOfRunBudget(
         store=host.storage,
@@ -1667,6 +1922,9 @@ class _WiredArm:
     #: Whether the caller named ``model``. One it did not is launched as the kind's default, so the run records
     #: its model inherited rather than chosen, and no surface reads the label as a model moved off production.
     named: bool = True
+    #: The cells of its run's cases this arm's earlier runs recorded (a continued comparison's), which its run counts
+    #: as done and never runs again (``KindWiring.observed``); ``None`` runs every cell.
+    observed: StoredCells | None = None
 
     @property
     def requested_model(self) -> str | None:
@@ -1760,6 +2018,7 @@ def _launch_host(
                 default_candidate_model=None if arm.named else arm.model,
                 # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
                 max_concurrent_cells=CallableKind.max_concurrent_cells,
+                observed=arm.observed,
             ),
         )
 
@@ -1824,16 +2083,11 @@ def _world_seeds(
     """Each case's starting state for a world with state, or ``None`` for any other run, refusing an incoherent one.
 
     :param world: The runner's world, or ``None``.
-    :ptype world: World | None
     :param seeds: Each case's ``world``, as the cases carried it (``None`` where a case carried none), or ``None`` when
         no case carried one.
-    :ptype seeds: Sequence[Any] | None
     :param goal_checks: The expression graders.
-    :ptype goal_checks: Sequence[str]
     :param host: The caller's own host, or ``None``.
-    :ptype host: EvalHost | None
     :param names: What each case is called.
-    :ptype names: list[str]
     :raises ValueError: A goal check, or a case's ``world``, with no world with state to read or seed; a case of a world
         with state that carries no ``world``, or one the state refuses; a goal check reading state or naming a
         tool the world lacks; or a given host that does not declare the world.
@@ -1875,8 +2129,10 @@ def _kind_factory(
     world: World | None,
     recording: ToolRecording | None,
     ranges: Mapping[str, tuple[float, float]],
+    positions: Mapping[str, int],
 ) -> KindFactory:
-    """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind."""
+    """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind,
+    each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
     if world is None or not world.stateful:
         kind = CallableKind(
             cast(Candidate | ToolUsingCandidate, candidate),
@@ -1887,12 +2143,21 @@ def _kind_factory(
             tools=None if world is None else world.functions,
             recording=recording,
             ranges=ranges,
+            positions=positions,
         )
         return lambda _cell: kind
     stateful = world
 
     def over(acting: Candidate) -> CallableKind:
-        return CallableKind(acting, scorers, classifies=classifies, label_field=label_field, judge=judge, ranges=ranges)
+        return CallableKind(
+            acting,
+            scorers,
+            classifies=classifies,
+            label_field=label_field,
+            judge=judge,
+            ranges=ranges,
+            positions=positions,
+        )
 
     def cell_kind(context: CellContext) -> WorldCellKind:
         return WorldCellKind(stateful, cast(WorldAgent, candidate), over, context)
@@ -1910,12 +2175,22 @@ def _logged_kind_factory(
     label_field: str | None,
     judge: Judge | None,
     ranges: Mapping[str, tuple[float, float]],
+    positions: Mapping[str, int],
 ) -> KindFactory:
-    """The factory building each cell's kind for a logged runner: the cell's case and repeat served from the log."""
+    """The factory building each cell's kind for a logged runner: the cell's case and repeat served from the log,
+    each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
 
     def cell_kind(context: CellContext) -> CallableKind:
         served = log.runner(logged, case_of[context.test_case.id], context.k_iteration)
-        return CallableKind(served, scorers, classifies=classifies, label_field=label_field, judge=judge, ranges=ranges)
+        return CallableKind(
+            served,
+            scorers,
+            classifies=classifies,
+            label_field=label_field,
+            judge=judge,
+            ranges=ranges,
+            positions=positions,
+        )
 
     return cell_kind
 
@@ -1933,7 +2208,6 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
 
     :return: The intent, and its source as a summary names it: ``None`` for the ``intent`` given, else a phrase
         saying which docstring it was read from or why it is the generic sentence.
-    :rtype: tuple[str, str | None]
     """
     if intent is not None:
         return intent, None
@@ -1951,7 +2225,30 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     return f"Answer each case so that {graded_by} the answer well.", f"a generic default: {lacking}"
 
 
-async def run_arms(
+@dataclass(frozen=True)
+class Launched:
+    """What :func:`launch_arms` launched and reads, arm by arm in arm order.
+
+    :ivar summaries: Each arm's summary over every run it reads: one run, or a continued comparison's runs as one.
+    :ivar run_ids: Each arm's runs, oldest first.
+    :ivar launched: The runs this call launched, which a refusal after the run archives; none where a continued
+        comparison had no case to add.
+    :ivar continued: Whether it continued an earlier comparison.
+    :ivar said: The sentence saying how the comparison ran (:func:`~threetears.evals.quick.continuation.continued_sentence`
+        or :func:`~threetears.evals.quick.continuation.new_comparison_sentence`); ``None`` with no earlier comparison.
+    :ivar cancelled: Whether the call was cancelled while its runs ran: its runs are settled cancelled, every result
+        they recorded kept, and it is handed to the caller's ``on_cancel`` to file before the cancel goes on.
+    """
+
+    summaries: list[EvalSummary]
+    run_ids: list[tuple[str, ...]]
+    launched: list[str]
+    continued: bool = False
+    said: str | None = None
+    cancelled: bool = False
+
+
+async def launch_arms(
     cases: Sequence[Mapping[str, Any]],
     arms: Sequence[CallableArm],
     scorers: Sequence[Scorer] = (),
@@ -1970,8 +2267,24 @@ async def run_arms(
     subject: str | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
-) -> list[EvalSummary]:
+    earlier: EarlierComparison | None = None,
+    control_index: int = 0,
+    said: str | None = None,
+    on_cancel: Callable[[Launched], Awaitable[None]] | None = None,
+) -> Launched:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
+
+    **Continuing a comparison.** With ``earlier``, the comparison the quick path filed last under this eval's name
+    (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
+    comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
+    place, unedited, with the same rubric, intent and goal checks over them. Then only the cells no launch recorded
+    run, into its case set: each case a launch of it that stopped or was cancelled left short on some arm or repeat
+    (:attr:`~threetears.evals.quick.continuation.EarlierComparison.unfinished`), its recorded cells counted as done so
+    only its missing ones run, then the cases appended; and each arm reads its earlier runs with its new one. A
+    recorded cell is never run again, so every result a stopped launch observed counts. A new run whose variant key, measurement
+    context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
+    it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
+    sentence the caller found already (a design that changed), which the launch keeps.
 
     The arms share the template, the case set, the host and the launch: one launch group, every arm's run prepared
     (every refusal made) before any starts, and all of them started together
@@ -1985,44 +2298,31 @@ async def run_arms(
         position, from ``0``, and numbered on the page),
         ``stratum`` is the kind of case it is, stored as its test case's stratum so the summary reads every
         measure again per stratum, and ``world`` is its starting state on a world with state.
-    :ptype cases: Sequence[Mapping[str, Any]]
     :param arms: The arms, distinct — no two at one model and one level of every lever — which the caller holds.
-    :ptype arms: Sequence[CallableArm]
     :param scorers: The function graders, each reported as a measure named by its ``__name__``.
-    :ptype scorers: Sequence[Scorer]
     :param scope_id: The scope the template, cases and runs are stored in.
-    :ptype scope_id: str
     :param host: Where to run and store: it declares a measure for every scorer, the callable kinds' contracts and the
         world (:func:`callable_host`).
-    :ptype host: EvalHost
     :param template_name: The template's name, as a listing of templates shows it.
-    :ptype template_name: str
     :param expected: Declares the runner a classifier: called once per case, it returns the label a correct answer
         gives. Each cell then lands ``match`` and ``confusion_cell``.
-    :ptype expected: ExpectedLabel | None
     :param label_field: The field of the answer a classifier's label is read from; ``None`` reads the answer itself.
-    :ptype label_field: str | None
     :param judge: The judge every arm's answers are graded by — one, so no difference between arms is one of judging.
-    :ptype judge: Judge | None
     :param intent: What every case asks, which a judge reads; ``None`` takes the first line of the runners' docstring.
-    :ptype intent: str | None
     :param world: The world every arm's agent acts on, or ``None``.
-    :ptype world: World | None
     :param goal_checks: Goal-state checks over a world with state, each reported as passed or failed per cell.
-    :ptype goal_checks: Sequence[str]
     :param k: Repeats per case, per arm.
-    :ptype k: int
     :param max_cost_usd: The most each arm's run may spend, in US dollars; ``None`` runs uncapped, which every summary
         states.
-    :ptype max_cost_usd: float | None
     :param subject: The subject every arm's run shares (a comparison's: its arms are variants of one subject, so the
         frontier and history rank them together); ``None`` makes each run's subject its arm's name, else its
         model.
-    :ptype subject: str | None
     :param margins: Run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared on every arm's run.
-    :ptype margins: Mapping[str, float] | None
     :param measure_latency: Declare latency under test: the cases run one at a time.
-    :ptype measure_latency: bool
+    :param on_cancel: Handed what the runs recorded (:attr:`Launched.cancelled` set) when a cancel lands while they
+        run, once they are settled cancelled and before the cancel goes on, for the caller to file (a comparison's:
+        the results it observed are kept); waited for to its end even through a second cancel, and then the cancel
+        that landed is re-raised. ``None`` re-raises it once the runs are settled.
     :return: Each arm's finished run's summary, read back from the store, in arm order.
     :rtype: list[EvalSummary]
     :raises ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
@@ -2065,9 +2365,8 @@ async def run_arms(
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
-    template_id = _template_id(
-        addressed, labels, judge, seeds, goal_checks, intent=template_intent if judge is not None else None
-    )
+    addressed_intent = template_intent if judge is not None else None
+    template_id = _template_id(addressed, labels, judge, seeds, goal_checks, intent=addressed_intent)
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
@@ -2077,21 +2376,85 @@ async def run_arms(
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
     )
-    test_cases = [
-        EvalTestCase(
-            id=f"{template_id}-{index}",
-            scope_id=scope_id,
-            template_id=template_id,
-            stratum=None if strata is None else strata[index],
-            # The author's own id names the case on the page; a case called by its position gets no name there.
-            name=names[index] if "id" in plain_cases[index] else None,
-            variation_params=stored_variation(case),
-            host_payload=_case_payload(
-                case, None if labels is None else labels[index], None if seeds is None else seeds[index]
-            ),
+
+    def cases_of(template_id: str) -> list[EvalTestCase]:
+        """The cases as the case set ``template_id`` stores them, each at its place."""
+        return [
+            EvalTestCase(
+                id=f"{template_id}-{index}",
+                scope_id=scope_id,
+                template_id=template_id,
+                stratum=None if strata is None else strata[index],
+                # The author's own id names the case on the page; a case called by its position gets no name there.
+                name=names[index] if "id" in plain_cases[index] else None,
+                variation_params=stored_variation(case),
+                host_payload=_case_payload(
+                    case, None if labels is None else labels[index], None if seeds is None else seeds[index]
+                ),
+            )
+            for index, case in enumerate(stimulus)
+        ]
+
+    test_cases = cases_of(template_id)
+    # A comparison continued: its case set, its runs read again, and only the cases appended after them run.
+    reading: list[tuple[str, ...]] = [() for _ in arms]
+    observed: list[StoredCells | None] = [None for _ in arms]
+    to_run = test_cases
+    keys = [launched_as(arm.arm, model, arm.levers) for arm, model in zip(arms, models, strict=True)]
+    if earlier is not None:
+        stored = await run_blocking(host.blocking_executor, host.storage.load_template, earlier.template_id, scope_id)
+        changed = (
+            "the case set it ran is no longer stored"
+            if stored is None
+            else await run_blocking(
+                host.blocking_executor,
+                _what_changed,
+                host,
+                earlier,
+                keys,
+                control_index,
+                k,
+                canonical_json(
+                    {
+                        "measures": {
+                            name: declaration_of(descriptor).model_dump(mode="json")
+                            for name in host.profile.measures.names
+                            if (descriptor := host.profile.measures.get(name)) is not None
+                        },
+                        "margins": dict(margins or {}),
+                    }
+                ),
+                cases_of(earlier.template_id),
+                names,
+                _template_id(
+                    addressed[: earlier.first_cases],
+                    None if labels is None else labels[: earlier.first_cases],
+                    judge,
+                    None if seeds is None else seeds[: earlier.first_cases],
+                    goal_checks,
+                    intent=addressed_intent,
+                ),
+            )
         )
-        for index, case in enumerate(stimulus)
-    ]
+        if changed is not None or stored is None:
+            said = new_comparison_sentence(changed or "the case set it ran is no longer stored")
+        else:
+            template, template_id = stored, earlier.template_id
+            test_cases = cases_of(template_id)
+            # The cases a launch that stopped left short on some arm or repeat, then the cases appended: each runs
+            # only the cells no launch recorded, and a recorded cell is read as it ran and never run again.
+            unfinished = set(earlier.unfinished)
+            held = len(earlier.case_ids)
+            to_run = [case for case in test_cases[:held] if case.id in unfinished] + test_cases[held:]
+            reading = [earlier.arms[key].run_ids for key in keys]
+            observed = await run_blocking(
+                host.blocking_executor,
+                _recorded_cells,
+                host,
+                reading,
+                {case.id for case in to_run},
+                scope_id,
+            )
     if world is not None and world.stateful:
         # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
         # over model prose, a text comparison over a call parameter its schema does not close, and calls or
@@ -2112,20 +2475,32 @@ async def run_arms(
             )
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
-    await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
+    continuing = any(reading)
+    if continuing:
+        # The template is the comparison's, stored when it first ran; only the cases appended after it are new.
+        await run_blocking(host.blocking_executor, _save_cases_unless_unchanged, host, to_run)
+    else:
+        await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
     if judge is not None and judge.examples:
         await run_blocking(host.blocking_executor, _seed_judge_examples, host, template, judge, expected)
-    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
+    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact. A
+    # check's 0 to 1 is not a range declared on it: the kind holds a check to 0 or 1 itself
+    # (:func:`~threetears.evals.quick.graders.declares_a_check`).
     ranges = {
         scorer: descriptor.value_range
         for scorer in map(_scorer_name, scorers)
-        if (descriptor := host.profile.measures.get(scorer)) is not None and descriptor.value_range is not None
+        if (descriptor := host.profile.measures.get(scorer)) is not None
+        and descriptor.value_range is not None
+        and not descriptor.pass_fail
     }
     recording = None if world is None or world.recording is None else ToolRecording(world.recording)
     if recording is not None:
         recording.begin()
     # A logged runner's outputs, read once as the run starts: every cell is served from the same reading.
     case_of = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    # Each case's index in the list every arm's run stores as its `test_case_ids` (these cases, in this order), which
+    # an error line names a case given no id by.
+    positions = {test_case.id: index for index, test_case in enumerate(test_cases)}
     logged = {
         id(arm.candidate): await run_blocking(host.blocking_executor, arm.candidate.outputs)
         for arm in arms
@@ -2144,6 +2519,7 @@ async def run_arms(
                 label_field=label_field,
                 judge=judge,
                 ranges=ranges,
+                positions=positions,
             )
             if isinstance(arm.candidate, Log)
             else _kind_factory(
@@ -2155,27 +2531,43 @@ async def run_arms(
                 world=world,
                 recording=recording,
                 ranges=ranges,
+                positions=positions,
             ),
             arm=arm.arm,
             shared_subject=subject,
             named=arm.model is not None,
+            observed=done,
         )
-        for arm, model in zip(arms, models, strict=True)
+        for arm, model, done in zip(arms, models, observed, strict=True)
     ]
     preparing: list[_WiredArm] = []
     launch_host = _launch_host(
         host,
         wired,
-        test_cases,
+        to_run,
         judge,
         world,
         max_cost_usd=max_cost_usd,
         preparing=preparing,
     )
 
+    # The order the bet reads, committed before any answer: the earlier launches' cases where they stand, and this
+    # launch's new cases shuffled once and appended. Every arm plays this launch's cases case by case in it.
+    running = {case.id for case in to_run}
+    committed = [
+        case
+        for case in committed_order(
+            template_id, [*(earlier.launches if continuing and earlier is not None else ()), [c.id for c in to_run]]
+        )
+        if case in running
+    ]
+
     async def form() -> tuple[LaunchGroup, None]:
         # Every arm's model is a candidate of the launch, which is what its judge is chosen against.
-        return LaunchGroup(candidate_models=list(dict.fromkeys(models))), None
+        group = LaunchGroup(candidate_models=list(dict.fromkeys(models)))
+        group.play_cases_in(committed)
+        launched_in.append(group)
+        return group, None
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
@@ -2199,53 +2591,223 @@ async def run_arms(
         preparing.clear()
         return prepared
 
-    runs = await launch_as_group(
-        launch_host,
-        len(arms),
-        settings=launch_host.settings(),
-        form=form,
-        prepare=prepare,
-        event="eval.quick",
-    )
-    try:
-        await launch_host.job_manager.wait_for([run.id for run in runs])
-    except asyncio.CancelledError:
-        # This call owns the runs it started: cancelled, it settles them as cancelled rather than
-        # leaving pending ones behind in a store that outlives it.
-        await launch_host.job_manager.shutdown()
-        raise
-    by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    runs: list[EvalRun] = []
+    launched_in: list[LaunchGroup] = []
 
-    def summarized() -> list[EvalSummary]:
-        return [
-            _with_case_results(
-                host,
-                summarize_run(host, run.id, scope_id, case_names=by_id),
-                test_cases,
-                names,
-                behavior="classify" if expected is not None else "score",
+    async def read(*, cancelled: bool) -> Launched:
+        """Each arm read over every run it reads, as :class:`Launched` says, ``cancelled`` where a cancel landed."""
+        by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+        read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
+
+        def summarized() -> list[EvalSummary]:
+            return [
+                _with_case_results(
+                    host,
+                    _ended_as_newest(host, summarize_runs(host, run_ids, scope_id, case_names=by_id), run_ids, scope_id)
+                    if len(run_ids) > 1
+                    else summarize_runs(host, run_ids, scope_id, case_names=by_id),
+                    run_ids,
+                    test_cases,
+                    names,
+                    behavior="classify" if expected is not None else "score",
+                )
+                for run_ids in read_runs
+            ]
+
+        def redrawn() -> RedrawnCells:
+            # Over every run read, this launch's included, so the print says the count the comparison's page says.
+            return redrawn_cells(
+                [
+                    result
+                    for run_ids in read_runs
+                    for run_id in run_ids
+                    for result in list_results(host.storage, run_id, scope_id)
+                ]
             )
-            for run in runs
-        ]
 
-    # Summarizing reads each run and its results back from the store, so it runs off the loop.
-    summaries = await run_blocking(host.blocking_executor, summarized)
-    # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
-    # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
-    idle = (
-        world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
-        if world is not None and seeds is not None and goal_checks
-        else None
+        # Summarizing reads each run and its results back from the store, so it runs off the loop.
+        summaries = await run_blocking(host.blocking_executor, summarized)
+        cells_again = await run_blocking(host.blocking_executor, redrawn) if continuing else RedrawnCells()
+        # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
+        # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
+        idle = (
+            world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
+            if world is not None and seeds is not None and goal_checks
+            else None
+        )
+        # The store keeps the intent but not where it came from; a judged run's summary carries both.
+        return Launched(
+            summaries=[
+                _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+                for summary, arm in zip(summaries, arms, strict=True)
+            ],
+            run_ids=read_runs,
+            launched=[run.id for run in runs],
+            continued=continuing,
+            cancelled=cancelled,
+            said=(
+                continued_sentence(
+                    len(test_cases) - len(to_run),
+                    len(to_run),
+                    unreached=len(earlier.unrun) if earlier is not None else 0,
+                    incomplete=earlier.incomplete if earlier is not None else 0,
+                    redrawn=cells_again,
+                )
+                if continuing
+                else said
+            ),
+        )
+
+    async def differs() -> bool:
+        """Whether a continuation's new runs read otherwise than their arms' earlier runs; where they do, they are
+        archived. Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement
+        context (the graders' and the judge's definitions among it) and the same graders' declarations."""
+        if not (continuing and earlier is not None and runs):
+            return False
+        found = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
+        if found:
+            await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
+        return found
+
+    async def drain(group: LaunchGroup | None, run_ids: list[str]) -> KeyboardInterrupt | None:
+        """Let the runs' running cells finish and record, starting none, then settle every run; a cancel landing
+        meanwhile (a second interrupt) cuts the cells still running at once, each recorded cut (termination
+        ``cancelled``), which a continuation runs again. The engine's one interrupt rule
+        (:func:`~threetears.evals.kernel.offload.drain_then_cut`), which a launch's job and a foreground wait keep too.
+
+        :return: The ``KeyboardInterrupt`` that cut the cells, where a second Ctrl+C arrived in this task; ``None``
+            otherwise.
+        """
+        manager = launch_host.job_manager
+
+        def ask() -> None:
+            # Each run's first cancel, which the job manager reads as a drain (each run is its group's member), so a
+            # further one cuts.
+            for run_id in run_ids:
+                manager.cancel_job(run_id)
+            if group is not None:
+                running = group.stop_starting()
+                said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
+                sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
+
+        def cut_now() -> None:
+            for run_id in run_ids:
+                manager.cut_job(run_id, reason="interrupted twice: the cells running were cut")
+
+        return await drain_then_cut(
+            ask,
+            cut_now,
+            [
+                (lambda: manager.wait_for(run_ids), "an interrupted comparison's wait for its runs failed"),
+                # Nothing is left running or pending behind the call.
+                (manager.shutdown, "an interrupted comparison's shutdown of its runs failed"),
+            ],
+        )
+
+    async def file_cancelled(deliver: Callable[[Launched], Awaitable[None]]) -> None:
+        """Hand what the cancelled runs recorded to ``deliver``, unless they were archived: then they are another
+        comparison's and nothing is left to keep. A failure is recorded, since the cancel goes on in its place."""
+        try:
+            if not await differs():
+                await deliver(await read(cancelled=True))
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="a cancelled comparison's runs could not be read to file; a run again starts a new comparison",
+                level="error",
+            )
+
+    if to_run:
+        runs = await launch_as_group(
+            launch_host,
+            len(arms),
+            settings=launch_host.settings(),
+            form=form,
+            prepare=prepare,
+            event="eval.quick",
+        )
+        try:
+            await launch_host.job_manager.wait_for([run.id for run in runs])
+        except asyncio.CancelledError as first:
+            # This call owns the runs it started: cancelled, it settles them as cancelled rather than leaving pending
+            # ones behind in a store that outlives it. A comparison's first interrupt drains (it is bounded: each cell
+            # by its own deadline, and a second interrupt cuts): no further cell starts, the cells
+            # running finish and are recorded (their answers were being drawn, and cutting a slow one to draw it
+            # afresh would lean the bet toward fast answers), and each run ends cancelled. A second cuts at once.
+            # A comparison's caller then files them, so what they recorded is kept and a run again runs only the
+            # cells they never recorded; the cancel that landed first is the one re-raised, or a second Ctrl+C after it.
+            if on_cancel is None:
+                # Not a comparison: no bet reads it, so the cancel cuts at once.
+                await launch_host.job_manager.shutdown()
+                raise
+            second = await drain(launched_in[0] if launched_in else None, [run.id for run in runs])
+            # Waited for to its end even through a further cancel.
+            await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
+            if second is not None:
+                # The second Ctrl+C is the interrupt the person gave, so it is the one raised, after the first cancel:
+                # a host not under ``asyncio.run``'s handler, which would read a cancel as its own, still gets it.
+                raise second from first
+            raise
+    if await differs():
+        # The comparison cannot continue: the new runs are archived, and every case runs as a new comparison.
+        return await launch_arms(
+            cases,
+            arms,
+            scorers,
+            scope_id=scope_id,
+            host=host,
+            template_name=template_name,
+            expected=expected,
+            label_field=label_field,
+            judge=judge,
+            intent=intent,
+            world=world,
+            goal_checks=goal_checks,
+            k=k,
+            max_cost_usd=max_cost_usd,
+            subject=subject,
+            margins=margins,
+            measure_latency=measure_latency,
+            said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
+            on_cancel=on_cancel,
+        )
+    return await read(cancelled=False)
+
+
+def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str], scope_id: str) -> EvalSummary:
+    """A continued comparison's arm over every launch of it, as it stands: its results every run's together, its ending
+    its newest run's, and its cases each once.
+
+    A launch of it that stopped or was cancelled was taken up by the launches after it, which ran every cell it never
+    recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`, which the campaign's page reads alike), so the
+    arm ends as its newest run ends: completed once that run completed, and stopped while it is stopped. A case a
+    launch left short is in a later run's cases too, and counts once.
+
+    :param host: The host whose store holds the runs.
+    :param pooled: The arm's runs summarised as one (:func:`~threetears.evals.analysis.summary.summarize_runs`).
+    :param run_ids: Its runs, oldest first.
+    :param scope_id: The scope they live in.
+    :return: The summary.
+    """
+    newest = summarize_run(host, run_ids[-1], scope_id)
+    cases: dict[str, None] = {}
+    for run_id in run_ids:
+        run = host.storage.load_eval_run(run_id, scope_id)
+        cases.update(dict.fromkeys(run.test_case_ids if run is not None else ()))
+    return pooled.model_copy(
+        update={"status": newest.status, "stopped_because": newest.stopped_because, "n_cases": len(cases)}
     )
-    # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return [
-        _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
-        for summary, arm in zip(summaries, arms, strict=True)
-    ]
 
 
 def _with_case_results(
-    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str], *, behavior: str
+    host: EvalHost,
+    summary: EvalSummary,
+    run_ids: Sequence[str],
+    test_cases: list[EvalTestCase],
+    names: list[str],
+    *,
+    behavior: str,
 ) -> EvalSummary:
     """The summary carrying every result read for a person, so they outlive the store the run was in.
 
@@ -2256,7 +2818,7 @@ def _with_case_results(
     """
     order = {test_case.id: index for index, test_case in enumerate(test_cases)}
     stored = sorted(
-        list_results(host.storage, summary.run_id, summary.scope_id),
+        (result for run_id in run_ids for result in list_results(host.storage, run_id, summary.scope_id)),
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
@@ -2332,9 +2894,10 @@ __all__ = [
     "callable_kind",
     "callable_kind_contracts",
     "grade_judge_examples",
+    "launch_arms",
+    "launched_as_run",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",
-    "run_arms",
     "scorer_measure",
 ]

@@ -44,30 +44,38 @@ def _row(*cells: str) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
-def test_the_options_table_s_pass_rate_reads_whole_with_its_counts() -> None:
-    """Options table, pass rate: ``85% (765 of 897)``, as before."""
+def test_the_options_table_s_pass_rate_reads_at_its_measure_s_precision_with_its_counts() -> None:
+    """Options table, pass rate: ``85.3% (765 of 897)``: its narrowest interval is 7 points wide, which reads to two
+    significant figures at a tenth (owner ruling, 2026-11-14; it read ``85%`` under the half-width's first figure)."""
     assert _row(
-        "P · September", "Control (recommended)", "deepseek/deepseek-v4.1-flash", "85% (765 of 897)", "$1.89"
+        "P · September", "Control (recommended)", "deepseek/deepseek-v4.1-flash", "85.3% (765 of 897)", "$1.89"
     ) in (_lines())
 
 
 def test_the_change_chart_s_head_reads_the_pass_rate_at_its_measure_s_precision() -> None:
-    """Change chart head: ``Pass rate · September 85%``, never ``85.3%`` (half-width 3.5 points: whole percents)."""
+    """Change chart head: ``Pass rate · September 85.3%``, as the options table prints it."""
     heads = [line for line in _lines() if line.startswith("| Pass rate · September")]
-    assert heads and all(line.startswith("| Pass rate · September 85% |") for line in heads), heads
+    assert heads and all(line.startswith("| Pass rate · September 85.3% |") for line in heads), heads
 
 
-def test_the_change_chart_reads_qwen_s_change_its_interval_and_its_note_whole() -> None:
-    """Change chart, qwen3.8-flash: ``-8 pts · -13 to -2 pts · -8 pts worse``, its values table writing the unit its
-    values are read in (rule 3: an interval alone ends on its unit)."""
-    assert _row("Pass rate · September 85%", "A · qwen3.8-flash", "-8 pts", "-13 to -2 pts", "-8 pts worse") in _lines()
+def test_the_change_chart_reads_qwen_s_change_its_interval_and_its_note_at_one_precision() -> None:
+    """Change chart, qwen3.8-flash: ``-7.6 pts · -12.9 to -1.8 pts · -7.6 pts worse``, at the pass rate's one
+    precision, its values table writing the unit its values are read in (rule 3: an interval alone ends on its
+    unit)."""
+    assert (
+        _row("Pass rate · September 85.3%", "A · qwen3.8-flash", "-7.6 pts", "-12.9 to -1.8 pts", "-7.6 pts worse")
+        in _lines()
+    )
 
 
 def test_1017_s_change_reads_as_its_prose_does() -> None:
-    """Prose, 1017: its drop of ``3`` points sits beside ``-3 pts (-7 to +3 pts)``, no longer beside ``-3.0``."""
+    """Prose, 1017: its drop of ``3.0`` points sits beside ``-3.0 pts (-7.4 to +2.6 pts)``, one precision."""
     lines = _lines()
-    assert _row("Pass rate · September 85%", "B · 1017", "-3 pts", "-7 to +3 pts", "-3 pts cannot tell apart") in lines
-    assert any("1017 (B)'s drop of 3 points" in line for line in lines)
+    assert (
+        _row("Pass rate · September 85.3%", "B · 1017", "-3.0 pts", "-7.4 to +2.6 pts", "-3.0 pts cannot tell apart")
+        in lines
+    )
+    assert any("1017 (B)'s drop of 3.0 points" in line for line in lines)
 
 
 def test_the_margin_reads_as_declared_on_the_chart_and_in_the_prose() -> None:
@@ -78,14 +86,15 @@ def test_the_margin_reads_as_declared_on_the_chart_and_in_the_prose() -> None:
     assert not any("-15.0" in line for line in lines)
 
 
-def test_holds_character_reads_whole_for_every_arm() -> None:
-    """Holds character, arm by measure: ``91% · 85% · 87%`` (its comparisons' narrowest half-width is 4.05 points)."""
-    assert _row("Persona holds character", "91%", "85%", "87%") in _lines()
+def test_holds_character_reads_at_a_tenth_for_every_arm() -> None:
+    """Holds character, arm by measure: ``91.5% · 85.4% · 86.6%`` (its comparisons' narrowest interval is 8.1 points
+    wide, a tenth at two significant figures)."""
+    assert _row("Persona holds character", "91.5%", "85.4%", "86.6%") in _lines()
 
 
 def test_holds_character_s_strata_read_at_its_one_precision() -> None:
-    """Holds character, strata: ``66%, 43%, 46%`` off lane, as the measure reads everywhere on the page."""
-    assert _row("off lane", "Persona holds character", "38", "66%", "43%", "46%") in _lines()
+    """Holds character, strata: ``65.8%, 42.9%, 45.6%`` off lane, as the measure reads everywhere on the page."""
+    assert _row("off lane", "Persona holds character", "38", "65.8%", "42.9%", "45.6%") in _lines()
 
 
 def test_the_send_message_check_keeps_its_decimal() -> None:
@@ -96,11 +105,11 @@ def test_the_send_message_check_keeps_its_decimal() -> None:
     assert any("| Send message or queue voice check | -1.0 pts | -3.6 to +1.6 pts |" in line for line in lines)
 
 
-def test_failed_reply_notices_read_at_their_interval_s_digit() -> None:
-    """Failed-reply notices: ``0.002 notices`` and ``-0.002 (-0.007 to +0.002)``; an exact zero ``0 notices``."""
+def test_failed_reply_notices_read_at_two_figures_of_their_interval_s_width() -> None:
+    """Failed-reply notices: ``0.0022 notices`` and ``-0.0022 (-0.0069 to +0.0025)``; an exact zero ``0 notices``."""
     lines = _lines()
-    assert _row("Failed-reply notices", "0.002 notices", "0 notices", "0 notices") in lines
-    assert any("| Failed-reply notices | -0.002 notices | -0.007 to +0.002 notices |" in line for line in lines)
+    assert _row("Failed-reply notices", "0.0022 notices", "0 notices", "0 notices") in lines
+    assert any("| Failed-reply notices | -0.0022 notices | -0.0069 to +0.0025 notices |" in line for line in lines)
 
 
 def test_every_heading_states_the_joint_guarantee_and_method_keeps_the_per_interval_level() -> None:
@@ -126,8 +135,8 @@ def test_adjusted_p_values_read_as_apa_writes_them() -> None:
 
 
 def test_a_corrected_comparison_s_interval_writes_its_unit_once() -> None:
-    """Corrected comparison interval: ``-13 to -2 pts``, never ``-12.9 pts to -1.8 pts``."""
-    assert any(line.startswith("| A · qwen3.8-flash | Pass rate | -8 pts | -13 to -2 pts |") for line in _lines())
+    """Corrected comparison interval: ``-12.9 to -1.8 pts``, never ``-12.9 pts to -1.8 pts``."""
+    assert any(line.startswith("| A · qwen3.8-flash | Pass rate | -7.6 pts | -12.9 to -1.8 pts |") for line in _lines())
 
 
 def test_only_the_family_level_key_prints_the_per_interval_level() -> None:

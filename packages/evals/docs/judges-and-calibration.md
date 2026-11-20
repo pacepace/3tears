@@ -31,19 +31,77 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
   every repeat gives its verdict. This reading sits beside the labels' and is never pooled into it: a few answers
   written to be hard are not a sample of the run's, and reach no tier's floor. The examples are also stored as cases
   a host's judge campaign calibrates on ([Seeding hard negatives](#seeding-hard-negatives)).
-- **`labels`** names a person's labels, a CSV. Every judged run's report writes `to_label.csv`: each judged answer on
-  each dimension, the judge's verdict withheld. A person fills in `label` and `rater` for about 20 rows of a
-  dimension, without looking at the judge's scores, and saves it as the file `labels=` names. The next run pairs
-  each label with the judge's score of the same answer (by a fingerprint of what was read and of the criterion's
-  wording, so a replayed run pairs, and a reworded dimension does not) and prints, per dimension, the pairs, κ with
-  its lower bound, and the [evidence tier](#step-7-evidence-tiers-and-how-many-ratings-they-take) it earns.
+- **`labels`** names a person's labels, a CSV, and the way to get them is a **blind read**. Every judged run's
+  report writes `blind_read.html`: one static page holding the run's judged answers in one seeded random order,
+  with the case each answers and the criteria as worded, and no arm, run, result or judge score. A person answers it
+  from the top, stops anywhere, and saves the labels as the file `labels=` names (`blind_read.csv` is the same
+  order as rows, for a spreadsheet). The next run pairs each label with the judge's score of the same answer (by a
+  fingerprint of what was read and of the criterion's wording, so a replayed run pairs, and a reworded dimension
+  does not) and prints how far the person read and, per dimension, the results paired with their cases as counts
+  (#1208): of the answers the person failed, how many the judge failed too (the catch rate), and of those they
+  passed, how many it failed (the false-fail rate), each with its exact (Clopper-Pearson) 95% interval. The print
+  states no κ, bar, tier word or count of results still needed.
+  - **Answered from the top, it is a random sample.** A prefix of a random order is a simple random sample, so
+    nobody picks a sample size first: 12 answered cases and 60 are both random. Answers out of order are not drawn
+    at random: they still count, and the line says so. A skipped case, and one answered in
+    part, are counted and said, since a rater skips by content.
+  - **Two results of one case raise the tier's error.** The tier is awarded on a bound that claims a judge exactly
+    at the bar earns it at most 5% of the time. That holds with one result a case. A read of pairs rates two results
+    of every case, and where the judge's errors on the two coincide the measured rate is about 7% (5.3% at 20 cases,
+    6.7% at 60, 7.0% at 120, pass/fail): see
+    [open problems](open-problems.md#two-results-of-one-case-count-as-two). Each line states its cases beside its
+    results for that reason, and where it holds more answers than cases it says the exact intervals count each
+    answer as independent, which answers on one case are not.
+  - **One result per case.** One answer is drawn per case among its repeats; with two arms an item is a pair in
+    slots A and B, assigned by a seeded coin in blocks of two, and the control is the first arm against the first
+    candidate.
+  - **Counts say what κ cannot.** A judge that passes everything agrees on most answers and catches none: the
+    catch rate shows it, where κ is 0 or undefined whenever one side gives every answer one verdict. The line says
+    so where a side did, and says where the person failed (or passed) nothing, so no rate exists.
+  - **With two arms, the person's preference is read once.** Each pair asks which output is better. The verdict
+    (the exact two-sided sign test over the non-tie cases, ties counted and never split, a blank preference
+    counted and said, fewer than 6 too few to test) is given when the first 30 cases, or all of them where there are
+    fewer, are answered, and over those cases only. Before that the line says how far the read is and nothing else: a sign test re-read after every
+    case and stopped when it separates is falsely separated about 18% of the time, and a running count tells the
+    reader which arm is ahead.
+  - **Blindness is discipline here, not enforcement.** The labeller holds the store and the report, where the
+    judge's scores are. The page shows none of them and nothing stops a person from looking.
+  - **Labels outlive the draw.** The page's labels and the sheet's carry a fingerprint of the output each was given
+    on. When the answers change (a case added, a reply rewritten) the order is drawn again, and every label whose
+    output is still among the answers is kept, paired with that output and read as not drawn at random; the line
+    says how many were kept, and how many were not read and why (the output is gone; a preference between a pair
+    no longer shown together). An older `to_label.csv` reads the same way: it listed answers arm by arm in store
+    order, so no prefix of it is a random sample.
+- **`reviewer`** names a model that answers the same blind read, one call per case with nothing of any other case
+  in it. Its answers are a model's, never a person's. The judge's agreement with it prints under
+  `checked against a model (<id>)`, with `not yet against people` until a person has answered the same outputs, and
+  then with the model's own agreement with that person beside it; no tier word is printed for it. Where a person's
+  reading is decided (met or not met at the tier's floor) it decides; until then the model's reading stands and the
+  person's is shown beside it. Agreement with a model shows the judge measures what that model measures, and bounds
+  nothing about a lean they share.
+  - **It is not the judge.** A reviewer whose id, or any model that served one of its answers, is the judge's asked
+    or served model is not read as a check: its answers repeat the judge. Where which model served the judge's
+    scores or the reviewer's answers was not recorded, the reviewer cannot be shown to be another model, so it is
+    not read as a check either, and the line says which side was unrecorded. One from the judge's provider is read,
+    with a line saying a lean the two share would not show.
+  - **Its calls are spend.** Each is admitted before it is made, held to the eval's `max_cost_usd` over everything
+    the eval has landed, and written to the out-of-run ledger under the purpose `reviewer`: the cost of checking
+    the judge, in no candidate's cost. The print states it on a `reviewer:` line.
+  - **A case it answered is not asked again.** Beside a file store its answers are kept
+    (`blind_reads/<read>.<model>.csv`, a labels file) and a later run over the same answers reads them back and
+    makes no call; a `Model(recording=...)` replays its calls like any other. With `store=":memory:"`, or a host's
+    own store, nothing is kept and every run pays for the whole read again: run against a file store to pay once. A reply that cannot be used leaves its
+    case not answered, counted and said, and the run completes.
+  - **A labels file may say a row is a model's** (`rater_kind` `reference`, the model's id in `rater`, the model
+    that served it in `served_model`). The file is taken at its word.
 - **`guard`** puts dimensions on the boundary axis with their margins: `guard={"safe": 0.02}`
   ([Step 3](#step-3-guardrails-are-not-capabilities)).
 
-Until labels exist, the printed result says `judge: 0 labels: judge uncalibrated` and the next step, a line no quiet
-print drops. The package provides the mechanism (the file to label, the pairing, κ, the tiers); collecting the labels
-is each app's own work, and no label is ever authored for you. The calibrated tier's floor is 20 person-rated
-results; about 50 is a realistic plan for a good judge.
+Until a person's labels exist, the printed result says `judge: 0 of N cases read blind: judge not checked` (`read
+blind by a person` once a model has read) and the next step, a line no quiet print drops. Each line names whose read
+it is: the `rater` the labels give, else `a person`. The package provides the mechanism (the page to read, the pairing, the counts); collecting the labels
+is each app's own work, and no label is ever authored for you. A catch rate over a few failures is wide: 0 of 2
+reads 0% to 84%, so a judge is checked on enough cases that the reader fails some.
 
 **The rest of this page is the judge in full,** on the engine's own terms. The snippets run top to bottom as one
 script, in one async context (`python -m asyncio`, or inside `async def main()`). A store call blocks, so a snippet makes it off the event loop with
@@ -75,6 +133,16 @@ excludes that cell from the dimension. It reads only the answer and what `case_m
 so give it what the candidate answered from. With no `case_material` it sees the case as JSON, and on a
 classifier run (a field grader) every field holding the expected label is left out, so it never grades against the
 answer key by accident. To grade against a reference answer, render the reference through `case_material`.
+
+A case on the engine path can carry its answer key as data: a reference key, the entities a good answer names. It
+holds a required core and the other entities that also count, each with the other names it goes by and checkable facts
+with their sources. The host writes it as `reference` on the case's `SeedTemplateCase`, or in a
+`template_cases/*.json` corpus file. It is part of the case: editing it makes a new case, which drift reads as stale
+and which never pools with the old one. Writing its entities in another order, or an alias twice, is the same key.
+Your kind renders it for each judge that grades against it with
+`reference_material` (provisional), appended to the case material. The text opens by telling the judge that an entity
+outside the key is unverified, not wrong, since a key rarely lists everything that counts. Never hand the key to the
+candidate. A code measure reads it from the case directly.
 
 ```python
 from threetears.evals.schema import RubricDim
@@ -211,13 +279,14 @@ records its config's id. The id is a fingerprint of the engine's wording only: a
 guide are its criterion, which a stored profile keys on separately, so editing them does not change it. Change a word
 of the built-in wording, as a release may, and every dimension judged with it is judged by a new judge. Its scores
 form their own agreement groups, tiers and drift readings, and no stored profile measured on the old wording is read
-for it (`is_builtin_judge_config_id` tells a built-in id from a config's).
+for it (a built-in id starts with `builtin:`, and a config's never does).
 
 **So is the reply format a configured judge is sent.** The engine appends one reply-format contract to every
 prompt, an operator's `prompt_template` included, so a configured judge reads its config and that suffix. A
 configured call records `<config id>@<sha12>`: the config's id and a fingerprint of the suffix's wording for the
 dimension's scale and artifact. A release that rewords the suffix makes every configured judge a new judge, as a
-new config version would, though no config changed. `judge_config_of` reads the config's id back from either form.
+new config version would, though no config changed. The config's id is the part of a recorded identity before the
+`@`.
 
 A result whose recorded judge identity is not today's (a release has reworded the built-in prompt or the suffix
 since it was judged) is not re-judged or repeated, because whether today's prompt is the judge that scored it cannot
@@ -670,6 +739,17 @@ the reason, if its run did not record its judging or its template was edited sin
 criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
 new case-set version lists only the new one. The action is `judge_cases_freeze`.
 
+An operator's write that adds a case to a judge template already holding cases (`judge_cases_freeze`, or
+`judge_case_author` below) writes the template's next revision, as a definitions reset does, and the case is a case
+of that revision. It carries every case of the revision it supersedes, each copy naming its source
+(`EvalTestCase.carried_from`), retired ones still retired. The receipt names the new revision (`template_id`,
+`revision`), the one it superseded, each carried case's copy (`carried`) and each case set still listing the
+superseded revision's cases (`stranded_case_sets`). Launch and write the next case into the new `template_id`: a
+write into a superseded revision is refused, naming the newest. Runs of two revisions never pool, so a judge's runs
+before the case and after it are never read as one battery. A template's first cases, and a write that adds
+nothing, write no revision. The new revision becomes the live one only once it holds every carried case: a store
+failure part-way leaves the superseded revision live and whole, and the same write again starts over. Your own code's `freeze_judge_cases` writes in place unless it passes `revise=True`.
+
 **Freeze from the labels alone, across a core reset.** `freeze_judge_cases(..., from_labels=True)` (and
 `from_labels: true` on the action, with no `judged_run_ids`) reads no run, result or trace. It groups the scope's
 person ratings by label key, one case per output and criterion, and builds each case from the content its labels
@@ -897,9 +977,10 @@ each batch a run of every arm in one campaign. After each batch the pass judges 
 answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
 separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
 cells a run holds in flight is one full wave. At k = N the side-by-side reading is the one-batch reading, number for
-number; the gated readings are too when every batch run stored a page. A batch run that stored no page judged nothing,
-so it is left out of the gated readings, its pairs read side by side (a missing page losing its pair, or tying it),
-and the run says so once.
+number, and so are the gated readings. A batch run that stored no page judged nothing, yet it sits in its arm's test
+setup: a judge dimension none of its results exercised reads at the level its arm's runs read. Its unwritten reports
+count as failures in Report finished, the judged readings find no score of it, its pairs read side by side (a missing
+page losing its pair, or tying it), and the run says so once.
 
 | At the stop | What the run does |
 |---|---|
@@ -911,10 +992,13 @@ The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and s
 
 **The spend cap is a budget the run runs under.** Before each batch the run checks that the batch's worst case (its
 reports at `budget_usd`, their judging and its pairs at the judge's floor) fits what each part has left after its spend
-so far, as its runs and passes recorded it. Each batch's runs run under that reservation. The engine checks a run's
-cap between cells, so cells running when it is crossed finish past it, and the last admitted batch can take an arm
-past its part by what those cells go on to spend, as an unbatched run can (#1111). A batch that came in under
-its reservation leaves the rest to the next. The first batch that does not fit is not launched: the
+so far, as its runs and passes recorded it. Once launched, each arm's run runs under all its part has left. The
+engine admits each case's judging, priced in full once its page is written, against what its run has left before
+paying for any of it: a case whose judging does not fit is set aside unjudged (a re-judge takes it up) and stops its
+run. So a case is set aside only when its arm cannot afford its judging, and an arm's judging stays within its part
+wherever the judge's price ceiling bounds what it is billed; its reports are never refused, so the arm's running
+cases can still take it past its part by what they write. What a batch
+did not spend is left to the next. The first batch that does not fit is not launched: the
 run stops at the spend cap, reads what it has, and its pass's record and line say so once, with the spend and the
 reservation (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a spend cap that cannot admit the first batch
 is refused, naming the smallest that would. At `--cap-usd 45` each arm's part is $18. A batch of 4 reserves
@@ -1027,6 +1111,58 @@ it is under them. Its pass criterion is code's: both arms ran every case, the re
 `regressed`, separated, its interval below 0, the order check stands, and bounces do not separate (a variant that moves
 bounces broke the format, so the run is void). Anything else fails, and nobody re-rolls.
 
+## Grading a named set against a reference key
+
+Some answers are a set: the cities a travel answer names, the sources a summary cites, the books a reading list
+recommends, the components a design mentions. Code grades the set against the case's reference key, and a judge is
+needed only to read the names out of prose. A `SetGrader` counts both directions
+at once:
+
+| Reading | Value | On which cells | Judges quality |
+|---|---|---|---|
+| recall | key entities named / key size | every graded cell | yes |
+| core recall | core entities named / core size | cells whose key has a core | yes |
+| verified share | named entities the key holds / named | cells that named at least one entity | no (a diagnostic) |
+| named | distinct picks | every graded cell | no (a diagnostic) |
+| unverified | named entities the key does not hold | every graded cell | no (a diagnostic) |
+
+**A pick counts once.** Every spelling the matcher finds as one key entity is one pick, so naming a city and then its
+alias (Lisbon, then Lisboa) is one pick, not two. Unmatched names that are equal after folding are one pick too.
+
+**Unverified is never wrong.** A key may be non-exhaustive, so a named entity outside it may be a good answer nobody
+listed. It is listed by name for a reader to check. It lowers the verified share, which is why that reading is a
+diagnostic with no better direction, never ranked on and never held to a bar, and why it is not called precision.
+Only recall and core recall judge quality, and an unlisted pick changes neither.
+
+**A cell with no value is outside that reading's n.** An empty answer carries recall 0 and no verified share; a
+perfect one carries recall 1 and verified share 1. The two are never averaged into one number.
+
+**One grader declares and grades.** A host builds one `SetGrader` per graded set, bound to its measure prefix, its
+matcher and, for prose, its extractor. It declares the five measures on the host's registry from that grader, and
+grades every cell with the same one. The measures' formula names the matcher's identity and the extractor's, and each
+grade records the identities it was graded with, so a set graded one way never pools with one graded another, and a
+cell can never be graded with one matcher while its measures name another.
+
+**Where the names come from.** A structured answer (a tool's picks, a list the candidate returned) names its entities
+itself: the kind builds `NamedEntity` values from it in code and grades them with `grade`. Prose goes through
+`grade_text` on a grader bound to an `EntityExtractor`: one model call with a strict reply schema that lists the
+entities of one kind, in order, and never sees the key. Each field asked for is a string or null, and a null is
+dropped, so the model never has to invent a value the text does not state. Its calls are billed to the cell's `judge`
+ledger. A reply cut short fails at once, and one that will not parse is asked twice more. Either failure raises
+`EntityExtractionFailed`, an `ApparatusError`: a fault of the measuring rig, never the candidate's. A kind grades
+inside `invoke`, and out of `invoke` the runner excludes the cell as `apparatus_failed` and never scores it as an
+empty set, so a host that does not catch it is safe by default. To keep spend on an excluded cell, a kind registers
+its reading through the cell sink's `report_progress` before it calls `grade_text`. A later registration replaces an
+earlier one, so that reading holds the candidate's usage as well as the extractor's ledger rows: otherwise an
+excluded cell loses the extractor's spend, or the candidate's. The extractor's identity names the
+model it was declared with, the apparatus, while the model that served each call is recorded per cell on its `judge`
+usage rows. Measures over an extracted set are in the `extracted_set` family, which is judge-graded and never ranked on;
+the host declares it on its measure registry.
+
+**Matching is the host's to replace.** The default matches a name or alias after folding case and Unicode
+compatibility forms (`É` is `é`, `ﬁ` is `fi`). It keeps accents (`é` is not `e`) and reads no word list, since both
+are rules of a language. A host binds its own normaliser to the grader as an `EntityMatcher`, which sees the whole key.
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the
@@ -1034,5 +1170,6 @@ bounces broke the format, so the run is void). Anything else fails, and nobody r
 - [Reading the guardrails](reading-reports.md#reading-the-guardrails): held, breached and undecided in a report.
 - [Principles](design.md#principles): code checks facts, a judge assesses judgment, people check the judge.
 - [Evaluating a tool-using agent](evaluating-agents.md): grading what an agent *did*, with no judge.
-- `examples/2-replies/replies.py`: a judged run on a judge of another family, recorded with no person's labels,
-  and how a person's labels calibrate it.
+- `examples/2-replies/replies.py`: a judged run on a judge of another family, checked against an adjudicated reference
+  (`labels.csv`: a person's blind read, adjudicated by that person where a model's blind read disagreed), with a
+  stronger judge checked against the same reference beside it.

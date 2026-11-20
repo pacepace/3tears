@@ -14,12 +14,9 @@ import pytest
 import re
 from html import escape
 
-from threetears.evals.analysis import (
-    build_campaign_report,
-    build_code_only_report,
-    campaign_report_html,
-    campaign_report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignReport,
@@ -59,9 +56,9 @@ _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing.
 #: what Accuracy was on each arm and what the interval allows.
 _CHANGE_LEAD = (
     "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
-    "18 for v2. Over 20 paired cases, the interval puts v2 between 17 and 92 points worse. Accuracy on tone: v2 "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 20 and 91 points worse. Accuracy on tone: v2 "
     "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
-    "paired cases, the interval puts v2 between 21 and 96 points better."
+    "paired cases, the interval puts v2 between 24 and 95 points better."
 )
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call

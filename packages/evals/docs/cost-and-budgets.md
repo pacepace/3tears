@@ -88,24 +88,75 @@ it ran under.
 **Both per-run ceilings are read between cells, against what has landed.** The cost cap and the metered-call ceiling
 (`max_metered_calls`) are checked before each cell starts, against the recorded cells only: their `cost_usd` for the
 cap, their metered calls for the ceiling, a resumed run's earlier holdings' cells included. Once either is reached no
-new cell starts, the cells already running finish whole, and the run ends `budget_stopped` once they are saved.
-**Neither ever refuses a call inside a cell.** A refusal inside a cell made the cell that happened to ask after the
-ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a cell is
-the unit of measurement, and it is measured whole or never begun.
+new cell starts, the cells already running finish, and the run ends `budget_stopped` once they are saved.
+**Neither ever refuses a candidate's call inside a cell.** A refusal there made the cell that happened to ask after
+the ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a
+candidate is measured whole or never begun.
 
-- **A run may land past a ceiling by up to the width's worth of cells, and that is the design.** The cells
-  running when the stop is decided are not asked and not refused anything, so the overshoot is what they add:
-  at most `width - 1` cells, plus the one whose landing reached the ceiling. A serial run (`measure_latency=True`)
-  has none. A run whose last cell reaches a ceiling stops nothing: no cell was kept from starting.
+**What a cap leaves out is not left out at random, in two ways.** Read both before comparing arms a cap stopped.
+
+- **The dearer arm loses more cases.** The cap is per run and each arm is its own run, so on one `max_cost_usd` the
+  arm that costs more per cell reaches it after fewer cells. Each run starts its cells in its own shuffled order, so
+  which cases it never started is chance, but how many is not, and two stopped arms lack different cases. A paired
+  contrast reads only the cases both arms ran, so it rests on fewer cases than either arm's count, and on the
+  unpaired test below two shared. A cell never started has no result: it is in no lost-trial count, so
+  `differential_exclusions` does not flag it and no floor or campaign reading bounds it. The run's stop line
+  (`cells_not_started`) is the only place it is counted.
+- **Setting judging aside lowers the pass rate of what is left.** A trial whose judging the cap set aside is lost
+  to the pass rate and pass^k (cause `cost_cap`) unless a check had already failed it: that trial stays failed, since
+  no judge could rescue it. The trials set aside therefore leave behind every failure a check decided and none of
+  the passes a judge would have confirmed, and the arm's pass rate over its usable trials reads below what all of
+  them would have given. A floor and a campaign reading give the lost trials their best and worst outcomes, so
+  they stay honest and read `undecided` more often; a bar, the frontier's pass^k and an aspect page's contrasts do
+  not. A re-judge (`result_regrade` with `apply`) removes the bias, since it scores the set-aside trials.
+
+Give every arm a cap its whole matrix fits (the launch estimate prices each arm), so that a cap is a guard that
+does not bind, never the thing that ends a comparison.
+
+- **Judging is admitted against the cost cap, before any of a cell's judge calls is paid for.** Judging is the
+  engine's own spend, and a cell running when the cap was crossed would otherwise judge on past it. A cell's judge
+  phase is priced whole, every call at its client's `price_ceiling`
+  times `JUDGE_CALL_ATTEMPTS`, and admitted when that fits what the run has spent (its recorded cells and its
+  running ones, a running cell's candidate counted from the rows it returned) beside what the phases already
+  admitted hold. A phase that does not fit waits while another holds, since that one's bills may come in under its
+  ceiling, and is set aside once none does. A phase is admitted whole, never call by call: a cell judged on some of
+  its dimensions is set aside all the same, and the calls it made would be spent for nothing. **So judging stays
+  within the cost cap wherever its price ceiling bounds what its calls are billed.** A ceiling can fall short of the
+  bill: a model whose rates are an estimate (`Model.ceiling_is_estimate`) may be billed otherwise, and the shipped
+  adapter prices a resent request as unbilled (below). A judge that cannot price a call is asked one call at a time, with no other
+  phase beside it, each call only while the run is within its cap, so it can pass the cap by that last call alone.
+  When the cap keeps such a phase's next dimension unasked after the judge had failed it on one, the cell is the
+  judge's fault (excluded as one, and a re-judge recovers it), not set aside, and the stop record does not count it.
+  A judged run also starts no new cell once what has landed, what its running cells have spent and the judging they
+  hold reach the cap, reaching it exactly included: such a cell would pay for its candidate and have its judging set
+  aside. A cell whose deadline strikes while its judging waits for the cap's room is set aside the same way, but stops
+  nothing: a phase waits only while another holds room it may not bill, so the cap's shortage was never established,
+  and the cells after it are asked of the cap as every cell is. It is not counted on the cap's record either (its
+  mark is its count: the summary's `n_not_judged`). So a hung judge call holding its room can see several cells pay
+  for their candidates and be set aside this way, within the cap.
+- **A cell whose judging was set aside is never scored low.** It asks the judge nothing; it is marked
+  (`EvalResult.judging_set_aside`) and left out of the judged readings (its dimensions, pass^k and the composite;
+  a trial a check had already failed stays failed, which biases what is left, as above)
+  under its own exclusion cause, `cost_cap` ("cost cap" in a report's loss table), while its measures, checks and cost
+  count as measured, a report it finished among them. Each of its dimensions carries a judge error that names the
+  cap, and a re-judge
+  (`regrade`, or the `result_regrade` action, with `apply`) takes it up from the evidence it stored, without buying its candidate again. A resume does not
+  run it again: its candidate is measured, so the cell is done. The first such cell stops the run as a crossing
+  does (no new cell starts), and the stop record counts the cells (`cells_not_judged`).
+- **A run may still land past the cost cap by what its running cells' candidates spend**, and past the
+  metered-call ceiling by the running cells' calls: at most `width - 1` cells, plus the one whose landing reached
+  the ceiling. A serial run (`measure_latency=True`) has none. A run whose last cell reaches a ceiling stops
+  nothing: no cell was kept from starting.
 - **A looping cell is bounded by the cell timeout, not by a ceiling.** Nothing inside a cell ends it on its
   spend; a candidate that loops until `cell_timeout_s` is excluded as `cell_timeout`, as before.
-- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
-  An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
+- **A candidate's or a simulated user's call nobody can price** (a client with no `price_ceiling`, or one answering
+  `None`) is made like any other; the engine's judge call is asked one at a time while the run is within its cap
+  (above). An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
   be priced, because the cap cannot be read against what it cannot count.
 - **A kind reports its spend as it lands** (`CellSink.add_spend`, or by wrapping its client in `CappedCompletion`),
   and returns it on its output, which is what the cap counts once the cell's result is recorded.
-- **The in-cell cap's names are gone.** `CellSink.reserve`, `CellSink.cost_cap_reached` and `CostCapReached` are
-  removed: count a call's cost with `add_spend` once it returns.
+- **The in-cell cap's names are gone** (`CellSink.reserve`, `CellSink.cost_cap_reached` and `CostCapReached`, all
+  removed): count a call's cost with `add_spend` once it returns.
   The shipped adapter's resend of a request a provider refused for a setting it carried is not another attempt:
   the refused request generated nothing and is taken to be unbilled (an assumption no provider documents), so its
   `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
@@ -114,8 +165,9 @@ the unit of measurement, and it is measured whole or never begun.
   (a host's own, or a cell timeout sized for a number of calls) allows `MAX_RESENDS` × the request timeout past the
   served request's own: up to `MAX_RESENDS + 1` timeouts per call. A host's own client built on `negotiate` is
   bounded the same way.
-- **A call whose ceiling is above the whole cap** is made, and the run stops `budget_stopped` before its next
-  cell having spent more than the cap on it. A launch still refuses such an arm before anything is spent (step 3
+- **A candidate's or a simulated user's call whose ceiling is above the whole cap** is made, and the run stops
+  `budget_stopped` before its next cell having spent more than the cap on it; a judge call above it is never sent,
+  and every cell's judging is set aside. A launch still refuses such an arm before anything is spent (step 3
   below), when its kind prices its calls before launch: a cap smaller than one call cannot bound the run. The
   judge kind's call is priced at the client's `price_ceiling` for the case's prompt times 2 (the judge's parse
   retry, `JUDGE_CALL_ATTEMPTS`), and the judge asks up to `JUDGE_MAX_TOKENS` (10,240) output tokens, so a
@@ -125,11 +177,18 @@ the unit of measurement, and it is measured whole or never begun.
 **What stopped the run is recorded as a typed record, from the counters.** `EvalRun.budget_stops` holds one
 `BudgetStop` per ceiling that stopped it: the `currency` (`cost_usd` or `metered_calls`), the `ceiling`,
 `landed_at_stop` (what had landed when the stop was decided), `landed_final` (once the running cells finished),
-`cells_in_flight` and `cells_not_started`. The overshoot is `landed_final - ceiling`, derived and never stored. When
-both ceilings are reached at the same boundary, both are recorded. The run's summary prints one line written from
-the records, never from prose, for example `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3
-running cells finished (+7); 12 cells not started`; money reads as `$`. A run the wall-clock budget stopped has no
-record, and its `budget_stop_reason` says so. A resume moves the records to the lifetime entry of the holding
+`cells_in_flight`, `cells_not_started` and, for the cost cap, `cells_not_judged`. The overshoot is
+`landed_final - ceiling`, derived and never stored; it is negative when the cap stopped the run by setting a cell's
+judging aside before the cap was reached. When both ceilings are reached at the same boundary, both are recorded. The
+run's summary prints one line written from the records, never from prose, for example `stopped by its metered-call
+ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started`, which ends `; 2 cells
+not judged, as the cap had too little left for their judging` when the cost cap set any aside; money reads as `$`. A run the wall-clock budget stopped has no
+record, and its `budget_stop_reason` says so. A run the account's refusal or the unserved-model circuit stopped first
+ends `exhausted`, but when the cost cap then set a running cell's judging aside it keeps the cap's record in
+`budget_stops` all the same, so the count of the cells left unjudged is not lost. That record is a count beside the
+stop, never the stop: no stop line is written from it. The run's error names what gave out and how many cells the cap
+left unjudged, its job status is that error, its summary's `stopped_because` is `None`, and its results line counts
+the cells not judged. So `budget_stops` no longer means a ceiling stopped the run; read `status`. A resume moves the records to the lifetime entry of the holding
 they stopped, so the run itself only ever describes its current holding.
 
 **The metered-call ceiling.** `max_metered_calls` bounds the third-party calls a run's tools may make, counted at
@@ -206,7 +265,8 @@ declaration, so it stays, and no between-cells stop is read from it.
 1. **Plan.** The engine asks the kind what each arm will run (`LaunchableKind.plan_arm` → `ArmPlan`: for
    an arm over stored cases, how many of the template's stored cases it plays, for a generating arm at
    most `n_variations`; the model; the judges it will be scored by, resolved with `plan_judge`; and its
-   simulator).
+   simulator). Then it asks the host's client factory whether each provider still serves the arm's candidate,
+   judge and simulator models (the served-model check, below), with or without a cap.
 2. **Price.** Under an enforced cap, it prices each arm with the host's `LaunchHost.launch_pricer`
    (`ArmQuote.case_source` says which). `threetears.evals.ops.history_launch_pricer` bounds it by the upper
    end of the band of runs launched the same way — template, model, cassette mode, the model each scored
@@ -227,10 +287,31 @@ declaration, so it stays, and no between-cells stop is read from it.
    changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
    count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
    analysis never pools two revisions.
-3. **Refuse.** First, it refuses an arm whose largest call is priced above its run's cap on its own
-   (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
-   all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, built as a cell builds it:
+   A template with no priced result of its own or of an earlier revision borrows from its siblings: other
+   templates in the scope of the same candidate kind (not revisions of its own), drawing only on their runs
+   launched as the arm will be (model, cassette mode, judges, simulator, apparatus and overlays) on the arm's
+   subject. A sibling whose judged dimensions with their judge pins, conversation shape, world seed, allowed tools
+   or kind spec differ is not drawn on, and is named: the price is per case, and a case's cost is not scaled across
+   such a change. The price's `method_id` is `borrowed-history`, where a template's own history reads
+   `usage-history`; its basis opens `borrowed from template '<name>' ('<id>'), <n> result(s): ...`,
+   and a capped launch admits against it as against any price. Its band holds only if the arm's cases cost as the
+   siblings' do, and the basis says so. It runs to the outer ends of a band over the siblings' observations and
+   one over each case's mean cost, never nearer its centre than 3% either side, so it is never narrower than a
+   direct estimate from the same results. It needs results over at least three cases. A borrowed figure budgets a
+   launch only; nothing pools it into a reading. An arm with neither its own nor a sibling's priced history reads
+   unpriced, and its basis says what each lacks, naming a sibling that differs in a launch condition, its subject
+   or its template.
+3. **Refuse.** First, whatever the cap, it refuses an arm naming a model its provider's list does not name
+   (`ArmPlan.served_checks`). Under a cap, it refuses an arm whose largest call cannot be priced
+   (`ArmPlan.call_unpriced`, an `UnpricedCall` naming the call and why): unknown is not $0, and that one call
+   could pass the cap. Then it refuses an arm whose largest call is priced above its run's cap on its own
+   (`ArmPlan.call_ceiling`): a candidate's or a simulated user's such call the run would make and stop
+   `budget_stopped` having spent more than the cap on it, and a judge call above the whole cap would set every
+   cell's judging aside after its candidate was paid for, whatever the arm is predicted to cost in all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
+   cells will call through, built as a cell builds it, each client's prices brought up to date first
+   (`refresh_prices`): a launch or a resume in a process that has read no price catalogue yet reads it here,
+   rather than finding every ceiling unknown. A call a client still cannot price after that (the catalogue could
+   not be read, or holds no row for the model) is the kind's `UnpricedCall`:
    - **The judge kind** prices each case's judge call exactly and keeps the largest. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
    - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
@@ -268,7 +349,32 @@ declaration, so it stays, and no between-cells stop is read from it.
    it refuses an arm predicted above its run's cap, or one
    nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
    An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest
-   call as `call_ceiling_usd`, and `call_ceiling_lower_bound` when that figure is a floor.
+   call as `call_ceiling_usd`, and `call_ceiling_lower_bound` when that figure is a floor. With no cap in force
+   there is nothing to check a ceiling against, so an arm whose largest call cannot be priced is admitted.
+
+**The served-model check.** A model a provider has retired answers every call with an error, and a run of it
+would judge each empty reply as the model doing badly. So admission asks the host's client factory, through its
+optional `model_listing(model, *, role)`, what the provider's own list of the models it serves says of each model
+an arm names: the candidate, every judge model and the simulator model. The candidate is asked in the role its kind
+calls it through (`LaunchableKind.candidate_role`: the judge kind's is `judge`). A candidate the host calls through
+its own route is asked with no role, and only the host's factory can say where it goes: the shipped `Clients` does
+not route it, so it answers nothing, and the check is reported skipped rather than read from a list of a provider the
+candidate may never be sent to. A host turns the check on in one line: `candidate_role="<factory role>"` on its kind's
+launch entry when the candidate goes through a factory client, or a factory `model_listing` that answers for
+`role=None` ([adopting a host](adopting-a-host.md#bringing-a-provider)); the skip notice names both. Until one of
+the two is in place, every launch of such a kind carries the notice, and its candidate is checked by nothing but
+the unserved-model circuit once it runs. The shipped `Clients` reads OpenRouter's model list, which is the price catalogue its
+models share, so one read serves this check and the pricing after it: rows younger than the catalogue's
+`refresh_after` are kept, older ones fetched again. A model that list does not name is refused, naming the model
+and the provider. So a model the provider retired within the last `refresh_after` (six hours by default) can pass the
+check; its run's cells then meet the provider's answer, and the unserved-model circuit stops the arm (three cells in a
+row, [adopting a host](adopting-a-host.md)), which is the backstop. A list that cannot be read, or whose refresh failed so it is not current, leaves the arm admitted,
+and the check skipped is said with the reason on the estimate (`ArmEstimate.served_check_skipped`, and its text),
+on the admitted launch (`AdmittedLaunch.notices`), and on the answer of `run_launch`, `sweep_launch`,
+`sweep_resume` and `job_resume` (`JobsStarted.notices`). A model
+whose provider the factory reads no list of (a direct Anthropic or OpenAI model, an OpenAI-compatible `base_url`)
+is not checked, and neither is any model of a factory without `model_listing`, such as a host's own adapter. A
+price from past runs never stands in for this check.
 
 Every arm is planned before any is priced, so `plan_arm` is where a kind makes its request-level refusals
 (no model and no default — `require_candidate_model`, the tail's own refusal — a judge or simulator it
@@ -290,7 +396,12 @@ Holm's correction asks of the family. Its variance comes from earlier runs of th
 noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
 shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
 cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
-assumptions, among them near-normal per-case differences and that only the one comparison differs. The block
+assumptions, among them near-normal per-case differences and that only the one comparison differs. **For a rate (a pass rate, a goal check, a pass or fail judgment) Δ is the least the launch could detect, not what it will.** The
+figure plans the paired t-test, and a rate is separated only where its bounded interval excludes zero too
+([why](measuring-soundly.md#a-floor-is-held-only-on-the-bounded-interval)); that interval needs more cases. At the
+stated Δ, 20 to 80 planned cases separated a pass rate 37–62% of the time in simulation, against the 80% stated, and
+the bounded interval reached 80% at one and a half to two times the cases. Each rate's line says so
+(`DetectableEffect.rate`); plan a rate with that margin until the estimate plans the bounded test itself. The block
 reads every earlier run's results, a page at a time, keeping of each result only its per-case values, so its memory
 holds a page of results and those values (a few of them per reading), never the results themselves. Its read time still grows with the history, so for a template whose earlier runs
 (archived ones left out) hold more than `PLANNING_READ_BUDGET` results by their matrices, or by their stored keys, it

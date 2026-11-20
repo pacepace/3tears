@@ -5,9 +5,9 @@ frozen, so neither tool it is handed writes: the ``evals_analyst`` tool on the a
 bound to its host and caller by the action that calls this (``actions/report_writing.py``'s ``write_report``). It
 reads the snapshot's report input, loads the skill and runs the writing loop
 (:func:`~threetears.evals.ops.report_writer.loop.write_rounds`), whose submissions are checked by the one checker
-(:func:`~threetears.evals.analysis.report_doc_store.doc_verdicts`). It stores what the loop's ending stores through the
-store gate (:func:`~threetears.evals.analysis.report_doc_store.store_report_doc`), which checks it again, and builds
-the stored page with its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`).
+(:func:`~threetears.evals.analysis.report.doc_page.store.doc_verdicts`). It stores what the loop's ending stores through the
+store gate (:func:`~threetears.evals.analysis.report.doc_page.store.store_report_doc`), which checks it again, and builds
+the stored page with its made line (:func:`~threetears.evals.analysis.report.doc_page.store.made_line`).
 
 **A paid run never loses its record.** The run's generation record in memory (the tally, the reviews, and every
 session held inline) is on the result whatever the ending, and on :class:`ReportNotStored` when the store gate or the
@@ -49,8 +49,8 @@ from typing import Any, Literal
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
-from threetears.evals.analysis.report_doc_checks import DocVerdict
-from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts, generation_record, made_line, store_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.offload import run_blocking
@@ -83,7 +83,7 @@ class ReportWritten:
         its name's ``session``, with no ``ref``), kept whatever the ending. A stored document's own ``generation``
         names each session by ref instead (``stored.generation``), and its sessions are stored beside it.
     :ivar page: The stored document's page as a reader reads it, built strict with its open findings in Method and
-        its made line (:func:`~threetears.evals.analysis.report_doc_store.made_line`), a draft's saying so first
+        its made line (:func:`~threetears.evals.analysis.report.doc_page.store.made_line`), a draft's saying so first
         (``stored.draft``); ``None`` when nothing is stored.
     :ivar gaps: Every gap and notice the write noted (the module docstring), whatever the ending, each naming the
         stored report or none.
@@ -119,11 +119,8 @@ class ReportNotStored(Exception):
         """Say why the report was not stored, and carry the run's record and the id it would have been stored under.
 
         :param message: What failed.
-        :ptype message: str
         :param written: The run's outcome and generation record.
-        :ptype written: ReportWritten
         :param report_doc_id: The id minted for the report.
-        :ptype report_doc_id: str
         """
         super().__init__(message)
         self.written = written
@@ -166,38 +163,23 @@ async def report_write(
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
     :param host: The host whose store holds the evidence, the snapshot and the report.
-    :ptype host: OpsHost
     :param scope_id: The scope the report is written in.
-    :ptype scope_id: str
     :param created_by: Who asks for the report, as the host names the caller.
-    :ptype created_by: str
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
-    :ptype model: TurnModel
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
-    :ptype budget: ReportBudget
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to the host and caller.
-    :ptype analyst_mount: ToolMount
     :param editor_mount: The tool on the editor's cut, bound the same way.
-    :ptype editor_mount: ToolMount
     :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
-    :ptype snapshot_id: str | None
     :param campaign_id: A campaign to freeze and write the report on.
-    :ptype campaign_id: str | None
     :param analysis_id: A stored analysis to freeze and write the report on.
-    :ptype analysis_id: str | None
     :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
-    :ptype withhold: Collection[str]
     :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
-    :ptype limits: WriterLimits | None
     :param tally: The tally every turn is counted in, when the caller keeps it (a job that must say what a run it
         stopped had spent); a fresh one when ``None``.
-    :ptype tally: Tally | None
     :param skill: The skill both sessions start from, when the write runs a version of it under test; the shipped
         skill (:func:`~threetears.evals.analysis.analyst.skill.load_skill`) when ``None``. Its digests are recorded on
         the generation either way.
-    :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
-    :rtype: ReportWritten
     :raises ValueError: Not exactly one of the sources named; ``withhold`` naming a note the skill has none of; a
         skill whose ``editor.md`` states no rubric its reviews can be read on; under a dollar budget, a model whose
         turns cannot be bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the

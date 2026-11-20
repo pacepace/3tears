@@ -1,0 +1,1 @@
+Some customers could not log in on Monday between 07:55 and 08:30 a.m. because the session store rejected new keys. Errors were limited to the EU region. The session store had reached its key limit, i.e. the eviction policy was set to never evict after last week's maintenance. Rui restored the eviction policy and errors stopped at 08:31. We added an alert on the key count.

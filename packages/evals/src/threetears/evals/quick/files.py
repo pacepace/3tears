@@ -26,10 +26,15 @@ level and inside a runner that imports at call time alike. The door is a command
 files in two directories that each hold a ``helper.py`` both get the first one loaded; give siblings distinct names.
 
 Each eval runs into its default store, prints its result quietly (``--verbose`` prints it whole), and writes its
-report to ``.evals/reports/<name>/``. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
+report to ``.evals/reports/<name>/``. A run that failed (a replay miss fails one) prints its failure first, naming
+what failed, and no verdict. The exit code is the worst of the evals': 0 done, 1 a run did not complete or no arm
+had an answer graded (its first line says why: the runner raised on every case, or every trial was lost),
 2 refused (the file, or what it declares), 3 an error nothing anticipated (its traceback printed), 4 a comparison's
-gate failed, with a line after its report's saying why (:meth:`RunResult.why_failed`), in the report's words. Anything else is
-the host command line (:func:`~threetears.evals.quick.cli.run_cli`), unchanged.
+gate failed, with a line after its report's saying why (:meth:`RunResult.why_failed`), in the report's words. A command
+(:data:`~threetears.evals.quick.cli.ENGINE_COMMANDS`) is the host command line
+(:func:`~threetears.evals.quick.cli.run_cli`), unchanged. ``--help`` prints the file door's usage before the host
+commands', and nothing at all prints it and exits 2: a newcomer's first command finds the door, not ``--host``. Any other
+first argument (a ``.txt``, a directory) is refused with exit 2, naming the two forms it could have been.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from threetears.evals.kernel.eval_file import loading_eval_file
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
+    ENGINE_COMMANDS,
     EXIT_FAILED,
     EXIT_OK,
     EXIT_REFUSED,
@@ -63,6 +69,17 @@ EVAL_FILES: tuple[str, ...] = (".py", ".toml")
 
 #: Where each eval's report is written, under the working directory, in a directory named after the eval.
 REPORTS_DIR = Path(".evals") / "reports"
+
+#: What the command line says first, asked for help or handed nothing: the file door, where a newcomer starts, and
+#: that the commands after it are a host's.
+_DOOR = (
+    f"usage: {DEFAULT_PROG} FILE.py [--verbose]\n"
+    "  runs every Eval a .py or .toml file defines and prints what it came to. Start here: rung 1 of docs/ladder.md\n"
+    f"  runs {DEFAULT_PROG} examples/1-triage/triage.py.\n"
+    f"usage: {DEFAULT_PROG} {{{','.join(ENGINE_COMMANDS)}}} --host MODULE:FACTORY ...\n"
+    "  reads and launches runs in a host's own store, which a first eval does not need\n"
+    "  (each command's --help says what it takes).\n"
+)
 
 
 class RunResult(Protocol):
@@ -80,7 +97,8 @@ class RunResult(Protocol):
         ...
 
     def exit_code(self) -> int:
-        """What the command line exits with for it: 0 done, 1 a run did not complete, 4 a gate failed."""
+        """What the command line exits with for it: 0 done, 1 a run did not complete or no arm had an answer graded
+        (its first line says which), 4 a gate failed."""
         ...
 
     def why_failed(self) -> str | None:
@@ -140,9 +158,7 @@ def load_evals(path: Path) -> list[Runnable]:
     import the modules beside it (see the module docstring).
 
     :param path: The ``.py`` or ``.toml`` file.
-    :ptype path: Path
     :return: The evals, not yet run.
-    :rtype: list[Runnable]
     :raises ValueError: A file that is not there, declares no eval, or that the eval refuses.
     """
     if not path.is_file():
@@ -174,14 +190,10 @@ def run_file(path: Path, *, verbose: bool = False, after: AfterRun | None = None
     An error nothing anticipated is printed whole to stderr with its traceback, and exits 3.
 
     :param path: The ``.py`` or ``.toml`` file.
-    :ptype path: Path
     :param verbose: Print each result whole rather than quietly.
-    :ptype verbose: bool
     :param after: What is done with each result once it is printed and its report written, whose exit code the
         file's is raised to; nothing when ``None``.
-    :ptype after: AfterRun | None
     :return: The worst exit code of the evals' (see the module docstring).
-    :rtype: int
     """
     try:
         return _run_file(path, verbose=verbose, after=after)
@@ -225,12 +237,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     """``python -m threetears.evals``: an eval file, or the host command line.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-    :ptype argv: Sequence[str] | None
     :return: The exit code.
-    :rtype: int
     """
     args = list(sys.argv[1:] if argv is None else argv)
-    if args and Path(args[0]).suffix in EVAL_FILES:
+    if not args:
+        sys.stderr.write(_DOOR)
+        return EXIT_REFUSED
+    if args[0] in ("-h", "--help"):
+        # The file door first: the host commands' help alone points a newcomer away from it.
+        _say(_DOOR)
+        return run_cli(args)
+    if Path(args[0]).suffix in EVAL_FILES:
         rest = args[1:]
         if unknown := [arg for arg in rest if arg != "--verbose"]:
             # The harness door takes the writer's flag; this door names it rather than leave the author guessing.
@@ -240,6 +257,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"{DEFAULT_PROG} FILE takes only --verbose; not {' '.join(unknown)}{elsewhere}\n")
             return EXIT_REFUSED
         return run_file(Path(args[0]), verbose="--verbose" in rest)
+    if args[0] not in ENGINE_COMMANDS and not args[0].startswith("-"):
+        # A path with another suffix, or a directory, would reach argparse as an unknown command.
+        sys.stderr.write(
+            f"{DEFAULT_PROG} {args[0]}: an eval file ends in .py or .toml ({DEFAULT_PROG} triage.py), and a command is "
+            f"one of {', '.join(ENGINE_COMMANDS)}; {args[0]} is neither\n"
+        )
+        return EXIT_REFUSED
     return run_cli(args)
 
 

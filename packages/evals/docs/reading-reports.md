@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Advice: keep v1. v2 is behind it. Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -261,11 +261,14 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   instead of the models.`, the arm, the cause, the fix; `The test setup failed or the provider declined every
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
-  `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
-  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
-  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
-  interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
-  else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
+  `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
+  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, proof pending.` on the question's own reading), its change
+  over the paired cases (`Over 30 paired cases, v2 is 1 point behind v1.`), what the interval allows it to be (`The
+  interval allows v2 to be as much as 14 points worse or 12 better.`, its level the table's header), how strong the
+  evidence is (`The evidence that v2 is worse is weak (1.2).`) and what the measure was on each arm, in its own verb
+  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed"); a
+  comparison no bet read says `the evidence cannot tell v2 and v1 apart` and its figures; then what else the
+  evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
   arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No
   invented total score guardrail.` No floor writes this line.
@@ -358,7 +361,16 @@ document's appendix lists its Checks after Method, each name defined by its expr
   failed and lost ones first. The Flag column reads `regression` only where a candidate passed a smaller share of
   its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
   `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
-  name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
+  name — one token, not a generated id, not a bare number — and `case N` otherwise, never a number read off its id. N
+  is where the case first stands in its runs' stored case lists (`EvalRun.test_case_ids`), chained in the order the
+  runs were launched, from 1. Where every run holds one list, that is its line in the list: an `Eval`'s first case,
+  the first line of its cases file, is `case 1`, as the console and `results()` call it, however many trials the page
+  holds, and a host's case is numbered by where its runs list it. Where the runs' lists differ (a case added or
+  dropped between runs, a run reordered, runs sharded), N is the order the campaign first launched its cases in: no
+  two cases share a number, but no one run's list need hold the case at that line (a second run over the next 38
+  cases numbers its first case 39), and the page says so under the Cases table. A page over evidence that holds no
+  case's place (one frozen with an analysis stored before places were carried) numbers its cases by their place among
+  the cases it lists, in the Trials table's order, and says so under the Cases table. Then the trials' census in one
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, each naming its stored result (`Stored result`, read with `result_get`) and carrying the
   trial's id, so a link to the trial lands on its row. The full record of each is opt-in, because the records are
@@ -387,7 +399,7 @@ document's appendix lists its Checks after Method, each name defined by its expr
 
 ### Style
 
-`threetears.evals.analysis.style` holds every rendered sentence to one set of rules, `lint_prose`: no meta-prose
+`threetears.evals.analysis.style` holds every rendered sentence to one set of rules: no meta-prose
 about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
 header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an
@@ -447,14 +459,102 @@ holds every verdict typed — each guardrail, each bar on each arm, each contras
 
 ## Reading a comparison
 
+### A small comparison on the quick path
+
+A comparison run by `Eval` reads fairly at any size, a handful of cases included. Its first screen answers two
+questions, each on its own line: what to do (the advice), then what is proven (the proof).
+
+**The advice comes first.** `Advice: switch to v2. At worst it is 25 points behind v1.` or `Advice: keep v1. v2 is
+ahead, but a switch needs evidence of 3 and this is weak (1.4).` It reads the first grader's reading, asked or not:
+
+- **Switch** once the evidence that v2 is better has reached moderate (3), while v2 is still ahead and the evidence
+  against it has not reached 3. On a question with a margin (`Eval(..., margin=0.05)`, is v2 no worse?), the
+  evidence is that v2 is no worse than the margin below v1, and "ahead" is within the margin: a v2 exactly as good as
+  v1 is meant to be advised switch there. Where the switch would be hard to undo, declare it before anything runs
+  (`Eval(..., undo="hard")`) and the bar is strong (10). With several arms the bar is that times their count, and the
+  advice names the advised arm with the best estimate.
+- **A decision leads.** Once the proof has decided, the advice follows it, for every arm: decided better reads
+  switch, decided worse reads keep, whatever the lead or the evidence has done since, so the advice never points
+  against the proof or the gate. With one arm this cannot make the advice say switch more often (a decision of better
+  needs the evidence for v2 at 11 or more, past either bar); with several, an arm Holm decides at a later step can be
+  switched on less evidence than the bar times the arms, and the certificate's `advice.decided-arms.*` claims hold the
+  promise with that counted, among them with one arm truly better, whose decision lowers the level Holm holds the rest
+  to.
+- **Keep** otherwise. A tie keeps the control: it costs nothing, and it is right whenever the candidate is not better.
+  The advice never says there is not enough to say.
+- **One caveat at most**, the one that matters: how far behind the control the candidate could be at worst (past the
+  margin, on a question with one), or, where it keeps, what the bar needs beside the evidence there is.
+- **The promise.** However often anyone looks, if the candidate is not really better (on a question with a margin: if
+  it is worse than the control by more than the margin), the advice says switch at most one time in three, or one time
+  in ten for a switch declared hard to undo. With several arms it holds for all of them together. It holds for every
+  distribution on the reading's range, read after every case or once (the certificate's `advice.no-better.*`,
+  `advice.margin.*` and `advice.arms.*` claims). Nothing bounds how
+  often it keeps a candidate that is better: on eight cases a moderate gain is often kept, and adding cases is what
+  changes that.
+- **`undo` is declared with the question, before the data, and never lowered after it.** A `"hard"` declared after
+  the results (`Result.against(..., undo="hard")`) is honoured: raising the bar can only make the advice say switch
+  less often. An `"easy"` declared after the results over an earlier `"hard"` is ignored, the `"hard"` kept, and the
+  print and the page say so: a bar lowered once the evidence was seen would be a second look. Where nothing was
+  declared before, `"easy"` is the default already, so nothing is lowered. A comparison continued with another `undo`
+  is a new comparison.
+- **An agent reads it typed.** `Result.contrasts()` rows carry `advice` (`switch` or `keep` on the first grader's
+  reading, None elsewhere) beside `outcome`, and a stored analysis carries it on the family's comparison (`advice`)
+  with the bar it read (`advice_bar`). `gate()` reads the proof, never the advice.
+- **An engine campaign gives no advice.** Its test is read once at a fixed count by a bet tuned to that count, which
+  keeps no running evidence an advice could keep its promise on; its first line says so and leads on the proof.
+
+**The proof comes second.** It leads on where the candidate stands on the question's reading, by how much, how far
+the interval lets it be either way, and how strong the evidence is, and it says "decided" only when the evidence
+clears the bar; until then the question's own reading says `proof pending` and what proving it needs
+(`The evidence that v2 is better is moderate (3.3); proving it needs evidence of 22.`):
+
+- **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
+  to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet
+  on each side), read on the capital now: with a question asked it is at 90%, each end a 95% bound on its own side;
+  with none, at 95% over the family. It holds the true difference at every count at once, and it always holds the
+  estimate. It is not the decision's bet: the decision leans one way, the interval does not.
+- **The evidence is graded, always.** It is the bet's current e-value for the side the arm leans to: weak below 3,
+  moderate from 3, strong from 10. Chance alone reaches 10 at most one time in ten, however often you read it. The
+  other side is named too where its evidence reaches 3, and evidence pointing the other way from the question says so
+  (`The evidence points the other way from the question: that v2 is worse is strong (132).`).
+- **A decision clears a bar, and says when.** The bet is staked nine tenths toward the side the question asks about
+  and a tenth the other way. A question whether v2 does better leans toward better: it decides "better" once the
+  evidence that v2 is better reaches about 22 (its capital at 20, α = 0.05), and "worse" only at about 200. A
+  question with a margin is a gate (is v2 no worse?) and leans toward worse: a regression decides at about 22. Once
+  decided, it stays decided, and the line says when: `v2 better than v1, decided at 6 cases when the evidence reached
+  24. Now, over 68 paired cases, v2 is 3 points ahead of v1.`, then the interval and the evidence as they stand now,
+  which may have fallen.
+- **One reading is decided.** The question's own reading, its first grader's, is tested alone at full α. Every
+  other reading is secondary: its change, interval and evidence are shown, and it decides nothing, so it costs the
+  question nothing, and it cannot fail a gate. A first grader the bet cannot read (a score with no declared range)
+  reads untested, saying why, and nothing else is decided in its place. A pass rate that is the one check's own
+  values is read once, not twice.
+- **A question set after the results leans no way.** A question, control or margin set once results exist
+  (`Result.against(control, question=...)`, a campaign adopting runs) reads the even hedge, and the print and the page
+  say the question came after the results: a lean picked after seeing which arm leads would be a second look.
+- **With no question asked**, nothing is declared: every reading on a merit axis is tested two-sided, corrected
+  together by Holm's method, each a lead.
+- **What a few cases can and cannot do.** Eight cases that all go v2's way decide (the evidence is 74), and from six
+  they can; a moderate effect needs a few dozen to decide. What the evidence is at eight cases is still worth reading.
+
+### The Contrasts table
+
 The Contrasts table (`multiple_comparisons` in the bundle) tests each arm against the control on each reading,
 under one rig. How its columns, and the `Statistics` fold under it, are computed:
 
 - **The test.** Per-case means (each case's repeats averaged first, because a case is the independent
-  draw). When the arms share at least two cases, it is a paired t-test over the shared cases. Otherwise it is
-  Welch's t statistic read on Hsu's `min(n_a, n_b) − 1` degrees of freedom. That is conservative at every
-  size: on Welch–Satterthwaite's degrees of freedom, a 2-case side against 10 called false differences 10%
-  of the time.
+  draw). A reading on the range 0 to 1 (a pass rate, a check's rate, a pass/fail judgment, a grade declared on 0
+  to 1) is read by the bounded test by betting, the same bet its interval is drawn by, which holds its error at every
+  number of cases (Ville's inequality; on pass/fail values checked exactly to twelve pairs, or ten cases a side
+  unpaired, and by seeded simulation from 10 to 100 pairs, or 6 to 96 a side): paired over the shared cases when the
+  arms share at least two, else at the cut between the two arms' bounds, the inversion of its interval. On pass/fail answers a t-test
+  does not hold it (on two fair coins over 40 cases it called a difference 5.28% of the time at 5%); the bounded
+  test needs more cases to show a small difference. Any other reading (a 1-5 judged scale, cost, latency, a count)
+  is read by a paired t-test over the shared cases, or otherwise Welch's t statistic read on Hsu's
+  `min(n_a, n_b) − 1` degrees of freedom. That is conservative at every size: on Welch–Satterthwaite's degrees of
+  freedom, a 2-case side against 10 called false differences 10% of the time. An eval whose every trial is graded
+  on one check holds that check once: its pass rate is the check case for case, so the table has no separate pass
+  rate row for it.
 - **The change, the means, and `Cases`** (`30 paired`) are all over the cases the test read. A case only one arm
   ran is left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
 - **The interval on the change** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
@@ -479,13 +579,15 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
+the measure's margin`, and, undecided, `v2 ahead of v1, undecided` (or `behind`, or `level with`; on a question's own
+reading, which its bet can still decide, `v2 ahead of v1, proof pending`) where the quick path's bet read it, else `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
 verdict line names the reading first (`Accuracy: v2 better than v1`).
 
 | Verdict | Means | Do |
 |---|---|---|
 | better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
+| ahead of, behind or level with, undecided (typed `not_separated`, the quick path's bet) | the change so far, with its interval and graded evidence; the evidence has not cleared the bar, or the reading is secondary and decides nothing (the row says so) | read the interval and the evidence; add cases and run it again, which keeps the error; never read it as a tie |
 | cannot tell apart (typed `not_separated`) | the cases could not tell the arms apart, which never means they are the same, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 
@@ -500,7 +602,7 @@ declared.
 
 Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`, the `outcome` key of
 `Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from
-(`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
+(`margin_source`: `"measure"`, `"run"` or, for a judged guardrail, `"campaign"`), its materiality, and whether it is a
 guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
 same values drive the CI gate ([`gate`](serving.md#gate)). The typed values are in the measure's own units; the
 rows `Result.contrasts()` and `Result.guardrails()` return are the page's figures on the page's ruler (a share in
@@ -521,17 +623,19 @@ of cases. Coarse scores need that: a regression that fails one case in ten leave
 of the time, and a t-test, or the exact sign-flip reading of a difference with no spread that the engine
 once used, called such samples equivalent up to three times in four. The price is that equivalence on a small margin
 takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
-within 0.25 from 12 shared cases and within 0.1 from 33, and a 1–5 score within 0.5 from 26, when it is the
-only reading the family tests (no valid test could do it in fewer than 11, 29 and 23). Each further reading
-in the family raises that: with a second (accuracy from a label's field grader, or a cost from `Answer`), a pass rate
-takes 15 and 41. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
+on the quick path within 0.25 from 15 shared cases and within 0.1 from 40, and a 1–5 score within 0.5 from 32, when
+it is the only reading the family tests (no valid test could do it in fewer than 11, 29 and 23; the quick path's bet,
+which may be read again as cases are added, pays for that in cases, and a campaign read once at a count fixed ahead
+needs a few fewer). With no question asked, each further reading in the family raises that: with a second (accuracy
+from a label's field grader, or a cost from `Answer`), a pass rate takes 18 and 48. With a question asked, only the
+question's own reading is tested, so a margin on any other reading shows its interval and reads no verdict. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
 answer in twelve departed from its case's usual one, a pass rate read `equivalent` within 0.25 in 18 of 20
 runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row reads `not_separated`, which
 claims nothing. A measure with a margin and no declared range
 is not tested for equivalence at all, since no test of a mean holds 5% without one: its rows never read
 `equivalent`, and the report names the measure once with the remedy, declare `value_range`. On the quick
-path a scorer annotated `-> bool` is on 0 to 1 already, and one returning a number takes its range beside its
-margin (`grader(rating, margin=0.5, range=(1, 5))`); a margin on it without one is refused
+path a scorer that declares no number (annotated `-> bool`, or not annotated) is a check on 0 to 1 already, and
+one annotated `-> float` or `-> int` takes its range beside its margin (`grader(rating, margin=0.5, range=(1, 5))`); a margin on it without one is refused
 when the eval is built. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
@@ -543,18 +647,21 @@ on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged di
 change in it in points. Each measure reads at one precision on every page of its campaign, the written page, the code
 page and each aspect page alike, so one value reads the same in a table, a chart, a tooltip, the prose and the CLI.
 
-- **The digits come from the measure's uncertainty**: the first significant digit of the narrowest 95% half-width
-  among the figures a reader compares (each arm's level and each comparison's change), or the second when that digit
-  is a 1 or a 2. A pooled figure, such as a code page's campaign-wide pass rate, prints at that form and never sets
-  it. A pass rate over a few hundred cases reads whole (`85%`, `-8 pts`); a check near the ceiling, whose interval
-  is narrow, reads a decimal (`99.7%`).
+- **The digits come from the measure's uncertainty**: two significant figures of the width of the narrowest 95%
+  interval among the figures a reader compares (each arm's level and each comparison's change). The precision is
+  set once per measure by that narrowest interval, and every figure of the measure reads at it, a change whose own
+  interval is wider too. A pooled figure, such as a code page's campaign-wide pass
+  rate, prints at that form and never sets it. A pass rate whose narrowest interval is 11 points or wider reads
+  whole (`21%`, `-7 pts`); one whose narrowest is 7 points reads a tenth (`85.3%`), as does a check near the ceiling
+  (`99.7%`).
 - **A rate, or a change in points, never goes past one decimal**, except where an end would round onto zero, 0% or
   100%: it takes just enough digits to stay off it, so `99.7%` never reads `100%`, and an interval that excludes zero
   never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even, 50%, the same way.
 - **An interval reads `low to high`**, its unit once (`-13 to -2 pts`), a change's ends signed.
 - **A heading states what a family's intervals hold at together**: a chart's `95% intervals (adjusted for 16
   comparisons)`, a column's `95% interval (adjusted for 16 comparisons)`, plain `95%` where nothing is adjusted.
-  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it.
+  Each interval's own level (99.69%) is in Method and the glossary, and the key `{family.level}` cites it. A
+  level printed as text reads its distance from 100% to two significant figures (`99.69%`, `98.3%` for 98.33%).
 - **Figures that are not measurements keep fixed forms**: a count whole (`765 of 897`), a declared margin as declared
   (`-15 pts`), a criterion's gap or the weakest margin as a bare distance (signed only by `|signed`), a p-value as
   APA writes it (`< 0.001`, `0.005`, `0.50`), an effect size or correlation to two decimals (`0.08`), an exact zero
@@ -652,7 +759,9 @@ that adopts the aspects it keeps.
 
 ## Excluded trials by cause
 
-A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
+A trial is left out of an arm's measures for one of five causes (`trial_exclusion`): `model_unserved`, the provider
+does not serve the model the call named; `cost_cap`, the run's cost cap had too little left to judge it, which leaves
+it out of the judged readings only ([below](#a-run-a-ceiling-stopped)); `infra`, the harness faulted
 it or the provider declined one of its calls (a 429 that is not a spent quota, or a 529 overloaded or 503
 unavailable, which says nothing about the model: it needs no fix, only a rerun once the provider can serve it, and the
 trial's error says which it was; but when an arm lost every trial this way and its run ended `failed` for it, the
@@ -679,6 +788,11 @@ other arm's share of the same cause under the same rig. Read it before any compa
 threshold the arms are not compared over the same trials, and the lost ones were lost for a reason that may differ
 by arm (a challenger whose long answers run its judge out of room, say). It is a flag, not a test.
 
+**Lost trials are bounded in a floor and a campaign reading only.** There each lost trial is given its best and its
+worst outcome, and a reading that depends on which is `undecided`. A bar, the frontier's pass^k and an aspect page's
+contrasts read the trials left, with no bound. A cell a budget stop never started has no result, so it is not a lost
+trial anywhere: not in `exclusions`, not in this flag, not in a bound.
+
 ## A run a ceiling stopped
 
 A run whose cost cap or metered-call ceiling was reached ends `budget_stopped`, and says so in one line written from
@@ -688,14 +802,26 @@ its stop records, never from prose:
 
 Read it left to right. *40 of 40 at the stop* is what the recorded cells had landed against the ceiling when the run
 decided to start no new cell. *47 once 3 running cells finished (+7)* is where it ended: those cells were running at
-the stop, were refused nothing, and finished whole, so the run lands past a ceiling by up to the width's worth of
-cells and that overshoot is the design. *12 cells not started* is the part of the matrix never measured. Money reads
-as `$` (`stopped by its cost cap: $10.20 of $10.00 at the stop, $12.35 once 1 running cell finished (+$2.35); ...`).
+the stop, their candidates were refused nothing, and they finished, so the run lands past a ceiling by what they
+added. *12 cells not started* is the part of the matrix never measured. Money reads as `$` (`stopped by its cost cap:
+$10.20 of $10.00 at the stop, $10.35 once 1 running cell finished (+$0.15); ...`). The cost cap also admits each
+cell's judging on its price ceiling before paying for it, so judging stays within the cap wherever that ceiling
+bounds the bill; a cell whose judging did not fit is
+set aside, and the line ends *2 cells not judged, as the cap had too little left for their judging*. Those cells are
+left out of the judged readings, never scored low, and counted in every other reading as what they did; a re-judge
+takes them up, and a report's lost-trial table counts them under *cost cap*. One exception makes what is left read
+low: a set-aside trial a check had already failed stays failed, so the usable trials keep those failures and none of
+the passes a judge would have confirmed. And a stopped arm lacks the cases it never started, more of them the dearer
+it is, so a contrast between two stopped arms pairs fewer cases than either ran
+([what a cap leaves out](cost-and-budgets.md#caps)). A cap that stopped a run this way can read
+under its ceiling: the stop came before the cap was reached.
 A run both ceilings stopped at one boundary reads both. The figures are `EvalRun.budget_stops`; a run stopped by its
 wall-clock budget has none and gives its reason instead.
 
-Every cell that ran is whole: a ceiling refuses no call inside a cell, so no cell's score was taken on a world it
-could not fully reach because of the budget, and two identical runs never differ in which cell was cut. The one
+Every cell that ran is whole: a ceiling refuses no call a candidate or a simulated user makes inside a cell, so no
+cell's score was taken on a world it could not fully reach because of the budget, and two identical runs never differ
+in which cell's candidate was cut. Only a cell's judging is admitted against the cost cap, and a cell it sets aside is
+counted under *cost cap*, never scored. The one
 refusal left is a host that declared no metered tools; a non-zero `metered_calls_refused` means that declaration is
 wrong, not that the run ran out.
 
@@ -706,11 +832,12 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 
 | Number | Method |
 |---|---|
-| Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale, or at zero for a time, a spend or a count (`nonnegative`). One case gives no interval. |
+| Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale, or at zero for a count (`nonnegative`). One case gives no interval. |
+| Interval on a mean spend or time (`nonnegative`, on the cost or latency axis or in dollars, `ms` or `s`) | The union of that t interval, clipped at zero, and a log-scale interval on the case means (the generalized interval on a lognormal mean, Krishnamoorthy & Mathew 2003), because such a measure is right-skewed and the t interval alone covered as little as 72% at ten cases. With cases at zero, the share of cases above zero (Clopper–Pearson) times the log-scale bounds on those, each at half the tail. Wider than the t interval: about 1.4 times at ten cases of moderate skew, several times on heavy skew. Checked on lognormal-like values only; where rare large cases dominate it covers as the t interval does. Under five cases above zero there is no interval, and the cell says so (`no interval: a spend or a time states one from 5 cases above zero, and this has fewer`). [Why](measuring-soundly.md#variance-k-and-how-many-cases). |
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed, its label matched, every check the host declares held, and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check, no label, no declared check and no judge has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
-| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
+| A contrast against the control | On the range 0 to 1, the bounded test by betting on per-case means, whatever the spread: the fixed-n plug-in bet the bounded interval is drawn by, its stakes tuned to α/m (paired over the shared cases, two or more; else at the cut between the two arms' bounds), so the p and the interval are one bet's and a row never reads not separated beside an interval that excludes zero. It holds α at every count by Ville's inequality; on pass/fail values every paired sequence of up to twelve pairs, and every unpaired pair of sequences of up to ten cases a side, is enumerated exactly, and from 10 to 100 pairs (6 to 96 a side unpaired) the rate is certified by seeded simulation, not computed exactly. Otherwise a paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. On a declared range the interval is the bounded test by betting (each end a one-sided 2.5% bound; paired on the differences, unpaired each arm's mean at 1.25% and the gap between them); with no declared range it is the comparison's t interval, which can read `breached` but never `held`. |
@@ -833,14 +960,20 @@ which chose a page from a fixed vocabulary of sections and charts. An analysis e
 reads as the code-only page, its first screen naming the retired writer and saying to regenerate with
 `analysis_generate`; `analyses_list` counts no findings for it and marks it to regenerate.
 
-Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
-sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence
-fingerprints alike across builds and machines (except, rarely, a value exactly on a rounding boundary); a fingerprint
-recorded before the rounding, with no prefix, was taken over a shape no build reads, so it never matches.
-Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
-fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
-`host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
-did). Renaming a lever, a measure or a level is none of these: a name is no part of a fingerprint.
+Every stored analysis carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v3:` and the
+sha256 of the evidence it was assembled from: the runs and results read, the declaration, the host's criteria (its
+pass threshold, registered bars and measure declarations), the cases, the ratings, the judge profiles consulted and
+the prior insights, as the bundle's `evidence` manifest digests them. The campaign's own fingerprint is `v4:`, over
+what it declares and each aspect's fingerprint. It hashes nothing
+the package computes, so the same evidence fingerprints alike on every build and machine, and a statistic computed a
+better way moves no fingerprint. A fingerprint stored before that is `v2:`, the sha256 of the bundle's own JSON with
+every float rounded to twelve significant figures; it is still compared the `v2:` way, so what holds one keeps
+matching and is not regenerated. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
+fingerprints in the stored one's version, and when they differ `mismatch_cause` names why: `host_declarations` (the
+host added, removed or renamed a declaration), `evidence` (the runs, results, declaration, ratings or insights
+moved), or, against a `v2:` fingerprint only, `package_shape` (the bundle schema moved). A newer fingerprint version
+is never a cause. Renaming a lever, a measure or a level is none of these, and neither is where a cost was priced: a
+name and a price source are no part of a fingerprint.
 
 **Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
 stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating
@@ -931,8 +1064,16 @@ answered by different models. Each candidate usage row records the model the res
 (`RoleUsage.served_model`), and the bundle reads it into `arm_served_models`: per arm, `one`, `pooled` (its
 numbers are a mixture) or `unrecorded`. Where one requested id was answered by more than one model across a
 comparison's runs, the comparison names a `served_model:candidate` confound (`undecided` where some response
-named no model). The arm still pools under its key, fixed at launch, so the mixture is disclosed, not split.
-The read lenses outside the bundle use the same reading (`ServedModelReading`): each frontier point and its
+named no model). The arm keeps its key, fixed at launch, and its cells do not pool the mixture: the arm's
+observations under one test setup stand in one cell per answering model, and those whose responses named no model
+in a cell apart from those that named one (`Cell.rig_class_id` names the setup they share). Each such cell is read
+against the control on its own, so no contrast averages two answering models, and `refused_merges` says why they
+stayed apart (`served_model:candidate`). An arm answered by one model throughout, or by none any response named,
+is one cell as before. Nothing is read for a split arm as a whole on that aspect: the campaign's readings give it no
+row, floor status or pair there (`CampaignReadings.answer_splits` names it), the campaign page reads the aspect as
+not compared and says the arm is read per model, and the report input gives it no figure. Its per-model contrasts
+are the aspect's own. The read lenses outside the bundle disclose the mixture and do not split it; they use the
+same reading (`ServedModelReading`): each frontier point and its
 verdict, each history series and each of its points, each pivot cell on a table grouped by `variant_key` or
 `model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
 `served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export
@@ -1067,7 +1208,9 @@ and two bootstraps over six marginals (`tests/test_simulated_agreement.py`). At 
 showed a judge exactly at the bar over it 3.0–3.2% of the time, against 12–34% for the others, which read their
 spread off the estimate and so make a sample that happens to agree look certain. The disagreement size used is
 the larger of the observed and the chance one, a miss is decided on the 97.5% upper bound because the upper
-bound runs looser, and raters of one result are treated as a cluster.
+bound runs looser, and raters of one result are treated as a cluster. Each result is its own cluster, so two results
+of one case whose judge errors coincide (a blind read of pairs) raise that rate: measured 5.3% at 20 cases and about
+7% at 60 to 120 ([open problems](open-problems.md#two-results-of-one-case-count-as-two)).
 
 **How many ratings a judge needs.** Seeded simulation, one rater per result, 1,500 replicates. The chance that a
 judge earns the tier, by distinct results:

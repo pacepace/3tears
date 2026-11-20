@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "unitprice.py"}
+{"tool": "read", "path": "data/shelf_audit.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom unitprice import unit_price\n\ndef shelf_label(case):\n    \"\"\"The unit-price label the printer prints for the line.\"\"\"\n    return {\"label\": unit_price(case[\"price\"], case[\"size\"]).label}\n\n\ndef as_audited(case, out):\n    \"\"\"The label is the one the shop manager signed off.\"\"\"\n    return out[\"label\"] == case[\"audited_label\"]\n\naudit = Eval(\"data/shelf_audit.jsonl\", runner=shelf_label, grader=[as_audited], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_audited\", \"pass_rate\": 0.725, \"finished\": true}"}

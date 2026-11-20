@@ -31,9 +31,11 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -349,6 +351,138 @@ class TestOneOutageContract:
 
         with pytest.raises(ValueError, match="kind"):
             storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures=undefined)
+
+    @pytest.mark.parametrize("path", ["store", "engine"])
+    def test_a_refused_grouping_asks_the_store_nothing(self, path: str) -> None:
+        """Refused before any read: the engine's path never reads every page to learn a grouping was refused."""
+        store = _stored(3)
+        storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
+
+        with pytest.raises(ValueError, match="kind"):
+            storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")})
+        with pytest.raises(TypeError, match="string"):
+            storage.result_groups(["run-1"], SCOPE, by="eval_run_id", measures={"n": ("count", None)})
+        assert store.calls == []
+
+
+class _GroupedBeforeNarrowing(CountingStore):
+    """A store whose ``grouped`` was written to the port before ``exclude_in_items``: it does not declare it."""
+
+    def grouped(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        assert "exclude_in_items" not in field_eq, "asked with a parameter it does not declare"
+        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+
+
+_REJUDGED = {
+    "rejudged_at": "2026-11-14T00:00:00+00:00",
+    "dims": ["d"],
+    "prior_judge_error": "cut off",
+    "judge_model": "judge",
+    "cost_usd": 0.5,
+    "cannot_tell": {"d": "the judge's prose"},
+}
+
+
+@pytest.mark.parametrize("kind", ["capable", "before_narrowing", "engine"])
+def test_values_are_narrowed_in_their_items_on_every_path(kind: str) -> None:
+    store = _GroupedBeforeNarrowing() if kind == "before_narrowing" else CountingStore()
+    EvalStorage(store).save_eval_result(make_eval_result(id="r-00000", eval_run_id="run-1"))
+    store.merge_fields("r-00000", SCOPE, {"judge_rescores": [_REJUDGED]})
+    storage = EvalStorage(EngineOnlyStore(store) if kind == "engine" else store)
+
+    (group,) = storage.result_groups(
+        ["run-1"],
+        SCOPE,
+        by=["eval_run_id"],
+        measures={"rescores": ("values", "judge_rescores"), "n": ("count", None)},
+        exclude_in_items={"judge_rescores": ["cannot_tell"]},
+    ).groups
+
+    without = {key: value for key, value in _REJUDGED.items() if key != "cannot_tell"}
+    assert group == {"eval_run_id": "run-1", "rescores": [["r-00000", [without]]], "n": 1}
+
+
+class _RowsWatchingStore(CountingStore):
+    """A counting store whose narrowed read says when its rows were closed; it keeps the rows it handed out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: Iterator[dict[str, Any]] | None = None
+        self.closed = False
+
+    def iter_narrowed(self, doc_type: str, scope_id: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        inner = super().iter_narrowed(doc_type, scope_id, **kwargs)
+
+        def rows() -> Iterator[dict[str, Any]]:
+            try:
+                yield from inner
+            finally:
+                self.closed = True
+
+        self.rows = rows()
+        return self.rows
+
+
+def test_a_read_of_readings_left_part_way_closes_the_store_s_rows_when_its_block_ends() -> None:
+    store = _RowsWatchingStore()
+    storage = EvalStorage(store)
+    for index in range(3 * READINGS_PAGE):
+        storage.save_eval_result(make_eval_result(id=f"r-{index:05d}", eval_run_id="run-1"))
+
+    with storage.iter_result_readings(["run-1"], SCOPE) as read:
+        walk = iter(read)
+        assert next(walk).eval_run_id == "run-1"
+        assert not store.closed
+
+    # The walk and the store's rows are both still referenced here, so nothing but the block closed them.
+    assert store.rows is not None and store.closed
+    assert list(walk) == []
+    with pytest.raises(RuntimeError, match="walked once"):
+        list(read)
+
+
+class _PageWatchingStore(CountingStore):
+    """A counting store that records, at each ``get_many``, how many rows it handed out are still alive."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.handed: list[weakref.ref[Any]] = []
+        self.alive_at_each_page: list[int] = []
+
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        gc.collect()
+        self.alive_at_each_page.append(sum(ref() is not None for ref in self.handed))
+        rows = [_Row(row) for row in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
+        self.handed += [weakref.ref(row) for row in rows]
+        return rows
+
+
+class _Row(dict[str, Any]):
+    """A stored row a weak reference can watch."""
+
+
+def test_the_engine_s_grouping_holds_one_page_of_rows_at_a_time() -> None:
+    store = _PageWatchingStore()
+    storage = EvalStorage(store)
+    for index in range(2 * READINGS_PAGE + 1):
+        storage.save_eval_result(make_eval_result(id=f"r-{index:05d}", eval_run_id="run-1"))
+
+    grouped = EvalStorage(EngineOnlyStore(store)).result_groups(
+        ["run-1"], SCOPE, by=["eval_run_id"], measures={"n": ("count", None), "cost": ("values", "cost_usd")}
+    )
+
+    assert [(group["n"], len(group["cost"])) for group in grouped.groups] == [(2 * READINGS_PAGE + 1,) * 2]
+    assert (grouped.path, grouped.store_calls) == ("engine", 4)
+    assert store.alive_at_each_page == [0, 0, 0], "a page's rows were still held when the next page was read"
 
 
 class _StrayRows(CountingStore):

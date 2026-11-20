@@ -29,8 +29,8 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_
 from threetears.evals.analysis.analyst.analyses import Sensitivity, sensitivity
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import decision_at
-from threetears.evals.analysis.report_gates import gate_check, gate_findings, routing_picks
+from threetears.evals.analysis.report.call import decision_at
+from threetears.evals.analysis.report.gates import gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import ReportInput
 
 #: Every flip a test reads asks for this many.

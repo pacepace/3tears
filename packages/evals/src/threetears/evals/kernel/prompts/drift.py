@@ -52,9 +52,7 @@ def seed_digest(seed: SeedTemplate | str) -> str:
 
     :param seed: A text seed's string, or a sectioned template — a shipped constant, or a stored copy rebuilt with
         :meth:`SeedTemplate.from_dict`.
-    :ptype seed: SeedTemplate | str
     :return: The full sha256 hex digest; equal for equal content whatever the template's revision number.
-    :rtype: str
     """
     if isinstance(seed, str):
         return canonical_digest({"text": seed})
@@ -123,24 +121,17 @@ def prompt_drift(
     """Read a stored copy of a catalogue prompt against the package's shipped default.
 
     :param entry: The catalogue entry the slot was seeded from.
-    :ptype entry: SeedPrompt
     :param shipped: The package's default, resolved from ``entry.seed_ref`` by import.
-    :ptype shipped: SeedTemplate | str
     :param stored: The copy the host's registry holds now, in the entry's kind: a string for a text seed, a
         :class:`SeedTemplate` (rebuilt from its payload) for a template seed.
-    :ptype stored: SeedTemplate | str
     :param seeded_digest: :func:`seed_digest` of what the host seeded the slot with, as it recorded it then; ``None``
         when it recorded nothing.
-    :ptype seeded_digest: str | None
     :param reset: How an operator of this host resets the slot to the shipped default — an action or a command,
         such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's, so the
         engine cannot name it; the remedy does.
-    :ptype reset: str
     :param customized: Whether the host holds the stored copy as deliberately its own — then it is never stale.
-    :ptype customized: bool
     :return: The reading, with the output contract the stored copy was written for read against the one the shipped
         default states.
-    :rtype: PromptDrift
     :raises TypeError: ``shipped`` or ``stored`` is not of the entry's kind.
     :raises ValueError: ``shipped`` declares more than one output contract, or ``reset`` is blank.
     """

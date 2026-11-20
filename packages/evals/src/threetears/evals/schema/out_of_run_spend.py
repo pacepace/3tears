@@ -39,8 +39,10 @@ _SHARE_REL_TOL: Final = 1e-9
 #: (:func:`~threetears.evals.run.judge_repeat_work`), or at two temperatures to measure what temperature does to it
 #: (:func:`~threetears.evals.run.judge_temperature_work`), ``second_judge`` asks a judge other than the run's to score
 #: a finished run's evidence (:func:`~threetears.evals.run.second_judge_work`) — measurement cost on its own line, never
-#: the candidate's. Each but ``second_judge`` is the :data:`~threetears.evals.kernel.host.CompletionRole` the host
-#: built the client in; a second judge's client is built in the ``judge`` role.
+#: the candidate's, ``reviewer`` has a model answer a blind read's sheet, one call per item
+#: (:meth:`~threetears.evals.quick.contract.Result.reviewed_by`): what it cost to check the judge against that model,
+#: never a candidate's cost and never the judge's. Each but ``second_judge`` and ``reviewer`` is the :data:`~threetears.evals.kernel.host.CompletionRole` the host
+#: built the client in; a second judge's client is built in the ``judge`` role, and a reviewer's is the caller's own.
 #:
 #: An open vocabulary, its values this build knows registered in :data:`OUT_OF_RUN_PURPOSES`: a value a newer minor
 #: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
@@ -50,7 +52,7 @@ OutOfRunPurpose = str
 #: A value of :data:`OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a
 #: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
 #: the open :data:`OutOfRunPurpose` instead.
-KnownOutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge"]
+KnownOutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge", "reviewer"]
 
 #: The values of :data:`OutOfRunPurpose` this build knows, in the order its readers list them.
 OUT_OF_RUN_PURPOSES: Final[tuple[str, ...]] = get_args(KnownOutOfRunPurpose)

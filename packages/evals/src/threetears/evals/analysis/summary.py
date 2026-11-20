@@ -5,7 +5,7 @@ What an eval's result carries for each arm (:class:`~threetears.evals.quick.resu
 says the same thing as one made the moment it ended.
 
 Every count is over the run's stored results, and each result is classified once by
-:func:`~threetears.evals.kernel.classify_result`: scored normally, failed by the candidate, or
+:func:`~threetears.evals.kernel.result_condition.classify_result`: scored normally, failed by the candidate, or
 excluded as a fault of the rig. A measure's mean is over the results that carry it, and its ``n``
 says how many did, so a mean over two results of five is never mistaken for one over five.
 
@@ -16,7 +16,7 @@ confusion matrix and each label's precision, recall and F1, counted by
 :func:`~threetears.evals.analysis.confusion.label_statistics` as the analysis bundle counts them.
 
 **A cost or latency measure is read over the turns the candidate took**
-(:func:`~threetears.evals.kernel.delivered_a_turn`), as every analysis surface reads it
+(:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), as every analysis surface reads it
 (:func:`~threetears.evals.kernel.metrics.summary_population`): a call the model refused or errored on
 carries a round trip and an empty spend, and averaged in they read as a fast, free run. What was left out
 is counted beside the mean — the failures that took no turn apart from the results excluded as a fault of
@@ -37,7 +37,7 @@ other two and hid it, and a judge campaign — every trial bills the ``judge`` r
 whose results reported nothing carries none of it.
 
 **So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
-it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
+it (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`): passed as it evaluated, failed on every
 check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
 
 **So is each kind of case.** When any case of the run declares a stratum (``EvalTestCase.stratum``), every
@@ -66,6 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, compu
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, InterJudgeTally
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
+from threetears.evals.analysis.run_ending import RunEnding
 from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.analysis.reporting import (
     ModelIdentityTally,
@@ -80,15 +81,10 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
 from threetears.evals.analysis.quantities import display_scale
-from threetears.evals.kernel import (
-    NotFoundError,
-    CONFUSION_CELL_MEASURE,
-    MATCH_MEASURE,
-    ResultOutcome,
-    classify_result,
-    counted_goal_verdicts,
-    delivered_a_turn,
-)
+from threetears.evals.kernel import NotFoundError, CONFUSION_CELL_MEASURE, MATCH_MEASURE, ResultOutcome
+from threetears.evals.kernel.result_condition import classify_result
+from threetears.evals.kernel.result_condition import counted_goal_verdicts
+from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.schema import (
     COST_CAP_ORIGINS,
     USAGE_ROLES,
@@ -118,7 +114,9 @@ from threetears.evals.kernel.scoring import FailedCheck, capability_scores, fail
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.report.words import judged_heading, stratum_name, stratum_names
-from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
+from threetears.evals.analysis.report.aspect.common import NO_STRATUM
+from threetears.evals.analysis.report.aspect.method import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE
+from threetears.evals.analysis.report.aspect.readings import TOO_FEW_CASES
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
@@ -147,10 +145,8 @@ def dollars_text(amount: float | None) -> str:
     amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
 
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
-    :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
         ``$1.20``), two significant figures below (``$0.012``, ``$0.00016``); :data:`UNPRICED` for ``None``.
-    :rtype: str
     """
     if amount is None:
         return UNPRICED
@@ -169,14 +165,14 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
     Every figure is read off the records, which were taken from the counters, so no number on the line is
     parsed from or rounded through prose. Money reads as ``$`` (:func:`dollars_text`) and the metered calls as
     counts, through the one number rule (:func:`~threetears.evals.kernel.numbers.format_number`). A run both ceilings stopped at one boundary reads both, in the order given, and says the
-    cells that never started once, since a boundary has one. For example::
+    cells that never started once, since a boundary has one, and then the cells that ran but were not judged, when
+    the cost cap set any aside. For example::
 
         stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3 running cells finished (+7); 12 cells not started
+        stopped by its cost cap: $1.80 of $2.67 at the stop, $2.10 once 3 running cells finished (-$0.57); 0 cells not started; 2 cells not judged, as the cap had too little left for their judging
 
     :param stops: The run's ``budget_stops``, at least one.
-    :ptype stops: Sequence[BudgetStop]
     :return: One sentence, without indentation.
-    :rtype: str
     :raises ValueError: ``stops`` is empty.
     """
     if not stops:
@@ -210,7 +206,11 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
         segment = f"{unpriced}{show(stop.landed_at_stop)} of {show(stop.ceiling)} at the stop, {settled}"
         segments.append(f"stopped by {what}: {segment}" if position == 0 else f"by {what}: {segment}")
     not_started = max(stop.cells_not_started for stop in stops)
-    return f"{'; '.join(segments)}; {_plural(not_started, 'cell')} not started"
+    line = f"{'; '.join(segments)}; {_plural(not_started, 'cell')} not started"
+    not_judged = sum(stop.cells_not_judged for stop in stops)
+    if not_judged:
+        line += f"; {_plural(not_judged, 'cell')} not judged, as the cap had too little left for their judging"
+    return line
 
 
 #: How one measure came out over a run, as the summary states it: ``measured`` (a mean), ``not_a_number`` (it is
@@ -319,7 +319,6 @@ class GoalCheckSummary(BaseModel):
         """The check as :meth:`EvalSummary.render` prints it: its pass count, and, unless proven, why it is not one.
 
         :return: One line, without indentation.
-        :rtype: str
         """
         if self.refused is not None:
             return (
@@ -377,9 +376,26 @@ class DimensionSummary(BaseModel):
     second_judges: list[InterJudgeDimension] = []
 
 
-#: How one result came out, as :func:`~threetears.evals.kernel.classify_result` classifies it: graded normally,
-#: failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
-CaseOutcome = Literal["scored", "failed", "excluded"]
+#: How one result came out, as :func:`~threetears.evals.kernel.result_condition.classify_result` classifies it: graded normally,
+#: failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing);
+#: or, of a result graded normally, ``not_judged``: the run's cost cap had too little left for its judging, so its
+#: measures and checks count and its judged readings leave it out (``EvalResult.judging_set_aside``).
+CaseOutcome = Literal["scored", "not_judged", "failed", "excluded"]
+
+#: Each case outcome as a case line prints it.
+_OUTCOME_WORDS: dict[CaseOutcome, str] = {
+    "scored": "scored",
+    "not_judged": "not judged",
+    "failed": "failed",
+    "excluded": "excluded",
+}
+
+#: What a case the cost cap set aside unjudged says about itself, where a case that failed or was excluded gives its
+#: error: why nothing scored it, and what judges it.
+NOT_JUDGED_LINE = (
+    "not judged: the run's cost cap had too little left for its judging; re-judge it (regrade with apply), or launch "
+    "again with a higher cap"
+)
 
 _CASE_OUTCOMES: dict[ResultOutcome, CaseOutcome] = {
     ResultOutcome.OK: "scored",
@@ -421,9 +437,11 @@ def _judged_missed(grade: JudgeGrade, threshold: int) -> str:
     """One judged dimension under the bar, as a miss reads it: a pass/fail one failed, a 1–5 one scored under the
     level the pass rule asks, each with the judge's reason on one line."""
     reason = " ".join(grade.reasoning.split())
+    # Named as every surface names a judged dimension (``answer grounded (judged)``), never by its stored id.
+    named = judged_heading(grade.dimension)
     if grade.scale == "pass_fail":
-        return f"the judge failed it on {grade.dimension}: {reason}"
-    return f"the judge scored {grade.dimension} {grade.score} of 5, under the bar of {threshold}: {reason}"
+        return f"the judge failed it on {named}: {reason}"
+    return f"the judge scored {named} {grade.score} of 5, under the bar of {threshold}: {reason}"
 
 
 class CaseResult(BaseModel):
@@ -432,8 +450,9 @@ class CaseResult(BaseModel):
     What :meth:`EvalSummary.results` and :meth:`EvalSummary.misses` return, one per result, so a run's answers
     can be read after it ends without the store it ran in.
 
-    :ivar case: The case's name: its own ``id`` when the case carries one, else its position in the list given
-        (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
+    :ivar case: The case's name: its own ``id`` when the case carries one, else its place in the list given, from 1
+        (``"1"`` is the first, the first line of a cases file), the number the report page calls it by. The summary's
+        :attr:`EvalSummary.errors` name cases the same way.
     :ivar case_id: The stored test case's id, which the page's Trials table orders its trials by.
     :ivar input: The case, as given.
     :ivar expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
@@ -449,7 +468,8 @@ class CaseResult(BaseModel):
     :ivar judged: Each rubric dimension the judge scored, with its reason; empty for an unjudged run.
     :ivar judge_cannot_tell: Each dimension the judge said it could not score, with its reason. Not a failure.
     :ivar goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
-    :ivar errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
+    :ivar errors: Why the result failed or was excluded, as the run recorded it, or why the cost cap left it unjudged
+        (:data:`NOT_JUDGED_LINE`); empty for a scored result.
     :ivar missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
         trial its pass rule failed (``state`` is ``failed``), and the reasons are what failed it: the candidate's own
         failure alone where it failed, else each check it failed as pass^k and the page read them
@@ -507,30 +527,25 @@ class CaseResult(BaseModel):
         """One stored result, read as a case result.
 
         :param result: The stored result.
-        :ptype result: EvalResult
         :param case: The case's name.
-        :ptype case: str
         :param given: The case, as given.
-        :ptype given: JsonValue
         :param expected: A classifier's expected label, or ``None``.
-        :ptype expected: str | None
         :param answer: The candidate's answer, as its kind stored it.
-        :ptype answer: JsonValue
         :param stratum: The stratum the case declares, or ``None``.
-        :ptype stratum: str | None
         :param catalog: Each measure the result carries, described as the host declares it, which says which are checks;
             the state and the misses are read through it exactly as the page reads its trials.
-        :ptype catalog: Mapping[str, MetricDescriptor] | None
         :param rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
-        :ptype rubric_threshold: int
         :return: The case result, its state and its miss reasons by the page's own reading of a trial
             (:attr:`missed_because`).
-        :rtype: CaseResult
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
+        if outcome == "scored" and result.judging_set_aside:
+            outcome = "not_judged"
         errors = (
             []
             if outcome == "scored"
+            else [NOT_JUDGED_LINE]
+            if outcome == "not_judged"
             else [
                 error
                 for error in (
@@ -581,12 +596,14 @@ class CaseResult(BaseModel):
         """The result as a few lines of text: the case, the answer, the grades, and why it missed or failed.
 
         :return: The text, without a trailing newline.
-        :rtype: str
         """
         # The stratum by the name every surface prints for it, among its summary's strata where a summary handed it
         # out; :attr:`stratum` keeps its id.
         kind = "" if self.stratum is None else f"{self._stratum_printed or stratum_name(self.stratum)}, "
-        head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
+        head = (
+            f"case {self.case} ({kind}repeat {self.repeat}, {_OUTCOME_WORDS[self.outcome]}): "
+            f"answered {_shown_value(self.answer)}"
+        )
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
@@ -644,6 +661,10 @@ EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate th
 #: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
 EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
 
+#: What a role whose calls all went unanswered spent (RoleSpend.answers_nothing): nothing, over no answered call, so it
+#: neither prices nor unprices its line and the run's total (owner, 2026-10-27).
+_NO_ANSWERED_CALL = "no spend, over no answered call"
+
 #: Why a call of a role this build does not know carries no dollars: a newer build recorded the role, and only it
 #: knows how the role is priced.
 UNKNOWN_ROLE_UNPRICED = "the build that recorded this role knows how it is priced, and this one does not"
@@ -675,6 +696,9 @@ class RoleSpend(BaseModel):
     :ivar counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
         the ``external`` role is only in a run that declared external rates.
     :ivar units: The ``external`` role's own metering, per provider and unit; empty for every other role.
+    :ivar answers_nothing: Whether every usage row of the role held only unanswered calls
+        (``RoleUsage.answers_nothing``), read off the rows, never off the sums: it spent nothing, over no answered
+        call, so its line says so, and the run's total and spend-cap lines read it as no spend reported.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -686,6 +710,7 @@ class RoleSpend(BaseModel):
     uncounted_rows: int = 0
     counted: bool = True
     units: list[ProviderUnits] = []
+    answers_nothing: bool = False
 
     @property
     def known(self) -> bool:
@@ -694,8 +719,9 @@ class RoleSpend(BaseModel):
 
     @property
     def unpriced_because(self) -> str | None:
-        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
-        if not self.unpriced_calls and self.cost_usd is not None:
+        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced, and when
+        it answered no call (:attr:`answers_nothing`), which left nothing to price."""
+        if self.answers_nothing or (not self.unpriced_calls and self.cost_usd is not None):
             return None
         if not self.known:
             return UNKNOWN_ROLE_UNPRICED
@@ -711,7 +737,10 @@ class RoleSpend(BaseModel):
         return f"{self.calls} call(s) and {rows}" if self.calls else rows
 
     def money_text(self) -> str:
-        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
+        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why;
+        no spend where it answered no call (:attr:`answers_nothing`)."""
+        if self.answers_nothing:
+            return _NO_ANSWERED_CALL
         money = UNPRICED if self.cost_usd is None else PageForms.off_page().money_total(self.cost_usd).text
         text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
@@ -731,6 +760,12 @@ class RoleSpend(BaseModel):
             f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
         )
         return f"external spend: {metered or 'no units counted'}, {self.money_text()}{outside}"
+
+
+def _reported_spend(spend: Sequence[RoleSpend]) -> bool:
+    """Whether some result reported spend: a role answered some call (:attr:`RoleSpend.answers_nothing`). A run none
+    of whose calls were answered reported none, as a run with no usage row did, whatever roles its lines name."""
+    return any(not role.answers_nothing for role in spend)
 
 
 def _shown_value(value: Any) -> str:
@@ -779,6 +814,8 @@ class EvalSummary(BaseModel):
     :ivar n_cases: Cases in the run's frozen case set.
     :ivar n_results: Results stored.
     :ivar n_scored: Results scored normally.
+    :ivar n_not_judged: Results the run's cost cap set aside unjudged: their measures count, their judged readings
+        leave them out. Not among ``n_scored``.
     :ivar n_candidate_failed: Results the candidate failed: they count against it.
     :ivar n_excluded: Results excluded as a fault of the rig: they count for nothing.
     :ivar measures: Each measure the host declares, over the results that carry it, then ``match`` and
@@ -805,14 +842,17 @@ class EvalSummary(BaseModel):
         them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
     :ivar second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
     :ivar spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
-        every role the results' usage rows name; empty for a run whose results reported none.
+        every role the results' usage rows name; empty for a run whose results left no usage row. A run none of whose
+        calls were answered holds a line per role naming them, each :attr:`RoleSpend.answers_nothing`, and reported
+        no spend: it states no total, and its spend-cap line reads as a run's with no usage row does.
     :ivar total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
         dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
         the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
         spend.
-    :ivar errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
+    :ivar errors: Each failed or excluded result's error, and each result the cost cap left unjudged, prefixed by its
+        case, then the run's own. A case is named
         as the caller that summarised the run named it (an eval: its own
-        ``id``, else its position), else by its stored test case id.
+        ``id``, else its place from 1), else by its stored test case id.
     :ivar arm_schedule: How the run's arm shared time and provider capacity with the other arms of its launch, as the
         run records it (``EvalRun.arm_schedule``): ``interleaved``, ``sequential`` or ``concurrent``, the last
         co-loading its providers with every arm at once; ``None`` for a run that records none.
@@ -842,8 +882,10 @@ class EvalSummary(BaseModel):
         operator gave for a cancel, the line written from the run's stop records when a per-run ceiling (its cost
         cap or its metered-call ceiling) stopped it (:func:`budget_stop_line`), or the reason its wall-clock
         budget gave.
-        ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
-        :attr:`errors`, which are faults.
+        ``None`` for a run nothing stopped, for a cancel given no reason, and for an ``exhausted`` run, whose
+        account or model stopped it as its :attr:`errors` say: a cost cap record such a run carries counts the cells
+        the cap refused judging beside that stop (the results line counts them), and is never read as its stop. A
+        stop is never one of :attr:`errors`, which are faults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -858,6 +900,7 @@ class EvalSummary(BaseModel):
     n_cases: int
     n_results: int
     n_scored: int
+    n_not_judged: int = 0
     n_candidate_failed: int
     n_excluded: int
     measures: list[RunMeasureSummary]
@@ -887,7 +930,6 @@ class EvalSummary(BaseModel):
         """Every result: each case's answer on each repeat, its grades, and why it failed or was excluded.
 
         :return: One :class:`CaseResult` per result, in case order then repeat.
-        :rtype: list[CaseResult]
         :raises ValueError: The summary carries no results — it was summarised without its cases (the CLI's and
             ``run_get``'s summaries are); read the stored results with
             :func:`~threetears.evals.run.list_results` instead.
@@ -916,7 +958,6 @@ class EvalSummary(BaseModel):
         about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
         :return: The missed results, in case order then repeat.
-        :rtype: list[CaseResult]
         :raises ValueError: The summary carries no results (:meth:`results`).
         """
         return [result for result in self.results() if result.missed]
@@ -925,9 +966,7 @@ class EvalSummary(BaseModel):
         """What one role spent over the run, or ``None`` when its results name no row of it.
 
         :param role: The role.
-        :ptype role: UsageRole
         :return: Its :class:`RoleSpend`, or ``None``.
-        :rtype: RoleSpend | None
         """
         return next((spend for spend in self.spend if spend.role == role), None)
 
@@ -958,14 +997,17 @@ class EvalSummary(BaseModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
-            "How the results came out: scored, then failed by the candidate and excluded as a fault of the rig where "
-            "there are some (excluded always once a judge is in play)."
+            "How the results came out: scored, then not judged (the cost cap had too little left for their judging), "
+            "failed by the candidate and excluded as a fault of the rig where there are some (excluded always once a "
+            "judge is in play)."
         )
     )
     @property
     def results_text(self) -> str:
         """The results line, without indentation."""
         counts = [f"{self.n_scored} scored"]
+        if self.n_not_judged:
+            counts.append(f"{self.n_not_judged} not judged, as the cost cap had too little left for their judging")
         if self.n_candidate_failed:
             counts.append(f"{self.n_candidate_failed} failed by the candidate")
         if self.n_excluded or self._judged_in_play:
@@ -987,6 +1029,21 @@ class EvalSummary(BaseModel):
             return self.stopped_because
         return f"stopped: {self.stopped_because}"
 
+    @property
+    def ending(self) -> RunEnding:
+        """How the run stood when it was summarised, as the one decision on whether a reading opens with a verdict
+        reads it (:func:`~threetears.evals.analysis.run_ending.stopped_short`): its status, and why it ended in the
+        run's own words. A designed stop's reason is :attr:`stopped_because`; a ``failed`` or ``exhausted`` run's is
+        the error it recorded last (the run's own come after its results' in :attr:`errors`), as its holding's ending
+        reason reads it. A replay miss is one: the line names the call the recording does not hold.
+
+        :return: The ending; its reason None for a finished run, and for one whose record gives none.
+        """
+        reason = self.stopped_because
+        if self.status in ("failed", "exhausted") and self.errors:
+            reason = self.errors[-1]
+        return RunEnding(run_id=self.run_id, status=self.status, reason=None if self.status == "completed" else reason)
+
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
             "The spend ceiling the run was held to, or that nothing bounded it; null when the summary prints no cap "
@@ -996,7 +1053,7 @@ class EvalSummary(BaseModel):
     @property
     def spend_cap_text(self) -> str | None:
         """The spend-cap line, without indentation, or None."""
-        if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
+        if self.max_cost_usd is None and not self._judged_in_play and not _reported_spend(self.spend):
             return None
         return _spend_cap_line(PageForms.off_page(), self)
 
@@ -1014,9 +1071,7 @@ class EvalSummary(BaseModel):
 
         :param guardrail_said: What the comparison came to on each guardrail for this run's arm, by measure name; a
             guardrail it names nothing for is printed with its level alone.
-        :ptype guardrail_said: Mapping[str, str]
         :return: Each measure's state and line, in ``measures`` order.
-        :rtype: list[MeasureLine]
         """
         return [self._measure_line(measure, guardrail_said.get(measure.name)) for measure in self.measures]
 
@@ -1168,7 +1223,8 @@ class EvalSummary(BaseModel):
     @property
     def total_spend_text(self) -> str | None:
         """The total-spend line, without indentation, or None."""
-        if not self.spend:
+        if not _reported_spend(self.spend):
+            # No role line states a call answered: nothing was spent, as with no line at all, so no total is stated.
             return None
         forms = PageForms.off_page()
         if self.total_cost_usd is not None:
@@ -1205,7 +1261,6 @@ class EvalSummary(BaseModel):
         spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
 
         :return: The text, without a trailing newline.
-        :rtype: str
         """
         lines = [self.headline, f"  {self.results_text}"]  # one line: the results line is counts
         # an operator's reason for a cancel is their own words, and can run over lines
@@ -1273,7 +1328,7 @@ def _spend_cap_line(forms: PageForms, summary: EvalSummary) -> str | None:
     line = f"spend cap: {forms.money_total(summary.max_cost_usd).text} for this run"
     if summary.cap_checked_on_estimates:
         line += ", checked against estimated rates"
-    if not summary.spend:
+    if not _reported_spend(summary.spend):
         line += "; it counts only spend a result reports, and no result reported any"
     return line
 
@@ -1371,16 +1426,11 @@ def summarize_run(
     and its interval) and the errors the summary lists — O(n) scalars, never O(n) results.
 
     :param host: The host whose store holds the run, and whose measures are summarised.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param case_names: What each case is called in the summary's errors, by stored test case id; a case it does
         not name, and every case when it is ``None``, is called by its id.
-    :ptype case_names: Mapping[str, str] | None
     :return: The summary.
-    :rtype: EvalSummary
     :raises NotFoundError: No run with that id in the scope.
     """
     run = host.storage.load_eval_run(run_id, scope_id)
@@ -1402,7 +1452,8 @@ def summarize_runs(
     cases, results, spend, errors   every run's together, cases in the order the runs were given
     status                          ``completed`` when every run's is, else the first other status met
     spend ceiling                   the runs' ceilings summed; ``None`` when any run had none
-    stop reasons                    the first run's that has one; budget stops, every run's
+    stop reasons                    the first run's that has one; budget stops, every run's but an
+                                    ``exhausted`` one's, whose cap record counts cells beside its stop
     run id, schedule, settings      the first run's
     template, model, repeats,       must agree: batches of one arm are launched alike, so runs that differ
     judge, overlays                 in any of them are refused rather than read as one arm
@@ -1411,15 +1462,10 @@ def summarize_runs(
     One run reads exactly as :func:`summarize_run` reads it.
 
     :param host: The host whose store holds the runs, and whose measures are summarised.
-    :ptype host: EvalHost
     :param run_ids: The runs, at least one, in the order they were launched.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param case_names: What each case is called in the summary's errors, by stored test case id.
-    :ptype case_names: Mapping[str, str] | None
     :return: The summary.
-    :rtype: EvalSummary
     :raises NotFoundError: No run with one of those ids in the scope.
     :raises ValueError: No run is named, or the runs differ in their template, model, repeats, judge or overlays.
     """
@@ -1441,7 +1487,7 @@ def summarize_runs(
             "arm; summarise each with summarize_run"
         )
     caps = [run.max_cost_usd for run in runs]
-    stops = [stop for run in runs for stop in run.budget_stops or ()]
+    stops = _ceiling_stops(runs)
     merged = first.model_copy(
         update={
             "test_case_ids": [case_id for run in runs for case_id in run.test_case_ids],
@@ -1454,6 +1500,15 @@ def summarize_runs(
         }
     )
     return _summary(host, merged, runs, scope_id, case_names or {})
+
+
+def _ceiling_stops(runs: Sequence[EvalRun]) -> list[BudgetStop]:
+    """The records of the per-run ceilings that stopped ``runs``, each read by its own run's status.
+
+    An ``exhausted`` run's account or model stopped it, which its errors name; a cost cap record it carries counts the
+    cells the cap refused judging beside that stop (the results line counts them), and is never a stop line's.
+    """
+    return [stop for run in runs if run.status != "exhausted" for stop in run.budget_stops or ()]
 
 
 def _summary(
@@ -1476,6 +1531,8 @@ def _summary(
     ]
     second_costs = [row.cost_usd for row in second_rows]
     outcomes = tally.outcomes
+    # Read from each run's own status, never the merged one: an exhausted batch's cap record is no stop.
+    stops = _ceiling_stops(runs)
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -1485,7 +1542,8 @@ def _summary(
         k_runs=run.k_runs,
         n_cases=len(run.test_case_ids),
         n_results=tally.n_results,
-        n_scored=outcomes[ResultOutcome.OK],
+        n_scored=outcomes[ResultOutcome.OK] - tally.n_not_judged,
+        n_not_judged=tally.n_not_judged,
         n_candidate_failed=outcomes[ResultOutcome.CANDIDATE_FAIL],
         n_excluded=outcomes[ResultOutcome.INFRA_EXCLUDE],
         measures=tally.measures.summaries(),
@@ -1505,8 +1563,7 @@ def _summary(
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
-        stopped_because=run.cancellation_reason
-        or (budget_stop_line(run.budget_stops) if run.budget_stops else run.budget_stop_reason),
+        stopped_because=run.cancellation_reason or (budget_stop_line(stops) if stops else run.budget_stop_reason),
         arm_schedule=run.arm_schedule,
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
@@ -1717,12 +1774,15 @@ class _JudgedTally:
 class _RoleTally:
     """One role's usage rows, summed as :class:`RoleSpend` reports them."""
 
-    __slots__ = ("calls", "counted", "n_priced", "priced", "uncounted_rows", "unpriced_calls", "units")
+    __slots__ = ("answered", "calls", "counted", "n_priced", "priced", "uncounted_rows", "unpriced_calls", "units")
 
     def __init__(self) -> None:
         self.calls = self.n_priced = self.unpriced_calls = self.uncounted_rows = 0
         self.priced = _ExactSum()
         self.counted = True
+        # Whether some row of the role answered a call: the rows' own fact, never read back off the sums, which a row
+        # that answered (an external row metering units over no counted call) can leave at zero.
+        self.answered = False
         self.units: dict[tuple[str | None, str], int] = {}
 
 
@@ -1748,10 +1808,13 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            # Every row names its role, so the pass below reads the roles this one tallied: a role whose rows hold only
+            # unanswered calls has a line stating no answered call (#1238), never a lookup of a role never tallied.
+            role = self._roles.setdefault(row.role, _RoleTally())
             if row.answers_nothing:
                 # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
                 continue
-            role = self._roles.setdefault(row.role, _RoleTally())
+            role.answered = True
             role.calls += row.call_count or 0
             if row.call_count is None:
                 role.uncounted_rows += 1
@@ -1783,6 +1846,7 @@ class _SpendTally:
                 unpriced_calls=role.unpriced_calls,
                 uncounted_rows=role.uncounted_rows,
                 counted=role.counted,
+                answers_nothing=not role.answered,
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
                     for (provider, unit), units in sorted(
@@ -1807,6 +1871,8 @@ class _RunTally:
     def __init__(self, host: EvalHost, run: EvalRun, names: Mapping[str, str]) -> None:
         self._names = names
         self.n_results = 0
+        # The results the cost cap set aside unjudged, which the results line counts apart from those scored.
+        self.n_not_judged = 0
         self.outcomes: Counter[ResultOutcome] = Counter()
         self.errors: list[str] = []
         self.measures = _MeasureTallies(host)
@@ -1826,6 +1892,9 @@ class _RunTally:
         delivered = delivered_a_turn(result)
         self.n_results += 1
         self.outcomes[outcome] += 1
+        if outcome is ResultOutcome.OK and result.judging_set_aside:
+            self.n_not_judged += 1
+            self.errors.append(f"case {self._names.get(result.test_case_id, result.test_case_id)}: {NOT_JUDGED_LINE}")
         if outcome is not ResultOutcome.OK:
             case = self._names.get(result.test_case_id, result.test_case_id)
             for error in (result.runner_error, None if result.judge_error is None else f"judge: {result.judge_error}"):

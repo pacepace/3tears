@@ -13,6 +13,31 @@ the request settings the client was built with (a :class:`~threetears.evals.sche
 for a client built with none), and carries the call's index under that key, so ``k`` repeats of one prompt replay as
 the ``k`` answers they were.
 
+**A call whose caller names its inputs is matched on them instead of its prompt** (format 4). Where the prompt holds
+text the package rendered from the inputs (a report page a judge reads), keying on the prompt moves the key whenever a
+printed word moves, and a replay then misses a call nothing about which changed. So a caller that knows what a call is
+about binds it (:func:`~threetears.evals.schema.call_inputs.bind_call_inputs`), and the key is the sha256 of the
+canonical JSON of those inputs in place of ``system`` and ``user``, beside the same ``response_format``, model,
+temperature and settings. The line keeps the inputs, so a miss names which one differs. Today one caller binds them,
+the judge service, for evidence whose kind names what its text was rendered from
+(:attr:`~threetears.evals.schema.JudgeEvidence.inputs`: the report writer's pages, scored alone and in pairs). Every
+component of such a key, and why a printed word cannot move it while a change to what is asked does:
+
+| Component | What it holds | A printed word cannot move it, because | A real change moves it, because |
+|---|---|---|---|
+| ``inputs.judge_prompt`` | sha256 of the judge's system prompt: its instructions, the dimension's name, definition, scale and guide, the reply contract | no page or fact text enters the system prompt | a reworded criterion or instruction asks the judge something else |
+| ``inputs.intent``, ``inputs.variation`` | the template's intent and the case's variation, as declared | both are declared data, never rendered | another intent or variation is another question |
+| ``inputs.goals`` | the goal-state outcomes the prompt shows (expression, verdict, detail), ``null`` where it shows none | they are computed facts, never laid out by a page | a check that holds or fails otherwise is other evidence |
+| ``inputs.evidence`` | what the evidence's text was rendered from, as its kind names it: a writer page's stored document digest, the content-derived snapshot id it was written over and its open findings' digest; for a pair, both pages' in the order shown | the page, the computed facts and the pair's labels are renderings of these | another document, snapshot or finding, or the other order, is another page or pair |
+| ``response_format``, ``model``, ``temperature``, ``settings`` | as for a prompt-keyed call | all structured | each changes the answer |
+| ``index``; the line's ``cell`` (subject, arm, case, repeat, ask) | which ask of the key it was, by which cell | counted, never rendered | another cell, or one more ask, is another call |
+
+The prompt's head is still kept on the line, for inspection only, and so is ``prompt_key``: the key the call would
+have had by its prompt (``null`` on a line keyed by its prompt). A replay serves a call by its inputs whatever its
+prompt says now, so it compares that prompt's key with the line's and counts each call served over a prompt that has
+changed since it was recorded (:attr:`RecordedCompletions.served_over_changed_prompts`): an answer about the page as
+it was then, which a run says beside its readings. The answer is not refused: the question asked is the same.
+
 **Which recorded call a cell is served.** A run's cells start in an order shuffled by the run's fresh id, several at
 once, so serving a prompt's calls in the order they are asked would hand a recorded answer to a different cell on each
 replay. A call made inside an eval's cell is recorded with the cell it was made for (format 3): the arm's subject and
@@ -54,22 +79,34 @@ the inner client's, read through, so the recorder is a bound client exactly when
 
 **A miss is refused, never served live.** A prompt the recording does not hold, one it holds only under other request
 settings, or one asked more times than it was recorded, raises :class:`RecordingRefused` naming the prompt (its first
-80 characters) or the settings that differ, and the command that re-records it. Each call is served once per client:
+80 characters) or the settings that differ, and the command that re-records it. A prompt held under no key names its
+own key's first 12 hex digits and where it parts from the recorded prompts: how many open on the same 80 characters (a
+line keeps no more, so what changed lies past them), else the nearest recorded key and the character it parts at. A
+call keyed by its inputs and held under no key names its inputs' components and, against the recorded call sharing
+the most of them, each one that differs, by its path (``evidence.pair[0].document``) with the asked and the recorded
+value, so the reader sees which input moved rather than a diff of prompt text.
+Each call is served once per client:
 one whose every recorded call already went to another eval's run in the process (a ``Model`` shared by two evals, or
 an eval run twice on one) is refused for that cause, naming the eval, and the remedy is a client per eval, never a
 recording made again. It is an
-:class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
-under test, so a candidate that raises it has its cell excluded rather than scored.
-:meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which is
-how a test says by name that a prompt changed under its recording.
+:class:`~threetears.evals.kernel.host.ReplayMiss`: a replay that cannot serve is a fault of the rig, not of the code
+under test, and the recording cannot serve the run. So a candidate that meets one never has the cell scored: the cell is
+recorded
+``apparatus_failed`` naming the call, and the run fails with the miss. A judge call that meets one is never read as the
+judge's failed answer either: :func:`~threetears.evals.run.run_judge_llm` raises it, so a writer's pairwise pass fails
+at the miss, and a run's scoring judge, or a judge kind's judge under test on any one trial, fails the run naming the
+call. A page whose text moved under a judge's recording is named, never judged on the calls still found.
+:meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which
+is how a test says by name that a prompt changed under its recording.
 
 **What is kept.** All ten :class:`~threetears.evals.schema.CompletionResult` members as the inner client returned
 them; the optional ``sent_settings`` member, what the request actually carried, as
 :func:`~threetears.evals.schema.sent_settings_of` reads it (``None`` when the completion has none), so a replayed
 completion reports what the recorded call was sent with, not what a replay is asked under; and every other
 attribute its completion type declares (a dataclass field, a Pydantic field, an instance attribute: a
-``served_provider``, say) under ``extra``. A computed property is not a declared attribute and is not
-kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
+``served_provider``, say) under ``extra``, and a kept ``served_provider`` is replayed as the completion's own, so a
+replayed call's usage row names the upstream the recorded one did. A computed property is not a declared attribute and
+is not kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
 as a :class:`~threetears.evals.testing.CompletionConformanceFailure`, not rendered as text. A replayed completion is a
 :class:`ReplayedCompletion`; ``cost_usd`` and ``price_source`` are replayed as recorded, so a replayed price is the
 historical fact of what that call cost when it was made, not a quote at today's rates.
@@ -79,18 +116,23 @@ the order calls returned. Recording onto a file that exists appends to it, the n
 holds; a fresh recording removes the file first, and only when asked (``record(..., replace=True)``), so no recording
 is ever overwritten by accident. Each line carries the recorder's format version (:attr:`RecordedCompletions.FORMAT_VERSION`)
 and the time it was written. A format-2 line, which noted no cell, is read and served by the fallback above, so a
-recording made before format 3 replays as it did, and one recorded onto since holds both. A line from a newer format,
+recording made before format 3 replays as it did, and one recorded onto since holds both. A format-3 line keeps no
+inputs and is keyed by its prompt, so it is found by a call made with none bound, as before, and by a call with inputs
+bound that no line holds under them: a recording made before its caller named a call's inputs replays as it did, and
+its calls move when its prompts do, as they did. A line from a newer format,
 one from format 1 (it kept no ``sent_settings``, so its calls cannot say what they were sent with), or one that is not
 a line this recorder writes, refuses the whole file by its line number. One process records a file at a time.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -98,7 +140,8 @@ from typing import Any, ClassVar, Literal, NamedTuple, Self, get_args
 
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.eval_scope import RunningEval, running_eval
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ReplayMiss
+from threetears.evals.schema.call_inputs import current_call_inputs
 from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
     OPTIONAL_COMPLETION_ATTRIBUTES,
@@ -125,7 +168,11 @@ __all__ = ["RecordedCompletions", "RecordedPrompt", "RecordingRefused", "Replaye
 #:   kept none, so it cannot replay a completion that says what it was sent with, and is refused by name.
 #: - **3** — each line carries ``cell``, the cell the call was made for (``null`` outside every cell), so a replay serves
 #:   each cell its own call. A format-2 line noted none and is still read, served by the fallback.
-_FORMAT_VERSION = 3
+#: - **4** — each line carries ``inputs``, what its caller named the call as being about (``null`` where it named
+#:   nothing), and a line carrying some is keyed by them in place of its prompt; such a line also carries
+#:   ``prompt_key``, the key its prompt had (``null`` beside ``null`` inputs), so a replay can tell a prompt that has
+#:   changed since. A format-3 line carries neither and is still read, keyed by its prompt.
+_FORMAT_VERSION = 4
 
 #: The oldest format this build reads: a line below it is refused by name.
 _OLDEST_FORMAT = 2
@@ -133,13 +180,26 @@ _OLDEST_FORMAT = 2
 #: How much of a prompt's ``user`` a refusal quotes, so the prompt is recognisable without the message carrying all of it.
 _PROMPT_HEAD = 80
 
+#: How many hex digits of a call's key a refusal names it by.
+_KEY_DIGITS = 12
+
 #: The top-level members every format-2 line carries, and nothing else.
 _FORMAT_2_MEMBERS = frozenset(
     {"recorder_version", "recorded_at", "key", "index", "user_head", "settings", "sent_settings", "result", "extra"}
 )
 
 #: The top-level members a line carries, and nothing else, by the format it was written in.
-_LINE_MEMBERS = {2: _FORMAT_2_MEMBERS, 3: _FORMAT_2_MEMBERS | {"cell"}}
+_LINE_MEMBERS = {
+    2: _FORMAT_2_MEMBERS,
+    3: _FORMAT_2_MEMBERS | {"cell"},
+    4: _FORMAT_2_MEMBERS | {"cell", "inputs", "prompt_key"},
+}
+
+#: How many differing input paths a miss names before it stops listing them.
+_PATHS_NAMED = 4
+
+#: The longest input value a miss quotes whole; a longer one, or a list or object, is named by its digest's head.
+_VALUE_QUOTED = 40
 
 #: The members a format-3 line's ``cell`` object carries, and nothing else.
 _CELL_MEMBERS = frozenset({"subject", "variant", "case", "repeat", "ask"})
@@ -149,12 +209,14 @@ _CELL_MEMBERS = frozenset({"subject", "variant", "case", "repeat", "ask"})
 _APPEND_LOCK = threading.Lock()
 
 
-class RecordingRefused(ApparatusError):
-    """A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+class RecordingRefused(ReplayMiss):
+    """A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format, a call
+    already served to another eval, or a call refused while recording.
 
-    An :class:`~threetears.evals.kernel.host.ApparatusError`, because a replay that cannot serve a call is the rig's
-    fault rather than the code under test's: raised out of a candidate, its cell is excluded, not scored. The message
-    names what was asked and ends with :attr:`remedy`.
+    A :class:`~threetears.evals.kernel.host.ReplayMiss`, because a recording that cannot serve a call is the rig's fault
+    rather than the code under test's, and cannot serve the run: wherever it is met, a candidate's call or a judge's,
+    replaying or recording, its cell is recorded ``apparatus_failed`` naming the call, never scored, and the run fails
+    with it. The message names what was asked and ends with :attr:`remedy`, the cause's own.
 
     :ivar path: The recording.
     :ivar remedy: What makes a recording that serves it: usually the command that re-records it.
@@ -164,11 +226,8 @@ class RecordingRefused(ApparatusError):
         """Name the recording, what it cannot do, and the remedy.
 
         :param path: The recording.
-        :ptype path: Path
         :param problem: What it cannot serve, or why it cannot be read, as a clause.
-        :ptype problem: str
         :param remedy: What makes one that serves it.
-        :ptype remedy: str
         """
         self.path = path
         self.remedy = remedy
@@ -230,7 +289,8 @@ class ReplayedCompletion:
     """A completion as it was recorded, replayed: the ten :class:`~threetears.evals.schema.CompletionResult` members.
 
     Satisfies :class:`~threetears.evals.schema.CompletionResult` structurally, and carries its optional
-    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded.
+    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded, ``served_model`` apart where
+    that named none (below).
     ``cost_usd`` and ``price_source`` are a historical fact, what the call cost when it was made and who priced it then,
     not a quote: a replay calls no price source, and a rate that moved since is not reflected.
 
@@ -240,14 +300,17 @@ class ReplayedCompletion:
     :ivar cost_usd: What the call cost when it was recorded, or ``None`` when nothing priced it.
     :ivar price_source: Who priced it then, or ``None``.
     :ivar model: The model the call was attributed to.
-    :ivar served_model: The model the provider's response named, or ``None``.
+    :ivar served_model: The model the provider's response named. Where the recorded reply named none, the
+        recording itself, as ``recording:`` and the first 12 hex digits of the sha256 of its file: a replay knows
+        what answers it, so two replays of one recording are answered alike and a run replayed from it never reads
+        as answered by an unknown model.
     :ivar reasoning_tokens: The reasoning share of ``output_tokens``, or ``None``.
     :ivar temperature: The temperature the request was sent with, or ``None``.
     :ivar stop_reason: Why the completion stopped, in the engine's vocabulary.
     :ivar sent_settings: What the recorded call's request actually carried, as its completion reported it, or ``None``
         when it reported nothing: never the settings the replay was asked under.
     :ivar extra: Every other attribute the recorded completion's type declared, by name (a ``served_provider``, say),
-        read-only.
+        read-only. A ``served_provider`` there is read back as :attr:`served_provider` too.
     """
 
     content: str
@@ -263,12 +326,44 @@ class ReplayedCompletion:
     sent_settings: ClientRequestSettings | None
     extra: Mapping[str, Any]
 
+    @property
+    def served_provider(self) -> str | None:
+        """The upstream the recorded call's reply named as serving it, as ``extra`` keeps it, or ``None`` when it named
+        none: so a replayed call's usage row names who served it, as the recorded call's did.
+
+        :return: The provider, or ``None`` when ``extra`` holds no non-empty text under ``served_provider``.
+        """
+        said = self.extra.get("served_provider")
+        return said if isinstance(said, str) and said else None
+
+
+#: What a replayed call whose recorded reply named no model is answered by, before the recording's digest.
+_RECORDING_ANSWERED = "recording:"
 
 #: What a recording holds under one key: the request settings it was recorded under, and its calls in index order.
 _Recorded = tuple[ClientRequestSettings | None, list[ReplayedCompletion]]
 
 #: The one model a recording holds calls of, and the one temperature they were sent at.
 _Client = tuple[str, float | None]
+
+
+class _Read(NamedTuple):
+    """What a recording holds, as :func:`_read_recording` reads it.
+
+    :ivar recorded: Its calls by key, each with the request settings it was recorded under, in index order.
+    :ivar cells: The cell each call names, by key in index order (``None`` for a call that names none).
+    :ivar heads: The head of each key's user message, as its lines keep it: what a miss is compared with.
+    :ivar inputs: The inputs each key's calls were keyed by, as its lines keep them, or ``None`` for a key of a
+        prompt: what a miss of a call keyed by its inputs is compared with.
+    :ivar prompt_keys: The key each call's prompt had, by key in index order (``None`` for a call keyed by its
+        prompt, or a line from before format 4): what a call served by its inputs compares its prompt's key with.
+    """
+
+    recorded: dict[str, _Recorded]
+    cells: dict[str, list[_CellAsk | None]]
+    heads: dict[str, str]
+    inputs: dict[str, dict[str, Any] | None]
+    prompt_keys: dict[str, list[str | None]]
 
 
 class RecordedCompletions:
@@ -308,18 +403,13 @@ class RecordedCompletions:
         :meth:`record` and :meth:`replay` build one: they read and check the file, which this does not.
 
         :param path: The recording.
-        :ptype path: Path
         :param inner: The client every call goes to while recording; ``None`` replays.
-        :ptype inner: CompletionClient | None
         :param settings: The request settings the client is built with (recording ``inner``, or replaying the client
             that was recorded), or ``None`` for one built with none: recorded on every line, and matched on replay.
-        :ptype settings: ClientRequestSettings | None
         :param recorded: The calls the recording already holds, by key: the request settings the key was recorded under,
             and its calls in index order.
-        :ptype recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]]
         :param rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` says to re-record it
             with the client it stands in for.
-        :ptype rerecord: str | None
         """
         self.path = path
         self.mode: Literal["record", "replay"] = "replay" if inner is None else "record"
@@ -331,6 +421,18 @@ class RecordedCompletions:
         self._cells: dict[str, list[_CellAsk | None]] = {
             key: [None] * len(calls) for key, (_, calls) in recorded.items()
         }
+        #: Replaying, the head of each key's user message, as the file keeps it: what a miss names its nearest by. Set by
+        #: :meth:`replay`.
+        self._heads: dict[str, str] = {}
+        #: Replaying, the inputs each key's calls were keyed by (``None`` for a key of a prompt), as the file keeps
+        #: them: what a miss of a call keyed by its inputs names the input that differs by. Set by :meth:`replay`.
+        self._inputs: dict[str, dict[str, Any] | None] = {}
+        #: Replaying, the key each recorded call's prompt had, by key in index order (``None`` for a call keyed by its
+        #: prompt). Set by :meth:`replay`.
+        self._prompt_keys: dict[str, list[str | None]] = {}
+        #: Replaying, how many calls were served by their inputs over a prompt that has changed since they were
+        #: recorded (:attr:`served_over_changed_prompts`).
+        self._changed_prompts = 0
         #: Replaying, how many times each cell has asked each key, so a cell's second ask of a prompt is served its
         #: second call.
         self._asks: dict[tuple[str, _CellCoordinates], int] = {}
@@ -370,24 +472,21 @@ class RecordedCompletions:
         mistake a replay under changed settings could then not catch.
 
         :param inner: The host's real client.
-        :ptype inner: CompletionClient
         :param path: The recording. Its directory is created when missing.
-        :ptype path: Path
         :param settings: The request settings ``inner`` was built with, the same value its builder applied (for a judge,
             :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`), or ``None`` when it was built with none.
             Every line carries them and every key covers them.
-        :ptype settings: ClientRequestSettings | None
         :param replace: Remove ``path`` first and record afresh. Pass it when building the client, before any call;
             without it, an existing recording is never overwritten.
-        :ptype replace: bool
         :return: The recording client.
-        :rtype: Self
         :raises RecordingRefused: ``path`` holds a line this build cannot read, or one from a newer format.
         """
         if replace:
             path.unlink(missing_ok=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        recorded, cells = _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {})
+        recorded, cells, _, _, _ = (
+            _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {}, {}, {}, {})
+        )
         client = cls(path, inner=inner, settings=settings, recorded=recorded)
         client._cells = cells
         return client
@@ -402,22 +501,21 @@ class RecordedCompletions:
         asked for.
 
         :param path: The recording.
-        :ptype path: Path
         :param settings: The request settings the client this one stands in for is built with, the same value
             :meth:`record` was given for it, or ``None`` for one built with none (which matches only calls recorded
             with none).
-        :ptype settings: ClientRequestSettings | None
         :param rerecord: The command that re-records ``path`` (``"RECORD=1 pytest tests/test_judge.py"``), quoted in
             every refusal; ``None`` says to re-record it with the client it stands in for.
-        :ptype rerecord: str | None
         :return: The replaying client.
-        :rtype: Self
         :raises RecordingRefused: ``path`` does not exist, holds no calls, holds a line this build cannot read, or holds
             one from a newer format.
         """
-        recorded, cells = _readable_replay(path, _rerecord_remedy(path, rerecord))
+        recorded, cells, heads, inputs, prompt_keys = _readable_replay(path, _rerecord_remedy(path, rerecord))
         client = cls(path, inner=None, settings=settings, recorded=recorded, rerecord=rerecord)
         client._cells = cells
+        client._heads = heads
+        client._inputs = inputs
+        client._prompt_keys = prompt_keys
         return client
 
     @classmethod
@@ -437,18 +535,14 @@ class RecordedCompletions:
         settings is named with the settings that differ.
 
         :param path: The recording.
-        :ptype path: Path
         :param prompts: Every call the code under test will make.
-        :ptype prompts: Iterable[RecordedPrompt]
         :param settings: As :meth:`replay`'s, and required for the same reason.
-        :ptype settings: ClientRequestSettings | None
         :param rerecord: As :meth:`replay`'s.
-        :ptype rerecord: str | None
         :raises RecordingRefused: The recording cannot be read (as :meth:`replay`), or holds fewer calls than asked for
             one or more prompts, or holds them only under other request settings, each named.
         """
         remedy = _rerecord_remedy(path, rerecord)
-        recorded, _ = _readable_replay(path, remedy)
+        recorded, *_ = _readable_replay(path, remedy)
         uncovered: list[str] = []
         for prompt, asked in _tally(prompts):
             key, others = _lookup(recorded, prompt, settings)
@@ -487,6 +581,20 @@ class RecordedCompletions:
         model, _ = _client_of(self._recorded)
         return model
 
+    @property
+    def served_over_changed_prompts(self) -> int:
+        """How many calls this replay served by their inputs over a prompt that has changed since they were recorded.
+
+        Such a call asks what it asked then (its inputs are the same), so it is served, but the text it is sent is not
+        the text the recorded answer was given on: a page the package now renders otherwise. Its answer is about the
+        page as it was recorded, so a run says how many it served. Counted only for a line that keeps its prompt's
+        key (format 4, keyed by its inputs); ``0`` recording, and for a replay that served none.
+
+        :return: The count so far.
+        """
+        with self._lock:
+            return self._changed_prompts
+
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` can cost
         (:meth:`~threetears.evals.schema.BoundCompletionClient.price_ceiling`).
@@ -496,13 +604,9 @@ class RecordedCompletions:
         charge).
 
         :param system: The system message the call would send.
-        :ptype system: str
         :param user: The user message the call would send.
-        :ptype user: str
         :param response_format: The directive the call would send, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The ceiling in dollars, or ``None`` when the inner client cannot say.
-        :rtype: float | None
         :raises AttributeError: Recording, the inner client prices nothing: it is a plain ``CompletionClient``.
         """
         if self._inner is None:
@@ -527,28 +631,28 @@ class RecordedCompletions:
         """Record or replay one call.
 
         :param system: The system prompt.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: The provider directive, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: Recording, the inner client's completion, unchanged; replaying, the recorded one as a
             :class:`ReplayedCompletion`.
-        :rtype: CompletionResult
         :raises RecordingRefused: Replaying, the recording holds no call for this prompt, holds it only under other
             request settings, or has served every call it holds for it (to another eval's run, named as the cause). Recording, the completion names
             another model or temperature than the calls the recording holds.
         :raises CompletionConformanceFailure: Recording, the inner client's completion lacks a member, or holds a value
             of the wrong type or one JSON cannot hold.
         """
+        bound = current_call_inputs()
+        inputs = None if bound is None else _plain(bound)
         if self._inner is None:
-            return self._serve(system, user, response_format)
-        tag = self._numbered(system, user, response_format)  # numbered as it is asked, as a replay numbers it
+            return self._serve(system, user, response_format, inputs)
+        tag = self._numbered(system, user, response_format, inputs)  # numbered as it is asked, as a replay numbers it
         completion = await self._inner.generate(system=system, user=user, response_format=response_format)
-        self._append(system, user, response_format, completion, tag)
+        self._append(system, user, response_format, completion, tag, inputs)
         return completion
 
-    def _numbered(self, system: str, user: str, response_format: dict[str, Any] | None) -> _CellAsk | None:
+    def _numbered(
+        self, system: str, user: str, response_format: dict[str, Any] | None, inputs: dict[str, Any] | None
+    ) -> _CellAsk | None:
         """The cell a call about to be made is made for, and its ask number: the cell's asks of the prompt so far.
 
         Numbered when the call is asked, never when its answer lands, so two asks of one prompt by one cell at once
@@ -560,21 +664,35 @@ class RecordedCompletions:
         if cell is None:
             return None
         coordinates = _coordinates(cell)
-        prompt = canonical_digest({"system": system, "user": user, "response_format": response_format})
+        asked = (
+            {"system": system, "user": user, "response_format": response_format}
+            if inputs is None
+            else {"inputs": inputs, "response_format": response_format}
+        )
+        prompt = canonical_digest(asked)
         with self._lock:
             ask = self._next_ask.get((prompt, coordinates))
             if ask is None:
                 ask = 0
                 if self._recorded:
                     model, temperature = _client_of(self._recorded)
-                    key = _call_key(system, user, response_format, model, temperature, self._settings)
+                    key = _call_key(system, user, response_format, model, temperature, self._settings, inputs)
                     held = [tag.ask for tag in self._cells.get(key, []) if tag is not None and tag[:4] == coordinates]
                     ask = max(held, default=-1) + 1
             self._next_ask[(prompt, coordinates)] = ask + 1
         return _CellAsk(*coordinates, ask)
 
-    def _serve(self, system: str, user: str, response_format: dict[str, Any] | None) -> ReplayedCompletion:
-        key, others = _lookup(self._recorded, RecordedPrompt(system, user, response_format), self._settings)
+    def _serve(
+        self, system: str, user: str, response_format: dict[str, Any] | None, inputs: dict[str, Any] | None
+    ) -> ReplayedCompletion:
+        prompt = RecordedPrompt(system, user, response_format)
+        key, others = _lookup(self._recorded, prompt, self._settings, inputs)
+        if inputs is not None and key is None and not others:
+            # A recording made before its caller named the call's inputs holds it under its prompt: served by it, so
+            # a format-3 file replays as it did. A key of a prompt is never a key of inputs (their pre-images differ).
+            held, under = _lookup(self._recorded, prompt, self._settings)
+            if held is not None or under:
+                key, others = held, under
         if key is None and others:
             raise RecordingRefused(
                 self.path,
@@ -584,10 +702,21 @@ class RecordedCompletions:
                 self._remedy,
             )
         if key is None:
+            model, temperature = _client_of(self._recorded)
+            asked = _call_key(system, user, response_format, model, temperature, self._settings, inputs)
+            if inputs is not None:
+                raise RecordingRefused(
+                    self.path,
+                    f"no call is recorded for the inputs {_spelled_inputs(inputs)} (call 0, key {asked[:_KEY_DIGITS]}, "
+                    f"prompt {_head(user)}): what the call is asked about changed since it was recorded, or the code "
+                    f"now asks something it did not ask then; {_nearest_inputs(self._inputs, inputs)}",
+                    self._remedy,
+                )
             raise RecordingRefused(
                 self.path,
-                f"no call is recorded for the prompt {_head(user)} (call 0): the prompt changed since it was recorded, "
-                "or the code now asks something it did not ask then",
+                f"no call is recorded for the prompt {_head(user)} (call 0, key {asked[:_KEY_DIGITS]}): the prompt "
+                f"changed since it was recorded, or the code now asks something it did not ask then; "
+                f"{_nearest(self._heads, user)}",
                 self._remedy,
             )
         cell = current_cell_identity()
@@ -599,6 +728,11 @@ class RecordedCompletions:
             if index is None:
                 raise self._spent(user, len(calls), taken.values(), asking)
             taken[index] = asking
+            recorded_prompt = self._prompt_keys.get(key, [None] * len(calls))[index]
+            if inputs is not None and recorded_prompt is not None:
+                model, temperature = _client_of(self._recorded)
+                if _call_key(system, user, response_format, model, temperature, self._settings) != recorded_prompt:
+                    self._changed_prompts += 1
         return calls[index]
 
     def _index_of(self, key: str, cell: CellIdentity | None, user: str) -> int | None:
@@ -742,16 +876,17 @@ class RecordedCompletions:
         response_format: dict[str, Any] | None,
         completion: CompletionResult,
         tag: _CellAsk | None,
+        inputs: dict[str, Any] | None,
     ) -> None:
         check_completion_conformance(completion)
         members = _recordable_members(completion)
         sent = sent_settings_of(completion)
         extra = _declared_extras(completion)
-        key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
+        key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings, inputs)
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
-                self._recorded, self._cells = (
-                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {})
+                self._recorded, self._cells, *_ = (
+                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {}, {}, {})
                 )
             if self._recorded and (held := _client_of(self._recorded)) != (members["model"], members["temperature"]):
                 raise RecordingRefused(
@@ -773,6 +908,10 @@ class RecordedCompletions:
                 "result": members,
                 "extra": extra,
                 "cell": None if tag is None else tag._asdict(),
+                "inputs": inputs,
+                "prompt_key": None
+                if inputs is None
+                else _call_key(system, user, response_format, members["model"], members["temperature"], self._settings),
             }
             with self.path.open("a", encoding="utf-8") as recording:
                 recording.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
@@ -827,9 +966,7 @@ def _tally(prompts: Iterable[RecordedPrompt]) -> list[tuple[RecordedPrompt, int]
     and two directives equal as JSON are the same call however their keys were ordered.
 
     :param prompts: The prompts, each repeat listed once per repeat.
-    :ptype prompts: Iterable[RecordedPrompt]
     :return: ``(prompt, times listed)`` per distinct prompt.
-    :rtype: list[tuple[RecordedPrompt, int]]
     """
     tally: dict[str, tuple[RecordedPrompt, int]] = {}
     for prompt in prompts:
@@ -841,6 +978,35 @@ def _tally(prompts: Iterable[RecordedPrompt]) -> list[tuple[RecordedPrompt, int]
 
 def _head(user: str) -> str:
     return repr(user[:_PROMPT_HEAD] + ("…" if len(user) > _PROMPT_HEAD else ""))
+
+
+def _nearest(heads: Mapping[str, str], user: str) -> str:
+    """Where a missed prompt parts from the recorded ones, as a clause: how many recorded keys open on the same text
+    (a line keeps the first :data:`_PROMPT_HEAD` characters of its user message, so what changed lies past them, or in
+    the system prompt or the reply's format), else the nearest recorded key and the character it parts at.
+    """
+    head = user[:_PROMPT_HEAD]
+    shared = {key: len(os.path.commonprefix([head, held])) for key, held in heads.items()}
+    alike = sorted(key for key, held in heads.items() if held == head)
+    if alike:
+        named = ", ".join(key[:_KEY_DIGITS] for key in alike[:3]) + (", ..." if len(alike) > 3 else "")
+        if len(user) < _PROMPT_HEAD:
+            # The whole user message is kept and matches: only what no line keeps can have changed.
+            return (
+                f"{len(alike)} recorded key(s) hold the same user message ({named}), so what changed is the system "
+                "prompt or the reply's format"
+            )
+        return (
+            f"{len(alike)} recorded key(s) open on the same {len(head)} characters ({named}), so what changed lies past "
+            "them in the user message, or in the system prompt or the reply's format"
+        )
+    if not shared:
+        return "the recording keeps no prompt to compare it with"
+    nearest = min(shared, key=lambda key: (-shared[key], key))
+    return (
+        f"the nearest recorded key, {nearest[:_KEY_DIGITS]}, parts from it at character {shared[nearest] + 1} "
+        f"({_head(heads[nearest])})"
+    )
 
 
 def _stated(settings: ClientRequestSettings | None, names: Iterable[str]) -> str:
@@ -875,14 +1041,15 @@ def _settings_drift(held: Iterable[ClientRequestSettings | None], asked: ClientR
     return "; ".join(dict.fromkeys(_drift(settings, asked) for settings in held))
 
 
-def _readable_replay(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict[str, list[_CellAsk | None]]]:
-    """The calls a recording holds and the cells they name, refused when there is none to replay: no file, or no calls."""
+def _readable_replay(path: Path, remedy: str) -> _Read:
+    """The calls a recording holds, the cells they name and the head of each key's prompt, refused when there is none
+    to replay: no file, or no calls."""
     if not path.exists():
         raise RecordingRefused(path, "there is no recording at this path", remedy)
-    recorded, cells = _read_recording(path, remedy)
-    if not recorded:
+    read = _read_recording(path, remedy)
+    if not read.recorded:
         raise RecordingRefused(path, "the recording holds no calls, so it can serve none", remedy)
-    return recorded, cells
+    return read
 
 
 def _client_of(recorded: Mapping[str, _Recorded]) -> _Client:
@@ -892,13 +1059,17 @@ def _client_of(recorded: Mapping[str, _Recorded]) -> _Client:
 
 
 def _lookup(
-    recorded: Mapping[str, _Recorded], prompt: RecordedPrompt, settings: ClientRequestSettings | None
+    recorded: Mapping[str, _Recorded],
+    prompt: RecordedPrompt,
+    settings: ClientRequestSettings | None,
+    inputs: Mapping[str, Any] | None = None,
 ) -> tuple[str | None, list[ClientRequestSettings | None]]:
-    """The key ``prompt`` is recorded under for ``settings``; else ``None`` and every other settings value it is under."""
+    """The key ``prompt`` (or, where given, ``inputs``) is recorded under for ``settings``; else ``None`` and every other
+    settings value it is under."""
     model, temperature = _client_of(recorded)
 
     def key(under: ClientRequestSettings | None) -> str:
-        return _call_key(prompt.system, prompt.user, prompt.response_format, model, temperature, under)
+        return _call_key(prompt.system, prompt.user, prompt.response_format, model, temperature, under, inputs)
 
     if key(settings) in recorded:
         return key(settings), []
@@ -927,17 +1098,98 @@ def _call_key(
     model: str,
     temperature: float | None,
     settings: ClientRequestSettings | None,
+    inputs: Mapping[str, Any] | None = None,
 ) -> str:
-    """The sha256 a call is recorded and replayed under. Raises ``UnhashableContentError`` for a directive JSON cannot hold."""
+    """The sha256 a call is recorded and replayed under: over its prompt, or over the inputs its caller named in place
+    of ``system`` and ``user`` (the module docstring's table). The two pre-images hold different members, so a key of
+    inputs is never a key of a prompt. Raises ``UnhashableContentError`` for a directive JSON cannot hold."""
+    asked: dict[str, Any] = {"system": system, "user": user} if inputs is None else {"inputs": _plain(inputs)}
     return canonical_digest(
         {
-            "system": system,
-            "user": user,
+            **asked,
             "response_format": response_format,
             "model": model,
             "temperature": temperature,
             "settings": _settings_member(settings),
         }
+    )
+
+
+def _plain(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """A call's inputs as a plain JSON object, as a line stores them and a key hashes them."""
+    plain: dict[str, Any] = json.loads(json.dumps(dict(inputs), sort_keys=True, allow_nan=False))
+    return plain
+
+
+def _short(value: Any) -> str:
+    """One input value as a refusal quotes it: a short scalar whole, anything else by its digest's head."""
+    if isinstance(value, str) and len(value) <= _VALUE_QUOTED or isinstance(value, int | float | bool) or value is None:
+        return json.dumps(value)
+    return f"sha256:{canonical_digest({'input': value})[:_KEY_DIGITS]}"
+
+
+def _spelled_inputs(inputs: Mapping[str, Any]) -> str:
+    """A call's inputs as a refusal names them: each top-level component and its value, short."""
+    return "{" + ", ".join(f"{name}: {_short(value)}" for name, value in sorted(inputs.items())) + "}"
+
+
+def _differing(asked: Any, held: Any, path: str = "") -> list[str]:
+    """The paths at which two input values differ, deepest first where both sides are objects or equal-length lists."""
+    if asked == held:
+        return []
+    if isinstance(asked, dict) and isinstance(held, dict):
+        return [
+            found
+            for name in sorted(set(asked) | set(held))
+            for found in _differing(asked.get(name), held.get(name), f"{path}.{name}" if path else name)
+        ]
+    if isinstance(asked, list) and isinstance(held, list) and len(asked) == len(held):
+        return [
+            found
+            for at, (a, h) in enumerate(zip(asked, held, strict=True))
+            for found in _differing(a, h, f"{path}[{at}]")
+        ]
+    return [path]
+
+
+def _at(value: Any, path: str) -> Any:
+    """The value at one of :func:`_differing`'s paths, or ``None`` where the path is absent."""
+    for part in path.replace("[", ".[").split("."):
+        if part.startswith("["):
+            value = value[int(part[1:-1])] if isinstance(value, list) else None
+        elif part:
+            value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def _nearest_inputs(held: Mapping[str, dict[str, Any] | None], asked: dict[str, Any]) -> str:
+    """Which of a missed call's inputs differ from the recorded call that shares the most of its components, as a
+    clause: each by its path, the asked value against the recorded one."""
+    keyed = {key: inputs for key, inputs in held.items() if inputs is not None}
+    if not keyed:
+        return (
+            "the recording keeps no call keyed by its inputs, only by prompt: it was recorded before this call named "
+            "its inputs"
+        )
+
+    def shared(key: str) -> int:
+        return sum(1 for name, value in asked.items() if keyed[key].get(name) == value)
+
+    nearest = min(keyed, key=lambda key: (-shared(key), key))
+    paths = _differing(asked, keyed[nearest])
+    if not paths:
+        return (
+            f"the recorded call {nearest[:_KEY_DIGITS]} holds the same inputs, so what changed is the reply's format, "
+            "the model, its temperature or the request settings"
+        )
+    named = "; ".join(
+        f"{path} (asked {_short(_at(asked, path))}, recorded {_short(_at(keyed[nearest], path))})"
+        for path in paths[:_PATHS_NAMED]
+    ) + (f"; and {len(paths) - _PATHS_NAMED} more" if len(paths) > _PATHS_NAMED else "")
+    same = sorted(name for name in asked if keyed[nearest].get(name) == asked[name])
+    return (
+        f"against the recorded call sharing the most of them, {nearest[:_KEY_DIGITS]}, the inputs differ at {named}"
+        + (f", and agree on {', '.join(same)}" if same else "")
     )
 
 
@@ -1021,17 +1273,23 @@ def _completion_of(
     return ReplayedCompletion(**members, sent_settings=sent, extra=MappingProxyType(dict(extra)))
 
 
-def _read_recording(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict[str, list[_CellAsk | None]]]:
-    """Every call ``path`` holds, by key in index order with its settings, and the cell each names; each line checked,
-    and a bad line refuses all."""
+def _read_recording(path: Path, remedy: str) -> _Read:
+    """Every call ``path`` holds, by key in index order with its settings, the cell each names, and the head of each
+    key's prompt; each line checked, and a bad line refuses all."""
     recorded: dict[str, _Recorded] = {}
     cells: dict[str, list[_CellAsk | None]] = {}
-    lines = path.read_text(encoding="utf-8").split("\n")
+    heads: dict[str, str] = {}
+    keyed_by: dict[str, dict[str, Any] | None] = {}
+    prompt_keys: dict[str, list[str | None]] = {}
+    text_held = path.read_text(encoding="utf-8")
+    lines = text_held.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the newline that ends the last line
+    # What answers a replayed call whose recorded reply named no model: this recording, whatever model made it.
+    answered_by = f"{_RECORDING_ANSWERED}{hashlib.sha256(text_held.encode('utf-8')).hexdigest()[:12]}"
     client: _Client | None = None
     for number, text in enumerate(lines, start=1):
-        key, index, settings, completion, cell = _read_line(path, number, text, remedy)
+        key, index, settings, completion, cell, head, inputs, prompt_key = _read_line(path, number, text, remedy)
         if client is None:
             client = (completion.model, completion.temperature)
         elif (completion.model, completion.temperature) != client:
@@ -1060,9 +1318,20 @@ def _read_recording(path: Path, remedy: str) -> tuple[dict[str, _Recorded], dict
                 "was edited",
                 remedy,
             )
-        calls.append(completion)
+        if calls and inputs != keyed_by[key]:
+            raise _malformed(
+                path,
+                number,
+                "its inputs are not the ones the lines before it under its key carry, and a key covers its inputs: the "
+                "file was edited",
+                remedy,
+            )
+        calls.append(completion if completion.served_model else replace(completion, served_model=answered_by))
         cells.setdefault(key, []).append(cell)
-    return recorded, cells
+        heads.setdefault(key, head)
+        keyed_by.setdefault(key, inputs)
+        prompt_keys.setdefault(key, []).append(prompt_key)
+    return _Read(recorded, cells, heads, keyed_by, prompt_keys)
 
 
 def _mismatch(expected: frozenset[str], found: Iterable[str]) -> str | None:
@@ -1133,7 +1402,9 @@ def _read_cell(path: Path, number: int, cell: Any, remedy: str) -> _CellAsk | No
 
 def _read_line(
     path: Path, number: int, text: str, remedy: str
-) -> tuple[str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None]:
+) -> tuple[
+    str, int, ClientRequestSettings | None, ReplayedCompletion, _CellAsk | None, str, dict[str, Any] | None, str | None
+]:
     try:
         line = json.loads(text)
     except json.JSONDecodeError as undecodable:
@@ -1187,4 +1458,19 @@ def _read_line(
         raise _malformed(path, number, "its result's " + "; ".join(problems), remedy)
     members = {name: _normalised(name, result[name]) for name in COMPLETION_RESULT_ATTRIBUTES}
     cell = _read_cell(path, number, line.get("cell"), remedy)
-    return key, index, settings, _completion_of(members, sent, extra), cell
+    inputs = line.get("inputs")
+    if inputs is not None and not isinstance(inputs, dict):
+        raise _malformed(path, number, f"its inputs are a JSON {type(inputs).__name__}, not an object or null", remedy)
+    prompt_key = line.get("prompt_key")
+    if prompt_key is not None and (not isinstance(prompt_key, str) or len(prompt_key) != 64):
+        raise _malformed(path, number, f"its prompt_key {prompt_key!r} is not a sha256 hex digest or null", remedy)
+    if version >= 4 and (prompt_key is None) != (inputs is None):
+        raise _malformed(
+            path,
+            number,
+            "it carries inputs and no prompt_key, or a prompt_key and no inputs: a line keyed by its inputs keeps its "
+            "prompt's key beside them, and only such a line does",
+            remedy,
+        )
+    head = line["user_head"]
+    return key, index, settings, _completion_of(members, sent, extra), cell, head, inputs, prompt_key

@@ -68,6 +68,7 @@ from threetears.evals.schema import (
     BoundCompletionClient,
     ClientRequestSettings,
     CompletionResult,
+    ModelListing,
     StopReason,
     ToolResultClearing,
     TurnCeiling,
@@ -179,7 +180,6 @@ def _run_started_at() -> float:
     instant is taken one second early: a recording written just after the first call is never read as older than it.
 
     :return: epoch seconds, one second before the first call
-    :rtype: float
     """
     return time.time() - _FILE_CLOCK_SLACK_SECONDS
 
@@ -197,7 +197,7 @@ _ASKED: Final[Mapping[str, ClientRequestSettings]] = {
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Completion:
-    """One reply: the completion port's ten members, and five of the client's own.
+    """One reply: the completion port's ten members, and seven of the client's own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult`. Every count and the cost are ``None`` where the
     provider reported nothing, never ``0``.
@@ -225,6 +225,11 @@ class Completion:
     :ivar pricing_stale_since: When the catalogue rates that priced the call expired with every refresh since failing
         (UTC): the cost is the last rates read, kept rather than failing the call. ``None`` when the rates were
         fresh, and for a cost the provider reported (OpenRouter's), which no catalogue priced.
+    :ivar resent_after: What each resend of the call followed, oldest first, as a tool turn's reply names them
+        (:attr:`~threetears.evals.schema.TurnReply.resent_after`); empty when the first send was answered.
+    :ivar maybe_billed_sends: How many sends of the call broke before any response began and were sent again: the
+        provider may have served and billed each, and ``cost_usd`` holds none of it. A usage row counts them
+        (``RoleUsage.maybe_billed_sends``).
     """
 
     content: str
@@ -242,6 +247,19 @@ class Completion:
     served_provider: str | None
     pricing_failure: str | None
     pricing_stale_since: datetime | None
+    resent_after: tuple[str, ...] = ()
+    maybe_billed_sends: int = 0
+
+
+#: What a resend after a first send that broke before any response began follows, as its words open: what
+#: :attr:`Completion.maybe_billed_sends` counts.
+_DROPPED_BEFORE_RESPONSE: Final = "the connection broke before any response began"
+
+
+def _dropped(resent_after: Sequence[str]) -> int:
+    """How many of a call's resends followed a send that broke before any response began: the sends the provider may
+    have billed, which no reply's cost holds."""
+    return sum(1 for after in resent_after if after.startswith(_DROPPED_BEFORE_RESPONSE))
 
 
 #: What :meth:`Model.refresh_prices` answers while replaying, and for a model its pricer prices: no catalogue is read,
@@ -565,7 +583,13 @@ class _Live:
         With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
         failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
         many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
-        provider may still have served it. Every wait and resend ends within one
+        provider may still have served it. A first send whose connection broke before any response began
+        (``httpx.RemoteProtocolError`` out of sending it: "Server disconnected without sending a response") is sent
+        again once, whatever ``failure_attempts`` is: a completion request changes nothing but what it bills, so one
+        resend costs at most a second call, and the drop, with its own text, is named among what the resend followed,
+        since the provider may have served the first and billed it. The first send is read streamed so that a
+        ``RemoteProtocolError`` while its body is read (a response begun and cut short: served and billed) is told
+        apart, and raised as it came, never resent. Every wait and resend ends within one
         request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
@@ -580,18 +604,33 @@ class _Live:
         until = time.monotonic() + budget if budget is not None else None
         made = declined = failed = 0
         resent_after: list[str] = []
-        # The answer the next resend follows, re-read if that resend brings none; or the connection never made.
+        # The answer the next resend follows, re-read if that resend brings none; or the first send that brought none:
+        # a connection never made, or one the server dropped with no response.
         previous: httpx.Response | None = None
-        unsent: httpx.ConnectError | httpx.ConnectTimeout | None = None
+        unsent: httpx.ConnectError | httpx.ConnectTimeout | httpx.RemoteProtocolError | None = None
         while True:
             if made == 0:
+                # Sent streamed, so a failure before the response began is told apart from one while its body was
+                # read: only the first is a drop with no response.
+                request = client.build_request("POST", self._url + path, json=body, headers=headers)
+                response: httpx.Response | None
                 try:
-                    response: httpx.Response | None = await client.post(self._url + path, json=body, headers=headers)
+                    begun = await client.send(request, stream=True)
                 except (httpx.ConnectError, httpx.ConnectTimeout) as never:
                     if failure_attempts < 2:
                         raise
                     # NOSILENT: the request never reached the provider; it is sent again below, or raised there.
                     response, unsent = None, never
+                except httpx.RemoteProtocolError as dropped:
+                    # NOSILENT: the connection broke before any response began; sent again once below, or raised there.
+                    response, unsent = None, dropped
+                else:
+                    try:
+                        # A body cut short here (RemoteProtocolError too) was served and billed: raised as it came.
+                        await begun.aread()
+                    finally:
+                        await begun.aclose()
+                    response = begun
             else:
                 response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
@@ -614,10 +653,16 @@ class _Live:
             if response is None:
                 assert unsent is not None
                 failed += 1
-                if failed >= failure_attempts:
+                dropped_once = isinstance(unsent, httpx.RemoteProtocolError)
+                if failed >= failure_attempts and not dropped_once:
                     raise unsent
                 after, wait = (
-                    f"the connection was never made ({type(unsent).__name__})",
+                    (
+                        f"{_DROPPED_BEFORE_RESPONSE} (RemoteProtocolError: {unsent}), so the provider may have served "
+                        "and billed the call"
+                        if dropped_once
+                        else f"the connection was never made ({type(unsent).__name__})"
+                    ),
                     self._retry.wait_s(failed, None),
                 )
                 standing: BaseException = unsent
@@ -706,6 +751,7 @@ class _Live:
         declared = self._declared()
         asked = replace(self._asked, strict_output=directive.asks_strict(self.provider))
         refused: list[tuple[dict[str, Any], ProviderError]] = []  # Any: a JSON body
+        resent: list[str] = []
 
         async def send(wire: WireSettings, facts: SettingFacts) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
             body = request_body(
@@ -722,7 +768,8 @@ class _Live:
             if refused and refused[-1][0] == body:
                 raise refused[-1][1]  # nothing closer to send: the refusal stands, as it came
             try:
-                status, parsed, _ = await self._post(body)
+                status, parsed, after = await self._post(body)
+                resent.extend(after)
                 return status, parsed
             except ProviderError as failure:
                 refused.append((body, failure))
@@ -765,6 +812,8 @@ class _Live:
             served_provider=reply.served_provider,
             pricing_failure=price.unpriced_reason,
             pricing_stale_since=price.stale_since,
+            resent_after=tuple(resent),
+            maybe_billed_sends=_dropped(resent),
         )
 
     async def turn(
@@ -826,6 +875,7 @@ class _Live:
             sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
             input_transformations=turned.input_transformations,
             resent_after=resent_after,
+            maybe_billed_sends=_dropped(resent_after),
         )
 
     def turn_price_ceiling(
@@ -842,6 +892,13 @@ class _Live:
         if self.rated() is not None:
             return None
         return self._fallback.unbounded_because(self.last_refresh)
+
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds one."""
+        if self._asked.max_tokens is None:
+            return "the request has no output cap"
+        unbounded = self.unbounded_because()
+        return unbounded[0] if unbounded is not None else None
 
     async def refresh_prices(self) -> PriceRefresh:
         if self.rated() is not None:
@@ -902,9 +959,9 @@ class Model:
     naming the variable, unless a recording will serve every call.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
-    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Two resends,
-    and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
-    bill, is answered with the closest setting the model then takes, learned for every model sharing the
+    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. The
+    resends below are made, and nothing else is retried. A provider's refusal of a setting the request carried, which
+    the provider did not bill, is answered with the closest setting the model then takes, learned for every model sharing the
     :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
     spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries), which it also
     did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
@@ -914,7 +971,12 @@ class Model:
     timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
     connection was never made, is sent again too, two attempts in all by default
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
-    and the reply names what each resend followed (``TurnReply.resent_after``).
+    and the reply names what each resend followed (``TurnReply.resent_after``). A call or a turn whose first send's
+    connection broke before any response began (``httpx.RemoteProtocolError``) is sent again once, after the same wait;
+    one cut short while its body was read was served and is raised, never resent. The
+    request changes nothing but what it bills, and the provider may have served and billed the first: a WARNING logs it,
+    a turn's reply names it, and a completion names it (``Completion.resent_after``) and counts it
+    (``Completion.maybe_billed_sends``), which its usage row counts in turn (``RoleUsage.maybe_billed_sends``).
 
     **Keys.** A model handed no ``api_key=`` reads its provider's variable (``ANTHROPIC_API_KEY``), then the
     variables ``<VARIABLE>_FALLBACKS`` names, a comma list tried in order
@@ -934,7 +996,7 @@ class Model:
     recording is whole, so recording it again is never the remedy.
 
     **Spend.** A call made inside an eval's runner call, live or replayed, is added to that call's spend
-    (:func:`~threetears.evals.kernel.note_spend`), so a runner that calls a model reports what it cost with no
+    (:func:`~threetears.evals.kernel.runner_spend.note_spend`), so a runner that calls a model reports what it cost with no
     ``Answer``.
 
     **Tool turns.** On Anthropic, :meth:`turn` sends one turn of a tool-calling loop (the
@@ -992,69 +1054,51 @@ class Model:
         """Build the client; nothing is sent until the first call.
 
         :param id: The model id: ``vendor/model`` for OpenRouter, the provider's own id otherwise.
-        :ptype id: str
         :param provider: ``"openrouter"``, ``"anthropic"`` or ``"openai"``; required for a bare id with no ``base_url``.
-        :ptype provider: Provider | None
         :param api_key: The key, or ``None`` to read the provider's variable and the fallback keys
             ``<VARIABLE>_FALLBACKS`` names (the class docstring's **Keys**). A key passed here never fails over:
             which key a call spends is then the host's choice.
-        :ptype api_key: str | None
         :param base_url: An OpenAI-compatible endpoint's root (``https://api.deepseek.com/v1``), or ``None``.
-        :ptype base_url: str | None
         :param max_tokens: The output cap, reasoning included; ``None`` sends :data:`DEFAULT_MAX_TOKENS`. Above the
             model's own cap (as the catalogue or a refusal says), that cap.
-        :ptype max_tokens: int | None
         :param effort: Reasoning, as an effort word (``none`` to ``max``) or a token budget, sent as the family takes
             it: Anthropic's ``output_config.effort`` over adaptive thinking or a thinking budget
             (``thinking.budget_tokens``), OpenAI's ``reasoning_effort``, OpenRouter's ``reasoning.effort`` or
             ``reasoning.max_tokens``. A budget where only words are taken (OpenAI's chat completions, a model
             that refused a budget) goes as the word its share of ``max_tokens`` maps to, and the completion's
             ``sent_settings.unsent_reasoning_max_tokens`` names it. ``None`` sends none.
-        :ptype effort: str | int | None
         :param temperature: The sampling temperature, or ``None`` for the model's own. Never sent to a Claude 5.5
             model, nor beside Anthropic thinking; each completion says what was sent.
-        :ptype temperature: float | None
         :param recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
             file being loaded (``python -m threetears.evals FILE``), else in the working directory.
-        :ptype recording: str | os.PathLike[str] | None
         :param turn_recording: A tool-turn recording, per session (:meth:`turn_session`): replayed when the file exists,
             whatever ``RECORD`` says, else recorded live; read where ``recording`` is. Anthropic only. A model replaying
             one still sends its completions live, so it still needs a key unless ``recording`` replays those.
-        :ptype turn_recording: str | os.PathLike[str] | None
         :param catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
-        :ptype catalogue: Catalogue | None
         :param http: An ``httpx.AsyncClient`` to send through, used as it is built, or ``None`` to open one.
-        :ptype http: httpx.AsyncClient | None
         :param own_http: Whether the model owns ``http``, so :meth:`aclose` closes it; ``False`` leaves it the caller's.
             Refused without ``http``.
-        :ptype own_http: bool
         :param transport: The ``httpx`` transport of the client the model opens itself (HTTP/2, a proxy, a test's mock),
             or ``None`` for ``httpx``'s own. Closing the model closes it with that client, as ``httpx`` does, so
             a transport shared between models is closed by the first one closed. Refused beside ``http``.
-        :ptype transport: httpx.AsyncBaseTransport | None
         :param timeout: The timeout of the client the model opens itself (seconds, or an ``httpx.Timeout``); ``None``
             is 600 seconds a request, 20 to connect. Refused beside ``http``, whose own timeout holds.
-        :ptype timeout: float | httpx.Timeout | None
         :param headers: Headers every request on the client the model opens itself carries; ``None`` for none. The
             provider's key and version headers, which each request sets, win over one of the same name. Refused
             beside ``http``, whose own headers hold.
-        :ptype headers: Mapping[str, str] | None
         :param catalogue_fetch_timeout: How long this model's price-catalogue read waits, in seconds: on a fetch another
             task started (it then gives up, unpriced, while that fetch goes on for its starter), and as the timeout of
             a fetch it starts itself on a client the catalogue opens. ``None`` is
             :data:`~threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S`. Models sharing a catalogue each keep their own.
-        :ptype catalogue_fetch_timeout: float | None
         :param retry: How a call the provider declined (a 429 that is no spent quota, a 529, a 503) is sent again;
             ``None`` is :class:`~threetears.evals.providers.DeclinedRetry`'s defaults: three attempts, waiting the
             provider's ``retry-after`` or one then two seconds, any wait at most twenty; and two attempts of a tool
             turn the provider failed with a 5xx, or whose connection was never made.
-        :ptype retry: DeclinedRetry | None
         :param pricer: What the host pays for a call (:class:`~threetears.evals.providers.Pricer`): asked for its rates
             before every call is bounded and, when it answered them, for the call's price after it returns; a call it
             answers no rates for is bounded and priced by the default's catalogue route. ``None`` with no ``catalogue`` either is the default for
             standalone and development use, :class:`~threetears.evals.providers.AnthropicPublishedRates`; ``None``
             beside a ``catalogue`` prices every call from that catalogue, as before.
-        :ptype pricer: Pricer | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), a ``<VARIABLE>_FALLBACKS`` naming a variable the environment does not set, the primary itself
             or one variable twice, ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it,
@@ -1140,7 +1184,13 @@ class Model:
         variable = KEY_VARIABLES[self.provider]
         keys = _KeyChain((("api_key=", api_key),)) if api_key else _keys_from_environment(variable)
         if keys is None:
-            where = f"; or record {self.recording} once with it set" if self.recording is not None else ""
+            # Each says how to run with no key too: a recording made once with one replays offline after.
+            where = (
+                f"; or record {self.recording} once with it set"
+                if self.recording is not None
+                else f'; or pass recording="recordings/{id.rsplit("/", 1)[-1]}.jsonl" and run once with it set, and '
+                "every run after replays that file with no key"
+            )
             raise ValueError(f"no key for {self.provider}: pass api_key= or set {variable}{where}")
         live = _Live(
             id,
@@ -1179,14 +1229,10 @@ class Model:
         derived model leaves this one on an open transport.
 
         :param id: The model id, or ``None`` for this one.
-        :ptype id: str | None
         :param temperature: The temperature, or ``None`` for the model's own.
-        :ptype temperature: float | None
         :param catalogue: The catalogue to share, or ``None`` for one of its own.
-        :ptype catalogue: Catalogue | None
         :return: A new model, built as this one was in every other setting but ``turn_recording``, which stays this
             model's: a derived model serves a role's completions.
-        :rtype: Model
         """
         options = dict(self._options)
         if self._live is not None and options["http"] is None:
@@ -1199,14 +1245,10 @@ class Model:
         """Send a prompt pair, or serve it from the recording: the completion port's one call.
 
         :param system: The system message; an empty one is not sent.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: ``None``, a ``json_object`` directive, or a strict ``json_schema`` one, which goes as
             each provider enforces it (and as JSON mode, or no format on Anthropic, where it cannot be).
-        :ptype response_format: dict[str, Any] | None
         :return: The completion: a :class:`Completion` live, a replayed one from a recording.
-        :rtype: CompletionResult
         :raises ProviderError: The provider refused or failed the request (a refused setting is resent first).
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         :raises ValueError: ``response_format`` is not a directive the client sends.
@@ -1221,11 +1263,8 @@ class Model:
         """The reply to ``user``, as text.
 
         :param user: The user message.
-        :ptype user: str
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: The reply's text.
-        :rtype: str
         :raises ValueError: The reply did not finish (cut short, filtered, or an error), named with its stop reason.
         """
         return _finished(await self.generate(system=system or "", user=user)).content
@@ -1234,13 +1273,9 @@ class Model:
         """The reply to ``user`` as ``schema``, sent as a strict ``json_schema`` and validated on return.
 
         :param user: The user message.
-        :ptype user: str
         :param schema: The pydantic model the reply must be.
-        :ptype schema: type[T]
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: The validated reply.
-        :rtype: T
         :raises ValueError: The reply did not finish, named with its stop reason.
         :raises pydantic.ValidationError: The reply is not a ``schema``: pydantic's message says why. Never a default.
         """
@@ -1257,13 +1292,9 @@ class Model:
         by name when the runner is called, and a placeholder that is not a plain name when the template is read.
 
         :param template: The user message, with ``{field}`` placeholders.
-        :ptype template: str
         :param schema: The pydantic model each answer must be, or ``None`` for text.
-        :ptype schema: type[T] | None
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: ``async (case) -> answer``, whose docstring is the template's first line.
-        :rtype: Callable[[Mapping[str, Any]], Awaitable[str | T]]
         :raises ValueError: A placeholder that is not a plain name (``{0}``, ``{a.b}``, ``{a!r}``), or an unbalanced
             brace.
         """
@@ -1306,23 +1337,16 @@ class Model:
         The reply is priced as a completion is, ``None`` when unpriced, never ``0``.
 
         :param system: The system prompt; an empty one is not sent.
-        :ptype system: str
         :param messages: The conversation, oldest first.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools the model may call.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: The turn's output cap, thinking included.
-        :ptype max_tokens: int
         :param clearing: Old tool results the provider clears itself past its trigger (server-side context editing,
             sent as ``context_management`` with the ``context-management-2025-06-27`` beta); ``None`` clears nothing.
-        :ptype clearing: ToolResultClearing | None
         :param binding: The check the provider runs on the thinking blocks the conversation replays, sent as
             ``thinking.block_binding`` with the ``thinking-binding-controls-2026-08-01`` beta where the turn sends
             thinking; ``None`` asks for none. With ``error``, a history changed under a replayed thinking block is
             the provider's 400, a :class:`ProviderError`.
-        :ptype binding: ThinkingBinding | None
         :return: The model's reply.
-        :rtype: TurnReply
         :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
             ``turn_recording``, whose turns go through :meth:`turn_session`; settings a tool turn refuses (a
             temperature; a thinking budget, or ``effort='none'``, on a model whose declared facts say it takes none: a
@@ -1349,15 +1373,10 @@ class Model:
         (:meth:`turn_pricing_refusal` says which before a loop starts).
 
         :param system: The system prompt the turn would send.
-        :ptype system: str
         :param messages: The conversation it would send.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools it would send.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: Its output cap.
-        :ptype max_tokens: int
         :return: The ceiling, or ``None``.
-        :rtype: TurnCeiling | None
         :raises ValueError: As :meth:`turn` refuses the model.
         """
         return self._turn_client().turn_price_ceiling(
@@ -1377,7 +1396,6 @@ class Model:
         not read, too old, or holding no row for it.
 
         :return: ``None``, or the pricing refusal, naming the model, why, and what to do.
-        :rtype: str | None
         :raises ValueError: As :meth:`turn` refuses the model (a route other than Anthropic's, settings a tool turn
             refuses, completions replayed with no live client): that is no pricing refusal, so it is not returned as one.
         """
@@ -1417,11 +1435,8 @@ class Model:
         ceiling it answers kept for its turn.
 
         :param name: The session's name (``analyst``, ``editor-1``).
-        :ptype name: str
         :param snapshot: The snapshot the session reads.
-        :ptype snapshot: str
         :return: The session's client.
-        :rtype: ToolTurnClient
         :raises ValueError: As :meth:`turn` refuses the model, or an empty name or snapshot id.
         """
         if self._turns is not None:
@@ -1468,15 +1483,26 @@ class Model:
         replaying.
 
         :param system: The system message the call would send.
-        :ptype system: str
         :param user: The user message the call would send.
-        :ptype user: str
         :param response_format: The directive the call would send, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The ceiling in dollars, or ``None``.
-        :rtype: float | None
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
+
+    def price_ceiling_refusal(self) -> str | None:
+        """Why :meth:`price_ceiling` answers no ceiling as things stand, or ``None`` when it bounds a call. Reads nothing.
+
+        What a launch quotes when it refuses an arm under a cost cap whose call this model cannot price: the catalogue
+        not read (or its first read failing), its rows too old after a failed refresh, no row that prices the model,
+        a price the client cannot bound, or a request with no output cap. ``None`` while replaying, which costs
+        nothing. Await :meth:`refresh_prices` first, as the engine does, so it answers from the read the ceiling
+        would be priced from.
+
+        :return: The reason, or ``None``.
+        """
+        if self._live is None:
+            return None
+        return self._live.price_ceiling_refusal()
 
     def ceiling_is_estimate(self) -> bool:
         """Whether this model's price ceilings are estimates: bounds on rates its pricer does not guarantee.
@@ -1491,9 +1517,21 @@ class Model:
         bring-your-own-key upstream bills at its own rates. ``False`` for a replay, which costs nothing.
 
         :return: Whether the bound is an estimate.
-        :rtype: bool
         """
         return self._live.ceiling_is_estimate() if self._live is not None else False
+
+    @property
+    def served_over_changed_prompts(self) -> int:
+        """How many calls this model's replay served by their inputs over a prompt that has changed since they were
+        recorded (:attr:`RecordedCompletions.served_over_changed_prompts
+        <threetears.evals.testing.RecordedCompletions.served_over_changed_prompts>`): answers about a page as it was
+        then. ``0`` for a model that sends live or records.
+
+        :return: The count so far.
+        """
+        if isinstance(self._client, RecordedCompletions):
+            return self._client.served_over_changed_prompts
+        return 0
 
     @property
     def last_price_refresh(self) -> PriceRefresh | None:
@@ -1517,7 +1555,6 @@ class Model:
         :return: What the read found (:class:`~threetears.evals.providers.PriceRefresh`), also kept as
             :attr:`last_price_refresh`: whether it fetched the rows anew, when the rows held were fetched, and why the
             prices are not current. While replaying, nothing read and no failure.
-        :rtype: PriceRefresh
         """
         await self._client.refresh_prices()  # recording, the recorder forwards it to the live client
         read = _NOTHING_READ if self._live is None else self._live.last_refresh
@@ -1569,6 +1606,9 @@ class _Lease:
 
     def ceiling_is_estimate(self) -> bool:
         return self._model.ceiling_is_estimate()
+
+    def price_ceiling_refusal(self) -> str | None:
+        return self._model.price_ceiling_refusal()
 
     async def refresh_prices(self) -> PriceRefresh:
         return await self._model.refresh_prices()
@@ -1622,17 +1662,12 @@ class Clients:
         """Hold the configuration; nothing is built and no key is read until a role is asked for.
 
         :param default: The model a role named nowhere else gets, or ``None``.
-        :ptype default: str | Model | None
         :param catalogue: The catalogue every model shares, or ``None`` for one of the factory's own.
-        :ptype catalogue: Catalogue | None
         :param http: The ``httpx.AsyncClient`` every model given by id sends through, never closing it, or ``None``
             for each to open its own.
-        :ptype http: httpx.AsyncClient | None
         :param own_http: Whether the factory owns ``http``, so :meth:`aclose` closes it after every model; ``False``
             leaves it the caller's. Refused without ``http``.
-        :ptype own_http: bool
         :param **roles: Role (``judge``, ``simulator``, ``analysis``, ``variation``, ``proposer``) -> its model.
-        :ptype roles: str | Model
         :raises ValueError: A keyword that is not one of the engine's roles, or ``own_http`` without ``http``.
         """
         if own_http and http is None:
@@ -1653,13 +1688,9 @@ class Clients:
         """A client for ``role`` bound to ``model``, built on first use and kept.
 
         :param role: The role it serves.
-        :ptype role: CompletionRole
         :param model: The model id, or ``None`` for the role's own.
-        :ptype model: str | None
         :param temperature: The temperature, or ``None`` for the model's own.
-        :ptype temperature: float | None
         :return: A lease on the factory's model; closing it releases nothing.
-        :rtype: BoundCompletionClient
         :raises ValueError: No model was named and the role has none, or the model cannot be built (no key, no
             provider).
         """
@@ -1693,7 +1724,6 @@ class Clients:
         every role, since each prices from the same rows. Never raises; a first read that fails is logged.
 
         :return: What the read found (:class:`~threetears.evals.providers.PriceRefresh`).
-        :rtype: PriceRefresh
         """
         return await self.catalogue.read()
 
@@ -1705,7 +1735,6 @@ class Clients:
 
         :return: Model id -> why it is unpriced, for each model named in the factory the catalogue cannot price; empty
             when every one is priced.
-        :rtype: dict[str, str]
         """
         named = {
             template if isinstance(template, str) else template.model_name: template
@@ -1732,6 +1761,58 @@ class Clients:
             if matched is None or self.catalogue.rates(matched) is None:
                 unpriced[model_id] = f"no single priced row of OpenRouter's catalogue matches {model_id!r}"
         return unpriced
+
+    async def model_listing(self, model: str, *, role: CompletionRole | None = None) -> ModelListing | None:
+        """Whether the provider a call to ``model`` goes to still lists it, read now: the engine's served-model check.
+
+        A launch asks this of every model an arm names before the arm is priced, and refuses an arm whose model the
+        provider no longer lists. OpenRouter's list is the price catalogue every model here shares, so the read is
+        the one a price ceiling needs and one catalogue read serves both: rows younger than ``refresh_after`` are
+        kept, older ones are fetched again. A list that cannot be read now, or whose refresh failed so the rows held
+        are stale, answers ``listed=None`` saying why, and the launch goes ahead saying the check was skipped.
+
+        The provider is the one the factory builds ``model`` on in ``role``: the role's own (a role given as a
+        :class:`Model` keeps its provider), else OpenRouter for a ``vendor/model`` id. Only OpenRouter's list is read
+        here, so a model going to Anthropic or OpenAI directly, or to an OpenAI-compatible ``base_url``, answers
+        ``None``: there is no list to check it against. ``role=None`` is a model the host calls through its own route
+        (a subject's candidate): this factory does not build it, so it does not know where it goes and answers
+        ``None``, which the launch reports as a check skipped. A host whose own route is one this factory reads a list
+        of says so by answering for ``role=None`` in a factory of its own.
+
+        :param model: The model id, as the launch names it.
+        :param role: The engine role the model serves, or ``None`` for a candidate the host calls itself.
+        :return: The listing, or ``None`` when the factory reads no list for the model in that role.
+        """
+        if role is None:
+            return None
+        if "/" not in model:
+            return None
+        # A vendor/model id goes to the router whose list the catalogue is, as Model builds it; a role's Model built
+        # on another provider or a base_url derives every model of that role there, where no list is read.
+        routed = _provider_of(model, None, None)
+        template = self._roles.get(role, self._default)
+        if isinstance(template, Model) and (template.base_url is not None or template.provider != routed):
+            return None
+        read = await self.catalogue.read()
+        listed = self.catalogue.lists(model)
+        if listed is None:
+            return ModelListing(
+                provider=routed,
+                listed=None,
+                detail=read.failure or "the provider's model list (the price catalogue) has not been read",
+            )
+        fetched = self.catalogue.fetched_at
+        when = fetched.isoformat(timespec="seconds") if fetched is not None else "an unknown time"
+        if self.catalogue.stale_since is not None:
+            return ModelListing(
+                provider=routed,
+                listed=None,
+                detail=(
+                    f"the provider's model list held was read at {when} and reading it again failed "
+                    f"({self.catalogue.refresh_failure or 'no reason given'}), so it is not current"
+                ),
+            )
+        return ModelListing(provider=routed, listed=listed, detail=f"the provider's model list, read at {when}")
 
     async def aclose(self) -> None:
         """Close every model the factory built, and forget them, then the ``http`` client it owns; a failure to close

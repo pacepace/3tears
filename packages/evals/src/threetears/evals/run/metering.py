@@ -97,7 +97,6 @@ class MeteredCallTally:
         — a drain would leave the ledger unable to say what the whole run did.
 
         :param baseline: A tally taken from the same ledger at an earlier moment.
-        :ptype baseline: MeteredCallTally
         :return: The difference. A spend's ``provider_units`` is ``None`` whenever THIS cell
             observed no new units at that provider, preserving unknown-vs-zero.
 
@@ -115,7 +114,6 @@ class MeteredCallTally:
             tally contributes nothing rather than a negative, and a provider whose entry is
             unchanged in both calls and units drops out entirely — the cell did nothing
             there, and an entry saying so would read as an observation.
-        :rtype: MeteredCallTally
         """
         prior_by_key = {(sp.provider, sp.provider_unit): sp for sp in baseline.spends}
         deltas: list[ExternalSpend] = []
@@ -153,9 +151,7 @@ def _folded(spends: dict[tuple[str, str | None], ExternalSpend], spend: External
     still happened and is counted by the caller, but nothing can be attributed.
 
     :param spends: The totals to fold into.
-    :ptype spends: dict[tuple[str, str | None], ExternalSpend]
     :param spend: The calling tool's consumption report for one call, or ``None``.
-    :ptype spend: ExternalSpend | None
     """
     if spend is None or spend.provider is None:
         return
@@ -225,12 +221,9 @@ class MeteredCallLedger:
 
         :param run_id: The eval run this bounds — named in the log line of a refusal, so it is attributable to
             its run.
-        :ptype run_id: str
         :param ceiling: The landed metered-call count at which no new cell starts, or
             ``None`` for counted-but-unbounded.
-        :ptype ceiling: int | None
         :param none_declared: The host declared it has no metered tools; requires a ``ceiling`` of 0.
-        :ptype none_declared: bool
         :raises ValueError: ``none_declared`` with a ceiling other than 0, or a ceiling below 1 without it.
         """
         if none_declared and ceiling != 0:
@@ -266,19 +259,14 @@ class MeteredCallLedger:
         engine's knowledge, so the engine keeps it.
 
         :param run_id: The eval run this bounds.
-        :ptype run_id: str
         :param max_metered_calls: Optional per-run override (validated ``> 0`` at the
             service boundary). ``None`` inherits the default below.
-        :ptype max_metered_calls: int | None
         :param configured_max_metered_calls: The default ceiling, as a value, or ``None`` for a host that
             declares it has no metered tools.
-        :ptype configured_max_metered_calls: int | None
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
-        :ptype enforcement_enabled: bool
         :return: A ledger bound to this run's effective ceiling, counting without bounding
             when the caller has enforcement off, and refusing every metered call at dispatch for a host
             that declared none.
-        :rtype: MeteredCallLedger
         :raises ValueError: An override for a host that declares no metered tools.
         """
         return cls(
@@ -307,15 +295,11 @@ class MeteredCallLedger:
         switch off, and a metered call on it contradicts the declaration.
 
         :param max_metered_calls: Optional per-run override.
-        :ptype max_metered_calls: int | None
         :param configured_max_metered_calls: The default ceiling, as a value, or ``None`` for a host that
             declares no metered tools.
-        :ptype configured_max_metered_calls: int | None
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
-        :ptype enforcement_enabled: bool
         :return: The effective ceiling, ``0`` for a host declaring no metered tools, or ``None`` when
             eval enforcement is disabled.
-        :rtype: int | None
         :raises ValueError: An override for a host that declares no metered tools — it would bound nothing.
         """
         if configured_max_metered_calls is None:
@@ -342,16 +326,12 @@ class MeteredCallLedger:
         vocabulary cannot reach the metered-call ledger and miss the cost cap.
 
         :param max_metered_calls: Optional per-run override.
-        :ptype max_metered_calls: int | None
         :param configured_max_metered_calls: The default ceiling, or ``None`` for a host that declares no
             metered tools.
-        :ptype configured_max_metered_calls: int | None
         :param enforcement_enabled: Whether the caller enforces eval ceilings at all.
-        :ptype enforcement_enabled: bool
         :return: A :data:`~threetears.evals.schema.models.MeteredCallOrigin` value: ``"none_declared"``
             for a host declaring no metered tools, else ``"uncapped"`` when enforcement is off, else
             ``"chosen"`` or ``"inherited"``.
-        :rtype: KnownMeteredCallOrigin
         """
         if configured_max_metered_calls is None:
             return "none_declared"
@@ -379,7 +359,6 @@ class MeteredCallLedger:
         :meth:`tally` and not here: the ceiling never acts on them.
 
         :param meter: The cell's meter, from :meth:`cell`.
-        :ptype meter: CellMeter
         """
         self._landed += meter.tally().calls
 
@@ -391,9 +370,7 @@ class MeteredCallLedger:
         of refusals, which this holding's own are then added to.
 
         :param calls: The metered calls the run's stored cells landed.
-        :ptype calls: int
         :param refused: The metered calls the run's stored cells were refused at dispatch.
-        :ptype refused: int
         """
         self._landed += calls
         self._refused += refused
@@ -416,7 +393,6 @@ class MeteredCallLedger:
         so a cell's slice is exact whether or not other cells of the run are calling at the same time.
 
         :yield: The cell's meter.
-        :rtype: Iterator[CellMeter]
         """
         meter = CellMeter()
         token = _OPEN_CELL.set((self, meter))
@@ -438,18 +414,14 @@ class MeteredCallLedger:
         no metered tools, where the call contradicts the declaration.
 
         :param tool: Catalog name of the tool making the call.
-        :ptype tool: str
         :param action: The action name, unprefixed.
-        :ptype action: str
         :param spend: What the calling tool says this ONE call consumes. ``None`` when the
             tool declared no provider at all, which the metering-declaration canary
             refuses for a metered action — the call is still counted, and
             lands unattributed, because a call this let through has happened
             whatever the declaration says about it.
-        :ptype spend: ExternalSpend | None
         :return: True when the call may proceed (and has been counted), False when the host declared no
             metered tools (and the refusal has been counted).
-        :rtype: bool
         """
         meter = self.open_cell()
         if self._none_declared:
@@ -496,7 +468,6 @@ class MeteredCallLedger:
         vocabulary does not discharge that line — it is a seam decision, not a pricing one.
 
         :param spend: The calling tool's consumption report for one call, or ``None``.
-        :ptype spend: ExternalSpend | None
         """
         _folded(self._spends, spend)
 
@@ -509,11 +480,8 @@ class MeteredCallLedger:
         like a provider outage invites exactly the retry loop it exists to stop.
 
         :param tool: Catalog name of the tool the call was for.
-        :ptype tool: str
         :param action: The action name, unprefixed.
-        :ptype action: str
         :return: One sentence pair, safe to hand back as an ``ActionResult`` description.
-        :rtype: str
         :raises ValueError: The ledger belongs to a host that declared metered tools; a per-run ceiling stops
             the run between cells and refuses no call, so there is nothing to say to a candidate.
         """

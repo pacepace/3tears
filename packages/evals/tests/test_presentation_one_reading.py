@@ -24,17 +24,12 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import (
-    GLOSSARY,
-    build_code_only_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report_html, report_html
+from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
-from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.words import (
     PASS_RATE,
@@ -47,9 +42,10 @@ from threetears.evals.analysis.report.words import (
 )
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.report.parts.words import reading_words
-from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
+from threetears.evals.analysis.style import CANNOT_TELL_APART, EVIDENCE_TERM, cannot_tell_apart, lint_prose
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
+from threetears.evals.analysis.style import measure_name_of
 
 from packages.evals.tests.analyst_support import shape_bundle
 from packages.evals.tests.campaign_page_support import kairo_page
@@ -82,6 +78,7 @@ class _Surfaces:
     first_line: str
     exit_line: str | None
     exit_code: int
+    advice: str | None = None
 
 
 def _said(blocks: list[ReportBlock], source: str, section: str | None = None) -> list[DisclosureBlock]:
@@ -106,13 +103,17 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
             result = asyncio.run(runnable.run(store=":memory:"))
         (lead,) = _said(result.page.blocks, "verdict", "answer")
         (verdict,) = _said(result.report.blocks, "verdict", "header")
+        printed = str(result).splitlines()
+        # A comparison's print opens on its advice, the proof's line under it; one arm's, on its count.
+        advised = printed[0].startswith(f"{result.name}: Advice: ")
         replayed[name] = _Surfaces(
             result=result,
             lead=lead.text,
             verdict=verdict.text,
-            first_line=str(result).splitlines()[0],
+            first_line=printed[1] if advised else printed[0],
             exit_line=result.why_failed(),
             exit_code=result.exit_code(),
+            advice=printed[0] if advised else None,
         )
     yield replayed
 
@@ -122,9 +123,13 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 
 #: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better."
+    "Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
+    "was right on 90 for v1 and 89 for v2."
 )
+
+#: What to do on rung 3's result, said above it on the print, the aspect's page and the campaign's.
+_RUNG_3_ADVICE = "Advice: keep v1. v2 is behind it."
 
 #: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
 _RUNG_3_GUARDRAIL = "v2 may do worse than v1 on the No invented total score guardrail."
@@ -134,10 +139,12 @@ def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_n
     rungs: dict[str, _Surfaces],
 ) -> None:
     rung = rungs["rung3"]
-    # The page leads with the result; the guardrail is its warning, one line down.
-    assert rung.lead == _RUNG_3_LEAD
-    # The aspect page and the print say the same sentences, then what the guardrail means for the decision.
-    assert rung.verdict == f"{_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    # The page leads with what to do, then the result; the guardrail is its warning, one line down.
+    assert rung.lead == f"{_RUNG_3_ADVICE} {_RUNG_3_LEAD}"
+    # The aspect page and the print say the same sentences, then what the guardrail means for the decision; the print
+    # says the advice on its own line above them.
+    assert rung.verdict == f"{_RUNG_3_ADVICE} {_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    assert rung.advice == f"invoices: {_RUNG_3_ADVICE}"
     assert rung.first_line == f"invoices: {_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
     # The exit line opens with the result, then why the gate failed, on the guardrail by the same name.
     assert rung.exit_code == 4
@@ -161,8 +168,8 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
 ) -> None:
     """Production, 0.94: the code page's three-line lead was bold throughout, then repeated its linked phrase as a
     bracketed "(cannot tell apart)". On the campaign page and the aspect page the decision alone is bold, the figures
-    it rests on (``Of 90 trials each``) and the guardrail are regular, and the line holds one glossary link: the
-    undecided reading, in its sentence form."""
+    it rests on (``Of 90 trials each``) and the guardrail are regular, and the line holds one glossary link: the graded
+    evidence the bet holds, where its sentence says it."""
     rung = rungs["rung3"]
     for name, page in (
         ("campaign", campaign_report_html(rung.result.page)),
@@ -172,11 +179,11 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
         assert found is not None, name
         line = found.group(1)
         bold = [re.sub(r"<[^>]+>", "", said) for said in re.findall(r"<strong>(.*?)</strong>", line, re.S)]
-        assert bold == ["Accuracy: the evidence cannot tell v2 and v1 apart"], (name, line)
+        assert bold == ["Accuracy: v2 behind v1, proof pending"], (name, line)
         regular = re.sub(r"<strong>.*?</strong>", "", line, flags=re.S)
         assert "Of 90 trials each" in regular and "interval allows v2" in regular, (name, line)
         links = re.findall(r"<a\b[^>]*>(.*?)</a>", line)
-        assert links == ["cannot tell v2 and v1 apart"], (name, links)
+        assert links == ["evidence"], (name, links)
 
 
 def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs: dict[str, _Surfaces]) -> None:
@@ -186,33 +193,39 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
     lead = rung.lead
     # The figure is the measure's, in its own verb: the scoreboard's "passed" (73 and 88) is the pass rate's alone.
     assert f"Of 90 trials each, Accuracy {reading_verb('Accuracy')} on 90 for v1 and 89 for v2." in lead
-    assert "as much as 20 points worse or 18 better" in lead
+    assert "as much as 14 points worse or 12 better" in lead
     # No level the first screen leaves unexplained, no subject but an arm, no count of cases to settle without a margin.
     assert "%" not in lead and " It " not in lead and "settle" not in lead
     (contrasts,) = [
         block for block in rung.result.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
     ]
     (row,) = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
-    assert (row["interval"].text, row["cases"].text) == ("-20 to +18 pts", "30 paired")
+    assert (row["interval"].text, row["cases"].text) == ("-14 to +12 pts", "30 paired")
     assert lint_prose(lead) == []
-    # The lead links the phrase's one definition at its first use, in the header, before any table says it.
+    # The lead links the graded evidence's one definition at its first use, in the header, before any table says it.
     html = campaign_report_html(rung.result.page)
     header = html[: html.index("</header>")]
-    assert f'title="{escape(GLOSSARY[CANNOT_TELL_APART])}"' in header
+    assert f'title="{escape(GLOSSARY[EVIDENCE_TERM])}"' in header
 
 
 def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_the_control() -> None:
     """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead opens on the
     reading in the scorecard cell's own term, as 1017's does, then says it lies below September, September the
-    subject of its own count. Every figure reads at the pass rate's whole points, as Kairo's pages print it (number
-    policy, rule 2)."""
+    subject of its own count. Every figure reads at the pass rate's tenth of a point, as Kairo's pages print it (number
+    policy, rule 2: two significant figures of its narrowest interval's width, 7.0 points)."""
     page = kairo_page()
     (lead,) = _said(page.blocks, "verdict", "answer")
+    # Re-pinned deliberately (T1, coordinator ruling): qwen3.8-flash ran 897 trials and 2 were not graded (lost to the
+    # test setup); its count left them out of its denominator without saying so. The lead now says so after it, through
+    # the one owner of a pass count, with the two cases the bundle holds and whose failure the bundle records (the
+    # judge's call); everything before those sentences is unchanged.
     assert lead.text == (
         "Pass rate: qwen3.8-flash against September no worse than the margin, though below September. Of 897 trials, "
-        "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3 and 11 "
+        "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 "
         "points worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September "
-        "passed 765 and 1017 738. The interval allows 1017 to be as much as 6 points worse or 1 better."
+        "passed 765 and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better. "
+        "qwen3.8-flash's figures are over its graded trials: 2 of 897 were not graded. Not graded on qwen3.8-flash: "
+        "sup-most-overrated-dj, sup-festival-closer (the judge's call failed)."
     )
     # Each arm's first clause carries its scorecard cell's reading term, word for word.
     (rows,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects"]
@@ -227,8 +240,9 @@ def test_a_measure_s_figure_takes_its_own_verb_and_only_the_pass_rate_passes(run
     assert reading_verb("No invented total score") != "passed"
     rung = rungs["rung3"]
     for said in (rung.lead, rung.verdict, rung.first_line, rung.exit_line or ""):
-        figures = said.split("apart. ", 1)[1]
-        assert "Accuracy was right on" in figures and "passed" not in figures.split(" Over ", 1)[0]
+        counts = re.search(r"Of 90 trials each, [^.]*\.", said)
+        assert counts is not None, said
+        assert "Accuracy was right on" in counts.group(0) and "passed" not in counts.group(0)
 
 
 def test_any_other_counted_reading_s_verb_is_neutral_never_a_decision_word_of_the_glossary() -> None:
@@ -316,13 +330,18 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     assert CANNOT_TELL_APART in GLOSSARY and "same" in GLOSSARY[CANNOT_TELL_APART]
     assert not any(_RETIRED.search(words) for words in GLOSSARY.values())
     assert "separated" not in GLOSSARY
-    # A table cell says the short form; its column holds every verdict, so it links the verdict's definition, and
-    # the line that says the undecided reading links the one definition.
+    # A table cell the bet read says where the arm stands, never the short undecided form; its column holds every
+    # verdict, so it links the verdict's definition, and the glossary still defines the undecided reading once.
     report = rungs["rung3"].result.report
     (contrasts,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
     assert column.term == "verdict"
-    assert {row["verdict"].text.split(";")[0] for row in contrasts.rows} == {CANNOT_TELL_APART}
+    cells = {row["reading"].text: row["verdict"].text.split(";")[0] for row in contrasts.rows}
+    # The question's own reading, which its bet can still decide, says its proof is pending; every other reading is
+    # secondary and undecided.
+    assert cells and all(cell.startswith("v2 ") for cell in cells.values()), cells
+    assert cells.pop("Accuracy").endswith("proof pending"), cells
+    assert cells and all("undecided" in cell and "proof pending" not in cell for cell in cells.values()), cells
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
     assert html.count('<dt id="g-cannot-tell-apart">') == 1
@@ -450,13 +469,15 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
     # One name: a table's row prints it as a label, starting with a capital as every measure's row does; the print's
     # line, as the words open it.
     surfaces = _rendered(rungs["rung2"])
-    for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
+    # Rung 2's judge, re-recorded under the grounded wording ruled on 2026-11-16, fails one grounded trial.
+    scored = {"answer.grounded": "97.5%, 39 of 40", "answer.answers": "100%, 40 of 40", "answer.safe": "100%, 40 of 40"}
+    for dimension, rate in scored.items():
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
         assert table_label(named) == named[:1].upper() + named[1:]
         assert (
             f"| {table_label(named)} |" in surfaces["aspect.md"]
-            and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
+            and f"  {named}, scored pass/fail: {rate} trials" in surfaces["print"]
         )
         assert dimension not in surfaces["print"]
 

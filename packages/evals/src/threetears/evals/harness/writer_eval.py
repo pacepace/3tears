@@ -31,8 +31,9 @@ editor's own model. ``await WriterEval(...).run()``:
    readings and guardrails are fixed-n tests, read once, at the stop, on the cases launched, and the result and the
    page say how many; a candidate whose preference separated improved while a guardrail is not shown held on them
    goes on to the last case, and its pass says those readings had a second look. At the last case the side-by-side
-   reading is the one a single batch of every case reads, number for number, and the gated readings are too when every
-   batch run stored a page: a run that stored none is left out of them, its pairs read side by side, and said once.
+   reading is the one a single batch of every case reads, number for number, and so are the gated readings: a run that
+   stored no page sits in its arm's test setup, its unwritten reports failures in Report finished and absent from the
+   judged readings, its pairs read side by side, and said once.
    Either way each look is recorded, the result says what happened in one sentence, and the launch's disclosures say
    the resolution floor: the smallest preference, held on every case, the side's cases can separate
    (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal, under the
@@ -43,7 +44,7 @@ editor's own model. ``await WriterEval(...).run()``:
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
    design, and a dev run says so instead of reading it (its pass is still run and printed);
 8. returns a :class:`WriterResult`, each arm's summary read over its batches' runs as one
-   (:func:`~threetears.evals.analysis.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
+   (:func:`~threetears.evals.analysis.summary.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
    campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
    with the preference drawn against even and the side-by-side tables at the head of its Scorecard.
 
@@ -87,6 +88,13 @@ a pass's    cases x 2 orders x attempts x floor is above the pass's part
 A judge that cannot price a call yet (its rates unread) is not checked here; a pass its part cannot cover is then
 refused with nothing spent once its pages are written, and the result says so and exits 1, as it does for a pass that
 stops before its last pair.
+
+Once a page is written its judging is priced in full, page and all, and the engine admits it against what the run's
+cap has left before any call is paid for: a case whose judging does not fit is set aside unjudged, never scored low,
+and stops its run there (a re-judge takes it up). So the floor decides only what a launch is refused on, and whether a
+batch launches; each batch's run runs under all its arm's part has left, so a case is set aside only when the arm
+cannot afford its judging, and an arm's judging stays within its part wherever the judge's price ceiling bounds what
+it is billed. Its reports are never refused, so its running cases can still take it past its part by what they write.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -139,12 +147,13 @@ from threetears.evals.analysis import (
     GateResult,
     add_runs_to_campaign,
     campaign_report,
-    campaign_report_markdown,
     create_campaign,
     gate_verdicts,
     summarize_run,
-    summarize_runs,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.summary import summarize_runs
+from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import (
     ChartBlock,
@@ -158,14 +167,16 @@ from threetears.evals.analysis.report.blocks import (
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, report_rulers
-from threetears.evals.analysis.report.forms import EVEN_SHARE, PageForms, PreferenceShares
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import PreferenceShares
+from threetears.evals.analysis.report.number_forms.sets import EVEN_SHARE
 from threetears.evals.analysis.report.charts import (
     ChartReference,
     DotIntervalChart,
     DotIntervalPanel,
     DotIntervalRow,
 )
-from threetears.evals.analysis.report.md_parts import table_lines
+from threetears.evals.analysis.report.md_parts import escaped, markdown_table, table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
@@ -174,6 +185,8 @@ from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.metrics import reads_as_share
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_stored_results
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
 from threetears.evals.ops.analysis import CampaignDefinition
@@ -220,8 +233,11 @@ from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult, utc_now_iso
 from threetears.evals.schema.turns import TurnCeiling
+
+log = get_logger(__name__)
 
 #: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
 _RECORDED_MODEL: Final = "claude-sonnet-5-5"
@@ -487,7 +503,6 @@ def _launched_line(
     read_on: Mapping[str, int],
     *,
     capped: str | None = None,
-    left_out: int = 0,
 ) -> str:
     """Where a batched run stopped launching, in one sentence: the cases the gated readings and guardrails are read on,
     and how often. ``read_on`` is the cases each candidate's were read on, at its own stop or the last batch."""
@@ -506,13 +521,12 @@ def _launched_line(
             f"read {'' if again else 'once, '}on the cases launched by then: {each}."
         )
     if launched >= planned:
-        every = "every case" if not left_out else "every case whose batch run stored a page"
-        read = f"read on {every}" if again else f"read once, on {every}"
+        read = "read on every case" if again else "read once, on every case"
         return f"{ran}, so the gated readings and guardrails were {read}."
     separated = len(reports) == len(passes) and all(
         report.stopping is not None and report.stopping.stopped_at is not None for report in reports
     )
-    those = f"those {launched}" if not left_out else f"those of the {launched} whose batch run stored a page"
+    those = f"those {launched}"
     if capped is not None:
         return (
             f"{ran}, until the spend cap stopped it (the pass's line says where), so the gated readings and guardrails "
@@ -630,27 +644,40 @@ class WriterResult:
         return self.render()
 
     def render(self, *, full: bool = False) -> str:
-        """The result as text: the readings table, the pairwise table, each arm's results and spend, the promotion read
-        and disclosures.
+        """The result as text: what stopped it first, where anything did (an arm's run that failed, was cancelled or
+        was stopped by its budget, or a pairwise pass; a replay miss named as the call its recording does not hold),
+        then the readings table, the pairwise table, each arm's
+        results and spend, the promotion read and disclosures.
 
         Each reading is a measure the writer host declares, named as its descriptor names it, then each judged
         dimension of the template's rubric; then the side-by-side tables (:meth:`pairwise_text`). ``full`` adds every
         arm's whole summary and the campaign's page.
 
         :param full: Every arm's whole summary and the whole page, as Markdown, after the quiet summary.
-        :ptype full: bool
         :return: The text.
-        :rtype: str
         """
         candidates = " and ".join(arm for arm in self.arms if arm != self.control)
         cases = next(iter(self.arms.values())).n_cases
-        lines = [
+        # What stopped an arm's run leads, in the run's own words (a replay miss fails one), and the pairwise passes
+        # that did not complete after it, so no reader takes the readings below for a finished run's: the one decision
+        # every surface asks (``stopped_short``).
+        short = stopped_short(summary.ending for summary in self.arms.values())
+        lines: list[str] = []
+        if short is not None:
+            arm_of = {summary.run_id: arm for arm, summary in self.arms.items()}
+            lines += [f"{self.name}: {said}" for said in short.sentences(lambda ending: arm_of[ending.run_id])]
+            lines.append(short.covers(sum(summary.n_results for summary in self.arms.values())))
+        lines += [
+            f"{self.name}: the pairwise pass of {arm} did not complete: {one_line(why)}"
+            for arm, why in self.pairwise_unread.items()
+        ]
+        lines += [
             f"{self.name}: {candidates} against {self.control}, {cases} {_SIDE_WORDS[self.side]} case(s) x {self.k}, "
             f"judged by {self.judge}"
         ]
         lines += self._readings()
         lines += ["", self.pairwise_text(), ""]
-        lines += ["| stratum | cases |", "|---|---|", *(f"| {name} | {n} |" for name, n in self.strata.items())]
+        lines += markdown_table(["stratum", "cases"], [[name, str(n)] for name, n in self.strata.items()])
         for arm, summary in self.arms.items():
             label = f"{arm}{' (control)' if arm == self.control else ''}"
             lines.append(f"{label}: {summary.results_text}")
@@ -694,10 +721,9 @@ class WriterResult:
                     rows.setdefault(f"{dimension.name} (judged)", {})[arm] = (dimension.mean, dimension.n)
                     passes = dimension.scale == "pass_fail"
                     read.setdefault(f"{dimension.name} (judged)", (dimension.name, "judged", passes))
-        head = ["| reading | " + " | ".join(self.arms) + " |", "|---|" + "---|" * len(self.arms)]
         forms = PageForms.off_page()
         # A measure the campaign's aspect page states a contrast of reads as that page prints its arms' levels (one form
-        # per measure, number rule 1): Must-fix findings open reads 0.4 here as on the page, never 0.43.
+        # per measure, number rule 1): Must-fix findings open reads 0.43 here as on the page, never another form.
         bundles = [fold.report.bundle for fold in self.page.aspects]
         aspects = PageForms.of_aspects(bundles, self.page.readings)
         on_page: dict[str, tuple[PageForms, MeasureRuler, ContrastPlaces]] = {}
@@ -709,7 +735,7 @@ class WriterResult:
                     if comparison.reading == "measure" and places is not None:
                         ruler = rulers.of(comparison.name, comparison.reading)
                         on_page.setdefault(comparison.name, (aspects[bundle.aspect], ruler, places))
-        body = []
+        body: list[list[str]] = []
         for label, row in rows.items():
             key, kind, rate = read[label]
             if rate:
@@ -725,20 +751,20 @@ class WriterResult:
                 }
             else:
                 said = {arm: forms.reading(mean, measure=key, kind=kind).text for arm, (mean, _) in row.items()}
-            body.append(f"| {label} | " + " | ".join(said.get(arm, "-") for arm in self.arms) + " |")
-        return [*head, *body] if body else ["no reading: no arm's results carry a measure"]
+            body.append([label, *(said.get(arm, "-") for arm in self.arms)])
+        return (
+            markdown_table(["reading", *self.arms], body) if body else ["no reading: no arm's results carry a measure"]
+        )
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle.
 
         :param out_dir: The directory; created when missing.
-        :ptype out_dir: Path | str
         :return: Each file written, by role (``html``, ``markdown``, ``json``, ``bundle:<aspect>``).
-        :rtype: dict[str, Path]
         """
         written = self.page.write(out_dir)
         pairwise = Path(out_dir) / "pairwise.md"
-        said = "".join(f"\n{line}\n" for line in self._stopping_lines())
+        said = "".join(f"\n{escaped(one_line(line))}\n" for line in self._stopping_lines())
         pairwise.write_text(f"# Side by side\n\n{self.pairwise_text()}\n{said}", encoding="utf-8")
         return {**written, "pairwise": pairwise}
 
@@ -763,7 +789,6 @@ class WriterResult:
         like these that would settle a reading that did not separate, and what the pass spent of its part.
 
         :return: The text, as Markdown.
-        :rtype: str
         """
         lines = [_PAIRWISE_LEAD]
         for block in _side_by_side_blocks(
@@ -777,7 +802,10 @@ class WriterResult:
             if isinstance(block, TableBlock):
                 lines += ["", *table_lines(block)]
         if self.pairwise_unread:
-            lines += ["", *(f"pairwise pass of {arm}: {why}" for arm, why in self.pairwise_unread.items())]
+            lines += [
+                "",
+                *(escaped(one_line(f"pairwise pass of {arm}: {why}")) for arm, why in self.pairwise_unread.items()),
+            ]
         return "\n".join(lines)
 
     @property
@@ -796,7 +824,6 @@ class WriterResult:
         """Why :meth:`exit_code` is 4, in one line and the page's words; ``None`` when no gate failed.
 
         :return: ``lead-first's promotion gate failed on ...``, one clause per candidate whose gate failed.
-        :rtype: str | None
         """
         failed = [f"{arm}'s promotion gate {gate.why()}" for arm, gate in self.gates.items() if gate.failed]
         return "; ".join(failed) or None
@@ -840,63 +867,41 @@ class WriterEval:
 
         :param cases_dir: The directory of writer case files (``*.json.gz``); relative, it is read beside the eval file
             being loaded.
-        :ptype cases_dir: str | os.PathLike[str]
         :param arms: The arms, by name; the first is the control. At least two, no two alike in every lever (model,
             skill, effort, revisions, editor's model).
-        :ptype arms: Mapping[str, Writer]
         :param judge: The scoring judge, of another family than the writers, with its recording.
-        :ptype judge: WriterJudge
         :param recordings: The directory every arm's turn recordings sit under, read beside the eval file.
-        :ptype recordings: str | os.PathLike[str]
         :param budget_usd: Each report's dollar cap.
-        :ptype budget_usd: float
         :param max_cost_usd: The most the whole eval may spend, judge and pairwise pass included, split as the module
             docstring says. The run is refused when an arm's reports, each at ``budget_usd``, could pass its part,
             and, for a judge that prices its calls, when they and the judge's calls at their floor could, or a pass's
             calls at their floor could pass its part.
-        :ptype max_cost_usd: float
         :param held_out_fraction: The share of split groups placed on the held-out side when first minted.
-        :ptype held_out_fraction: float
         :param side: The side whose cases the arms run on; a promotion is read on ``held_out`` alone.
-        :ptype side: WriterSide
         :param name: The eval's name, its scope's unless ``scope`` says, and its campaign's.
-        :ptype name: str
         :param question: The question the campaign is filed asking; ``None`` asks whether the candidates write reports
             better than the control.
-        :ptype question: str | None
         :param k: Repeats of each case per arm: 1, the only count a recorded arm can run (the module docstring).
-        :ptype k: int
         :param pairwise_share: The part of ``max_cost_usd`` reserved for the pairwise passes, strictly between 0 and 1.
-        :ptype pairwise_share: float
         :param turns: Each report's turn cap, which bounds how long a cell can run (the module docstring's table).
-        :ptype turns: int
         :param request_s: The ceiling for one request on the writer's client, in seconds.
-        :ptype request_s: float
         :param margin: How far, in points of a 0-100 rate, a candidate may fall below the control before it is shown
             worse: the author's own, a non-inferiority question's. ``None`` declares none, and the question is a
             superiority one, a candidate's drop read against zero.
-        :ptype margin: float | None
         :param writer_provider: The provider every writer (and editor) is built on to record, whose key a recording run
             reads, and which tells a writer's family to the judge's check.
-        :ptype writer_provider: str
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
-        :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
-        :ptype scope: str | None
         :param stop_when: The pairwise pass's stopping rule, declared as :meth:`run` starts, before any arm launches,
             over the side's cases: ``separated`` stops the judge at the first case after which the preference
             separates, either way; ``never`` reads every case.
-        :ptype stop_when: StopWhen
         :param prior: An earlier run on these cases, whose projection the resolution line carries when it ran the same
             case files; one over other cases is said and not carried.
-        :ptype prior: WriterPrior | None
         :param batch_size: Under ``separated``, the cases every arm launches at a time, in the bet's order, before the
             pass reads on (4 unless told; a host picks it from its concurrent-cell count and its admitted-runs limit, as the constant beside the class says); ``never`` launches every case at once.
-        :ptype batch_size: int
         :param fewest_cases: The fewest side cases the author asks a run to read; a side with fewer runs, and its
             resolution line says it is under them: a floor is a disclosure, never a refusal. ``None`` asks none.
-        :ptype fewest_cases: int | None
         :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, a
             blank question, a ``k`` other than 1, a stopping rule that is neither, or a share, budget, turn cap or
             ceiling out of its range.
@@ -966,7 +971,6 @@ class WriterEval:
         """Mint the cases, launch every arm on one side's cases, file the campaign and read the promotion.
 
         :return: The result.
-        :rtype: WriterResult
         :raises ValueError: The case files do not read; a case withholds a note an arm's skill lacks; the side holds
             no case, or its set lists a case the directory no longer holds; a recording is missing with no key to
             make it; or the reports' budgets, or they and the judge's calls at their floor, could pass an arm's part,
@@ -1078,15 +1082,11 @@ class WriterEval:
         # The design, the question, the margin and the control are fixed here, in the call, before any arm runs: the
         # campaign, filed once they have, is dated now, so its criteria read as set before its results.
         declared_at = utc_now_iso()
-        # What each part has spent so far, as its runs and passes recorded it (a run that priced nothing counts its
-        # whole reservation): the spend cap bounds actual spend, so a batch that came in under its reservation leaves
-        # the rest to the next.
+        # What each part has spent so far, as its runs and passes recorded it (a run that priced nothing counts the
+        # whole cap it ran under): the spend cap bounds actual spend, so what a batch did not spend is left to the next.
         spent = {arm: 0.0 for arm in self.arms}
         spent_pass = {arm: 0.0 for arm in list(self.arms)[1:]}
         cap_stop: str | None = None
-        # The runs of the batches that stored no page on either arm, and their cases: read by the pass, outside the
-        # campaign's readings.
-        aside: list[str] = []
         ran_cases: dict[str, list[str]] = {arm: [] for arm in self.arms}
         run_ids: dict[str, list[str]] = {arm: [] for arm in self.arms}
         campaign_id: str | None = None
@@ -1110,6 +1110,19 @@ class WriterEval:
                     f"{forms.money_total(reserve).text} against the {forms.money_total(max(left, 0.0)).text} left of "
                     f"{whose}."
                 )
+                log.warning(
+                    "eval.writer_batch_cap_stop scope=%s batch=%d/%d launched_cases=%d planned_cases=%d spent_usd=%.4f "
+                    "next_reserve_usd=%.4f left_usd=%.4f part=%s",
+                    self.scope_id,
+                    index + 1,
+                    len(batches),
+                    len(launched),
+                    len(planned),
+                    total,
+                    reserve,
+                    left,
+                    whose,
+                )
                 break
             ref = case_set
             if batch is not None and len(batches) > 1:
@@ -1126,46 +1139,66 @@ class WriterEval:
             launched += planned if batch is None else batch
             for arm in [arm for arm in self.arms if arm not in held]:
                 ran_cases[arm] += planned if batch is None else batch
-            # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
-            # for; one batch of every case runs under the whole part, as it always has. The engine checks a run's cap
-            # between cells, so cells running at the crossing finish past it, and the last batch can take an arm past
-            # its part by what they go on to spend (an unbatched run overshoots the same way: #1111).
+            # The reservation decides whether a batch launches: its reports at the budget and its judging at the
+            # judge's floor, the one worst case known before a page is written, must fit what each part has left. Once
+            # launched, each arm's run runs under all its part has left, not under the reservation: a page's judging
+            # is priced in full only once the page exists, and the engine admits it against the run's cap before
+            # paying for any of it, so a run capped at a floor-priced reservation would set aside judging the arm
+            # could afford. The arm's runs run one after another, each under what the ones before it left, and the
+            # engine holds each to its cap, so together they stay within the part.
             reservation = costs.arm(size) if len(batches) > 1 else share
-            ran = await self._launch_batch(host, template_id, ref, dict.fromkeys(arms, reservation), arms)
+            caps = {arm: share - spent[arm] for arm in arms}
+            log.info(
+                "eval.writer_batch_launch scope=%s batch=%d/%d cases=%d arms=%s reserve_usd=%.4f caps=%s",
+                self.scope_id,
+                index + 1,
+                len(batches),
+                size // self.k,
+                ",".join(arms),
+                reservation,
+                ",".join(f"{arm}:{PageForms.off_page().money_total(cap).text}" for arm, cap in caps.items()),
+            )
+            ran = await self._launch_batch(host, template_id, ref, caps, arms)
             for arm, run_id in ran.items():
                 run_ids[arm].append(run_id)
-                spent[arm] += await run_blocking(
-                    eval_host.blocking_executor, self._spent, eval_host, run_id, reservation
+                run_spent, status, stopped = await run_blocking(
+                    eval_host.blocking_executor, self._spent, eval_host, run_id, caps[arm]
                 )
-            # A batch run that stored no page judged nothing, so it records no judge and would read as a second setup
-            # beside the runs that did, on either arm: it stays out of the campaign's readings, said once, and the pass
-            # reads its pairs beside the campaign's, a missing page losing its pair, or tying it when both are.
-            kept = []
-            for run_id in ran.values():
-                if len(batches) > 1 and await run_blocking(
-                    eval_host.blocking_executor, _stored_no_page, eval_host, [run_id], self.scope_id
-                ):
-                    aside.append(run_id)
-                else:
-                    kept.append(run_id)
-            in_campaign = {arm: [run_id for run_id in ids if run_id not in aside] for arm, ids in run_ids.items()}
-            if campaign_id is None and all(in_campaign.values()):
+                spent[arm] += run_spent
+                log.info(
+                    "eval.writer_batch_ran scope=%s batch=%d/%d arm=%s run=%s status=%s spent_usd=%.4f "
+                    "cap_usd=%.4f arm_spent_usd=%.4f arm_part_usd=%.4f stopped=%s",
+                    self.scope_id,
+                    index + 1,
+                    len(batches),
+                    arm,
+                    run_id,
+                    status,
+                    run_spent,
+                    caps[arm],
+                    spent[arm],
+                    share,
+                    stopped or "-",
+                )
+            # Every batch run joins the campaign, a run that stored no page among them: nothing of it was judged, so a
+            # judge dimension none of its results exercised reads at its arm's level, and it sits in its arm's test
+            # setup. Its unwritten reports count as failures in Report finished, the judged readings find no score of
+            # it, and the pass reads a missing page as losing its pair, or tying it when both are. A case whose judging
+            # the cost cap set aside did write its report: Report finished counts it as what it did, the judged readings
+            # leave it out, and the pass reads its page as any other.
+            if campaign_id is None:
                 campaign_id = await run_blocking(
-                    eval_host.blocking_executor, self._file_campaign, eval_host, in_campaign, template_id, declared_at
+                    eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id, declared_at
                 )
-            elif campaign_id is not None and kept:
+            else:
                 await run_blocking(
                     eval_host.blocking_executor,
                     add_runs_to_campaign,
                     eval_host.storage,
                     campaign_id,
                     self.scope_id,
-                    kept,
+                    list(ran.values()),
                 )
-            if campaign_id is None:
-                if index == len(batches) - 1:
-                    break
-                continue  # nothing judged yet, so nothing to read
             for arm in arms[1:]:
                 passes[arm] = await self._pairwise(
                     host,
@@ -1175,7 +1208,6 @@ class WriterEval:
                     judged=_report_of(passes.get(arm)),
                     past_the_stop=arm in going_on,
                     launched=launched if batched else None,
-                    outside=aside,
                 )
                 report = _report_of(passes[arm])
                 spent_pass[arm] = (
@@ -1188,15 +1220,8 @@ class WriterEval:
             await self._settle(host, campaign_id, passes, going_on, held, launched=len(launched))
             if len(held) == len(self.arms) - 1:
                 break
-        if campaign_id is None:
-            # Some arm's every batch stored no page: the campaign holds every run as it stands, and its pass reads them
-            # once, refusing two setups as a single launch's pass does.
-            aside = []
-            campaign_id = await run_blocking(
-                eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id, declared_at
-            )
-            for arm in list(self.arms)[1:]:
-                passes[arm] = await self._pairwise(host, campaign_id, arm, rule, launched=launched if batched else None)
+        # The first batch always launches, and files the campaign.
+        assert campaign_id is not None
         if cap_stop is not None:
             # The candidates still reading are read once more, asking nothing, so their records carry the stop.
             for arm in [arm for arm in list(self.arms)[1:] if arm not in held]:
@@ -1209,7 +1234,6 @@ class WriterEval:
                     past_the_stop=arm in going_on,
                     launched=launched,
                     out_of_budget=cap_stop,
-                    outside=aside,
                 )
         snapshot_of = {receipt.test_case_id: receipt.snapshot_id for _, receipt in on_side}
         wrote = {arm: {snapshot_of[case_id] for case_id in ids} for arm, ids in ran_cases.items()}
@@ -1217,6 +1241,7 @@ class WriterEval:
         disclosures[at:at] = self._recording_disclosures(turns, before, wrote)
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
+        disclosures += _rerendered_judge_line(self.judge)
         disclosures += await run_blocking(
             eval_host.blocking_executor,
             _over_budget_with_no_page,
@@ -1226,22 +1251,16 @@ class WriterEval:
             self.budget.spelled,
             floors,
         )
-        pageless = 0
-        if aside:
-            outside_cases, total = await run_blocking(
-                eval_host.blocking_executor, _pageless_cases, eval_host, run_ids, aside, self.scope_id
+        if len(batches) > 1:
+            pageless = await run_blocking(
+                eval_host.blocking_executor, _pageless_runs, eval_host, run_ids, self.scope_id
             )
-            pageless = len(outside_cases)
-            each = await run_blocking(
-                eval_host.blocking_executor, _aside_by_arm, eval_host, run_ids, aside, self.scope_id
-            )
-            who = " and ".join(f"{count} of {arm}'s" for arm, count in each.items())
-            disclosures.append(
-                f"{total} case{'' if total == 1 else 's'} stored no page on at least one arm. A batch run that stored "
-                f"none, {who}, is left out of the gated readings, Report finished among them, since no judge was asked "
-                "of it and it would read as a second setup; its unwritten reports count against its arm only side by "
-                "side, where a missing page loses its pair, or ties it when both are."
-            )
+            if pageless:
+                disclosures.append(
+                    await run_blocking(
+                        eval_host.blocking_executor, _pageless_line, eval_host, run_ids, pageless, self.scope_id
+                    )
+                )
         launch_line = None
         if batched:
             read_on = {arm: held[arm].launched if arm in held else len(launched) for arm in passes}
@@ -1253,7 +1272,6 @@ class WriterEval:
                 passes,
                 read_on,
                 capped=cap_stop,
-                left_out=pageless,
             )
             disclosures.append(launch_line)
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
@@ -1276,10 +1294,21 @@ class WriterEval:
             ),
         )
 
-    def _spent(self, host: EvalHost, run_id: str, reservation: float) -> float:
-        """What a run spent, as its results recorded it; its reservation when any of it went unpriced. Blocking."""
-        cost = summarize_run(host, run_id, self.scope_id).total_cost_usd
-        return reservation if cost is None else cost
+    def _spent(self, host: EvalHost, run_id: str, cap: float) -> tuple[float, str, str | None]:
+        """What a run spent, as its results recorded it (the whole cap it ran under when any of it went unpriced), its
+        status, and why a designed stop ended it, if one did. Blocking."""
+        summary = summarize_run(host, run_id, self.scope_id)
+        cost = summary.total_cost_usd
+        if cost is None:
+            return cap, summary.status, summary.stopped_because
+        # Beside its cost, what its priced cells' dropped sends may have billed, as the run's cap counted it: the next
+        # batch's cap is what the arm's part has left after both.
+        dropped = math.fsum(
+            maybe_billed_usd(row.usage, row.cost_roles)
+            for row in iter_stored_results(host.storage, run_id, self.scope_id)
+            if row.cost_usd is not None
+        )
+        return cost + dropped, summary.status, summary.stopped_because
 
     async def _launch_batch(
         self, host: OpsHost, template_id: str, case_set: CaseSetRef, parts: Mapping[str, float], arms: Sequence[str]
@@ -1532,7 +1561,6 @@ class WriterEval:
         past_the_stop: bool = False,
         launched: Sequence[str] | None = None,
         out_of_budget: str | None = None,
-        outside: Sequence[str] = (),
     ) -> _Pass:
         """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
         complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
@@ -1550,7 +1578,6 @@ class WriterEval:
                 past_the_stop=past_the_stop,
                 launched=launched,
                 out_of_budget=out_of_budget,
-                outside=outside,
             )
         except (ValidationFailedError, NotFoundError) as refused:
             return _Pass(status=None, why_not=f"refused before any call: {refused}")
@@ -1734,8 +1761,8 @@ class WriterEval:
                 for arm, ran in passes.items()
             }
         arms = {arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()}
-        # An arm launched in batches ran under its part of the cap across them, each batch under its reservation, so
-        # its ceiling is the part: the reservations summed would read above the cap.
+        # An arm launched in batches ran under its part of the cap across them, each batch under what the ones before
+        # it left, so its ceiling is the part: the runs' ceilings summed would read above the cap.
         arms = {
             arm: summary if len(run_ids[arm]) == 1 else summary.model_copy(update={"max_cost_usd": self._arm_part})
             for arm, summary in arms.items()
@@ -2200,47 +2227,63 @@ def _refuse_unheld_notes(cases: Sequence[WriterCaseFile], arms: Mapping[str, Wri
         )
 
 
-def _pageless_cases(
-    host: EvalHost, run_ids: Mapping[str, Sequence[str]], aside: Sequence[str], scope_id: str
-) -> tuple[set[str], int]:
-    """The cases of the runs set aside, and how many cases stored no page on at least one arm, read off every run's
-    stored results. Blocking."""
-    storage = host.storage
-    left = {result.test_case_id for run_id in aside for result in storage.query_eval_results_by_run(run_id, scope_id)}
-    none = {
-        result.test_case_id
+def _pageless_runs(host: EvalHost, run_ids: Mapping[str, Sequence[str]], scope_id: str) -> list[str]:
+    """The runs that stored no page: none of their results carries a stored page's open findings, a run that stored no
+    result at all among them. Blocking."""
+    return [
+        run_id
         for ids in run_ids.values()
         for run_id in ids
-        for result in storage.query_eval_results_by_run(run_id, scope_id)
-        if MUST_FIX_OPEN_MEASURE not in result.host_measures
-    }
-    return left, len(none)
-
-
-def _aside_by_arm(
-    host: EvalHost, run_ids: Mapping[str, Sequence[str]], aside: Sequence[str], scope_id: str
-) -> dict[str, int]:
-    """How many cases each arm ran in a batch run set aside, by arm, in the arms' order. Blocking."""
-    left = set(aside)
-    counts: dict[str, int] = {}
-    for arm, ids in run_ids.items():
-        cases = {
-            result.test_case_id
-            for run_id in ids
-            if run_id in left
+        if not any(
+            MUST_FIX_OPEN_MEASURE in result.host_measures
             for result in host.storage.query_eval_results_by_run(run_id, scope_id)
+        )
+    ]
+
+
+def _rerendered_judge_line(judge: WriterJudge) -> list[str]:
+    """The line a run says when its judge's replay served calls over pages rendered otherwise since they were recorded
+    (``Model.served_over_changed_prompts``): the same question, answered about the page as it was then. Empty for a
+    judge that served none, or one that does not count them (a host's own client)."""
+    changed = getattr(judge, "served_over_changed_prompts", 0)
+    if not isinstance(changed, int) or isinstance(changed, bool) or changed <= 0:
+        return []
+    return [
+        f"judge: {changed} call(s) replayed over a page rendered otherwise since it was recorded; each answer is about "
+        "the page as it read then"
+    ]
+
+
+def _pageless_line(host: EvalHost, run_ids: Mapping[str, Sequence[str]], pageless: Sequence[str], scope_id: str) -> str:
+    """Say once that batch runs stored no page, naming each arm by the cases its such runs launched, and what that does
+    to the readings. The cases are read off each run's own record, never off its stored results: a run whose job ended
+    before its first cell stored one stored no result at all, and its cases are no less unwritten. Blocking."""
+    storage = host.storage
+    left = set(pageless)
+    launched: dict[str, set[str]] = {}
+    none: set[str] = set()
+    for run_id in (run_id for ids in run_ids.values() for run_id in ids):
+        none |= {
+            result.test_case_id
+            for result in storage.query_eval_results_by_run(run_id, scope_id)
+            if MUST_FIX_OPEN_MEASURE not in result.host_measures
         }
-        if cases:
-            counts[arm] = len(cases)
-    return counts
-
-
-def _stored_no_page(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> bool:
-    """Whether none of the runs stored a page: no result of theirs carries a stored page's open findings. Blocking."""
-    return not any(
-        MUST_FIX_OPEN_MEASURE in result.host_measures
-        for run_id in run_ids
-        for result in host.storage.query_eval_results_by_run(run_id, scope_id)
+        if run_id in left:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("writer eval run", run_id, remedy="restore the run, then read the eval again")
+            launched[run_id] = set(run.test_case_ids)
+            none |= launched[run_id]
+    who = " and ".join(
+        f"{len(cases)} of {arm}'s"
+        for arm, ids in run_ids.items()
+        if (cases := {case for run_id in ids if run_id in left for case in launched[run_id]})
+    )
+    return (
+        f"{len(none)} case{'' if len(none) == 1 else 's'} stored no page on at least one arm. A batch run that stored "
+        f"none, {who}, is left out of the judged readings, since no judge was asked of it; its unwritten reports count "
+        "against its arm in Report finished and side by side, where a missing page loses its pair, or ties it when "
+        "both are."
     )
 
 

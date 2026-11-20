@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.trials import pass_count
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
@@ -38,7 +39,6 @@ from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks,
 from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
     call_blocks,
-    report_doc_blocks,
     unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames
@@ -62,7 +62,12 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     settle_blocks,
     table_blocks,
 )
-from threetears.evals.analysis.report.campaign.warnings import bar_warnings, floor_warnings, guardrail_warnings
+from threetears.evals.analysis.report.campaign.warnings import (
+    answer_split_warnings,
+    bar_warnings,
+    floor_warnings,
+    guardrail_warnings,
+)
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
@@ -76,9 +81,19 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
-from threetears.evals.analysis.report.build import contrast_evidence
-from threetears.evals.analysis.report.verdict import led_sentences
-from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.analysis.report.aspect.contrasts import contrast_advice, contrast_evidence
+from threetears.evals.analysis.report.aspect.common import case_namer
+from threetears.evals.analysis.report.verdict import (
+    graded_contrast,
+    led_sentences,
+    led_verdicts,
+    unfinished_line,
+    ungraded_sentence,
+    ungraded_sentences,
+)
+from threetears.evals.analysis.report.words import heading_case
+from threetears.evals.analysis.style import CANNOT_TELL_APART, EVIDENCE_TERM
+from threetears.evals.analysis.completeness import bundle_stopped_short
 
 __all__ = ["build_campaign_report"]
 
@@ -89,7 +104,6 @@ def build_campaign_report(
     aspect_reports: Mapping[str, Report],
     *,
     call: CampaignCall | None = None,
-    report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
@@ -101,34 +115,22 @@ def build_campaign_report(
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`).
-    :ptype readings: CampaignReadings
     :param aspect_reports: Each aspect's own page, keyed by its label: one per aspect, each built over the bundle its
         readings were read from (:func:`~threetears.evals.analysis.report.build.build_code_only_report`).
-    :ptype aspect_reports: Mapping[str, Report]
     :param call: The person's call; None while none is recorded.
-    :ptype call: CampaignCall | None
-    :param report_doc_id: The report document of the analysis the page is laid out for, when it is one
-        (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there; None for any
-        other page.
-    :ptype report_doc_id: str | None
     :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
         for: the first screen says so in the one regenerate line
         (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), and the page names it
         (``CampaignReport.unread_analysis_id``); None for any other page.
-    :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: The report document, read by its id, this version no longer reads, which this
         code-only page stands in for: the first screen says so in the same line
         (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`); None for any other page.
-    :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as its line says:
         :data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`, or the line of the retired
         writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
-    :ptype unread_line: str
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the arms line under the heading names; None names the arms its readings label.
-    :ptype arms: Sequence[CampaignArm] | None
     :param lead: The page's answer where its caller states its own, in place of the lead code writes from the
         readings: the way a harness whose eval reads a figure of its own (a judge's preference, a promotion's
         reading) states its answer on the page, as its own blocks with their own tone. They replace code's lead
@@ -137,13 +139,10 @@ def build_campaign_report(
         what warns. Each is in
         the ``answer`` section. None for code's lead; an empty sequence is refused. Nothing else on the page changes
         with it.
-    :ptype lead: Sequence[ReportBlock] | None
     :param folds_alone: Whether the folds are laid out without the page's own blocks, as a report document's evidence
         record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
         line, which the page's own Design & provenance would otherwise state once.
-    :ptype folds_alone: bool
     :return: The page, ``basis="code_only"``.
-    :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
         are of another campaign, or a given lead is empty or holds a block outside the ``answer`` section.
     """
@@ -152,7 +151,6 @@ def build_campaign_report(
         readings,
         aspect_reports,
         call=call,
-        report_doc_id=report_doc_id,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
@@ -169,7 +167,6 @@ def build_campaign_report_in_aspect_forms(
     aspect_reports: Mapping[str, Report],
     *,
     call: CampaignCall | None = None,
-    report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
@@ -184,34 +181,20 @@ def build_campaign_report_in_aspect_forms(
     forms are the engine's own.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it, as :func:`build_campaign_report` reads them.
-    :ptype readings: CampaignReadings
     :param aspect_reports: Each aspect's own page, keyed by its label, as :func:`build_campaign_report` reads them.
-    :ptype aspect_reports: Mapping[str, Report]
     :param call: As :func:`build_campaign_report` reads it.
-    :ptype call: CampaignCall | None
-    :param report_doc_id: As :func:`build_campaign_report` reads it.
-    :ptype report_doc_id: str | None
     :param unread_analysis_id: As :func:`build_campaign_report` reads it.
-    :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: As :func:`build_campaign_report` reads it.
-    :ptype unread_report_doc_id: str | None
     :param unread_line: As :func:`build_campaign_report` reads it.
-    :ptype unread_line: str
     :param arms: As :func:`build_campaign_report` reads them.
-    :ptype arms: Sequence[CampaignArm] | None
     :param lead: As :func:`build_campaign_report` reads it.
-    :ptype lead: Sequence[ReportBlock] | None
     :param folds_alone: As :func:`build_campaign_report` reads it.
-    :ptype folds_alone: bool
     :param aspect_forms: The forms each aspect's own page was built in, by its label
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), which the lead's figures read as that
         page's verdict line does; an aspect left out has its forms built here, from its page's bundle. They stay the
         aspects' own: the page's own figures read the campaign's forms.
-    :ptype aspect_forms: Mapping[str, PageForms]
     :return: The page, ``basis="code_only"``.
-    :rtype: CampaignReport
     :raises RefusedInput: As :func:`build_campaign_report` refuses.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
@@ -227,16 +210,19 @@ def build_campaign_report_in_aspect_forms(
     blocks: list[ReportBlock] = [
         *question_blocks(campaign, compares=kind != "measurement"),
         *_arms_blocks(campaign, readings, arms, bundles),
+        # An aspect with a run that did not finish has no verdict to lead with: what stopped it opens the page, before
+        # code's lead on the aspects that finished and before a caller's own lead.
+        *_stopped_blocks(campaign, readings, reports, names=names),
         *(
             _lead_blocks(campaign, readings, reports, names=names, forms=forms, aspect_forms=aspect_forms)
             if lead is None
             else lead
         ),
-        *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names, forms=forms),
         *guardrail_warnings(campaign, readings, reports, names=names, forms=forms),
+        *answer_split_warnings(readings, names=names),
         *caveat_blocks(bundles, section="warnings", names=names),
     ]
     if kind == "change":
@@ -259,7 +245,7 @@ def build_campaign_report_in_aspect_forms(
         CampaignAspectFold(
             aspect=aspect.label,
             name=_fold_heading(aspect, names, _title(campaign)),
-            shows=aspect_shows(readings, aspect.label),
+            shows=aspect_shows(readings, aspect.label, bundle=reports[aspect.label].bundle),
             # What the campaign states once for every aspect, its fold does not say again.
             report=for_the_campaign(reports[aspect.label], alone=folds_alone),
         )
@@ -287,6 +273,39 @@ def build_campaign_report_in_aspect_forms(
         call=call,
         unread_analysis_id=unread_analysis_id,
     )
+
+
+def _stopped_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+) -> list[ReportBlock]:
+    """What opens the page in place of a verdict where an aspect's runs did not all finish: for each such aspect, the
+    line its own page opens with (:func:`~threetears.evals.analysis.report.verdict.unfinished_line`, or the failed
+    setup's), named by its aspect where the campaign reads several. Whether an aspect has a verdict to lead with is the
+    one decision every surface asks (:func:`~threetears.evals.analysis.completeness.bundle_stopped_short`). Empty
+    where every run of every aspect completed."""
+    several = len(campaign.aspects) > 1
+    labels = readings.arm_labels()
+    said: list[str] = []
+    for aspect in campaign.aspects:
+        report = reports[aspect.label]
+        if bundle_stopped_short(report.bundle) is None:
+            continue
+        opened = next(
+            (
+                block.text
+                for block in report.blocks
+                if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "verdict"
+            ),
+            None,
+        )
+        if opened is None:
+            line = unfinished_line(report.bundle, lambda key: labels.get(key, key))
+            opened = line.text if line is not None else ""
+        said.append(f"On {names(aspect.label)}: {opened}" if several else opened)
+    if not said:
+        return []
+    tone = DisclosureBlock.verdict_tone("unfinished")
+    return [DisclosureBlock(section="answer", source="verdict", text=" ".join(said), tone=tone)]
 
 
 def _lead_blocks(
@@ -321,24 +340,44 @@ def _lead_blocks(
     sentences: list[str] = []
     # Each decision the lead says, word for word, which the page sets in bold; the figures after it stay regular.
     decisions: list[str] = []
-    # Whether a decision the lead says leaves arms undecided, read off each decision's own reading.
+    # Whether a decision the lead says leaves arms undecided, read off each decision's own reading; and whether one
+    # leaves a contrast the bet read undecided, whose words grade its evidence.
     undecided = False
+    graded_lead = False
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
+        if bundle_stopped_short(report.bundle) is not None:
+            # No verdict over a run that did not finish: the page opened on what stopped it (``_stopped_blocks``).
+            continue
         order = aspect.design.measure_order if aspect.design is not None else []
         # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py), in the forms
         # its page was built in.
         figures = contrast_evidence(report.bundle, forms=aspect_forms.get(aspect.label))
         led_undecided: list[bool] = []
+        led_graded: list[bool] = []
 
-        def evidence(verdict: Verdict, figures: Callable[[Verdict], str | None] = figures) -> str | None:
-            # Each led contrast's own reading says whether its sentence leaves the arms undecided.
-            led_undecided.append(verdict.outcome == "not_separated")
+        def evidence(
+            verdict: Verdict,
+            figures: Callable[[Verdict], str | None] = figures,
+            bundle: AnalysisContextBundle = report.bundle,
+        ) -> str | None:
+            # Each led contrast's own reading says whether its sentence leaves the arms undecided; one the bet read
+            # says where the arm stands and grades its evidence instead.
+            graded = verdict.outcome == "not_separated" and graded_contrast(bundle, verdict)
+            led_undecided.append(verdict.outcome == "not_separated" and not graded)
+            led_graded.append(graded)
             return figures(verdict)
 
         if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=evidence):
             undecided = undecided or any(led_undecided)
+            graded_lead = graded_lead or any(led_graded)
+            # What to do first, as the aspect's own page and the print say it; a page of several aspects leaves it to
+            # each aspect's page.
+            advised = contrast_advice(report.bundle, forms=aspect_forms.get(aspect.label))(
+                led_verdicts(report.bundle, report.verdicts, order)
+            )
+            sentences += [advised] if advised and not several else []
             sentences += led
             decisions += [
                 decision.removesuffix(".")
@@ -361,19 +400,30 @@ def _lead_blocks(
             decision = f"On {names(aspect.label)}, {paired}" if several else opened
             sentences.append(f"{decision}.")
             decisions.append(decision)
-        elif measured := _measured_lead(aspect, readings):
-            # One arm measured: its count, a figure, nothing decided, so nothing is set in bold.
+        elif measured := _measured_lead(aspect, readings, report.bundle):
+            # One arm measured: its count, a figure, nothing decided, so nothing is set in bold; the cases nothing
+            # graded after it, as the quick print says them.
             prefix = f"On {names(aspect.label)}, " if several else ""
-            sentences += [f"{prefix}{said}." for said in measured]
+            sentences += [f"{prefix}{said}.{after}" for said, after in measured]
+            continue
         else:
             undecided = undecided or reads_undecided(readings, aspect.label)
-            decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}"
+            decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label, bundle=report.bundle)}"
             sentences.append(f"{decision}.")
             decisions.append(decision)
+        # Every count above is over the graded trials: an arm with trials nothing graded says so beside them, as the
+        # quick print's comparison line does (one owner, :func:`~threetears.evals.analysis.report.verdict.passed_clause`).
+        labels = readings.arm_labels()
+        if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), case_namer(report.bundle)):
+            sentences.append(ungraded.strip())
+
+    if not sentences:
+        # Every aspect has a run that did not finish, so the page's opening is all there is to lead with.
+        return []
     text = " ".join(sentences)
     # Where a decision the lead says leaves arms undecided, its words say the evidence cannot tell them apart, and the
     # lead links that phrase's one definition at its first use.
-    term = CANNOT_TELL_APART if undecided else None
+    term = CANNOT_TELL_APART if undecided else EVIDENCE_TERM if graded_lead else None
     # Code's own decisions: bold falls away where a host's name would cut a code span, never refusing the page.
     emphasis = DisclosureBlock.code_emphasis(text, decisions)
     return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term, emphasis=emphasis)]
@@ -396,16 +446,19 @@ def _check_lead(lead: Sequence[ReportBlock]) -> None:
         )
 
 
-def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
-    """Each measured arm's pass rate on an aspect, as the count it is computed over
-    (:func:`~.scorecard.measured_figure`): the figure every grader's reading makes together, as the aspect's printed
-    line leads on its cases passed; none where no arm was measured there."""
+def _measured_lead(aspect: Aspect, readings: CampaignReadings, bundle: AnalysisContextBundle) -> list[tuple[str, str]]:
+    """Each measured arm's pass count on an aspect (:func:`~.scorecard.measured_figure`), with the sentence naming
+    the cases nothing graded after it (:func:`~threetears.evals.analysis.report.verdict.ungraded_sentence`): the
+    figure every grader's reading makes together, as the aspect's printed line leads on its cases passed; none where
+    no arm was measured there."""
+    boards = {board.variant_key: board for board in bundle.scoreboard}
+    namer = case_namer(bundle)
     return [
-        figure
+        (figure, ungraded_sentence(pass_count(bundle, boards[reading.arm]), namer))
         for reading in readings.measures
         # ``passed``: the trials' own pass rate, as the readings key it.
         if reading.aspect == aspect.label and reading.measure == "passed"
-        if (figure := measured_figure(reading)) is not None
+        if (figure := measured_figure(reading, bundle)) is not None
     ]
 
 
@@ -416,9 +469,9 @@ _EVIDENCE_HEADING = "Evidence"
 def _fold_heading(aspect: Aspect, names: AspectNames, title: str) -> str:
     """An aspect fold's heading: its full label, which a declared short name stands in for everywhere else; an
     engine-given label by the name the page calls the aspect; and a fold named as the page is, its evidence, so no
-    heading prints twice."""
+    heading prints twice. A heading is a label, so one in words opens on a capital (:func:`heading_case`)."""
     heading = aspect.label if aspect.short_name is not None else names(aspect.label)
-    return _EVIDENCE_HEADING if heading == title else heading
+    return _EVIDENCE_HEADING if heading == title else heading_case(heading)
 
 
 def _title(campaign: EvalCampaign) -> str:

@@ -84,17 +84,20 @@ since only the host knows what it pays ([who sets the prices](docs/cost-and-budg
 pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
-> **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. The declared
-> names are [mapped by rung](docs/surface.md); the rest a root exports are provisional
+> **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves only with a
+> `MIGRATIONS.toml` record naming its replacement, in a single cut-over, and any other declared name may change in any
+> release, recorded there too. The declared
+> names are [mapped by role and rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## What is different
 
-- **A verdict, not a mean.** Every version is run over the same frozen cases and tested case by case against a control,
-  and evidence that cannot tell two versions apart says so ("the evidence cannot tell v2 and v1 apart"), never "no
-  difference"
-  ([why](docs/design.md#numbers)).
+- **Advice, then a verdict, not a mean.** Every version is run over the same frozen cases and tested case by case
+  against a control. The first line says what to do ("Advice: switch to v2"), once the evidence reaches moderate (strong
+  where the switch is hard to undo); if v2 is not really better (with a margin: worse by more than it), it says switch
+  at most one time in three, however often anyone looks. Then a small test still gets a fair read of what is proven: where the candidate stands, by how
+  much, the interval, and how strong the evidence is ("v2 ahead of v1, proof pending ... the evidence that v2 is better
+  is moderate"), never "no difference" ([why](docs/design.md#numbers)).
 - **Guardrails apart from capability.** What a version must never do is decided on its own, so a gain cannot pay for
   a breach ([why](docs/design.md#guardrails-are-a-pillar-apart-from-capability)).
 - **A judge is measured, not trusted.** Every judged reading carries the evidence tier its judge's agreement with
@@ -131,7 +134,8 @@ this README is the package's description, they do not resolve, so read the docs 
 
 - [Design](docs/design.md): the principles the engine keeps, why each concept is shaped as it is, and the prior art.
 - [Open problems](docs/open-problems.md): known gaps.
-- [The surface](docs/surface.md): the declared names on one page, by rung.
+- [The surface](docs/surface.md): the declared names on one page, by role and rung, generated.
+- [`llms.txt`](llms.txt): what an AI agent adopting the package reads first, generated from the same names.
 - [Reference](docs/reference.md): every declared name, setting, report field, goal-check builtin and action, generated
   from the code.
 

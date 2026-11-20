@@ -1,7 +1,8 @@
 """``python -m threetears.evals FILE``: every eval a Python file defines is run, printed, reported, and exits with a code.
 
-The exit codes are the host command line's: 0 done, 1 a run did not complete, 2 refused, 3 an error nothing
-anticipated, 4 a comparison's gate failed. Anything that is not an eval file is the host command line, unchanged.
+The exit codes are the host command line's: 0 done, 1 a run did not complete (or, from an eval file, no arm had an
+answer graded: ``test_quick_one_reading_of_a_case.py``), 2 refused, 3 an error nothing anticipated, 4 a comparison's
+gate failed. Anything that is not an eval file is the host command line, unchanged.
 """
 
 from __future__ import annotations
@@ -98,11 +99,14 @@ def test_a_comparison_whose_gate_fails_exits_4(capsys: pytest.CaptureFixture[str
     assert main([_write("regression.py", REGRESSION)]) == EXIT_GATE_FAILED
 
     # The exit line opens with the result as the page leads with it, which is what the gate failed on. An interval's
-    # two ends read at one precision, the whole points its width sets (number policy, rule 2): "63" and "100".
+    # two ends read at one precision, the whole points its width sets (number policy, rule 2): "56" and "100". The
+    # decision says when it was made; the evidence past a thousand is said to be over it.
     exit_line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("exit 4: ")]
     assert exit_line == [
-        "exit 4: Accuracy: wrong worse than right. Of 20 trials each, Accuracy was right on 20 for right and 0 for "
-        "wrong. Over 20 paired cases, the interval puts wrong between 63 and 100 points worse. The gate failed on it."
+        "exit 4: Accuracy: wrong worse than right, decided at 7 cases when the evidence reached 42. Now, over 20 paired "
+        "cases, wrong is 100 points behind right. The interval puts wrong between 56 and 100 points worse. The evidence "
+        "that wrong is worse is strong (over 1,000). Of 20 trials each, Accuracy was right on 20 for right and 0 for "
+        "wrong. The gate failed on it."
     ]
 
 

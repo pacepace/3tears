@@ -1,7 +1,7 @@
 """The insight ledger as the bundle reads it: which insights stand, which are retracted, which are superseded.
 
 An insight minted by an ARCHIVED analysis is retracted (:func:`retracted_insights`), and a newer insight
-restating an older one supersedes it (:func:`superseding_insights`). :func:`_prior_insights` is the capped,
+restating an older one supersedes it (:func:`superseding_insights`). :func:`carried_insights` is the capped,
 deduplicated list the bundle carries.
 """
 
@@ -12,8 +12,8 @@ from typing import NamedTuple
 
 from threetears.evals.kernel.campaign import EvalInsight
 from threetears.evals.analysis.bundle.caps import (
-    _capped,
-    _MAX_PRIOR_INSIGHTS,
+    capped,
+    MAX_PRIOR_INSIGHTS,
 )
 
 
@@ -54,12 +54,9 @@ def insight_standing(
     from ``orphaned``.
 
     :param insights: The insights to classify.
-    :ptype insights: Iterable[EvalInsight]
     :param analysis_archived: Whether one analysis is archived, ``None`` when it does not resolve.
         Called at most once per distinct analysis, and only for insights that name one.
-    :ptype analysis_archived: Callable[[str], bool | None]
     :return: Both maps, each in insight-id order and empty when nothing is in that state.
-    :rtype: InsightStanding
     """
     standing: dict[str, bool | None] = {}
     retracted: dict[str, str] = {}
@@ -84,11 +81,8 @@ def retracted_insights(
     """Which of these insights an ARCHIVED analysis minted — :func:`insight_standing`'s ``retracted``.
 
     :param insights: The insights to classify.
-    :ptype insights: Iterable[EvalInsight]
     :param analysis_archived: Whether one analysis is archived, ``None`` when it does not resolve.
-    :ptype analysis_archived: Callable[[str], bool | None]
     :return: Insight id → the id of the archived analysis that minted it, in insight-id order.
-    :rtype: dict[str, str]
     """
     return insight_standing(insights, analysis_archived).retracted
 
@@ -103,9 +97,7 @@ def insight_restatement_key(statement: str) -> str:
     restated.
 
     :param statement: An insight's statement.
-    :ptype statement: str
     :return: The comparison key.
-    :rtype: str
     """
     return " ".join(statement.casefold().split()).rstrip(".").rstrip()
 
@@ -131,14 +123,10 @@ def superseding_insights(
     archived analysis restored beside the claim minted afresh, say — the newest is the one replaced.
 
     :param minted: The insights a generation returned, in its order.
-    :ptype minted: Sequence[EvalInsight]
     :param ledger: The subject's prior insights.
-    :ptype ledger: Iterable[EvalInsight]
     :param analysis_archived: Whether one analysis is archived, ``None`` when it does not resolve.
-    :ptype analysis_archived: Callable[[str], bool | None]
     :return: The insights to write, in ``minted`` order, each under its own id or the id of the insight it replaces.
         A claim the generation stated twice is written once.
-    :rtype: list[EvalInsight]
     """
     prior = list(ledger)
     retracted = retracted_insights(prior, analysis_archived)
@@ -157,18 +145,16 @@ def superseding_insights(
     return written
 
 
-def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
+def carried_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
     """The live insights a bundle carries — the newest per claim, at most the cap — and how many it leaves out.
 
     :param live: The subject's insights as of the cutoff, less the retracted ones.
-    :ptype live: list[EvalInsight]
     :return: ``(carried, omitted)``: newest first, deterministic for the fingerprint.
-    :rtype: tuple[list[EvalInsight], int]
     """
     newest: dict[str, EvalInsight] = {}
     for insight in _sorted_insights(live):
         newest.setdefault(insight_restatement_key(insight.statement), insight)
-    carried, _beyond_cap = _capped(list(newest.values()), _MAX_PRIOR_INSIGHTS, weight=None)
+    carried, _beyond_cap = capped(list(newest.values()), MAX_PRIOR_INSIGHTS, weight=None)
     return carried, len(live) - len(carried)
 
 
@@ -181,17 +167,16 @@ def _sorted_insights(insights: list[EvalInsight]) -> list[EvalInsight]:
     here: ``(observed_at, id)`` descending keeps newest-first and makes ties total.
 
     :param insights: The subject's prior insights, in storage order.
-    :ptype insights: list[EvalInsight]
     :return: The same insights, deterministically ordered.
-    :rtype: list[EvalInsight]
     """
     return sorted(insights, key=lambda insight: (insight.observed_at, insight.id), reverse=True)
 
 
 __all__ = [
+    "InsightStanding",
+    "carried_insights",
     "insight_restatement_key",
     "insight_standing",
-    "InsightStanding",
     "retracted_insights",
     "superseding_insights",
 ]

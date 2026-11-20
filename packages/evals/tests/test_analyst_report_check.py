@@ -31,22 +31,15 @@ from packages.evals.tests.analyst_support import KAIRO, TEXT_BUDGET, action_call
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import OpsFixture, ops_fixture
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
-from threetears.evals.actions import (
-    ActionOutcome,
-    Caller,
-    MountedTool,
-    analyst_actions,
-    analyst_tools,
-    catalogue_primer,
-    eval_catalogue,
-    standard_tools,
-)
+from threetears.evals.actions import ActionOutcome, Caller, MountedTool, analyst_tools, eval_catalogue, standard_tools
+from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_doc_checks import check_report_doc
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import check_report_doc
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.kernel.report_doc import ReportDoc, report_doc_prose
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -467,7 +460,41 @@ def _served(tool: MountedTool) -> list[str]:
 #: blocks or removes an option and, read broken on an asked aspect, caps the candidate's standing in the dominance read.
 #: The evals tool moved again when campaign_create's and campaign_update's aspects description gained an axis's
 #: reader_name (what every page calls the lever; omitted, the name the host declares for it).
-_EVALS_BYTES = "f9485e7733a9187e659856d6694ac13cc07cbc70c743cbed2b62f1f575aef904"
+#: The evals tool's help names JobsStarted's notices on every action that starts a job: what admitting the work found
+#: and did not refuse it for, such as a served-model check that could not be made. EvalSummary's fields include
+#: n_not_judged: the cases a run's cost cap left unjudged.
+#: The evals tool moved again when runs_list and campaigns_list came to page by default (#1145; owner ruling
+#: 2026-11-14, a cursor with a default): each gained cursor and limit, its help a paging line, and its result next
+#: (and runs_list's filtered). Nothing else it serves moved.
+#: The evals tool moved again when judge_case_author and judge_cases_freeze came to write a judge template's next
+#: revision for a case added to one that holds cases: each one's help says so, and their result gained revision,
+#: superseded_template_id, carried and stranded_case_sets. Nothing else it serves moved.
+#: The evals tool moved again when it gained two actions (#1160): run_remeasure and runs_attest_definitions, a host's
+#: doors to re-read a stored run's measures and to state the measure definitions stored runs ran under. Each adds
+#: its line to the tool's description and its help page; no other action's text moved.
+#: The evals tool moved again when the out-of-run ledger gained the purpose ``reviewer`` (a model's reading of a blind
+#: read's sheet; core v15.19): spend_list's purpose filter lists it. Nothing else it serves moved.
+#: The evals tool moved again when runs_attest replaced runs_attest_definitions (#1187): one action states either
+#: coordinate of stored runs, their measure definitions or their served model, with a ``coordinate`` and a
+#: ``served_model`` parameter and one result shape. No other action's text moved.
+#: The evals tool moved again when runs_attest's ``coordinate`` came to be the closed set of attestable coordinates
+#: (``AttestableCoordinate``: measure_definition, served_model), where its schema had listed template and rig too
+#: (#1187). No other action's text moved.
+#: The evals tool moved again when runs_attest's help came to say what a served-model statement does (#1187): it is
+#: recorded on the run with the results whose candidate rows named no model, read through, and rewrites no row; the
+#: help had said it was written to each such row. No other action's text moved.
+#: The evals tool moved again when a frontier came to store that its contestants' definitions differ (#1187): the
+#: frontier lens's help lists ``definitions_apart`` among the fields ``FrontierResult`` returns. No other text moved.
+#: The evals tool moved again when it gained the blind read's host door (#1178, chunk A2): seven actions
+#: (blind_read_create, _sheet, _answer, _review, _close, _get, blind_reads_list), each a help page and a help-index line
+#: with its parameters in the input schema; and campaign_record says who made the call (made_by, person, call_model,
+#: on_behalf_of: its summary, detail, parameters and example). Nothing else it serves moved.
+#: The evals tool moved again when blind_read_close's help page gained one sentence, the recovery a caller can find
+#: from the door: "A close whose ratings were not all written (the store refused one) is completed by closing again,
+#: which writes the ones missing." Diffed against the text served before: nothing else moved.
+#: Taken again over runs_attest's text (#1187) when both met: diffed against the text served without the door, the
+#: only lines that moved are the door's and campaign_record's above.
+_EVALS_BYTES = "3d319028771cf338e1500fa725bd63c1d73e62a1df89a6341e87389fbe1db626"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

@@ -42,19 +42,13 @@ from packages.evals.tests.ops_support import (
     settled,
 )
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import host_declarations_digest
-from threetears.evals.harness import ReasonedOn, WriterCaseFile
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
+from threetears.evals.harness import ReasonedOn
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
-from threetears.evals.schema import (
-    BUILTIN_JUDGE_CONFIG_PREFIX,
-    DOC_TYPE_FACTS,
-    CatalogRubricDim,
-    JudgeConfig,
-    JudgeConfigTombstone,
-    RubricDim,
-    judge_config_of,
-)
+from threetears.evals.schema import DOC_TYPE_FACTS, CatalogRubricDim, JudgeConfig, JudgeConfigTombstone, RubricDim
+from threetears.evals.schema.models import judge_config_of
 from threetears.evals.storage import InMemoryDocumentStore
 
 SCOPE = TOYHOST_SCOPE
@@ -292,8 +286,8 @@ def test_a_campaign_not_in_the_scope_is_refused_naming_it() -> None:
 #: asked, and the refusals: a bare config id, an empty string and three malformed ``@`` shapes.
 JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}not-twelve-hex", "builtin"),
+    ("builtin:576896bef534", "builtin"),
+    ("builtin:not-twelve-hex", "builtin"),
     (None, "none"),
     ("bare-config-id", "refused"),
     ("", "refused"),
@@ -346,7 +340,7 @@ def test_a_recorded_judge_identity_is_read_as_the_packages_reader_reads_it(recor
 #: names the prompt sent rather than the config committed to, and an empty string, which names no config.
 RUN_JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
+    ("builtin:576896bef534", "builtin"),
     (None, "none"),
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "refused"),
     ("", "refused"),
@@ -422,7 +416,7 @@ def test_judged_results_reach_their_judge_configs_and_dims_and_name_the_builtin_
     storage.save_rubric_dim(stray)
     storage.save_judge_config_tombstone(tombstone)
     result = _first_result(toy)
-    builtin = f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534"
+    builtin = "builtin:576896bef534"
     judged = {"toy.dim": f"{config.id}@{'0' * 12}", "toy.gone": f"cfg-gone@{'1' * 12}", "toy.builtin": builtin}
     assert toy.store.merge_fields(result["id"], SCOPE, {"judge_config_ids": judged})
 
@@ -605,7 +599,13 @@ async def test_the_action_pages_the_closure_and_its_pages_join_to_the_export() -
         assert not outcome.is_error, outcome.text
         pages.append(CampaignExport.model_validate(outcome.structured))
         page = pages[-1].page
-        if page is None or page.next_after_doc_type is None:
+        assert page is not None, "a closure past one page is answered a page at a time"
+        assert (
+            "Pages are not a snapshot: when a page's manifest closure_keys_digest is not the first page's "
+            f"({pages[0].manifest.closure_keys_digest[:12]}…), the campaign moved between calls; read it again from "
+            "the first page."
+        ) in outcome.text
+        if page.next_after_doc_type is None:
             assert "More:" not in outcome.text
             break
         assert (
@@ -637,6 +637,7 @@ async def test_the_mint_hint_names_every_flag_the_mint_requires() -> None:
     assert not outcome.is_error, outcome.text
     for required in ("--documents", "--profile", "--host", "--campaign", "--name <case>", "--out <file>.json.gz"):
         assert required in outcome.text, required
+    assert "Pages are not a snapshot" not in outcome.text, "a closure inside one page is answered whole, unpaged"
 
 
 async def test_the_action_reads_the_callers_scope_and_refuses_a_campaign_it_does_not_hold() -> None:

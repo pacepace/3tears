@@ -35,11 +35,13 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.reads import run_summary
-from threetears.evals.kernel import EvalStorage, ResultOutcome, classify_result
+from threetears.evals.kernel import EvalStorage, ResultOutcome
+from threetears.evals.kernel.result_condition import classify_result
 from threetears.evals.kernel import run_pages
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.scoring import reconstruct_completeness
-from threetears.evals.ops import job_poll, results_list, run_job_id, runs_bisect, runs_compare
+from threetears.evals.ops import job_poll, results_list, run_job_id, runs_compare
+from threetears.evals.ops.lenses import runs_bisect
 from threetears.evals.run import delete_run, list_results
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import RubricScore

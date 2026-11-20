@@ -22,11 +22,11 @@ fails loudly (an ``AttributeError`` at run time, a type error under mypy), never
 from __future__ import annotations
 
 import copy
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
-from threetears.evals.schema.models import SCALES, LabelKey
+from threetears.evals.schema.models import SCALES, LabelKey, WrittenOver
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import (
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         SecondJudgeScore,
         SecondJudging,
     )
+    from threetears.evals.schema.reading_states import SampleKind
 
 __all__ = [
     "GoalReading",
@@ -146,6 +147,8 @@ class UsageView(Protocol):
     @property
     def served_model(self) -> str | None: ...
     @property
+    def served_provider(self) -> str | None: ...
+    @property
     def prompt_tokens(self) -> int | None: ...
     @property
     def completion_tokens(self) -> int | None: ...
@@ -175,6 +178,18 @@ class UsageView(Protocol):
     def unanswered_lost(self) -> int | None: ...
     @property
     def unanswered_reasons(self) -> Mapping[str, int] | None: ...
+    @property
+    def maybe_billed_sends(self) -> int | None: ...
+    @property
+    def answers_nothing(self) -> bool:
+        """Whether the row holds only unanswered calls: the stored row's own
+        :attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`, which a :class:`UsageReading` carries.
+
+        Such a row stands for no answer: no model served it, it sent no settings a reply came back under, and it
+        reported no token because none was spent, so a reader that reads a row as an answer (who served it, what it
+        was sent with, which models a role ran on, whether its tokens were reported) skips it (#1238).
+        """
+        ...
 
 
 class LatencyView(Protocol):
@@ -193,10 +208,13 @@ class LatencyView(Protocol):
 
 
 class RescoreView(Protocol):
-    """A re-judge's record as the readers read it: its spend."""
+    """A re-judge's record as the readers read it: its spend, and when it was made (a look at the result's
+    contrasts, :func:`~threetears.evals.analysis.significance.looks_taken`)."""
 
     @property
     def cost_usd(self) -> float | None: ...
+    @property
+    def rejudged_at(self) -> str: ...
 
 
 class RepeatedScoreView(Protocol):
@@ -229,6 +247,8 @@ class RepeatView(Protocol):
     def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def scores(self) -> Sequence[RepeatedScoreView]: ...
+    @property
+    def sample(self) -> SampleKind | None: ...
 
 
 class SecondScoreView(Protocol):
@@ -308,6 +328,14 @@ class ResultView(Protocol):
     def metered_calls(self) -> int | None: ...
     @property
     def metered_calls_refused(self) -> int | None: ...
+    @property
+    def model_unserved(self) -> bool: ...
+    @property
+    def account_refused(self) -> bool: ...
+    @property
+    def written_over(self) -> WrittenOver | None: ...
+    @property
+    def judging_set_aside(self) -> bool: ...
     @property
     def candidate_kind(self) -> str | None: ...
     @property
@@ -535,6 +563,7 @@ class UsageReading:
     role: str
     model: str | None
     served_model: str | None
+    served_provider: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
     reasoning_tokens: int | None
@@ -550,6 +579,8 @@ class UsageReading:
     unanswered_retried: int | None
     unanswered_lost: int | None
     unanswered_reasons: Mapping[str, int] | None
+    maybe_billed_sends: int | None
+    answers_nothing: bool
 
     @classmethod
     def of(cls, row: RoleUsage, shared: SharedValues) -> UsageReading:
@@ -559,6 +590,7 @@ class UsageReading:
             role=shared.text(row.role),
             model=shared.text(row.model),
             served_model=shared.text(row.served_model),
+            served_provider=shared.text(row.served_provider),
             prompt_tokens=row.prompt_tokens,
             completion_tokens=row.completion_tokens,
             reasoning_tokens=row.reasoning_tokens,
@@ -574,6 +606,9 @@ class UsageReading:
             unanswered_retried=row.unanswered_retried,
             unanswered_lost=row.unanswered_lost,
             unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons),
+            maybe_billed_sends=row.maybe_billed_sends,
+            # Carried, never restated: the stored row owns the rule.
+            answers_nothing=row.answers_nothing,
         )
 
 
@@ -601,14 +636,15 @@ class LatencyReading:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RescoreReading:
-    """A re-judge's record: its spend (:class:`RescoreView`)."""
+    """A re-judge's record: its spend and when it was made (:class:`RescoreView`)."""
 
     cost_usd: float | None
+    rejudged_at: str
 
     @classmethod
     def of(cls, rescore: JudgeRescore) -> RescoreReading:
         """The reading of a stored re-judge."""
-        return cls(cost_usd=rescore.cost_usd)
+        return cls(cost_usd=rescore.cost_usd, rejudged_at=rescore.rejudged_at)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -648,6 +684,7 @@ class RepeatReading:
 
     judge_config_ids: Mapping[str, str]
     scores: tuple[RepeatedScoreReading, ...]
+    sample: SampleKind | None = None
 
     @classmethod
     def of(cls, repeat: JudgeRepeat, shared: SharedValues) -> RepeatReading:
@@ -655,6 +692,7 @@ class RepeatReading:
         return cls(
             judge_config_ids=shared.names(repeat.judge_config_ids),
             scores=tuple(RepeatedScoreReading.of(entry, shared) for entry in repeat.scores),
+            sample=repeat.sample,
         )
 
 
@@ -749,6 +787,10 @@ class ResultReading:
     superseded_spend_usd: float | None
     metered_calls: int | None
     metered_calls_refused: int | None
+    model_unserved: bool
+    account_refused: bool
+    written_over: WrittenOver | None
+    judging_set_aside: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
     subject_id: str | None
@@ -792,12 +834,9 @@ class ResultReading:
         """The reading of a hydrated result: each attribute copied from it, never recomputed.
 
         :param result: A result the store returned, hydrated and validated.
-        :ptype result: EvalResult
         :param shared: Where a read's repeated values are held once (:class:`SharedValues`); ``None`` shares none
             beyond this result's own.
-        :ptype shared: SharedValues | None
         :return: Its reading.
-        :rtype: ResultReading
         """
         held = SharedValues() if shared is None else shared
         text = held.text
@@ -817,6 +856,10 @@ class ResultReading:
             superseded_spend_usd=result.superseded_spend_usd,
             metered_calls=result.metered_calls,
             metered_calls_refused=result.metered_calls_refused,
+            model_unserved=result.model_unserved,
+            account_refused=result.account_refused,
+            written_over=result.written_over,
+            judging_set_aside=result.judging_set_aside,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),
@@ -871,11 +914,8 @@ class ResultReading:
         ``deep``, the replaced values taken as given.
 
         :param update: Attribute values to replace; a name the reading does not carry is refused (``TypeError``).
-        :ptype update: Mapping[str, Any] | None
         :param deep: Copy every held value too.
-        :ptype deep: bool
         :return: The copy.
-        :rtype: Self
         """
         source = copy.deepcopy(self) if deep else self
         return replace(source, **dict(update or {}))
@@ -896,35 +936,65 @@ class ReadingsRead:
     :ivar store_calls: The store calls made so far.
     """
 
-    __slots__ = ("path", "store_calls", "_pages", "_walked")
+    __slots__ = ("path", "store_calls", "_pages", "_walk")
 
     def __init__(self, path: ReadPath, *, store_calls: int, pages: Iterator[tuple[int, list[ResultReading]]]) -> None:
         """Hold a read.
 
         :param path: The path that serves it.
-        :ptype path: ReadPath
         :param store_calls: The store calls made before the first page (its keys).
-        :ptype store_calls: int
         :param pages: Each page's readings, beside the store calls reading it took, read lazily.
-        :ptype pages: Iterator[tuple[int, list[ResultReading]]]
         """
         self.path = path
         self.store_calls = store_calls
         self._pages = pages
-        self._walked = False
+        self._walk: Generator[ResultReading] | None = None
 
     def __iter__(self) -> Iterator[ResultReading]:
         """Each reading, in the read's order.
 
-        :raises RuntimeError: The read was walked before: its pages are read once, and a second walk would hand out
-            nothing as though nothing were stored.
+        :raises RuntimeError: The read was walked, or closed, before: its pages are read once, and a second walk would
+            hand out nothing as though nothing were stored.
         """
-        if self._walked:
+        if self._walk is not None:
             raise RuntimeError("a read of readings is walked once; read again for a second walk")
-        self._walked = True
-        for calls, page in self._pages:
-            self.store_calls += calls
-            yield from page
+        self._walk = self._walked()
+        return self._walk
+
+    def _walked(self) -> Generator[ResultReading]:
+        """The one walk of the pages; however it ends, it closes them."""
+        try:
+            for calls, page in self._pages:
+                self.store_calls += calls
+                yield from page
+        finally:
+            self._close_pages()
+
+    def _close_pages(self) -> None:
+        close = getattr(self._pages, "close", None)
+        if callable(close):
+            close()
+
+    def close(self) -> None:
+        """Close the read: the store's rows it holds open are released now, and nothing more is handed out.
+
+        A walk left part way (a ``break``, or an exception in the reader) otherwise holds the store's rows open until
+        it is collected. A reader that may stop part way holds the read in a ``with`` block, which closes it however
+        the block ends. A read walked to its end has closed itself; closing it again does nothing.
+        """
+        if self._walk is None:
+            # Never walked: no walk will be, so the pages are closed here.
+            self._walk = self._walked()
+        self._walk.close()
+        self._close_pages()
+
+    def __enter__(self) -> ReadingsRead:
+        """The read, closed when the ``with`` block ends."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Close the read (:meth:`close`)."""
+        self.close()
 
 
 @dataclass(frozen=True, slots=True)

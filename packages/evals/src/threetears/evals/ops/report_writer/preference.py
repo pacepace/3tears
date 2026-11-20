@@ -58,7 +58,6 @@ def preference_rubric() -> RubricDim:
     so the prompt is held fixed with the criterion.
 
     :return: The dimension, ordinal 1-5.
-    :rtype: RubricDim
     """
     return RubricDim(
         name=_PREFERRED_DIM,
@@ -82,12 +81,14 @@ def pair_evidence(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
     Report B's; the case material is each page's computed facts, labelled the same way. Swapping the arguments
     swaps the labels and nothing else, so the two orders of one pair are two judged outputs of the same question.
 
+    Where both sides name what their text was rendered from, the pair names both, in the order shown
+    (``{"pair": [a's, b's]}``), so a recorded pairwise call is keyed by the two pages and their order, never by the
+    labels this lays around them or a word on either page. A side that names nothing leaves the pair naming nothing,
+    keyed by its prompt.
+
     :param a: The stored evidence of the page placed first.
-    :ptype a: JudgeEvidence
     :param b: The stored evidence of the page placed second.
-    :ptype b: JudgeEvidence
     :return: The pair's evidence, with no subject: a report speaks for itself.
-    :rtype: JudgeEvidence
     :raises ValueError: Either side carries a subject, which the pair has no place for.
     """
     if a.subject is not None or b.subject is not None:
@@ -96,6 +97,7 @@ def pair_evidence(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
         subject=None,
         case_material=f"=== Report A's facts ===\n{a.case_material}\n\n=== Report B's facts ===\n{b.case_material}",
         artifact=f"=== Report A ===\n{a.artifact}\n\n=== Report B ===\n{b.artifact}",
+        inputs=None if a.inputs is None or b.inputs is None else {"pair": [dict(a.inputs), dict(b.inputs)]},
     )
 
 
@@ -144,9 +146,7 @@ def case_preference(judgments: Sequence[PairJudgment]) -> CasePreference:
     """The candidate's preference in one case, read from its judgments in both orders.
 
     :param judgments: Every reply on the case's pair, in either order and any number of repeats.
-    :ptype judgments: Sequence[PairJudgment]
     :return: The case's reading.
-    :rtype: CasePreference
     :raises ValueError: There is no judgment, a slot is neither A nor B, or a score is off the 1-5 scale.
     """
     if not judgments:

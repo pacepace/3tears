@@ -2,7 +2,7 @@
 
 A newcomer's first question after a run is which cases it got wrong. The summary carries every result —
 the case, the answer, the grades and why it failed — so it can be read after ``Eval.run`` returns, whatever
-store the run used. Cases are called by their own ``id`` when they carry one, else by their position, in the
+store the run used. Cases are called by their own ``id`` when they carry one, else by their place from 1, in the
 results and in every error line; the ``id`` itself is withheld from the runner and the graders. A plain ``def``
 runner is called in a worker thread; one handed a world's tools must be async, and is refused before anything runs.
 
@@ -10,8 +10,8 @@ The quiet print's lines, read through ``render()`` and the files ``write`` leave
 
 - **A miss shows the graded field**, never the whole answer object it was read from: a runner's answer can run to
   hundreds of characters, and the label is what was wrong.
-- **The judge's next step reads the sheet**: how many rows ``to_label.csv`` holds per dimension, and how many more
-  judged answers the calibrated tier's floor needs when it holds fewer.
+- **The judge's next step is the blind read**: a judge nobody has read against is said to be not checked, with the
+  one step that checks it, and no tier word or count of answers still needed (#1208).
 - **Total spend splits by role** when more than one role spent, each role's dollars read off its usage rows.
 - **A comparison leads on its classifier, else its first grader**, never on a cost alone, with a guardrail not held
   said after the lead.
@@ -31,13 +31,17 @@ from typing import Any, Self
 
 import pytest
 
+from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Judge, Result, World, grader
 from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import campaign_report_markdown, campaign_verdicts, get_campaign, summarize_run
+from threetears.evals.analysis import summarize_run
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.service import campaign_verdicts
+from threetears.evals.analysis.campaigns import get_campaign
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 
@@ -80,10 +84,10 @@ async def test_every_result_reads_back_after_the_call_with_its_case_answer_and_g
     assert [(result.case, result.repeat) for result in results] == [
         ("refund", 1),
         ("refund", 2),
-        ("1", 1),
-        ("1", 2),
         ("2", 1),
         ("2", 2),
+        ("3", 1),
+        ("3", 2),
     ]
     first = results[0]
     # The case as the runner was handed it: its id names it, and is withheld.
@@ -95,9 +99,10 @@ async def test_every_result_reads_back_after_the_call_with_its_case_answer_and_g
 async def test_misses_are_the_wrong_answers_each_saying_why() -> None:
     summary = await _summary(CASES, hasty, [QUEUE])
     (miss,) = summary.misses()
-    assert miss.case == "2" and miss.answer == "bug" and miss.expected == "billing"
+    # Re-pinned deliberately (P1, #1209 item 1): a case with no id is called by its place from 1, the third "3".
+    assert miss.case == "3" and miss.answer == "bug" and miss.expected == "billing"
     assert miss.missed_because == ["answered 'bug', expected 'billing'"]
-    assert miss.render().splitlines()[0] == "case 2 (repeat 1, scored): answered 'bug', expected 'billing'"
+    assert miss.render().splitlines()[0] == "case 3 (repeat 1, scored): answered 'bug', expected 'billing'"
 
 
 async def test_a_failed_runner_is_a_miss_and_its_error_line_names_the_case_by_its_id() -> None:
@@ -115,6 +120,40 @@ async def test_a_failed_runner_is_a_miss_and_its_error_line_names_the_case_by_it
     assert UNUSABLE_ANSWER in str(failed.scores["confusion_cell"])
 
 
+async def test_a_runner_reading_a_withheld_id_is_told_the_key_is_withheld_and_what_to_do() -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def by_id(case: Mapping[str, Any]) -> str:
+        seen.append(dict(case))
+        return str(case["id"])
+
+    summary = await _summary(CASES, by_id, [QUEUE])
+    # The case is handed over less the keys the package keeps: an author's id names the case and is never stimulus.
+    assert all("id" not in case for case in seen)
+    assert summary.errors[0] == (
+        "case refund: the candidate raised KeyError: 'id'; the case's 'id' names the case: the package reads it and "
+        "withholds it from the runner and every grader; if your function needs the value, copy it into the case under "
+        "another key as well"
+    )
+    # A case the author gave no id lacks one as written: its KeyError is the function's own, said as it was raised.
+    assert summary.errors[1] == "case 2: the candidate raised KeyError: 'id'"
+
+
+async def test_a_grader_reading_a_withheld_stratum_is_told_the_key_is_withheld() -> None:
+    def by_kind(case: Mapping[str, Any], out: Any) -> bool:
+        return bool(case["stratum"] == "plain")
+
+    async def bug(case: Mapping[str, Any]) -> str:
+        return "bug"
+
+    stratified = [{**case, "stratum": "plain"} for case in CASES]
+    summary = await _summary(stratified, bug, [by_kind])
+    assert summary.errors[0].startswith(
+        "case refund: the grader by_kind raised KeyError: 'stratum'; the case's 'stratum' is the kind of case, which "
+        "the runner must not be told, so it is withheld from the runner and every grader"
+    )
+
+
 async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_never_one() -> None:
     def short(case: Mapping[str, Any], answer: Any) -> bool:
         return len(str(answer)) <= 3
@@ -127,15 +166,17 @@ async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_n
     summary = await _summary(CASES, hasty, [short, picky])
     by_case = {result.case: result for result in summary.results()}
     assert by_case["refund"].missed_because == ["Short score is 0"], "the check, as its pass rule words it failing"
-    assert by_case["1"].outcome == "excluded" and not by_case["1"].missed
-    assert by_case["1"].errors == ["the scorer picky raised ValueError: cannot grade crashes"]
+    assert by_case["2"].outcome == "excluded" and not by_case["2"].missed
+    # Re-pinned deliberately (T1, Critic V3-2): the author's own function is named as what they call it, a grader.
+    assert by_case["2"].errors == ["the grader picky raised ValueError: cannot grade crashes"]
     assert [result.case for result in summary.misses()] == ["refund"]
 
 
-async def test_cases_without_ids_are_called_by_their_position() -> None:
+async def test_cases_without_ids_are_called_by_their_place_from_1() -> None:
+    # Re-pinned deliberately (P1, #1209 item 1): from 0 it read "0", "1", which no line of a cases file is numbered.
     summary = await _summary([{"n": 1}, {"n": 2}], hasty_n, [even])
-    assert [result.case for result in summary.results()] == ["0", "1"]
-    assert [result.case for result in summary.misses()] == ["0"]
+    assert [result.case for result in summary.results()] == ["1", "2"]
+    assert [result.case for result in summary.misses()] == ["1"]
 
 
 async def hasty_n(case: Mapping[str, Any]) -> int:
@@ -150,10 +191,11 @@ def even(case: Mapping[str, Any], answer: Any) -> bool:
     ("cases", "said"),
     [
         ([{"id": "a"}, {"id": "a"}], "more than one case is called 'a'"),
-        ([{"id": 1}, {}], "more than one case is called '1'"),
-        ([{"id": ""}], "case 0's id is ''"),
-        ([{"id": True}], "case 0's id is True"),
-        ([{"id": {"x": 1}}], "case 0's id is {'x': 1}"),
+        # An id is refused where it is another case's place: the second case, with none, is called "2".
+        ([{"id": 2}, {}], "more than one case is called '2'"),
+        ([{"id": ""}], "case 1's id is ''"),
+        ([{"id": True}], "case 1's id is True"),
+        ([{"id": {"x": 1}}], "case 1's id is {'x': 1}"),
     ],
 )
 async def test_case_ids_that_cannot_name_one_case_each_are_refused_before_anything_runs(
@@ -187,7 +229,7 @@ async def test_a_comparison_reads_each_arms_results_and_misses_by_its_key() -> N
     comparison = await Eval(CASES, {"hasty": hasty, "careful": careful}, [QUEUE], k=1, name="hasty vs careful").run(
         store=":memory:", scope=SCOPE
     )
-    assert [result.case for result in comparison.misses("hasty")] == ["2"]
+    assert [result.case for result in comparison.misses("hasty")] == ["3"]
     assert comparison.misses("careful") == []
     assert len(comparison.results("careful")) == 3
     with pytest.raises(ValueError, match="'nobody' names no arm"):
@@ -199,8 +241,8 @@ def misses_two_and_ten(case: Mapping[str, Any], answer: Any) -> bool:
 
 
 async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_both_surfaces() -> None:
-    """The console and the page's Trials table share one order, case 2 before case 10, then arm, for cases called by
-    their position."""
+    """The console and the page's Trials table share one order, case 3 before case 11, then arm, and one name, for cases
+    called by their place from 1."""
 
     async def twin(case: Mapping[str, Any]) -> int:
         return int(case["n"])
@@ -209,13 +251,16 @@ async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_
         [{"n": n} for n in range(12)], {"a": hasty_n, "b": twin}, [misses_two_and_ten], k=1, name="a vs b"
     ).run(store=":memory:", scope=SCOPE)
     arm_of = {variant: arm for arm, variant in comparison.arm_variants.items()}
+    named = case_namer(comparison.report.bundle)
     page = [
-        (trial.case_id.rsplit("-", 1)[1], arm_of[trial.arm])
+        (named(trial.case_id).removeprefix("case "), arm_of[trial.arm])
         for trial in comparison.report.bundle.trials
         if trial.state == "failed"
     ]
     console = re.findall(r"^  case (\d+) \((\w+), repeat 1\): ", comparison.render(), flags=re.M)
-    assert page == console == [("2", "a"), ("2", "b"), ("10", "a"), ("10", "b")]
+    # Re-pinned deliberately (P1, #1209 item 1): the page side was the stored id's index, which no page prints; it is
+    # now the name the page prints, and the cases at index 2 and 10 are the third and the eleventh.
+    assert page == console == [("3", "a"), ("3", "b"), ("11", "a"), ("11", "b")]
 
 
 async def test_a_sync_runner_runs_in_a_worker_thread() -> None:
@@ -232,7 +277,7 @@ async def test_a_sync_runner_runs_in_a_worker_thread() -> None:
 
 async def test_a_sync_callable_returning_a_coroutine_has_it_awaited() -> None:
     summary = await _summary(CASES, {"wrapped": lambda case: hasty(case)}, [QUEUE])
-    assert summary.n_scored == 3 and [result.case for result in summary.misses()] == ["2"]
+    assert summary.n_scored == 3 and [result.case for result in summary.misses()] == ["3"]
 
 
 async def test_a_sync_runner_handed_a_worlds_tools_is_refused_once_before_anything_runs() -> None:
@@ -266,7 +311,7 @@ def _miss_lines(printed: str) -> list[str]:
 async def test_a_classifier_miss_prints_the_graded_field_never_the_whole_answer() -> None:
     result = await Eval(CASES, routed, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     (line,) = _miss_lines(result.render())
-    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    assert line == "  case 3 (repeat 1): answered queue 'bug', expected 'billing'"
     # The whole answer is still on the result, for a reader who asks for it.
     (miss,) = result.misses()
     assert isinstance(miss.answer, dict) and "usage_id" in miss.answer
@@ -281,7 +326,7 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
         store=":memory:", scope=SCOPE
     )
     (line,) = _miss_lines(result.render())
-    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    assert line == "  case 3 (repeat 1): answered queue 'bug', expected 'billing'"
     # The classifier's label match is printed as the page names it: the Accuracy it leads on.
     assert any(re.match(r"  Accuracy: [\d.]+%, \d+ of \d+ trials", text) for text in result.render().splitlines())
     matrix, _ = result.labels()
@@ -295,13 +340,16 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
 class Routing:
     """An app's own answer that JSON cannot hold, so the run stores its repr."""
 
-    queue: str
+    queue: str | None
     note: str
 
 
 async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
+    # The refund is routed; every other ticket comes back with no queue, which no label can be read from. (Had no
+    # answer routed one, the eval would be refused as wired to a field its answers lack.)
     async def as_dataclass(case: Mapping[str, Any]) -> Routing:
-        return Routing(queue="billing", note="routed after reading " + "the whole ticket " * 20)
+        queue = "billing" if case["text"] == "refund please" else None
+        return Routing(queue=queue, note="routed after reading " + "the whole ticket " * 20)
 
     result = await Eval(CASES, as_dataclass, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     (miss, *_) = result.misses()
@@ -309,17 +357,18 @@ async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
     line = _miss_lines(result.render())[0]
     said = line.split("): ", 1)[1]
     shown = said.removeprefix("answered no queue it can be graded on: ").rsplit(", expected ", 1)[0]
-    assert said.startswith("answered no queue it can be graded on: Routing(queue='billing'")
+    assert said.startswith("answered no queue it can be graded on: Routing(queue=None")
     assert len(shown) == 120 and shown.endswith("…")
 
 
 async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_without_its_id() -> None:
+    # The refund carries its queue; the other two answers carry none.
     async def unlabelled(case: Mapping[str, Any]) -> dict[str, Any]:
-        return {"id": "row-1", "note": "x" * 300}
+        return {"queue": "billing"} if case["text"] == "refund please" else {"id": "row-1", "note": "x" * 300}
 
     result = await Eval(CASES, unlabelled, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     lines = _miss_lines(result.render())
-    assert len(lines) == 3
+    assert len(lines) == 2
     said = lines[0].split("): ", 1)[1]
     assert said.startswith('answered no queue it can be graded on: {"note":"xxx')
     shown = said.split("graded on: ", 1)[1].rsplit(", expected ", 1)[0]
@@ -329,16 +378,20 @@ async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_
 
 async def test_a_miss_s_reasons_print_on_one_line_and_the_first_line_keeps_and_n_more() -> None:
     async def raises_over_lines(case: Mapping[str, Any]) -> str:
+        if case["text"] == "ticket 7":
+            return "billing"
         raise ValueError("first line\nsecond line")
 
-    cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(7)]
+    # One case answered, so the first line counts passes and names the misses: a runner that raised on every case says
+    # that instead (test_quick_bool_grader_is_a_check), with its error on the same line.
+    cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(8)]
     result = await Eval(cases, raises_over_lines, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     printed = result.render().splitlines()
     # The first line names the first five cases missed, as the cases table names them, and counts the rest.
     assert "Cases that failed a trial: " in printed[0] and printed[0].endswith(", and 2 more.")
     assert printed[0].split("failed a trial: ", 1)[1].count(", ") == 5
     lines = _miss_lines(result.render())
-    assert lines[0] == "  case 0 (repeat 1): failed: the candidate raised ValueError: first line second line"
+    assert lines[0] == "  case 1 (repeat 1): failed: the candidate raised ValueError: first line second line"
     assert not [line for line in printed if line.strip() == "second line"], "no reason runs onto a line of its own"
 
 
@@ -391,37 +444,33 @@ async def priced_hasty(case: Mapping[str, Any]) -> Answer:
 
 
 def _sheet(written: Mapping[str, Path]) -> Counter[str]:
-    with written["to_label"].open(encoding="utf-8", newline="") as read:
+    with written["blind_read_csv"].open(encoding="utf-8", newline="") as read:
         return Counter(row["dimension"] for row in csv.DictReader(read))
 
 
-async def test_the_judge_s_next_step_says_what_the_sheet_holds_and_how_many_more_answers_the_floor_needs(
-    tmp_path: Path,
-) -> None:
+async def test_the_judge_s_next_step_is_the_read_with_no_tier_word_or_count_still_needed(tmp_path: Path) -> None:
     labels = tmp_path / "labels.csv"
     result = await Eval(CASES, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC, labels=labels)], k=1).run(
         store=":memory:", scope=SCOPE
     )
     sheet = _sheet(result.write(tmp_path / "report"))
-    assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per judged answer per dimension"
-    needed = CALIBRATION_MIN_RESULTS - 3
+    assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per drawn answer per dimension"
     assert result.render().splitlines()[1] == (
-        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
-        "to_label.csv the report writes, which holds 3 per dimension, without looking at the judge's verdict; the "
-        f"calibrated tier's floor is {CALIBRATION_MIN_RESULTS} per dimension, so it needs {needed} more judged "
-        "answers per dimension"
+        f"judge: 0 of 3 cases read blind: judge not checked ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}"
     )
 
 
-async def test_a_sheet_at_the_floor_asks_for_the_floor_s_ratings_of_each_dimension(tmp_path: Path) -> None:
+async def test_a_read_at_the_floor_asks_only_for_the_read(tmp_path: Path) -> None:
     cases = [{"text": f"refund {n}", "queue": "billing"} for n in range(CALIBRATION_MIN_RESULTS)]
     result = await Eval(cases, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC)], k=1).run(store=":memory:", scope=SCOPE)
     sheet = _sheet(result.write(tmp_path / "report"))
+    # Every case's answer is the one word "billing", so the read holds each case once, as its own item.
     assert set(sheet.values()) == {CALIBRATION_MIN_RESULTS}
     assert result.calibration_lines() == [
-        "judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels); next step: rate about "
-        f"{CALIBRATION_MIN_RESULTS} outputs of each dimension in the to_label.csv the report writes, which holds "
-        f"{CALIBRATION_MIN_RESULTS} per dimension, without looking at the judge's verdict"
+        f"judge: 0 of {CALIBRATION_MIN_RESULTS} cases read blind: judge not checked (Judge(labels=...) names the "
+        "labels file); next step: open the blind_read.html the report writes, answer its cases from the top, and "
+        "save its labels where Judge(labels=...) names"
     ]
 
 
@@ -483,14 +532,21 @@ def no_leak(case: Mapping[str, Any], out: Any) -> bool:
 
 #: A sentence of the figures a decision rests on, which the first line says after it.
 _FIGURES = re.compile(
-    r" (?:Of [\d,]+ |Over [\d,]+ paired cases, |The interval |The mean is |The test read ).*?\.(?= \S|$)"
+    r" (?:Of [\d,]+ |Over [\d,]+ paired cases, |The interval |The mean is |The test read |The evidence that "
+    r"|Neither arm varied ).*?\.(?= \S|$)"
 )
 
 
+def _proof_line(result: Result) -> str:
+    """The print's verdict line: its first line, or its second where the first is the advice said above it."""
+    lines = result.render().splitlines()
+    return lines[1] if lines[0].startswith(f"{result.name}: Advice: ") else lines[0]
+
+
 def _decided(result: Result) -> str:
-    """The print's first line with the figures after each decision left out: what the line decides. Each decision
+    """The print's verdict line with the figures after each decision left out: what the line decides. Each decision
     states its figures, so the line holds some."""
-    line = result.render().splitlines()[0]
+    line = _proof_line(result)
     assert _FIGURES.search(line), line
     return _FIGURES.sub("", line)
 
@@ -542,7 +598,7 @@ async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() ->
     assert cost["outcome"] == "improved"
     (guarded,) = result.guardrails("cheap")
     # No reading leads, so no figures follow a decision: what the evidence leaves undecided, then the cost.
-    assert result.render().splitlines()[0] == (
+    assert _proof_line(result) == (
         f"{result.name}: Exploratory: the evidence cannot tell cheap and dear apart on every reading but cost; "
         f"{_worded([cost])}. cheap may do worse than dear on the {guarded['guardrail']} guardrail."
     )
@@ -618,7 +674,7 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     ).run(store=":memory:", scope=SCOPE)
     (first,) = result.contrasts("resolved")
     prefix = "" if question is not None else "Exploratory: "
-    assert result.render().splitlines()[0].startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
+    assert _proof_line(result).startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
     (verdict,) = [
         verdict
         for verdict in result.page.aspects[0].report.verdicts
@@ -628,7 +684,10 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
     asked = question is not None
     # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
+    # The lead opens on what to do, then the result.
     said = bold[0].strip("*")
+    assert said.startswith("Advice: ")
+    said = said[said.index(f"{verdict.heading}: ") :]
     assert _FIGURES.search(said) and _FIGURES.sub("", said) == f"{verdict.heading}: {verdict.words}."
     assert bold[1].startswith("**cheap may do worse than dear on the No leak score guardrail")
     assert ("Exploratory comparison." in page.splitlines()) is not asked
@@ -727,16 +786,19 @@ async def test_a_margin_read_again_with_no_question_is_refused_naming_why() -> N
 async def test_a_no_margin_question_whose_candidate_reads_shown_worse_fails_the_gate_and_its_verdicts_carry_it() -> (
     None
 ):
-    """The question's pass rate is in its family whether or not a margin is written, so the page, the gate and the
-    campaign's verdicts read it alike: v2, missing every case where v1 misses half, is shown worse on the row, its
-    pass-rate contrast regressed in the verdicts, and the gate fails."""
+    """The question is read whether or not a margin is written, so the page, the gate and the campaign's verdicts read
+    it alike: v2, missing every case where v1 misses half, is shown worse on the row, the question's own reading (its
+    one check, whose per-case values are the pass rate's, so the pass rate is not tested a second time) regressed in the
+    verdicts, and the gate fails."""
     result = await Eval(
         _LABELLED, {"v1": _missing(15), "v2": _missing(30)}, ["label"], k=1, question=_BETTER, name="v1 vs v2"
     ).run(store=":memory:", scope=SCOPE)
     (row,) = result.page.readings.readings
     assert (row.reading, row.margin) == ("worse", None)
     verdicts = off_loop(campaign_verdicts, result.host, result.campaign_id, result.scope_id)
-    (pass_rate,) = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading == "trial"]
-    assert (pass_rate.outcome, pass_rate.arm) == ("regressed", "v2")
-    assert pass_rate.aspect is not None, "read as asked, in the question's family"
+    contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast"]
+    assert not [verdict for verdict in contrasts if verdict.reading == "trial"], "one hypothesis, read once"
+    (asked,) = contrasts
+    assert (asked.outcome, asked.arm) == ("regressed", "v2")
+    assert asked.aspect is not None, "read as asked, in the question's family"
     assert result.gate().failed

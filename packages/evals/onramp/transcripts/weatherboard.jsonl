@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "board.py"}
+{"tool": "read", "path": "data/dual_logged.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom board import display_c\n\n\ndef show(case):\n    \"\"\"The whole degree the board shows for the reading.\"\"\"\n    return {\"shown_c\": display_c(case[\"temp_f\"])}\n\n\ndef within_half_degree(case, out):\n    \"\"\"The board is never more than half a degree from the logger's Celsius.\"\"\"\n    return abs(out[\"shown_c\"] - case[\"temp_c\"]) <= 0.5\n\n\nboard = Eval(\"data/dual_logged.jsonl\", runner=show, grader=[within_half_degree], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"within_half_degree\", \"pass_rate\": 0.5893, \"finished\": true}"}

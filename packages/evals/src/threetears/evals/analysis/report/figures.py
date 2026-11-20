@@ -68,9 +68,7 @@ def surface_order_sentence(*, has_control_row: bool) -> str:
     """The row-order sentence for a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`.
 
     :param has_control_row: Whether the table holds a row of the declared control.
-    :ptype has_control_row: bool
     :return: :data:`SURFACE_ORDER` or :data:`SURFACE_ORDER_NO_CONTROL`.
-    :rtype: str
     """
     return SURFACE_ORDER if has_control_row else SURFACE_ORDER_NO_CONTROL
 
@@ -135,13 +133,10 @@ def measure_rulers(
     check's pass rate.
 
     :param surface: The decision surface.
-    :ptype surface: DecisionSurface
     :param catalog: The bundle's ``measure_catalog``, when the caller has the bundle; None reads the engine's
         descriptions alone.
-    :ptype catalog: Mapping[str, MetricDescriptor] | None
     :return: Every measure the surface describes, by name, to its ruler; a measure absent here has none
         (:data:`UNITLESS`).
-    :rtype: dict[str, MeasureRuler]
     """
     values: dict[str, list[float]] = {name: [] for name in surface.measures}
     for cell in surface.cells:
@@ -184,10 +179,8 @@ def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
     """The ruler the scoreboard's cost per reply is stated on, by the one rule a cost measure's ruler follows.
 
     :param costs: Each arm's cost per reply; None for an arm whose cost was not measured.
-    :ptype costs: Iterable[float | None]
     :return: Money per reply, or per 1,000 (1,000,000) replies where some measured cost is under a cent per reply (per
         1,000), as the one owner of money's scale states it.
-    :rtype: MeasureRuler
     """
     return _money_ruler(costs)
 
@@ -225,11 +218,8 @@ class Rulers(NamedTuple):
         """The ruler of one reading: a measure's, a judged dimension's, or :data:`SHARE` for the trials' pass rate.
 
         :param name: The measure's key, or the judged dimension's name.
-        :ptype name: str
         :param reading: ``measure``, ``judged`` or ``trial``.
-        :ptype reading: str
         :return: The ruler; :data:`UNITLESS` for a reading the report knows no unit for.
-        :rtype: MeasureRuler
         """
         if reading == "trial":
             return SHARE
@@ -245,11 +235,8 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
     share, and a 1–5 score is stated as scored.
 
     :param surface: The decision surface.
-    :ptype surface: DecisionSurface
     :param catalog: The bundle's ``measure_catalog``, when the caller has the bundle (see :func:`measure_rulers`).
-    :ptype catalog: Mapping[str, MetricDescriptor] | None
     :return: The rulers.
-    :rtype: Rulers
     """
     dimensions = {
         name: SHARE if facts.value_range == (0.0, 1.0) else UNITLESS for name, facts in surface.dimensions.items()

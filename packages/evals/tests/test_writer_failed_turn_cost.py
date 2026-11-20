@@ -55,6 +55,7 @@ from threetears.evals.providers import DeclinedRetry, Model, ProviderError, desc
 from threetears.evals.providers.failures import Provider
 from threetears.evals.providers.pricing import CallPrice, HostRates, ModelRates
 from threetears.evals.providers.wire import usage_counts
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate, EvalTestCase
@@ -222,6 +223,35 @@ async def test_a_turn_whose_connection_was_never_made_is_sent_again(never: Excep
     assert answered.resent_after == (f"the connection was never made ({type(never).__name__})",)
 
 
+async def test_a_turn_the_server_dropped_with_no_response_is_sent_again_once_naming_the_drop() -> None:
+    """A live Kairo re-record ended failed 34 turns in, on a disconnect with no response that nothing resent."""
+    dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    messages, waits = Messages(dropped, (200, ANSWERS)), Waits()
+
+    answered = await _turn(sonnet(messages, waits))
+
+    assert messages.sent == 2 and waits.asked == [1.0]
+    assert answered.resent_after == (
+        "the connection broke before any response began (RemoteProtocolError: Server disconnected without sending a "
+        "response.), so the provider may have served and billed the call",
+    )
+    # The dropped send may have been billed: the reply counts it, and its JSON keeps the count.
+    assert answered.maybe_billed_sends == 1
+    assert TurnReply.from_json(answered.to_json()) == answered
+
+
+async def test_a_turn_dropped_twice_raises_the_first_drop_from_the_second_after_one_resend() -> None:
+    first = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    second = httpx.RemoteProtocolError("Server disconnected again.")
+    messages, waits = Messages(first, second), Waits()
+
+    with pytest.raises(httpx.RemoteProtocolError) as raised:
+        await _turn(sonnet(messages, waits, retry={"turn_failure_attempts": 3}))
+
+    assert messages.sent == 2 and waits.asked == [1.0], "a drop is sent again once, however many attempts a 5xx gets"
+    assert raised.value is first and raised.value.__cause__ is second
+
+
 @pytest.mark.parametrize("status", [504, 524], ids=["a 504", "Cloudflare's 524"])
 async def test_a_turn_a_gateway_timed_out_is_never_sent_again_since_it_may_have_been_served(status: int) -> None:
     """The gateway gave up waiting; the provider may still have served and billed the turn, as a turn cut in flight."""
@@ -319,7 +349,11 @@ async def test_a_recorded_turn_keeps_its_resend_and_its_replay_says_so(tmp_path:
 def test_a_reply_written_before_resends_were_kept_reads_as_answered_at_once() -> None:
     written = reply().to_json()
     assert "resent_after" not in written, "a reply answered at once is written as before"
+    assert "maybe_billed_sends" not in written, "so is one none of whose sends broke"
     assert TurnReply.from_json(written).resent_after == ()
+    assert TurnReply.from_json(written).maybe_billed_sends == 0
+    with pytest.raises(ValueError, match="maybe_billed_sends"):
+        TurnReply.from_json({**written, "maybe_billed_sends": 0})
     with pytest.raises(ValueError, match="resent_after"):
         TurnReply.from_json({**written, "resent_after": []})
 
@@ -481,6 +515,23 @@ async def test_a_520_answered_on_its_resend_lets_the_writing_go_on_and_is_priced
         assert result.cost_usd == pytest.approx(2 * READS_USD)
         assert result.turns_delivered == 2
     assert waits.asked == [1.0, 1.0, 1.0, 1.0], "the resent turn's wait, then the failed turn's, in each cell"
+
+
+async def test_a_turn_whose_first_send_dropped_counts_the_send_on_its_cells_row_for_the_cap() -> None:
+    """Each cell: the analyst's read drops before any response, is resent and answered, then its next turn fails. The
+    dropped send may have been billed: the row counts it beside the read's price, and the cap counts it at that price,
+    as it does a completion's."""
+    dropped = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    models = _Models(lambda: sonnet(Messages(dropped, (200, READS), (520, EDGE_520), (520, EDGE_520)), Waits()))
+
+    results, stopped = await _capped_run(models)
+
+    assert stopped is None and len(results) == 2
+    for result in results:
+        (row,) = result.usage
+        assert (row.call_count, row.cost_usd, row.maybe_billed_sends) == (1, pytest.approx(READS_USD), 1)
+        assert result.cost_usd == pytest.approx(READS_USD), "the row's cost holds the answered read alone"
+        assert maybe_billed_usd(result.usage, result.cost_roles) == pytest.approx(READS_USD)
 
 
 async def test_a_reply_nothing_could_price_still_stops_the_capped_run_after_its_cell() -> None:

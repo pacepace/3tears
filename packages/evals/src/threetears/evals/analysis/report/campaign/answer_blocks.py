@@ -1,9 +1,8 @@
 """The lines on a campaign's page that say what became of its analysis, and the person's call.
 
-Code's page says where the campaign's report is, where it has one: one line naming the report document it is stored
-as (:func:`report_doc_blocks`); one line where the analysis it stands in for is one this version no longer reads or
-a retired writer wrote (:func:`unread_analysis_blocks`, :func:`retired_generation`). With neither, the page says
-nothing of a report: it is code's page, and says what code read. Then **the person's call**, once one is recorded; a
+Code's page says what became of the campaign's report where it stands in for one: one line where the analysis it
+stands in for is one this version no longer reads or a retired writer wrote (:func:`unread_analysis_blocks`,
+:func:`retired_generation`). Otherwise the page says nothing of a report: it is code's page, and says what code read. Then **the person's call**, once one is recorded; a
 call adopting an arm past a broken floor says which floor it overrides (:func:`call_blocks`).
 """
 
@@ -13,29 +12,22 @@ from collections.abc import Mapping
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import floor_of
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
-from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.analysis.style import code
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, Floor, aware_instant, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "NO_LONGER_READS",
     "call_blocks",
-    "report_doc_blocks",
     "retired_generation",
     "unread_analysis_blocks",
 ]
-
-#: The first screen's line where the analysis laid out is a report document's (``EvalAnalysis.report_doc_id``): the
-#: report is stored apart, and this page is code's over the same evidence.
-DOC_WRITTEN = (
-    "A report was written over this campaign's evidence and is stored as report document {report_doc_id}. This page "
-    "is the code-only page over the same evidence."
-)
 
 #: The one line every surface prints where the campaign's reported analysis is one this version no longer reads: a
 #: report document that no longer validates, whose snapshot
@@ -64,28 +56,13 @@ _UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was {line}."
 _UNREAD_REPORT_DOC = "Report document {report_doc_id} was " + NO_LONGER_READS + "."
 
 
-def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
-    """The one line saying a report document was written and where it is stored; nothing for any other page.
-
-    :param report_doc_id: The report document the analysis laid out names (``EvalAnalysis.report_doc_id``), or None.
-    :ptype report_doc_id: str | None
-    :return: The line, or nothing.
-    :rtype: list[ReportBlock]
-    """
-    if report_doc_id is None:
-        return []
-    return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
-
-
 def retired_generation(basis: str) -> str | None:
     """The one line for an analysis a retired report writer wrote, naming the writer (worded once, beside
     :data:`NO_LONGER_READS`);
     None for one a writer this version reads.
 
     :param basis: What wrote the analysis (``EvalAnalysis.basis``).
-    :ptype basis: str
     :return: The line, or None.
-    :rtype: str | None
     """
     writer = _RETIRED_WRITERS.get(basis)
     return _RETIRED_GENERATION.format(writer=writer) if writer is not None else None
@@ -100,13 +77,9 @@ def unread_analysis_blocks(
     other page.
 
     :param analysis_id: The analysis the code-only page stands in for, or None.
-    :ptype analysis_id: str | None
     :param report_doc_id: The report document it stands in for, read by its id, or None.
-    :ptype report_doc_id: str | None
     :param line: What the analysis was: :data:`NO_LONGER_READS`, or the retired writer's line.
-    :ptype line: str
     :return: The line, or nothing.
-    :rtype: list[ReportBlock]
     """
     if analysis_id is not None:
         text = _UNREAD_ANALYSIS.format(analysis_id=analysis_id, line=line)
@@ -145,19 +118,12 @@ def call_blocks(
     it, so a control stored under an older identity predicate is still found.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param call: The person's call; None while none is recorded.
-    :ptype call: CampaignCall | None
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param reports: Each aspect's own page, by its label, whose evidence names a bar's measure.
-    :ptype reports: Mapping[str, Report]
     :param forms: The page's forms, which state each floor's margin.
-    :ptype forms: PageForms
     :return: The call's lines; none while no call is recorded.
-    :rtype: list[ReportBlock]
     """
     if call is None:
         return []

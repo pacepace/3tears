@@ -140,13 +140,13 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 #: **What it does not guarantee.** An effort level bounds nothing in tokens on any model; a model
 #: that takes reasoning as a token budget is sent the closest budget its client chooses, and a model
 #: that does not reason ignores it. The cap below is the only hard stop.
-SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "low"
+_SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "low"
 
 #: Room the output cap leaves for the simulated user's private reasoning at
-#: :data:`SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
+#: :data:`_SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
 #: so it bounds nothing; it is what the cap is sized from, so a turn that reasons a little more than
 #: usual still has room to answer.
-SIMULATOR_REASONING_ALLOWANCE_TOKENS = 1024
+_SIMULATOR_REASONING_ALLOWANCE_TOKENS = 1024
 
 #: Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one
 #: utterance or one scheduling pick. That is at most a few hundred tokens, so this is headroom; unused
@@ -155,7 +155,7 @@ SIMULATOR_ANSWER_BUDGET_TOKENS = 4096
 
 #: The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than
 #: chosen. It is the only bound in tokens a simulator call has.
-SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+SIMULATOR_MAX_TOKENS = _SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
 
 #: The simulator role's request settings as ONE value: what the host's client builder applies to
 #: the simulated user's client, and what a run launched with a simulated user records as
@@ -170,7 +170,7 @@ SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_B
 #: the enforcement the calls already carry.
 SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=SIMULATOR_MAX_TOKENS,
-    reasoning_effort=SIMULATOR_REASONING_EFFORT,
+    reasoning_effort=_SIMULATOR_REASONING_EFFORT,
     strict_output=True,
 )
 
@@ -217,9 +217,7 @@ def next_speaker_response_format(choices: list[str]) -> dict[str, Any]:
     """The ``response_format`` one scheduling call sends: :class:`NextSpeakerReply` with ``next`` narrowed.
 
     :param choices: The answers legal at this pick, in the order they are offered.
-    :ptype choices: list[str]
     :return: The strict directive, its ``next`` property an ``enum`` of ``choices``.
-    :rtype: dict[str, Any]
     """
     directive = _response_format("next_speaker", NextSpeakerReply)
     directive["json_schema"]["schema"]["properties"]["next"]["enum"] = list(choices)
@@ -368,7 +366,6 @@ class TurnDriver:
         """Halt the conversation under ``cause``. Idempotent: the first cause recorded stands.
 
         :param cause: Why the conversation stopped.
-        :ptype cause: ConversationStopCause
         """
         if self._stop_cause is None:
             self._stop_cause = cause
@@ -436,9 +433,7 @@ class TurnDriver:
 
         :param llm: The simulator-role client; called only by ``llm_decided``, and only when more than one
             answer is legal.
-        :ptype llm: SimulatorLLM
         :return: The actor to hand to :meth:`next_user_turn`, or ``None``.
-        :rtype: ActorPolicy | None
         :raises SimulatorReplyInvalid: The scheduler's reply and its repair both broke the schema.
         :raises ValueError: The conversation has already stopped.
         """
@@ -510,11 +505,8 @@ class TurnDriver:
         :param llm: An object satisfying :class:`SimulatorLLM` — needs only
             ``await llm.generate(system=..., user=..., response_format=...)`` returning
             an object with a ``content`` attribute.
-        :ptype llm: SimulatorLLM
         :param actor: The speaker, as :meth:`next_speaker` named it.
-        :ptype actor: ActorPolicy
         :return: A :class:`SimulatorTurn`.
-        :rtype: SimulatorTurn
         :raises SimulatorReplyInvalid: The reply was not the structured shape it was sent.
         :raises ValueError: ``actor`` is not one of this conversation's actors, or has already left.
         """
@@ -576,11 +568,8 @@ class TurnDriver:
         world. The transcript records it, so an actor speaking in a later round reads that it happened.
 
         :param world_round: The current round, as :meth:`world_round` named it.
-        :ptype world_round: WorldRound
         :param event: What the world session recorded when it fired.
-        :ptype event: WorldEvent
         :return: The round's turn.
-        :rtype: SimulatorTurn
         :raises ValueError: ``world_round`` is not the current round.
         """
         if world_round != self.world_round():
@@ -645,14 +634,10 @@ class TurnDriver:
         driver's calls stay complete whichever way the conversation ended.
 
         :param response: The simulator call's completion.
-        :ptype response: Any
         :param purpose: Whether the call was an ``utterance`` or a ``schedule`` pick, for the record of a refused one.
-        :ptype purpose: KnownSimulatorPurpose
         :param actor_id: The actor it spoke for, for the record of a refused one; ``None`` for a pick, whose choice
             is unread.
-        :ptype actor_id: str | None
         :return: The call's usage.
-        :rtype: CallUsage
         :raises CompletionProtocolDefect: The response's ``sent_settings`` is neither ``None`` nor request settings; the
             call is recorded first.
         """
@@ -670,7 +655,6 @@ class TurnDriver:
         nobody (``round_done``, a refused reply) lands under no actor.
 
         :param ledger: The cell's simulator-role ledger.
-        :ptype ledger: RoleUsageLedger
         :raises ValueError: ``ledger`` is another role's. Simulator spend is the program's cost and never
             the candidate's, so landing it on another role would misstate what the candidate costs.
         """
@@ -761,9 +745,7 @@ def smallest_utterance_prompts(actor: ActorPolicy) -> tuple[str, str]:
     simulated user's floor by (:func:`~threetears.evals.run.price_subject_call_floor`).
 
     :param actor: One of the conversation's actors.
-    :ptype actor: ActorPolicy
     :return: The system prompt and the user prompt.
-    :rtype: tuple[str, str]
     """
     return _actor_system_prompt(actor.policy, ""), _actor_user_prompt(actor.intent, "")
 
@@ -787,9 +769,7 @@ def simulator_prompt_digest(conversation: ConversationSpec) -> str:
     order, the scheduler, the round's cap, or any of the engine's own words above.
 
     :param conversation: The template's conversation, as the run launched it.
-    :ptype conversation: ConversationSpec
     :return: A sha256 hex digest.
-    :rtype: str
     """
     calls: list[dict[str, Any]] = []
     for actor in conversation.actors:
@@ -888,9 +868,7 @@ def _parse_reply(content: str | None) -> SimulatedUserReply:
     whether the object has the two declared fields.
 
     :param content: The completion's text.
-    :ptype content: str | None
     :return: The validated reply.
-    :rtype: SimulatedUserReply
     :raises SimulatorReplyInvalid: The text is not JSON, or does not match the model.
     """
     try:
@@ -905,8 +883,6 @@ __all__ = [
     "SIMULATED_USER_RESPONSE_FORMAT",
     "SIMULATOR_ANSWER_BUDGET_TOKENS",
     "SIMULATOR_MAX_TOKENS",
-    "SIMULATOR_REASONING_ALLOWANCE_TOKENS",
-    "SIMULATOR_REASONING_EFFORT",
     "SIMULATOR_REQUEST_SETTINGS",
     "CandidateTurn",
     "NextSpeakerReply",

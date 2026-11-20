@@ -111,6 +111,31 @@
   "apparatus": {
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunRig"}}, {"type": "null"}],
    "description": "The rig each run was measured with, for each run that recorded one past a serial run pinning and declaring nothing; none where no run did, or the bundle carried none."
+  },
+  "caveat_list": {
+   "anyOf": [
+    {
+     "items": {
+      "$ref": "#/$defs/CaveatEntry"
+     },
+     "type": "array"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "description": "Every qualification of the answer, each once, typed; none on an input built before the list."
+  },
+  "first_screen": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/FirstScreen"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "description": "The first screen's slots, as shown when the input was frozen; never part of the input's digest."
   }
  },
  "additionalProperties": false,
@@ -167,6 +192,66 @@
     "description": {
      "type": ["string", "null"],
      "description": "What kind of candidate the arm is, in a few words."
+    },
+    "arm_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The id that names the arm apart from its label; names one cell where the arm is split."
+    },
+    "cell": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The one cell the arm id names, where the arm is split over several."
+    },
+    "spelling": {
+     "anyOf": [
+      {
+       "additionalProperties": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "integer"
+         },
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The levers code spelled the arm's computed name from, each with its level, in order."
+    },
+    "identity": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/ArmIdentity"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the arm is one thing, a state per coordinate."
     }
    },
    "additionalProperties": false,
@@ -228,6 +313,28 @@
     "pass_rule": {
      "anyOf": [{"$ref": "#/$defs/PassRule"}, {"type": "null"}],
      "description": "How a trial on the aspect passes: its criteria, threshold, counted dimensions and checks; none where the input does not say."
+    },
+    "margin_informative": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether any margin a reader could plausibly hold changes a reading on the aspect."
+    },
+    "looks": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Looks"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts about the campaign (its launches, membership, re-judges), never an input the author gave, so never part of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
     }
    },
    "additionalProperties": false,
@@ -320,6 +427,11 @@
      "type": "array",
      "items": {"type": "string"},
      "description": "Observations recorded but not reported."
+    },
+    "unfinished": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "What stopped each run that did not finish, a sentence each in code's words, then what the readings cover: what a page opens with in place of a verdict. Empty where every run completed."
     }
    },
    "additionalProperties": false,
@@ -433,6 +545,90 @@
     "pairing_r": {
      "type": ["number", "null"],
      "description": "The arms' correlation across the paired cases: how much pairing narrowed the interval."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The contrast's state where it is not counted, with its reason; none reads counted."
+    },
+    "baseline": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The control's mean over the cases the test paired: what the delta is a change from."
+    },
+    "baseline_n_cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The cases that baseline is the mean of."
+    },
+    "family": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The family the contrast was corrected in, by id."
+    },
+    "delta_note": {
+     "anyOf": [
+      {
+       "enum": [
+        "paired_cases",
+        "adjusted"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Why the delta is not the difference of the two means printed beside it, where it is not."
+    },
+    "corrected": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Corrected"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The contrast as what its judge was checked against would read it: a check's result, never a second verdict."
+    },
+    "aa": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Check"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The A/A check covering the contrast: identical arms read on the same reading."
     }
    },
    "additionalProperties": false,
@@ -563,6 +759,10 @@
      "items": {"$ref": "#/$defs/Level"},
      "description": "Its levels, in order.",
      "minItems": 1
+    },
+    "ordered": {
+     "description": "Whether the levels are points on one scale, so a line may be drawn across them.",
+     "type": "boolean"
     }
    },
    "additionalProperties": false,
@@ -630,6 +830,64 @@
      "items": {"$ref": "#/$defs/PreferenceRow"},
      "description": "The preference in each slice.",
      "minItems": 1
+    },
+    "read_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The blind read the ratings come from."
+    },
+    "person": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Who rated, where the read records it."
+    },
+    "test": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The test the preference was read by."
+    },
+    "p": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Its p."
+    },
+    "verdict": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The contrast verdict it comes to."
     }
    },
    "additionalProperties": false,
@@ -668,6 +926,13 @@
      "type": "object",
      "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
      "description": "Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, else the first)."
+    },
+    "checks": {
+     "description": "The judge's checks: what it was checked against, on what sample, with what result.",
+     "items": {
+      "$ref": "#/$defs/Check"
+     },
+     "type": "array"
     }
    },
    "additionalProperties": false,
@@ -822,6 +1087,17 @@
     "precision": {
      "anyOf": [{"$ref": "#/$defs/Precision"}, {"type": "null"}],
      "description": "What limits the interval."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The pair's state where it is not counted, with its reason; none reads counted."
     }
    },
    "additionalProperties": false,
@@ -991,6 +1267,31 @@
     "precision": {
      "anyOf": [{"$ref": "#/$defs/Precision"}, {"type": "null"}],
      "description": "What limits the interval."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The reading's state where it is not counted, with its reason; none reads counted."
+    },
+    "flip_margin": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The margin at which the reading would read the other way, in points."
     }
    },
    "additionalProperties": false,
@@ -1104,6 +1405,28 @@
     "pricing": {
      "anyOf": [{"$ref": "#/$defs/Pricing"}, {"type": "null"}],
      "description": "How the arm's cost was priced: its price sources, serving providers and priced calls; none where the input does not say."
+    },
+    "cost": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Stat"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The arm's one cost reading, the fallback from cost per reply decided once."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The row's state where its passes and failures are not counted, with its reason: withheld where the cells keep the arm apart on a coordinate, which it names; none reads counted."
     }
    },
    "additionalProperties": false,
@@ -1154,6 +1477,45 @@
      "type": ["array", "null"],
      "items": {"type": "number"},
      "description": "The share in each of the measure's bins, percent."
+    },
+    "spread": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The spread of the arm's per-case values, in the measure's units."
+    },
+    "no_variation": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The one value every case took, where the cases did not vary."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval's state where it is not counted, with its reason; none reads counted."
     }
    },
    "additionalProperties": false,
@@ -1235,7 +1597,11 @@
     "providers": {
      "type": "array",
      "items": {"type": "string"},
-     "description": "Each provider its model calls name as serving them (RoleUsage.provider on every role but external), sorted; empty where none does."
+     "description": "Each provider its model calls name as serving them (RoleUsage.served_provider, else RoleUsage.provider, on every role but external), sorted; empty where none does: not recorded."
+    },
+    "providers_in_part": {
+     "type": "boolean",
+     "description": "Some of its model calls named no provider beside calls that named one: providers names who served part of them, and the rest are not recorded."
     },
     "tool_providers": {
      "type": "array",
@@ -1281,6 +1647,1724 @@
    },
    "additionalProperties": false,
    "description": "One role's calls of one arm's trials that went unanswered, beside the arm's cost and never inside it."
+  },
+  "ArmIdentity": {
+   "additionalProperties": false,
+   "description": "Whether an arm is one thing, a state per coordinate of :data:`Coordinate`; a coordinate left out was not\nread.",
+   "properties": {
+    "served_model": {
+     "anyOf": [
+      {
+       "enum": [
+        "one",
+        "split",
+        "unrecorded"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether one model answered the arm's candidate calls."
+    },
+    "measure_definition": {
+     "additionalProperties": {
+      "enum": [
+       "one",
+       "split",
+       "unrecorded"
+      ],
+      "type": "string"
+     },
+     "description": "Whether each host measure's values were read under one definition, by measure.",
+     "type": "object"
+    },
+    "template": {
+     "anyOf": [
+      {
+       "enum": [
+        "one",
+        "split",
+        "unrecorded"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the arm's runs ran one revision of one template."
+    },
+    "rig": {
+     "anyOf": [
+      {
+       "enum": [
+        "one",
+        "split",
+        "unrecorded"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the arm's runs were measured under one rig: one measurement context."
+    }
+   },
+   "type": "object"
+  },
+  "CallRead": {
+   "additionalProperties": false,
+   "description": "The call on a campaign, as of the freeze: the arm decided, who decided, and what has moved since.",
+   "properties": {
+    "arm": {
+     "description": "The decided arm's id.",
+     "type": "string"
+    },
+    "made_by": {
+     "anyOf": [
+      {
+       "enum": [
+        "person",
+        "model"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "A person or a model; none where the call recorded none."
+    },
+    "model": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The model that made it, by id."
+    },
+    "on_behalf_of": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Who a model made it for."
+    },
+    "runs_joined_since": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Runs that joined the evidence after the call."
+    },
+    "identity_changed": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the evidence's fingerprint differs from the one the call was read against."
+    }
+   },
+   "required": [
+    "arm"
+   ],
+   "type": "object"
+  },
+  "CaveatEntry": {
+   "additionalProperties": false,
+   "description": "One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.\n\nEvery first-screen qualification is one of these. ``against`` and ``criterion`` say what a caveat about an\ninstrument's check was checked against and on which criterion, which is what lets a check against people silence a\ncheck against a model, and what ranks a judge checked against a model only.",
+   "properties": {
+    "id": {
+     "description": "The caveat's stable id, as a report document names it.",
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "description": "The id's kind, which decides its class.",
+     "title": "Kind",
+     "type": "string"
+    },
+    "class": {
+     "anyOf": [
+      {
+       "enum": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What it does to the answer, A to E; none for a method-reach kind.",
+     "title": "Class"
+    },
+    "reach": {
+     "description": "report, scoped or method.",
+     "enum": [
+      "report",
+      "scoped",
+      "method"
+     ],
+     "title": "Reach",
+     "type": "string"
+    },
+    "state": {
+     "anyOf": [
+      {
+       "enum": [
+        "counted",
+        "set_aside",
+        "withheld",
+        "not_available"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The non-counted state that raised it, where one did.",
+     "title": "State"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "enum": [
+        "instrument_unchecked",
+        "instrument_below_bar",
+        "instrument_leans",
+        "people_disagree",
+        "identical_arms_separated"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "unfinished",
+        "split",
+        "identity_unrecorded",
+        "measured_under_concurrency",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "too_few",
+        "no_variation",
+        "not_recorded",
+        "replayed",
+        "not_drawn_at_random",
+        "skipped_past_limit",
+        "identity_unrecorded",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "That state's reason, or the reason a check is not met.",
+     "title": "Reason"
+    },
+    "coordinate": {
+     "anyOf": [
+      {
+       "enum": [
+        "served_model",
+        "measure_definition",
+        "template",
+        "rig"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The coordinate a split or an unrecorded identity names.",
+     "title": "Coordinate"
+    },
+    "arms": {
+     "description": "The arm ids it touches; empty for all.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Arms",
+     "type": "array"
+    },
+    "readings": {
+     "description": "The readings it is scoped to, each '<aspect>/<measure>'; empty for the whole report.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Readings",
+     "type": "array"
+    },
+    "asked": {
+     "default": false,
+     "description": "Whether it touches an asked aspect: one of its readings is on one, or it is scoped to the whole report and the report asks about one.",
+     "title": "Asked",
+     "type": "boolean"
+    },
+    "deciding": {
+     "default": false,
+     "description": "Whether the answer turns on a reading it names: a class E caveat reaches the first screen only where it does.",
+     "title": "Deciding",
+     "type": "boolean"
+    },
+    "immaterial": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "True once code proved it changes no answer; none where code cannot say.",
+     "title": "Immaterial"
+    },
+    "subsumed_by": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The caveat that silences it, by id.",
+     "title": "Subsumed By"
+    },
+    "against": {
+     "anyOf": [
+      {
+       "enum": [
+        "people",
+        "model"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat about an instrument's check: what the instrument was checked against.",
+     "title": "Against"
+    },
+    "criterion": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a borderline figure: the gate, by id.",
+     "title": "Criterion"
+    },
+    "same_family": {
+     "default": false,
+     "description": "For a check against a model: whether the model is of a candidate's family.",
+     "title": "Same Family",
+     "type": "boolean"
+    },
+    "check": {
+     "anyOf": [
+      {
+       "enum": [
+        "met",
+        "not_met",
+        "undecided",
+        "insufficient"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat about an instrument's check: the check's result. Only a result that decides (met or not met) speaks for the instrument, so only such a check against people silences one against a model.",
+     "title": "Check"
+    },
+    "runs": {
+     "description": "The runs it is about, by id; empty for none named.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Runs",
+     "type": "array"
+    },
+    "cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The cases the readings it names rest on, where one count says it.",
+     "title": "Cases"
+    },
+    "looks": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Looks"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded (`Aspect.looks`)."
+    },
+    "false_separation": {
+     "description": "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where the looks counted are a lower count (more may have been taken, so no row is the situation's: the count is shown alone), or were not recorded.",
+     "items": {
+      "$ref": "#/$defs/FalseSeparation"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "kind",
+    "reach"
+   ],
+   "title": "CaveatEntry",
+   "type": "object"
+  },
+  "FalseSeparation": {
+   "additionalProperties": false,
+   "description": "A reference figure for one test the aspect's readings are read by: how often a test with no true difference\nseparated at some look in a simulation of that test, plan and count, in the setting stated beside it\n(:func:`~threetears.evals.analysis.significance.looks_false_separation`). It is never this campaign's own rate,\nwhich is not known, and it is no limit on it: a campaign launched smaller, extended by more cases a step, or\nreading several claims at once can err more. For a claim of held (one tail) it is the two-sided separation rate.",
+   "properties": {
+    "test": {
+     "description": "The test the reference simulates: bounded or t.",
+     "enum": [
+      "bounded",
+      "t"
+     ],
+     "type": "string"
+    },
+    "rate": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
+    },
+    "upper": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The reference simulation's own uncertainty about ``rate``: the one-sided 97.5% Wilson upper confidence limit from its replicates. Nothing about this campaign's error. None with no rate."
+    },
+    "row": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The row of `significance.FALSE_SEPARATION` the rate is read from; None with no rate."
+    },
+    "looks": {
+     "description": "The looks the reference rate is for.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "setting": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What the reference simulated, in one line: a single contrast, the test, the per-case values, the launch and the extends. None where no row measured the situation."
+    },
+    "launched": {
+     "description": "The cases the simulated first looks read; empty where no row measured it.",
+     "items": {
+      "type": "integer"
+     },
+     "type": "array"
+    },
+    "largest_step": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The most cases one later look added in the simulation; None where no row did."
+    },
+    "unquoted": {
+     "anyOf": [
+      {
+       "enum": [
+        "not_measured",
+        "outside_setting"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why no rate is quoted: not_measured (no row for this test, plan and count) or outside_setting (the aspect's own first-look cases or largest step, from stored facts, fall outside the simulated setting, so the reference does not cover it). None with a rate."
+    }
+   },
+   "required": [
+    "test",
+    "rate",
+    "looks"
+   ],
+   "type": "object"
+  },
+  "Check": {
+   "additionalProperties": false,
+   "description": "One check of one instrument.",
+   "properties": {
+    "instrument": {
+     "description": "What was checked: a judge by its dimension, a reviewer by its id, or the rig.",
+     "type": "string"
+    },
+    "criterion": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The criterion the check decides, where it names one."
+    },
+    "against": {
+     "description": "What it was checked against.",
+     "enum": [
+      "people",
+      "model",
+      "itself",
+      "identical_arms"
+     ],
+     "type": "string"
+    },
+    "against_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The model it was checked against, by id."
+    },
+    "same_family_as": {
+     "description": "The arms whose candidate model is of the family of the model checked against.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "sample": {
+     "anyOf": [
+      {
+       "enum": [
+        "random",
+        "selected",
+        "none"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the items it was read on were drawn at random, chosen, or no sample stands behind it."
+    },
+    "sample_results": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Results read."
+    },
+    "sample_cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Distinct cases behind them."
+    },
+    "skipped": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Items a reader skipped."
+    },
+    "read_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The blind read the sample is, by id."
+    },
+    "result": {
+     "description": "met, not_met, undecided or insufficient.",
+     "enum": [
+      "met",
+      "not_met",
+      "undecided",
+      "insufficient"
+     ],
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "enum": [
+        "instrument_unchecked",
+        "instrument_below_bar",
+        "instrument_leans",
+        "people_disagree",
+        "identical_arms_separated"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "unfinished",
+        "split",
+        "identity_unrecorded",
+        "measured_under_concurrency",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "too_few",
+        "no_variation",
+        "not_recorded",
+        "replayed",
+        "not_drawn_at_random",
+        "skipped_past_limit",
+        "identity_unrecorded",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Why the result is not met, where a shared reason says it."
+    },
+    "coordinate": {
+     "anyOf": [
+      {
+       "enum": [
+        "served_model",
+        "measure_definition",
+        "template",
+        "rig"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The coordinate an unrecorded identity names, where that is the reason."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Where the check could not be made at all (both sides replayed a recording): not available, why."
+    },
+    "kappa": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Agreement beyond chance."
+    },
+    "kappa_interval": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "number"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval on it."
+    },
+    "lean": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The instrument's lean toward one arm."
+    },
+    "lean_interval": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "number"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval on it."
+    },
+    "half_width": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The half-width the check was read at."
+    },
+    "reads": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Reads behind the figures."
+    },
+    "delta": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The difference between identical arms."
+    },
+    "interval": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "number"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval on that difference."
+    },
+    "p_adjusted": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Its adjusted p."
+    },
+    "reading": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The reading a check of the rig covers."
+    },
+    "covers_arms": {
+     "description": "The arms a check of the rig covers.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "instrument",
+    "against",
+    "result"
+   ],
+   "type": "object"
+  },
+  "Corrected": {
+   "additionalProperties": false,
+   "description": "A check's result on one judged contrast: the contrast as what the judge was checked against would read it.",
+   "properties": {
+    "against": {
+     "description": "Whose reading corrects the judge's.",
+     "enum": [
+      "people",
+      "model"
+     ],
+     "type": "string"
+    },
+    "against_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The model, by id."
+    },
+    "result": {
+     "anyOf": [
+      {
+       "enum": [
+        "met",
+        "not_met",
+        "undecided",
+        "insufficient"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether the corrected reading confirms."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Its state where it is not counted."
+    },
+    "estimate": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The corrected difference."
+    },
+    "interval": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "number"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval on it."
+    },
+    "level": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval's level."
+    },
+    "lean": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The judge's lean the correction removes."
+    },
+    "lean_interval": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "number"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The interval on it."
+    },
+    "labelled_cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Cases both the judge and the other reader read."
+    },
+    "identical_cases": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Of those, the cases they read alike."
+    },
+    "read_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The blind read the correction rests on."
+    }
+   },
+   "required": [
+    "against"
+   ],
+   "type": "object"
+  },
+  "FirstScreen": {
+   "additionalProperties": false,
+   "description": "What a report's first screen holds beside the answer, in four fixed slots, as typed values and no text.\n\nThe gate (can this be read at all), the trust slot's reasons (at most three caveats, ranked, with the count past\nthem), and the call. The answer slot holds no field: it is the verdicts and warnings the input already carries.\nComputed by one function over the caveat list\n(:func:`~threetears.evals.analysis.first_screen.first_screen`), and left out of the input's digest, since it is a\nfunction of the rest of the input and of a call that may be made after the freeze.",
+   "properties": {
+    "gate": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Gate"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What stopped the read; none when the campaign can be read."
+    },
+    "reasons": {
+     "description": "The ranked caveats shown, by id.",
+     "items": {
+      "type": "string"
+     },
+     "maxItems": 3,
+     "title": "Reasons",
+     "type": "array"
+    },
+    "remainder": {
+     "default": 0,
+     "description": "The eligible caveats past the three shown.",
+     "minimum": 0,
+     "title": "Remainder",
+     "type": "integer"
+    },
+    "open_report_caveats": {
+     "default": 0,
+     "description": "Every open report-wide caveat, shown or not.",
+     "minimum": 0,
+     "title": "Open Report Caveats",
+     "type": "integer"
+    },
+    "called_arms": {
+     "description": "The arms code's own read of the options calls: what ranks a caveat on them.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Called Arms",
+     "type": "array"
+    },
+    "call": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/CallRead"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The call, where one was made."
+    },
+    "steps": {
+     "description": "What would change each reason shown, in their order; under a gate, what would lift it.",
+     "items": {
+      "$ref": "#/$defs/RemedyStep"
+     },
+     "title": "Steps",
+     "type": "array"
+    }
+   },
+   "title": "FirstScreen",
+   "type": "object"
+  },
+  "Gate": {
+   "additionalProperties": false,
+   "description": "What stops a campaign from being read at all; a campaign that can be read has none.",
+   "properties": {
+    "rule": {
+     "description": "Which rule stopped the read.",
+     "enum": [
+      "setup",
+      "unfinished",
+      "too_small"
+     ],
+     "title": "Rule",
+     "type": "string"
+    },
+    "runs": {
+     "description": "The runs the rule names.",
+     "items": {
+      "$ref": "#/$defs/GateRun"
+     },
+     "title": "Runs",
+     "type": "array"
+    },
+    "fewest_cases": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For too few cases: the fewest usable cases an arm read holds.",
+     "title": "Fewest Cases"
+    },
+    "waiting": {
+     "default": 0,
+     "description": "The open report-wide caveats waiting below the gate.",
+     "minimum": 0,
+     "title": "Waiting",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "rule"
+   ],
+   "title": "Gate",
+   "type": "object"
+  },
+  "GateRun": {
+   "additionalProperties": false,
+   "description": "One run a gate names.",
+   "properties": {
+    "run": {
+     "description": "The run's id.",
+     "type": "string"
+    },
+    "status": {
+     "description": "Its stored status.",
+     "type": "string"
+    },
+    "ended_because": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Why it ended, in its record's own words; never one of the shared reasons."
+    }
+   },
+   "required": [
+    "run",
+    "status"
+   ],
+   "type": "object"
+  },
+  "Looks": {
+   "additionalProperties": false,
+   "description": "How often a reading's test was looked at, against how often it planned to be.\n\nA look is an occasion on which the contrast's test could have been read again on more or different evidence\n(:func:`~threetears.evals.analysis.significance.looks_taken`): the first, once both arms held a result; then each\nlaunch whose results changed what the test reads, each run that joined or left, each re-measure and each re-judge\nmade after it. ``taken`` is the most any one contrast of the aspect has had. It is exact where every such fact is\nstored, and a lower bound (``lower_bound``) where one is not: a run that left with no result recorded, an archived\nor unresolved member, a result with no ordered time, or re-judges, which are stored per result, so passes over\ndifferent results cannot be told apart.\n\n**Looks were not recorded** (``recorded`` false) where a member run's joining was never recorded: it joined before\ndurable 17.3 recorded membership. The occasions its stored results give are then artifacts of how the runs were\nstored (each arm launched alone, one group of cases after another), not occasions on which a reading could have\nbeen taken, and runs joined in one write are dated each by its own launch: the count could be too high or too low,\nso it is neither a bound above nor a bound below, and it is not given as looks. ``evidence_changes`` gives that\ncount as what it is: how many times the stored evidence changed. Where looks were recorded since (a run joined,\nleft, was launched after it joined, re-measured or re-judged after the first comparison), ``taken`` is the first\ncomparison plus those, a true lower count (``lower_bound``): at least that many looks since looks were recorded,\nand earlier ones not recorded. Where none were, ``taken`` is None.",
+   "properties": {
+    "planned": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks the design plans, where the plan was declared before the first look; None where none was, or where it was declared after (``late_plan``)."
+    },
+    "taken": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks taken. Where looks were not recorded (``recorded`` false): the looks recorded since, counting the first comparison, a lower count; None where none were."
+    },
+    "plannable": {
+     "default": true,
+     "description": "Whether the campaign was created once looks were counted, so its design could have declared them. False for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only.",
+     "type": "boolean"
+    },
+    "lower_bound": {
+     "default": false,
+     "description": "Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
+     "type": "boolean"
+    },
+    "recorded": {
+     "default": true,
+     "description": "Whether looks were recorded: false where a member run joined before durable 17.3 recorded membership, so the looks before are not counted; ``taken`` is then only the looks recorded since, a lower count, or None.",
+     "type": "boolean"
+    },
+    "evidence_changes": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Where looks were not recorded: how many times the stored evidence of a contrast changed (its runs' launches, re-measures and re-judges as stored), context and not a count of looks. None where they were."
+    },
+    "launched": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The fewest cases any contrast of the aspect read at its first look. None where not counted."
+    },
+    "largest_step": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The most cases one later occasion added to any contrast of the aspect. None where not counted."
+    },
+    "tests": {
+     "description": "The tests the aspect's readings are read by, sorted: ``bounded`` (a pass rate, a judged score, a guardrail) and ``t`` (a mean, a measure's score, a cost per reply). What a caveat on looks quotes a measured rate for.",
+     "items": {
+      "enum": [
+       "bounded",
+       "t"
+      ],
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "late_plan": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks a plan declared after the first look named (or over runs that held results before it was declared): read as no plan, since the looks it would count were already taken. None where no plan was declared late."
+    }
+   },
+   "type": "object"
+  },
+  "NextExperiment": {
+   "additionalProperties": false,
+   "description": "What recording one dimension would buy, in pooled observations.\n\nBoth counts are :attr:`Cell.n_observations`, maxed or summed over the cells in question, and\nare named for it: a replication claim reads a run's ``k_runs``, never these.\n\nThe mitigation that keeps a conservative merge from being pure refusal. Generated\nmechanically — no model is asked — because it is arithmetic: these observations already\nshare a variant, and the only thing keeping them in separate cells is a dimension nobody\nwrote down. Recording it either merges them or proves they never should have merged, and\nboth answers are worth more than the current silence.",
+   "properties": {
+    "variant_key": {
+     "description": "The variant whose pooling is being held back.",
+     "minLength": 1,
+     "title": "Variant Key",
+     "type": "string"
+    },
+    "dimension": {
+     "description": "The unrecorded apparatus dimension.",
+     "minLength": 1,
+     "title": "Dimension",
+     "type": "string"
+    },
+    "n_observations_now": {
+     "description": "The largest `n_observations` among the cells this one recording would merge — the baseline the gain is measured against. Scoped to those cells rather than to the whole variant, because a variant-wide baseline would compare this merge's result against a cell it cannot reach and report a real gain as none.",
+     "minimum": 1,
+     "title": "N Observations Now",
+     "type": "integer"
+    },
+    "n_observations_if_recorded": {
+     "description": "The `n_observations` those cells reach together once the dimension is recorded AND turns out to agree. The optimistic branch, deliberately: the pessimistic one — they disagree and stay apart — needs no action, so the number worth showing is the one that says what is at stake.",
+     "minimum": 1,
+     "title": "N Observations If Recorded",
+     "type": "integer"
+    },
+    "observation_ids": {
+     "description": "The observations missing the dimension — where the recording has to happen, sorted.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Observation Ids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "variant_key",
+    "dimension",
+    "n_observations_now",
+    "n_observations_if_recorded"
+   ],
+   "title": "NextExperiment",
+   "type": "object"
+  },
+  "RemedyStep": {
+   "additionalProperties": false,
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the\nreading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched, except\nthe dimensions ``alike`` names, held at one value on every call; ``call_arms`` says which arms each call runs.\nWhere one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same\nshape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a\nconfirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.\nA step ships a sequence only where following it, through the real actions on a fixture campaign, has been shown\nto do what it says; ``limits`` states, typed, what following it cannot guarantee, and a re-run no sequence has\nbeen shown to lift makes no call and says so (``no_action`` ``lift_not_shown``).\nWhere the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated\nbefore it runs, never \"until it separates\"; where no size can be read, ``unsized`` says why and the step makes no\ncall, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names\nthe action that prices it first; code never takes a step.",
+   "properties": {
+    "remedy": {
+     "description": "What would close it.",
+     "enum": [
+      "resume_or_rerun",
+      "rerun_on_one_cell",
+      "remeasure_or_attest",
+      "rerun_serially",
+      "rerun_balanced",
+      "check_against_people",
+      "replace_instrument",
+      "sharpen_criterion",
+      "repair_rig",
+      "add_cases",
+      "confirm_on_fresh_cases",
+      "record_and_rerun",
+      "run_live",
+      "draw_at_random",
+      "finish_read",
+      "declare_looks",
+      "declare_criteria",
+      "name_control",
+      "no_action"
+     ],
+     "title": "Remedy",
+     "type": "string"
+    },
+    "closes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The caveat it answers, by id; none for the gate's. A step whose first call is campaign_create closes nothing on this report: the caveat stays raised here, and the confirmation is read in the campaign it creates (limits: this_report_stays_flagged).",
+     "title": "Closes"
+    },
+    "action": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The catalogue action that takes it; none where a host or a person acts.",
+     "title": "Action"
+    },
+    "calls": {
+     "description": "Each call of the action the step makes, its arguments by the action's own parameter names; empty where no action takes it.",
+     "items": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "integer"
+        },
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       ]
+      },
+      "type": "object"
+     },
+     "title": "Calls",
+     "type": "array"
+    },
+    "needs": {
+     "description": "The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Needs",
+     "type": "array"
+    },
+    "as_launched": {
+     "description": "For a launch: the parameters that set an arm up which the reading holds no value for, by the action's own names; the taker sets each as the runs of the arms it launches were launched, never to its default, or the new runs are not more of those arms. The one exception is a dimension alike names, which the taker sets to one value on every call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "As Launched",
+     "type": "array"
+    },
+    "alike": {
+     "description": "For a re-run that balances a confound: each apparatus dimension the confound is in, by its apparatus_settings key, which the taker sets to one value on every call of the launch, never as each arm was launched: the arms then differ only in what is compared.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Alike",
+     "type": "array"
+    },
+    "call_arms": {
+     "description": "For a launch: the arms each call runs, by id, in the calls' order; empty where the reading does not hold the arms' runs.",
+     "items": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "title": "Call Arms",
+     "type": "array"
+    },
+    "after": {
+     "additionalProperties": {
+      "enum": [
+       "launched_runs",
+       "launched_control_run",
+       "created_campaign"
+      ],
+      "type": "string"
+     },
+     "description": "For a call that follows another of the step: each parameter only an earlier call's result holds, and which: launched_runs, the run ids job_poll names on the step's launch job once its runs start (run_ids); launched_control_run, the one of them the control arm's model ran, named as soon as job_poll names it and before any result is scored, or the campaign reads its control as named late; created_campaign, the id the step's campaign_create returned.",
+     "title": "After",
+     "type": "object"
+    },
+    "then": {
+     "description": "The calls that finish the act after this step's own, in order, each of one action and of this shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that follows another.",
+     "items": {
+      "$ref": "#/$defs/RemedyStep"
+     },
+     "title": "Then",
+     "type": "array"
+    },
+    "arms": {
+     "description": "The arms it is about, by id; empty for all.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Arms",
+     "type": "array"
+    },
+    "runs": {
+     "description": "The runs it is about, by id; empty for none named.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Runs",
+     "type": "array"
+    },
+    "planned_cases": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate. It counts cases the launch keeps and did not reuse (limits: axis_may_not_generate), and holds only for arms launched in one call with the control (limits: unpaired_arms). For a step whose first call is campaign_create, the line is the one the created campaign reads, never this report's.",
+     "title": "Planned Cases"
+    },
+    "unsized": {
+     "anyOf": [
+      {
+       "enum": [
+        "no_interval",
+        "no_spread",
+        "on_the_line",
+        "no_count",
+        "nothing_to_settle"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For more evidence no size can be read for: why. Such a step makes no call.",
+     "title": "Unsized"
+    },
+    "size_bias": {
+     "anyOf": [
+      {
+       "const": "picked_best_of_n",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's own estimate, which reads high because the pick was the best of several, so fewer than four designs in five of that size clear.",
+     "title": "Size Bias"
+    },
+    "declared_look": {
+     "default": false,
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a reference false-separation rate from a simulated setting.",
+     "title": "Declared Look",
+     "type": "boolean"
+    },
+    "results_needed": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a check: how many more results it needs before it can decide.",
+     "title": "Results Needed"
+    },
+    "recording": {
+     "description": "What recording an unrecorded coordinate would pool, cell by cell.",
+     "items": {
+      "$ref": "#/$defs/NextExperiment"
+     },
+     "title": "Recording",
+     "type": "array"
+    },
+    "spends": {
+     "default": false,
+     "description": "Whether it costs money to take.",
+     "title": "Spends",
+     "type": "boolean"
+    },
+    "priced_by": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a step that spends: the catalogue action that prices it before it is taken.",
+     "title": "Priced By"
+    },
+    "no_action": {
+     "anyOf": [
+      {
+       "enum": [
+        "unclassed_kind",
+        "method_only",
+        "no_interval_to_gain",
+        "lift_not_shown"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action takes, or no sequence has been shown to finish, why not.",
+     "title": "No Action"
+    },
+    "limits": {
+     "description": "What following the step as written cannot guarantee. unpaired_arms: an arm that differs from the control beyond its model would run in a launch call of its own, whose new cases the control does not run; a contrast pairs only the cases both sides ran, so such runs add no pair to it (unpaired_arms names each). A step whose caveat reads a contrast on this report launches no such arm, and makes no call where no arm it names is left beside the control (no_action lift_not_shown); a confirmation launches it, and the planned size does not hold for it. A gate or a figure reads each arm's own cases, so its step names none. axis_may_not_generate: n_variations writes unseen cases only on a template axis a model writes (llm); on an axis of stated values (enum, sample) a launch reuses stored cases with the same values and keeps fewer where they run out, and a kind that generates none refuses it. The reading holds no template's axes, so the cases are new only where the launch reports reused 0 and kept the planned count; for a confirmation, unseen cases on such an axis are authored first. this_report_stays_flagged: the caveat is read off this report's own results (a criterion set after them, a pick among them), which nothing added anywhere lifts; the confirmation is read in the campaign the step creates, and that reading is the one to trust. control_may_read_late: the control is named from a launched run, which exists only once the launch starts; named after the first result is scored, the created campaign reads its control as named late.",
+     "items": {
+      "enum": [
+       "unpaired_arms",
+       "axis_may_not_generate",
+       "this_report_stays_flagged",
+       "control_may_read_late"
+      ],
+      "type": "string"
+     },
+     "title": "Limits",
+     "type": "array"
+    },
+    "unpaired_arms": {
+     "description": "For limits unpaired_arms: the arms whose new cases no call of the control's runs, by id: launched in a call of their own on a confirmation, not launched on a step that reads this report's contrast.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Unpaired Arms",
+     "type": "array"
+    }
+   },
+   "required": [
+    "remedy"
+   ],
+   "title": "RemedyStep",
+   "type": "object"
+  },
+  "StateOf": {
+   "additionalProperties": false,
+   "description": "The state of one reading, contrast, interval or pair, where it is not simply counted.\n\nA holder with none reads ``counted``. The three fields are checked together (:func:`check_state`) when the value is\nbuilt and when a stored one is read, so no document holds a reason outside its state's set.",
+   "properties": {
+    "state": {
+     "description": "counted, set_aside, withheld or not_available.",
+     "enum": [
+      "counted",
+      "set_aside",
+      "withheld",
+      "not_available"
+     ],
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "enum": [
+        "instrument_unchecked",
+        "instrument_below_bar",
+        "instrument_leans",
+        "people_disagree",
+        "identical_arms_separated"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "unfinished",
+        "split",
+        "identity_unrecorded",
+        "measured_under_concurrency",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "too_few",
+        "no_variation",
+        "not_recorded",
+        "replayed",
+        "not_drawn_at_random",
+        "skipped_past_limit",
+        "identity_unrecorded",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Why it is not counted; none for counted."
+    },
+    "coordinate": {
+     "anyOf": [
+      {
+       "enum": [
+        "served_model",
+        "measure_definition",
+        "template",
+        "rig"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The coordinate a split is on, or the one an unrecorded identity names."
+    }
+   },
+   "required": [
+    "state"
+   ],
+   "type": "object"
   }
  }
 }

@@ -65,7 +65,6 @@ def _host_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     its kind never emits is admitted here and adjudicated as carried by no result.
 
     :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
     """
     names = measures.names
     # A host catalogue may re-declare the engine's core, and the core wins that tie wherever a name
@@ -84,7 +83,6 @@ def per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     never read.
 
     :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
     """
     return _carried_field_names() | DERIVED_PER_RESULT_MEASURES | _COVARIATE_MEASURES | _host_measure_names(measures)
 
@@ -129,7 +127,6 @@ def mechanism_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     role's count with another's describes no mechanism.
 
     :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
     """
     return (
         _single_carried_field_names()

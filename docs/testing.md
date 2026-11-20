@@ -80,9 +80,12 @@ runners instead (testament 0.45.1 or later: an older client refuses the manifest
 `fallback` key and runs nothing; upgrade with
 `uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
 where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
-there leaves out the integration and `loop_timing` tests, and the `docker` and `secrets` ones
-(`.testament.toml` selects `-m "not integration and not loop_timing and not docker and not
-secrets"`; CI runs `loop_timing` serially on its own runner). `docker` marks a test that drives a
+there leaves out the integration and `loop_timing` tests, the `docker` and `secrets` ones, and the
+`long_simulation` shards (`.testament.toml` selects `-m "not integration and not loop_timing and not
+docker and not secrets and not long_simulation"`; CI runs `loop_timing` serially on its own runner).
+A `long_simulation` test is one shard of the statistics certification
+(`packages/evals/tests/test_certified_simulations.py`), which only the certification command runs, as the
+manifest's `simulation` suite ("Statistical simulations" below). CI's GitHub shards still collect them. `docker` marks a test that drives a
 Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
 credential, which never ships to a runner; both run on this machine
 (`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A
@@ -210,9 +213,8 @@ that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's 
 **What the pool runs.** `testament run --suite default --fresh --no-cache --no-fallback -- -m "not
 loop_timing"`. `.testament.toml`'s unit suite, `default` (the manifest is version 3, one table per
 suite; `test.sh` names it too), selects `packages/` and `tests/` with `-m "not integration and not loop_timing
-and not docker and not secrets"`: the tests `ci-unit-tests.sh` partitions, less the `loop_timing`
-ones (below), which this `-m`
-names again. `--fresh` runs every batch in a container started cold from the project's image (one
+and not docker and not secrets and not long_simulation"`: the tests `ci-unit-tests.sh` partitions, less the
+`loop_timing` ones and the `long_simulation` shards (both below); this `-m` names `loop_timing` again. `--fresh` runs every batch in a container started cold from the project's image (one
 per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
 the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
 reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
@@ -229,6 +231,10 @@ serving an earlier passing result on the same tree. Every difference from the sh
   does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
   leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
   `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
+- **`long_simulation`** tests are left out of the pool's unit suite, and the shards collect them. Each is one shard
+  of the statistics certification, which its command sends to the pool as the manifest's `simulation` suite and
+  reads back ("Statistical simulations" below); a `default` run never starts it, and a shard run alone certifies
+  nothing.
 - **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
   is also an integration test, so the shards leave it out too. The `secrets` tests outside the
   integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have
@@ -306,6 +312,81 @@ Two things break under a parallel run that a serial one hides. A fixed `asyncio.
 waits for background work loses the race on a loaded machine: wait for the event itself. And a
 `conftest.py` fixture named like the root one replaces it rather than adding to it, which drops
 the root's per-test reset of process-wide state.
+
+## Statistical simulations
+
+A statistical claim (a comparison continued to five reads separates at most α; an interval covers what it states; an
+engine comparison its operator interrupts does not lean) needs tens of thousands of simulated newcomers to bound. They
+are not run on every build. Instead:
+
+- **Fast guards** run in the unit suite, each in seconds, and fail for a wrong formula: the bet's reading of every
+  sequence of up to twelve pass/fail signs, enumerated and pinned, with the exact single-read error rate it gives;
+  golden p values, e-values and intervals for fixed samples, through the statistics functions and through `Eval.run`'s
+  primary; the first shard of each claim, restated, pinned at the count the product gave it; the engine's exact
+  uninterrupted rates; and smoke runs holding a few newcomers, through the product, read for read to the restatement
+  (`packages/evals/tests/test_stats_guards.py`, `test_small_n_read.py`, `test_rereadable_bet.py`,
+  `test_engine_take_up_null.py`).
+- **Certified claims** are counted by the certification and written to
+  `packages/evals/tests/fixtures/stats_certificate.json`: each claim, its count, its Clopper-Pearson 95% bounds and
+  its seeds, and the digest of every file that decides them. That digest is no list anyone keeps: it is the import
+  closure of the certification's entry points (`stats_certificate.closure()`), every repository file they import, at
+  module level, inside a function, under `TYPE_CHECKING` or by name for a lazy export, computed from the code at
+  certify time and at check time; `test_stats_certificate.py` also runs a few simulations in a fresh interpreter and
+  checks every repository file they load is in it. Most claims are counted on the reading restated over the bet alone
+  (`null_newcomers.py`: the package's own statistics functions over the same seeded answers, no `Eval.run`), which
+  the `restated-as-product` claims hold read for read to several hundred newcomers through `Eval.run`. The claims
+  that depend on time (which cells an interrupt finds in flight) run through the product: a drained stop draws
+  nothing afresh, so each drained engine comparison is held exactly to the uninterrupted reading of its first draws
+  and each drained quick-path watcher to the bet over its whole committed path, whose rate the `horizon` claims
+  bound; a stop that cuts is counted. Every one runs at the simulation's full size (engine 800 or 500 a cell,
+  watchers 300 or 1,000). The trade against the simulations they replace: each comparison is held to equality, not
+  to a rate that cannot reject, so one drain race in a checked comparison fails the claim; and as many comparisons
+  run as before, so a race once in a thousand would be seen with chance 26% at 300 newcomers, 63% at 1,000, and
+  above 99.9% over the engine's 7,800 drained comparisons together. Each end of the primary's interval is certified
+  on 4,000 newcomers: a count passes at most 172 misses, so an end that missed 6% of the time (one point past the 5%
+  it states) would pass with chance about one in a million.
+- **`test_stats_certificate.py`**, in the unit suite, fails when any file of the closure has changed, joined it or left
+  it since the certificate was written, naming the files, each stale claim and the command; and fails on any claim
+  whose count does not clear its target.
+
+**Re-certify** from the repository's root when that test says the certificate is stale, and commit the certificate it
+writes:
+
+```bash
+uv run python packages/evals/scripts/certify_stats.py
+```
+
+Every shard runs on the testament pool, in one request of the `simulation` suite: the restated shards (pure
+arithmetic over seeded answers) and the product shards (through `Eval.run` or the engine's operator path) alike, each
+an xdist group of its own so the pool spreads them. Nothing runs on this machine but the request, so the certification
+does not load it. Each shard records the counts its claims read as metrics named by the run's key, which the command
+reads back, asking again for up to ten minutes while the pool's metrics catch up with a request that has passed, and
+naming any shard still missing a count at that limit. A shard that fails fails the command. It exits 1 if a claim
+fails its target, and the certificate it wrote then fails `test_stats_certificate.py` too: a claim that fails is
+reported with its evidence, never re-run until it passes. With the pool down, `--local` runs every shard here, each in a
+process of its own (an hour or more, and it loads this machine).
+
+The command never hangs silently. It prints, flushed as it goes: a start line with its pid; the pool request's id once
+testament accepts it; where the request stands every minute (its state, and how many shards are done, passed and
+failed); each round of the metrics read-back; and each phase's start and end. A `testament run` past an hour, a
+`testament metrics` past two minutes, or under `--local` a shard past 25 minutes, is stopped and fails the run, naming
+which and how long it ran. A request the coordinator lists counts as alive, queued or running, up to the run's one-hour
+limit, which stops a queued request too. The run stalls when the coordinator stops answering for ten minutes
+(`--stall-minutes`), when the request is gone from the coordinator with no verdict for as long, when the request has
+batches running and none finishes for thirty minutes, or, before the request is accepted, under `--local` and while its
+modules load, when nothing moves for ten minutes. A stall writes every thread's stack to its log, names the phase
+(`loading`, `pool request`, `metrics read-back` or `local shards`) and which of those it was (the coordinator's own
+error, when it stopped answering), stops its subprocesses, removes its key file and exits 3. A signal (`timeout`'s
+SIGTERM, a hang-up) stops it with its last line written and its key file removed. A key file left by a killed run is
+replaced at the next run's start, and said so.
+
+**On a stall**, before stopping the run, take its stacks and attach them to the report: `kill -USR1 <pid>` (the pid is
+on its first line, and the signal is caught from then on) writes every thread's stack into its log, and `py-spy dump --pid <pid>` shows the same from
+outside; under `--local`, also `py-spy dump --pid <worker>` on each worker (`pgrep -f 'certify_stats.py --shard'`).
+Then look at the pool's side: `testament status` shows whether its request reached the coordinator.
+
+A claim added to the certification is a `Claim` and its shards in `stats_certificate.py`, with a fast guard beside it
+that fails for a wrong formula.
 
 ## The integration suite
 

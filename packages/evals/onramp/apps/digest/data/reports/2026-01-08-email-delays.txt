@@ -1,0 +1,1 @@
+Order confirmation emails were delayed by up to two hours on Thursday. The email provider throttled us after a marketing send went out from the same account. No emails were lost; they were all delivered by 14:20. Customers contacted support about 140 times asking whether their order had gone through. We have moved marketing sends to a separate account.

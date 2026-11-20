@@ -83,6 +83,9 @@ dev-dependencies = [
     "nats-py>=2.10",
     "nkeys>=0.2",
     "simpleeval>=1.0.4",
+    # the Markdown parser the report-escape tests render with, raw HTML on, to see what a host would (CommonMark).
+    # Locked already, through rich; named here so the tests do not lean on that.
+    "markdown-it-py>=3",
     # 3tears-agent-tools' `ocr` extra, installed in dev so its imports resolve for the declared-imports
     # gate (tests/enforcement/test_imports_declared.py); the tesseract binary is still only needed at runtime
     "pdf2image",
@@ -447,6 +450,10 @@ markers = [
     # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
     "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
+    # The statistics certification's product shards (packages/evals/tests/test_certified_simulations.py). The unit
+    # suite leaves them out; the certification command sends them to the pool as .testament.toml's `simulation` suite:
+    # `uv run python packages/evals/scripts/certify_stats.py` (docs/testing.md, "Statistical simulations").
+    "long_simulation: a shard of the statistics certification; left out of the unit suite, run only by its command",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

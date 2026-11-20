@@ -25,7 +25,8 @@ from threetears.evals.kernel.cassettes import ActionSeam, CellCassettes, Deliver
 from threetears.evals.actions.render import render_job_status
 from threetears.evals.kernel import ANALYSIS_JOB, RUN_JOB, SWEEP_JOB, EvalSweep, JobLeases, SweepArmRecord
 from threetears.evals.kernel.job_leases import LeasedJobKind, settle_job_record
-from threetears.evals.ops import job_poll, sweep_job_id
+from threetears.evals.ops import job_poll
+from threetears.evals.ops.jobs import sweep_job_id
 from threetears.evals.run import LAUNCH_JOB, EvalLaunch
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.host.eval_host import EvalHost

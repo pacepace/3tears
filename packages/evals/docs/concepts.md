@@ -9,7 +9,7 @@ reports use. Nothing here assumes you have built an eval before. Why the pieces 
 
 An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
 runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves)
-and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
+is another shape of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
 modifiers.
 
 ### Case (test case)
@@ -22,16 +22,20 @@ kind (a `lookalike`, say) so every reading is also split by kind, and `world` is
 ### Runner
 
 The code under test: any function from one case to an answer, async or not. It is one **arm**, one version under
-test. A runner may also be a `World`'s, which hosts your agent in a seeded state, or a `Log` of outputs your app
-pushed when it cannot be wrapped as a function.
+test. A runner may also be a `World`'s, which hosts your agent in a seeded state.
 
 ### Grader
 
 What counts as right, in the `grader` list. A field name (`"category"`) grades the answer's field against the
 case's: the first is read as a classifier, with a confusion matrix and each label's precision and recall, any other as
-a pass rate. A function `(case, answer) -> bool | float` is a grader named by its `__name__`, and every grader is
-higher-is-better. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
-raises excludes its trial: it is part of the measuring setup, not the runner.
+a pass rate. A function `(case, answer)` is a grader named by its `__name__`, and every grader is higher-is-better.
+Its kind is what its author declared: `-> bool`, or no annotation, grades pass or fail, and it returns `True` or
+`False` on every path (wrap a numpy result in `bool(...)`); `-> float` or `-> int`, or a range
+(`grader(f, range=(1, 5))`), grades a number. An annotation read as both (`-> bool | float`), as neither (an alias,
+a numpy type) or naming `None` (`-> bool | None`), and an `async def` grader, are refused when the eval is built, and a value its kind cannot hold fails the run, naming the case:
+`None` from a pass or fail grader, or from a grader of a number anything but a finite number on its declared range. A string that is not a name is a [goal-state check](#goal-state-check) over a world. A grader that
+raises excludes its trial: it is part of the measuring setup, not the runner, and every count beside it says how many
+trials were not graded, and which.
 
 ### Judge
 
@@ -44,9 +48,10 @@ too, so it is checked against people's labels before its scores are leaned on, a
 
 A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
 the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
-**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`the evidence cannot
-tell v2 and v1 apart`, `cannot tell apart` in a table cell, which never means "no difference"), `equivalent` (shown inside a
-margin you declared), or `untested`. A guardrail is
+**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`v2 ahead of v1,
+undecided`, or on the question's own reading `v2 ahead of v1, proof pending`, with the change, its interval and how
+strong the evidence is: weak, moderate or strong; which never means "no difference"), `equivalent` (shown inside a margin you declared), or `untested`. With a question asked, only the
+question's own reading, its first grader's, is decided; every other reading is shown and decides nothing. A guardrail is
 decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.
 
 ### Report
@@ -232,9 +237,17 @@ them as one condition.
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
-named with `(test setup <digest>)` in a report. These cells, and every composite, cost and latency, pool on
-variant x rig alone. pass^k splits further: on the measurement context, the template revision and the model
-that answered (see [Measurement context](#measurement-context)).
+named with `(test setup <digest>)` in a report. These cells, and every contrast read between them, pool on
+variant x rig, and on the candidate model that answered: an arm whose runs under one rig were answered by more than
+one model, or by a model some responses did not name, holds a cell per answering model, each a class of its own
+that names the rig it shares (`Cell.rig_class_id`) and is compared with the control under that rig. Two runs whose
+responses each named no model are two such cells: two silences are no match, and `runs_attest` (coordinate `served_model`) records
+your statement of the model that answered them. An arm answered by one model throughout, or by one silent run
+alone, is one cell under the rig's own class. What each host measure counts is part of the rig: runs that recorded
+two definitions of a measure are under two classes, so they share no cell and no contrast, and a run whose results
+hold a host measure and that recorded no definition is a class of its own, compared with nothing until you state
+its definitions (`runs_attest`, coordinate `measure_definition`) or re-measure it. pass^k splits further: on the measurement context and
+the template revision (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -250,20 +263,38 @@ judged kind, `callable-judged`, seats the judge and nothing else.
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the template, the resolved
 judge and simulator models, judge configs, cassette mode and corpus, tool bound, scope, world seed, apparatus
-settings (`compute_context_components`). Its digest is the context key, stamped once at launch. The frozen
-case set is not in it: more cases, or more repeats, under one context are more samples of one condition.
+settings, and, where your host declares any measure, each one's definition (`compute_context_components`). Its
+digest is the context key, stamped once at launch. The frozen case set is not in it: more cases, or more repeats, under one
+context are more samples of one condition.
+
+A measure's definition is what one stored value of it counts: the descriptor's type, unit, range, categories,
+formula and family, and `definition_revision`, which you raise when your reading code changes what the measure
+counts and the descriptor stays as it is (`MeasureRegistry.definition_digests()`). A name, a description or a better end is
+how a value is read, and moves nothing. A run records every measure's digest at launch
+(`EvalRun.measure_definitions`). Runs that recorded two definitions of one measure are two conditions. A run that
+recorded none (stored before runs recorded them, or assembled without a launch) pools with nothing where its
+results hold a host measure, and as it always did where they hold none. A campaign reads it the same way: a
+measure's definition is part of the test setup, so runs under two definitions share no cell and no contrast, and
+an unrecorded run is compared with nothing until you state its definitions. `attest_measure_definitions` records your
+statement of the definitions such runs ran under, touching no result (`EvalRun.measure_attestation`).
+`remeasure_run` reads a stored run again from what its cells stored, through your `HostProfile.measure_rereader`,
+and the run then joins the cell of the definitions it was read under, marked (`EvalRun.measure_remeasures`).
+Nothing is guessed: a stored value your reader does not answer refuses the run, and so does a moved measure that
+declares `shapes_run` (its definition decided what the run did).
 
 A contestant's pass^k pools per case over the runs of one pass^k cell (`PassHatKCell`): one context (read at
 today's identity version), one template revision (the template's id and the digest of what it measured that
-the run froze, `EvalRun.template_digest`), one apparatus provenance and one set of served models, whatever
+the run froze, `EvalRun.template_digest`), one definition of each host measure, one apparatus provenance and one
+set of served models, whatever
 cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
 cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then a cell
 that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
 pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
 A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
-only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
-count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
-a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
+only: the frontier's composite, cost and latency for the arm still count it. A campaign's cells (see
+[Apparatus class](#apparatus-class)) keep apart what they split on, the served model and each host measure's
+definition, and pool across the rest. A run that froze no template digest, a run whose results hold a host measure and that recorded no
+measure definitions, and a run with a candidate call whose response named no model, is a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
 not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
 that, and pools on everything else.
 
@@ -525,10 +556,21 @@ tested together holds at once, 95% of the time. The **adjusted p** (Holm's, in t
 p-value corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that
 excludes zero. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
+#### Advice
+What to do on a comparison, said above its verdict on the first grader's reading: `switch` to the candidate once the
+evidence that it is better reaches moderate (strong where the switch was declared hard to undo, `Eval(undo="hard")`),
+while it is still ahead, and whenever the verdict has decided it better; `keep` the control otherwise. However often
+anyone looks, if the candidate is not really better (on a question with a margin: if it is worse by more than the
+margin), the advice says switch at most one time in three, or one time in ten for a switch declared hard to undo. A
+program reads
+it as `Result.contrasts()`'s `advice`; the gate reads the verdict, never the advice. See
+[reading a comparison](reading-reports.md#a-small-comparison-on-the-quick-path).
+
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `v2 better than v1` or `v2 worse
-than v1`, each arm by its label), **cannot tell apart** (typed `not_separated`: the cases could not tell the arms
-apart, which never means "no difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
+than v1`, each arm by its label), **undecided** (typed `not_separated`: on a comparison an `Eval` runs, `v2 ahead
+of v1, undecided` with its change, interval and graded evidence; elsewhere **cannot tell apart**: the cases could
+not tell the arms apart, which never means "no difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
 enough"), or **untested** (no test could decide). A report names, under Not tested, each measure that declares no
 margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
 `undecided`. Each is also a typed value a program reads (`Result.verdicts()`), which the printed words are
@@ -536,8 +578,8 @@ rendered from. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Miss
 A trial the pass rule failed: the runner failed outright (it raised, say), or a goal check failed, the label was
-wrong, a check the host declares fell on its wrong side (on the quick path, a grader annotated `bool`, guarded or
-not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
+wrong, a check the host declares fell on its wrong side (on the quick path, a function grader annotated `-> bool` or
+not annotated and given no range, guarded or not), or a judged capability dimension scored under the bar. A grader that is no check is never a miss, whatever it returns, and an
 excluded result never is. `summary.misses()` lists them, each with its reason; [rung 1](ladder.md#rung-1-your-own-function) says how
 to read them.
 
@@ -682,7 +724,7 @@ An `Eval` takes plain functions, so a few things you might think of as documenta
 | A runner's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | Reword the docstring; a judged run's `summary.render()` prints the intent and where it came from. |
 | A runner's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant, and the eval's default name. | Name the arm: a runner mapping of one (`{"arm-a": runner}`). A comparison names each arm by its key on the `candidate` lever, every arm at one model; keys named `"model=m1"` are models. |
 | A function grader's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
-| A function grader's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on the function (`@measure(...)`), or on a [host](#host) of your own (`host=`). |
+| A function grader's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on the function (`@measure(...)`, provisional), or on a [host](#host) of your own (`host=`). |
 | A world tool's function: `__name__`, docstring and type hints | the name, the docstring's first line, and each parameter's type | The tool's name, description and parameter schema, which the model is shown, as in any tool-use API. | None: the function's name, docstring and types are the tool's. |
 
 With no docstring, a function grader is described as "The score the `<name>` function gave the candidate's answer.",

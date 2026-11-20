@@ -1,4 +1,4 @@
-"""The report document's invariants (``analysis/report_doc_checks.py``): what code proves wrong about a document.
+"""The report document's invariants (``analysis/report/doc_page/checks.py``): what code proves wrong about a document.
 
 Every converted document of the second and third prototypes passes with no verdict. Each invariant then has planted
 negatives, each a small change to a passing document, and each is held two ways: its invariant finds it, and with that
@@ -27,9 +27,9 @@ from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import render
-from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, Story
 
 #: The Kairo document of the third prototype, which most negatives are planted in.

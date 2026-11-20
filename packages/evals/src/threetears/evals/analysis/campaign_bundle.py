@@ -27,6 +27,7 @@ from typing import Any, Final
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.analysis.arms import arm_names, short_digest
+from threetears.evals.analysis.bundle.evidence import campaign_fingerprint
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     refuse_a_bundle_of_another_shape,
@@ -39,6 +40,7 @@ from threetears.evals.analysis.campaign_readings import (
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
+from threetears.evals.analysis.report_input import CaveatEntry, FirstScreen
 from threetears.evals.analysis.style import lever_spelled
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
 from threetears.evals.kernel.declaration import (
@@ -68,10 +70,16 @@ CAMPAIGN_BUNDLE_SHAPE = 4
 #: evidence, so renaming it moves no fingerprint (its description never reaches the bundle at all).
 CAMPAIGN_PRESENTATION_FIELDS: frozenset[str] = frozenset({"name"})
 
-#: What a campaign bundle's fingerprint starts with: version 3, the digest of :func:`~threetears.evals.schema.hashing.
-#: identity_digest` (floats rounded) over its evidence without the campaign's name. A fingerprint of another version was
-#: taken over a frame of an earlier shape, which no build reads, so it never matches: what holds it is regenerated.
+#: What a version 3 campaign fingerprint starts with: the digest of :func:`~threetears.evals.schema.hashing.
+#: identity_digest` (floats rounded to twelve figures) over the campaign's frame without its name, the frame naming each
+#: aspect by its ``v2:`` fingerprint. It hashes the campaign's computed readings and stored reasons, so a formula or
+#: wording change moved it; version 4 (:func:`~threetears.evals.analysis.bundle.evidence.campaign_fingerprint`,
+#: ``v4:``) is over the evidence alone and is what a campaign bundle answers now. Version 3 is still computed for what
+#: was stored under it (:meth:`CampaignBundle.fingerprint`'s ``like``).
 _CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
+
+#: The version a ``v3:`` campaign fingerprint named each aspect's bundle in.
+_ASPECT_NAMED_IN_V3: Final[str] = "v2:"
 
 #: What each kind of campaign asks of its report, as the report input says it (``report_input_build``).
 KIND_MEANS: dict[str, str] = {
@@ -120,7 +128,6 @@ class ArmSpelling(EvalDocumentModel):
         `` (<taken>)``; empty for neither.
 
         :return: The suffix.
-        :rtype: str
         """
         return (f" (arm {self.digest})" if self.digest else "") + (f" ({self.taken})" if self.taken else "")
 
@@ -129,9 +136,7 @@ class ArmSpelling(EvalDocumentModel):
         frozen label.
 
         :param declared: Each lever's stored reader name, by id (``CampaignBundle.lever_names``); None for none.
-        :ptype declared: Mapping[str, str] | None
         :return: The name.
-        :rtype: str
         """
         return lever_spelled(self.levers, self.levels, declared) + self.suffix()
 
@@ -168,6 +173,18 @@ class CampaignBundle(EvalDocumentModel):
     )
     aspects: list[AnalysisContextBundle] = Field(
         min_length=1, description="Each aspect's evidence bundle, in the campaign's order."
+    )
+    # The two below are derived from the rest and the campaign's call, held in memory for the code page and never
+    # dumped: no frame, fingerprint or stored analysis holds them, so they are no evidence and move nothing.
+    caveat_list: list[CaveatEntry] | None = Field(
+        default=None,
+        exclude=True,
+        description="Every qualification of the campaign's answer, each once, typed, as its report input lists them.",
+    )
+    first_screen: FirstScreen | None = Field(
+        default=None,
+        exclude=True,
+        description="The first screen's slots as its report input computes them, with the campaign's call as of now.",
     )
 
     @field_validator("schema_version")
@@ -225,35 +242,64 @@ class CampaignBundle(EvalDocumentModel):
         """What the campaign adds over its aspects' bundles, as a stored analysis keeps it.
 
         :return: Every field but the aspects' bundles, which become ``{aspect, fingerprint}`` pairs.
-        :rtype: dict[str, Any]
         """
         frame = self.model_dump(mode="json", exclude={"aspects"})
         frame["aspects"] = [{"aspect": bundle.aspect, "fingerprint": bundle.fingerprint()} for bundle in self.aspects]
         return frame
 
-    def fingerprint(self) -> str:
-        """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint, without
-        the campaign's name (:data:`CAMPAIGN_PRESENTATION_FIELDS`) or how a page prints each aspect and arm.
+    def fingerprint(self, *, like: str | None = None) -> str:
+        """The campaign bundle's fingerprint: ``v4:`` and the digest of the evidence it was put together from.
 
-        Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike across Python
-        builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary
-        (:meth:`AnalysisContextBundle.fingerprint` says why).
+        **Over the evidence, never over a statistic**, as each aspect's ``v3:`` fingerprint is (#1062): what the
+        campaign declares (its question, arms, aspects and floors, each without how a page prints it, and its ids)
+        and each aspect's bundle fingerprint, which digests what that aspect's assembly read. The campaign's readings
+        across aspects, its arms' computed spellings and every stored reason are no part of it, so a formula or a
+        wording change moves no campaign fingerprint, and changed evidence in any aspect, or an edited declaration,
+        moves it. Renaming the campaign, an aspect, an arm, a lever or a level does not.
 
-        :return: ``v3:`` and a 64-character lowercase hex digest.
-        :rtype: str
+        **A stored fingerprint is compared in its own version.** A ``v3:`` campaign fingerprint was the digest of the
+        campaign's frame, readings and all, with every float rounded to twelve figures and each aspect named by its
+        ``v2:`` fingerprint. Passed as ``like``, it is answered that way, so the same evidence read by the same
+        formulas still matches what was stored. A campaign bundle any of whose aspects carries no evidence manifest
+        (one frozen before the manifest existed) answers ``v3:`` whatever is asked: nothing stored is rewritten.
+
+        :param like: A stored campaign fingerprint whose version to answer in; None answers in the newest the bundle
+            can.
+        :return: The fingerprint: its version's prefix and a 64-character lowercase hex digest.
         """
-        return _campaign_digest(self.frame())
+        as_stored = like is not None and like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX)
+        if not as_stored and all(bundle.evidence is not None for bundle in self.aspects):
+            return campaign_fingerprint(
+                self._declared_evidence(), [(bundle.aspect, bundle.fingerprint()) for bundle in self.aspects]
+            )
+        frame = self.model_dump(mode="json", exclude={"aspects"})
+        frame["aspects"] = [
+            {"aspect": bundle.aspect, "fingerprint": bundle.fingerprint(like=_ASPECT_NAMED_IN_V3)}
+            for bundle in self.aspects
+        ]
+        return _campaign_digest(frame)
+
+    def _declared_evidence(self) -> dict[str, Any]:
+        """The campaign's own evidence: its ids and what it declares, rendered without any field that holds its
+        declared default (so a field a later build adds to a declaration moves nothing until a campaign sets it) and
+        without how a page prints an aspect, an arm, a lever or a level."""
+        declared = _evidence_of({"declaration": self.declaration.model_dump(mode="json", exclude_defaults=True)})
+        return {
+            "campaign_id": self.campaign_id,
+            "scope_id": self.scope_id,
+            "subject_id": self.subject_id,
+            "subject_kind": self.subject_kind,
+            "behavior": self.behavior,
+            "declaration": declared["declaration"],
+        }
 
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
         """Refuse a frozen campaign bundle, or frame, of a shape this build does not read.
 
         :param data: The frozen document.
-        :ptype data: Mapping[str, Any]
         :param what: What holds it, as a sentence names it.
-        :ptype what: str
         :param remedy: What to do instead.
-        :ptype remedy: str
         :raises RefusedInput: Its ``schema_version`` is not :data:`CAMPAIGN_BUNDLE_SHAPE` (one frozen at an earlier
             shape is refused saying it was frozen before names left the readings), or it is not a campaign bundle at
             all (one aspect's bundle, frozen before one memo covered a campaign).
@@ -283,13 +329,9 @@ class CampaignBundle(EvalDocumentModel):
         """Read a whole campaign bundle back, refusing any shape but this build's with a remedy.
 
         :param data: A campaign bundle, as ``to_dict`` wrote it (each aspect's bundle whole in its place).
-        :ptype data: Mapping[str, Any]
         :param what: What holds it, as a sentence names it, for the refusal.
-        :ptype what: str
         :param remedy: What to do instead, for the refusal; empty names re-assembling it.
-        :ptype remedy: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: It is not a campaign bundle of this build's shape, or an aspect's bundle is from before
             a bundle read one aspect.
         """
@@ -306,9 +348,7 @@ class CampaignBundle(EvalDocumentModel):
         """Read ``to_json``'s text back, refusing another shape as :meth:`from_dict` does.
 
         :param json_str: The JSON text.
-        :ptype json_str: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: See :meth:`from_dict`.
         """
         return cls.from_dict(json.loads(json_str))
@@ -321,19 +361,19 @@ class CampaignBundle(EvalDocumentModel):
         do not belong together.
 
         :param frame: The frame, as :meth:`frame` wrote it.
-        :ptype frame: Mapping[str, Any]
         :param bundles: The aspects' bundles, in the frame's order.
-        :ptype bundles: Sequence[AnalysisContextBundle]
         :param what: What holds the frame, for the refusal.
-        :ptype what: str
         :return: The bundle.
-        :rtype: CampaignBundle
         :raises RefusedInput: The frame is of another shape.
-        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint.
+        :raises ValueError: The bundles are not the ones the frame names, by aspect and fingerprint, each fingerprint
+            compared in the version the frame holds it in.
         """
         cls.refuse_another_shape(frame, what=what, remedy="generate the analysis again (analysis_generate)")
         named = [(entry["aspect"], entry["fingerprint"]) for entry in frame.get("aspects") or []]
-        held = [(bundle.aspect, bundle.fingerprint()) for bundle in bundles]
+        # Each bundle's fingerprint in the version the frame named it by, so a frame stored under an earlier version
+        # still holds its bundles.
+        likes = [fingerprint for _, fingerprint in named] + [None] * len(bundles)
+        held = [(bundle.aspect, bundle.fingerprint(like=like)) for bundle, like in zip(bundles, likes)]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
         return cls.model_validate({**_held(frame), "aspects": bundles})
@@ -354,9 +394,7 @@ class CampaignBundle(EvalDocumentModel):
         """The bundle of the aspect labelled ``label``.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: Its bundle.
-        :rtype: AnalysisContextBundle
         :raises KeyError: No aspect has that label.
         """
         for bundle in self.aspects:
@@ -368,7 +406,6 @@ class CampaignBundle(EvalDocumentModel):
         """Each aspect's decision surface, by label: what every reading on that aspect resolves against.
 
         :return: ``label -> surface``.
-        :rtype: dict[str, DecisionSurface]
         """
         return {bundle.aspect: bundle_decision_surface(bundle) for bundle in self.aspects}
 
@@ -376,7 +413,6 @@ class CampaignBundle(EvalDocumentModel):
         """The aliases the writer names cells by, unique across the campaign (``c1`` … ``cN``).
 
         :return: ``alias -> (aspect, cell_ref)``.
-        :rtype: dict[str, CellAddress]
         """
         return campaign_cell_aliases([(bundle.aspect, bundle.cell_measures) for bundle in self.aspects])
 
@@ -384,9 +420,7 @@ class CampaignBundle(EvalDocumentModel):
         """Resolve the alias a writer named a cell by, or refuse it naming the aliases there are.
 
         :param alias: The cell as the writer named it.
-        :ptype alias: str
         :return: The aspect and the cell's ``cell_ref``.
-        :rtype: CellAddress
         :raises UnresolvableReference: No cell carries that alias.
         """
         aliases = self.cell_aliases()
@@ -404,7 +438,6 @@ class CampaignBundle(EvalDocumentModel):
         A campaign of one aspect names each trial by its bundle's own id.
 
         :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
-        :rtype: dict[str, tuple[str, str]]
         """
         return campaign_trial_ids(
             (bundle.aspect, [trial.trial_id for trial in bundle.trials]) for bundle in self.aspects
@@ -414,9 +447,7 @@ class CampaignBundle(EvalDocumentModel):
         """The aspect and bundle trial a campaign trial id names; None for an id the campaign does not hold.
 
         :param trial_id: The id, as the writer named it.
-        :ptype trial_id: str
         :return: ``(aspect, bundle trial id)``, or None.
-        :rtype: tuple[str, str] | None
         """
         return self.trial_ids().get(trial_id)
 
@@ -438,9 +469,7 @@ class CampaignBundle(EvalDocumentModel):
         """The arm the writer named by ``label``; None for a label no arm carries.
 
         :param label: The arm's label.
-        :ptype label: str
         :return: The arm, or None.
-        :rtype: CampaignArm | None
         """
         return next((arm for arm in self.arms if arm.label == label), None)
 
@@ -448,9 +477,7 @@ class CampaignBundle(EvalDocumentModel):
         """Every variant key that names ``arm``'s cells: its own, and the control's under each predicate.
 
         :param arm: One of this campaign's arms.
-        :ptype arm: CampaignArm
         :return: The keys.
-        :rtype: frozenset[str]
         """
         if arm.role == "control":
             return frozenset({arm.variant_key, *resolve_control_arm(arm).variant_keys})
@@ -464,7 +491,6 @@ class CampaignBundle(EvalDocumentModel):
         aspects that do), and this is every lever any of them names.
 
         :return: Lever id to reader name, sorted by id.
-        :rtype: dict[str, str]
         """
         return dict(
             sorted({lever: name for bundle in self.aspects for lever, name in bundle.lever_names.items()}.items())
@@ -474,9 +500,7 @@ class CampaignBundle(EvalDocumentModel):
         """What a reader calls the arm a variant key names: its arm's label, else the name its levels give it.
 
         :param variant_key: The variant.
-        :ptype variant_key: str
         :return: The label.
-        :rtype: str
         """
         for arm in self.arms:
             if variant_key in self.arm_keys(arm):
@@ -488,7 +512,7 @@ class CampaignBundle(EvalDocumentModel):
 
 
 def _campaign_digest(frame: Mapping[str, Any]) -> str:
-    """A campaign bundle frame's fingerprint: :data:`_CAMPAIGN_FINGERPRINT_PREFIX` and the digest of its evidence
+    """A campaign bundle frame's version 3 fingerprint: :data:`_CAMPAIGN_FINGERPRINT_PREFIX` and the digest of its evidence
     without the campaign's name."""
     evidence = _evidence_of(frame)
     unnamed = {key: value for key, value in evidence.items() if key not in CAMPAIGN_PRESENTATION_FIELDS}
@@ -513,9 +537,7 @@ def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     The campaign's own name stays here, and :func:`_campaign_digest` leaves it out.
 
     :param frame: The frame.
-    :ptype frame: Mapping[str, Any]
     :return: The frame's evidence.
-    :rtype: dict[str, Any]
     """
     frame = dict(frame)
     if isinstance(arms := frame.get("arms"), list):
@@ -555,19 +577,13 @@ def build_campaign_bundle(
     """Put a campaign's evidence together for its one memo.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param bundles: Each aspect's bundle, in the campaign's aspect order
         (:func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle` per aspect).
-    :ptype bundles: Sequence[AnalysisContextBundle]
     :param arms: The campaign's arms as a reader reads them (:func:`~threetears.evals.analysis.campaigns.campaign_arms`).
-    :ptype arms: Sequence[CampaignArm]
     :param readings: Code's readings across the aspects and floors.
-    :ptype readings: CampaignReadings
     :param spellings: How code spelled each derived arm it spelled from several levers, by variant key
         (:func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled`); None for none.
-    :ptype spellings: Mapping[str, ArmSpelling] | None
     :return: The campaign bundle.
-    :rtype: CampaignBundle
     :raises ValueError: The bundles are not the campaign's aspects, in its order.
     """
     expected = [aspect.label for aspect in campaign.aspects]
@@ -597,9 +613,7 @@ def campaign_trial_ids(aspects: Iterable[tuple[str, Sequence[str]]]) -> dict[str
     writer's id back to its trial number them here.
 
     :param aspects: Each aspect's label and its bundle's trial ids, in the campaign's order.
-    :ptype aspects: Iterable[tuple[str, Sequence[str]]]
     :return: ``campaign trial id -> (aspect, the trial's id in that aspect's bundle)``.
-    :rtype: dict[str, tuple[str, str]]
     """
     ids: dict[str, tuple[str, str]] = {}
     for aspect, trials in aspects:

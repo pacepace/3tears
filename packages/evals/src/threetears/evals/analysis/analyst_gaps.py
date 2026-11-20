@@ -42,7 +42,7 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import Final
 
-from threetears.evals.analysis.report.figure_keys import is_figure_key
+from threetears.evals.analysis.report.keys.resolve import is_figure_key
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapDigest, GapGroup
 
@@ -86,9 +86,7 @@ def _normalized_need(need: str) -> str:
     """A need as the digest groups it (the module docstring states each step).
 
     :param need: The need as written.
-    :ptype need: str
     :return: The normalized text.
-    :rtype: str
     """
     text = unicodedata.normalize("NFKC", need).casefold()
 
@@ -107,11 +105,8 @@ def gap_digest(records: Sequence[EvalAnalystGap], *, since: str | None = None) -
     """Group, rank and write up ``records`` (the module docstring).
 
     :param records: The records, oldest first (``EvalStorage.list_analyst_gaps``).
-    :ptype records: Sequence[EvalAnalystGap]
     :param since: The window's start as the caller gave it, echoed; the records are already read from it.
-    :ptype since: str | None
     :return: The digest.
-    :rtype: GapDigest
     """
     grouped: dict[tuple[str, str], list[EvalAnalystGap]] = {}
     for record in records:

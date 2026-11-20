@@ -24,15 +24,18 @@ from pydantic.fields import FieldInfo
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.blind_reads import blind_read_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.kernel.analyst_gap import GapDigest
+from threetears.evals.kernel.list_pages import LIST_PAGE_SIZE
 from threetears.evals.ops.analyst import analyst_gaps_list
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
+from threetears.evals.schema.reading_states import AttestableCoordinate
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
@@ -93,12 +96,9 @@ from threetears.evals.ops import (
     UndescribableArmsListing,
     analyses_list,
     analyses_undescribable,
-    analysis_archive,
-    analysis_delete,
     analysis_estimate,
     analysis_generate,
     bars_propose,
-    campaign_archive,
     campaign_create,
     campaign_record,
     campaign_runs_add,
@@ -129,12 +129,10 @@ from threetears.evals.ops import (
     result_rate,
     result_rate_person,
     results_list,
-    run_archive,
     run_label,
     run_delete,
     run_get,
     run_launch,
-    runs_bisect,
     runs_compare,
     runs_list,
     runs_unreadable,
@@ -144,15 +142,20 @@ from threetears.evals.ops import (
     scope_out_of_run_spend,
     scope_pivot,
     templates_list,
-    bar_proposals_text,
-    estimate_text,
     frontier_text,
-    history_text,
     out_of_run_spend_text,
-    pivot_text,
-    runs_bisected_text,
-    runs_compared_text,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.analysis import analysis_delete
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.runs import run_archive
+from threetears.evals.ops.lenses import runs_bisect
+from threetears.evals.ops.analysis import bar_proposals_text
+from threetears.evals.ops.lenses import estimate_text
+from threetears.evals.ops.lenses import history_text
+from threetears.evals.ops.lenses import pivot_text
+from threetears.evals.ops.lenses import runs_bisected_text
+from threetears.evals.ops.lenses import runs_compared_text
 from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
@@ -181,13 +184,18 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
 )
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
+from threetears.evals.run.remeasure import attest_served_model
 from threetears.evals.run import (
+    Attested,
     JudgeCaseFreezeReport,
     JudgeTemperatureEstimate,
     Regrade,
+    Remeasure,
     ResumableJobs,
     SecondJudgeEstimate,
+    attest_measure_definitions,
     regrade,
+    remeasure_run,
     resumable_jobs,
     run_blocking,
 )
@@ -206,6 +214,9 @@ JobId = Annotated[
 ]
 RunStatus = Annotated[EvalRunStatus | None, Field(description="List only runs with this stored status.")]
 IncludeArchived = Annotated[bool, Field(description="List archived records too; they are left out by default.")]
+PageCursor = Annotated[
+    str | None, Field(description="The next of the page before, to read the page after it; unset reads the first page.")
+]
 Archived = Annotated[bool, Field(description="The state to set: true retires the record, false restores it.")]
 Reason = Annotated[str | None, Field(description="Why, recorded on a cancelled run.")]
 Confirm = Annotated[str, Field(description="Must echo the id of what is destroyed, exactly.")]
@@ -378,6 +389,8 @@ class RunsListParams(EvalBaseModel):
     label: Annotated[
         str | None, Field(description="List only runs carrying this label (run_label sets them); every run if unset.")
     ] = None
+    cursor: PageCursor = None
+    limit: Limit = LIST_PAGE_SIZE
 
 
 class RunsUnreadableParams(EvalBaseModel):
@@ -493,6 +506,8 @@ class CampaignsListParams(EvalBaseModel):
     """``campaigns_list``."""
 
     include_archived: IncludeArchived = False
+    cursor: PageCursor = None
+    limit: Limit = LIST_PAGE_SIZE
 
 
 class CampaignCreateParams(EvalBaseModel):
@@ -576,6 +591,22 @@ class CampaignRecordParams(EvalBaseModel):
     # meaning across the tool: described as every other action's analysis_id is.
     analysis_id: Annotated[
         str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
+    ] = None
+    made_by: Annotated[
+        Literal["person", "model"] | None,
+        Field(
+            description=(
+                "Who made the call: a person (name them in person; the host must vouch that you relay their call) or a "
+                "model (name it in call_model). Omitted records neither, and the call never reads as a person's."
+            )
+        ),
+    ] = None
+    person: Annotated[str | None, Field(min_length=1, description=PERSON_DESCRIPTION)] = None
+    call_model: Annotated[
+        str | None, Field(min_length=1, description="The model that made the call, by id; a model's call only.")
+    ] = None
+    on_behalf_of: Annotated[
+        str | None, Field(min_length=1, description="Who the model made the call for; a model's call only.")
     ] = None
 
 
@@ -736,7 +767,6 @@ class WriterCaseMintParams(EvalBaseModel):
         """The operation's arguments, refused as the operation refuses them (one source; two set names).
 
         :return: The mint.
-        :rtype: WriterCaseMint
         :raises ValidationFailedError: No source or several are named, or one name is given for both sets.
         """
         try:
@@ -956,6 +986,51 @@ class ResultRegradeParams(EvalBaseModel):
     ] = False
 
 
+class RunRemeasureParams(EvalBaseModel):
+    """``run_remeasure``."""
+
+    run_id: RunId
+    store: Annotated[
+        bool,
+        Field(
+            description="Store the values read again and mark the run; false (the default) reports and writes nothing."
+        ),
+    ] = False
+
+
+class RunsAttestParams(EvalBaseModel):
+    """``runs_attest``."""
+
+    run_ids: RunIds
+    coordinate: Annotated[
+        AttestableCoordinate,
+        Field(
+            description="Which coordinate of the runs' identity is stated: measure_definition (what each host "
+            "measure counted when the runs' values were read) or served_model (the model that answered their "
+            "candidate calls). No other coordinate is stated after the fact."
+        ),
+    ]
+    measure_definitions: Annotated[
+        dict[str, str] | None,
+        Field(
+            description="For measure_definition: measure key -> the definition digest those runs ran under, as the "
+            "host computes it from the measure descriptors as they were. Omitted: the host's current definitions, "
+            "for runs made since its last definition change."
+        ),
+    ] = None
+    served_model: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="For served_model: the model that answered those runs' candidate calls, as a provider's "
+            "response would name it: the dated version, never a floating alias.",
+        ),
+    ] = None
+    attestation_note: Annotated[
+        str | None, Field(description="Why the host knows what it states of the runs, in its own words.")
+    ] = None
+
+
 SecondJudgeModel = Annotated[
     str, Field(min_length=1, description="The model the second judge sends every judged dimension to.")
 ]
@@ -1094,6 +1169,8 @@ async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> R
         status=params.status,
         include_archived=params.include_archived,
         label=params.label,
+        cursor=params.cursor,
+        limit=params.limit,
     )
 
 
@@ -1193,7 +1270,13 @@ async def _campaigns_list(host: OpsHost, caller: Caller, params: CampaignsListPa
     eval_host = host.eval_host
     archived = None if params.include_archived else False
     return await run_blocking(
-        eval_host.blocking_executor, campaigns_list, eval_host, caller.scope_id, archived=archived
+        eval_host.blocking_executor,
+        campaigns_list,
+        eval_host,
+        caller.scope_id,
+        archived=archived,
+        cursor=params.cursor,
+        limit=params.limit,
     )
 
 
@@ -1273,6 +1356,10 @@ async def _campaign_record(host: OpsHost, caller: Caller, params: CampaignRecord
             floors_overridden=params.floors_overridden,
             bars_overridden=bars,
             analysis_id=params.analysis_id,
+            made_by=params.made_by,
+            person=params.person,
+            model=params.call_model,
+            on_behalf_of=params.on_behalf_of,
         ),
         eval_host,
         params.campaign_id,
@@ -1602,6 +1689,52 @@ async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradePa
             "through regrade(..., apply=True)",
         )
     return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
+
+
+async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasureParams) -> Remeasure:
+    return await remeasure_run(host.eval_host, params.run_id, caller.scope_id, apply=params.store)
+
+
+async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) -> Attested:
+    eval_host = host.eval_host
+    # The parameter each attestable coordinate is stated in: one entry per value of AttestableCoordinate.
+    stated_for: dict[AttestableCoordinate, str] = {
+        "measure_definition": "measure_definitions",
+        "served_model": "served_model",
+    }
+    if misplaced := sorted(
+        name
+        for coordinate, name in stated_for.items()
+        if coordinate != params.coordinate and getattr(params, name) is not None
+    ):
+        raise ValidationFailedError(
+            f"{', '.join(misplaced)} states another coordinate than {params.coordinate}",
+            remedy=f"pass {stated_for[params.coordinate]} alone, or attest the other coordinate in a call of its own",
+        )
+    if params.coordinate == "served_model":
+        if params.served_model is None:
+            raise ValidationFailedError("a statement of the served model names the model", remedy="pass served_model")
+        return await attest_served_model(
+            eval_host,
+            params.run_ids,
+            caller.scope_id,
+            params.served_model,
+            attested_by=caller.identity,
+            note=params.attestation_note,
+        )
+    definitions = (
+        params.measure_definitions
+        if params.measure_definitions is not None
+        else eval_host.profile.measures.definition_digests()
+    )
+    return await attest_measure_definitions(
+        eval_host,
+        params.run_ids,
+        caller.scope_id,
+        definitions,
+        attested_by=caller.identity,
+        note=params.attestation_note,
+    )
 
 
 async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) -> ResultRated:
@@ -1959,11 +2092,10 @@ ANALYSE = "Analyse and report"
 CURATE = "Curate"
 
 
-def engine_actions() -> tuple[Action, ...]:
+def _engine_actions() -> tuple[Action, ...]:
     """The engine's actions, in the order help lists them.
 
     :return: The actions.
-    :rtype: tuple[Action, ...]
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
@@ -2007,9 +2139,13 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_model,
             example={"status": "completed"},
             detail=(
-                "A stored run this build cannot read is left out and counted in unreadable rather than failing the "
-                "listing; runs_unreadable names each with why. Its archive flag and labels cannot be read, so the "
-                "count is narrowed by status alone."
+                "Paged: each call reads limit stored runs (100 unless named) and returns next, the cursor for the "
+                "page after; call again with cursor=next, and the same filters, until next is None to read every "
+                "run. The status and archive filters are part of the read; the label filter runs over the page, so a "
+                "labelled page can list fewer runs than limit while next is set, and filtered says how many it left "
+                "out. A stored run this build cannot read is left out and counted in unreadable rather than failing "
+                "the listing; runs_unreadable names each with why. Its labels cannot be read, so the count is not "
+                "narrowed by label."
             ),
         ),
         Action(
@@ -2100,6 +2236,12 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_campaigns_list,
             render=render.render_model,
             example={},
+            detail=(
+                "Paged: each call reads limit campaigns (100 unless named) and returns next, the cursor for the page "
+                "after; call again with cursor=next, and the same filter, until next is None to read every "
+                "campaign. What an exploratory "
+                "campaign feeds is read among every campaign of the scope, whatever page it is on."
+            ),
         ),
         Action(
             name="run_launch",
@@ -2376,14 +2518,21 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_record",
-            summary="Record a person's call on a campaign: the arm decided, why, and each warning it overrides.",
+            summary="Record a call on a campaign: the arm decided, why, who made it, and each warning it overrides.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignRecordParams,
             result=CampaignCallLine,
             handler=_campaign_record,
             render=render.render_model,
-            example={"campaign_id": campaign_id, "arm": "v2", "call_reason": "Tone matters more this quarter."},
+            example={
+                "campaign_id": campaign_id,
+                "arm": "v2",
+                "call_reason": "Tone matters more this quarter.",
+                "made_by": "model",
+                "call_model": "anthropic/claude-opus",
+                "on_behalf_of": "ana@example.com",
+            },
             detail=(
                 "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
                 "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
@@ -2395,7 +2544,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "so it is refused. In a choice, an arm shown behind another is never refused: the page warns of each "
                 "such pair beside the call. A new call replaces the earlier one; the campaign's page states the call, "
                 "who made it and when, every warning it overrides, and how many runs joined since. call_reason is "
-                "recorded as the call's reason."
+                "recorded as the call's reason. made_by says whether a person or a model decided: a person's call "
+                "names them in person and is recorded only when the host vouches that you relay their call (refused, "
+                "403, otherwise, and nothing is written); a model's names call_model, and on_behalf_of where it "
+                "decided for someone. A call that says neither is never read as a person's."
             ),
         ),
         Action(
@@ -2791,6 +2943,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "rebuilt from what its run recorded and the person ratings given on it as labels. One case per judged "
                 "dim of each result; a result whose run did not record its judging, or whose template was edited "
                 "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
+                "A case added to a template that already holds cases is a case of the template's next revision, which "
+                "carries the earlier cases: the result's template_id is the one to launch and to freeze into next, and "
+                "runs of the two revisions never pool. "
                 "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
                 "temperature); the trials call only the judge. Calls no model."
             ),
@@ -2861,8 +3016,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "itself. The host must vouch that the caller authors for that person, or the call is refused and "
                 "nothing is written. The case is stored under "
                 "the host's name for that person and records the caller that relayed it. Authoring the same case "
-                "again names the stored one. It mints no case set: case_set_mint lists the cases a launch runs. "
-                "Calls no model."
+                "again names the stored one. A new case written into a template that already holds cases is a case "
+                "of the template's next revision, which carries the earlier cases: the result's template_id is the one "
+                "to launch and to author the next case into, and runs of the two revisions never pool. It mints no "
+                "case set: case_set_mint lists the cases a launch runs. Calls no model."
             ),
         ),
         Action(
@@ -3123,6 +3280,55 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="run_remeasure",
+            summary="Read one stored run's host measures again under the host's current definitions: report, or store.",
+            workflow=CURATE,
+            permission="write",
+            params=RunRemeasureParams,
+            result=Remeasure,
+            handler=_run_remeasure,
+            render=render.render_model,
+            example={"run_id": run_id, "store": False},
+            detail=(
+                "For a run whose host measures were read under another definition than the host's current one, or "
+                "that recorded none. The host's reader (HostProfile.measure_rereader) reads each stored result "
+                "again from what its cell stored; no model is called and nothing is guessed. A stored value the "
+                "reader does not answer, a host with no reader, or a moved measure that shaped the run refuses it "
+                "before anything is written. With store, each result keeps the value it held, the run is marked "
+                "re-measured and pools with the runs of the current definitions."
+            ),
+        ),
+        Action(
+            name="runs_attest",
+            summary="State one coordinate of stored runs that they did not record: their measure definitions or served model.",
+            workflow=CURATE,
+            permission="write",
+            params=RunsAttestParams,
+            result=Attested,
+            handler=_runs_attest,
+            render=render.render_model,
+            example={
+                "run_ids": [run_id],
+                "coordinate": "measure_definition",
+                "attestation_note": "made after the last definition change",
+            },
+            detail=(
+                "An upgrade step for runs stored before a coordinate was recorded, never something a run launched "
+                "now needs. A run whose results hold a host measure and that recorded no measure definitions, and a "
+                "run whose candidate responses named no model, each pools and is compared with nothing, in pass^k "
+                "and in a campaign's cells, since nothing says what it was read under or what answered it. The "
+                "host's statement is recorded as one, alike for either coordinate: who stated it (the caller), when "
+                "and what, on each run (measure_attestation, served_model_attestation), and the run then pools only "
+                "with runs that match. measure_definition: pass measure_definitions, or omit it for the host's "
+                "current ones; no result is touched. served_model: pass served_model; it is recorded on the run "
+                "with the results whose candidate usage rows named no model, and those rows are read through it; "
+                "no row is rewritten, and a run none of whose candidate rows is silent is refused. Takes many "
+                "runs in one call. Stating the same value twice changes nothing; a run that already records the "
+                "coordinate (its launch's, a re-measure's, a response's, another statement's) is refused, and "
+                "nothing is written."
+            ),
+        ),
+        Action(
             name="result_rate",
             summary="Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled.",
             workflow=CURATE,
@@ -3167,6 +3373,7 @@ def engine_actions() -> tuple[Action, ...]:
                 "written. An agent's own opinion goes through result_rate."
             ),
         ),
+        *blind_read_actions(CURATE),
         Action(
             name="analysis_archive",
             summary="Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.",
@@ -3257,12 +3464,10 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
 
     :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
         rendered like the engine's.
-    :ptype host_actions: tuple[Action, ...]
     :return: The catalogue.
-    :rtype: ActionCatalogue
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
-    return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)
+    return ActionCatalogue((*_engine_actions(), *analyst_actions())).extended(host_actions)
 
 
-__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "engine_actions", "eval_catalogue"]
+__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "eval_catalogue"]

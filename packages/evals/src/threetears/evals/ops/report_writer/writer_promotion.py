@@ -4,7 +4,7 @@ A change to how the report writer works (its skill, its reasoning effort, its re
 measured decision, and this is the read that decides it. It adds no statistics. It reads one pre-registered primary
 reading, the pairwise pass's preference (``report_writer.preferred``, at alpha 0.05, a family of one; its report is
 the completed ``writer_pairwise`` job's result), and the campaign's corrected verdicts
-(:func:`~threetears.evals.analysis.campaign_verdicts`), which gate on regression only:
+(:func:`~threetears.evals.analysis.service.campaign_verdicts`), which gate on regression only:
 
 - ``promote`` when the primary reads improved on the cases a rate needs, no gated reading reads regressed, and every
   guardrail is held;
@@ -222,13 +222,9 @@ def held_out_batch_name(held_out: CaseSetRef, index: int, batches: int) -> str:
     one launch, only as a case of the held-out set version it names, and only when that version lists every case of it.
 
     :param held_out: The held-out set version the batches are cut from.
-    :ptype held_out: CaseSetRef
     :param index: The batch, from 0.
-    :ptype index: int
     :param batches: How many batches the launch is cut into.
-    :ptype batches: int
     :return: The name.
-    :rtype: str
     """
     return f"{held_out.label} batch {index + 1} of {batches}"
 
@@ -300,8 +296,8 @@ def _pass_report(
             remedy="run the pass over this campaign's candidate (writer_pairwise), then read with its job id",
         )
     read = {result for pair in report.pairs for result in (pair.candidate_result_id, pair.control_result_id)}
-    # A batch that stored no page on either arm is left out of the campaign's readings and read by the pass beside
-    # them: its results are the pass's to hold, never the campaign's.
+    # A report stored before a batch run that stored no page joined its arm's test setup names such runs: the pass
+    # read their pairs beside the campaign's, so their results are the pass's to hold, never the campaign's.
     aside = outside(report.outside_run_ids)
     gone, unread = read - results - aside, results - read - set(report.unpaired)
     if gone or unread:
@@ -521,23 +517,16 @@ def writer_promotion(
     """Read whether a report writer campaign's candidate arm should replace its control (the module docstring).
 
     :param host: The host whose store holds the campaign and its runs and cases.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param candidate: The candidate arm, by its label or its variant key.
-    :ptype candidate: str
     :param pairwise_job: The completed ``writer_pairwise`` job over this campaign's candidate (``job_poll``'s status),
         whose report holds the primary reading; ``None`` reads no primary, so the read never promotes.
-    :ptype pairwise_job: JobStatus | None
     :param one_editor: Whether the candidate and the control ran one editor (its ``editor.md``, model and effort); with
         two, the decision's sentence names only the readings the comparison counts
         (:func:`~threetears.evals.ops.report_writer.writer_contract.uncompared_readings`). ``None`` answers it for the
         arms' recorded skill levels: one editor when they are the same skill, else two.
-    :ptype one_editor: bool | None
     :return: The decision and what it read.
-    :rtype: WriterPromotion
     :raises NotFoundError: No campaign with that id in the scope, or a run it names is not stored.
     :raises ValidationFailedError: The campaign has no control, the candidate is none of its arms or is the control,
         an arm's lever map was not recorded, its arms were not scored by one judge on one rubric, or it ran over

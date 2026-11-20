@@ -1,7 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, since durable v16 campaigns, and since a later minor the analyst's gap notes) out of
+sets, test cases, calibration ratings, since durable v16 campaigns, and since later minors the analyst's gap notes and
+blind reads) out of
 the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
@@ -37,7 +38,6 @@ from threetears.evals.schema import versioning
 from threetears.evals.schema.base import CoreDocumentModel
 from threetears.evals.schema.versioning import (
     CORE_DOC_TYPES,
-    DURABLE_ADDRESSING_FIELDS,
     DURABLE_BASELINE_VERSION,
     DURABLE_DOC_TYPES,
     DURABLE_SCHEMA_MINOR,
@@ -55,20 +55,24 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 0
+PINNED_DURABLE_SCHEMA_MINOR = 7
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "8477ebd5e374d893776e65a7e731e0f38631146dc58ce107d5ee12e849d2ea46",
-    "case_set": "8f0165d26d157517528f3ee5d3e09cff75405025ae3643abbbf5f661f99ae197",
-    "eval_analyst_gap": "e0ac1f149ed22d466e610dff66dcc1c34af0ddc552a47dac5a153ff6e5d62836",
-    "eval_campaign": "96ceb75b5776dd0c5812054dcac4d013357131035d10087ca2b43af09b556f44",
-    "eval_template": "95d91727e479a9e99529ceb4bc2cc2c3dc0d2b62574cc3ac14a0d5cd6e1179b4",
-    "eval_test_case": "97a970e4edfe2100ff9b65de77fc83d164a133764833f35c7b792aec890be5fb",
-    "judge_config": "45695e6285c81ac8033850d9a8e62bfd227ac5cb86ab0de0e756fbb34d151faa",
-    "judge_config_tombstone": "27d8ee74be598ae29c60bd1f3e865d819bded0f623cfa58ae6b1c6f92a9ae4bc",
-    "rubric_dim": "c857ffe7dd2ce098fca9578474350074c9fb7a9f7e6e71601d85bf2a077a2793",
-    "rubric_dim_tombstone": "9737ebc5236c74117d12d9232630daf544076e0643504096675ace2dacc44507",
+    # Re-taken under durable 17.7: every durable type's ``schema_minor`` default moved, and the test case's shape gained
+    # ``reference`` (``ReferenceKey``). (Under 17.6 the campaign's shape gained ``Aspect.undo`` and
+    # ``Aspect.undo_ignored``; under 17.5 the blind read's gained ``BlindPreference.shares`` and ``stake_items``.)
+    "blind_read": "d74a54f02176332327de8efc7efe9920f11d62ec517e01136efbd53dda20a278",
+    "calibration_rating": "6c7ee09c6b5e6ba7607d266926397a8800a832887edf0c0e7dfd05b66484386f",
+    "case_set": "6b596f1b9dc383d17eefb235a5d73312a288d1cdf2137820a012e90a0a351b9d",
+    "eval_analyst_gap": "ef173c0ef7f8b052dcf0fe940fe49bb6cf7705f16f5bd142b9896ce409e8a731",
+    "eval_campaign": "4853515ddcfe8863837d81319624a214685c8369aac25ef7b1ed29734dccfb3f",
+    "eval_template": "7eeb8207c817c6e0f57d58657a0f551e1ba53a1106f8f8be51ac9ec16d8182cb",
+    "eval_test_case": "9c4447ed11e5f75dcd0be108475c742aa25c866fa25853a757a331c3e50a94c6",
+    "judge_config": "0e3b281068fc2be1ec265d27b637a8ee80f5bcaa757b0d2ee4f01cc5158e2dde",
+    "judge_config_tombstone": "433944a65efcb06dd5da2a89cb105107ad9f5f19df217c33fab2899004ae3b3e",
+    "rubric_dim": "e80f41034616da13ba89300929940a7e7c9cf72b3be3e7d00bfaff7df4d83d6a",
+    "rubric_dim_tombstone": "80445305fe59fc3932f1787d6794be644fef1e4a0acf8eae52d7f30bebf2b0ad",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -99,6 +103,7 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
     "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
+    "blind_read": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
@@ -127,6 +132,9 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
+    # Re-written from its stored sample (unshipped 17.4, #1208): the report now holds agreement counts for a person and
+    # a served model and a reviewer check, where it held none; its person's preference names no served model.
+    "v17/blind_read.json": "abedc5ff4965a019f10656233c0384347a4e0471aa044f51371edd6cbd2e2e71",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",
@@ -200,9 +208,9 @@ def test_a_change_to_a_shape_the_core_embeds_too_moves_a_durable_pin() -> None:
 
 
 def test_the_durable_addressing_fields_are_pinned_and_are_fields() -> None:
-    assert dict(DURABLE_ADDRESSING_FIELDS) == PINNED_DURABLE_ADDRESSING_FIELDS
+    assert set(PINNED_DURABLE_ADDRESSING_FIELDS) == DURABLE_DOC_TYPES
     for doc_type, model in _durable_models().items():
-        missing = DURABLE_ADDRESSING_FIELDS[doc_type] - set(model.model_fields)
+        missing = PINNED_DURABLE_ADDRESSING_FIELDS[doc_type] - set(model.model_fields)
         assert not missing, f"{model.__name__} has no field {sorted(missing)} the store addresses it by"
 
 

@@ -30,7 +30,7 @@ from typing import Any, Final, NamedTuple
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LeverCoverageInput, RunSummary
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.report.figure_keys import KeySubjects, key_subjects, keys_in, render
+from threetears.evals.analysis.report.keys.resolve import KeySubjects, key_subjects, keys_in, render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.authored import Confidence
@@ -93,28 +93,18 @@ def doc_analysis(
     """Build the analysis a stored report document is linked by, and its insights (this module's account).
 
     :param bundle: The campaign bundle the document's snapshot froze (``EvalReportSnapshot.bundle``).
-    :ptype bundle: CampaignBundle
     :param report_input: The snapshot's report input, which the claims' keys resolve against.
-    :ptype report_input: ReportInput
     :param stored: The stored document.
-    :ptype stored: EvalReportDoc
     :param input_digest: The digest of the snapshot's report input (``EvalReportSnapshot.report_input_digest``): what
         the writer read, recorded as the analysis's ``user_message_digest``.
-    :ptype input_digest: str
     :param writer_model: The model the report was written with, as the client names it.
-    :ptype writer_model: str
     :param skill_digest: The analyst skill's digest (``load_skill().digest``), the provenance.
-    :ptype skill_digest: str
     :param bundle_assembled_at: When the bundle was assembled (ISO-8601), the cutoff a re-assembly reads the insight
         ledger as of.
-    :ptype bundle_assembled_at: str
     :param token_cost: What every turn cost together; ``None`` when any turn was unpriced, never ``0``.
-    :ptype token_cost: float | None
     :param bounces: The analyst's submissions sent back, counted by what they were sent back for (``invariant``,
         ``shape``, ...), as the tally sums them; the editor's ask-again is no bounce and is not counted.
-    :ptype bounces: Mapping[str, int]
     :return: The analysis and its insights.
-    :rtype: DocAnalysis
     :raises UnresolvableReference: A durable claim's key does not resolve (a stored document's always do).
     :raises ValueError: An analysis or insight built from it does not validate, which is a bug, not the writer's.
     """
@@ -273,12 +263,9 @@ def aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> 
     """What a stored analysis keeps of one aspect: its frozen bundle, and what code read off it.
 
     :param bundle: The aspect's bundle.
-    :ptype bundle: AnalysisContextBundle
     :param surface: The surface every reading on it was resolved against — the same object, so the stored numbers and
         the stored facts cannot describe two different bundles.
-    :ptype surface: DecisionSurface
     :return: The aspect's part of the analysis.
-    :rtype: AspectAnalysis
     """
     reported = _comparable_measures(bundle.run_summaries)
     all_names = {m.name for summary in bundle.run_summaries for m in summary.measures.measures}
@@ -340,9 +327,7 @@ def _comparable_measures(summaries: list[RunSummary]) -> set[str]:
     rather than in the caller, so the ceiling cannot be routed around by the fallback.
 
     :param summaries: Every run summary in the campaign.
-    :ptype summaries: list[RunSummary]
     :return: The names worth a column, at most ``_MAX_RUN_INDEX_MEASURES`` of them.
-    :rtype: set[str]
     """
     seen: dict[str, set[str]] = {}
     numeric: dict[str, list[float]] = {}

@@ -1,0 +1,1 @@
+The primary database failed over unexpectedly on Monday at 03:14. The failover took 40 seconds, during which writes failed. Customers saw errors on checkout and account pages for under a minute. The old primary had a failing disk, which the cloud provider has replaced. No data was lost.

@@ -1,6 +1,6 @@
 """The GENERATOR §3 gate function: each arm's status against the gates, with a reason per figure.
 
-Contracts held here (``threetears.evals.analysis.report_gates``, GENERATOR.md §3):
+Contracts held here (``threetears.evals.analysis.report.gates``, GENERATOR.md §3):
 
 - an arm fails a gate or guardrail on its point estimate (at least the threshold where higher is better, at most
   where lower is), and a passing figure whose interval crosses the threshold is borderline; the interval is the
@@ -31,8 +31,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.report_decision import decision_at, surviving_options
-from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
+from threetears.evals.analysis.report.call import decision_at, surviving_options
+from threetears.evals.analysis.report.gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
 

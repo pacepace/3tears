@@ -65,22 +65,24 @@ from threetears.evals.analysis.report.campaign.measure_kinds import (
     shown_measures,
 )
 from threetears.evals.analysis.report.figures import MeasureRuler, Rulers, report_rulers
-from threetears.evals.analysis.report.forms import PageForms, Printed
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.analysis.report.campaign.common import floor_of
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.floors import (
     CasesNeeded,
+    RateReading,
     RateVerdict,
     SampleProjection,
     aspect_pass_rate,
     case_cost_usd,
     control_cannot_show,
     floor_readings,
-    projected_cell,
     rate_projections,
     read_floor,
 )
+from threetears.evals.analysis.report.projection_words import projected_cell
 from threetears.evals.analysis.report.blocks import bare_columns
 from threetears.evals.analysis.report.model import (
     CellValue,
@@ -92,15 +94,20 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     table_row,
 )
-from threetears.evals.analysis.report.verdict import interval_words, passed_clause
-from threetears.evals.analysis.report.figure_keys import joint_guarantee
+from threetears.evals.analysis.bundle.trials import pass_count
+from threetears.evals.analysis.cells import unread_arms
+from threetears.evals.analysis.report.verdict import interval_words, not_graded_words, passed_clause
+from threetears.evals.analysis.caveats import UnkeptPlan, unkept_plan
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee, plan_condition
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
-from threetears.evals.analysis.report.words import PASS_RATE, judged_name, reason_words
+from threetears.evals.analysis.report.words import PASS_RATE, label_case, reason_words
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "BAR_WORDS",
@@ -214,9 +221,7 @@ def _row_words(row: AspectReading) -> str:
     :func:`row_sentence`.
 
     :param row: The row.
-    :ptype row: AspectReading
     :return: The words.
-    :rtype: str
     """
     if _undecided(row):
         return _CONTRAST_WORDS["not_separated"]
@@ -231,13 +236,9 @@ def row_figures(row: AspectReading, control: str, *, forms: PageForms) -> str:
     (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). The interval's level is the fold's.
 
     :param row: The row.
-    :ptype row: AspectReading
     :param control: The control, as the page names it.
-    :ptype control: str
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The sentences.
-    :rtype: str
     """
     unit = "trials" if row.control_trials != row.control_cases or row.arm_trials != row.arm_cases else "cases"
     if row.control_trials == row.arm_trials:
@@ -285,11 +286,8 @@ def reads_undecided(readings: CampaignReadings, aspect: str) -> bool:
     either side of it, or a pair neither of whose arms is ahead. Decided from the readings, never from the words.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :return: Whether some arms on it are undecided.
-    :rtype: bool
     """
     return any(_undecided(row) for row in readings.on_aspect(aspect)) or any(
         pair.ahead is None for pair in readings.pairs if pair.aspect == aspect
@@ -303,13 +301,9 @@ def row_sentence(row: AspectReading, control: str, *, against: bool = True) -> s
     the row is read beside others on one aspect (``v2 shown better``).
 
     :param row: The row.
-    :ptype row: AspectReading
     :param control: The control, as the page names it.
-    :ptype control: str
     :param against: Whether the control is named.
-    :ptype against: bool
     :return: The clause, with no closing stop.
-    :rtype: str
     """
     if _undecided(row):
         return cannot_tell_apart([row.arm_label], control)
@@ -514,17 +508,11 @@ def table_blocks(
     under them that change how a cell reads.
 
     :param campaign: The campaign, a change.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, its folded rows and its lines; one line where no control was named.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
         no matrix is laid out.
     """
@@ -538,9 +526,10 @@ def table_blocks(
             )
         ]
     blocks: list[ReportBlock] = []
+    rates = _PassRates(reports, readings.control)
     if readings.readings:
         blocks += [
-            _change_matrix(campaign, readings, reports, names, readings.control, forms),
+            _change_matrix(campaign, readings, reports, names, readings.control, rates, forms),
             _change_rows(readings, names, forms),
         ]
     else:
@@ -553,7 +542,7 @@ def table_blocks(
     # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse. It is
     # a method, so it is the page's methods, not its scorecard.
     read = [
-        *(_level_lines(levels, readings, forms) if readings.readings else []),
+        *(_level_lines(levels, readings, forms, _unkept(readings, reports), names) if readings.readings else []),
         *_within_lines(readings, names, forms),
     ]
     if read:
@@ -563,10 +552,28 @@ def table_blocks(
         for row in readings.readings
         if row.rig is not None
     ]
-    notes += _reconciled_lines(readings, reports, names, forms)
+    notes += _reconciled_lines(readings, reports, rates, names, forms)
     notes += _unread_lines(campaign, readings, names)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
+
+
+class _PassRates:
+    """Each row's overall pass rate against the control
+    (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`), read once per scorecard: the matrix's
+    baselines and the lines reconciling a contrast both read it."""
+
+    def __init__(self, reports: Mapping[str, Report], control: str) -> None:
+        self._reports = reports
+        self._control = control
+        self._read: dict[tuple[str, str], RateReading | None] = {}
+
+    def of(self, row: AspectReading) -> RateReading | None:
+        """The row's pass rate, read off its aspect's evidence the first time it is asked for."""
+        key = (row.aspect, row.arm)
+        if key not in self._read:
+            self._read[key] = aspect_pass_rate(self._reports[row.aspect].bundle, self._control, row.arm)
+        return self._read[key]
 
 
 def _change_matrix(
@@ -575,6 +582,7 @@ def _change_matrix(
     reports: Mapping[str, Report],
     names: AspectNames,
     control: str,
+    rates: _PassRates,
     forms: PageForms,
 ) -> TableBlock:
     """One row per aspect any candidate was compared on, one column per candidate, the control's pass rate beside the
@@ -602,7 +610,7 @@ def _change_matrix(
         if not on:
             continue
         bundle = reports[aspect.label].bundle
-        baselines = {arm: _baseline(row, bundle, control) for arm, row in on.items()}
+        baselines = {arm: _baseline(row, rates) for arm, row in on.items()}
         shown = _control_cell(list(on.values()), bundle, control, baselines, forms)
         # Where the candidates' changes read different cases, the control's cell is its trials passed, and every
         # candidate names the baseline its own change is read from.
@@ -642,7 +650,9 @@ def _change_matrix(
         rows=rows,
         order="aspect by aspect, each candidate's change against the control",
         total_rows=len(rows),
-        glyph_key=_glyph_key(readings, [labels[arm] for arm in candidates], forms),
+        glyph_key=_glyph_key(
+            readings, [labels[arm] for arm in candidates], forms, unkept=bool(_unkept(readings, reports))
+        ),
     )
 
 
@@ -663,19 +673,12 @@ def _across_levels(
     its own baselines (``stated``), as its cells above name each.
 
     :param control: The control's variant key.
-    :ptype control: str
     :param named: The control as the page names it.
-    :ptype named: str
     :param rows: The matrix's rows, one per aspect.
-    :ptype rows: Sequence[Mapping[str, TableCell]]
     :param stated: Each candidate's baseline on each aspect it was read on, by variant key.
-    :ptype stated: Mapping[str, Sequence[float]]
     :param split: Whether some aspect's candidates read different cases.
-    :ptype split: bool
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: Each arm's level and its cell's words (None for none), by variant key.
-    :rtype: dict[str, tuple[float, str | None]]
     """
 
     def mean(key: str, read: Callable[[TableCell], float | None]) -> float | None:
@@ -703,12 +706,14 @@ _ACROSS_BASIS = "mean of the aspects above, each weighted equally"
 _MEASURE = PASS_RATE.lower()
 
 
-def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: PageForms) -> str:
+def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: PageForms, *, unkept: bool) -> str:
     """What each glyph of a change's matrix draws, which the line under it opens with: whose change, from which
     control (the tick), what its interval guarantees (every interval drawn's, :func:`_shown_interval`), and which way
     is better (a pass rate's gain is to the right). An interval corrected across an arm's aspects states the joint
     guarantee its arm's readings hold at together (owner ruling, level in headings), never its own level, which the
-    Methods paragraph states (:func:`_level_lines`)."""
+    Methods paragraph states (:func:`_level_lines`); where the plan of looks it is read under is not shown to hold
+    that guarantee (``unkept``, :func:`_unkept`), it states none, and the Methods paragraph states it with its
+    condition."""
     levels = {
         _told_apart(forms, level)
         for row in readings.readings
@@ -720,7 +725,7 @@ def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: Pag
     drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
     sizes = {max(gains[arm], drops[arm]) for arm in {row.arm for row in readings.readings}}
     guarantee = joint_guarantee(readings.alpha, max(sizes, default=0), corrected=corrected)
-    if not levels:
+    if not levels or (unkept and guarantee is not None):
         interval_said = "its interval"
     elif guarantee is None:
         interval_said = f"its {_level_text(forms, min(levels))} interval"
@@ -735,12 +740,12 @@ def _glyph_key(readings: CampaignReadings, candidates: Sequence[str], forms: Pag
     )
 
 
-def _baseline(row: AspectReading, bundle: AnalysisContextBundle, control: str) -> tuple[float, int | None]:
+def _baseline(row: AspectReading, rates: _PassRates) -> tuple[float, int | None]:
     """The control's level a row's change is read from, in percent, and the cases it is a mean over: the mean of the
     control's per-case shares the change reads (the change is the candidate's mean less this one), so the candidate's
     level, this plus the change, closes with it on the page. Where no per-case shares were read the change is on the
     trial counts, and so is its baseline, over no cases named."""
-    rate = aspect_pass_rate(bundle, control, row.arm)
+    rate = rates.of(row)
     if rate is not None and rate.samples is not None and rate.samples[0]:
         shares = rate.samples[0]
         return 100 * math.fsum(shares) / len(shares), len(shares)
@@ -758,7 +763,7 @@ def _control_cell(
     it is read from (``baselines``), which is its trials passed (``18 of 20 cases``) where the two agree, else the mean
     of the cases the changes read (``mean of 380 cases``), its trial count left to the fold. Where the candidates'
     changes read different cases, it is its trials passed, and each candidate's cell names its own baseline. Marked
-    where it cannot move (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`, the rule the writer's
+    where it cannot move (:func:`~threetears.evals.analysis.floors.control_cannot_show`, the rule the writer's
     view flags too)."""
     row = rows[0]
     if not row.control_trials:
@@ -925,13 +930,21 @@ def _rig_line(aspect: str, what: str, rig: str) -> str:
     )
 
 
-def _level_lines(levels: Sequence[float], readings: CampaignReadings, forms: PageForms) -> list[str]:
+def _level_lines(
+    levels: Sequence[float],
+    readings: CampaignReadings,
+    forms: PageForms,
+    unkept: Sequence[tuple[str, UnkeptPlan]],
+    names: AspectNames,
+) -> list[str]:
     """The level the corrected intervals were read at (``levels``: every reading's but one no worse than the margin,
     whose sentence is :func:`_within_lines`; none where every reading is) and why it is wider than a plain interval,
     then how often one arm is shown better or worse wrongly, and, with several arms, how often some arm is, since the
     correction does not run across them. Each count is the page's own, and counts what is corrected together: an
     arm's gains are its rows with an interval, its drops those with an interval on an aspect with a margin or asked a
-    question (``drop_interval``), as its two families are read. One sentence each, every one a whole template."""
+    question (``drop_interval``), as its two families are read. One sentence each, every one a whole template. Where
+    the plan of looks the readings are read under is not shown to hold its level on some aspect (``unkept``,
+    :func:`_unkept`), no error rate is stated: the level is, with its condition (:func:`_plan_lines`)."""
     families = Counter(row.arm for row in readings.readings)
     gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
     drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
@@ -964,21 +977,55 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings, forms: Pag
                 else interval_beside(_level_text(forms, low), _level_text(forms, high))
             )
             lines.append(f"So each interval is read at {read_at}, not {_level_text(forms, INTERVAL_LEVEL)}.")
-    half = _level_text(forms, readings.alpha / 2)
-    lines.append(
-        f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and likewise "
-        "for wrongly shown worse."
-        if any(max(size) > 1 for size in sizes)
-        else f"For any one arm, the chance of being wrongly shown better is at most {half}, and likewise for wrongly "
-        "shown worse."
-    )
-    if len(families) > 1:
+    if unkept:
+        guarantee = joint_guarantee(readings.alpha, max((max(size) for size in sizes), default=0))
+        level = (
+            _level_text(forms, 1 - readings.alpha)
+            if guarantee is None
+            else FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
+        )
+        lines += _plan_lines(level, unkept, names, len(families) > 1)
+    else:
+        half = _level_text(forms, readings.alpha / 2)
         lines.append(
-            f"The correction does not run across the {len(families)} arms, so the chance that some arm is wrongly "
-            f"shown better is up to {_level_text(forms, min(1.0, len(families) * readings.alpha / 2))}, and likewise "
-            "for worse."
+            f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and "
+            "likewise for wrongly shown worse."
+            if any(max(size) > 1 for size in sizes)
+            else f"For any one arm, the chance of being wrongly shown better is at most {half}, and likewise for "
+            "wrongly shown worse."
+        )
+    if len(families) > 1:
+        up_to = _level_text(forms, min(1.0, len(families) * readings.alpha / 2))
+        lines.append(
+            f"The correction does not run across the {len(families)} arms, so some arm is wrongly shown better more "
+            "often than any one arm is, and likewise for worse."
+            if unkept
+            else f"The correction does not run across the {len(families)} arms, so the chance that some arm is "
+            f"wrongly shown better is up to {up_to}, and likewise for worse."
         )
     return lines
+
+
+def _unkept(readings: CampaignReadings, reports: Mapping[str, Report]) -> list[tuple[str, UnkeptPlan]]:
+    """Each aspect on which the campaign's plan (``planned_looks``) is not shown held on the bounded test every pass
+    rate here is read by (:func:`~threetears.evals.analysis.caveats.unkept_plan`), with why. A candidate's family runs
+    across its aspects, so one aspect not shown is its family's level not shown."""
+    if readings.planned_looks is None:
+        return []
+    found = []
+    for aspect in readings.aspects:
+        looks = reports[aspect].bundle.reading_scope.looks if aspect in reports else None
+        if looks is not None and (unkept := unkept_plan(looks, ("bounded",), planned=readings.planned_looks)):
+            found.append((aspect, unkept))
+    return found
+
+
+def _plan_lines(level: str, unkept: Sequence[tuple[str, UnkeptPlan]], names: AspectNames, per_arm: bool) -> list[str]:
+    """The plan's ``level`` with its condition (``plan_condition``), one per reason and count, naming its pass rates."""
+    grouped: dict[tuple[str, int | None], tuple[UnkeptPlan, list[str]]] = {}
+    for aspect, plan in unkept:
+        grouped.setdefault((plan.why, plan.taken), (plan, []))[1].append(f"the pass rate on {names(aspect)}")
+    return [plan_condition(level, plan, named, per_arm=per_arm) for plan, named in grouped.values()]
 
 
 def _within_lines(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> list[str]:
@@ -1010,7 +1057,7 @@ def _listed(items: Sequence[str]) -> str:
 
 
 def _reconciled_lines(
-    readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames, forms: PageForms
+    readings: CampaignReadings, reports: Mapping[str, Report], rates: _PassRates, names: AspectNames, forms: PageForms
 ) -> list[str]:
     """Where a contrast in an aspect's fold reads the very per-case values a row reads and reaches another verdict, one
     line naming both and the interval each was read on, so the disagreement is explained where it is seen.
@@ -1027,7 +1074,7 @@ def _reconciled_lines(
     for row in readings.readings:
         _, level = _shown_interval(row)
         bundle = reports[row.aspect].bundle
-        rate = aspect_pass_rate(bundle, control, row.arm)
+        rate = rates.of(row)
         if level is None or rate is None or rate.samples is None:
             continue
         for comparison, _ in _contrasts(bundle, control, row.arm):
@@ -1107,7 +1154,22 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: Asp
     lines: list[str] = []
     for aspect in campaign.aspects:
         rows = readings.on_aspect(aspect.label)
-        if not rows:
+        held_here = [held for held in readings.answer_splits if held.aspect == aspect.label]
+        split = [held.arm_label for held in held_here if held.coordinate == "served_model"]
+        defined = [held.arm_label for held in held_here if held.coordinate == "measure_definition"]
+        if split:
+            # Both sides ran: what withholds the rows is an arm read per answering model, which the warning names.
+            lines.append(
+                f"{names(aspect.label)} is not compared: {_listed(split)}'s results there were answered by more than "
+                "one model, or by one no response named, so they are read per model and no row is read for the arm."
+            )
+        elif defined:
+            # Both sides ran: what withholds the rows is a host measure's definition, which the warning names.
+            lines.append(
+                f"{names(aspect.label)} is not compared: {_listed(defined)}'s runs there were not read under one "
+                "recorded definition of each host measure shared with the control, so no row is read for the arm."
+            )
+        elif not rows:
             lines.append(f"{names(aspect.label)} holds the runs of one side only, so its figures are read arm by arm.")
         elif aspect.margin is None and not any(row.confirmatory for row in rows):
             lines.append(
@@ -1152,17 +1214,11 @@ def settle_blocks(
     margin has nothing to show it within, and a settled reading nothing left to show, so neither is a row here.
 
     :param campaign: The campaign, a change.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label, whose evidence a floor's count is read from.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The table and its note; nothing where no reading is to settle.
-    :rtype: list[ReportBlock]
     """
     sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports, forms)]
     if not sizings:
@@ -1285,7 +1341,7 @@ def _sizings(
 
 
 def _deciding_rate(rates: Sequence[tuple[RateVerdict, SampleProjection]]) -> RateVerdict:
-    """Of a floor's unclear rates and their projections (:func:`~threetears.evals.analysis.report.decision.
+    """Of a floor's unclear rates and their projections (:func:`~threetears.evals.analysis.floors.
     rate_projections`), the one deciding the floor's as-observed count, the column a decision reads first: the one
     needing the most there, then with no difference, the first of equals."""
     best, chosen = rates[0]
@@ -1346,16 +1402,16 @@ def _settle_note(sizings: Sequence[_Sizing], forms: PageForms) -> str:
 # =============================================================================
 
 
-def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
+def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisContextBundle | None = None) -> str:
     """What code read on one aspect, beside its fold's heading, by the campaign's kind: ``v2 shown worse``, ``alpha
     ahead of beta``, ``alpha misses a bar``, ``reply passed 40 of 40 trials on 20 cases``.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
+    :param bundle: The aspect's evidence, which a measurement's pass count is read off
+        (:func:`measured_figure`); a measurement's words need it.
     :return: The words.
-    :rtype: str
+    :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
     if readings.kind == "choice":
         return pairs_words(readings, aspect) or "not compared"
@@ -1363,13 +1419,15 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
         missed = [status.arm_label for status in readings.missed_bars() if status.aspect == aspect]
         if missed:
             return f"{', '.join(dict.fromkeys(missed))} misses a bar"
-        # The arm's pass rate as its count, as the lead states it, so no fold opens on a bare word.
+        if bundle is None:
+            raise ValueError(f"a measurement's words on {aspect!r} are its pass count, read off the aspect's bundle")
+        # The arm's pass count, as the lead states it, so no fold opens on a bare word.
         figures = [
             figure
             for reading in readings.measures
             # ``passed``: the trials' own pass rate, as the readings key it.
             if reading.aspect == aspect and reading.measure == "passed"
-            if (figure := measured_figure(reading)) is not None
+            if (figure := measured_figure(reading, bundle)) is not None
         ]
         return "; ".join(figures) or "measured"
     rows = readings.on_aspect(aspect)
@@ -1399,21 +1457,27 @@ def _rows_sentence(rows: Sequence[AspectReading], control: str) -> str:
     return "; ".join(clauses)
 
 
-def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: AspectNames) -> str:
+def campaign_verdict(
+    readings: CampaignReadings,
+    aspects: Sequence[str],
+    names: AspectNames,
+    *,
+    bundles: Mapping[str, AnalysisContextBundle] | None = None,
+) -> str:
     """The verdict line of a campaign of several aspects, as code writes it: what code read on each aspect, as the
     campaign's page says it beside that aspect's fold, in the campaign's order — ``billing: v2 shown worse; tone: v2
     shown better``. Never the writer's words.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspects: The campaign's aspects' labels, in its order.
-    :ptype aspects: Sequence[str]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
+    :param bundles: Each aspect's evidence, by its label, which a measurement's words need (:func:`aspect_shows`).
     :return: The verdict line.
-    :rtype: str
     """
-    return "; ".join(f"{names(aspect)}: {aspect_shows(readings, aspect)}" for aspect in aspects)
+    held = bundles or {}
+    return "; ".join(
+        f"{names(aspect)}: {aspect_shows(readings, aspect, bundle=held.get(aspect))}" for aspect in aspects
+    )
 
 
 def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True) -> str | None:
@@ -1422,13 +1486,9 @@ def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True)
     whose campaign asks nothing, which says so once); None where no pair was read there.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :param marked: Whether a pair the question does not ask is marked a lead.
-    :ptype marked: bool
     :return: The words, or None.
-    :rtype: str | None
     """
     pairs = [pair for pair in readings.pairs if pair.aspect == aspect]
     return ", ".join(_pair_words(pair, marked=marked) for pair in pairs) or None
@@ -1471,17 +1531,11 @@ def pair_blocks(
     no separation; then the lines that change how a row reads.
 
     :param campaign: The campaign, a choice.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, the pairs and their lines.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
         no matrix is laid out.
     """
@@ -1554,9 +1608,11 @@ def pair_blocks(
     notes = [CHOICE_NOTE]
     if (guarantee := joint_guarantee(readings.alpha, len(levels))) is not None:
         # The package's own words state what the pairs' intervals guarantee together (owner ruling, level in
-        # headings): each pair's own step-down level is the Method's, never this line's.
+        # headings): each pair's own step-down level is the Method's, never this line's. Where the plan of looks they
+        # are read under is not shown to hold it, the level is stated with its condition.
         joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
-        notes.append(f"The intervals hold together at {joint}.")
+        unkept = _unkept(readings, reports)
+        notes += _plan_lines(joint, unkept, names, False) if unkept else [f"The intervals hold together at {joint}."]
     elif levels:
         notes.append(f"Each interval is read at {_level_text(forms, levels[0])}.")
     notes += [
@@ -1646,15 +1702,10 @@ def frontier_blocks(
     shown cheaper than the rest. A reading of the bundle's frontier, never a pick.
 
     :param campaign: The campaign, a choice.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :return: The lines, aspect by aspect.
-    :rtype: list[ReportBlock]
     """
     labels = readings.arm_labels()
     lines: list[ReportBlock] = []
@@ -1710,17 +1761,11 @@ def measure_blocks(
     than one test setup, each cell's apart.
 
     :param campaign: The campaign, a measurement.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, the measures and their lines.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell is given: a measurement's matrix has no arm columns to hold it.
     """
     rigs: dict[str, set[str]] = {}
@@ -1786,12 +1831,12 @@ def measure_blocks(
 
 def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
     """A measure as the page names it on its aspect, and as every other surface names it
-    (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its name on the aspect
+    (:func:`~threetears.evals.analysis.style.measure_name_of`): a goal check by its name on the aspect
     (declared, else what it tests), any other measure by its reader name; the pass rate as a name, capitalised as the
     others are (``Pass rate``)."""
     if reading.measure == PASSED_READING:
         name = reading_name(reports[reading.aspect].bundle, reading.measure)
-        return name[:1].upper() + name[1:]
+        return label_case(name)
     return measure_name_of(reports[reading.aspect].bundle, reading.measure)
 
 
@@ -1856,7 +1901,9 @@ def _measure_matrix(
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
                 found = [reading for reading in held if reading.measure == key]
-                cells[f"measure:{key}"] = _measure_cell(found, forms, rulers.get(key), counts=counts)
+                cells[f"measure:{key}"] = _measure_cell(
+                    found, forms, rulers.get(key), counts=counts, bundle=reports[aspect.label].bundle
+                )
             rows.append(cells)
     if len(arms) == 1:
         return _turned_matrix(
@@ -1952,6 +1999,7 @@ def _measure_cell(
     ruler: MoneyRuler | None = None,
     *,
     counts: Mapping[tuple[str, str, str], str] | None = None,
+    bundle: AnalysisContextBundle | None = None,
 ) -> TableCell:
     """One measure on one aspect: its value with its interval, a rate (a pass rate, an accuracy) in percent, money in
     its measure's one form on its ruler (``ruler``, per 1,000 replies as its header says), any other measure at its
@@ -1973,6 +2021,17 @@ def _measure_cell(
         if reading.passed is not None and reading.trials is not None
         else (counts or {}).get((reading.aspect, reading.arm, reading.measure))
     )
+    if (
+        reading.passed is not None
+        and bundle is not None
+        and count is not None
+        and not unread_arms(bundle.cells, reading.arm)
+    ):
+        # The pass rate is over the graded trials; the trials nothing graded are counted beside it, from the one owner
+        # the lead's count is said by, so the cell and the lead are one fact. Nothing beside a fully graded count.
+        board = next((board for board in bundle.scoreboard if board.variant_key == reading.arm), None)
+        if board is not None and (ungraded := not_graded_words(pass_count(bundle, board))):
+            count = f"{count}, {ungraded}"
     # Bare: a rate's head names its percent, and any other measure's head its name.
     if reading.interval is None:
         cell = TableCell(value=figure.held, value_text=figure.digits, flag=count)
@@ -1992,21 +2051,26 @@ def _measure_cell(
     return forms.of_measure(cell, measure=reading.measure, kind="measure")
 
 
-def measured_figure(reading: MeasureReading) -> str | None:
-    """One arm's pass rate as a sentence states it: the count it is computed over, ``reply passed 40 of 40 trials on
-    20 cases``, or ``reply passed 18 of 20 cases`` where each case ran once; None for a reading that is no pass rate,
-    or not read. The percent and its interval are the scorecard's, beside the same count, one step down: a sentence
+def measured_figure(reading: MeasureReading, bundle: AnalysisContextBundle) -> str | None:
+    """One arm's pass count as a sentence states it (:func:`~threetears.evals.analysis.report.verdict.passed_clause`,
+    the one-arm verdict line's own clause, as the aspect's page, its fold and the quick print say it): ``reply passed
+    18 of 20 cases``, over every trial that ran with those nothing graded beside it; None for a reading that is no
+    pass rate, or not read. The percent and its interval are the scorecard's, beside it, one step down: a sentence
     carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
 
     :param reading: The arm's reading.
-    :ptype reading: MeasureReading
+    :param bundle: The aspect's evidence, whose census counts every trial the arm ran.
     :return: The figure, as a clause with no closing stop, or None.
-    :rtype: str | None
     """
     if reading.value is None or reading.passed is None or reading.trials is None:
         return None
-    # The one-arm verdict line's own clause, as the aspect's page and the quick print say it.
-    return passed_clause(reading.arm_label, reading.passed, reading.trials, reading.cases)
+    if unread_arms(bundle.cells, reading.arm):
+        # A split arm has no one count (its cells keep two models or definitions apart); it has no reading either.
+        return None
+    board = next((board for board in bundle.scoreboard if board.variant_key == reading.arm), None)
+    if board is None:
+        return None
+    return passed_clause(reading.arm_label, pass_count(bundle, board))
 
 
 def _rate_counts(
@@ -2124,17 +2188,11 @@ def bar_threshold(
     4: ``92%``, never ``92.0%``), money in its ruler's form; held as a figure of its measure.
 
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :param ruler: The measure's ruler on its aspect's page.
-    :ptype ruler: MeasureRuler
     :param threshold: The threshold, as stored.
-    :ptype threshold: float
     :param measure: The measure's key.
-    :ptype measure: str
     :param kind: Its reading (``measure``, ``judged``).
-    :ptype kind: str
     :return: The cell.
-    :rtype: TableCell
     """
     if is_money(ruler.unit):
         return forms.ruled_level_cell(ruler, threshold, measure=measure, kind=kind)
@@ -2150,15 +2208,10 @@ def bar_blocks(
     nothing where no bar is declared.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The bars table, or nothing.
-    :rtype: list[ReportBlock]
     """
     if not readings.bars:
         return []

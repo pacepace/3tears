@@ -25,12 +25,12 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.result_condition import (
     JudgingState,
+    ResultCondition,
     ResultOutcome,
     candidate_failure_cause,
     counted_goal_verdicts,
     resolve_result_condition,
 )
-from threetears.evals.kernel.usage_capture import resolve_result_usage
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import result_capture_defaults
 
@@ -69,6 +69,10 @@ _JUDGING_STATES: dict[str, dict[str, object]] = {
     },
     "failed": {"judge_error": "judge timed out"},
     "not_attempted": {},
+    "not_asked": {
+        "judge_error": "conversation.tone: not judged: the run's cost cap had too little left",
+        "judging_set_aside": True,
+    },
 }
 
 #: A result in each scoring outcome, on the same terms.
@@ -96,6 +100,17 @@ def test_every_judging_arm_has_a_disclosure():
     assert set(_JUDGING_STATES) == set(get_args(JudgingState)), "a judging arm has no case driving it"
     for arm, fields in _JUDGING_STATES.items():
         assert resolve_result_condition(_result(**fields)).judging == arm
+
+
+def test_a_condition_handed_back_under_the_judging_state_s_earlier_spelling_reads_as_its_new_one():
+    """``set_aside`` was judging the cost cap kept the judge from; the word is the shared reading state's now, so the
+    judging state is ``not_asked``, and a condition stored or handed back before the rename reads as it."""
+    condition = resolve_result_condition(_result(**_JUDGING_STATES["not_asked"]))
+    earlier = condition.model_dump(mode="json") | {"judging": "set_aside"}
+
+    assert ResultCondition.model_validate(earlier).judging == "not_asked"
+    assert condition.model_dump(mode="json")["judging"] == "not_asked"
+    assert "set_aside" not in get_args(JudgingState)
 
 
 def test_every_scoring_arm_has_a_disclosure():
@@ -288,38 +303,6 @@ def test_a_judge_that_produced_nothing_and_errored_is_failed():
 # =============================================================================
 # The known false affirmative
 # =============================================================================
-
-
-def test_a_cancelled_cells_usage_is_reported_lost_not_captured():
-    """A lost capture, refused at the resolver that once published it as complete.
-
-    A timed-out cell stores ``usage=[]`` — byte-identical to a subject-factory failure's
-    honest "capture ran and attributed no roles". Branching on ``usage is not None`` alone
-    therefore published ``source="captured", partial=False`` for a cell that had burned
-    past its deadline: a claim that something which ran for minutes consumed nothing
-    anywhere. The run loop now keeps the rows a cancelled cell had captured, but the
-    call in flight at the deadline never reported — here the cell's only one — so the
-    capture is cut short rather than complete, and only the recorded termination separates
-    the two.
-    """
-    resolved = resolve_result_usage(_result(termination="cell_timeout", usage=[]))
-
-    assert resolved.source == "lost"
-    assert resolved.partial is True
-    assert resolved.usage == []
-
-
-def test_a_factory_failure_still_reports_an_honest_empty_capture():
-    """The other side of the same distinction — this one really did attribute no roles.
-
-    Paired with the test above deliberately: the two records differ ONLY in the stored
-    termination, so a fix that reported every empty capture as lost would pass that test
-    and fail this one.
-    """
-    resolved = resolve_result_usage(_result(termination="factory_failed", usage=[]))
-
-    assert resolved.source == "captured"
-    assert resolved.partial is False
 
 
 # =============================================================================

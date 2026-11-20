@@ -1,13 +1,18 @@
 """What reading a figure key twice on one report input holds to: the same answer, and nothing kept past the input.
 
 Contracts held here (``threetears.evals.analysis.report.figure_keys.resolve``, which keeps each input's figures and
-refusals once read):
+refusals once read, and ``PageForms.of`` and ``page_arm_names``, which keep each input's forms and arm names on the
+same values kept per input):
 
 - **a refusal reads alike every time**: a key refused twice on one input raises the same type (an unstated figure
   apart from a key that names nothing, which a listing reads as absent) with the same message, the same cause and the
   same choice of showing its context;
 - **nothing keeps an input alive**: an input that read a figure and a refused key is freed once dropped;
-- **an input is its own**: an input made where a dropped one was read reads its own figures, never the dropped one's.
+- **an input is its own**: an input made where a dropped one was read reads its own figures, forms and arm names,
+  never the dropped one's;
+- **a page is its own**: two pages of one input keep their own ledgers, a caller's arm names are its own copy, and a
+  gate check on a page's forms records its reasons there every time (``gate_check`` keeps only a check read off any
+  page).
 """
 
 from __future__ import annotations
@@ -16,9 +21,14 @@ import gc
 import weakref
 from typing import Any
 
+import pytest
+
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.gates import gate_check
+from threetears.evals.analysis.report.keys.names import page_arm_names
 from threetears.evals.analysis.report_input import ReportInput
 
 #: A key r2 leaves unstated, refused with a cause: the arm states no spread on the measure.
@@ -95,3 +105,61 @@ def test_an_input_made_where_a_dropped_one_was_reads_its_own_figures() -> None:
         assert resolve(path, held).value == 10.0 + step / 8, step
         del held
     assert reused, "the control: some input was made where a dropped one had been"
+
+
+def test_an_input_whose_forms_and_arm_names_were_read_is_freed_once_dropped() -> None:
+    held = _copy_of_r2()
+    PageForms.of(held)
+    page_arm_names(held)
+    gone = weakref.ref(held)
+    del held
+    gc.collect()
+    assert gone() is None, "a page's forms or arm names keep their report input alive"
+
+
+def test_an_input_made_where_a_dropped_one_was_reads_its_own_forms_and_arm_names() -> None:
+    document = fixture_inputs()["r2"].model_dump(mode="json", by_alias=True)
+    seen: set[int] = set()
+    reused = 0
+    for step in range(100):
+        document["measures"]["calls_per_task"]["unit"] = f"calls-{step}"
+        document["arms"][0]["short_name"] = f"first-{step}"
+        held = ReportInput.model_validate(document)
+        reused += id(held) in seen
+        seen.add(id(held))
+        assert PageForms.of(held).measure("calls_per_task").unit == f"calls-{step}", step
+        assert page_arm_names(held)[held.arms[0].id] == f"first-{step}", step
+        del held
+    assert reused, "the control: some input was made where a dropped one had been"
+
+
+def test_each_page_of_one_input_keeps_its_own_ledger_and_names() -> None:
+    held = _copy_of_r2()
+    first, second = PageForms.of(held), PageForms.of(held)
+    key, arm = _first_mean(held)
+    first.level(key, held.measures[key].per_arm[arm].mean)
+    assert first.ledger and not second.ledger, "two pages of one input share a ledger"
+    names = page_arm_names(held)
+    names[held.arms[0].id] = "renamed"
+    assert page_arm_names(held)[held.arms[0].id] != "renamed", "a caller's names changed the input's"
+
+
+def test_a_gate_check_on_a_pages_forms_records_its_reasons_every_time_and_one_off_any_page_reads_alike() -> None:
+    held = _copy_of_r2()
+    arm = "atlas-m.off.r0"
+    page = PageForms.of(held)
+    first = gate_check(held, arm, forms=page)
+    printed = len(page.ledger)
+    second = gate_check(held, arm, forms=page)
+    assert first.status == "fail" and printed, "the control: the check fails on a figure the page prints"
+    assert len(page.ledger) == 2 * printed, "a check on a page's forms skipped recording its reasons"
+    off_page = gate_check(held, arm)
+    assert off_page is gate_check(held, arm), "a check read off any page was read again"
+    assert off_page == first == second
+
+
+def test_a_gate_check_at_a_place_the_input_does_not_hold_is_refused_every_time() -> None:
+    held = _copy_of_r2()
+    for _ in range(2):
+        with pytest.raises(ValueError, match="no task"):
+            gate_check(held, "atlas-m.off.r0", task="no-such-task")

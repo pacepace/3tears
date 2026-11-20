@@ -32,6 +32,7 @@ from threetears.evals.kernel.scoring import (
     result_composite,
 )
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import Coordinate, StateOf
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -67,6 +68,7 @@ from threetears.evals.analysis.lenses.contestants import (
     ContestantKey,
 )
 from threetears.evals.analysis.bundle.measures import in_population
+from threetears.evals.analysis.bundle.observations import split_coordinates
 from threetears.evals.kernel.metrics import summary_population
 from threetears.evals.analysis.stats import (
     EQUIVALENCE_TEST_NAME,
@@ -102,11 +104,11 @@ log = get_logger(__name__)
 # dimension or one check, so there is no single per-run value to plot, while each axis above is
 # one value per result.
 #: The measures `history` can series; any other is refused rather than answered with an empty series.
-HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
+_HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
 
-if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cover - import-time invariant
+if set(_METRIC_GLOSS) != PROJECTED_METRICS | _HISTORY_METRICS:  # pragma: no cover - import-time invariant
     raise RuntimeError(
-        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | HISTORY_METRICS))}"
+        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | _HISTORY_METRICS))}"
     )
 
 
@@ -134,11 +136,9 @@ def _unknown_history_metric(metric: str) -> HistoryError:
     alternatives left the caller to infer that, which reads as "not implemented yet".
 
     :param metric: The measure the caller asked to series.
-    :ptype metric: str
     :return: The refusal, ready to raise.
-    :rtype: HistoryError
     """
-    expected = f"expected one of {_metric_vocabulary(HISTORY_METRICS)}"
+    expected = f"expected one of {_metric_vocabulary(_HISTORY_METRICS)}"
     resolved = resolve_measure_name(metric)
     if resolved in SCOPED_METRICS and resolved != METRIC_SCORE:
         scope_field, scope_noun, _row_noun = SCOPED_METRICS[resolved]
@@ -188,9 +188,7 @@ def _attribution_withheld(descriptor: MetricDescriptor) -> bool:
 
     :param descriptor: The measure the series reports — the AGGREGATE descriptor, since
         that is what a point holds.
-    :ptype descriptor: MetricDescriptor
     :return: Whether a verdict on this measure must decline to attribute the move.
-    :rtype: bool
     """
     return descriptor.transferability_class == "scenario_bound"
 
@@ -203,9 +201,7 @@ def _attribution_disclosure(descriptor: MetricDescriptor) -> str | None:
     :func:`_unknown_history_metric` is shared for its refusal.
 
     :param descriptor: The aggregate descriptor the series reports.
-    :ptype descriptor: MetricDescriptor
     :return: The sentence, or ``None`` when the measure's verdicts carry no such limit.
-    :rtype: str | None
     """
     if not _attribution_withheld(descriptor):
         return None
@@ -311,8 +307,8 @@ class SeriesPoint(EvalBaseModel):
     suite-version boundary, and ``epoch_boundary`` marks the point where the suite
     changed — so a step caused by the denominator changing does not read as a
     regression. ``delta_from_baseline`` is the descriptive red/green move from the
-    series' first point; ``regression`` is the statistical verdict versus the
-    immediately preceding point.
+    first point of its stretch (the series' first point, or the first after a boundary ``split_on`` marks);
+    ``regression`` is the statistical verdict versus the immediately preceding point.
     """
 
     run_id: str
@@ -364,6 +360,17 @@ class SeriesPoint(EvalBaseModel):
     #: because a floating alias can resolve to a different model between two runs of one contestant, and the step
     #: between them then reads as a change in the contestant. ``None`` when no result's candidate made a call.
     served_models: ServedModelReading | None = None
+    #: The coordinates of its identity this point's run is apart from the previous point's run on, as a campaign's
+    #: cells keep runs apart (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): answered by
+    #: another model, or read under another definition of a host measure, or either left unrecorded on one of the two
+    #: (an unrecorded coordinate matches nothing). A boundary the series marks and is not read across: the step into
+    #: this point has no ``regression``, and this point starts a stretch, its own baseline. On a point whose own run
+    #: is split (two models answered it, say), its value is withheld too, since it would pool them. Empty, and left
+    #: out of a dump, where nothing separates the two.
+    split_on: list[Coordinate] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: The state of the step into this point where it is not read: ``withheld``, ``split``, on the first coordinate
+    #: of ``split_on``. ``None`` where the step is read, or there is none.
+    state: StateOf | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MeasureSeries(EvalBaseModel):
@@ -380,6 +387,10 @@ class MeasureSeries(EvalBaseModel):
     scored against; an identity bump may have moved what the contestant *is*, and the stamp
     cannot say whether it did — so holding both versions in one series would assert a
     continuity nothing can verify, in the one place a reader reads continuity.
+
+    A change of served model or of a host measure's definition between two runs, or either left unrecorded, is a
+    boundary inside the series (:attr:`SeriesPoint.split_on`): marked, with no verdict across it and a fresh
+    baseline after it, never pooled into one step and never a reason to withhold the rest of the series.
     """
 
     subject_id: str
@@ -468,12 +479,10 @@ class HistoryResult(EvalBaseModel):
 def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
     """Pick the per-result value extractor for a history measure.
 
-    :param metric: A measure in :data:`HISTORY_METRICS`.
-    :ptype metric: str
+    :param metric: A measure in :data:`_HISTORY_METRICS`.
     :return: A callable reading the measure off one result, ``None`` when this result
         did not carry it — a null that the aggregation drops rather than counts as
         zero, so an unmeasured latency never reads as instant.
-    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The metric is not one this surface can series. Unreachable
         when :func:`compute_history` validated first; kept as the honest total answer.
     """
@@ -507,10 +516,8 @@ def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
             """Read one dual-score axis off a result, or ``None`` where it is not a measurement.
 
             :param result: The observation to read.
-            :ptype result: ResultView
             :return: The raw 1-5 score, or ``None`` when the axis was not judged, was
                 mis-stamped, or the cell was an apparatus failure.
-            :rtype: float | None
             """
             # Named attributes rather than a computed one: this pair is read the same way
             # in `project_score_records`, and a `getattr` by string puts a rename of either
@@ -559,9 +566,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[ResultView
     cell the harness faulted is never in it. A ``bool`` counts as 1 or 0.
 
     :param descriptor: The host's descriptor of the measure.
-    :ptype descriptor: MetricDescriptor
     :return: The per-result reader, ``None`` where the result carries no number for the measure.
-    :rtype: Callable[[ResultView], float | None]
     :raises HistoryError: The measure is not numeric, or declares no direction — a series could not say which
         way a step is a decline.
     """
@@ -597,12 +602,9 @@ def _per_case_means(
     dropped, so a case counts only where it was actually measured.
 
     :param results: One contestant's results within one run.
-    :ptype results: Sequence[ResultView]
     :param value_of: The measure extractor from :func:`_history_value_of`.
-    :ptype value_of: Callable[[ResultView], float | None]
     :return: ``(per_case_mean, n_observations)`` — the per-case means keyed by
         ``test_case_id``, and how many observations carried a value.
-    :rtype: tuple[dict[str, float], int]
     """
     by_case: dict[str, list[float]] = {}
     for result in results:
@@ -625,10 +627,8 @@ def _suite_epoch_key(run: EvalRun) -> str:
     denominator changing, not necessarily the contestant regressing.
 
     :param run: The run whose suite identity to key.
-    :ptype run: EvalRun
     :return: The run's :func:`~threetears.evals.kernel.identity.case_set_fingerprint`, the one comparison of case
         sets every surface makes.
-    :rtype: str
     """
     return case_set_fingerprint(run)
 
@@ -640,9 +640,7 @@ def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, Eval
     holding identical ids — keeps no label: the name would describe only some of its points.
 
     :param points: One series' points, in order, epochs already numbered.
-    :ptype points: list[SeriesPoint]
     :param runs: The series' runs by id.
-    :ptype runs: Mapping[str, EvalRun]
     """
     by_epoch: dict[int, set[CaseSetRef | None]] = {}
     for point in points:
@@ -701,39 +699,29 @@ def compute_history(
     not share. The predicate is the completeness record, never the status.
 
     :param runs: The runs supplying subject identity, suite set, and timestamps.
-    :ptype runs: list[EvalRun]
     :param results: The observations to series.
-    :ptype results: Sequence[ResultView]
-    :param metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
+    :param metric: A measure in :data:`_HISTORY_METRICS`, or the registry name of its
         aggregate as ``list_metrics`` publishes it (``mean_composite`` for
         ``composite``, and so on through
         :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
         numeric, directional measure the host declares (a quick-path scorer's name),
         read off each result's ``host_measures``. Defaults to composite quality.
-    :ptype metric: str
     :param min_absolute_change: Smallest absolute move that counts as a regression,
         in the measure's own unit. ``0.0`` lets significance alone flag.
-    :ptype min_absolute_change: float
     :param min_relative_change: Smallest move relative to the baseline that counts, as
         a fraction. ``0.0`` lets significance alone flag.
-    :ptype min_relative_change: float
     :param subject_id: When set, restrict to this subject; others are counted as
         ``n_filtered_out`` rather than dropped silently.
-    :ptype subject_id: str | None
     :param known_run_ids: Every run id in the corpus, so a result excluded by the
         caller's own run filter is counted filtered-on-request rather than
         unplaceable. See :func:`project_score_records`.
-    :ptype known_run_ids: set[str] | None
     :param archived_run_ids: The corpus run ids the operator has archived, so an
         archival exclusion is counted as ``results_from_archived_runs``
         rather than under the caller's ``status`` filter. See
         :func:`place_results`.
-    :ptype archived_run_ids: set[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`HistoryResult` — one :class:`MeasureSeries` per contestant,
         sorted by subject then model then variant then identity version, plus corpus-level accounting.
-    :rtype: HistoryResult
     :raises HistoryError: ``metric`` is not one this surface can series — refused
         before any row is read, so a typo cannot return an empty series that
         reads like a measure nobody recorded.
@@ -746,8 +734,8 @@ def compute_history(
     # name is the wrong thing to quote back.
     requested = metric
     metric = resolve_measure_name(metric)
-    declared = None if metric in HISTORY_METRICS else profile.measures.get(metric)
-    if metric not in HISTORY_METRICS and declared is None:
+    declared = None if metric in _HISTORY_METRICS else profile.measures.get(metric)
+    if metric not in _HISTORY_METRICS and declared is None:
         raise _unknown_history_metric(requested)
 
     if declared is not None:
@@ -756,7 +744,7 @@ def compute_history(
     else:
         value_of = _history_value_of(metric)
         descriptor = _describe_aggregate(metric, profile=profile)
-    # Every HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
+    # Every _HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
     # asserting an impossible None away.
     direction = descriptor.higher_is_better if descriptor.higher_is_better is not None else True
     # Decided from the descriptor once, before any row is read, so a corpus that yields no
@@ -818,6 +806,7 @@ def compute_history(
         ordered_run_ids = sorted(runs_in_series, key=lambda run_id: (runs_in_series[run_id].created_at, run_id))
 
         points: list[SeriesPoint] = []
+        prev_run_id: str | None = None
         prev_epoch_key: str | None = None
         prev_per_case: dict[str, float] = {}
         epoch_ordinal = 0
@@ -826,8 +815,16 @@ def compute_history(
             run = runs_in_series[run_id]
             per_case, n_observations = _per_case_means(rows_by_run[run_id], value_of)
             case_means = list(per_case.values())
-            value = math.fsum(case_means) / len(case_means) if case_means else None
-            sem = standard_error_of_mean(case_means)
+            # A run that is itself split (two models answered it) has no one value: its mean would pool them.
+            mixed = split_coordinates([run], rows_by_run[run_id])
+            value = math.fsum(case_means) / len(case_means) if case_means and not mixed else None
+            sem = standard_error_of_mean(case_means) if not mixed else None
+            # A change of identity coordinate between this run and the last is a boundary, read as the cells read it.
+            split_on = (
+                split_coordinates([runs_in_series[prev_run_id], run], rows_by_run[prev_run_id] + rows_by_run[run_id])
+                if prev_run_id is not None
+                else mixed
+            )
 
             epoch_key = _suite_epoch_key(run)
             boundary = index > 0 and epoch_key != prev_epoch_key
@@ -835,7 +832,7 @@ def compute_history(
                 epoch_ordinal += 1
 
             regression: RegressionFlag | None = None
-            if index > 0:
+            if index > 0 and not split_on:
                 # Compared against the immediately preceding run, because that is the pair
                 # the flag is about. A series-level "these modes differ" would be true of
                 # the whole series and would not say WHICH step crossed — the same reason
@@ -875,7 +872,7 @@ def compute_history(
                     min_relative_change=min_relative_change,
                 )
 
-            if index == 0:
+            if index == 0 or split_on:
                 baseline_value = value
             delta_from_baseline = value - baseline_value if (value is not None and baseline_value is not None) else None
 
@@ -890,7 +887,7 @@ def compute_history(
                     n_cases=len(per_case),
                     epoch=epoch_ordinal,
                     epoch_boundary=boundary,
-                    is_baseline=index == 0,
+                    is_baseline=index == 0 or bool(split_on),
                     delta_from_baseline=delta_from_baseline,
                     regression=regression,
                     # Only the cost series has a composition; asking a latency or quality
@@ -913,8 +910,11 @@ def compute_history(
                     # predicate and cannot disagree about which runs were short.
                     completeness_disclosure=degraded_by_run.get(run_id),
                     served_models=pooled_served_models(rows_by_run[run_id]),
+                    split_on=split_on,
+                    state=StateOf(state="withheld", reason="split", coordinate=split_on[0]) if split_on else None,
                 )
             )
+            prev_run_id = run_id
             prev_epoch_key = epoch_key
             prev_per_case = per_case
 
@@ -976,7 +976,6 @@ def compute_history(
 
 __all__ = [
     "compute_history",
-    "HISTORY_METRICS",
     "HistoryError",
     "HistoryResult",
     "MeasureSeries",

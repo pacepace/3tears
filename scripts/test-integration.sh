@@ -45,6 +45,7 @@ cd "$REPO_ROOT"
 HERE_FILES=(
     packages/datasources/tests/integration/test_redshift_driver_live.py
     packages/datasources/tests/integration/test_transaction_redshift_live.py
+    packages/evals/tests/test_onramp_isolation.py
     packages/models/tests/live/test_claude_cli_structured_output_live.py
     packages/nats/tests/integration/test_lame_duck_handover_live.py
     packages/scrape/tests/integration/test_operator_pipe_sidecar.py

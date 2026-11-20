@@ -1,0 +1,1 @@
+The returns portal rejected valid returns for two days. Customers with orders placed before 31 Dec. were told their order was too old, because the age check used the wrong field. About 450 customers were turned away. The check was fixed on Tuesday at 12:00 and support emailed everyone who had been refused.

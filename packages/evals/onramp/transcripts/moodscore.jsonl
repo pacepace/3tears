@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "sentiment.py"}
+{"tool": "read", "path": "data/rated_reviews.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom sentiment import score\n\ndef rate_review(case):\n    \"\"\"The dashboard's score for the review.\"\"\"\n    return {\"score\": score(case[\"text\"])}\n\n\ndef agrees_with_panel(case, out):\n    \"\"\"The score is within 0.25 of the panel's mean rating, as the README counts agreement.\"\"\"\n    return abs(out[\"score\"] - case[\"panel\"]) <= 0.25 + 1e-9\n\nreviews = Eval(\"data/rated_reviews.jsonl\", runner=rate_review, grader=[agrees_with_panel], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"agrees_with_panel\", \"pass_rate\": 0.6939, \"finished\": true}"}

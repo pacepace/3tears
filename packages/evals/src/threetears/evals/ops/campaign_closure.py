@@ -1,13 +1,13 @@
 """One campaign's closure, exported as the three files a writer case is minted from: the mint's producer.
 
 A host mints a held-out writer case from one of its own campaigns
-(:func:`~threetears.evals.harness.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
+(:func:`~threetears.evals.harness.minting.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
 files. :func:`campaign_export` assembles them, read-only, from the host's store:
 
 - ``documents``: every stored document reachable from the campaign, verbatim as the store returns it (each keeps its
   ``id``, ``scope_id`` and ``doc_type``), each ``(doc_type, id)`` once, in ``(doc_type, id)`` order;
 - ``profile``: the host's declarations (:class:`ProfileDeclaration`), with ``host_declarations_digest``
-  (:func:`~threetears.evals.analysis.host_declarations_digest`, the digest every analysis bundle records) and
+  (:func:`~threetears.evals.analysis.bundle.schema.host_declarations_digest`, the digest every analysis bundle records) and
   ``built_by``, the ``module:callable`` the profile came from, as provenance: the mint checks the digest and never
   imports ``built_by``, since its operator names the factory;
 - ``manifest``: the documents that reasoned on the campaign (so a case withholds the notes they lead to), the count of
@@ -21,7 +21,7 @@ campaign minted it, because an analysis reads insights by subject; and the launc
 the campaign's runs are found by a whole-type scan, since a store compares scalar fields only (and a judge config's
 rubric dim by the dim's nested name, the same way). A run and a result record their judges in two forms under one field
 name: a run the bare config id it committed to, a result the configured judge's identity, ``<config id>@<sha12>``, read
-by the package's own reader (:func:`~threetears.evals.schema.judge_config_of`), or a built-in prompt's
+by the package's own reader (:func:`~threetears.evals.schema.models.judge_config_of`), or a built-in prompt's
 ``builtin:<sha12>``. A run's built-in dim has no key (``RunJudge.config_ids``); a ``builtin:`` value on a run names no
 config and is listed with the built-in identities, never refused. A value in the other document type's form, or one the reader refuses, is refused here, naming
 the document and the form its type records. The manifest states every rule (``closure_rules``), and the types no
@@ -42,8 +42,13 @@ chunk of whole documents: a field read fetches ids first, every other field its 
 the documents a chunk at a time, so those reads leave a refused call holding the ceiling and one chunk. The three
 whole-type scans (rubric dims, launches, judge profiles) are outside that bound: each reads its small type whole in
 one read, however many documents it holds, and only the documents a scan keeps are counted. The command line and the function, which
-read the closure once in a process of their own, hold no ceiling and read each type in one read. Pages are not a snapshot: a write between two calls can drop a document or move the manifest, and the
-manifest's ``closure_keys_digest`` then differs from the first page's.
+read the closure once in a process of their own, hold no ceiling and read each type in one read.
+
+Pages are not a snapshot: a write between two calls can drop a document from the join or move the manifest. The
+manifest's ``closure_keys_digest`` hashes the closure's ``(doc_type, id)`` keys, not its documents, so it detects a
+document added, removed or replaced under another id between two calls, and a page whose digest differs from the first
+page's was read after the closure moved. It does not detect a document edited in place under its own id: an equal
+digest says the closure holds the same documents by key, not that none of them changed.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel import MeasureFamily, MetricDescriptor
 from threetears.evals.kernel.build_stamp import package_version
@@ -62,7 +67,9 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.storage import UnreadableRecordError
 from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThreshold
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
-from threetears.evals.schema import DOC_TYPE_FACTS, is_builtin_judge_config_id, judge_config_of
+from threetears.evals.schema import DOC_TYPE_FACTS
+from threetears.evals.schema.models import is_builtin_judge_config_id, judge_config_of
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.campaign import (
@@ -108,6 +115,7 @@ _CHUNK: Final = 16
 _BEYOND_ID: Final[Mapping[str, tuple[str, ...]]] = {
     str(model.model_fields["doc_type"].default): tuple(field for field in model.model_fields if field != "id")
     for model in (
+        BlindRead,
         CalibrationRating,
         CaseSet,
         EvalAnalysis,
@@ -366,7 +374,6 @@ class CampaignExport(BaseModel):
         """The three files the mint reads, by name: each canonical JSON (sorted keys, no incidental whitespace).
 
         :return: ``documents.json``, ``profile.json`` and ``manifest.json``, each its bytes.
-        :rtype: dict[str, bytes]
         :raises ValueError: This is one page of a paged export, which holds only part of the documents.
         """
         if self.page is not None:
@@ -594,6 +601,8 @@ def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> No
         closure.where("eval_second_judge_pass", run_id=run_id)
         closure.where("eval_judge_temperature_check", run_id=run_id)
         closure.where("eval_out_of_run_spend", run_id=run_id)
+    # The blind reads drawn over the campaign: what people answered of its outputs, and what the reads found.
+    closure.where("blind_read", campaign_id=campaign["id"])
 
     # Definitions the runs ran: templates, cases, case sets, judge configs and their rubric dims, cassettes.
     case_sets: list[dict[str, Any]] = []
@@ -798,29 +807,20 @@ def campaign_export(
     case is minted from.
 
     :param host: The host whose store holds the campaign, and whose profile its runs were measured under.
-    :ptype host: EvalHost
     :param scope_id: The scope the campaign lives in.
-    :ptype scope_id: str
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param built_by: Provenance: the ``module:callable`` ``host``'s profile (or ``host``) comes from, recorded in the
         profile; ``None`` to name none. The mint never imports it: its operator names the factory (``--host``).
-    :ptype built_by: str | None
     :param paged: Read one page of the export (:class:`CampaignExportPage`) rather than all of it.
-    :ptype paged: bool
     :param after_doc_type: With ``paged``, the previous page's ``next_after_doc_type``; ``None`` for the first page.
-    :ptype after_doc_type: str | None
     :param after_document_id: With ``paged``, the previous page's ``next_after_document_id``.
-    :ptype after_document_id: str | None
     :param max_bytes: The most bytes of canonical JSON (ASCII, so its characters; a decoded document takes several
         times that on the heap) the kept documents may total, counted as they are gathered, a chunk at a time, and
         refused the moment the total passes; ``None``, the default, for no ceiling. The ``campaign_export``
         action passes its host's (:attr:`~threetears.evals.ops.OpsHost.campaign_export_max_bytes`), since it reads the
         whole closure on every page call; a process exporting once passes none.
-    :ptype max_bytes: int | None
     :return: The export: every document in ``(doc_type, id)`` order (one page of them, when paged and more than one
         page's worth), the profile's declaration, the manifest.
-    :rtype: CampaignExport
     :raises NotFoundError: No campaign of that id in the scope.
     :raises ValidationFailedError: ``built_by`` is not ``module:callable``, a cursor is given without ``paged``,
         half of one, or with a type the engine does not store, or the closure passes ``max_bytes``.

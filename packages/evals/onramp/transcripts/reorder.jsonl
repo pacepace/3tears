@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "stockroom.py"}
+{"tool": "read", "path": "data/stock_review.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom stockroom import Line, order_quantity, reorder_point\n\nFIELDS = (\"sku\", \"name\", \"sold\", \"window_days\", \"lead_days\", \"safety_days\", \"on_hand\", \"on_order\", \"pack\")\n\n\ndef review(case):\n    \"\"\"The line's reorder point and today's order, as the sheet works them out.\"\"\"\n    line = Line(**{field: case[field] for field in FIELDS})\n    return {\"point\": reorder_point(line), \"order\": order_quantity(line)}\n\n\ndef matches_sheet(case, out):\n    \"\"\"The reorder point and the order are the buyer's spreadsheet's.\"\"\"\n    return (out[\"point\"], out[\"order\"]) == (case[\"sheet_reorder_point\"], case[\"sheet_order\"])\n\nreview_sheet = Eval(\"data/stock_review.jsonl\", runner=review, grader=[matches_sheet], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_sheet\", \"pass_rate\": 0.2273, \"finished\": true}"}

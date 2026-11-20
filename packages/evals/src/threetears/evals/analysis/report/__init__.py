@@ -21,10 +21,8 @@ Hosts import these from :mod:`threetears.evals.analysis`, the public root.
 
 from __future__ import annotations
 
-from threetears.evals.analysis.report.build import (
-    NO_ANALYSIS,
-    build_code_only_report,
-)
+from threetears.evals.analysis.report.aspect.method import NO_ANALYSIS
+from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.campaign_page import build_campaign_report
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,

@@ -246,10 +246,18 @@ def code_html(text: str) -> str:
 _EXPRESSION_CHARS = 60
 
 
+#: The mark a table sets before the control's name (``▸ production``), as its cell or header text writes it.
+_CONTROL_MARK = "▸ "
+
+#: The mark as a page's HTML lays it out: a no-break space keeps it on its name's line, so a narrowed column wraps the
+#: name, never the mark alone above it (#1136). The stored text keeps its plain space, which a program reads.
+_CONTROL_MARK_KEPT = "▸&nbsp;"
+
+
 def _cell_code(text: str) -> str:
     """A cell's or a header's text escaped, its code spans set as code, each longer than :data:`_EXPRESSION_CHARS`
     shown by its start and a visible ellipsis, the whole of it in a fold that opens in place. Never shortened silently:
-    the whole expression is in the page."""
+    the whole expression is in the page. A control's mark stays on its name's line (:data:`_CONTROL_MARK_KEPT`)."""
 
     def span(match: re.Match[str]) -> str:
         whole = match.group(1)
@@ -258,7 +266,8 @@ def _cell_code(text: str) -> str:
         start = escape(html.unescape(whole)[:_EXPRESSION_CHARS].rstrip())
         return f'<details class="expr"><summary><code>{start}…</code></summary><code>{whole}</code></details>'
 
-    return _CODE.sub(span, escape(text))
+    shown = _CODE.sub(span, escape(text))
+    return _CONTROL_MARK_KEPT + shown.removeprefix(_CONTROL_MARK) if shown.startswith(_CONTROL_MARK) else shown
 
 
 def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
@@ -278,11 +287,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     ``highlighted`` is the kit's highlighted row (``tr.hl``): the one a page sets apart, as the recommendation.
 
     :param block: The table.
-    :ptype block: TableBlock
     :param highlighted: The positions of the rows set apart; none by default.
-    :ptype highlighted: Collection[int]
     :return: The table's markup.
-    :rtype: str
     """
     scales = _glyph_scales(block)
     # A stored table holds no page's forms, so its glyphs' titles and the line under it ask forms of their own.
@@ -409,7 +415,6 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], _Scale]:
     (``MetricDescriptor.nonnegative``), so nothing here may say it cannot be.
 
     :return: ``{(column key, cell unit): scale}``, for the columns with a cell carrying an interval.
-    :rtype: dict[tuple[str, str], _Scale]
     """
     headers = {column.key: column.header for column in block.columns}
     ends: dict[tuple[str, str], list[float]] = {}
@@ -550,9 +555,7 @@ def _unbroken(text: str) -> bool:
     other cell wraps at its spaces and after its hyphens, never inside a word.
 
     :param text: The cell's text, as served.
-    :ptype text: str
     :return: Whether the cell is id-like.
-    :rtype: bool
     """
     return any(len(run) > _UNBROKEN_CHARS for run in _WRAP_AT.split(text))
 
@@ -587,9 +590,7 @@ def held_whole(markup: str) -> str:
     in a frame that scrolls anyway.
 
     :param markup: The cell's markup, as built.
-    :ptype markup: str
     :return: The same markup with its hyphenated words held whole.
-    :rtype: str
     """
     out, code = [], 0
     for part in _TAG.split(markup):
@@ -604,10 +605,13 @@ def held_whole(markup: str) -> str:
 def _id_span(match: re.Match[str]) -> str:
     """One hyphenated word, held on one line where the cap can hold it."""
     word = match.group(0)
+    # The control's mark is no part of the word: it stays before the span, held to it by its no-break space.
+    mark = _CONTROL_MARK_KEPT if word.startswith(_CONTROL_MARK_KEPT) else ""
+    word = word.removeprefix(mark)
     chars = len(html.unescape(word))
     if chars > _ONE_WORD_CHARS:
-        return word
-    return f'<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
+        return mark + word
+    return f'{mark}<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
 
 
 #: The widths a pinned column is laid out at, estimated from its text, in rem: its floor and its cap; the width a
@@ -653,11 +657,8 @@ def _lines_rem(block: TableBlock, key: str) -> float | None:
     columns past it never crush, so a long label reads in three lines in a host's 688 px frame, not five.
 
     :param block: The table, keyed by one column.
-    :ptype block: TableBlock
     :param key: The pinned column's key.
-    :ptype key: str
     :return: The width, to two places, or ``None``.
-    :rtype: float | None
     """
     low, high = _KEY_REM
     at_floor = int((low - _CELL_PAD_REM) / _CELL_REM_PER_CHAR)
@@ -703,9 +704,7 @@ def _head_width(header: str) -> str:
     the header wraps as its column needs. Empty for a header the floor sets in that many lines already.
 
     :param header: The column's header, as declared.
-    :ptype header: str
     :return: `` style="--head:<rem>rem"``, or empty.
-    :rtype: str
     """
     words = header.split()
     at_floor = int((_HEAD_FLOOR_REM - _CELL_PAD_REM) / _HEAD_REM_PER_CHAR)
@@ -724,11 +723,8 @@ def _id_rem(block: TableBlock, key: str) -> float | None:
     beside it, between the floor and the cap; ``None`` for a column with no such word.
 
     :param block: The table.
-    :ptype block: TableBlock
     :param key: The pinned column's key.
-    :ptype key: str
     :return: The width, to two places, or ``None``.
-    :rtype: float | None
     """
     widths = [
         len(word) * _CELL_REM_PER_CHAR + (_CHIP_REM if row[key].tag is not None else 0.0)
@@ -750,9 +746,7 @@ def _key_rem(block: TableBlock) -> float:
     of holding the cap.
 
     :param block: The table, keyed by two columns.
-    :ptype block: TableBlock
     :return: The first column's width, in rem, to two places.
-    :rtype: float
     """
     first = block.columns[0]
     cells = [
@@ -985,11 +979,8 @@ def check_header_links(markup: str, names: Sequence[str]) -> str:
     ``seen`` (:func:`_seen_header_links`), so a term's dotted underline marks its first header alone.
 
     :param markup: The page's markup.
-    :ptype markup: str
     :param names: The checks' names the page defines.
-    :ptype names: Sequence[str]
     :return: The markup, each such header linked.
-    :rtype: str
     """
     named = [(name, re.compile(rf"{re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?", re.S)) for name in names]
 
@@ -1072,11 +1063,8 @@ def pill_html(status: ChartStatus, markup: str) -> str:
     ``markup``, the word, already escaped.
 
     :param status: The status: the pill's colour and icon.
-    :ptype status: ChartStatus
     :param markup: The word the pill says, as HTML this package wrote (escaped text).
-    :ptype markup: str
     :return: The pill.
-    :rtype: str
     """
     return f'<span class="pill {status}"><span aria-hidden="true">{_PILL_ICONS[status]}</span>{markup}</span>'
 

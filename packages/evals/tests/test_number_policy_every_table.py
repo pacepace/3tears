@@ -23,7 +23,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.report_doc_support import converted_doc, snapshot_of
 from threetears.evals import Eval
-from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaign_report_markdown
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.campaign_readings import MeasureReading
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart
@@ -238,17 +239,17 @@ def _kairo_chart(block: str, query: dict[str, object]) -> list[str]:
 
 def test_a_change_chart_over_contrasts_names_its_unit_in_its_values_table() -> None:
     """Diverging bars over the contrasts, a change in points under a ``+num`` format: the values table writes ``pts``
-    on each change and once after its interval, never ``-8 | -13 to -2``."""
+    on each change and once after its interval, never ``-7.6 | -12.9 to -1.8``."""
     rows = _kairo_chart(
         "diverging_bars",
         {"source": "contrasts", "aspect": "character adherence (v2)", "measures": ["passed"], "arms": [], "strata": []},
     )
     assert rows and all(" pts | " in row for row in rows), rows
-    assert any("| -8 pts | -13 to -2 pts |" in row for row in rows), rows
+    assert any("| -7.6 pts | -12.9 to -1.8 pts |" in row for row in rows), rows
 
 
 def test_a_change_chart_over_strata_names_its_unit_in_its_values_table() -> None:
-    """Diverging bars over strata: each stratum's change reads ``-23 pts``, never a bare ``-23``."""
+    """Diverging bars over strata: each stratum's change reads ``-22.9 pts``, never a bare ``-22.9``."""
     rows = _kairo_chart(
         "diverging_bars",
         {
@@ -259,7 +260,7 @@ def test_a_change_chart_over_strata_names_its_unit_in_its_values_table() -> None
             "strata": ["off_lane", "machinery"],
         },
     )
-    assert rows[0].startswith("| off lane | -23 pts |"), rows
+    assert rows[0].startswith("| off lane | -22.9 pts |"), rows
 
 
 def _readings_only(**described: MetricDescriptor) -> ReportInput:

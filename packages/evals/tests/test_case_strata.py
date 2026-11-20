@@ -34,8 +34,8 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
     report_html,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES

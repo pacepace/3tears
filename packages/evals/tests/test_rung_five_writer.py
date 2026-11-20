@@ -1,7 +1,7 @@
 """Rung 5, ``examples/5-writer/``: the report writer evaluated as the thing under test, replayed with no key.
 
 The rung's recordings (14 reports on ``claude-sonnet-5-5`` recorded 2026-11-03, and the flash judge and its pairwise
-pass recorded again 2026-11-08 over the pages as the package now prints them) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
+pass recorded again 2026-11-14, then re-keyed by each page's inputs for $0 with no call re-made) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
 ``writer.py`` stays short and reaches the engine through public roots; ``python -m threetears.evals writer.py``
 replays the shipped recordings with no key, every turn and judge call served from them and none left unasked, and
 prints the judge's preference and the promotion read. In a copy with its recordings stripped, the door refuses,
@@ -14,6 +14,7 @@ connect fails.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import shutil
@@ -33,10 +34,13 @@ from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.writer_eval_support import ScoredReply
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.harness import AnalystSkill, WriterEval, read_writer_cases
+from threetears.evals.harness import AnalystSkill, WriterEval
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
+from threetears.evals.ops.report_writer import writer_pairwise
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.quick.files import load_evals, main
+from threetears.evals.schema import JudgeEvidence
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.testing import RecordedCompletions
 
@@ -143,7 +147,7 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     # The recording's date and the head it was made at; and when the judge's calls were recorded again, naming the
     # commit whose pages the judge read, which is the one a replay of its keys must stand on.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme
-    assert "2026-11-10, over the pages built at `7601153ed`" in readme
+    assert "2026-11-14, over the pages built at `67c222242`" in readme
     # What it cost: the judge's dollars are what judge.jsonl recorded, and the total is the writer's and the judge's.
     judged = sum(
         json.loads(line)["result"]["cost_usd"]
@@ -159,6 +163,35 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "Not recorded" not in readme
 
 
+#: The sha256 of every judge line's recorded members but its key and format, in file order, as recorded on
+#: 2026-11-14: re-keying the file by each call's inputs (format 3 to 4, 2026-11-15) moved its keys and nothing a
+#: replay serves. A response changed by hand, or a line added, dropped or reordered, moves it.
+JUDGE_RESPONSES: Final = "d7bde81356ee3a83a46bbb0d0377073cbdd4d9e5694a43fb4def902ba3b96065"
+
+
+def test_the_judge_recording_is_keyed_by_each_call_s_inputs_and_serves_what_was_recorded() -> None:
+    lines = [
+        json.loads(line) for line in (RUNG / "recordings" / "judge.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(lines) == 112 and {line["recorder_version"] for line in lines} == {4}
+    assert all(line["inputs"] is not None for line in lines), "every judge call over a page is keyed by its inputs"
+    assert len({line["key"] for line in lines}) == 112
+    # Each keeps the key its prompt had, so a replay can count a call served over a page rendered otherwise since.
+    assert all(re.fullmatch(r"[0-9a-f]{64}", line["prompt_key"]) for line in lines)
+    assert len({line["prompt_key"] for line in lines} | {line["key"] for line in lines}) == 224
+    pairs = [line for line in lines if "pair" in line["inputs"]["evidence"]]
+    assert len(pairs) == 14 and all(len(line["inputs"]["evidence"]["pair"]) == 2 for line in pairs)
+    served = [
+        {
+            name: line[name]
+            for name in ("index", "cell", "settings", "sent_settings", "result", "extra", "recorded_at", "user_head")
+        }
+        for line in lines
+    ]
+    digest = hashlib.sha256(json.dumps(served, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    assert digest == JUDGE_RESPONSES
+
+
 def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_the_promotion_read(
     writer_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -168,13 +201,13 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
     # The pairwise preference, the primary reading: lead-first's share beside shipped's and the interval on it, all on
     # the share scale, which the evidence cannot tell from even at 7 cases (the glossary's words, by owner ruling), a
-    # row with columns; its two orders agreed on 6 of 7 cases, so the pass gives the held-out cases that would settle
+    # row with columns; its two orders agreed on 5 of 7 cases, so the pass gives the held-out cases that would settle
     # it at the share it read, and its spend in the money form.
-    # Re-pinned 2026-11-10, the judge recorded again over the pages with one form per measure and the new layout:
-    # from 70 · 30 · 33
-    # to 100, a lean of -2 points and 33 cases to settle.
-    assert "| lead-first | every pair | cannot tell apart | 61 | 39 | 28 to 96 |" in lines
-    assert "| lead-first | 86% (6 of 7) | 7 | 0 | 120 | $0.13 of $1.95 |" in lines
+    # Re-pinned 2026-11-14, the judge recorded again over the pages under the precision rule and the stated levels
+    # (4adea2eae): from 61 · 39 · 28 to 96, 6 of 7 agreeing, a lean of 7 points, 120 cases to settle and $0.13 spent,
+    # to 68 · 32 · 26 to 98, 5 of 7, a lean of 18 points, 33 cases and $0.041.
+    assert "| lead-first | every pair | cannot tell apart | 68 | 32 | 26 to 98 |" in lines
+    assert "| lead-first | 71% (5 of 7) | 18 | 0 | 33 | $0.041 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
@@ -195,8 +228,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # What the page compares and on what is the line under the question, then the answer.
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
-        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 61% of its preference over "
-        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 61%, roughly 100 "
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 68%, roughly 30 "
         "cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
@@ -229,6 +262,40 @@ def _endings(directory: Path) -> dict[tuple[str, str], str]:
         for body in bodies
         if body["doc_type"] == "eval_result"
     }
+
+
+def test_a_pair_whose_inputs_moved_under_the_judge_s_recording_fails_the_pass_naming_the_input_that_differs(
+    writer_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pairwise judge's calls are keyed by the two pages' inputs (each page's stored document, its snapshot and
+    its findings) and their order, so a pair naming another document for its first page moves every pass call's key
+    off its recording. The pass fails at its first call, naming the input that differs, and reads no share: a missed
+    call once was dropped, and 54/46 was read off fewer (#1162). A page whose words alone moved replays whole
+    (``test_wording_moves_no_identity.py``)."""
+    shipped = writer_pairwise.pair_evidence
+
+    def moved(a: JudgeEvidence, b: JudgeEvidence) -> JudgeEvidence:
+        assert a.inputs is not None
+        return shipped(a.model_copy(update={"inputs": {**a.inputs, "document": "0" * 64}}), b)
+
+    monkeypatch.setattr(writer_pairwise, "pair_evidence", moved)
+
+    assert main(["writer.py"]) == 1
+    printed = capsys.readouterr().out
+    # The print leads with the failure, naming the call, before any reading.
+    lead = printed.splitlines()[0]
+    assert lead.startswith("writer: the pairwise pass of lead-first did not complete: ended failed: RecordingRefused: ")
+    assert "recordings/judge.jsonl" in lead and "no call is recorded for the inputs" in lead, lead
+    (failed,) = [line for line in printed.splitlines() if line.startswith("pairwise pass of lead-first: ")]
+    assert "ended failed: RecordingRefused: recording " in failed and "recordings/judge.jsonl" in failed
+    assert re.search(r"no call is recorded for the inputs \{.+\} \(call 0, key [0-9a-f]{12}, prompt ", failed), failed
+    assert re.search(
+        r"the inputs differ at evidence\.pair\[0\]\.document \(asked sha256:[0-9a-f]{12}, recorded ", failed
+    )
+    assert "and agree on goals, intent, judge_prompt, variation" in failed, failed
+    assert "| lead-first | every pair |" not in printed, "no share is read off the calls the replay still found"
+    # The scoring judge read each page alone, which did not move: every result scored, none excluded.
+    assert printed.count("7 result(s): 7 scored, 0 excluded") == 2
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(

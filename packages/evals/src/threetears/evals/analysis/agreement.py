@@ -86,7 +86,6 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
-    TierCriterion,
     agreement_statistic,
     calibration_criterion,
     separation_criterion,
@@ -94,22 +93,19 @@ from threetears.evals.kernel.evidence_tiers import (
     weakest_judged_tier,
 )
 from threetears.evals.schema.models import (
-    MODEL_DEFAULT_TEMPERATURE,
     SCALES,
     ClientRequestSettings,
     JudgeTemperature,
     RubricScale,
-    is_builtin_judge_config_id,
     request_settings_order,
-    sent_settings_phrase,
 )
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.report.forms import PageForms
     from threetears.evals.kernel.result_reading import RepeatView, ResultView, ScoreView, SecondJudgingView
     from threetears.evals.schema.models import (
         CalibrationRating,
         LabelKey,
+        RaterKind,
     )
 
 
@@ -144,9 +140,7 @@ def sent_settings_key(settings: ClientRequestSettings | None) -> str | None:
     """Request settings as a :class:`JudgeKey` holds them: their canonical JSON, or ``None`` when unverified.
 
     :param settings: What a judge call was sent with, as its score recorded it (``None`` = unverified).
-    :ptype settings: ClientRequestSettings | None
     :return: The canonical form (:func:`~threetears.evals.schema.models.request_settings_order`), or ``None``.
-    :rtype: str | None
     """
     return None if settings is None else request_settings_order(settings)
 
@@ -155,9 +149,7 @@ def sent_settings_from_key(key: str | None) -> ClientRequestSettings | None:
     """A :class:`JudgeKey`'s ``judge_sent_settings`` read back as the settings, for a row that names them.
 
     :param key: The canonical form, as :func:`sent_settings_key` made it, or ``None``.
-    :ptype key: str | None
     :return: The settings, or ``None`` (unverified).
-    :rtype: ClientRequestSettings | None
     """
     return None if key is None else ClientRequestSettings.model_validate_json(key)
 
@@ -172,11 +164,9 @@ def sent_settings_level(scores: Iterable[ScoreView | None]) -> tuple[str, ...] |
     over.
 
     :param scores: The scores, as the calls that made them recorded what they were sent with.
-    :ptype scores: Iterable[RubricScore | None]
     :return: Each distinct value's canonical form (:func:`~threetears.evals.schema.models.request_settings_order`),
         sorted; ``None`` when any score is unverified (its client did not report what it sent) or there is no score: a
         partial record is not reported as the part that is known.
-    :rtype: tuple[str, ...] | None
     """
     sent: set[str] = set()
     for score in scores:
@@ -192,9 +182,7 @@ def sent_settings_from_level(level: tuple[str, ...] | None) -> list[ClientReques
     """A :func:`sent_settings_level` read back as the settings, for a row that names them.
 
     :param level: The canonical forms, as :func:`sent_settings_level` made them, or ``None``.
-    :ptype level: tuple[str, ...] | None
     :return: The settings in canonical order, or ``None`` (unverified).
-    :rtype: list[ClientRequestSettings] | None
     """
     return None if level is None else [ClientRequestSettings.model_validate_json(form) for form in level]
 
@@ -203,12 +191,9 @@ def judge_key(result: ResultView, dim: str) -> JudgeKey | None:
     """The judge behind ``result``'s score on ``dim``, or None when it holds no score there.
 
     :param result: The result.
-    :ptype result: ResultView
     :param dim: The dimension, as its score spells it.
-    :ptype dim: str
     :return: The key: the score's scale, served model and temperature, and the config the result records as having
         scored the dim.
-    :rtype: JudgeKey | None
     """
     score = result.judge_score(dim)
     if score is None:
@@ -228,9 +213,7 @@ def judge_sort_key(key: JudgeKey) -> tuple[str, str, str, str, str, str]:
     prompt, an unrecorded temperature or unverified settings first.
 
     :param key: The judge.
-    :ptype key: JudgeKey
     :return: The sort key.
-    :rtype: tuple[str, str, str, str, str, str]
     """
     temperature = key.judge_temperature
     return (
@@ -247,9 +230,7 @@ def judge_key_of(entry: DimensionAgreement | SelfAgreementDimension | JudgeEvide
     """The judge an agreement row or a tier was measured for, read back off its fields.
 
     :param entry: The row or tier.
-    :ptype entry: DimensionAgreement | SelfAgreementDimension | JudgeEvidenceTier
     :return: Its :class:`JudgeKey`.
-    :rtype: JudgeKey
     """
     return JudgeKey(
         entry.rubric_dim,
@@ -397,9 +378,15 @@ class _PairedRatings(NamedTuple):
     read: int
 
 
-def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> _PairedRatings:
+def _pair_ratings(
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
+) -> _PairedRatings:
     """Pair each rating with the judge's score on its dimension, on its result or the same output — the ONE matching
     rule.
+
+    ``rated_by`` is whose ratings are paired: people's (the default, and the only reading that is agreement with
+    people), or agents' (a reference reviewer's answers, read apart as agreement with that model). A rating of the
+    other kind is listed unpaired, never pooled.
 
     A rating pairs with its own result's score, then with every other result's score carrying its label key (#628),
     entering each judge (:class:`JudgeKey`) once; it is unpaired only when it entered none, with its own result's
@@ -409,12 +396,9 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[Result
     ratings a prediction-powered estimate combines with the judge's scores are one set (#598).
 
     :param ratings: The ratings to read.
-    :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate. A rating whose result is not here, and whose label key reaches no
         score here, is unpaired (``result_unresolved``).
-    :ptype results: Iterable[ResultView]
     :return: The pairs grouped by judge, the ratings that could not be paired (and why), and how many were read.
-    :rtype: _PairedRatings
     """
     results = list(results)
     by_id = {result.id: result for result in results}
@@ -425,7 +409,11 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[Result
     for rating in ratings:
         read += 1
         # Before anything is paired: an agent's rating is not a person's, whatever it would pair with.
-        if rating.rater_kind != "person":
+        if rating.rater_kind != rated_by:
+            if rated_by != "person":
+                raise ValueError(
+                    f"an agreement with {rated_by} ratings reads those alone; {rating.id!r} is a {rating.rater_kind}'s"
+                )
             unpaired.append(_unpaired(rating, "rated_by_an_agent"))
             continue
         # The judges this label has entered: one entry per judge, whichever route found it.
@@ -459,18 +447,22 @@ def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[Result
     return _PairedRatings(groups, unpaired, read)
 
 
-def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement:
+def judge_agreement(
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
+) -> JudgeAgreement:
     """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
 
+    By default the agreement is with people: an agent's rating is listed unpaired. ``rated_by="agent"`` reads the
+    judge against agents' ratings alone (a reference reviewer's answers to a blind read), which is agreement with
+    that model and is never presented as agreement with people; every rating handed in must then be an agent's.
+
     :param ratings: The ratings to read.
-    :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate. A rating whose result is not here, and whose label key reaches no
         score here, is unpaired (``result_unresolved``), so hand in every result the ratings were read for.
-    :ptype results: Iterable[ResultView]
     :return: The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
-    :rtype: JudgeAgreement
+    :raises ValueError: ``rated_by="agent"`` and a rating that is a person's.
     """
-    groups, unpaired, read = _pair_ratings(ratings, results)
+    groups, unpaired, read = _pair_ratings(ratings, results, rated_by=rated_by)
     dimensions = []
     for key in sorted(groups, key=judge_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -495,7 +487,7 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Resu
 
 
 def person_scores_by_result(
-    ratings: Iterable[CalibrationRating], results: Iterable[ResultView]
+    ratings: Iterable[CalibrationRating], results: Iterable[ResultView], *, rated_by: RaterKind = "person"
 ) -> dict[tuple[str, str], list[int]]:
     """Every person's score of a judged dimension of a result, keyed ``(result_id, dimension)`` — the human labels.
 
@@ -509,15 +501,12 @@ def person_scores_by_result(
     person's answer on several byte-identical outputs as several labels.
 
     :param ratings: The ratings to read.
-    :ptype ratings: Iterable[CalibrationRating]
     :param results: The results they may rate.
-    :ptype results: Iterable[ResultView]
     :return: Every person's score per rated ``(result_id, dimension)``, in the order the ratings were read; a result
         two people rated carries both.
-    :rtype: dict[tuple[str, str], list[int]]
     """
     scores: dict[tuple[str, str], list[int]] = {}
-    for key, pairs in _pair_ratings(ratings, results).groups.items():
+    for key, pairs in _pair_ratings(ratings, results, rated_by=rated_by).groups.items():
         for pair in pairs:
             if pair.other is not None:
                 scores.setdefault((pair.result_id, key.rubric_dim), []).append(pair.other)
@@ -528,10 +517,8 @@ def _scores_by_label_key(results: Sequence[ResultView]) -> dict[LabelKey, list[t
     """Every stamped judge score, by the output and criterion it was given on, in result order.
 
     :param results: The results read.
-    :ptype results: Sequence[ResultView]
     :return: ``{label_key: [(result, score), ...]}`` over every judge score — rubric dimensions and the two dual-score
         axes — that carries a key. A score with none (one restated from a judge trial) is absent.
-    :rtype: dict[LabelKey, list[tuple[ResultView, ScoreView]]]
     """
     found: dict[LabelKey, list[tuple[ResultView, ScoreView]]] = {}
     for result in results:
@@ -580,11 +567,8 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
     on.
 
     :param scale: The group's scale.
-    :ptype scale: RubricScale
     :param pairs: At least one.
-    :ptype pairs: Sequence[_Pair]
     :return: The numbers.
-    :rtype: _AgreementNumbers
     """
     low, high = SCALES[scale].scores
     categories = list(range(low, high + 1))
@@ -640,8 +624,11 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
 
 
 #: The one-sided confidence of the bound a tier is AWARDED on: a criterion is met only when its lower bound at
-#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time.
-#: Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time, where
+#: each result is its own case. Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+#: Results clustered by case raise it: two results a case whose judge errors coincide, as a blind read of pairs
+#: gives, measure 5.3% at 20 cases and about 7% at 60 to 120 (``docs/open-problems.md``, "Two results of one case
+#: count as two").
 TIER_LOWER_CONFIDENCE: Final = 0.95
 
 #: The one-sided confidence of the bound a criterion is MISSED on: not met only when its upper bound at this
@@ -688,12 +675,9 @@ def agreement_interval(
     multiplier is Student's t on ``results - 1`` degrees of freedom.
 
     :param estimate: The pooled figure the interval is around — it always lies inside.
-    :ptype estimate: float
     :param raters: Per rater whose kappa entered the figure: its disagreement moments under the figure's cost
         (with each item's cost), and the result each of its pairs is about.
-    :ptype raters: Sequence[tuple[KappaMoments, Sequence[str]]]
     :return: ``(lower, upper)``, or None when fewer than two distinct results carry the figure.
-    :rtype: tuple[float, float] | None
     """
     defined = [(moments, ids) for moments, ids in raters if moments.expected > 0]
     measurers: dict[str, int] = {}
@@ -943,10 +927,8 @@ def judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement:
     times weighs those few results and no more.)
 
     :param results: The results whose repeats to read.
-    :ptype results: Iterable[ResultView]
     :return: The agreement per (dimension, scale, judge, judge config), and the repeated scores that could not be
         paired.
-    :rtype: JudgeSelfAgreement
     """
     return self_agreement_of_repeats((result.id, result.judge_repeats) for result in results)
 
@@ -958,9 +940,7 @@ def self_agreement_of_repeats(repeats: Iterable[tuple[str, Sequence[RepeatView]]
     one setting, paired against that setting's first answer (#633) — so they are read by the same code.
 
     :param repeats: ``(result id, its repeats, oldest first)`` per result.
-    :ptype repeats: Iterable[tuple[str, Sequence[RepeatView]]]
     :return: As :func:`judge_self_agreement`.
-    :rtype: JudgeSelfAgreement
     """
     groups: dict[JudgeKey, list[_Pair]] = {}
     unpaired: list[UnrepeatedScore] = []
@@ -1172,13 +1152,9 @@ def second_judge_group(first: JudgeKey, judging: SecondJudgingView, dim: str) ->
     bundle links to a judge level is grouped as that level.
 
     :param first: The first judge of the pair.
-    :ptype first: JudgeKey
     :param judging: The pass the second answer belongs to.
-    :ptype judging: SecondJudgingView
     :param dim: The dimension asked.
-    :ptype dim: str
     :return: The group.
-    :rtype: SecondJudgeGroup
     """
     return (
         first,
@@ -1193,9 +1169,7 @@ def second_judge_group_sort_key(key: SecondJudgeGroup) -> tuple[str, ...]:
     """The order second-judge groups are listed in: the first judge's, then the second as asked, then as sent.
 
     :param key: The group.
-    :ptype key: SecondJudgeGroup
     :return: A sort key.
-    :rtype: tuple[str, ...]
     """
     first, model, config_id, temperature, sent = key
     return (
@@ -1217,11 +1191,8 @@ def inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None 
     undefined one is stated as undefined, with why.
 
     :param results: The results whose second-judge scores to read.
-    :ptype results: Iterable[ResultView]
     :param pass_id: Read only this pass's pairs; ``None`` for every pass.
-    :ptype pass_id: str | None
     :return: The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
-    :rtype: InterJudgeAgreement
     """
     tally = InterJudgeTally(pass_id=pass_id)
     for result in results:
@@ -1241,7 +1212,6 @@ class InterJudgeTally:
         """Start a tally reading every pass's pairs, or only ``pass_id``'s.
 
         :param pass_id: Read only this pass's pairs; ``None`` for every pass.
-        :ptype pass_id: str | None
         """
         self._pass_id = pass_id
         self._groups: dict[SecondJudgeGroup, list[_Pair]] = {}
@@ -1253,7 +1223,6 @@ class InterJudgeTally:
         """Read one result's second-judge scores.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         for judging in result.judge_seconds:
             if self._pass_id is not None and judging.pass_id != self._pass_id:
@@ -1286,7 +1255,6 @@ class InterJudgeTally:
 
         :return: The agreement per (dimension, scale, first judge, second judge), and the scores that could not be
             paired.
-        :rtype: InterJudgeAgreement
         """
         groups, served = self._groups, self._served
         dimensions = []
@@ -1338,13 +1306,9 @@ def judge_evidence_tiers(
     rather than absent, which a reader would take for unjudged.
 
     :param agreement: The judge's agreement with people (:func:`judge_agreement`).
-    :ptype agreement: JudgeAgreement
     :param self_agreement: The judge's agreement with itself (:func:`judge_self_agreement`).
-    :ptype self_agreement: JudgeSelfAgreement
     :param judged: Every judge a judged score was read under (:func:`judge_key`).
-    :ptype judged: Iterable[JudgeKey]
     :return: The tiers, ordered by dimension, scale, judge and judge config.
-    :rtype: list[JudgeEvidenceTier]
     """
     calibrations = {judge_key_of(d): d for d in agreement.dimensions}
     repeats = {judge_key_of(d): d for d in self_agreement.dimensions}
@@ -1391,102 +1355,12 @@ def tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKe
     with no entry is ``undetermined``: nothing measured it.
 
     :param tiers: The tiers, from :func:`judge_evidence_tiers`.
-    :ptype tiers: Iterable[JudgeEvidenceTier]
     :param judges: The judges behind the reading's scores (:func:`judge_key`).
-    :ptype judges: Iterable[JudgeKey]
     :return: The tier; ``undetermined`` when no judge is named — a reading with no score behind it has no judge.
-    :rtype: JudgedEvidenceTier
     """
     by_judge = {judge_key_of(tier): tier.tier for tier in tiers}
     found: list[JudgedEvidenceTier] = [by_judge.get(JudgeKey(*key), "undetermined") for key in set(judges)]
     return weakest_judged_tier(found) if found else "undetermined"
-
-
-def tier_sentence_in(tier: JudgeEvidenceTier, forms: PageForms) -> str:
-    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it,
-    every figure (a kappa, its bounds and bar, a temperature, a count of cases) printed by ``forms``, the forms of the
-    page it is printed on.
-
-    :param tier: The tier as decided.
-    :ptype tier: JudgeEvidenceTier
-    :param forms: The forms of the page the sentence is printed on, which print its every figure by the lone figure
-        rule.
-    :ptype forms: PageForms
-    :return: The sentence, naming the judge (its config, when one asked, its temperature and the request settings its
-        calls were sent with), the tier and each criterion's
-        agreement, pairs and results against its bar — and, for a tier read from a stored judge profile, the profile,
-        when and on which cases it was measured, and what the campaign's own evidence read.
-    :rtype: str
-    """
-    judge = tier.judge_model or "an unnamed judge"
-    if tier.judge_config_id is not None:
-        what = "built-in prompt" if is_builtin_judge_config_id(tier.judge_config_id) else "config"
-        judge = f"{judge}, {what} {tier.judge_config_id}"
-    temperature = tier.judge_temperature
-    judge += (
-        ", temperature not recorded"
-        if temperature is None
-        else ", sent no temperature"
-        if temperature == MODEL_DEFAULT_TEMPERATURE
-        else f", temperature {forms.lone(temperature).text}"
-    )
-    judge += f", {sent_settings_phrase(tier.judge_sent_settings)}"
-    measured = (
-        f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
-        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}."
-    )
-    consulted = tier.consulted_profile
-    if consulted is not None:
-        return (
-            f"{measured} This campaign's evidence decided no tier, so it consulted the judge's stored profile "
-            f"{consulted.profile_id}, measured at {consulted.measured_at} on {forms.lone(consulted.cases).text} frozen "
-            f"cases (case set {consulted.case_set_fingerprint[:12]}, runs {', '.join(consulted.run_ids)}), which is "
-            f"undetermined too: agreement with the labels {_criterion_words(consulted.calibration, forms)}; with its own "
-            f"repeats {_criterion_words(consulted.separation, forms)}."
-        )
-    profile = tier.from_profile
-    if profile is None:
-        return measured
-    # Never silently: a tier read from a stored profile says so, with when and on what it was measured, and what
-    # the campaign's own evidence read (#628).
-    return (
-        f"{tier.rubric_dim} ({judge}): {tier.tier}, read from the judge's stored profile {profile.profile_id}, "
-        f"measured at {profile.measured_at} on {forms.lone(profile.cases).text} frozen cases (case set "
-        f"{profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)}) — agreement with the labels "
-        f"{_criterion_words(tier.calibration, forms)}; with its own repeats {_criterion_words(tier.separation, forms)}. This "
-        f"campaign's own evidence decided no tier: agreement with people {_criterion_words(profile.own_calibration, forms)}; "
-        f"with its own repeats {_criterion_words(profile.own_separation, forms)}."
-    )
-
-
-def _criterion_words(criterion: TierCriterion, forms: PageForms) -> str:
-    """A criterion as a clause: its agreement, bounds, pairs and results against the bar, and what it still needs,
-    each figure by the lone figure rule, in ``forms``."""
-    bar = f"(bar {forms.lone(criterion.threshold).text} over at least {criterion.min_results} results)"
-    needed = criterion.results_needed
-    if criterion.n == 0:
-        return f"not measured {bar} — needs {criterion.min_results} results"
-    if criterion.agreement is None:
-        # Undefined kappa below the floor is still short of the floor: the results it needs are stated as they are
-        # for a defined one, so the sentence never reads as though only the kappa were missing.
-        undefined = f"undefined over {criterion.n} pairs from {criterion.results} results {bar}"
-        return f"{undefined} — needs {needed} more results" if needed is not None else undefined
-    over = f"over {criterion.n} pairs from {criterion.results} results"
-    if criterion.interval is not None:
-        low, high = criterion.interval
-        over = f"(bounds {forms.lone(low).text} to {forms.lone(high).text}) {over}"
-    verdict = {
-        "met": "meets",
-        "not_met": "misses",
-        "undecided": "undecided — the bounds straddle",
-        "insufficient": "too few results for" if criterion.results < criterion.min_results else "no bounds for",
-    }[criterion.state]
-    clause = f"{forms.lone(criterion.agreement).text} {over}, {verdict} {bar}"
-    if needed is not None and criterion.state == "insufficient":
-        clause += f" — needs {needed} more results"
-    elif needed is not None:
-        clause += f" — about {needed} more results would decide it if agreement holds"
-    return clause
 
 
 __all__ = [

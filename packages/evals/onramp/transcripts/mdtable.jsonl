@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "mdtable.py"}
+{"tool": "read", "path": "data/tables.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom mdtable import format_table\n\ndef write_table(case):\n    \"\"\"The Markdown the handbook gets for the table.\"\"\"\n    return {\"markdown\": format_table(case[\"header\"], case[\"rows\"], case.get(\"align\"))}\n\n\ndef as_signed_off(case, out):\n    \"\"\"The table is written as the signed-off Markdown.\"\"\"\n    return out[\"markdown\"] == case[\"expected\"]\n\ntables = Eval(\"data/tables.jsonl\", runner=write_table, grader=[as_signed_off], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_signed_off\", \"pass_rate\": 0.7143, \"finished\": true}"}

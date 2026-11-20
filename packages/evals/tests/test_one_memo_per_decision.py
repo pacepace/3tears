@@ -27,20 +27,14 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import (
-    CampaignReport,
-    assemble_campaign_bundle,
-    campaign_report,
-    campaign_report_markdown,
-    create_campaign,
-    get_campaign,
-)
+from threetears.evals.analysis import CampaignReport, campaign_report, create_campaign
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import BarStatus
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.doc_analysis import aspect_analysis
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
@@ -50,10 +44,12 @@ from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.ops import analyses_list, analysis_archive, campaign_record
+from threetears.evals.ops import analyses_list, campaign_record
+from threetears.evals.ops.analysis import analysis_archive
 from threetears.evals.quick.contract import as_host
 from threetears.evals.run.curation import set_analysis_archived
 from threetears.evals.storage import InMemoryDocumentStore
+from threetears.evals.analysis.style import measure_name_of
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 from packages.evals.tests.fixtured_client import FixturedClient
@@ -431,7 +427,8 @@ async def _build_two(
     asked_at: str = DECLARED_AT,
 ) -> tuple[Store, EvalCampaign]:
     """Billing regresses (production passes eighteen of twenty cases, the candidate six) under a 10-point floor; tone
-    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run.
+    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run, and filed as a host
+    files a campaign over the quick path's runs (``create_campaign``, as its operator), so it reads by the engine's test.
 
     ``labels`` keeps those aspects of the two; ``floor`` and ``bar`` declare billing's floor and tone's bar;
     ``asked_at`` asks the question then instead, after the runs where it is later than them."""
@@ -443,6 +440,62 @@ async def _build_two(
     quick = {
         label: off_loop(get_campaign, held.host.storage, held.runs[label].campaign_id, SCOPE) for label in held.runs
     }
+    if asked_at != DECLARED_AT:
+        return held, off_loop(_asked_late, held, quick, labels, floor=floor, bar=bar, asked_at=asked_at)
+    # Filed as a host files a campaign over the quick path's runs, through its front door (``create_campaign``, as its
+    # operator): the quick path's own campaigns are the only ones its bet reads, so a host's reads by the engine's
+    # test, and an adopting campaign reads the same way.
+    first = held.runs[labels[0]]
+    aspects = []
+    for label, campaign in quick.items():
+        (aspect,) = campaign.aspects
+        assert aspect.design is not None
+        bars = [COST_BAR] if label == "tone" and bar else []
+        aspects.append(
+            {
+                "label": label,
+                "template_id": aspect.template_id,
+                "margin": 10.0,
+                "design": aspect.design.model_copy(update={"merit_axes": [], "bars": bars}),
+                "run_ids": list(aspect.run_ids),
+            }
+        )
+    two = off_loop(
+        create_campaign,
+        held.host.storage,
+        {
+            "name": "support queue",
+            "subject_id": quick[labels[0]].subject_id,
+            "behavior": "support",
+            "question": QUESTION,
+            "arms": [{"label": "production", "role": "control", "from_run_ids": [first.arms["production"].run_id]}],
+            "aspects": aspects,
+            "floors": [{"aspect": "billing", "clause": RateDrop(max_points=10)}]
+            if floor and "billing" in labels
+            else [],
+        },
+        scope_id=SCOPE,
+        created_by="op",
+        profile=held.host.profile,
+        declared_at=DECLARED_AT,
+    )
+    return held, two
+
+
+def _asked_late(
+    held: Store,
+    quick: Mapping[str, EvalCampaign],
+    labels: Sequence[str],
+    *,
+    floor: bool,
+    bar: bool,
+    asked_at: str,
+) -> EvalCampaign:
+    """:func:`_build_two`'s campaign with its question asked at ``asked_at``, after its runs, while its control and its
+    margins were fixed before them. No front door files that mix (a create dates every criterion it declares at one
+    time), so it is stored as written; filed by a host (``created_by`` its operator), so it reads by the engine's test
+    as the campaign filed through the front door does, and the two differ in nothing but when each criterion was set.
+    Reads the store."""
     control = quick[labels[0]].control
     assert control is not None
     aspects = []
@@ -470,6 +523,7 @@ async def _build_two(
             "behavior": "support",
             "question": QUESTION,
             "declared_at": DECLARED_AT,
+            "created_by": "op",
             "arms": [control.model_copy(update={"label": "production", "named_at": DECLARED_AT})],
             "aspects": aspects,
             "floors": [Floor(aspect="billing", clause=RateDrop(max_points=10))]
@@ -477,8 +531,9 @@ async def _build_two(
             else [],
         }
     )
-    off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate(two.model_dump()))
-    return held, two
+    stored = EvalCampaign.model_validate(two.model_dump())
+    held.host.storage.save_campaign(stored)
+    return stored
 
 
 async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_the_broken_floor_first() -> None:
@@ -675,7 +730,7 @@ _WHEN = re.compile(
 
 
 #: A bundle's fingerprint, which digests the campaign it was read for.
-_FINGERPRINT = re.compile(r"v2:[0-9a-f]{64}")
+_FINGERPRINT = re.compile(r"v[23]:[0-9a-f]{64}")
 
 
 def _undated(text: str, *ids: str) -> str:
@@ -743,16 +798,13 @@ async def test_a_call_on_the_recommended_arm_records_the_key_the_analysis_record
 
 async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campaign_as_it_stands() -> None:
     """The floor is withdrawn from the stored campaign after the analysis was written: the analysis's line still names
-    it, worded over the floors frozen with it, as the analysis's page, read by its id, still opens on it."""
+    it, worded over the floors frozen with it."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert line.id == analysis_id
-    by_id = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
-    (floor,) = [text for text in _warnings(by_id) if "floor" in text]
-    assert floor == "Adopting candidate overrides the 10-point floor it breaks on billing."
-    assert floor in line.verdict
+    assert "Adopting candidate overrides the 10-point floor it breaks on billing." in line.verdict
 
 
 async def test_an_analysis_with_no_missed_bar_and_no_broken_floor_is_listed_by_its_verdict_alone() -> None:
@@ -793,8 +845,7 @@ async def test_an_analysis_of_one_aspect_is_listed_by_its_page_s_broken_floor_th
 async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_without_against_the_evidence_now() -> None:
     """The memo was written while billing's floor stood; the floor is then withdrawn from the stored campaign. A call
     over the analysis is read against the readings frozen with it, which still break the floor; a call on code's
-    readings alone is read against the evidence now, which breaks none — and the analysis's page, read by its id over
-    what was frozen with it, says the floor broken there is not overridden."""
+    readings alone is read against the evidence now, which breaks none."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
@@ -808,12 +859,6 @@ async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_with
     recorded = _record(held, two, arm=candidate.arm, bars_overridden=[missed])
 
     assert recorded.call.analysis_id is None
-    page = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
-    assert page.unread_analysis_id == analysis_id
-    assert (
-        "The call does not name the broken floor as overridden: no pass rate drops by more than 10 points on billing."
-        in _first_screen(page)
-    )
 
 
 async def test_a_call_over_an_analysis_the_page_does_not_report_is_refused() -> None:

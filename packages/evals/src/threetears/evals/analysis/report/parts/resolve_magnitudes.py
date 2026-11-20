@@ -66,12 +66,14 @@ from threetears.evals.analysis.report.parts.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    own_fmt,
     unit_quantities,
     unit_refusal,
 )
 from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.figure_keys import cost_basis, figure_unit
+from threetears.evals.analysis.report.keys.reads import cost_basis
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
@@ -93,7 +95,7 @@ from threetears.evals.analysis.report.parts.words import (
     STATISTIC_NOTE,
 )
 from threetears.evals.analysis.analyst.settle import SettleRow
-from threetears.evals.analysis.report_rows import PriceStep
+from threetears.evals.analysis.report.rows import PriceStep
 from threetears.evals.analysis.style import humanize
 from threetears.evals.analysis.report_input import (
     Measure,
@@ -232,8 +234,13 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
         for arm in context.arm_order(rows):
             held = getattr(rows[arm], key)
             value = sum(held.values()) if key in _BY_CAUSE else held
-            if value is not None:
-                picked.append((key, arm, float(value)))
+            if value is None:
+                continue
+            if not isinstance(value, int | float):
+                # A figure no bar is: the calls answered and unanswered by role (#1250), whose records hold no one
+                # number, never summed into one; refused, so the page draws its table, which states them in words.
+                raise context.refuse(f"{key!r} holds no one number per arm, which a bar draws")
+            picked.append((key, arm, float(value)))
     # One unit: the one-unit rule (charting.unit_refusal, which the bars resolver reads first) has refused figures in
     # more than one.
     unit = figure_unit(context.report_input, keys[0], source="scoreboard")
@@ -338,11 +345,8 @@ def settle_label(context: ChartContext, row: SettleRow) -> str:
     is not the arm's overall figure.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param row: One ``settle_cases`` row.
-    :ptype row: SettleRow
     :return: The label.
-    :rtype: str
     """
     kind, _colon, line = row.against.partition(":")
     if row.against.startswith("criterion "):
@@ -397,9 +401,7 @@ def settle_notes(context: ChartContext) -> tuple[str, ...]:
     exactly on its line, which no size settles.
 
     :param context: The chart being resolved, over the settle source.
-    :ptype context: ChartContext
     :return: The note.
-    :rtype: tuple[str, ...]
     """
     levels = {
         str(row.item.level.value)
@@ -437,9 +439,7 @@ def price_notes(context: ChartContext) -> tuple[str, ...]:
     reaches zero and no price bounds it, so the reader never takes it for the firmest.
 
     :param context: The chart being resolved, over the prices source.
-    :ptype context: ChartContext
     :return: The note, or none where every step's interval is bounded or none is drawn.
-    :rtype: tuple[str, ...]
     """
     named = _open_steps(context)
     if not named or not context.level:
@@ -526,12 +526,15 @@ def _panels(
     panels = []
     for title, rows in grouped.items():
         own = rows[0].drawn or drawn
+        # A panel of one measure on a shared axis names that measure's own format (:func:`own_fmt`).
+        alone = {bar.key for bar in rows}
+        mine = own_fmt(context, rows[0].key, own) if len(alone) == 1 else None
         panels.append(
             BarsPanel(
                 title=title,
                 rows=[_bar_row(context, bar, drawn) for bar in rows],
                 domain=spans[own] if spans is not None else None,
-                fmt=own.fmt if spans is not None else None,
+                fmt=own.fmt if spans is not None else mine,
                 tick_fmt=own.tick_fmt if spans is not None else None,
                 ticks=log_ticks(spans[own]) if spans is not None and own in logged else None,
                 log=(own in logged) if spans is not None and own in logged else None,
