@@ -177,7 +177,10 @@ datasource.
 
 `list_tables`, `list_columns` and `table_hashes` return only relations
 the connected user can SELECT -- on a Postgres-family engine,
-`has_table_privilege(current_user, <schema>.<table>, 'SELECT')`.
+`has_table_privilege(current_user, <schema>.<table>, 'SELECT')` together
+with `has_schema_privilege(current_user, <schema>, 'USAGE')`: a table
+granted in a schema the user cannot use is listed by the catalog views
+and answers true to the table check, but every read of it is a `42501`.
 `allowed_schemas` names whole schemas, and a least-privilege warehouse
 user is granted a few of their tables; the hub reads its catalog for
 every later step (the coverage probe, the schema tool), so a table
@@ -186,7 +189,9 @@ them. All three methods must apply the same filter, or the hash probe
 and the column list disagree about which tables exist. Mind relations
 the privilege check cannot see: Redshift's `has_table_privilege` raises
 on a Spectrum external table, so the Redshift driver guards it with a
-`CASE` on `SVV_TABLES.table_type`. And mind where the check can run:
+`CASE` on `SVV_TABLES.table_type`, and raises on a table in a schema
+without USAGE, so the table check sits inside a `CASE` on the schema's
+USAGE (an `AND` gives no evaluation order). And mind where the check can run:
 Redshift's `has_table_privilege` is leader-node-only, so it cannot share
 a statement with compute-node work such as the hash query's `LISTAGG`
 (`0A000`). The Redshift driver runs the check as its own statement over

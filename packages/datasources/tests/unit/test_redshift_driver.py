@@ -1016,9 +1016,9 @@ class TestQueryRouting:
     ) -> None:
         """``has_table_privilege`` raises ``42501`` on a table in a schema the user has no USAGE on.
 
-        ``SVV_TABLES`` lists such tables anyway (the ``ots`` login and ``geospatial_data``,
-        2026-11-19), and one row failed the catalog read for every schema in scope. the table check
-        therefore sits inside a ``CASE`` on the schema's USAGE, which answers false instead of raising.
+        ``SVV_TABLES`` lists such tables anyway, and one row failed the catalog read for every schema
+        in scope. the table check therefore sits inside a ``CASE`` on the schema's USAGE, which answers
+        false instead of raising.
 
         Flips if: the table check is reached for a schema without USAGE, or the guard moves into an
         ``AND``, whose operands Redshift may evaluate in any order.

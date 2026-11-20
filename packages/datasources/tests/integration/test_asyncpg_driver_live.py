@@ -304,6 +304,8 @@ async def least_privilege_reader(
     try:
         await conn.execute(f'CREATE TABLE "{schema}"."secrets" (id integer, token text)')
         await conn.execute(f'CREATE TABLE "{schema}"."Gadgets" (id integer)')
+        # a killed run's leftover grant in this schema would block the role's drop
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}_nousage" CASCADE')
         await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
         await conn.execute(f"CREATE ROLE {_READER_ROLE} LOGIN PASSWORD '{_READER_PASSWORD}'")
         await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {_READER_ROLE}')

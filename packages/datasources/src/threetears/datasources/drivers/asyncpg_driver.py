@@ -261,8 +261,7 @@ def _pool_start_budget_seconds(config: PostgresConnectionConfig | YugabyteConnec
 #: AND THE SCHEMA'S USAGE. a SELECT grant on a table in a schema the user has no USAGE on still
 #: answers true, and ``information_schema`` lists that table, but every read of it raises 42501;
 #: so the table counts only with its schema's USAGE (asked by the namespace's OID, which never
-#: raises). Redshift raised outright there instead (the ``ots`` login and ``geospatial_data``,
-#: 2026-11-19), which is how this was found.
+#: raises). Redshift's check raises outright there instead (see its driver's ``_SELECTABLE``).
 #:
 #: the answer is a column (``selectable``: true, false, or NULL for vanished), not a WHERE
 #: filter, so the driver can say which relations it left out for want of a grant
