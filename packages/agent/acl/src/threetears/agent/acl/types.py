@@ -38,6 +38,7 @@ from uuid import UUID
 from threetears.core.namespaces import namespace_contains
 
 __all__ = [
+    "ACTION_ARGUMENT_SEPARATOR",
     "ActorType",
     "EvaluationContext",
     "EvaluationResult",
@@ -51,6 +52,7 @@ __all__ = [
     "ScopeType",
     "Trail",
     "WILDCARD_RESOURCE_TYPE",
+    "action_acts_on_sql",
     "decode_role_permissions",
     "permissions_act_on",
 ]
@@ -62,6 +64,78 @@ __all__ = [
 #: fall back to the wildcard bucket whenever no type-specific bucket
 #: matches.
 WILDCARD_RESOURCE_TYPE = "*"
+
+#: separator between the namespace type an action is on and its verb, as the platform spells its actions
+#: (``memory.read``, ``customer.admin``, ``tool.call``).
+_ACTION_TYPE_SEPARATOR = "."
+
+#: separator between a parameterized action's stem and its argument (``read_file_matching:**/*.yaml``), as
+#: :data:`~threetears.agent.acl.evaluator.READ_FILE_MATCHING_PREFIX` spells it. the argument is free text, so a ``.``
+#: inside it names no type.
+ACTION_ARGUMENT_SEPARATOR = ":"
+
+
+def _action_namespace_type(action: str) -> str | None:
+    """the namespace type ``action`` is an action ON, or None for a verb naming none.
+
+    the ONE definition caller visibility counts a grant by (:func:`_action_acts_on`, :func:`action_acts_on_sql`). an
+    action's stem is its text before the first :data:`ACTION_ARGUMENT_SEPARATOR` (the whole action when it holds
+    none). a stem holding an :data:`_ACTION_TYPE_SEPARATOR` names the type before the first one (``customer.read`` ->
+    ``customer``, ``datasource.read_matching:x.y`` -> ``datasource``); a stem holding none names no type -- a bare verb
+    (``read``, ``call``) or a parameterized one (``read_file_matching:**/*.yaml``, the stem ``read_file_matching``),
+    which acts on whatever type the bucket holding it is.
+
+    WHY a name, not the bucket: a role's bucket is free text the evaluator matches by string, so
+    ``{"customer": ["group.read"]}`` "acts" on a customer namespace by holding a non-empty bucket, yet the action is
+    one on groups. counted by its bucket, such a role bound on a customer namespace opened every list of that
+    customer (Pace's ruling 2026-11-20, option A). the platform's convention prefixes an action with its type
+    (:mod:`threetears.agent.acl.catalog`); its shipped exceptions are the verbs naming no type, which this keeps.
+
+    :param action: the action string, as a role's bucket holds it
+    :ptype action: str
+    :return: the type it names, or None
+    :rtype: str | None
+    """
+    stem = action.split(ACTION_ARGUMENT_SEPARATOR, 1)[0]
+    head, separator, _ = stem.partition(_ACTION_TYPE_SEPARATOR)
+    return head if separator else None
+
+
+def _action_acts_on(action: str, namespace_type: str) -> bool:
+    """whether ``action`` is an action on ``namespace_type``'s own: it names that type, or names none
+    (:func:`_action_namespace_type`).
+
+    :param action: the action string
+    :ptype action: str
+    :param namespace_type: the namespace type
+    :ptype namespace_type: str
+    :return: whether it acts there
+    :rtype: bool
+    """
+    named = _action_namespace_type(action)
+    return named is None or named == namespace_type
+
+
+def action_acts_on_sql(action_sql: str, type_sql: str) -> str:
+    """:func:`_action_acts_on` spelled in SQL, over an action expression and a type expression.
+
+    ``split_part(<action>, ':', 1)`` is the stem (the whole action when it holds no ``:``, as Python's
+    ``split(':', 1)[0]``); ``strpos(<stem>, '.') = 0`` is a stem naming no type, and ``split_part(<stem>, '.', 1)`` the
+    type it names. held equal to the Python rule on PostgreSQL and YugabyteDB by
+    ``test_the_sql_and_python_action_rules_agree``.
+
+    :param action_sql: SQL yielding the action text: a trusted column or alias, or a ``$N`` placeholder; never user
+        input
+    :ptype action_sql: str
+    :param type_sql: SQL yielding the namespace type: a trusted column or a ``$N`` placeholder; never user input
+    :ptype type_sql: str
+    :return: boolean SQL expression
+    :rtype: str
+    """
+    argument = ACTION_ARGUMENT_SEPARATOR.replace("'", "''")
+    dot = _ACTION_TYPE_SEPARATOR.replace("'", "''")
+    stem = f"split_part({action_sql}, '{argument}', 1)"
+    return f"(strpos({stem}, '{dot}') = 0 OR split_part({stem}, '{dot}', 1) = {type_sql})"
 
 
 def decode_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
@@ -110,13 +184,22 @@ def _granted_actions(permissions: Mapping[str, frozenset[str]], resource_type: s
 
 
 def permissions_act_on(permissions: Mapping[str, frozenset[str]], namespace_type: str | None) -> bool:
-    """whether a role with ``permissions`` grants any action on ``namespace_type`` (:func:`_granted_actions`); for
-    None ("any type", a listing that names none), whether it grants any action on any type.
+    """whether a role with ``permissions`` grants an action OF ``namespace_type``'s own on it: among the actions its
+    type bucket and the wildcard bucket grant (:func:`_granted_actions`, :meth:`Role.actions_for`'s union), one that
+    :func:`_action_acts_on` the type. for None ("any type", a listing that names none), whether it holds an action of
+    its own type anywhere: a bucket holding an action on the bucket's type, or a wildcard bucket holding any action
+    (each acts on some type: the one it names, or every one).
+
+    the rule caller visibility counts a grant by (:func:`threetears.agent.acl.visible_customers`, and
+    :func:`threetears.agent.acl.caller_visible_customer_clause` spelling it in SQL). it is narrower than what the
+    evaluator authorizes, deliberately: the evaluator answers one action on one namespace, and a role whose
+    ``customer`` bucket holds ``group.read`` may read groups there; visibility answers which customers' rows of
+    EVERY listed type a grant opens, and an action on groups is no membership in the customer (Pace's ruling
+    2026-11-20, option A).
 
     WHY None asks for one action anywhere: a grant reaches a type only through a role that acts on it, and a listing of
-    no type names none to check, so the weakest grant that is still a grant is the bar: a role with no action at all
-    (``{}``, or empty buckets) is no grant on any type, and opens nothing, as the evaluator authorizes nothing through
-    it; a role acting somewhere may be what the listing shows.
+    no type names none to check, so the weakest grant that is still a grant is the bar: a role with no action of its
+    own type (``{}``, empty buckets, or only another type's actions) is no grant on any type, and opens nothing.
 
     :param permissions: a role's permissions
     :ptype permissions: Mapping[str, frozenset[str]]
@@ -126,8 +209,11 @@ def permissions_act_on(permissions: Mapping[str, frozenset[str]], namespace_type
     :rtype: bool
     """
     if namespace_type is None:
-        return any(permissions.values())
-    return bool(_granted_actions(permissions, namespace_type))
+        return any(
+            bool(actions) if bucket == WILDCARD_RESOURCE_TYPE else any(_action_acts_on(a, bucket) for a in actions)
+            for bucket, actions in permissions.items()
+        )
+    return any(_action_acts_on(action, namespace_type) for action in _granted_actions(permissions, namespace_type))
 
 
 class ActorType(StrEnum):

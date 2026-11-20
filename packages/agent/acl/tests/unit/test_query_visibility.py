@@ -297,7 +297,9 @@ def test_the_clause_admits_only_a_role_that_grants_where_its_scope_needs() -> No
     assert "JOIN roles vis_role ON vis_role.role_id = ra.role_id" in fragment
     assert "vis_bucket.key IN ($5, '*')" in fragment
     assert "vis_bucket.key IN (ns.namespace_type, '*')" in fragment
-    assert "vis_bucket.value <> '[]'::jsonb" in fragment
+    # which actions each arm counts (only an action of the type's own) is pinned by behaviour on a real database, where
+    # the clause and visible_customers admit the same customers for every scope and role
+    # (integration/test_query_visibility_roles.py::test_the_customer_set_a_listing_pages_within_is_the_set_the_clause_admits).
 
 
 def test_caller_clause_reaches_through_one_nesting_level() -> None:

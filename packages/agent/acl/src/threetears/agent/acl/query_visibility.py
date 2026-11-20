@@ -14,10 +14,15 @@ a row at customer_id ``X`` is visible to caller user ``$U`` iff
 row whose scope admits ``X`` and whose ROLE grants an action where that
 scope needs one.
 
-"grants an action on a type" mirrors :meth:`threetears.agent.acl.Role.actions_for`:
-the role's ``permissions`` carries a non-empty action list under the type's
-bucket or under the ``*`` wildcard bucket. the evaluator never authorizes an
-action through a role that carries none on the type.
+"grants an action on a type" is :func:`threetears.agent.acl.types.permissions_act_on`:
+among the actions :meth:`threetears.agent.acl.Role.actions_for` unions from the
+type's bucket and the ``*`` wildcard bucket, one that is the type's OWN action
+(named ``<type>.``, or a verb naming no type, ``read`` or
+``read_file_matching:<glob>``; spelled for SQL by
+:func:`threetears.agent.acl.types.action_acts_on_sql`). a bucket's non-emptiness
+is not enough: ``{"customer": ["group.read"]}`` holds an action on groups, and bound
+on a customer namespace it once opened every list of that customer (Pace's ruling
+2026-11-20, option A).
 
 - ``scope_type='all'`` admits every customer, when the role grants an
   action on the LISTED type. a fleet-wide grant reaches every customer's
@@ -80,7 +85,7 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH, WILDCARD_RESOURCE_TYPE
+from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH, WILDCARD_RESOURCE_TYPE, action_acts_on_sql
 
 __all__ = [
     "caller_visible_customer_clause",
@@ -122,16 +127,17 @@ def _caller_membership_predicate(param_offset: int) -> str:
 
 
 def _role_grants_type_predicate(type_sql: str) -> str:
-    """render the granting role carries an action on a type, as the evaluator reads it.
+    """render the granting role carries an action of a type's own on it: :func:`permissions_act_on` in SQL.
 
-    mirrors :meth:`threetears.agent.acl.Role.actions_for` over the ``vis_role`` alias (the
-    ``roles`` row joined on ``ra.role_id``): a non-empty action array under the
-    type's bucket, or under the ``*`` wildcard bucket. the role collection decodes a
-    ``permissions`` value stored as a JSON string (a double-encoded write) the same
-    as an object, and skips a bucket that is not a list, so the predicate does both;
-    a clause that read only the object form would hide rows the evaluator grants. the
-    emptiness test is a comparison rather than ``jsonb_array_length``: SQL does not
-    short-circuit ``AND``, and the length function raises on a scalar bucket.
+    over the ``vis_role`` alias (the ``roles`` row joined on ``ra.role_id``): an action under the
+    type's bucket, or under the ``*`` wildcard bucket (:meth:`threetears.agent.acl.Role.actions_for`'s
+    union), that :func:`action_acts_on_sql` the type -- named for it, or naming no type. the role
+    collection decodes a ``permissions`` value stored as a JSON string (a double-encoded write) the
+    same as an object, and skips a bucket that is not a list, so the predicate does both; a clause
+    that read only the object form would hide rows the evaluator grants. a bucket that is not an array
+    is read as an empty one rather than filtered beside it: SQL does not short-circuit ``AND``, and
+    ``jsonb_array_elements_text`` raises on a scalar. a JSON ``null`` element reads as ``'null'``, a
+    verb naming no type, as :func:`decode_role_permissions` reads it (``'None'``), so the two agree.
 
     :param type_sql: SQL naming the type: a ``$N`` placeholder bound to the listed
         type, or a trusted column reference such as ``ns.namespace_type``; never user input
@@ -141,14 +147,17 @@ def _role_grants_type_predicate(type_sql: str) -> str:
     """
     permissions = "(CASE WHEN jsonb_typeof(vis_role.permissions) = 'string' THEN (vis_role.permissions #>> '{}')::jsonb ELSE vis_role.permissions END)"
     wildcard = WILDCARD_RESOURCE_TYPE.replace("'", "''")
+    acts = action_acts_on_sql("COALESCE(vis_action.action, 'null')", type_sql)
     return f"""EXISTS (
                 SELECT 1
                   FROM jsonb_each(
                         CASE WHEN jsonb_typeof({permissions}) = 'object' THEN {permissions} ELSE '{{}}'::jsonb END
                        ) vis_bucket
+                 CROSS JOIN LATERAL jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof(vis_bucket.value) = 'array' THEN vis_bucket.value ELSE '[]'::jsonb END
+                       ) AS vis_action(action)
                  WHERE vis_bucket.key IN ({type_sql}, '{wildcard}')
-                   AND jsonb_typeof(vis_bucket.value) = 'array'
-                   AND vis_bucket.value <> '[]'::jsonb
+                   AND {acts}
             )"""
 
 
@@ -196,8 +205,10 @@ def caller_visible_customer_clause(
     ``$(param_offset + 1) = scope_namespace_type``).
 
     rows admitted when the caller has any role assignment whose scope
-    covers the row's customer and whose role grants an action (its type's
-    bucket or the ``*`` bucket, as :meth:`Role.actions_for` reads it)
+    covers the row's customer and whose role grants an action of the
+    type's own (its type's bucket or the ``*`` bucket, as
+    :meth:`Role.actions_for` reads it, each action counted only on the
+    type it names or, naming none, any type: :func:`permissions_act_on`)
     where that scope needs one:
 
     - scope_type='all' (platform admin), role grants on

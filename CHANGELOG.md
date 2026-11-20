@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-acl: a grant opens a customer's lists only through an action of the bound type's own
+
+**Fixed (security, narrows access):** `visible_customers` and `caller_visible_customer_clause` (and so
+`customer_scope_visibility_clause`, `three_scope_visibility_clause` and `visible_rows`) counted a grant whenever its
+role's bucket for the bound type was non-empty, whichever action the bucket held. A role holding only
+`{"customer": ["group.read"]}`, bound on a customer's `customers.<hex>` namespace, handed its holder that customer in
+every listing (agents, api keys, channels, groups, knowledge, ...) and every row of it through the clause, where a
+principal of the same customer with no grant saw nothing. A grant now counts only through an action of the type's
+OWN: one named `<type>.` (`customer.read`, `tool.call`), or a verb naming no type (`read`, `call`,
+`read_file_matching:**/*.yaml`), which acts on whatever type its bucket is. On every arm: a fleet-wide grant through
+an action of the listed type, a `type_customer` grant through one of its own type, a namespace grant through one of
+the namespace's type; `namespace_type=None` needs an action of its own type somewhere (a wildcard bucket's any
+action). Every role the hub and 3tears seed keeps the visibility it had (CustomerAdmin, CustomerMember, the datasource,
+channel, api-key, tool, model, memory, shared-agent and workspace roles, the storage and agent-data roles,
+PlatformBuiltinToolUser). What narrows: a role whose bucket holds only another type's actions -- the hub's
+GroupReader (`{"system": ["group.read"]}`) bound at scope `all` no longer opens every customer for a listing of no
+one type. The evaluator is unchanged: it still authorizes `group.read` on a namespace whose bucket holds it; only
+which customers' rows a grant lists narrows. **Added:** `threetears.agent.acl.types.action_acts_on_sql` (the rule's
+SQL spelling, held equal to the Python one on PostgreSQL and YugabyteDB) and `ACTION_ARGUMENT_SEPARATOR` (moved from
+`catalog`, where it was not exported). **Changed:** `permissions_act_on` counts an action only on its own type; it
+and `action_acts_on_sql` share the one definition in `types`. **Known, not fixed here:** a
+namespace grant opens its namespace's customer whatever customer the granted group belongs to, so a customer-B group
+holding SharedAgentInvoker on customer A's `shared_agent` namespace shows B's users every list of A, where the
+evaluator drops that group against A's namespace (held as a strict xfail in `test_query_visibility_roles.py`, left
+for a ruling).
+
 ### datasources: a catalog read leaves out a table in a schema its login cannot use
 
 `list_tables`, `list_columns` and `table_hashes` keep only the tables the datasource's login can

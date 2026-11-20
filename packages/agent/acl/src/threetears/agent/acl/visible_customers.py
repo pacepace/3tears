@@ -8,9 +8,10 @@ admits), and the page reads its rows by key with ``customer_id = ANY(<those cust
 ``LIMIT``. A platform-wide grant (``scope_type='all'``) whose role acts on the listed type narrows nothing (its
 fragment is ``TRUE``).
 
-**A grant counts only through its role**, as the evaluator reads it (:meth:`threetears.agent.acl.Role.actions_for`,
-:func:`threetears.agent.acl.types.permissions_act_on`): the role binding a grant is read beside it, and a grant whose
-role grants no action where its scope needs one is no grant. Read without its role, any assignment at scope
+**A grant counts only through its role**, by :func:`threetears.agent.acl.types.permissions_act_on`'s rule: the role
+binding a grant is read beside it, decoded as the evaluator decodes it (:meth:`threetears.agent.acl.Role.actions_for`),
+and a grant whose role grants no action of the type's own where its scope needs one is no grant -- narrower than the
+evaluator, which authorizes any action a bucket holds. Read without its role, any assignment at scope
 ``all`` -- a one-action system role, or a role with no action at all -- made every admin listing fleet-wide (the leak
 3tears #1276 closed in :func:`~threetears.agent.acl.caller_visible_customer_clause`, which this set must equal).
 """
@@ -125,12 +126,14 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
     one statement.
 
     The same set :func:`threetears.agent.acl.caller_visible_customer_clause` admits a row of for that type, each
-    grant through the role it binds (:func:`~threetears.agent.acl.types.permissions_act_on`, the evaluator's rule):
-    a platform-wide grant whose role acts on the type, a ``type_customer`` grant on the type whose role acts on it, or
-    a grant on a namespace of the customer whose role acts on that namespace's own type (a customer admin's grant on
-    the customer namespace opens every list of that customer). ``namespace_type`` None (a listing of no one type): a
-    platform-wide grant counts when its role grants any action at all, a ``type_customer`` grant when its role acts
-    on the grant's own type; a role with no action is no grant anywhere. The groups
+    grant through the role it binds (:func:`~threetears.agent.acl.types.permissions_act_on`: an action of the type's
+    own, each counted only on its own type): a platform-wide grant whose role acts on the type, a
+    ``type_customer`` grant on the type whose role acts on it, or a grant on a namespace of the customer whose role
+    acts on that namespace's own type (a customer admin's grant on the customer namespace opens every list of that
+    customer; ``{"customer": ["group.read"]}`` there holds an action on groups, and opens nothing). ``namespace_type``
+    None (a listing of no one type): a platform-wide grant counts when its role holds an action of its own type
+    anywhere, a ``type_customer`` grant when its role acts on the grant's own type; a role with none is no grant
+    anywhere. The groups
     are the caller's own (its memberships, ``idx_group_members_reverse``) and those they nest in, a level each, to
     :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups from the caller (the evaluator's walk); each reached group's grants are
     looked up by its key (``idx_role_assignments_group_scope``), and a namespace grant's namespace by its id
