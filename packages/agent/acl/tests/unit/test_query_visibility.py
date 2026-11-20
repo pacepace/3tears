@@ -355,27 +355,31 @@ class _Tables:
         self.reads: list[str] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        """answer the one capped walk :func:`visible_customers` sends: the caller's groups within the depth, each
-        beside its grants and a namespace grant's namespace's customer (a group with none kept, as LEFT joins keep
-        it)."""
+        """answer the one capped walk :func:`visible_customers` sends: every membership edge within the depth (each a
+        platform row: no customer), each beside its group's grants and a namespace grant's namespace's customer (an
+        edge whose group holds none kept, as LEFT joins keep it); every group and role a platform one."""
         self.reads.append(sql)
         assert sql.startswith("WITH RECURSIVE reached") and '"group_members"' in sql, sql
         # the discriminators are the code's own constants, written as literals (Const) so the generic plan caches
         assert "t.\"member_type\" = 'user'" in sql and "t.\"member_type\" = 'group'" in sql, sql
         start_kind, link_kind = "user", "group"
-        user, depth, _scopes = params
-        level = {g for t, m, g in self.members if t == start_kind and m == user}
-        reached = set(level)
+        user, depth, *_scopes = params
+        level = {(m, g) for t, m, g in self.members if t == start_kind and m == user}
+        edges = set(level)
         for _ in range(depth - 1):
-            level = {g for t, m, g in self.members if t == link_kind and m in level}
-            reached |= level
+            level = {(m, g) for t, m, g in self.members if t == link_kind and m in {above for _, above in level}}
+            edges |= level
         rows: list[dict[str, Any]] = []
-        for group in reached:
+        for member, group in edges:
             grants = [grant for grant in self.grants if grant["group_id"] == group] or [{}]
             for grant in grants:
                 namespace = grant.get("scope_namespace_id")
                 rows.append(
                     {
+                        "member_id": member,
+                        "customer_id": None,
+                        "group_customer_id": None,
+                        "role_customer_id": None,
                         "group_id": group,
                         **{
                             key: grant.get(key)

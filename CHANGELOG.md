@@ -26,11 +26,19 @@ one type. The evaluator is unchanged: it still authorizes `group.read` on a name
 which customers' rows a grant lists narrows. **Added:** `threetears.agent.acl.types.action_acts_on_sql` (the rule's
 SQL spelling, held equal to the Python one on PostgreSQL and YugabyteDB) and `ACTION_ARGUMENT_SEPARATOR` (moved from
 `catalog`, where it was not exported). **Changed:** `permissions_act_on` counts an action only on its own type; it
-and `action_acts_on_sql` share the one definition in `types`. **Known, not fixed here:** a
-namespace grant opens its namespace's customer whatever customer the granted group belongs to, so a customer-B group
-holding SharedAgentInvoker on customer A's `shared_agent` namespace shows B's users every list of A, where the
-evaluator drops that group against A's namespace (held as a strict xfail in `test_query_visibility_roles.py`, left
-for a ruling).
+and `action_acts_on_sql` share the one definition in `types`.
+
+### agent-acl: a grant crossing customers opens no list the evaluator would not authorize
+
+**Fixed (security, narrows access):** `visible_customers` and `caller_visible_customer_clause` now apply the
+evaluator's cross-customer wall, on every scope: a grant counts on customer X's rows only when every
+membership edge from the caller to the granting group, the granting group and the role name no customer or X (the
+evaluator's `_filter_memberships` and `_walk_assignments`). Before, a customer-B group holding SharedAgentInvoker on
+customer A's `shared_agent` namespace showed B's users every list of A, though the evaluator refuses that grant; and a
+fleet-wide grant reached through a customer's rows opened every customer, where the evaluator lets it reach that
+customer alone (it now opens that one). A platform group with platform membership rows, the one shape the hub admits
+for a cross-customer shared-agent grant, is unchanged. `visible_customers`' statement reads each membership edge's
+customer, the granting group's and the role's; the clause joins `groups` (alias `vis_group`).
 
 ### datasources: a catalog read leaves out a table in a schema its login cannot use
 

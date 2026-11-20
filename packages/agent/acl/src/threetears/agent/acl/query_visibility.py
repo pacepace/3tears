@@ -50,13 +50,21 @@ on a customer namespace it once opened every list of that customer (Pace's rulin
   admitting a customer off a subtree grant would widen row visibility
   on the strength of a grant that never mentioned one.
 
-the generator emits an ``EXISTS`` subquery joining
-``role_assignments`` + ``roles`` + ``group_members`` + ``namespaces``, parameterised
-by the caller's user_id. composes additively with other WHERE clauses
-via the ``param_offset`` knob (caller passes the next $N to allocate).
+every arm sits behind the evaluator's cross-customer wall: a grant admits
+a row of customer ``X`` only when every membership edge from the caller to
+the granting group, the granting group and the role name no customer or
+``X`` (the evaluator's ``_filter_memberships`` and ``_walk_assignments``).
+visibility is never broader than the evaluator: a customer-B group's grant
+on customer A's namespace admits nothing of A, and a fleet-wide grant
+reached through customer C's rows admits C's rows alone.
 
-the subquery's own aliases -- ``ra``, ``vis_role``, ``gm`` and ``gm2``...,
-``ns``, ``vis_bucket`` -- shadow a caller's alias of the same name inside
+the generator emits an ``EXISTS`` subquery joining
+``role_assignments`` + ``roles`` + ``group_members`` + ``groups`` + ``namespaces``,
+parameterised by the caller's user_id. composes additively with other WHERE
+clauses via the ``param_offset`` knob (caller passes the next $N to allocate).
+
+the subquery's own aliases -- ``ra``, ``vis_role``, ``vis_group``, ``gm`` and ``gm2``...,
+``ns``, ``vis_bucket``, ``vis_action`` -- shadow a caller's alias of the same name inside
 it, so the caller's ``customer_id_column`` must not name one. the role
 join is ``vis_role`` rather than ``r`` because callers alias their own
 listed table ``r`` (``dataset_runs r``): a short alias here would turn
@@ -96,7 +104,7 @@ __all__ = [
 log = get_logger(__name__)
 
 
-def _caller_membership_predicate(param_offset: int) -> str:
+def _caller_membership_predicate(param_offset: int, customer_sql: str) -> str:
     """render the caller-reaches-this-group predicate, nesting included.
 
     a caller reaches a granting group DIRECTLY, or through group nesting
@@ -116,14 +124,18 @@ def _caller_membership_predicate(param_offset: int) -> str:
     table's primary key -- so every hop is a keyed lookup rather than a
     scan. it is generated from the constant, never written per depth; the
     nested aliases are ``gm2``, ``gm3``, ... so a caller composing the
-    clause keeps clear of the ``gm`` prefix.
+    clause keeps clear of the ``gm`` prefix. every membership row on the
+    chain passes the evaluator's cross-customer wall (:func:`_customer_wall`),
+    as each edge of its walk does.
 
     :param param_offset: the ``$N`` placeholder bound to the caller's user id
     :ptype param_offset: int
+    :param customer_sql: the listed row's customer column, a TRUSTED identifier
+    :ptype customer_sql: str
     :return: boolean SQL expression over the ``gm`` join alias
     :rtype: str
     """
-    return _member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1, param_offset)
+    return _member_reaches_caller("gm", MAX_GROUP_MEMBERSHIP_DEPTH - 1, param_offset, customer_sql)
 
 
 def _role_grants_type_predicate(type_sql: str) -> str:
@@ -161,8 +173,27 @@ def _role_grants_type_predicate(type_sql: str) -> str:
             )"""
 
 
-def _member_reaches_caller(alias: str, edges_left: int, param_offset: int) -> str:
-    """the membership row ``alias`` names the caller, directly or through up to ``edges_left`` group edges.
+def _customer_wall(alias: str, customer_sql: str) -> str:
+    """the row ``alias`` names no customer, or the listed row's: the evaluator's cross-customer wall on one row.
+
+    the evaluator drops a membership row (``_filter_memberships``, on every edge of the walk), a granting group and a
+    customer-authored role (``_walk_assignments``) that name a customer other than the namespace's; a row naming none
+    (a platform row) passes everywhere. every arm here admits a row only through a namespace of the row's own customer,
+    so the namespace's customer is the listed row's.
+
+    :param alias: the joined row's alias: a ``group_members``, ``groups`` or ``roles`` row
+    :ptype alias: str
+    :param customer_sql: the listed row's customer column, a TRUSTED identifier
+    :ptype customer_sql: str
+    :return: boolean SQL expression over ``alias``
+    :rtype: str
+    """
+    return f"({alias}.customer_id IS NULL OR {alias}.customer_id = {customer_sql})"
+
+
+def _member_reaches_caller(alias: str, edges_left: int, param_offset: int, customer_sql: str) -> str:
+    """the membership row ``alias`` names the caller, directly or through up to ``edges_left`` group edges, every
+    edge inside the cross-customer wall (:func:`_customer_wall`).
 
     :param alias: the ``group_members`` alias whose row is tested
     :ptype alias: str
@@ -170,21 +201,24 @@ def _member_reaches_caller(alias: str, edges_left: int, param_offset: int) -> st
     :ptype edges_left: int
     :param param_offset: the ``$N`` placeholder bound to the caller's user id
     :ptype param_offset: int
+    :param customer_sql: the listed row's customer column, a TRUSTED identifier
+    :ptype customer_sql: str
     :return: boolean SQL expression over ``alias``
     :rtype: str
     """
+    wall = _customer_wall(alias, customer_sql)
     direct = f"({alias}.member_type = 'user' AND {alias}.member_id = ${param_offset})"
     if edges_left <= 0:
-        return f"({direct})"
+        return f"({wall} AND {direct})"
     child = f"gm{MAX_GROUP_MEMBERSHIP_DEPTH - edges_left + 1}"
-    nested = _member_reaches_caller(child, edges_left - 1, param_offset)
-    return f"""({direct}
+    nested = _member_reaches_caller(child, edges_left - 1, param_offset, customer_sql)
+    return f"""({wall} AND ({direct}
              OR ({alias}.member_type = 'group' AND EXISTS (
                     SELECT 1
                       FROM group_members {child}
                      WHERE {child}.group_id = {alias}.member_id
                        AND {nested}
-                )))"""
+                ))))"""
 
 
 def caller_visible_customer_clause(
@@ -264,8 +298,11 @@ def caller_visible_customer_clause(
           FROM role_assignments ra
           JOIN roles vis_role ON vis_role.role_id = ra.role_id
           JOIN group_members gm ON gm.group_id = ra.group_id
+          LEFT JOIN groups vis_group ON vis_group.group_id = ra.group_id
           LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-         WHERE {_caller_membership_predicate(param_offset)}
+         WHERE {_caller_membership_predicate(param_offset, customer_id_column)}
+           AND {_customer_wall("vis_group", customer_id_column)}
+           AND {_customer_wall("vis_role", customer_id_column)}
            AND (
                 (ra.scope_type = 'all'
                  AND {listed_grant})

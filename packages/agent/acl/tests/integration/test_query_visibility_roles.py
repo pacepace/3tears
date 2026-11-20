@@ -616,55 +616,207 @@ async def test_a_seeded_role_keeps_the_customer_its_own_action_opens(pg_pool: as
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "a namespace grant opens its namespace's customer whatever customer the granted GROUP belongs to: the "
-        "evaluator drops a customer-B group against customer A's namespace, the visible set does not. Left for Pace."
-    ),
-)
+#: a grant chain's customers, by the letter of the customer each row names (None for a platform row): the caller's
+#: membership row, the nesting edge above it (``"absent"``: the caller's group holds the grant itself), the granting
+#: group and the role. the evaluator's cross-customer wall (``evaluator._filter_memberships`` on every membership edge,
+#: ``_walk_assignments`` on the group and the role) drops each row naming a customer other than the namespace's.
+_CHAINS: dict[str, dict[str, str | None]] = {
+    "every row platform": {"member": None, "nested": "absent", "group": None, "role": None},
+    "nested, every row platform": {"member": None, "nested": None, "group": None, "role": None},
+    "the membership A's": {"member": "A", "nested": "absent", "group": None, "role": None},
+    "the membership B's": {"member": "B", "nested": "absent", "group": None, "role": None},
+    "the nesting edge A's": {"member": None, "nested": "A", "group": None, "role": None},
+    "the nesting edge B's": {"member": None, "nested": "B", "group": None, "role": None},
+    "the group A's": {"member": None, "nested": "absent", "group": "A", "role": None},
+    "the group B's": {"member": None, "nested": "absent", "group": "B", "role": None},
+    "the role A's": {"member": None, "nested": "absent", "group": None, "role": "A"},
+    "the role B's": {"member": None, "nested": "absent", "group": None, "role": "B"},
+    "membership and group B's": {"member": "B", "nested": "absent", "group": "B", "role": None},
+    "membership A's, group B's": {"member": "A", "nested": "absent", "group": "B", "role": None},
+}
+
+#: the scopes a chain's grant takes, each covering namespaces of customer A, or every namespace
+_WALL_SCOPES: tuple[str, ...] = ("namespace", "type_customer", "all")
+
+
+def _walled(chain: dict[str, str | None], scope: str) -> tuple[bool, set[str]]:
+    """the customers the evaluator lets ``chain``'s grant reach, by letter: ``(every customer, these)``.
+
+    a namespace of customer X is reached when no row of the chain names a customer other than X; a ``namespace`` or
+    ``type_customer`` grant covers customer A's namespaces only, a fleet-wide grant every customer's.
+
+    :param chain: the chain's customers
+    :ptype chain: dict[str, str | None]
+    :param scope: the grant's scope
+    :ptype scope: str
+    :return: ``(is_all, customers)``
+    :rtype: tuple[bool, set[str]]
+    """
+    named = {value for value in chain.values() if value not in (None, "absent")}
+    covered = {"A"} if scope != "all" else {"A", "B"}
+    reached = {customer for customer in covered if named <= {customer}}
+    is_all = scope == "all" and not named
+    return is_all, set() if is_all else reached
+
+
+async def _seed_chain(
+    conn: asyncpg.Connection, chain: dict[str, str | None], scope: str, customers: dict[str, uuid.UUID]
+) -> uuid.UUID:
+    """seed a caller whose grant reaches it through ``chain``'s rows, on ``scope``.
+
+    :param conn: open connection
+    :ptype conn: asyncpg.Connection
+    :param chain: the chain's customers, by letter
+    :ptype chain: dict[str, str | None]
+    :param scope: the grant's scope
+    :ptype scope: str
+    :param customers: each letter's customer
+    :ptype customers: dict[str, uuid.UUID]
+    :return: the caller
+    :rtype: uuid.UUID
+    """
+
+    def customer(letter: str | None) -> uuid.UUID | None:
+        """the customer a letter names, or None for a platform row.
+
+        :param letter: the letter, or None
+        :ptype letter: str | None
+        :return: the customer, or None
+        :rtype: uuid.UUID | None
+        """
+        return None if letter is None else customers[letter]
+
+    async def group(letter: str | None) -> uuid.UUID:
+        """seed one group of the customer ``letter`` names (a platform group for None).
+
+        :param letter: the group's customer, by letter
+        :ptype letter: str | None
+        :return: the group
+        :rtype: uuid.UUID
+        """
+        group_id = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ($1, $2, $3, $4)",
+            "platform" if letter is None else "customer",
+            group_id,
+            customer(letter),
+            f"group-{group_id.hex}",
+        )
+        return group_id
+
+    async def member(group_id: uuid.UUID, member_type: str, member_id: uuid.UUID, letter: str | None) -> None:
+        """seed one membership row naming the customer ``letter`` names.
+
+        :param group_id: the group joined
+        :ptype group_id: uuid.UUID
+        :param member_type: ``user`` or ``group``
+        :ptype member_type: str
+        :param member_id: the member
+        :ptype member_id: uuid.UUID
+        :param letter: the row's customer, by letter
+        :ptype letter: str | None
+        :return: nothing
+        :rtype: None
+        """
+        await conn.execute(
+            "INSERT INTO group_members (id, group_id, member_type, member_id, customer_id) VALUES ($1, $2, $3, $4, $5)",
+            uuid.uuid4(),
+            group_id,
+            member_type,
+            member_id,
+            customer(letter),
+        )
+
+    user_id = uuid.uuid4()
+    nested = chain["nested"] != "absent"
+    granting = await group(chain["group"])
+    bottom = await group(None) if nested else granting
+    await member(bottom, "user", user_id, chain["member"])
+    if nested:
+        await member(granting, "group", bottom, chain["nested"])
+    role_id = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO roles (role_id, name, permissions, customer_id) VALUES ($1, $2, $3::text::jsonb, $4)",
+        role_id,
+        f"role-{role_id.hex}",
+        json.dumps({"*": ["read"]}),
+        customer(chain["role"]),
+    )
+    namespace_id = await _namespace(conn, customers["A"], "shared_agent") if scope == "namespace" else None
+    await conn.execute(
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
+        " scope_namespace_type, scope_customer_id) VALUES ('platform', $1, $2, $3, $4, $5, $6, $7)",
+        uuid.uuid4(),
+        role_id,
+        granting,
+        scope,
+        namespace_id,
+        _LISTED if scope == "type_customer" else None,
+        customers["A"] if scope == "type_customer" else None,
+    )
+    return user_id
+
+
+@pytest.mark.parametrize("scope", _WALL_SCOPES)
+@pytest.mark.parametrize("chain", list(_CHAINS))
+async def test_a_grant_opens_only_the_customers_the_evaluators_wall_lets_it_reach(
+    pg_pool: asyncpg.Pool, chain: str, scope: str
+) -> None:
+    """Flips if either arm admits a customer the evaluator's cross-customer wall refuses the grant on, or refuses one
+    it lets through: a membership edge, the granting group or the role naming a customer other than the namespace's
+    counts for nothing there, and a platform row (no customer) passes everywhere. :func:`visible_customers` (for the
+    listed type and for no one type) and :func:`caller_visible_customer_clause` must both say exactly that."""
+    customers = {"A": uuid.uuid4(), "B": uuid.uuid4()}
+    async with pg_pool.acquire() as conn:
+        await _things(conn, *customers.values())
+        holder = await _seed_chain(conn, _CHAINS[chain], scope, customers)
+        clause_sees = await _visible(conn, holder)
+        typed = await visible_customers(conn, user_id=holder, namespace_type=_LISTED)
+        untyped = await visible_customers(conn, user_id=holder, namespace_type=None)
+
+    is_all, letters = _walled(_CHAINS[chain], scope)
+    expected = (is_all, {customers[letter] for letter in letters})
+    every = set(customers.values())
+    assert clause_sees == (every if is_all else expected[1]), (chain, scope)
+    assert (typed.is_all, set(typed.customer_ids)) == expected, (chain, scope)
+    assert (untyped.is_all, set(untyped.customer_ids)) == expected, (chain, scope)
+
+
 async def test_another_customers_group_holding_an_invoker_grant_opens_no_list_of_the_owner(
     pg_pool: asyncpg.Pool,
 ) -> None:
-    """a customer-B group holding SharedAgentInvoker on customer A's ``shared_agent`` namespace: does a B user see A?
+    """a customer-B group holding SharedAgentInvoker on customer A's ``shared_agent`` namespace opens no list of A.
 
     The evaluator drops a membership or a group naming a customer against a namespace of another customer, so the grant
-    authorizes nothing there; a visibility rule that counted it would show B's users every list of A.
+    authorizes nothing there; visibility counts it for nothing either.
     """
-    customer_a, customer_b = uuid.uuid4(), uuid.uuid4()
+    customers = {"A": uuid.uuid4(), "B": uuid.uuid4()}
     async with pg_pool.acquire() as conn:
-        await _things(conn, customer_a, customer_b)
-        shared_agent = await _namespace(conn, customer_a, "shared_agent")
-        invoker = await _role(conn, {"shared_agent": ["shared_agent.invoke"]})
-        user_id, group_id = uuid.uuid4(), uuid.uuid4()
-        await conn.execute(
-            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('customer', $1, $2, $3)",
-            group_id,
-            customer_b,
-            f"invokers-{group_id.hex}",
-        )
-        await conn.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id, customer_id)"
-            " VALUES ($1, $2, 'user', $3, $4)",
-            uuid.uuid4(),
-            group_id,
-            user_id,
-            customer_b,
-        )
-        await conn.execute(
-            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
-            " customer_id) VALUES ('customer', $1, $2, $3, 'namespace', $4, $5)",
-            uuid.uuid4(),
-            invoker,
-            group_id,
-            shared_agent,
-            customer_b,
-        )
-        clause_sees = await _visible(conn, user_id)
+        await _things(conn, *customers.values())
+        holder = await _seed_chain(conn, _CHAINS["membership and group B's"], "namespace", customers)
+        clause_sees = await _visible(conn, holder)
         set_sees = {
-            listing: set((await visible_customers(conn, user_id=user_id, namespace_type=listing)).customer_ids)
+            listing: set((await visible_customers(conn, user_id=holder, namespace_type=listing)).customer_ids)
             for listing in _LISTING_TYPES
         }
 
-    assert customer_a not in clause_sees
-    assert all(customer_a not in seen for seen in set_sees.values()), set_sees
+    assert clause_sees == set()
+    assert set_sees == {listing: set() for listing in _LISTING_TYPES}
+
+
+async def test_a_platform_group_holding_an_invoker_grant_opens_the_owners_lists(pg_pool: asyncpg.Pool) -> None:
+    """the shape the hub grants a shared agent across customers with (a platform group and platform membership rows,
+    the only one ``SHARED_AGENT_REQUIRES_PLATFORM_GROUP`` admits): the evaluator grants it on customer A's namespace, so
+    visibility opens A, for every listing type and through the clause."""
+    customers = {"A": uuid.uuid4(), "B": uuid.uuid4()}
+    async with pg_pool.acquire() as conn:
+        await _things(conn, *customers.values())
+        holder = await _seed_chain(conn, _CHAINS["every row platform"], "namespace", customers)
+        clause_sees = await _visible(conn, holder)
+        set_sees = {
+            listing: set((await visible_customers(conn, user_id=holder, namespace_type=listing)).customer_ids)
+            for listing in _LISTING_TYPES
+        }
+
+    assert clause_sees == {customers["A"]}
+    assert set_sees == {listing: {customers["A"]} for listing in _LISTING_TYPES}
