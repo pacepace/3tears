@@ -238,11 +238,21 @@ log = get_logger(__name__)
 #: the query for every table in scope. so each use sits behind a ``CASE`` on ``table_type``: SQL
 #: takes a ``CASE`` branch only when it applies, where the operands of an ``AND`` have no order.
 #:
+#: ``has_table_privilege`` also RAISES (``42501 permission denied for schema``) on a table in a
+#: schema the user has no USAGE on, and ``SVV_TABLES`` lists such tables all the same, so one such
+#: schema in the allow-list failed the read for every schema in it. the table check therefore runs
+#: only inside a ``CASE`` on ``has_schema_privilege(..., 'USAGE')``, which never raises for a schema
+#: that exists: a table in a schema the user cannot use is not selectable, and is logged as left out.
+#:
 #: the name is resolved against the CURRENT catalog, not the statement's snapshot, so a relation
 #: dropped or renamed mid-read raises ``42P01``; :func:`_privilege_rows` runs the statement again.
 #: the answer is a column (``selectable``), not a WHERE filter, so the driver can say what it left
 #: out for want of a grant (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
-_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+_SELECTABLE = (
+    "CASE WHEN has_schema_privilege(current_user, table_schema, 'USAGE') "
+    "THEN has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') "
+    "ELSE FALSE END"
+)
 
 
 #: list tables visible inside the schema allow-list.
@@ -292,7 +302,7 @@ ORDER BY table_schema, table_name
 #: python, every row outside the set this returns -- on the same connection, one statement
 #: after the other. ``SVV_COLUMNS`` carries no ``table_type`` to guard the check with, which
 #: is the other reason it cannot ride the column queries. a local table or view is kept only
-#: with its SELECT grant; an external table passes, its access being the external schema's
+#: with its SELECT grant and its schema's USAGE; an external table passes, its access being the external schema's
 #: USAGE (see :data:`_SELECTABLE`).
 _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE = (
     """

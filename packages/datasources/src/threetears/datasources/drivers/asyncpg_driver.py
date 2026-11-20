@@ -258,10 +258,18 @@ def _pool_start_budget_seconds(config: PostgresConnectionConfig | YugabyteConnec
 #: carries the OID, and for an OID that no longer exists the check answers NULL -- that relation
 #: is simply left out (``tests/integration/test_asyncpg_driver_live.py`` drops one mid-read).
 #:
+#: AND THE SCHEMA'S USAGE. a SELECT grant on a table in a schema the user has no USAGE on still
+#: answers true, and ``information_schema`` lists that table, but every read of it raises 42501;
+#: so the table counts only with its schema's USAGE (asked by the namespace's OID, which never
+#: raises). Redshift's check raises outright there instead (see its driver's ``_SELECTABLE``).
+#:
 #: the answer is a column (``selectable``: true, false, or NULL for vanished), not a WHERE
 #: filter, so the driver can say which relations it left out for want of a grant
 #: (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
-_SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
+_SELECTABLE = (
+    "(has_schema_privilege(current_user, rel.relnamespace, 'USAGE') "
+    "AND has_table_privilege(current_user, rel.oid, 'SELECT'))"
+)
 
 #: the snapshot's ``pg_class`` row behind an ``information_schema`` row aliased ``src``
 _RELATION_JOIN = (

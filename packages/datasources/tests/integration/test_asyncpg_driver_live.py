@@ -304,11 +304,17 @@ async def least_privilege_reader(
     try:
         await conn.execute(f'CREATE TABLE "{schema}"."secrets" (id integer, token text)')
         await conn.execute(f'CREATE TABLE "{schema}"."Gadgets" (id integer)')
+        # a killed run's leftover grant in this schema would block the role's drop
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}_nousage" CASCADE')
         await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
         await conn.execute(f"CREATE ROLE {_READER_ROLE} LOGIN PASSWORD '{_READER_PASSWORD}'")
         await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {_READER_ROLE}')
         await conn.execute(f'GRANT SELECT ON "{schema}"."widgets", "{schema}"."Gadgets" TO {_READER_ROLE}')
         await conn.execute(f'GRANT INSERT ON "{schema}"."secrets" TO {_READER_ROLE}')
+        # a table granted for SELECT in a schema the role has no USAGE on: every read of it raises 42501
+        await conn.execute(f'CREATE SCHEMA "{schema}_nousage"')
+        await conn.execute(f'CREATE TABLE "{schema}_nousage"."granted" (id integer)')
+        await conn.execute(f'GRANT SELECT ON "{schema}_nousage"."granted" TO {_READER_ROLE}')
         reader_url = (
             f"postgresql://{_READER_ROLE}:{_READER_PASSWORD}@{parsed['host']}:{parsed['port']}/{parsed['database']}"
         )
@@ -316,6 +322,7 @@ async def least_privilege_reader(
     finally:
         # the role owns no objects but holds grants on the schema; drop those first
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}_nousage" CASCADE')
         await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
         await conn.close()
 
@@ -341,6 +348,32 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         assert tables == {"widgets", "Gadgets"}
         assert columns == {"widgets", "Gadgets"}
         assert hashed == {"widgets", "Gadgets"}
+
+    @pytest.mark.asyncio
+    async def test_a_table_in_a_schema_without_usage_is_not_selectable(
+        self,
+        least_privilege_reader: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a SELECT grant on a table whose schema the user cannot use reads nothing: the catalog leaves it out.
+
+        Flips if: the selectable test asks the table's grant alone, which answers true for
+        ``granted`` while any SELECT of it raises 42501.
+        """
+        reader_url, schema = least_privilege_reader
+        config = _make_config_for_container(reader_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        both = [schema, f"{schema}_nousage"]
+        try:
+            tables = {(row["table_schema"], row["table_name"]) for row in await driver.list_tables(both)}
+            columns = {(row["table_schema"], row["table_name"]) for row in await driver.list_columns(both)}
+            hashed = set(await driver.table_hashes(both))
+        finally:
+            await driver.close()
+        expected = {(schema, "widgets"), (schema, "Gadgets")}
+        assert tables == expected
+        assert columns == expected
+        assert hashed == expected
 
     # PostgreSQL only: the race is staged by a REPEATABLE READ snapshot of PostgreSQL's catalog, which keeps showing a
     # table another session dropped. YugabyteDB's catalog reads follow its catalog version, not the snapshot, so the
