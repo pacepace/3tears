@@ -6,6 +6,53 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### enforcement: no-whole-reads counts an interpolated conjunct beside a key only in its own parentheses
+
+**Fixed (closes a gap in the gate):** a statement written as SQL was keyed by what the walk could see, whatever text
+was interpolated beside it, so `WHERE u.id = $1 AND {extra}` and a keyset page `WHERE {extra} AND (u.at, u.id) > ($1,
+$2) ... LIMIT 50` passed. But text interpolated bare may hold a top-level `OR`, which unbinds every predicate beside it
+and reads the table whole. Pace's ruling 2026-11-21: an interpolated conjunct the walk cannot see counts beside what it
+sees only as a whole conjunct in its own parentheses, `AND ({extra})` (or `NOT ({extra})`). Written bare (`AND
+{extra}`, `NOT {extra}`), inside parentheses it shares (`(a = $2 AND {extra})`), or as one branch of an `OR`
+(`({extra}) OR x`), it makes the read `unknown-predicate`, for reads, updates and deletes alike. So does one fused into
+a predicate rather than standing as all of one side of its comparison: `WHERE id = $1 {and_clause}`, `{extra} IS
+TRUE`, `NOT NOT {extra}`, `{a}{b}`. An interpolated column, value or name (`{col} = $1`, `k = {value}`, `t.{col}`) is
+no predicate and is judged as before. The fix at each site is the parentheses, or for a fused suffix, writing the
+interpolated conjunct as its own `AND ({it})`.
+
+The same reasoning closes the visible form: a level holding a top-level `OR` is now one disjunction, since SQL binds
+`AND` first. `WHERE k = $1 AND x = $2 OR flag = $3` reads `(k AND x) OR flag`, and is keyed only when every branch is
+(`k = $1 AND x = $2 OR k = $3 AND y = $4`); before, the `k = $1` in one branch keyed it, and `... AND id = $2 OR TRUE`
+passed. An `OR` in its own parentheses (`k = $1 AND (x = $2 OR y = $3)`) narrows as before.
+
+A read inside `source_change_read(unit="table")` is whole by its mark, so text it interpolates bare cannot widen it and
+it is admitted as before (`WHERE {cond}`, `WHERE x = 1 AND {cond}`). A read by the ids a source's runs record
+(`source_change_read(ids=...)`) beside a bare interpolation is not: those ids key nothing then.
+
+A keyset pager (`keyset_pages`) writes each `conditions` fragment in its own parentheses, and the walk now synthesizes
+its page the same way, so a fragment the walk cannot read no longer makes its purposed index read as unused.
+`holds_bare_interpolation` judges its predicate cleaned, as `judge_sql` does, so a parenthesis inside a literal or a
+comment neither hides nor fakes the parentheses an interpolation stands in.
+
+Unchanged: a visible non-key filter beside a key, the reviewed acl clause, the key generic code names (`{pk}`),
+sets spread into a 3tears filter builder (`**part.filters`, each its own `col IN (...)`), and keyed helpers' `where=`
+fragments. A helper ANDs each fragment inside its own parentheses, so a fragment holding bare text the walk cannot see
+is judged as one narrowing it cannot see: its own pins key nothing, the helper's `by` still does.
+
+**Added:** `threetears.enforcement.no_whole_reads.sql.holds_bare_interpolation`.
+
+**Changed:** the two sites in 3tears it named.
+- The change notes' page read (`_noted_keys_sql`) now writes its tenant and planner-restore conditions as `AND
+  ({tenant}) AND ({restored})`. Each is a fixed predicate the module builds, so the statement is unchanged.
+- A partitioned read's page (`threetears.datasources.partitioned_read`) wrote its key bounds fused, `AND
+  {lower}{upper}`. The statement now writes each bound in its own parentheses, and `_bound` answers the bare condition.
+  The text sent is unchanged.
+
+**Tests:** in `test_rewrite`, the `either` fixture's top-level `OR` is now keyed in each branch, so it still reaches
+the rewrite planner's own refusal rather than being refused first as the whole read it now is. In `test_walker`, the
+ok-runs arm of `_counted` (`status = '{_OK}'{role}`) is now `unknown-predicate` rather than `non-key-where`, since its
+role text is fused.
+
 ### enforcement: no-whole-reads trusts an acl visibility clause only when it is tied to `threetears.agent.acl`
 
 **Fixed (closes a gap in the gate):** in a keyed read's `visible=`, the no-whole-reads walk trusted any `.fragment(...)`

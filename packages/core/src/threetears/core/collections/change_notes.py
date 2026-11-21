@@ -501,7 +501,7 @@ def _noted_keys_sql(
         f"SELECT {_NOTED_MICROS} AS noted, {_KEYS_UNLESS_SPLIT if arrays else _SEPARATORS}, columns, "
         "char_length(key_text) + 7 * cardinality(keys) + 1 AS bytes, key_text "
         f"FROM {owner}.{quote_identifier(note_table(slot))} "  # noqa: S608
-        f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND {tenant} AND {_RESTORED} "
+        f"WHERE table_name = $1 AND noted_at > $3 AND noted_at <= $4 AND ({tenant}) AND ({_RESTORED}) "
         "ORDER BY noted_at LIMIT $5"
     )
 

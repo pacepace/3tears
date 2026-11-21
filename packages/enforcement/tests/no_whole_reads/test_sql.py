@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
-from threetears.enforcement.no_whole_reads.sql import Reader, is_sql, judge_sql
+from threetears.enforcement.no_whole_reads.sql import Reader, holds_bare_interpolation, is_sql, judge_sql
 
 #: the function the purposed index below names
 _DIGEST = "src/hub/schema_digest.py::SchemaDigest.refresh_active"
@@ -167,11 +167,12 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         "SELECT -1 AS ask, state, count(*) AS n FROM {} WHERE 1 = 0 GROUP BY state",
         "SELECT * FROM (SELECT a, k FROM t) AS d WHERE d.k = $1",
         "SELECT m.a FROM memories m WHERE m.id = $1 AND NOT EXISTS (SELECT 1 FROM memories g WHERE g.id = m.id)",
-        # what the walk can see keys it, whatever the interpolation adds; generic code names its key predicate
-        # a shape probe reads no row
+        # what the walk can see keys it, whatever the interpolation in its own parentheses adds (Pace 2026-11-21:
+        # a bare one is test_an_interpolated_conjunct_counts_only_in_its_own_parentheses's); generic code names its
+        # key predicate; a shape probe reads no row
         "SELECT * FROM t LIMIT 0",
         "SELECT a, flag FROM t WHERE flag = $1 LIMIT 0",
-        "SELECT a FROM t WHERE k = $1 AND {}",
+        "SELECT a FROM t WHERE k = $1 AND ({})",
         "SELECT a FROM {} WHERE {pk}",
         "SELECT * FROM pg_class",
         # SQLite's own catalog of a database's pages, bounded by the database, as pg_class is
@@ -197,6 +198,121 @@ def test_keyed_and_bounded_statements_pass(sql: str, schema: SchemaCatalog) -> N
 def test_a_keyset_page_passes(sql: str, schema: SchemaCatalog) -> None:
     """Flips if an ordered key range under a LIMIT, after a bound key prefix, is called whole."""
     assert _kinds(sql, schema) == []
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        # an interpolation that is a whole conjunct inside its own parentheses: whatever text it holds (an OR
+        # included) stays inside them, so what the walk can see still keys the read
+        ("SELECT a FROM t WHERE k = $1 AND ({})", []),
+        ("SELECT a FROM t WHERE ({}) AND k = $1", []),
+        ("SELECT a FROM t WHERE k = $1 AND (({}))", []),
+        ("SELECT a FROM t WHERE k = $1 AND NOT ({})", []),
+        ("UPDATE stamps SET v = $1 WHERE k = $2 AND ({})", []),
+        ("DELETE FROM t WHERE k = $1 AND ({})", []),
+        # beside it, a visible non-key filter and the reviewed acl clause stay what they were
+        ("SELECT a FROM t WHERE k = $1 AND flag = $2", []),
+        ("SELECT a FROM t WHERE k = $1 AND __keyed_fragment__ = $9", []),
+        # the key generic code names is no unseen text
+        ("SELECT a FROM {} WHERE {pk} = $1 AND ({})", []),
+        # bare: a top-level OR in the text would split the conjunction and unbind what the walk sees
+        ("SELECT a FROM t WHERE k = $1 AND {}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE {} AND k = $1", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND NOT {}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k > $1 AND {} ORDER BY k LIMIT $2", [("unknown-predicate", "t")]),
+        ("UPDATE stamps SET v = $1 WHERE k = $2 AND {}", [("unknown-predicate", "stamps")]),
+        ("DELETE FROM t WHERE k = $1 AND {}", [("unknown-predicate", "t")]),
+        # parentheses it shares are not its own: beside another predicate, or one branch of an OR
+        ("SELECT a FROM t WHERE k = $1 AND (flag = $2 AND {})", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND (({}) OR flag = $2)", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND ({}) OR flag = $2", [("unknown-predicate", "t")]),
+        # nothing seen keys it, parenthesized or not: unknown as it always was
+        ("SELECT a FROM t WHERE ({})", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE {}", [("unknown-predicate", "t")]),
+    ],
+)
+def test_an_interpolated_conjunct_counts_only_in_its_own_parentheses(
+    sql: str, expected: list[tuple[str, str]], schema: SchemaCatalog
+) -> None:
+    """Flips if an interpolation the walk cannot see, beside a predicate that keys the read, passes when it is not a
+    whole conjunct in its own parentheses (``AND {extra}``, ``NOT {extra}``, ``(a = 1 AND {extra})``,
+    ``({extra}) OR x``), or is refused when it is (``AND ({extra})``, ``NOT ({extra})``) -- Pace's ruling
+    2026-11-21: text interpolated bare may hold a top-level OR that unbinds the key the walk sees."""
+    assert _kinds(sql, schema) == expected
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        # fused into a predicate rather than standing as a conjunct: as bare as ``AND {}``
+        ("SELECT a FROM t WHERE k = $1 {}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND flag = $2 {}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND {} IS TRUE", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND {} IS NOT FALSE", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND NOT NOT {}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND {}{}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND flag = '_'{}", [("unknown-predicate", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND {} {} $2", [("unknown-predicate", "t")]),
+        ("DELETE FROM t WHERE k = $1 {}", [("unknown-predicate", "t")]),
+        # all of one side of a comparison (a column, a value, cast or not), or part of a name: not a predicate
+        ("SELECT a FROM t WHERE k = $1 AND {} = $2", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag = {}", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag = {}::text", []),
+        ("SELECT a FROM t WHERE k = $1 AND {} IS NULL", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag BETWEEN {} AND {}", []),
+        ("SELECT a FROM t WHERE k = $1 AND t.{} = $2", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag_{} = $2", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag = ANY({})", []),
+    ],
+)
+def test_an_interpolation_fused_into_a_predicate_is_bare(
+    sql: str, expected: list[tuple[str, str]], schema: SchemaCatalog
+) -> None:
+    """Flips if an interpolation at a predicate's own level that is neither a name nor all of one side of its
+    comparison (``k = $1 {extra}``, ``{extra} IS TRUE``, ``NOT NOT {extra}``, ``{a}{b}``) lets the key beside it
+    count, or if an interpolated column, value or name is taken for one (Pace's ruling 2026-11-21)."""
+    assert _kinds(sql, schema) == expected
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        # AND binds first: ``(k AND flag) OR flag``, so no branch's key keys the read
+        ("SELECT a FROM t WHERE k = $1 AND flag = $2 OR flag = $3", [("non-key-where", "t")]),
+        ("SELECT a FROM t WHERE k = $1 AND flag = $2 OR TRUE", [("non-key-where", "t")]),
+        ("SELECT a FROM t WHERE flag = $1 OR k = $2 AND flag = $3", [("non-key-where", "t")]),
+        ("DELETE FROM t WHERE k = $1 AND flag = $2 OR flag = $3", [("non-key-where", "t")]),
+        ("UPDATE stamps SET v = $1 WHERE k = $2 AND kind = $3 OR kind = $4", [("non-key-where", "stamps")]),
+        # an OR in its own parentheses only narrows; a disjunction keyed in every branch is keyed
+        ("SELECT a FROM t WHERE k = $1 AND (flag = $2 OR flag = $3)", []),
+        ("SELECT a FROM t WHERE k = $1 AND flag = $2 OR k = $3 AND flag = $4", []),
+        ("SELECT a FROM t WHERE k = $1 OR k = $2", []),
+    ],
+)
+def test_a_top_level_or_makes_its_level_one_disjunction(
+    sql: str, expected: list[tuple[str, str]], schema: SchemaCatalog
+) -> None:
+    """Flips if a key ANDed in one branch of a top-level OR keys the read (``k = $1 AND x = $2 OR flag = $3``, read
+    ``(k AND x) OR flag``), or an OR in its own parentheses, or one keyed in every branch, stops being keyed."""
+    assert _kinds(sql, schema) == expected
+
+
+@pytest.mark.parametrize(
+    ("predicate", "bare"),
+    [
+        ("t.note = '(' AND {}", True),
+        ("t.note = ')' AND {}", True),
+        ("t.k = $1 /* ( */ AND {}", True),
+        ("t.note = '(' AND ({})", False),
+        ("t.note = '(' AND {extra}", True),
+        ("t.note = '(' AND ({extra})", False),
+    ],
+)
+def test_a_bare_interpolation_is_found_past_a_parenthesis_in_a_literal_or_comment(predicate: str, bare: bool) -> None:
+    """Flips if a parenthesis inside a quoted literal or a comment hides, or fakes, the parentheses an interpolation
+    stands in: the predicate is judged cleaned, as judge_sql judges it."""
+    assert holds_bare_interpolation(predicate) is bare
 
 
 def test_a_key_prefix_passes_and_a_later_key_column_alone_does_not(schema: SchemaCatalog) -> None:
