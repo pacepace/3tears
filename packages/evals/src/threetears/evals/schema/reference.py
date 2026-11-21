@@ -50,13 +50,18 @@ class ReferenceEntity(EvalDocumentModel, CoreShapeModel):
 
 
 class ReferenceKey(EvalDocumentModel, CoreShapeModel):
-    """The entities a case's answer is graded against: a required core and the others that also count."""
+    """The entities a case's answer is graded against, a required core and the others that also count, and the context
+    entities a reply may state facts about that are never part of the answer."""
 
     type: Literal["entity_set"] = "entity_set"
     core: tuple[ReferenceEntity, ...] = ()
     acceptable: tuple[ReferenceEntity, ...] = ()
+    #: Entities outside the answer set whose facts a grader may check a reply against: a set grade never counts one,
+    #: found or missed. Left out of the document while empty, so a key without context is stored, digested and
+    #: identified exactly as before the tier existed.
+    context: tuple[ReferenceEntity, ...] = Field(default=(), exclude_if=lambda value: not value)
 
-    @field_validator("core", "acceptable", mode="after")
+    @field_validator("core", "acceptable", "context", mode="after")
     @classmethod
     def _entities_in_one_order(cls, entities: tuple[ReferenceEntity, ...]) -> tuple[ReferenceEntity, ...]:
         """Each part is a set: kept in one order, so writing it in another is the same key and the same case."""
@@ -64,16 +69,25 @@ class ReferenceKey(EvalDocumentModel, CoreShapeModel):
 
     @property
     def entities(self) -> tuple[ReferenceEntity, ...]:
-        """Every entity of the key, core first."""
+        """The answer set: every core and acceptable entity, core first. Never a context entity."""
         return (*self.core, *self.acceptable)
+
+    @property
+    def fact_entities(self) -> tuple[ReferenceEntity, ...]:
+        """Every entity whose facts the key states, in all three tiers: core, then acceptable, then context.
+
+        What a grader checking a reply's statements reads; a set grade reads :attr:`entities`, the answer set, alone.
+        """
+        return (*self.core, *self.acceptable, *self.context)
 
     @model_validator(mode="after")
     def _one_entity_per_name(self) -> Self:
-        """Refuse a key with no entity, or a name or alias that folds alike for two entities."""
+        """Refuse a key with no entity in its answer set, or a name or alias that folds alike for two entities in any
+        tier."""
         if not self.entities:
             raise ValueError("a reference key names at least one entity, in core or acceptable")
         owner: dict[str, str] = {}
-        for entity in self.entities:
+        for entity in self.fact_entities:
             for said in {fold_name(n) for n in (entity.name, *entity.aliases)}:
                 if said in owner:
                     raise ValueError(f"{said!r} names both {owner[said]!r} and {entity.name!r}")

@@ -1222,6 +1222,17 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.TurnMessage",
         "threetears.evals.schema.TurnReply",
         "threetears.evals.schema.TurnToolSpec",
+        # Promoted for Discodon's set grader (#1292): the set-grader group it builds and declares per graded set
+        # (discodon #3458), its own matcher's argument types and exact tier (#3465), and the key as plain text its
+        # hedged-claim grader renders for its own model step. EntityMatcher, SetGrade, FoldingMatcher and the match
+        # and provenance shapes stay provisional: Discodon imports none of them.
+        "threetears.evals.kernel.EXTRACTED_SET_FAMILY",
+        "threetears.evals.kernel.EntityExtractor",
+        "threetears.evals.kernel.NamedEntity",
+        "threetears.evals.kernel.SetGrader",
+        "threetears.evals.kernel.reference_material",
+        "threetears.evals.schema.ReferenceKey",
+        "threetears.evals.schema.fold_name",
     }
 )
 

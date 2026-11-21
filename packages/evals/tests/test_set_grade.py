@@ -41,12 +41,16 @@ from threetears.evals.kernel import (
     CandidateOutput,
     CellSink,
     EntityExtractor,
+    EntityMatch,
     FoldingMatcher,
+    MatchRefusal,
     NamedEntity,
     RoleUsageLedger,
     EntityMatcher,
+    SetCredit,
     SetGrade,
     SetGrader,
+    SetRefusal,
 )
 from threetears.evals.kernel.host import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor, measure_definition_digests
@@ -139,6 +143,37 @@ def test_an_unverified_name_is_listed_and_never_counted_against_recall() -> None
     assert with_more.verified_share < without.verified_share
     judged = {d.name for d in _GRADER.descriptors() if d.higher_is_better is not None}
     assert judged == {"picks_recall", "picks_core_recall"}
+
+
+def test_a_context_entity_never_counts_in_a_set_grade_named_or_missed() -> None:
+    """The key's context tier carries facts, never answers: a set grade reads the answer set alone, so a key with
+    context counts every output exactly as the same key without it, and a context entity named is unverified, listed
+    apart as refused with the reason ``context``."""
+    with_context = ReferenceKey.model_validate(
+        {
+            **_KEY.model_dump(mode="json"),
+            "context": [{"name": "Mary Shelley", "aliases": ["Mary Wollstonecraft Shelley"]}, {"name": "Homer"}],
+        }
+    )
+    assert [e.name for e in with_context.entities] == [e.name for e in _KEY.entities], "context is outside the set"
+
+    for names in [(), ("Frankenstein", "Beloved"), ("Frankenstein", "Mary Shelley", "Homer", "An unlisted novel")]:
+        assert _grade(*names, key=with_context).model_dump(exclude={"refusals"}) == _grade(*names).model_dump(
+            exclude={"refusals"}
+        ), names
+        assert _measures(_grade(*names, key=with_context)) == _measures(_grade(*names)), names
+
+    grade = _grade("Frankenstein", "Mary Shelley", "Homer", key=with_context)
+    assert (grade.named, grade.verified, grade.key_size) == (3, 1, 4)
+    assert grade.found == ("Frankenstein",)
+    assert grade.unverified_names == ("Mary Shelley", "Homer")
+    assert grade.refusals == (
+        SetRefusal(written="Mary Shelley", reason="context"),
+        SetRefusal(written="Homer", reason="context"),
+    )
+    assert grade.unlisted_names == ()
+    assert FoldingMatcher().match(NamedEntity(name="mary shelley"), with_context) == MatchRefusal(reason="context")
+    assert _grade("Homer").refusals == (), "the same name against a key without context is one the key lacks"
 
 
 def test_only_recall_and_core_recall_judge_quality_and_the_rest_are_diagnostics() -> None:
@@ -269,6 +304,138 @@ def test_a_matcher_that_names_an_entity_the_key_lacks_is_refused() -> None:
         _grade("Frankenstein", matcher=_NamesWhatTheKeyLacks())
 
 
+def test_a_matcher_that_answers_a_context_entity_is_refused_since_context_is_no_answer() -> None:
+    key = ReferenceKey.model_validate({**_KEY.model_dump(mode="json"), "context": [{"name": "Ulysses"}]})
+
+    with pytest.raises(ValueError, match="'Ulysses', which the key does not hold"):
+        _grade("Frankenstein", key=key, matcher=_NamesWhatTheKeyLacks())
+
+
+class _TieredMatcher:
+    """A host matcher that gives reasons: an exact tier, a one-word partial tier, and an ambiguous refusal.
+
+    ``plain`` answers the same decisions as a bare name or None, the shape a matcher without reasons returns, so the
+    two can be graded side by side.
+    """
+
+    def __init__(self, *, plain: bool = False) -> None:
+        self._plain = plain
+
+    @property
+    def identity(self) -> str:
+        return "tiers-v1"
+
+    def match(self, named: NamedEntity, key: ReferenceKey) -> str | EntityMatch | MatchRefusal | None:
+        said = named.name.casefold()
+        for entity in key.entities:
+            if said in {name.casefold() for name in (entity.name, *entity.aliases)}:
+                return entity.name if self._plain else EntityMatch(entity=entity.name, reason="exact")
+        starts = [entity.name for entity in key.entities if entity.name.casefold().startswith(said)]
+        if len(starts) == 1:
+            return starts[0] if self._plain else EntityMatch(entity=starts[0], reason="partial")
+        if len(starts) > 1 and not self._plain:
+            return MatchRefusal(reason="ambiguous")
+        return None
+
+
+#: A key where "Odyssey" starts two entities, so the tiered matcher refuses it as ambiguous.
+_TWO_STARTS = ReferenceKey.model_validate(
+    {"core": [{"name": "Frankenstein"}, {"name": "Odyssey of Homer"}], "acceptable": [{"name": "Odyssey Two"}]}
+)
+
+
+def test_a_grade_records_which_written_name_earned_which_entity_and_how() -> None:
+    grade = SetGrader(_PREFIX, reader_label="Picks", matcher=_TieredMatcher()).grade(
+        _named("frankenstein", "Frankenstein", "Odyssey Tw", "Odyssey", "A novel", "frankenstein"), _TWO_STARTS
+    )
+
+    assert grade.credits == (
+        SetCredit(written="frankenstein", entity="Frankenstein", reason="exact"),
+        SetCredit(written="Frankenstein", entity="Frankenstein", reason="exact"),
+        SetCredit(written="Odyssey Tw", entity="Odyssey Two", reason="partial"),
+    )
+    assert grade.unverified_names == ("Odyssey", "A novel")
+    assert grade.refusals == (SetRefusal(written="Odyssey", reason="ambiguous"),)
+    assert grade.unlisted_names == ("A novel",), "a refused name is kept apart from the names the key lacks"
+
+
+def test_the_default_gives_one_reason_for_every_credit() -> None:
+    grade = _grade("the modern prometheus", "Beloved", "An unlisted novel")
+
+    assert grade.credits == (
+        SetCredit(written="the modern prometheus", entity="Frankenstein", reason="folded"),
+        SetCredit(written="Beloved", entity="Beloved", reason="folded"),
+    )
+    assert (grade.refusals, grade.unlisted_names) == ((), ("An unlisted novel",))
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        (),
+        ("Frankenstein",),
+        ("Odyssey",),
+        ("frankenstein", "Odyssey", "Odyssey Tw", "A novel", "odyssey", "Odyssey Two"),
+    ],
+)
+def test_reasons_and_refusals_move_no_count_reading_or_definition(names: tuple[str, ...]) -> None:
+    """A refusal is still an unverified pick (``set grade v1``): a matcher that gives reasons and refusals counts every
+    output exactly as one deciding the same and answering a bare name or None, so readings graded either way pool."""
+    reasons = SetGrader(_PREFIX, reader_label="Picks", matcher=_TieredMatcher())
+    plain = SetGrader(_PREFIX, reader_label="Picks", matcher=_TieredMatcher(plain=True))
+
+    rich, bare = reasons.grade(_named(*names), _TWO_STARTS), plain.grade(_named(*names), _TWO_STARTS)
+
+    provenance = {"credits", "refusals"}
+    assert rich.model_dump(exclude=provenance) == bare.model_dump(exclude=provenance)
+    assert rich.host_measures() == bare.host_measures()
+    assert measure_definition_digests(reasons.descriptors()) == measure_definition_digests(plain.descriptors())
+    assert rich.formula == "set grade v1 | matcher tiers-v1 | extractor structured"
+    assert bare.refusals == () and all(credit.reason is None for credit in bare.credits)
+
+
+def test_a_grade_with_its_provenance_round_trips_through_its_stored_json() -> None:
+    """A host stores the whole grade as JSON (a kind's payload): the provenance serializes like every other field."""
+    grade = SetGrader(_PREFIX, reader_label="Picks", matcher=_TieredMatcher()).grade(
+        _named("Frankenstein", "Odyssey", "A novel"), _TWO_STARTS
+    )
+    stored = grade.model_dump(mode="json")
+
+    assert stored["credits"] == [{"written": "Frankenstein", "entity": "Frankenstein", "reason": "exact"}]
+    assert stored["refusals"] == [{"written": "Odyssey", "reason": "ambiguous"}]
+    assert SetGrade.model_validate(stored) == grade
+
+
+def test_a_grade_stored_before_provenance_still_reads() -> None:
+    before = _grade("Frankenstein", "An unlisted novel").model_dump(mode="json", exclude={"credits", "refusals"})
+
+    read = SetGrade.model_validate(before)
+
+    assert (read.credits, read.refusals, read.unlisted_names) == ((), (), ("An unlisted novel",))
+
+
+def test_provenance_that_contradicts_the_counts_is_refused() -> None:
+    stored = _grade("Frankenstein", "An unlisted novel").model_dump(mode="json")
+
+    with pytest.raises(ValueError, match="each entity found is credited"):
+        SetGrade.model_validate({**stored, "credits": [{"written": "Beloved", "entity": "Beloved"}]})
+    with pytest.raises(ValueError, match="not distinct unverified names"):
+        SetGrade.model_validate({**stored, "refusals": [{"written": "Frankenstein", "reason": "ambiguous"}]})
+
+
+def test_a_match_with_a_reason_naming_an_entity_the_key_lacks_is_refused() -> None:
+    class _ReasonedButWrong:
+        @property
+        def identity(self) -> str:
+            return "defective-v2"
+
+        def match(self, named: NamedEntity, key: ReferenceKey) -> EntityMatch:
+            return EntityMatch(entity="Ulysses", reason="exact")
+
+    with pytest.raises(ValueError, match="'Ulysses', which the key does not hold"):
+        _grade("Frankenstein", matcher=_ReasonedButWrong())
+
+
 def test_a_changed_matcher_identity_changes_every_measure_definition() -> None:
     default = measure_definition_digests(_GRADER.descriptors())
     host = measure_definition_digests(_descriptors(matcher=_ArticleDroppingMatcher()))
@@ -380,7 +547,7 @@ def test_the_default_folds_case_and_compatibility_forms_and_keeps_accents(
 
     hit = FoldingMatcher().match(NamedEntity(name=named), key)
 
-    assert hit == (written if matches else None)
+    assert hit == (EntityMatch(entity=written, reason="folded") if matches else None)
     assert FoldingMatcher().identity == "fold-v1"
 
 

@@ -136,12 +136,16 @@ answer key by accident. To grade against a reference answer, render the referenc
 
 A case on the engine path can carry its answer key as data: a reference key, the entities a good answer names. It
 holds a required core and the other entities that also count, each with the other names it goes by and checkable facts
-with their sources. The host writes it as `reference` on the case's `SeedTemplateCase`, or in a
+with their sources, and names at least one core or acceptable entity, since it is the answer set a set grade reads. It
+may also carry `context`: entities outside the answer set whose facts a grader may check a reply against. A set grade
+never counts a context entity, found or missed, so one a reply names reads unverified, as any name outside the answer
+set does. The host writes it as `reference` on the case's `SeedTemplateCase`, or in a
 `template_cases/*.json` corpus file. It is part of the case: editing it makes a new case, which drift reads as stale
 and which never pools with the old one. Writing its entities in another order, or an alias twice, is the same key.
 Your kind renders it for each judge that grades against it with
 `reference_material` (provisional), appended to the case material. The text opens by telling the judge that an entity
-outside the key is unverified, not wrong, since a key rarely lists everything that counts. Never hand the key to the
+outside the key is unverified, not wrong, since a key rarely lists everything that counts, and renders the context
+last, under "Context (facts only; not answers):", only when the key has one. Never hand the key to the
 candidate. A code measure reads it from the case directly.
 
 ```python
@@ -1162,6 +1166,13 @@ the host declares it on its measure registry.
 **Matching is the host's to replace.** The default matches a name or alias after folding case and Unicode
 compatibility forms (`É` is `é`, `ﬁ` is `fi`). It keeps accents (`é` is not `e`) and reads no word list, since both
 are rules of a language. A host binds its own normaliser to the grader as an `EntityMatcher`, which sees the whole key.
+
+**A grade shows how each credit was earned.** A matcher answers a key entity's name, an `EntityMatch` carrying the
+rule that found it (a tier label), a `MatchRefusal` carrying why it declined a name (`ambiguous`), or None. The grade
+records each credited spelling with its entity and reason (`SetGrade.credits`), and the refused picks with their reasons
+(`SetGrade.refusals`), apart from the names the key does not hold (`SetGrade.unlisted_names`). A refusal is still an
+unverified pick, so reasons move no count and no measure definition. The default gives every credit the reason
+`folded`, and refuses a name that is one of the key's context entities with the reason `context`.
 
 ## What to read next
 
