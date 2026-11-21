@@ -8,15 +8,18 @@ packages (bumped in lock-step).
 
 ### evals: a judge-graded measure no longer passes or fails a trial
 
-**Fixed:** a check (a boolean, or a pass/fail scorer, with a better end) fails its trial on its value alone, and so
-moves the ranked pass rate, but the pass rule read every check whatever its family. A host measure in a
+**Fixed:** a host's check (a boolean, or a pass/fail scorer, with a better end) fails its trial on its value alone,
+and so moves the ranked pass rate, but the pass rule read every such check whatever its family. A host measure in a
 `graded_by="judge"` family could therefore fail trials and move pass^k, though nothing ranks on a judge-graded number
-and no judge identity or check stood behind it. `MeasureRegistry` now refuses such a check at startup, naming the
-measure, its family and the rule: in a host family declared `graded_by="judge"`, and in the engine's judged families
-(`rubric`, `dual_axis`, `composite`). The pass rule (pass^k and a report's census of trials) no longer reads a check in
-an engine judged family or in no family at all. An undirected boolean and a directed numeric reading in a judged family
-are declared as before, and a check in a code-graded family, the engine's or a host's, fails its trials exactly as it
-did. Stored shapes, digests and pages are unchanged.
+and no judge identity or check stood behind it. `MeasureRegistry` now refuses such a measure at startup, naming the
+measure, its family and the rule, whether the host's family is declared `graded_by="judge"` or the measure names one of
+the engine's judged families (`rubric`, `dual_axis`, `composite`). This closes only that route. Rubric dimensions gate
+trials exactly as before, through their scores and the rubric threshold, and no existing eval's pass^k, census of
+trials, bar or report line moves: no measure the engine or a known host declares is a check in a judge-graded family.
+`MetricDescriptor.is_check` stays the one definition the pass rule and every report surface read; it now also answers
+False for such a measure, so a page never names a pass criterion the pass rule ignores. An undirected boolean and a
+directed numeric reading in a judged family are declared as before, and a check in a code-graded family, the engine's
+or a host's, fails its trials exactly as it did. Stored shapes, digests and pages are unchanged.
 
 **For hosts:** a registry that declares a directed boolean or pass/fail measure in a judge-graded family now fails to
 build. Declare the family `graded_by="code"` if code made the number, or drop the measure's better end

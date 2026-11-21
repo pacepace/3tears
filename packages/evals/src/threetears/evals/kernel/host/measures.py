@@ -153,7 +153,11 @@ class MeasureRegistry(HostAttributed):
             # carries no judge identity and no check of the judge behind it here, and nothing ranks on one
             # (`is_code_graded`), so a check in such a family would rank by the back door. Refused at startup, by
             # name, rather than filtered out of the pass rule where no host would see it go.
-            if descriptor.is_check and descriptor.family is not None and graded_by.get(descriptor.family) == "judge":
+            # Read off the shape, not `is_check`: that answers False in an engine judged family, the very case named here.
+            check_shaped = descriptor.higher_is_better is not None and (
+                descriptor.data_type == "boolean" or descriptor.pass_fail
+            )
+            if check_shaped and descriptor.family is not None and graded_by.get(descriptor.family) == "judge":
                 shape = "a pass/fail scorer" if descriptor.pass_fail else "a boolean"
                 defects.append(
                     f"{descriptor.name} is a check ({shape} with a better end) in family {descriptor.family}, which "
