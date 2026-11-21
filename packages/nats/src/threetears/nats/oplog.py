@@ -61,6 +61,7 @@ from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
 from threetears.nats.errors import OpLogError, OpLogSequenceConflict, PublishTimeoutError
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
+from threetears.nats.raw_errors import api_description, api_err_code
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
@@ -300,7 +301,7 @@ class OpLog:
         try:
             await js.add_stream(config=config_for(_NUM_REPLICAS))
         except APIError as exc:
-            if exc.err_code != _REPLICAS_UNSUPPORTED_ERR_CODE:
+            if api_err_code(exc) != _REPLICAS_UNSUPPORTED_ERR_CODE:
                 raise OpLogError(f"create op-log stream failed: stream={stream}: {exc!r}") from exc
             log.warning(
                 "JetStream broker is non-clustered; op-log stream downgraded R3 -> 1 replica",
@@ -378,7 +379,7 @@ class OpLog:
                 stream=self._stream,
             )
         except APIError as exc:
-            if exc.err_code != _WRONG_LAST_SEQUENCE_ERR_CODE:
+            if api_err_code(exc) != _WRONG_LAST_SEQUENCE_ERR_CODE:
                 # Some other JetStream 4xx/5xx (bad stream, bad subject, ...): not a CAS
                 # conflict -- never swallow it as one.
                 raise OpLogError(f"op-log append failed: stream={self._stream} op_id={op_id}: {exc!r}") from exc
@@ -390,7 +391,7 @@ class OpLog:
                 return AppendResult(seq=existing_seq, deduplicated=True)
             raise OpLogSequenceConflict(
                 f"op-log append rejected by expected-last-sequence CAS: stream={self._stream} "
-                f"op_id={op_id} expected_last_seq={expected_last_seq}: {exc.description}"
+                f"op_id={op_id} expected_last_seq={expected_last_seq}: {api_description(exc)}"
             ) from exc
         except _BOUNDED_CALL_FAILURES as exc:
             raise OpLogError(f"op-log append failed: stream={self._stream} op_id={op_id}: {exc!r}") from exc

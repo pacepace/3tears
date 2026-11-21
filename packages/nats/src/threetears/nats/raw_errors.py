@@ -32,6 +32,8 @@ from threetears.nats.errors import KvBucketNotFoundError
 
 __all__ = [
     "JS_ERR_STREAM_NOT_FOUND",
+    "api_description",
+    "api_err_code",
     "is_bucket_not_found",
     "is_key_not_found",
     "is_nats_error",
@@ -119,3 +121,30 @@ def is_key_not_found(exc: BaseException) -> bool:
     :rtype: bool
     """
     return isinstance(exc, (_NatsKeyNotFoundError, _NatsKeyDeletedError))
+
+
+def api_err_code(exc: BaseException) -> int | None:
+    """the JetStream error code an API error carries, or ``None``.
+
+    nats-py's ``KeyNotFoundError`` and ``KeyDeletedError`` are ``APIError`` subclasses whose constructors set no
+    ``err_code``: read as ``exc.err_code`` they raised AttributeError inside the very handler judging them (the hub's
+    write-mark reconciler's lease create, every such pass: local burst replay, 0.95.0 gate 1).
+
+    :param exc: what a nats-py call raised
+    :ptype exc: BaseException
+    :return: the code, or ``None`` when it carries none
+    :rtype: int | None
+    """
+    code = getattr(exc, "err_code", None)
+    return code if isinstance(code, int) else None
+
+
+def api_description(exc: BaseException) -> str:
+    """the description an API error carries, or ``""`` (as :func:`api_err_code`, for the subclasses that set none).
+
+    :param exc: what a nats-py call raised
+    :ptype exc: BaseException
+    :return: the description
+    :rtype: str
+    """
+    return str(getattr(exc, "description", None) or "")

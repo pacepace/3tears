@@ -122,6 +122,7 @@ from threetears.nats._nats_py_internals import (
     write_pending_then_ping,
 )
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
+from threetears.nats.raw_errors import api_err_code
 from threetears.nats.receipt import ReceiptBacklog
 from threetears.nats.credential_refusal import CredentialRefusal
 from threetears.nats.renewal_request import CredentialRenewalRequest
@@ -6557,11 +6558,11 @@ class NatsClient:
         try:
             await js.add_stream(config)
         except _NatsJsAPIError as exc:
-            if exc.err_code == _JS_ERR_SUBJECTS_OVERLAP:
+            if api_err_code(exc) == _JS_ERR_SUBJECTS_OVERLAP:
                 raise StreamSubjectsOverlapError(
                     f"cannot create object store {full_name!r}: its subjects are claimed by a different stream"
                 ) from exc
-            if exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
+            if api_err_code(exc) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise ObjectStoreError(f"declaring object store {full_name!r} failed: {exc}") from exc
             # name in use: the bucket is live with another shape (an identical one creates idempotently)
             try:

@@ -15,7 +15,7 @@ from datetime import timedelta
 import pytest
 from nats.errors import ConnectionClosedError as NatsConnectionClosedError
 from nats.errors import MaxPayloadError as NatsMaxPayloadError
-from nats.js.errors import APIError
+from nats.js.errors import APIError, KeyNotFoundError
 
 from threetears.nats import (
     KvError,
@@ -139,3 +139,14 @@ async def test_any_other_failure_stays_a_plain_kv_error_saying_whether_the_serve
         await bucket.put(key="k", value=b"v")
     assert not isinstance(raised.value, (KvFullError, KvStoreExhaustedError, KvValueTooLargeError))
     assert raised.value.server_error_code == server_error_code
+
+
+async def test_a_key_not_found_is_never_misread_as_a_refusal_for_room() -> None:
+    """Flips if a create the server answers "key not found" (nats-py's KeyNotFoundError, an APIError that sets no
+    ``err_code`` or ``description``) crashes the room check with AttributeError: the hub's write-mark reconciler's
+    lease create died so on every such pass (local burst replay, 0.95.0 gate 1)."""
+    bucket, _, _ = _bucket(KeyNotFoundError())
+    with pytest.raises(Exception) as raised:
+        await bucket.create(key="k", value=b"v")
+    assert not isinstance(raised.value, AttributeError), raised.value
+    assert not isinstance(raised.value, (KvFullError, KvStoreExhaustedError, KvValueTooLargeError))
