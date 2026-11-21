@@ -48,18 +48,23 @@ def test_a_version_mapped_part_way_raises_its_own_error_and_unmaps_what_it_mappe
     assert _fds() == before, "a version mapped part way left descriptors open"
 
 
-def test_a_let_go_frees_its_tables_handing_the_lock_over_between_them(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_let_go_frees_its_tables_handing_the_lock_over_between_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Flips if the let-go frees a version's tables leaving the event loop to the switch interval between them: an idle
     reader letting 2236 lent files go held the loop 20-31 ms (the let-go loop-timing test, bound 20 ms)."""
-    looked: list[int] = []
+    store = SharedArrowStore(tmp_path / "shm", max_bytes=1 << 30)
+    part = pa.table({"a": pa.array(range(4), pa.int64())})
+    store.publish("v1", {"long": Parts(schema=part.schema, parts={f"p{index:03d}": part for index in range(5)})})
+    mapped = MappedVersion(store.root, "v1")
+    freed = len(mapped.by_inode) + len(mapped.tables)
+    turns: list[int] = []
 
     class _Turns:
         def take(self) -> None:
-            looked.append(len(held))
+            turns.append(1)
 
     monkeypatch.setattr(shared_arrow, "LoopTurns", _Turns, raising=False)
-    part = pa.table({"a": pa.array(range(4), pa.int64())})
-    held = [part] * 5
-    shared_arrow._free_in_turns(held)  # noqa: SLF001 - the let-go's one freeing step
-    assert held == []
-    assert looked == [4, 3, 2, 1, 0], "a table was freed without a turn after it"
+    mapped.close()
+    assert freed >= 6
+    assert len(turns) == freed, "a table was freed without a turn after it"

@@ -2948,7 +2948,14 @@ class _ProxyTransaction:
         """
         try:
             response = await begin
-        except Exception:  # prawduct:allow prawduct/broad-except -- NOSILENT: a begin that failed or went unanswered opened no session to end here
+        except (
+            Exception
+        ) as exc:  # prawduct:allow prawduct/broad-except -- said, never raised: no caller waits for this task
+            contain(
+                exc,
+                log=_logger,
+                what="a begin for a cancelled caller failed or went unanswered; it opened no session to end",
+            )
             return
         tx_id = response.get("tx_id")
         if not response.get("success", False) or not isinstance(tx_id, str):
