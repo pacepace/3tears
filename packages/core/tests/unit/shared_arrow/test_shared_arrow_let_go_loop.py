@@ -15,8 +15,9 @@ holds few rows, so the test writes little, and frees as many arrays as the pod's
 from __future__ import annotations
 
 import asyncio
+import resource
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pyarrow as pa
@@ -56,6 +57,40 @@ def _part(seed: int) -> pa.Table:
 
 #: the parts' names, in order
 _NAMES = [f"p{index:05d}" for index in range(PARTS)]
+
+
+#: the descriptors a measurement holds at once: a reader maps one file a part and holds its descriptor while mapped
+#: (the held version's every file, the idle reader's lent ones beside the next version's), and the store and the
+#: DuckDB connection theirs, with room to spare
+OPEN_FILES = 4 * PARTS
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _open_files() -> Iterator[None]:
+    """the process's soft open-files limit raised to :data:`OPEN_FILES` for these tests, and put back after.
+
+    A host's default (1024 on a Linux runner) is under one version's files: the reads failed there with "Too many
+    open files" (brooks-5950x, 2026-11-21), a limit of the host, not a descriptor these tests or the store leak (a
+    reader's descriptors all close as it lets a version go). The serving pod runs under its container's limit, far
+    above a version's files. A hard limit under what a measurement needs is said, never measured short.
+
+    :return: the limit held for the module
+    :rtype: Iterator[None]
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard < OPEN_FILES:
+        pytest.fail(
+            f"this host's hard open-files limit is {hard}, under the {OPEN_FILES} a measurement maps at once: raise "
+            "the runner's nofile limit"
+        )
+    raised = soft != resource.RLIM_INFINITY and soft < OPEN_FILES
+    if raised:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (OPEN_FILES, hard))
+    try:
+        yield
+    finally:
+        if raised:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
 @pytest.fixture(scope="module")

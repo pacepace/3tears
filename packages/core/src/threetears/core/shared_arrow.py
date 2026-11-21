@@ -114,6 +114,7 @@ from threetears.core.eviction import (
     policy_declare,
     policy_lookup,
 )
+from threetears.core.loop_turns import LoopTurns
 from threetears.core.processes import exit_with_parent, name_process, start_worker_server
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
@@ -1609,22 +1610,28 @@ def _map_pinned(path: str, pin: _Pin | None) -> Any:
 
 
 def _free_in_turns(held: list[Any]) -> None:
-    """let go of ``held``'s tables one at a time, last first, emptying the list: between two, any other thread waiting
-    for the interpreter lock (the event loop) takes its turn.
+    """let go of ``held``'s tables one at a time, last first, emptying the list, the thread handing the interpreter
+    lock over whenever it has held it its share (:class:`~threetears.core.loop_turns.LoopTurns`).
 
     Freeing a table frees every array it is the last to hold in one cascade of deallocations in C, during which no
     other thread runs; a dictionary of tables freed whole is one cascade for all of them, as long as every array of a
-    version (its files times their columns). One table at a time is one cascade a table, and the waiting thread takes
-    the lock at the next switch interval between two. The caller drops its own references first, so each table goes
-    here, never with the mapping that held it.
+    version (its files times their columns). One table at a time is one cascade a table. The caller drops its own
+    references first, so each table goes here, never with the mapping that held it.
+
+    WHY the turns: between two tables the waiting event loop was left to CPython's switch interval, and on a busy
+    host it is often not the thread handed the lock: an idle reader letting its 2236 lent files of 200 columns go held
+    the loop 20-31 ms past the host's own lateness, each free 0.05 ms (a 10-core Apple host, 2026-11-21; the bound is
+    20 ms). Handed over every half millisecond, no stretch of the let-go held it past 8 ms there.
 
     :param held: the tables, the one to free first last; emptied
     :ptype held: list[pa.Table]
     :return: nothing
     :rtype: None
     """
+    turns = LoopTurns()
     while held:
         held.pop()
+        turns.take()
 
 
 def _free_lent(lent: dict[Any, Any]) -> None:
@@ -1683,6 +1690,12 @@ class MappedTables:
     ) -> None:
         self.name = name
         self._path = path
+        # set before anything is mapped, so a constructor that fails part way unmaps what it mapped (:meth:`_unmap`)
+        # and raises its own error; unset, the unmap raised AttributeError in its place (a runner out of descriptors
+        # mapping a version's 2240 files was reported as a missing attribute, 2026-11-21)
+        self.tables: Mapping[str, Any] = MappingProxyType({})
+        self._by_inode: dict[Any, Any] = {}
+        self._maps: list[Any] = []
         self._descriptor: int | None = None
         #: the cached lock a kept mapping holds in place of the read lock while it waits for its next read
         #: (:meth:`MappedVersion.park`)
@@ -1691,15 +1704,13 @@ class MappedTables:
             self._descriptor = _locked(path, fcntl.LOCK_SH)
             if self._descriptor is None:
                 raise LookupError(f"shared Arrow {name!r} is gone")
-        self._maps: list[Any] = []
         #: the pinned directory's lock, freed once this is closed and the last buffer over its files is
         pinned: _Pin | None = None
         if pin:
             descriptor = _locked(path, fcntl.LOCK_SH)
             pinned = None if descriptor is None else _Pin(descriptor)
         #: each file's table, by the file's identity (:func:`_mapped_files`), for a later version's mapping to take
-        #: (``reuse``)
-        self._by_inode: dict[Any, Any] = {}
+        #: (``reuse``): ``_by_inode``, set above
         held = reuse or {}
         pieces: dict[str, list[Any]] = {}
         try:
@@ -1721,7 +1732,7 @@ class MappedTables:
             raise
         # a table in parts is its parts' chunks side by side: concatenating tables copies no buffer
         tables = {name: held[0] if len(held) == 1 else pa.concat_tables(held) for name, held in pieces.items()}
-        self.tables: Mapping[str, Any] = MappingProxyType(tables)
+        self.tables = MappingProxyType(tables)
 
     @property
     def by_inode(self) -> Mapping[Any, Any]:
