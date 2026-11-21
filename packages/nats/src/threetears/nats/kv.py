@@ -96,7 +96,7 @@ from threetears.nats.change_log import (
 )
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
-from threetears.nats.raw_errors import is_bucket_not_found
+from threetears.nats.raw_errors import api_description, api_err_code, is_bucket_not_found
 from threetears.nats.subject_permissions import kv_stream_name
 
 if TYPE_CHECKING:
@@ -489,8 +489,8 @@ def _refusal_for_its_room_or_size(cause: BaseException) -> _RoomOrSizeRefusal | 
         return KvValueTooLargeError
     if not isinstance(cause, APIError):
         return None
-    code = cause.err_code
-    description = str(cause.description or "").lower()
+    code = api_err_code(cause)
+    description = api_description(cause).lower()
     if code == _JS_ERR_STORE_FAILED and _MAX_BYTES_EXCEEDED in description:
         return KvFullError
     if code in _JS_ERR_ACCOUNT_LIMIT_REACHED:
@@ -535,7 +535,7 @@ def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
         refusal = _refusal_for_its_room_or_size(cause)
         error = KvError(message) if refusal is None else refusal(message, bucket=bucket)
     if isinstance(cause, APIError):
-        error.server_error_code = cause.err_code
+        error.server_error_code = api_err_code(cause)
     elif isinstance(cause, KvError):
         error.server_error_code = cause.server_error_code
     return error
@@ -1377,8 +1377,8 @@ def _is_stream_temporarily_unavailable(exc: BaseException | None) -> bool:
     :rtype: bool
     """
     return isinstance(exc, APIError) and (
-        exc.err_code in _JS_ERR_STREAM_TEMPORARILY_UNAVAILABLE
-        or (isinstance(exc, ServiceUnavailableError) and exc.err_code is None)
+        api_err_code(exc) in _JS_ERR_STREAM_TEMPORARILY_UNAVAILABLE
+        or (isinstance(exc, ServiceUnavailableError) and api_err_code(exc) is None)
     )
 
 
@@ -2524,7 +2524,7 @@ class NatsKvBucket:
                 failure=failure,
             )
         except APIError as exc:
-            if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
+            if api_err_code(exc) in _JS_ERR_WRONG_LAST_SEQUENCE:
                 log.debug(
                     "KV update lost: revision mismatch",
                     extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
@@ -2587,7 +2587,7 @@ class NatsKvBucket:
         except APIError as exc:
             # nats-py maps a lost compare-and-set to KeyWrongLastSequenceError on put and update
             # but not on delete, where the server's refusal arrives as a bare BadRequestError
-            if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
+            if api_err_code(exc) in _JS_ERR_WRONG_LAST_SEQUENCE:
                 log.debug(
                     "KV delete lost: revision mismatch",
                     extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
@@ -2630,7 +2630,7 @@ class NatsKvBucket:
                 failure=failure,
             )
         except APIError as exc:
-            if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
+            if api_err_code(exc) in _JS_ERR_WRONG_LAST_SEQUENCE:
                 log.debug(
                     "KV delete lost: revision mismatch",
                     extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
@@ -2639,14 +2639,14 @@ class NatsKvBucket:
             log.warning(
                 "KV delete: the stream refused the lapsing purge marker (err_code=%s: %s), so the key is "
                 "deleted plainly and its marker stays until the bucket's owner sweeps it",
-                exc.err_code,
-                exc.description,
+                api_err_code(exc),
+                api_description(exc),
                 extra={
                     "extra_data": {
                         "bucket": self._full_name,
                         "key": key,
-                        "err_code": exc.err_code,
-                        "description": exc.description,
+                        "err_code": api_err_code(exc),
+                        "description": api_description(exc),
                     }
                 },
             )
@@ -3989,13 +3989,13 @@ class NatsChangeLog:
         try:
             await self._call(lambda: js.add_stream(config(wanted)), "change log create")
         except APIError as exc:
-            if exc.err_code == _JS_ERR_REPLICAS_UNSUPPORTED and wanted > 1:
+            if api_err_code(exc) == _JS_ERR_REPLICAS_UNSUPPORTED and wanted > 1:
                 log.warning(
                     "the broker is not clustered; the change log is created on one replica",
                     extra={"extra_data": {"stream": self._stream}},
                 )
                 await self._call(lambda: js.add_stream(config(1)), "change log create")
-            elif exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
+            elif api_err_code(exc) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise KvError(f"change log {self._stream} could not be created: {exc}") from exc
         except _BOUNDED_CALL_FAILURES as exc:
             raise KvError(f"change log {self._stream} could not be created: {exc}") from exc

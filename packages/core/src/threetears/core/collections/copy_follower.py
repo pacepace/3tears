@@ -1695,6 +1695,9 @@ class CopyFollower:
             #: a table with no scope: the keys its partitions replace, for the checkpoint's patch
             replaced: set[tuple[str, ...]] = set()
             clashed = False
+            #: whether this pass handed the backend a page of keys, of rows: a stage is made by its first page, so a
+            #: partition that staged none must not name it (the apply failed on the missing table, every pass after)
+            keys_made = rows_made = False
             #: prefixes the copy holds a row of a held scope in: they wait for the write, the rest are read now
             waiting: list[dict[str, str]] = []
             for columns, lead, batch in _prefix_batches(table.key, parts):
@@ -1728,6 +1731,7 @@ class CopyFollower:
                         mine.select(list(table.key)),
                         rows_stage=rows_stage,
                     )
+                    keys_made = True
                 pages = keyset_arrow_pages(
                     self._l3,
                     f"SELECT {selected} FROM {quote_identifier(name)}",  # noqa: S608 - trusted identifiers
@@ -1761,6 +1765,7 @@ class CopyFollower:
                         rows_stage=rows_stage,
                     )
                     await asyncio.to_thread(self._backend.stage_rows, rows_stage, name, page, table.key)
+                    keys_made = rows_made = True
                 if clashed:
                     break
             if clashed:
@@ -1776,14 +1781,19 @@ class CopyFollower:
                 self._staged_touched.setdefault(name, set()).update(replaced)
             self._partitions_staged.setdefault(name, []).extend(dict(p) for p in parts if dict(p) not in waiting)
             was = self._staged.get(name)
-            self._staged[name] = StagedChange(
-                table=name,
-                key=table.key,
-                keys=keys_stage,
-                rows=rows_stage,
-                whole=was is not None and was.whole,
-                whole_kind=None if was is None else was.whole_kind,
-            )
+            # each stage named only once a page made it, here or by an earlier pass's change of the table: partitions
+            # neither the copy nor L3 holds a row of change nothing, and stage nothing
+            keys_named = keys_stage if keys_made or (was is not None and was.keys is not None) else None
+            rows_named = rows_stage if rows_made or (was is not None and was.rows is not None) else None
+            if was is not None or keys_named is not None or rows_named is not None:
+                self._staged[name] = StagedChange(
+                    table=name,
+                    key=table.key,
+                    keys=keys_named,
+                    rows=rows_named,
+                    whole=was is not None and was.whole,
+                    whole_kind=None if was is None else was.whole_kind,
+                )
             del partitions[name]
             self._reading = None
 
