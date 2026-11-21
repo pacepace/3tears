@@ -1,4 +1,4 @@
-"""The stored shapes of claim grading (#1287, C1): what a template, a trace and a result may carry, and what they refuse.
+"""The stored shapes of claim grading (#1287): what a template, a trace and a result may carry, and what they refuse.
 
 - **What carries none of it stores, digests and fingerprints exactly as before.** Pinned first, on the build before
   the shapes existed: a template's stored document and both its digests, a judge evidence's fingerprint, and a
@@ -380,7 +380,7 @@ def test_a_web_budget_whose_windows_could_outgrow_their_share_of_the_trace_is_re
             {"claim_criteria": [_criterion(name="conversation.tone")]}, "owns its name", id="a-dimension's-name"
         ),
         pytest.param(
-            {"claim_criteria": [_criterion(name="conversation.tone")], "rubric": _dims("conversation.tone_x")},
+            {"claim_criteria": [_criterion(name="conversation.tone")], "rubric": ("conversation.tone_x",)},
             "conversation.tone_x",
             id="a-dimension-named-like-a-reading",
         ),
@@ -404,6 +404,10 @@ def test_a_web_budget_whose_windows_could_outgrow_their_share_of_the_trace_is_re
 def test_a_criterion_owns_its_name_and_every_reading_name_in_the_template(
     changes: dict[str, Any], refusal: str
 ) -> None:
+    # A rubric is named in the parameters and built here, so collecting this module builds no template (and reads no
+    # clock) at import.
+    if "rubric" in changes:
+        changes = {**changes, "rubric": _dims(*changes["rubric"])}
     with pytest.raises(ValidationError, match=refusal):
         make_template(**changes)
 
