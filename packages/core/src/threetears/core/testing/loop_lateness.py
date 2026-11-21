@@ -112,13 +112,17 @@ async def main():
     ticks = array.array("d")
     stop = asyncio.Event()
     asyncio.get_running_loop().add_reader(sys.stdin.fileno(), stop.set)
-    sys.stdout.write("ticking\\n")
-    sys.stdout.flush()
+    announced = False
     while not stop.is_set():
         asked = time.perf_counter()
         await asyncio.sleep(0.001)
         ticks.append(asked)
         ticks.append(time.perf_counter())
+        if not announced:
+            # Said only once a tick is recorded: every moment after the caller hears it has a host tick under it.
+            sys.stdout.write("ticking\\n")
+            sys.stdout.flush()
+            announced = True
     sys.stdout.buffer.write(ticks.tobytes())
     sys.stdout.flush()
 

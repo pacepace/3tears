@@ -66,6 +66,15 @@ def test_a_tick_with_no_host_baseline_at_its_moment_is_refused() -> None:
         added_lateness([(1.0, 1.002)], [(0.0, 0.001), (0.001, 0.002)])
 
 
+def test_the_host_has_ticked_before_it_says_it_is_ticking() -> None:
+    """a caller's first moment after entering already has a host tick under it, however late the ticker's process was
+    to start: on a loaded runner a ticker that announced before its first tick left the caller's first ticks with no
+    baseline, and the judgement refused them."""
+    with HostTicker() as host:
+        entered = time.perf_counter()
+    assert host.ticks and host.ticks[0][1] <= entered, (host.ticks[:1], entered)
+
+
 @pytest.mark.loop_timing
 async def test_the_host_ticks_through_the_loops_ticks_and_a_planted_block_is_the_loops() -> None:
     """the host's ticker spans the loop's ticks with no gap past a tick, and 30 ms held on the loop is counted as
