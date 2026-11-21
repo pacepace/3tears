@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### models: the current OpenAI and Anthropic models are registered with their prices
+
+**Added:** capability entries for `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna` (OpenAI) and
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` (Anthropic), registered on `threetears.models`' import
+path, so `get_capabilities(<id>)` prices their calls: USD per 1M tokens, input/output, from OpenRouter's catalogue of
+2026-11-20: sol 2/10, astra 8/40, terra 1/5, luna 0.10/0.50, opus 4/20, sonnet 2/10, haiku 0.10/0.50. Each declares
+`accepts_temperature=False`: all seven refused a temperature on the live APIs that day. `gpt-6.2-sol` also refuses
+`max_tokens` (it takes `max_completion_tokens` only); no capability field carries that yet, so it is recorded in a
+comment at the entry. Context windows, output caps, vision and reasoning settings were not verified, so they stay
+`None`.
+
 ### core, epoch, nats: a change-log read a pod's tenants cannot make is a wiring error, said at ERROR
 
 **Changed:** a pod's change-log reader that names no key for a table (a pod of no schema asked for a schema table), or

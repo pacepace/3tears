@@ -29,6 +29,7 @@ json matching this schema". Dispatch across providers lives in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from anthropic import transform_schema
@@ -287,6 +288,8 @@ def create_anthropic_chat(
 # the docs say sampling parameters were REMOVED (a 400); where the docs say
 # "allowed" it is left None, so a caller sends it and learns from a refusal
 # rather than trusting a static True that a later model rev could break.
+#: a price per 1M tokens over this is the price per token
+_PER_MILLION = Decimal(1_000_000)
 _ANTHROPIC_EFFORTS_THROUGH_XHIGH = ["low", "medium", "high", "xhigh", "max"]
 _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
     "claude-opus-4-8": ModelCapabilities(
@@ -389,6 +392,66 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         adaptive_reasoning=False,
         reasoning_disable=True,
         structured_output=True,
+    ),
+    # the 5-5 family. prices: OpenRouter's catalogue, 2026-11-20 (https://openrouter.ai/api/v1/models),
+    # USD per 1M tokens (input/output), stored per token. temperature: refused (a 400) by the live API for
+    # every one of these, verified 2026-11-20, so False.
+    "claude-opus-5-5": ModelCapabilities(
+        model_name="claude-opus-5-5",
+        provider_name=ANTHROPIC_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=True,
+        supports_openai_auto_cache=False,
+        min_cacheable_tokens=1024,
+        cache_ttl_seconds=300,
+        # the family's request surface; context window, output cap, vision and reasoning not
+        # verified for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("4") / _PER_MILLION,
+        cost_per_output_token=Decimal("20") / _PER_MILLION,
+    ),
+    "claude-sonnet-5-5": ModelCapabilities(
+        model_name="claude-sonnet-5-5",
+        provider_name=ANTHROPIC_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=True,
+        supports_openai_auto_cache=False,
+        min_cacheable_tokens=1024,
+        cache_ttl_seconds=300,
+        # the family's request surface; context window, output cap, vision and reasoning not
+        # verified for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("2") / _PER_MILLION,
+        cost_per_output_token=Decimal("10") / _PER_MILLION,
+    ),
+    "claude-haiku-5-5": ModelCapabilities(
+        model_name="claude-haiku-5-5",
+        provider_name=ANTHROPIC_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.SMALL,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=True,
+        supports_openai_auto_cache=False,
+        min_cacheable_tokens=1024,
+        cache_ttl_seconds=300,
+        # the family's request surface; context window, output cap, vision and reasoning not
+        # verified for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("0.10") / _PER_MILLION,
+        cost_per_output_token=Decimal("0.50") / _PER_MILLION,
     ),
 }
 
