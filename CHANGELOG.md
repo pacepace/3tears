@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### testing: the host's idle-loop ticker says it is ticking only once it has ticked
+
+**Fixed:** `HostTicker` announced itself before its first tick, so on a loaded runner the first ticks a caller took
+after entering could come before any host tick, and `added_lateness` refused them ("no host baseline at that
+moment"), which `trusted()` does not catch. Seen in discodon's port of this helper on its CI runners. The ticker
+now records a tick before it announces, so every moment after `__enter__` returns has a host tick under it.
+`test_the_host_has_ticked_before_it_says_it_is_ticking` pins that; on an idle host it fails on the old ticker. No API change.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and
