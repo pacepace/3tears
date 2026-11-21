@@ -340,9 +340,7 @@ class TruthVerdict:
     nominated_by: Literal["judge"] | None
 
 
-def truth_verdict(
-    citations: Sequence[ClaimCitation], *, suspect: bool, web: WebOutcome | None = None
-) -> TruthVerdict:
+def truth_verdict(citations: Sequence[ClaimCitation], *, suspect: bool, web: WebOutcome | None = None) -> TruthVerdict:
     """The verdict table: case support always reads supported, case contradiction contradicted, and the web decides
     only a claim no case evidence bears on that the model doubts.
 
@@ -392,35 +390,26 @@ def graded_claims(
         )
     graded: list[GradedClaim] = []
     for claim, finding in zip(claims, verification.findings, strict=True):
-        base = {
-            "segment": claim.segment,
-            "unit": claim.unit,
-            "claim": claim.claim,
-            "excerpt": claim.excerpt,
-            "start": claim.start,
-            "end": claim.end,
-            "scope": claim.scope,
-            "specific": claim.specific,
-            "hedged": claim.hedged,
-            "attributed": claim.attributed,
-            "restates": claim.restates,
-        }
+        # The extractor's fields are the stored claim's own: where it stands, the proposition and its tags.
+        base: dict[str, Any] = claim.model_dump()
         if finding is None:
-            graded.append(GradedClaim(**base))
+            graded.append(GradedClaim.model_validate(base))
             continue
         verdict = truth_verdict(finding.truth_citations, suspect=finding.suspect)
         graded.append(
-            GradedClaim(
-                **base,
-                truth_citations=finding.truth_citations,
-                ground_citations=finding.ground_citations,
-                suspect=finding.suspect,
-                nominated_by=verdict.nominated_by,
-                verdict=verdict.verdict,
-                graded_against=verdict.graded_against,
-                grounded=finding.grounded,
-                evidence_conflict=verdict.evidence_conflict,
-                decided_by=calls_before + finding.truth_call,
+            GradedClaim.model_validate(
+                {
+                    **base,
+                    "truth_citations": finding.truth_citations,
+                    "ground_citations": finding.ground_citations,
+                    "suspect": finding.suspect,
+                    "nominated_by": verdict.nominated_by,
+                    "verdict": verdict.verdict,
+                    "graded_against": verdict.graded_against,
+                    "grounded": finding.grounded,
+                    "evidence_conflict": verdict.evidence_conflict,
+                    "decided_by": calls_before + finding.truth_call,
+                }
             )
         )
     return tuple(graded)
@@ -532,6 +521,7 @@ def _batches(claims: Sequence[ExtractedClaim]) -> list[tuple[int, ...]]:
     units: dict[int, list[int]] = {}
     outside: list[int] = []
     for position, claim in enumerate(claims):
+        # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         if claim.scope != "world" or claim.restates is not None:
             continue
         if claim.unit is None:
@@ -749,10 +739,13 @@ class ClaimVerifier:
             if original is not None and not (
                 original < position and cell[original].scope == claim.scope and cell[original].restates is None
             ):
-                raise ValueError(f"claim {position} restates claim {original}, which is no earlier original of its scope")
+                raise ValueError(
+                    f"claim {position} restates claim {original}, which is no earlier original of its scope"
+                )
         batches = _batches(cell)
         if not batches:
             return Verification((), (), (), tuple(None for _ in cell))
+        # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         world = [claim for claim in cell if claim.scope == "world"]
         facts = [] if key is None else [(entity.name, fact) for entity in key.fact_entities for fact in entity.facts]
         names = [] if key is None else [name for entity in key.fact_entities for name in (entity.name, *entity.aliases)]
@@ -1052,7 +1045,10 @@ def _passage_citation(ref: str, cited: _Cited, passage: _Passage) -> tuple[Claim
         )
     quote = document.text[span[0] : span[1]]
     if len(quote) > CLAIM_QUOTE_CHARS:
-        return None, f"its quote of {ref} runs {len(quote)} characters; a quote is one sentence or row of at most {CLAIM_QUOTE_CHARS}"
+        return (
+            None,
+            f"its quote of {ref} runs {len(quote)} characters; a quote is one sentence or row of at most {CLAIM_QUOTE_CHARS}",
+        )
     spans: dict[str, TextSpan] = {}
     for what, words in (("subject", cited.subject), ("value", cited.value)):
         if words is None or not words.strip():
@@ -1099,6 +1095,7 @@ def _findings(
     """One finding per claim: a world original's own, a restatement its original's, a session claim None."""
     findings: list[ClaimFinding | None] = []
     for position, claim in enumerate(cell):
+        # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         if claim.scope != "world":
             findings.append(None)
             continue

@@ -159,14 +159,24 @@ def _claim(
     )
 
 
-_BOUND_YEAR = _claim(_SEGMENTS, 1, "The bound volume of Harrow Tales appeared in 1931.", "The bound volume of Harrow Tales appeared in 1931")
+_BOUND_YEAR = _claim(
+    _SEGMENTS,
+    1,
+    "The bound volume of Harrow Tales appeared in 1931.",
+    "The bound volume of Harrow Tales appeared in 1931",
+)
 _AUTHOR = _claim(_SEGMENTS, 2, "Ida Venn wrote Harrow Tales.", "Ida Venn wrote it")
 _CHAPTERS = _claim(_SEGMENTS, 2, "Harrow Tales has twelve chapters.", "Harrow Tales has twelve chapters")
 _CLAIMS = (_BOUND_YEAR, _AUTHOR, _CHAPTERS)
 
 
 def _cite(
-    ref: str, stance: str = "supports", *, quote: str | None = None, subject: str | None = None, value: str | None = None
+    ref: str,
+    stance: str = "supports",
+    *,
+    quote: str | None = None,
+    subject: str | None = None,
+    value: str | None = None,
 ) -> dict[str, Any]:
     return {"ref": ref, "stance": stance, "quote": quote, "subject": subject, "value": value}
 
@@ -275,7 +285,9 @@ async def test_the_key_facts_are_numbered_first_then_the_case_passages() -> None
 
 
 async def test_a_neighbouring_value_on_the_same_page_is_bound_to_its_own_subject() -> None:
-    client = _FakeScriptedClient([_batch(_answer(0, _CONTRADICTED_BY_THE_BOUND_VOLUME)), _batch(_answer(1), _answer(2))])
+    client = _FakeScriptedClient(
+        [_batch(_answer(0, _CONTRADICTED_BY_THE_BOUND_VOLUME)), _batch(_answer(1), _answer(2))]
+    )
 
     verification = await _verify(client)
 
@@ -335,7 +347,13 @@ async def test_case_support_with_a_case_contradiction_reads_supported_with_a_con
                 _answer(
                     1,
                     _cite("K1"),
-                    _cite("S2", "contradicts", quote="Harrow Tales: written by Ida Venn", subject="Harrow Tales", value="Ida Venn"),
+                    _cite(
+                        "S2",
+                        "contradicts",
+                        quote="Harrow Tales: written by Ida Venn",
+                        subject="Harrow Tales",
+                        value="Ida Venn",
+                    ),
                 ),
                 _answer(2),
             ),
@@ -347,7 +365,9 @@ async def test_case_support_with_a_case_contradiction_reads_supported_with_a_con
     assert (grade.claims[1].verdict, grade.claims[1].evidence_conflict) == ("supported", True)
 
 
-async def test_a_claim_no_evidence_covers_that_the_model_doubts_is_nominated_and_reads_unverifiable_with_web_off() -> None:
+async def test_a_claim_no_evidence_covers_that_the_model_doubts_is_nominated_and_reads_unverifiable_with_web_off() -> (
+    None
+):
     client = _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1), _answer(2, suspect=True))])
 
     grade = _grade(_CLAIMS, await _verify(client))
@@ -396,7 +416,9 @@ def test_the_web_never_decides_a_claim_nobody_nominated(citations: tuple[ClaimCi
 # --- house rules, summaries and the candidate's own documents ---------------------------------------------------------
 
 _TABLE = (Segment(text="At this table a natural 20 on a skill check always succeeds.", unit=0),)
-_NATURAL_20 = _claim(_TABLE, 0, "A natural 20 on a skill check always succeeds.", "a natural 20 on a skill check always succeeds")
+_NATURAL_20 = _claim(
+    _TABLE, 0, "A natural 20 on a skill check always succeeds.", "a natural 20 on a skill check always succeeds"
+)
 _HOUSE_RULES = EvidenceDocument(
     id="house-rules",
     provenance="case",
@@ -489,8 +511,12 @@ async def test_no_documents_given_reads_ungrounded_with_no_ground_call() -> None
 
 
 async def test_a_ground_citation_of_a_case_passage_is_no_evidence_shown_there() -> None:
-    support = _ground_cite("S1", quote=_HOUSE_RULES.text, subject="a natural 20 on a skill check", value="always succeeds")
-    client = _FakeScriptedClient([_batch(_answer(0)), _ground((0, [support])), _repair()])
+    support = _ground_cite(
+        "S1", quote=_HOUSE_RULES.text, subject="a natural 20 on a skill check", value="always succeeds"
+    )
+    client = _FakeScriptedClient(
+        [_batch(_answer(0)), _ground((0, [support])), _Reply(content=json.dumps({"citations": []}))]
+    )
 
     verification = await _verify(
         client, (_NATURAL_20,), key=None, documents=(_HOUSE_RULES, _FETCHED_RULEBOOK), grounded_in=("run",)
@@ -506,7 +532,9 @@ _LONG = EvidenceDocument(
     id="long-sentence",
     provenance="case",
     title="A long account",
-    text="The bound volume of Harrow Tales, " + "which the press set by hand over a long winter, " * 7 + "came out in 1932.",
+    text="The bound volume of Harrow Tales, "
+    + "which the press set by hand over a long winter, " * 7
+    + "came out in 1932.",
 )
 
 
@@ -524,7 +552,9 @@ _LONG = EvidenceDocument(
             "its citation of S1 names no subject",
         ),
         (
-            _cite("S1", "contradicts", quote="The bound volume of Harrow Tales followed in 1932.", subject="Harrow Tales"),
+            _cite(
+                "S1", "contradicts", quote="The bound volume of Harrow Tales followed in 1932.", subject="Harrow Tales"
+            ),
             "its citation of S1 names no value",
         ),
         (
@@ -659,7 +689,9 @@ async def test_a_claim_still_failing_after_its_rounds_raises_naming_it_and_every
     )
     ledger = RoleUsageLedger(role="judge")
 
-    with pytest.raises(ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 round\(s\): truth claim 0") as failed:
+    with pytest.raises(
+        ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 round\(s\): truth claim 0"
+    ) as failed:
         await _verify(client, ledger=ledger)
 
     assert failed.value.loss == "repair_budget_spent"
@@ -745,12 +777,24 @@ async def test_one_call_per_unit_in_unit_order_then_one_outside_any_unit() -> No
         _claim(_SPREAD, 0, "There are two books tonight.", "two books", scope="session"),
         _claim(_SPREAD, 1, "Lantern Works printed Harrow Tales.", "Harrow Tales came from Lantern Works"),
         _claim(_SPREAD, 2, "The bound volume of Harrow Tales followed in 1932.", "Its bound volume followed in 1932"),
-        _claim(_SPREAD, 3, "Lantern Works printed Harrow Tales.", "Lantern Works, again, printed Harrow Tales", restates=1),
+        _claim(
+            _SPREAD, 3, "Lantern Works printed Harrow Tales.", "Lantern Works, again, printed Harrow Tales", restates=1
+        ),
         _claim(_SPREAD, 0, "Two books are reviewed.", "Tonight: two books"),
     )
     client = _FakeScriptedClient(
         [
-            _batch(_answer(1, _cite("S1", quote="Lantern Works printed small runs for local writers.", subject="Lantern Works", value="printed small runs"))),
+            _batch(
+                _answer(
+                    1,
+                    _cite(
+                        "S1",
+                        quote="Lantern Works printed small runs for local writers.",
+                        subject="Lantern Works",
+                        value="printed small runs",
+                    ),
+                )
+            ),
             _batch(_answer(2, _CONTRADICTED_BY_THE_BOUND_VOLUME)),
             _batch(_answer(4)),
         ]
@@ -920,7 +964,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 #: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:PENDING"
+_PINNED_IDENTITY = "scripted/verify|claimverify:013e1de80ce9"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:
@@ -943,5 +987,8 @@ def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() 
     ]
     assert base.identity not in others
     assert len(set(others)) == len(others)
-    assert _verifier(client, grounded_in=("run", "case")).identity == _verifier(client, grounded_in=("case", "run")).identity
+    assert (
+        _verifier(client, grounded_in=("run", "case")).identity
+        == _verifier(client, grounded_in=("case", "run")).identity
+    )
     assert _verifier(client, guidance="  ").identity == base.identity, "blank guidance is no guidance"
