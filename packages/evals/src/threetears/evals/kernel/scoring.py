@@ -67,6 +67,8 @@ from threetears.evals.kernel.result_condition import (
 from threetears.evals.kernel.result_reading import LatencyView, ResultView, ScoreView
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.metrics import (
+    CODE_GRADED_FAMILIES,
+    ENGINE_FAMILIES,
     MATCH_MEASURE,
     MetricDescriptor,
     describe_reported_measure,
@@ -363,8 +365,8 @@ def failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -
     :func:`pool_pass_hat_k`) and a report's census of trials both read it, so a check that fails a trial in one fails
     it in the other. A check measure is one its descriptor calls a check
     (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`): a boolean with a better end, or a scorer
-    graded 0 or 1. A measure with no better end, a numeric one that is no pass/fail scorer, and one the catalog does
-    not describe fail nothing. The label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) fails on False
+    graded 0 or 1. A measure with no better end, a numeric one that is no pass/fail scorer, one the catalog does not
+    describe, and a check no code graded (:func:`_decides_a_trial`) fail nothing. The label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) fails on False
     whatever the catalog holds, since an answer that is not the expected one is wrong in every host.
 
     :param result: The trial.
@@ -383,7 +385,7 @@ def failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -
                 failed.append(FailedCheck(measure=name, expression=f"{name} == expected label"))
             continue
         descriptor = catalog.get(name)
-        if descriptor is not None and descriptor.check_failed(value):
+        if descriptor is not None and _decides_a_trial(descriptor) and descriptor.check_failed(value):
             # A pass/fail scorer lands 0 or 1: named by the side it fell on, as a boolean's is.
             fell = value if isinstance(value, bool) else not descriptor.higher_is_better
             failed.append(FailedCheck(measure=name, expression=f"{name} is {fell}"))
@@ -555,9 +557,26 @@ def _carries_a_check(result: ResultView, catalog: Mapping[str, MetricDescriptor]
     """Whether the result carries a label or a measure its host declares as a check: what :func:`failed_checks` reads
     beside goal checks."""
     return any(
-        name == MATCH_MEASURE or ((descriptor := catalog.get(name)) is not None and descriptor.is_check)
+        name == MATCH_MEASURE or ((descriptor := catalog.get(name)) is not None and _decides_a_trial(descriptor))
         for name in result.host_measures
     )
+
+
+def _decides_a_trial(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure the catalog describes is a check code graded, so its value alone may pass or fail a trial.
+
+    A check (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`) whose family is not code-graded fails
+    nothing, as :func:`~threetears.evals.kernel.metrics.is_code_graded` reads it: one with no family, and one in an
+    engine family a judge grades (``rubric``, ``dual_axis``, ``composite``). A host family's grading is settled where
+    the host declares it: :class:`~threetears.evals.kernel.host.measures.MeasureRegistry` refuses a check in a
+    judge-graded host family, so every host-family check a registry describes is code-graded.
+
+    :param descriptor: The measure's descriptor, from the catalog.
+    :return: True for a check its trial is held to.
+    """
+    if not descriptor.is_check or descriptor.family is None:
+        return False
+    return descriptor.family not in ENGINE_FAMILIES or descriptor.family in CODE_GRADED_FAMILIES
 
 
 #: The exclusions that leave only a trial's judging unread — the judge could not tell, or the cost cap kept it from
