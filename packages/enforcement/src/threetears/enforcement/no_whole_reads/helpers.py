@@ -48,6 +48,7 @@ from typing import Final
 
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, PRODUCED_PREFIX
 from threetears.enforcement.no_whole_reads.placeholders import placeholder_numbers, renumbered_with
+from threetears.enforcement.no_whole_reads.sql import holds_bare_interpolation
 
 __all__ = [
     "COPY_CALLS",
@@ -755,8 +756,11 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
             continue
         text = sql.value
         numbers = placeholder_numbers(text)
-        # in its own parentheses, as the helper writes it
-        written.append("(" + renumbered_with(text, partial(_shifted, by=place - 1)) + ")")
+        renumbered = renumbered_with(text, partial(_shifted, by=place - 1))
+        # in its own parentheses, as the helper writes it. One holding text the walk cannot see written bare inside
+        # it (``a = $1 AND {}``: an OR in that text would unbind its own pins, never the helper's) is one narrowing
+        # the walk cannot see, in its own parentheses: its pins key nothing, the helper's still do
+        written.append("({})" if holds_bare_interpolation(renumbered) else "(" + renumbered + ")")
         place += max(numbers, default=0)
     return written, place
 

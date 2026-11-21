@@ -1725,8 +1725,12 @@ _GUARDED = """
         await conn.execute("UPDATE geos SET name = $1 WHERE state = $2 AND pop >= $3", name, state, floor)
 
 
-    async def either(conn, state, name):
-        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 AND name = $2 OR pop > 3", state, name)
+    async def either(conn, state, name, floor):
+        # keyed in each branch (the no-whole-reads rule reads a top-level OR as one disjunction), so it reaches the
+        # planner, whose conjunction of pins would misread it
+        return await conn.fetch(
+            "SELECT geo_id FROM geos WHERE state = $1 AND name = $2 OR state = $1 AND pop > $3", state, name, floor
+        )
 
 
     async def flagged(conn, state, on):

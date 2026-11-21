@@ -311,13 +311,11 @@ def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int
     :ptype below: bool
     :param first: the first placeholder's number
     :ptype first: int
-    :return: the condition, parenthesised, and its parameters
+    :return: the condition (an ``OR`` of key comparisons: the statement writes it in its own parentheses) and its
+        parameters
     :rtype: tuple[str, list[Any]]
     """
-    condition, params = keyset_condition(
-        key, values, earlier="<" if below else ">", last="<" if below else ">=", first=first
-    )
-    return f"({condition})", params
+    return keyset_condition(key, values, earlier="<" if below else ">", last="<" if below else ">=", first=first)
 
 
 async def _boundaries(
@@ -395,17 +393,20 @@ async def _read_pages(
                 if after is None:
                     lower, params = _bound(key, starts[index], below=False, first=2)
                 else:
-                    past, params = keyset_condition(key, after, earlier=">", last=">", first=2)
-                    lower = f"({past})"
-                upper = ""
+                    lower, params = keyset_condition(key, after, earlier=">", last=">", first=2)
+                upper: str | None = None
                 if index + 1 < len(starts):
-                    bound, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
-                    upper = f" AND {bound}"
+                    upper, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
                     params += more
-                # the part's pin written out, so the statement says it reads one part between two of its keys
+                # the part's pin written out, so the statement says it reads one part between two of its keys; each
+                # bound (an OR of key comparisons) in its own parentheses, so it only narrows the part
+                limit = int(page_size) + 1
                 sql = (
-                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND {lower}{upper} "  # noqa: S608 - trusted identifiers
-                    f"ORDER BY {ordering} LIMIT {int(page_size) + 1}"
+                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}) "  # noqa: S608 - trusted identifiers
+                    f"ORDER BY {ordering} LIMIT {limit}"
+                    if upper is not None
+                    else f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) "  # noqa: S608 - trusted identifiers
+                    f"ORDER BY {ordering} LIMIT {limit}"
                 )
                 result = await _ask(client, datasource_name, sql, [part, *params], types, {})
                 rows = result.rows

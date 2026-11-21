@@ -2499,6 +2499,22 @@ _STATIC = """
         async def load(self, relation):
             return await self.static_records(relation)
 
+        @source_change_read(unit="table", proof="tests/test_source.py::test_static")
+        async def static_where(self, relation, cond):
+            return await self._client.query(f"SELECT * FROM {relation} WHERE {cond}")
+
+        @source_change_read(unit="table", proof="tests/test_source.py::test_static")
+        async def static_beside(self, relation, cond):
+            return await self._client.query(f"SELECT * FROM {relation} WHERE x = 1 AND {cond}")
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def ids_beside_bare(client, relation, run_ids, cond):
+        return await client.query(f"SELECT office_key FROM {relation} WHERE run_id = ANY($1) AND {cond}", run_ids)
+
+    @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
+    async def ids_beside_own(client, relation, run_ids, cond):
+        return await client.query(f"SELECT office_key FROM {relation} WHERE run_id = ANY($1) AND ({cond})", run_ids)
+
     @source_change_read(ids=("run_id",), proof="tests/test_source.py::test_runs")
     async def grouped_by(client, relation, run_ids, required):
         condition, params = filter_conditions(where_in={"run_id": run_ids, "family": ["race"]}, not_null=required)
@@ -2518,16 +2534,21 @@ _STATIC = """
 _STATIC_TESTS = """
     async def test_static(warehouse):
         assert await warehouse.static_records("r")
+        assert await warehouse.static_where("r", "TRUE") and await warehouse.static_beside("r", "TRUE")
 
     async def test_runs(client):
         assert await grouped_by(client, "r", [1], ()) and await filtered_unknown(client, "r", {})
+        assert await ids_beside_bare(client, "r", [1], "TRUE") and await ids_beside_own(client, "r", [1], "TRUE")
 """
 
 
 def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are_judged_right(tmp_path: Path) -> None:
-    """Flips if a static input read whole (a pager, a bare head) inside its mark, or its caller, is a finding; if a
-    read by ids built through filter_conditions is unknown; if one whose columns are not written out passes; or if a
-    temp view over registered rows, built in an f-string, is undeclared or its reads are named."""
+    """Flips if a static input read whole (a pager, a bare head) inside its mark, or its caller, is a finding; if one
+    narrowed by text the walk cannot see, bare or not, is refused (read whole by its mark, an OR in that text cannot
+    widen it); if a read by ids beside an interpolation written bare passes, or one in its own parentheses is refused
+    (Pace 2026-11-21); if a read by ids built through filter_conditions is unknown; if one whose columns are not
+    written out passes; or if a temp view over registered rows, built in an f-string, is undeclared or its reads are
+    named."""
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_source.py").write_text(textwrap.dedent(_STATIC_TESTS), encoding="utf-8")
     with pytest.warns(UserWarning):
@@ -2535,10 +2556,14 @@ def test_a_static_input_s_pager_its_callers_filter_conditions_and_temp_views_are
     assert not {function for function, _ in found} & {
         "Warehouse.static_records",
         "Warehouse.load",
+        "Warehouse.static_where",
+        "Warehouse.static_beside",
+        "ids_beside_own",
         "grouped_by",
         "typed",
     }, found
     assert any(function == "filtered_unknown" for function, _ in found), found
+    assert ("ids_beside_bare", "unknown-predicate {}") in found, found
 
 
 _CURSORED = """
@@ -2833,6 +2858,28 @@ def test_a_keyset_pager_s_purposed_index_is_recorded_as_used(tmp_path: Path) -> 
     )
     findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": other}))
     assert any("index-purpose-unused" in finding for finding in findings), findings
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        # run-time text the walk cannot read
+        "Fragment(extra, ())",
+        # text it reads, holding text it cannot see written bare inside it
+        "Fragment(f'\"date_last_progress\" < $1 AND {extra}', (cutoff,))",
+    ],
+)
+def test_a_keyset_pager_given_a_fragment_it_cannot_see_still_records_its_index(tmp_path: Path, condition: str) -> None:
+    """Flips if a keyset pager given a condition the walk cannot see stops recording the purposed index its pages
+    read through: keyset_pages writes each condition in its own parentheses (``narrowing``), so its pins still key
+    the page whatever that condition holds."""
+    _plans(tmp_path, "def test_live(plan):\n    assert plan_uses_index(plan, 'dataset_runs_live')\n")
+    runtime = _DRAIN.replace(
+        "async def live_run_ids(pool, status, cutoff):", "async def live_run_ids(pool, status, cutoff, extra):"
+    ).replace("conditions=[Fragment('\"date_last_progress\" < $1', (cutoff,))]", f"conditions=[{condition}]")
+    assert condition in runtime
+    findings = no_whole_reads_findings(_config(tmp_path, {"runs.py": runtime}))
+    assert not any("index-purpose-unused" in finding for finding in findings), findings
 
 
 _MARKED_COLUMNS = """
@@ -4547,6 +4594,80 @@ def test_a_builder_s_clause_in_sql_is_trusted_only_when_the_walk_ties_it_to_the_
     assert not {(name, reviewed) for name in untied} & found, found
 
 
+#: keyed reads written as SQL beside a conjunct the walk cannot see: bare, or in its own parentheses
+_UNSEEN_CONJUNCTS = """
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import Fragment, read_by
+    from threetears.agent.acl import caller_visible_customer_clause
+
+    USAGE = TableSchema(
+        name="usage",
+        primary_key="id",
+        columns=[],
+        indexes=(Index("usage_by_at", "at", "id", purpose=PURPOSES),),
+    )
+
+    async def page_unseen(conn, at, last, extra):
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE {extra} AND (u.at, u.id) > ($1, $2) ORDER BY u.at, u.id LIMIT 50",
+            at, last,
+        )
+
+    async def point_unseen(conn, usage_id, extra):
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE u.id = $1 AND {extra}", usage_id)
+
+    async def page_parenthesized(conn, at, last, extra):
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE ({extra}) AND (u.at, u.id) > ($1, $2) ORDER BY u.at, u.id LIMIT 50",
+            at, last,
+        )
+
+    async def point_parenthesized(conn, usage_id, extra):
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE u.id = $1 AND ({extra})", usage_id)
+
+    async def page_known_filter(conn, at, last, kind):
+        return await conn.fetch(
+            "SELECT u.id FROM usage u WHERE u.kind = $3 AND (u.at, u.id) > ($1, $2) ORDER BY u.at, u.id LIMIT 50",
+            at, last, kind,
+        )
+
+    async def page_tied(conn, user_id, at, last):
+        clause, params = caller_visible_customer_clause(
+            user_id=user_id, customer_id_column="u.customer_id", scope_namespace_type="customer", param_offset=3
+        )
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE {clause} AND (u.at, u.id) > ($1, $2) ORDER BY u.at, u.id LIMIT 50",
+            at, last, *params,
+        )
+
+    async def helper_fragment(conn, usage_id, kind, extra):
+        return await read_by(
+            conn, "usage", by={"id": usage_id}, columns=["id"], where=[Fragment(f"t.kind = $1 AND {extra}", (kind,))]
+        )
+"""
+
+
+def test_a_conjunct_the_walk_cannot_see_counts_beside_a_key_only_in_its_own_parentheses(tmp_path: Path) -> None:
+    """Flips if a keyed read written as SQL passes beside an interpolated conjunct the walk cannot see written bare
+    (``WHERE {extra} AND <keyset range>``, ``WHERE id = $1 AND {extra}``: text that may hold a top-level OR), or is
+    refused beside one in its own parentheses, a visible non-key filter, a tied acl clause, or a keyed helper's
+    fragment (the helper parenthesizes it) -- Pace's ruling 2026-11-21."""
+    names = (
+        "page_unseen",
+        "point_unseen",
+        "page_parenthesized",
+        "point_parenthesized",
+        "page_known_filter",
+        "page_tied",
+        "helper_fragment",
+    )
+    source = _UNSEEN_CONJUNCTS.replace("PURPOSES", repr(tuple(f"src/app.py::{name}" for name in names)))
+    found = _symbols(_config(tmp_path, {"app.py": source}))
+    assert {("page_unseen", "unknown-predicate usage"), ("point_unseen", "unknown-predicate usage")} <= found, found
+    admitted = {"page_parenthesized", "point_parenthesized", "page_known_filter", "page_tied", "helper_fragment"}
+    assert not {function for function, _ in found} & admitted, found
+
+
 _STAGE_TEMPLATE = """
     from threetears.core.collections.schema_backed import TableSchema
     from threetears.core.keyed import apply_stage
@@ -5115,10 +5236,11 @@ def test_a_fragment_chosen_by_a_branch_is_judged_in_each_arm(tmp_path: Path) -> 
     """Flips if a ``Fragment`` over a local bound to one f-string or another (``_counted``'s literal ids, or the ok
     runs the warehouse selects) is dropped or left unseen instead of judged arm by arm (reports #55 ask 4): the
     literal-ids arm is keyed; the ok-runs arm keys the counted relations by the runs it selects, and its read of the
-    runs relation by status, a column no key of it leads, is the non-key read it is."""
+    runs relation is flagged: by status, a column no key of it leads, with the role text fused after it
+    (``status = '_'{role}``), which may hold a top-level OR, so the read is unknown (Pace 2026-11-21)."""
     found = _symbols(_config(tmp_path, {"lsf.py": _COUNTED}, relation_producers=_COUNTED_PRODUCERS))
     counted = {symbol for function, symbol in found if function == "LsfWarehouse._counted"}
-    assert counted == {"non-key-where produced.lsfrelations__runs"}, found
+    assert counted == {"unknown-predicate produced.lsfrelations__runs"}, found
 
 
 #: reports #61: the counted relations keyed per label, the long one by ``data_time`` and the rest by ``run_id``

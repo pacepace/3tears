@@ -43,9 +43,18 @@ Kinds, each the start of a finding's symbol:
 A ``SELECT ... FROM <table>`` with nothing after the table is a *head* (:data:`HEAD`): the caller adds the
 predicate (a keyset pager does), so a head is judged where it is run, not where it is written. Text interpolated
 between a table and its clauses (``FROM t {where}``), or a whole predicate that is one interpolation, may or may not
-hold the key: unless what the walk can see keys the read, it is ``unknown-predicate``. An interpolation the code
-names as the key (``{pk_predicate}``) binds the key; the walk resolves a placeholder to a string the function binds
-once (``where = "WHERE id = $1"``), so a predicate built that way is judged as written.
+hold the key: unless what the walk can see keys the read, it is ``unknown-predicate``. An interpolated conjunct beside
+what the walk sees counts only as a whole conjunct in its own parentheses (``k = $1 AND ({extra})``, ``NOT
+({extra})``): written bare (``AND {extra}``, ``NOT {extra}``), inside parentheses it shares (``(a = $2 AND
+{extra})``), in one branch of an ``OR`` (``({extra}) OR x``), or fused into a predicate rather than all of one side
+of its comparison (``k = $1 {extra}``, ``{extra} IS TRUE``, ``NOT NOT {extra}``, ``{a}{b}``), its text may hold a
+top-level ``OR`` that unbinds the rest, so nothing beside it keys the read and it is ``unknown-predicate`` (Pace's
+ruling 2026-11-21). An interpolated column, value or name (``{col} = $1``, ``k = {value}``, ``t.{col}``) is no
+predicate. A static input read whole by its ``source_change_read(unit=...)`` mark stays admitted: no ``OR`` widens a
+read already whole. For the same reason a visible top-level ``OR`` makes its level one disjunction (SQL binds ``AND``
+first): ``k = $1 AND x = $2 OR flag = $3`` is keyed only when every branch is. An interpolation
+the code names as the key (``{pk_predicate}``) binds the key; the walk resolves a placeholder to a string the function
+binds once (``where = "WHERE id = $1"``), so a predicate built that way is judged as written.
 """
 
 from __future__ import annotations
@@ -76,6 +85,7 @@ __all__ = [
     "KEYED_COUNT",
     "Reader",
     "data_relations",
+    "holds_bare_interpolation",
     "is_sql",
     "judge_sql",
     "statement_shape",
@@ -142,6 +152,12 @@ _AGGREGATE: Final[re.Pattern[str]] = re.compile(
 )
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\d+|%s|%\(\w+\)s|\?|(?<![:\w]):[A-Za-z_]\w*")
 _INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"\{(?:pk)?\}")
+
+#: an interpolation the walk cannot see written as a whole conjunct with nothing around it (``{}``, ``NOT {}``)
+_BARE_INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"(?:NOT\s+)?\{\}", re.IGNORECASE)
+
+#: the same in its own parentheses (``({})``, ``NOT ({})``): whatever text it holds stays inside them
+_OWN_INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"(?:NOT\s*)?\(\s*\{\}\s*\)", re.IGNORECASE)
 #: an operand compared in an explicit collation: ``<operand> COLLATE "C"``
 _COLLATE: Final[re.Pattern[str]] = re.compile(r"(.+?)\s+COLLATE\s+(\"[^\"]+\"|\w+)", re.IGNORECASE | re.DOTALL)
 #: a predicate no row passes: a part that only types a ``UNION``'s columns
@@ -403,17 +419,25 @@ _BETWEEN_AND: Final[re.Pattern[str]] = re.compile(r"(\bBETWEEN\s+\S+\s+)AND\b", 
 def _conjuncts(text: str) -> list[str]:
     """the predicates ``text`` ANDs together, nested parentheses of ANDs opened.
 
+    SQL binds ``AND`` before ``OR``, so a level holding an ``OR`` of its own (``k = $1 AND x = $2 OR flag = $3``,
+    read ``(k = $1 AND x = $2) OR flag = $3``) is one predicate, a disjunction: no single branch's key keys it.
+
     :param text: a ``WHERE`` or ``ON`` condition
     :ptype text: str
     :return: the predicates
     :rtype: list[str]
     """
+    if len(_split(text, _OR)) > 1:
+        return [text.strip()]
     found: list[str] = []
     for part in _split(_BETWEEN_AND.sub(r"\1_BETWEEN_AND_", text), _AND):
         part = part.replace("_BETWEEN_AND_", "AND")
         inner = _unwrap(part)
         if inner != part.strip() and len(_split(inner, _AND)) > 1 and len(_split(inner, _OR)) == 1:
             found.extend(_conjuncts(inner))
+        elif inner != part.strip() and _BARE_INTERPOLATION.fullmatch(inner):
+            # a whole conjunct in its own parentheses keeps them (``({})``): what tells it from a bare one
+            found.append(f"({inner})")
         else:
             found.append(inner)
     return found
@@ -572,6 +596,9 @@ class _Atom:
     :ivar bound: whether the predicate holds a bound value at all
     :ivar branches: an ``either``'s branches, each the atoms it binds
     :ivar side: a range's side bound by a placeholder or interpolation
+    :ivar bare: an ``unseen`` interpolation not written as a whole conjunct in its own parentheses (``AND {}``,
+        ``NOT {}``, ``(a = 1 AND {})``, ``({}) OR x``): its text may hold a top-level ``OR`` that unbinds every
+        other predicate, so nothing beside it keys the read
     """
 
     kind: str
@@ -582,6 +609,7 @@ class _Atom:
     #: a range's bound side by a placeholder or interpolation: ``lo``, ``hi``, ``both`` (``BETWEEN``); empty for a
     #: literal bound or any other kind
     side: str = ""
+    bare: bool = False
 
 
 def _is_null(atom: _Atom) -> bool:
@@ -610,6 +638,43 @@ def _row_expression(text: str) -> bool:
     return shaped and not _bound_value(text)
 
 
+#: an interpolation that is part of a name (``{}.id``, ``t.{}``, ``"{}"``, ``x_{}``): a relation or a column, never
+#: a predicate
+_NAMED_INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"(?<=[\w.\"])\{\}|\{\}(?=[\w.\"])")
+#: an interpolation that is all of one side of a comparison, cast or not (``{} = $1``, ``k = {}::uuid``)
+_OPERAND_INTERPOLATION: Final[re.Pattern[str]] = re.compile(r"\{\}(?:\s*::\s*[\w ]+(?:\[\])*)*")
+#: a truth test (``IS TRUE``, ``IS NOT UNKNOWN``): its operand is itself a predicate
+_TRUTH_TEST: Final[re.Pattern[str]] = re.compile(r"(?:NOT\s+)?(?:TRUE|FALSE|UNKNOWN)", re.IGNORECASE)
+
+
+def _fused_interpolation(text: str) -> bool:
+    """whether one predicate (holding no ``OR`` of its own) has an interpolation at its own level that is neither a
+    name nor all of one side of its comparison: fused into it (``k = $1 {}``, ``{} IS TRUE``, ``NOT NOT {}``,
+    ``{}{}``), so its text may hold a top-level ``OR`` that unbinds every other predicate (Pace 2026-11-21).
+
+    :param text: the predicate, unwrapped
+    :ptype text: str
+    :return: whether it does
+    :rtype: bool
+    """
+    # a name's interpolation as a same-length name, so the operator and the sides keep their places
+    masked = _NAMED_INTERPOLATION.sub("_n", _mask(text))
+    if "{}" not in masked:
+        return False
+    operator = next(
+        (found for found in _COMPARISON.finditer(masked) if found.group(0) not in _JSON_FIELD_OPERATORS), None
+    )
+    if operator is None:
+        return True
+    op = " ".join(operator.group(0).upper().split())
+    left, right = masked[: operator.start()].strip(), masked[operator.end() :].strip()
+    if op == "IS" and _TRUTH_TEST.fullmatch(right) is not None:
+        # ``{} IS TRUE``: the interpolation is the predicate tested
+        return "{}" in left
+    sides = [left, *re.split(r"\bAND\b", right, flags=re.IGNORECASE)] if op.endswith("BETWEEN") else [left, right]
+    return any("{}" in side and _OPERAND_INTERPOLATION.fullmatch(side.strip()) is None for side in sides)
+
+
 def _atoms(predicate: str) -> list[_Atom]:
     """what one predicate binds.
 
@@ -618,7 +683,12 @@ def _atoms(predicate: str) -> list[_Atom]:
     :return: its atoms
     :rtype: list[_Atom]
     """
+    written = predicate.strip()
     text = _unwrap(predicate)
+    if _OWN_INTERPOLATION.fullmatch(written) or _OWN_INTERPOLATION.fullmatch(text):
+        # an interpolation that is a whole conjunct in its own parentheses (``({})``, ``NOT ({})``): whatever its
+        # text, it stays inside them, a narrowing the walk cannot see
+        return [_Atom("unseen")]
     bound = (
         _PLACEHOLDER.search(without_hidden_dollars(text)) is not None
         or _INTERPOLATION.search(text) is not None
@@ -629,12 +699,16 @@ def _atoms(predicate: str) -> list[_Atom]:
         # a predicate the code names as the key (``WHERE {pk_predicate}``): the read is by the table's key
         return [_Atom("eq", ("", PK_TOKEN), bound=True)]
     if _INTERPOLATION.fullmatch(text) or re.fullmatch(r"(?:NOT\s+)?\{(?:pk)?\}", text, re.IGNORECASE):
-        return [_Atom("unseen")]
+        # written bare (``AND {}``, ``NOT {}``): its text may hold a top-level OR (Pace 2026-11-21)
+        return [_Atom("unseen", bare=_BARE_INTERPOLATION.fullmatch(text) is not None)]
     masked = _mask(text)
     branches = _split(text, _OR)
     if len(branches) > 1:
         # ``k = $1 OR k = $2``: every branch binds the same column, so the read is by those keys
         each = [[atom for part in _conjuncts(branch) for atom in _atoms(part)] for branch in branches]
+        if any(atom.kind == "unseen" for atoms in each for atom in atoms):
+            # an interpolation in one branch of an OR (``({}) OR x``) is not a whole conjunct in its own parentheses
+            return [_Atom("unseen", bare=True)]
         columns = {atoms[0].column for atoms in each if len(atoms) == 1 and atoms[0].kind == "eq"}
         if len(columns) == 1 and all(len(atoms) == 1 and atoms[0].kind == "eq" for atoms in each):
             return [_Atom("eq", columns.pop(), bound=True)]
@@ -648,6 +722,10 @@ def _atoms(predicate: str) -> list[_Atom]:
             # equal to an outer row's column (``t.x = d.y``) binds as an equality where that row is read by key
             return [_Atom("either", bound=True, branches=tuple(tuple(atoms) for atoms in each))]
         return [_Atom("filter", bound=bound)]
+    if _fused_interpolation(text):
+        # an interpolation fused into the predicate (``k = $1 {}``, ``{} IS TRUE``, ``NOT NOT {}``): bare as a
+        # conjunct of its own is (Pace 2026-11-21)
+        return [_Atom("unseen", bare=True)]
     if re.match(r"\s*(?:NOT\b|EXISTS\b)", masked, re.IGNORECASE):
         return [_Atom("filter", bound=bound)]
     # a json field of a column (``metadata->>'pod'``) is an operand, not the comparison: the comparison is the first
@@ -1039,6 +1117,21 @@ def _enclosing_keyed(
     return None
 
 
+def _known_schema(relation: _Relation, reader: Reader) -> bool:
+    """whether a relation's schema is known: declared with a key. Generic code over an interpolated table knows the
+    key it names (``{pk}``), and nothing else about it, unless its module builds the table from a template.
+
+    :param relation: the relation
+    :ptype relation: _Relation
+    :param reader: the judgement's context
+    :ptype reader: Reader
+    :return: whether it is
+    :rtype: bool
+    """
+    primary, _, _ = _keys(relation.name, reader)
+    return bool(primary) and (bare_table(relation.name) is not None or reader.template is not None)
+
+
 def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
     """which data relations of a level are read by key, and which have a known schema.
 
@@ -1126,9 +1219,7 @@ def _keyed(level: _Level, reader: Reader) -> tuple[list[bool], list[bool]]:
             if keyed[index]:
                 continue
             primary, purposed, tenants = _keys(relation.name, reader)
-            # generic code over an interpolated table knows the key it names ({pk}), and nothing else about it, unless
-            # its module builds the table from a template
-            known[index] = bool(primary) and (bare_table(relation.name) is not None or reader.template is not None)
+            known[index] = _known_schema(relation, reader)
             hit = _key_hit(
                 primary,
                 purposed,
@@ -1919,7 +2010,8 @@ def _source_read(level: _Level, reader: Reader) -> bool:
     """
     by_ids = any(atom.kind == "eq" and atom.column[1] in reader.source_ids for atom in level.atoms)
     stamped = bool(reader.stamps) and _past_stamps(level.where, reader.stamps)
-    # an id the source's runs record named keys the read; any other predicate beside it, seen or not, only narrows
+    # an id the source's runs record named keys the read; a predicate the walk sees beside it, or an interpolation in
+    # its own parentheses, only narrows (one written bare unbinds it: _judge_select admits only a unit read then)
     return reader.source_unit or stamped or by_ids
 
 
@@ -2047,7 +2139,15 @@ def _judge_select(
         and not aggregate
     ):
         return _SqlFinding(HEAD, table)
-    keyed, known = _keyed(level, reader)
+    bare = any(atom.kind == "unseen" and atom.bare for atom in level.atoms)
+    if bare:
+        # an interpolation written bare beside the predicates the walk sees: its text may hold a top-level OR that
+        # unbinds them, so they key nothing (Pace 2026-11-21: one counts only in its own parentheses), and no index
+        # is read for them
+        keyed = [relation.kind == "source" for relation in level.relations]
+        known = [_known_schema(relation, reader) for relation in level.relations]
+    else:
+        keyed, known = _keyed(level, reader)
     for index, relation in enumerate(level.relations):
         if relation.kind != "data" or keyed[index]:
             continue
@@ -2060,7 +2160,10 @@ def _judge_select(
         )
         if probe and len(level.relations) == 1 and not unseen:
             return None
-        if (not known[index] or _keyless(relation, reader)) and _source_read(level, reader):
+        # a static input read whole by its mark (``source_change_read(unit="table")``) cannot be widened by an OR in
+        # its text; one by the ids its runs record is, so beside a bare interpolation those ids key nothing
+        admitted = reader.source_unit if bare else _source_read(level, reader)
+        if (not known[index] or _keyless(relation, reader)) and admitted:
             continue
         kind = "unknown-predicate" if unseen else _unkeyed_kind(level, known[index], aggregate)
         shown = table if relation is first else relation.name
@@ -2149,6 +2252,10 @@ def _judge_write(
                 )
             atoms = [atom for predicate in _conjuncts(where) for atom in _atoms(predicate)]
             unseen = unseen or any(atom.kind == "unseen" for atom in atoms)
+            if any(atom.kind == "unseen" and atom.bare for atom in atoms):
+                # an interpolation written bare beside the predicates the walk sees: they key nothing (as a read's)
+                findings.append(_SqlFinding("unknown-predicate", table.removesuffix("{}") or table))
+                continue
             # a write narrowed by a column of a relation it does not name reads by an outer row's key
             level = _Level([target, *others], atoms, where, None, False, correlated=True)
             keyed, known = _keyed(level, reader)
@@ -2158,6 +2265,20 @@ def _judge_write(
                     _SqlFinding("unknown-predicate" if unseen else _unkeyed_kind(level, known[0], False), written)
                 )
     return findings
+
+
+def holds_bare_interpolation(predicate: str) -> bool:
+    """whether a predicate holds an interpolation the walk cannot see written bare (``a = $1 AND {}``,
+    ``NOT {}``, ``({}) OR x``): one whose text may hold a top-level ``OR`` unbinding the rest of the predicate.
+
+    :param predicate: a ``WHERE`` condition, as written or each interpolation as ``{}``
+    :ptype predicate: str
+    :return: whether it does
+    :rtype: bool
+    """
+    # judged as judge_sql judges it: a parenthesis in a literal or a comment is no parenthesis
+    cleaned = _clean(predicate)
+    return any(atom.kind == "unseen" and atom.bare for part in _conjuncts(cleaned) for atom in _atoms(part))
 
 
 def judge_sql(sql: str, reader: Reader | None = None) -> list[_SqlFinding]:

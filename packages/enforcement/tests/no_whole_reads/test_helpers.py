@@ -105,6 +105,11 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         # a keyed batch by a leading part of the key, or by the key's rest after a pinned prefix
         'read_keyed(c, "results", keys=KeyBatch(("state", "geo"), ks), columns=cols)',
         'read_keyed_arrow(c, "results", keys=KeyBatch(("id",), ks), by={"state": s, "geo": g}, types=t)',
+        # a fragment holding text the walk cannot see, bare inside it: the helper ANDs each fragment inside its own
+        # parentheses, so nothing in it unbinds the pins (Pace 2026-11-21, interpolations only in their own
+        # parentheses: the helper writes every fragment so)
+        'read_by(c, "results", by={"state": s, "geo": g, "id": i}, columns=cols, '
+        "where=[Fragment('r.\"kind\" = $1 AND {}'), Fragment('{}')])",
         # a page after a bound prefix, ordered by the key's next column; one across the whole key
         'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id", "bigint")], limit=5)',
         'keyset_page(c, "results", columns=cols, by={}, order=[Sort("state"), Sort("geo"), Sort("id")], limit=5)',

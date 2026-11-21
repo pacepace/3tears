@@ -134,6 +134,7 @@ from threetears.enforcement.no_whole_reads.sql import (
     PK_TOKEN,
     Reader,
     condition_shape,
+    holds_bare_interpolation,
     is_sql,
     judge_sql,
 )
@@ -5621,7 +5622,10 @@ class _ModuleWalk(ast.NodeVisitor):
         for element in getattr(listed, "elts", []):
             fragment = element.args[0] if isinstance(element, ast.Call) and element.args else element
             written = _string_text(fragment, self._envs[-1])
-            conditions.append(written if written is not None else "{}")
+            # in its own parentheses, as the pager writes it (threetears.interfaces.keyed.filters.narrowing): one the
+            # walk cannot read, or holding text it cannot see written bare, is one narrowing it cannot see
+            seen = written is not None and not holds_bare_interpolation(written)
+            conditions.append("(" + written + ")" if seen and written is not None else "({})")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         judge_sql(f"{head}{where} ORDER BY {key[0]} LIMIT 100", self._reader(node))
         named = _HEAD_RELATION.search(head)
@@ -6600,8 +6604,9 @@ def _filter_text(call: ast.Call) -> str | None:
         parts.extend(form.format(column) for column in written)
         if len(written) < len(mapping.keys):
             # sets spread in beside the written ones (``**part.filters``) only narrow: what the walk cannot see is an
-            # interpolation, unknown unless a written column keys the read
-            parts.append("{}")
+            # interpolation, unknown unless a written column keys the read. The builder writes each set as its own
+            # ``col IN (...)`` conjunct, never an OR, so it stands in its own parentheses
+            parts.append("({})")
     if given.get("not_null") is not None:
         parts.append("__not_null__ IS NOT NULL")
     return " AND ".join(parts) or None
