@@ -80,6 +80,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`current_cell_identity() -> CellIdentity | None`
 - **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
   <br>`field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]`
+- **`fold_name`** · function · The name folded for matching: Unicode NFKC, case folded, whitespace runs as one space, ends stripped.
+  <br>`fold_name(text: str) -> str`
 - **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · *host contract* · function · Every schema written directly inside `schema`, in declaration order.
@@ -129,6 +131,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
 - **`ProviderFailureDescriber`** · *host contract* · protocol · The host's mapping from its own exceptions onto `ProviderFailure`.
 - **`RecordedCall`** · model · One call a candidate made that succeeded — or, in a control end state, one it is stated to have made.
+- **`ReferenceKey`** · model · The entities a case's answer is graded against, a required core and the others that also count, and the context entities a reply may state facts about that are never part of the answer.
 - **`RoleUsage`** · *host contract* · model · Per-role token + cost observation for one `EvalResult`.
 - **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
@@ -235,6 +238,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
+- **`reference_material`** · function · The key as plain text for a judge: the non-exhaustive line, the core, the acceptable others, then the context.
+  <br>`reference_material(key: ReferenceKey) -> str`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
   <br>`seed_digest(seed: SeedTemplate | str) -> str`
 - **`strict_response_format`** · *host contract* · function · The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
@@ -268,6 +273,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`DeliveryReplay`** · protocol · Serves one asynchronous tool's recorded work for one cell.
 - **`DeliverySeam`** · protocol · One asynchronous tool of a kind, as the cassette lane records and replays its background work.
 - **`DeliveryTicket`** · protocol · One piece of background work being captured, from its start to however it ends.
+- **`EntityExtractor`** · dataclass · A model step that lists the entities of one kind a text names, with the fields asked for each.
 - **`EvalAnalysis`** · *host contract* · model · A generated, stored analysis of one campaign — the productized "Analysis" lens.
 - **`EvalCampaign`** · *host contract* · model · What a person set out to learn, and the runs gathered to learn it: one question, its arms, its aspects.
 - **`EvalInsight`** · model · A durable, subject-scoped insight extracted from an analysis.
@@ -281,6 +287,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`JobStore`** · *host contract* · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.
 - **`MetricDescriptor`** · *host contract* · model · What a single measure is, independent of any particular value of it.
+- **`NamedEntity`** · model · One entity an output named: what it was called, and any fields that came with it (a host tool's pick).
 - **`NotFoundError`** · *host contract* · exception · Resource not found (status 404).
 - **`OutOfRunBudget`** · dataclass · The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
 - **`OverriddenBar`** · *host contract* · model · An absolute bar a call's arm missed on one aspect, named as the writer's `bars_missed` names one: the aspect and the bar's measure.
@@ -296,6 +303,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`SeedPrompt`** · dataclass · Where one shipped default lives, so a host can register it by import.
 - **`SeedSection`** · dataclass · One section of a seeded prompt template.
 - **`SeedTemplate`** · dataclass · A seeded prompt template: an ordered set of sections and its identity.
+- **`SetGrader`** · class · One named set's grader: bound to its measure prefix, its matcher and its extractor, it declares the measures and grades with exactly what they name.
 - **`StorageError`** · *host contract* · exception · Storage operation failed (status 503). Its remedy is the class's own (`STORAGE_REMEDY`).
 - **`SweptAxis`** · model · One axis this campaign set out to vary, and the levels it meant to compare.
 - **`UnportableSchema`** · *host contract* · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent; or an `enum` or `const` holding a value that is not a string, which not every strict mode enforces.
@@ -318,6 +326,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
+- **`EXTRACTED_SET_FAMILY`** · constant (MeasureFamily) · The family a set grade's measures carry when a model step listed the entities: the numbers are code's, over names a judge read off prose, so they are a judge's in the sense that decides ranking (`graded_by`).
 - **`FIND_TEMPLATE`** · *host contract* · constant (str) · How a caller finds a template's id.
   <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.

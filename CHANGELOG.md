@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a set grade shows how each credit was earned, and why a name was refused (#1293)
+
+**Added:** `EntityMatcher.match` may answer an `EntityMatch` (the key entity's name and the matcher's reason, such as a
+tier label) or a `MatchRefusal` (a reason, such as `ambiguous`) beside a bare name or None. `SetGrade.credits` records
+each credited spelling as a `SetCredit` (the name as written, the key entity it earned, the reason), and
+`SetGrade.refusals` each refused pick as a `SetRefusal` (the name as first written, the reason), one of
+`unverified_names`; `SetGrade.unlisted_names` is the unverified picks nobody refused, the names the key does not hold.
+A refusal is still an unverified pick: every count, reading and measure definition is unchanged, the formula stays
+`set grade v1`, and readings graded before and after pool. `FoldingMatcher` gives every credit the reason `folded`, and
+refuses a name that folds to one of the key's context entities with the reason `context` (it was None); its identity
+stays `fold-v1`, since it credits exactly what it did. New, provisional: `EntityMatch`, `MatchRefusal`, `SetCredit`,
+`SetRefusal` (`threetears.evals.kernel`). Engine path only.
+
+**For hosts:** a matcher answering `str | None` works unchanged (its credits carry no reason), so nothing has to move;
+to show tiers and ambiguity, answer `EntityMatch(entity=..., reason=...)` and `MatchRefusal(reason="ambiguous")`
+instead. Code that calls `FoldingMatcher().match` directly now gets an `EntityMatch` or a `MatchRefusal` where it got a
+name (read `.entity`). A grade's JSON (`model_dump(mode="json")`) carries `credits` and `refusals` beside the other
+fields, and `SetGrade.model_validate` reads a grade stored without them. A build from before this change refuses a
+grade document carrying them (`extra_forbidden`, naming `credits` and `refusals`; checked by loading one through the
+previous build's `SetGrade`), so a host that validates stored grades back into `SetGrade` upgrades every reader before
+it writes new grades, and on a rollback drops the two keys first. A host that keeps the grade as a plain JSON payload is
+unaffected.
+
+### evals: the set-grading names a host imports are stable (#1292)
+
+**Changed:** `SetGrader`, `EntityExtractor`, `EXTRACTED_SET_FAMILY`, `NamedEntity` and `reference_material`
+(`threetears.evals.kernel`), and `ReferenceKey` and `fold_name` (`threetears.evals.schema`), move from provisional to
+stable: Discodon's set grader builds and declares a `SetGrader` per graded set, its own matcher reads `NamedEntity` and
+`ReferenceKey` and its exact tier is `fold_name`, and its hedged-claim grader renders `reference_material`.
+`EntityMatcher`, `SetGrade`, `FoldingMatcher`, `EntityExtractionFailed` and the match and provenance shapes stay
+provisional. The recorded Discodon host imports are regenerated from its develop at 3e05bd7a2.
+
+**For hosts:** nothing to change; a host's exemptions for these seven names end with the pin that includes this.
+
 ### evals: a reference key carries a context tier, facts that are never answers
 
 **Added:** `ReferenceKey.context`, a third tier of `ReferenceEntity` beside `core` and `acceptable`: entities outside

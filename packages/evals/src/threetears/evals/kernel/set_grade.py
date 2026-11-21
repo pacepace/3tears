@@ -10,6 +10,13 @@ key's author did not list. Only recall and core recall judge quality. The verifi
 unverified count are diagnostics with no better direction, so no ranking or bar reads them and an unlisted pick never
 counts against an output; :attr:`SetGrade.unverified_names` lists those picks for a reader to check.
 
+**A grade shows how each credit was earned.** A matcher answers a key entity's name, or an :class:`EntityMatch`
+carrying its reason (the rule that matched, such as a host's tier label), or a :class:`MatchRefusal` carrying why it
+declined a name it could have read as a key entity (``ambiguous``, ``context``), or None. :attr:`SetGrade.credits`
+records which written name earned which key entity and why, and :attr:`SetGrade.refusals` the unverified picks a
+matcher refused and why, apart from the names the key does not hold (:attr:`SetGrade.unlisted_names`). A refusal is
+still an unverified pick, so no count, reading or measure definition depends on whether a matcher gives reasons.
+
 **Matching is the host's to replace.** :class:`FoldingMatcher` is the default: a name or alias equal after
 :func:`~threetears.evals.schema.reference.fold_name` (Unicode NFKC, case folded, whitespace runs as one space). It
 uses no word list and strips no accent, since both are language-specific. A host with its own normaliser plugs it in
@@ -54,6 +61,12 @@ EXTRACTED_SET_FAMILY = MeasureFamily(
 
 #: What the default matcher is called in a measure's formula. Raise it with any change to how it matches.
 _FOLDING_IDENTITY = "fold-v1"
+
+#: The default matcher's one reason for every name it credits: equal after folding.
+_FOLDED = "folded"
+
+#: The default matcher's reason for refusing a name that is one of the key's context entities, never an answer.
+_CONTEXT = "context"
 
 #: The revision of the grading rule itself, as a measure's formula names it.
 _GRADE_REVISION = "set grade v1"
@@ -100,6 +113,55 @@ class NamedEntity(EvalBaseModel):
     )
 
 
+class EntityMatch(EvalBaseModel):
+    """A matcher's credit with its reason: the key entity a named entity is, and the rule that found it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    entity: str = Field(min_length=1, description="The key entity's name, exactly as the key spells it.")
+    reason: str = Field(
+        min_length=1,
+        description="How the matcher found it, in the matcher's own words: a tier label such as `exact` or `partial`.",
+    )
+
+
+class MatchRefusal(EvalBaseModel):
+    """A matcher's refusal with its reason: a name it declined to credit although it could read it as a key entity.
+
+    The name is an unverified pick, exactly as one the key does not hold, and the grade lists it apart, with why.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    reason: str = Field(
+        min_length=1,
+        description="Why the matcher refused the name: `ambiguous` where it reads as more than one key entity, "
+        "`context` where it is one of the key's context entities, or the matcher's own label.",
+    )
+
+
+class SetCredit(EvalBaseModel):
+    """One written name a grade credited: the key entity it earned, and how."""
+
+    model_config = ConfigDict(frozen=True)
+
+    written: str = Field(min_length=1, description="The name as the output wrote it.")
+    entity: str = Field(min_length=1, description="The key entity it earned, by key name.")
+    reason: str | None = Field(
+        default=None,
+        description="The matcher's reason (`EntityMatch.reason`), or None where the matcher answered a bare name.",
+    )
+
+
+class SetRefusal(EvalBaseModel):
+    """One unverified pick the matcher refused, as the output first wrote it, and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    written: str = Field(min_length=1, description="The pick as the output first wrote it, one of `unverified_names`.")
+    reason: str = Field(min_length=1, description="The matcher's reason (`MatchRefusal.reason`).")
+
+
 class EntityMatcher(Protocol):
     """How a named entity is found in a key: the host's normaliser, or :class:`FoldingMatcher`."""
 
@@ -109,12 +171,17 @@ class EntityMatcher(Protocol):
         measures' definition and a changed definition never pools with the old one."""
         ...
 
-    def match(self, named: NamedEntity, key: ReferenceKey) -> str | None:
-        """The name of the key entity ``named`` is, or None when the key holds no entity it is.
+    def match(self, named: NamedEntity, key: ReferenceKey) -> str | EntityMatch | MatchRefusal | None:
+        """The key entity ``named`` is, with or without the reason; a refusal with its reason; or None.
+
+        A matcher that gives no reasons answers a bare name or None, exactly as before reasons existed. A refusal and
+        None count alike, as one unverified pick; a refusal is listed on the grade with its reason.
 
         :param named: One entity the output named.
         :param key: The case's whole key, so a matcher may read every entity, alias and fact of it.
-        :return: A key entity's ``name``, exactly as the key spells it, or None.
+        :return: A key entity's ``name`` exactly as the key spells it, or an :class:`EntityMatch` carrying it and the
+            reason; a :class:`MatchRefusal` for a name the matcher declines to credit; or None when the key holds no
+            entity it is.
         """
         ...
 
@@ -124,7 +191,9 @@ class FoldingMatcher:
     one of its folded aliases (:func:`~threetears.evals.schema.reference.fold_name`).
 
     It folds case and Unicode compatibility forms only: ``É`` matches ``é`` and ``ﬁ`` matches ``fi``, while ``é`` does
-    not match ``e``, since which accents a language may drop is that language's rule, and no word list is read.
+    not match ``e``, since which accents a language may drop is that language's rule, and no word list is read. Every
+    credit's reason is ``folded``. A name that folds to one of the key's context entities is refused with the reason
+    ``context``: the key states facts about it, and it is never an answer.
     """
 
     @property
@@ -132,17 +201,22 @@ class FoldingMatcher:
         """``fold-v1``."""
         return _FOLDING_IDENTITY
 
-    def match(self, named: NamedEntity, key: ReferenceKey) -> str | None:
-        """The key entity whose folded name or alias equals ``named``'s folded name, or None.
+    def match(self, named: NamedEntity, key: ReferenceKey) -> EntityMatch | MatchRefusal | None:
+        """The key entity whose folded name or alias equals ``named``'s folded name, a refusal where that entity is
+        context, or None.
 
         :param named: One entity the output named.
-        :param key: The case's key. Its validation guarantees no folded name or alias belongs to two entities.
-        :return: That entity's name, or None.
+        :param key: The case's key. Its validation guarantees no folded name or alias belongs to two entities in any
+            tier.
+        :return: The answer-set entity's name with the reason ``folded``, a refusal with the reason ``context``, or
+            None.
         """
         said = fold_name(named.name)
-        for entity in key.entities:
+        for entity in key.fact_entities:
             if said in {fold_name(name) for name in (entity.name, *entity.aliases)}:
-                return entity.name
+                if entity in key.context:
+                    return MatchRefusal(reason=_CONTEXT)
+                return EntityMatch(entity=entity.name, reason=_FOLDED)
         return None
 
 
@@ -164,6 +238,9 @@ class SetGrade(EvalBaseModel):
     names whose folded names are equal are one pick. ``verified`` counts the picks the matcher found in the key, one
     per key entity found, and the rest are unverified: outside a key that may be non-exhaustive, so never counted
     wrong. Made by :class:`SetGrader`, which records its own prefix, matcher and extractor here.
+
+    ``credits`` and ``refusals`` are the provenance behind the counts, and no count reads them: a grade made before
+    they existed carries neither.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -184,6 +261,16 @@ class SetGrade(EvalBaseModel):
     core_missed: tuple[str, ...] = Field(description="The core entities the output did not name, in key order.")
     unverified_names: tuple[str, ...] = Field(
         description="The named entities the key does not hold, as the output first spelled them, in its order."
+    )
+    credits: tuple[SetCredit, ...] = Field(
+        default=(),
+        description="Each written name the matcher credited, the key entity it earned and why, in the output's order: "
+        "every distinct spelling of a key entity, so one entity found may have several.",
+    )
+    refusals: tuple[SetRefusal, ...] = Field(
+        default=(),
+        description="The unverified picks the matcher refused, and why, in the output's order: each one of "
+        "`unverified_names`, and still counted as unverified.",
     )
 
     @model_validator(mode="after")
@@ -206,12 +293,26 @@ class SetGrade(EvalBaseModel):
             )
         if len(self.core_missed) > self.core_size:
             raise ValueError(f"{len(self.core_missed)} core entities missed of a core of {self.core_size}")
+        credited = {credit.entity for credit in self.credits}
+        if self.credits and credited != set(self.found):
+            raise ValueError(
+                f"credits for {sorted(credited)} beside {sorted(self.found)} found: each entity found is credited"
+            )
+        refused = [refusal.written for refusal in self.refusals]
+        if len(set(refused)) != len(refused) or not set(refused) <= set(self.unverified_names):
+            raise ValueError(f"refusals {refused} are not distinct unverified names of {list(self.unverified_names)}")
         return self
 
     @property
     def formula(self) -> str:
         """The formula this grade's measures are declared under: the grading rule, its matcher and its extractor."""
         return _formula(self.matcher_identity, self.extractor_identity)
+
+    @property
+    def unlisted_names(self) -> tuple[str, ...]:
+        """The unverified picks the matcher did not refuse: the names the key does not hold, in the output's order."""
+        refused = {refusal.written for refusal in self.refusals}
+        return tuple(name for name in self.unverified_names if name not in refused)
 
     @property
     def unverified(self) -> int:
@@ -421,22 +522,28 @@ class SetGrader:
     def _graded(self, named: Sequence[NamedEntity], key: ReferenceKey) -> SetGrade:
         names = {entity.name for entity in key.entities}
         found: set[str] = set()
+        credits: dict[tuple[str, str, str | None], None] = {}
         unmatched: set[str] = set()
         unverified: list[str] = []
+        refusals: list[SetRefusal] = []
         for entity in named:
-            hit = self._matcher.match(entity, key)
-            if hit is None:
+            outcome = self._matcher.match(entity, key)
+            if outcome is None or isinstance(outcome, MatchRefusal):
                 said = fold_name(entity.name)
                 if said not in unmatched:
                     unmatched.add(said)
                     unverified.append(entity.name)
+                    if outcome is not None:
+                        refusals.append(SetRefusal(written=entity.name, reason=outcome.reason))
                 continue
+            hit, reason = (outcome, None) if isinstance(outcome, str) else (outcome.entity, outcome.reason)
             if hit not in names:
                 raise ValueError(
                     f"the matcher {self._matcher.identity!r} matched {entity.name!r} to {hit!r}, which the key does "
-                    "not hold; a matcher answers a key entity's name or None"
+                    "not hold; a matcher answers a key entity's name, a match or a refusal, or None"
                 )
             found.add(hit)
+            credits[(entity.name, hit, reason)] = None
         return SetGrade(
             prefix=self._prefix,
             matcher_identity=self._matcher.identity,
@@ -448,14 +555,20 @@ class SetGrader:
             found=tuple(entity.name for entity in key.entities if entity.name in found),
             core_missed=tuple(entity.name for entity in key.core if entity.name not in found),
             unverified_names=tuple(unverified),
+            credits=tuple(SetCredit(written=written, entity=hit, reason=reason) for written, hit, reason in credits),
+            refusals=tuple(refusals),
         )
 
 
 __all__ = [
     "EXTRACTED_SET_FAMILY",
+    "EntityMatch",
     "EntityMatcher",
     "FoldingMatcher",
+    "MatchRefusal",
     "NamedEntity",
+    "SetCredit",
     "SetGrade",
     "SetGrader",
+    "SetRefusal",
 ]
