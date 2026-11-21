@@ -508,6 +508,10 @@ _PERMISSIONS_VIOLATION_PATTERN: Final[re.Pattern[str]] = re.compile(
 #: refusals read as the two operations a subject grant is split into.
 _VIOLATION_OPERATIONS: Final[dict[str, str]] = {"subscription": "subscribe", "publish": "publish"}
 
+#: the most refused publish subjects a client remembers (:meth:`NatsClient.publish_refused_since`), the oldest
+#: dropped first: a caller asks within one request's deadline of the refusal, so only the latest matter
+_REFUSED_PUBLISHES_KEPT: Final = 256
+
 #: what a refusal actually COSTS, per operation -- the half of the message that says a capability
 #: just went dead rather than merely that an error occurred.
 _VIOLATION_CONSEQUENCES: Final[dict[str, str]] = {
@@ -2670,6 +2674,7 @@ class _ConnectionOpener:
         "_error_log_times",
         "reconnect_callbacks",
         "health_state",
+        "refused_publishes",
         "lame_duck_handler",
     )
 
@@ -2715,6 +2720,10 @@ class _ConnectionOpener:
         # :attr:`NatsClient.is_healthy`. resilience-task-03: ``overflow_events`` beside
         # ``auth_violations``.
         self.health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
+        # each subject the server refused a publish (a request) on, lowercased, with when it last did
+        # (time.monotonic), shared by every connection and read by :meth:`NatsClient.publish_refused_since`:
+        # a refused request is never answered, so its caller's deadline is the only other sign of it
+        self.refused_publishes: dict[str, float] = {}
         # what the client does when the server under its current connection enters lame-duck mode
         # (:meth:`NatsClient._move_off_lame_duck_server`). the first connection is opened before the
         # client exists, so each connection's callback reads this when the server says so.
@@ -2748,6 +2757,7 @@ class _ConnectionOpener:
         """
         health_state = self.health_state
         reconnect_callbacks = self.reconnect_callbacks
+        refused_publishes = self.refused_publishes
 
         async def _dispatch_reconnected() -> None:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
@@ -2766,6 +2776,8 @@ class _ConnectionOpener:
             # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
             # the transport is healthy again, so any buffered-full streak is stale.
             health_state["overflow_events"] = 0
+            # a fresh credential may name what the last one did not: a refusal it heard says nothing of this one
+            refused_publishes.clear()
             await _on_reconnected()
             for callback in list(reconnect_callbacks):
                 try:
@@ -2850,6 +2862,7 @@ class _ConnectionOpener:
         """
         health_state = self.health_state
         error_log_times = self._error_log_times
+        refused_publishes = self.refused_publishes
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
@@ -2862,6 +2875,13 @@ class _ConnectionOpener:
             # connection is still valid, and is kept until it expires.
             if state.role is _Role.CURRENT and _is_authorization_violation(exc):
                 health_state["auth_violations"] += 1
+            violation = _permissions_violation(exc)
+            if violation is not None and violation.operation == "publish" and violation.subject:
+                subject = violation.subject.lower()
+                refused_publishes.pop(subject, None)
+                refused_publishes[subject] = time.monotonic()
+                while len(refused_publishes) > _REFUSED_PUBLISHES_KEPT:
+                    del refused_publishes[next(iter(refused_publishes))]
             await _on_error(exc, error_log_times)
 
         return _dispatch_error
@@ -3173,6 +3193,7 @@ class NatsClient:
         "_kv_locks",
         "_reconnect_callbacks",
         "_health_state",
+        "_refused_publishes",
         "_renewal_task",
         "_handover_lock",
         "_reply_routes",
@@ -3281,6 +3302,9 @@ class NatsClient:
         # resilience-task-03: ``overflow_events`` counts consecutive outbound-buffer overflows at the
         # publish boundary since the last successful publish/(re)connect; folded into :meth:`is_healthy`.
         self._health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
+        # the subjects the server refused a publish on, and when (:meth:`publish_refused_since`); :meth:`connect`
+        # rebinds this to the dict its connections' error callbacks write
+        self._refused_publishes: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -3500,6 +3524,7 @@ class NatsClient:
         # :attr:`is_healthy` reads the live counts.
         client._reconnect_callbacks = opener.reconnect_callbacks
         client._health_state = opener.health_state
+        client._refused_publishes = opener.refused_publishes
         # FIRST in the list, ahead of every consumer hook: what a NATS restart wiped is put back
         # before anything registered later runs against it. it only starts a task, so it never
         # holds up the hooks after it.
@@ -4039,6 +4064,29 @@ class NatsClient:
             and self._health_state["overflow_events"] < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
         )
 
+    def publish_refused_since(self, fragment: str, since: float) -> str | None:
+        """a subject naming ``fragment`` that the server refused this client a publish on at or after ``since``.
+
+        A permissions violation answers a refused request with nothing, so the request ends at its deadline
+        like one to an unreachable broker; the violation itself reaches only the connection's error callback,
+        which records the subject here. A caller whose request timed out asks whether the refusal was it, and
+        a caller that remembered a refusal asks whether it still holds. The record is cleared whenever a new
+        credential takes over (a reconnect, a renewal's successor), since that credential may name the subject.
+        nats-py lowercases the server's ``-ERR`` text, so ``fragment`` is matched without regard to case.
+
+        :param fragment: a part of the request's subject (a stream name, a key)
+        :ptype fragment: str
+        :param since: the ``time.monotonic()`` reading the request was sent at
+        :ptype since: float
+        :return: the refused subject as the server reported it, or ``None`` when none was refused since
+        :rtype: str | None
+        """
+        wanted = fragment.lower()
+        for subject, when in list(self._refused_publishes.items()):
+            if when >= since and wanted in subject:
+                return subject
+        return None
+
     @property
     def overflow_events(self) -> int:
         """current consecutive outbound-buffer overflow count (resilience-task-03).
@@ -4350,6 +4398,8 @@ class NatsClient:
                 # nothing about the credential now in use.
                 self._health_state["auth_violations"] = 0
                 self._health_state["overflow_events"] = 0
+                # the successor's credential may name what the old one's did not
+                self._refused_publishes.clear()
                 # each old half stays in its group until its hold is over
                 handovers = [
                     sub.move_to(raw_sub, successor, hold=min(hold, retire_after).total_seconds())

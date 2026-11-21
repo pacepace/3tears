@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -68,10 +68,15 @@ from threetears.core.collections.epoch_change import (
     read_logged_epoch_change,
 )
 from threetears.core.collections.generation import split_generation_token, tenancy_of_table
-from threetears.core.exceptions import GenerationUnavailableError, L2LostError, RestoreTooLargeError
+from threetears.core.exceptions import (
+    ChangeLogKeyRefusedError,
+    GenerationUnavailableError,
+    L2LostError,
+    RestoreTooLargeError,
+)
 from threetears.nats.capabilities import ChangeLogBinder
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogLike, ChangeLogState
-from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError
+from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError, KvReadRefusedError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 from threetears.observe.resilience import retry_until_done
@@ -272,6 +277,10 @@ class _ChangeLogReading:
         self._tenants = tenants
         self._database = database
         self._tenants_of: dict[str, tuple[str, ...]] = {}
+        # each table this pod's tenants cannot read, with why, and the subject the broker refused (``None`` when
+        # the tenants name no key for it): a wiring error, so a later read is answered at once rather than waiting
+        # on the broker again, for as long as the client still holds the refusal (a new credential clears it)
+        self._refused: dict[str, tuple[ChangeLogKeyRefusedError, str | None]] = {}
         self._absent_log_poll = absent_log_poll
 
     def _table_tenants(self, pod: PodTenants, table_name: str) -> tuple[str, ...]:
@@ -283,14 +292,23 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the tenant tokens
         :rtype: tuple[str, ...]
-        :raises GenerationUnavailableError: when the table is a schema table and the pod reads no schema
+        :raises ChangeLogKeyRefusedError: when the table is a schema table and the pod reads no schema
         """
         tenants = self._tenants_of.get(table_name)
         if tenants is None:
             try:
                 tenants = pod.keys_for(tenancy_of_table(table_name))
             except ValueError as exc:
-                raise GenerationUnavailableError(f"{table_name!r} cannot be read by this pod: {exc}") from exc
+                refused = ChangeLogKeyRefusedError(
+                    f"{table_name!r} cannot be read by this pod: {exc}; it is wired as {pod!r}. A pod that owns a "
+                    f"space is wired with PodTenants(schema=<its ns_<hex>>), whose key its host grants "
+                    f"(s-<schema>.>)",
+                    table=table_name,
+                    keys=(),
+                    tenants=pod,
+                )
+                self._refused[table_name] = (refused, None)
+                raise refused from exc
             self._tenants_of[table_name] = tenants
         return tenants
 
@@ -301,11 +319,64 @@ class _ChangeLogReading:
         :ptype table_name: str
         :return: the keys
         :rtype: tuple[str, ...]
-        :raises GenerationUnavailableError: when this pod cannot read the table at all
+        :raises ChangeLogKeyRefusedError: when this pod cannot read the table at all (no key for it, or a key the
+            broker refused it before)
         """
         if self._tenants is None:
             return (epoch_change_filter(table_name),)
+        refused = self._refused.get(table_name)
+        if refused is not None:
+            if self._still_refused(refused[1]):
+                raise refused[0]
+            del self._refused[table_name]
         return tuple(epoch_change_key(table_name, tenant) for tenant in self._table_tenants(self._tenants, table_name))
+
+    def _still_refused(self, subject: str | None) -> bool:
+        """whether a refusal this reader remembered still holds.
+
+        :param subject: the subject the broker refused, or ``None`` when the pod's tenants name no key (which
+            holds for the reader's life: its tenants never change)
+        :ptype subject: str | None
+        :return: ``True`` while the client still records the refusal; a client that keeps no record (the
+            in-memory fake) holds it for the reader's life
+        :rtype: bool
+        """
+        if subject is None:
+            return True
+        refused_since = getattr(self._nats, "publish_refused_since", None)
+        if not callable(refused_since):
+            return True
+        return refused_since(subject, 0.0) is not None
+
+    async def _each_key[T](self, table_name: str, read: Callable[[str], Awaitable[T]]) -> list[T]:
+        """``read`` of each key this reader reads ``table_name`` under, together; a key refused is remembered.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param read: one key's read
+        :ptype read: Callable[[str], Awaitable[T]]
+        :return: each key's answer, in key order
+        :rtype: list[T]
+        :raises ChangeLogKeyRefusedError: when this pod cannot read the table, or the broker refused one of its
+            keys (the pod's grant does not name it), which later reads of the table answer at once while the
+            client still holds the refusal
+        :raises KvBucketNotFoundError: when the log is absent
+        :raises KvError: when the log cannot be read
+        """
+        keys = self._keys(table_name)
+        try:
+            return list(await asyncio.gather(*(read(key) for key in keys)))
+        except KvReadRefusedError as exc:
+            refused = ChangeLogKeyRefusedError(
+                f"{table_name!r}'s change-log keys {list(keys)} were refused to this pod, wired as {self._tenants!r}: "
+                f"{exc}. Its host grants a tool pod s-<its schema>.> and the platform tables' keys; check that the "
+                f"pod's schema (PodTenants.schema) is the space the hub granted it",
+                table=table_name,
+                keys=keys,
+                tenants=self._tenants,
+            )
+            self._refused[table_name] = (refused, exc.subject)
+            raise refused from exc
 
     def _readable(self, table_name: str, key: str) -> bool:
         """whether ``key`` is one of ``table_name``'s record keys this reader may read.
@@ -352,7 +423,8 @@ class _ChangeLogReading:
         :raises KvBucketNotFoundError: when the log is absent
         :raises KvError: when the log cannot be read
         """
-        entries = await asyncio.gather(*(self._log().last(key) for key in self._keys(table_name)))
+        log = self._log()
+        entries = await self._each_key(table_name, log.last)
         held = [entry for entry in entries if entry is not None]
         return max(held, key=lambda entry: entry.seq) if held else None
 
@@ -368,7 +440,8 @@ class _ChangeLogReading:
         :raises KvBucketNotFoundError: when the log is absent
         :raises KvError: when the log cannot be read
         """
-        entries = await asyncio.gather(*(self._log().next_after(key, seq) for key in self._keys(table_name)))
+        log = self._log()
+        entries = await self._each_key(table_name, lambda key: log.next_after(key, seq))
         held = [entry for entry in entries if entry is not None]
         return min(held, key=lambda entry: entry.seq) if held else None
 
@@ -527,9 +600,8 @@ class _ChangeLogReading:
         seq = low[1]
         try:
             # each key this reader reads, read through its own filtered consumer, merged by the log's sequence
-            walked = await asyncio.gather(
-                *(self._log().records_after(key, low[1], high[1]) for key in self._keys(table_name))
-            )
+            log = self._log()
+            walked = await self._each_key(table_name, lambda key: log.records_after(key, low[1], high[1]))
         except KvBucketNotFoundError:
             # NOSILENT: the log went mid-walk; nothing read is trusted, and the follower is behind
             return EpochWalk(changes=(), complete=False, first_missing=_token(state.incarnation, low[1] + 1))

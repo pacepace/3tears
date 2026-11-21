@@ -76,6 +76,7 @@ from threetears.nats.errors import (
     KvConfigMismatch,
     KvError,
     KvFullError,
+    KvReadRefusedError,
     KvStoreExhaustedError,
     KvValueTooLargeError,
     NatsClientError,
@@ -4139,7 +4140,12 @@ class NatsChangeLog:
         :raises KvError: when the log cannot be read
         """
         js = self._client.jetstream_context()
-        return await self._read(lambda: js.get_last_msg(self._stream, self._subject(key), direct=True), "last record")
+        # a direct get's request subject names the key's subject after the stream, so a refusal names the key
+        return await self._read(
+            lambda: js.get_last_msg(self._stream, self._subject(key), direct=True),
+            "last record",
+            refused_on=f"{self._stream}.{self._subject(key)}",
+        )
 
     async def at(self, seq: int) -> ChangeLogEntry | None:
         """the record at ``seq``, or ``None`` when the log holds none there.
@@ -4171,18 +4177,26 @@ class NatsChangeLog:
             lambda: js.get_msg(self._stream, seq=seq + 1, subject=self._subject(key), next=True), "next record"
         )
 
-    async def _read(self, op: Callable[[], Coroutine[Any, Any, Any]], what: str) -> ChangeLogEntry | None:
-        """run one read, telling a missing message from a missing log.
+    async def _read(
+        self, op: Callable[[], Coroutine[Any, Any, Any]], what: str, *, refused_on: str | None = None
+    ) -> ChangeLogEntry | None:
+        """run one read, telling a missing message from a missing log, and a refused read from a slow one.
 
         :param op: the nats-py read
         :ptype op: Callable[[], Coroutine[Any, Any, Any]]
         :param what: what it reads, for errors
         :ptype what: str
+        :param refused_on: the part of the read's request subject a refusal of it names; the stream's name
+            when ``None``
+        :ptype refused_on: str | None
         :return: the entry, or ``None`` when the log holds no such message
         :rtype: ChangeLogEntry | None
         :raises KvBucketNotFoundError: when the log is absent
-        :raises KvError: when the read failed
+        :raises KvReadRefusedError: when the server refused this connection the read (its grant does not name
+            the subject): the request went unanswered and the client heard the violation on its subject
+        :raises KvError: when the read failed otherwise
         """
+        sent = time.monotonic()
         try:
             raw = await self._call(op, f"change log {what}")
         except NatsNotFoundError:
@@ -4191,6 +4205,12 @@ class NatsChangeLog:
                 raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket) from None
             return None
         except _BOUNDED_CALL_FAILURES as exc:
+            refused = self._client.publish_refused_since(refused_on or self._stream, sent)
+            if refused is not None:
+                raise KvReadRefusedError(
+                    f"change log {self._stream} {what} was refused: this connection's grant does not name {refused!r}",
+                    subject=refused,
+                ) from exc
             raise KvError(f"change log {self._stream} {what} failed: {exc}") from exc
         return self._entry(raw)
 

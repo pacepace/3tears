@@ -13,11 +13,15 @@ What these hold, on the in-memory log (the live NATS behaviour is pinned in
 - a reader is given a pod's PodTenants, never a list of tenants;
 - a record retention took from a follower's own key leaves it behind (``aged_out``), as per table before;
 - a platform reader (no tenants) reads every tenant through the wildcard;
-- the restore puts each tenant's notes, whole-table ones too, back under its own key.
+- the restore puts each tenant's notes, whole-table ones too, back under its own key;
+- every table 3tears hands an owner to declare among its own tables (the epochs, the fence, the coordination
+  tables) is read by a tool pod of a provider space under ``s-ns_<hex>.<table>.e``, the key the hub's broker
+  writes it under, never ``_all`` or the wildcard.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -27,7 +31,12 @@ from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.collections.schema_backed import SchemaBackedCollection, collection_for_schema
+from threetears.core.collections.scope_epochs import scope_epochs_collection
+from threetears.core.coordination.source_token import source_tokens_schema
+from threetears.core.coordination.tables import COORDINATION_TABLE_SCHEMAS
+from threetears.core.exceptions import ChangeLogKeyRefusedError, GenerationUnavailableError
+from threetears.core.namespaces import build_namespace_schema_name
 from threetears.core.tenancy import (
     ALL_TENANTS,
     TENANT_BY_SCHEMA,
@@ -40,6 +49,7 @@ from threetears.core.tenancy import (
 )
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationReader, EpochGenerationSource
+from threetears.nats.errors import KvError
 
 _TABLE = "tenancy_test_widgets"
 _OWN_TABLE = "tenancy_test_notebook"
@@ -67,6 +77,17 @@ class _Notebook(BaseCollection[Any]):
     @property
     def table_name(self) -> str:
         return _OWN_TABLE
+
+
+class _RefusalRecordingClient(FakeNatsClient):
+    """a client that records refused subjects as the real one does: a test sets what it still holds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused: set[str] = set()
+
+    def publish_refused_since(self, fragment: str, since: float) -> str | None:
+        return next((subject for subject in self.refused if fragment.lower() in subject.lower()), None)
 
 
 def _row(key: str, tenant: str | None) -> ChangedRow:
@@ -271,6 +292,79 @@ class TestAPodReadsItsOwnSchemaTableUnderItsOwnKeyOnly:
         with pytest.raises(GenerationUnavailableError, match="reads no schema"):
             await EpochGenerationReader(bus, tenants=PodTenants(customer="customer-a")).read(_OWN_TABLE)
 
+    async def test_a_pod_of_no_schema_is_refused_as_a_wiring_error(self) -> None:
+        bus = FakeNatsClient()
+        await EpochGenerationSource(bus).start_log()
+        reader = EpochGenerationReader(bus, tenants=PodTenants(customer="customer-a"))
+        with pytest.raises(ChangeLogKeyRefusedError) as refused:
+            await reader.read(_OWN_TABLE)
+        assert refused.value.table == _OWN_TABLE and refused.value.keys == ()
+        assert refused.value.tenants == PodTenants(customer="customer-a")
+
+    async def test_a_key_the_broker_refuses_is_refused_once_and_never_asked_again(self) -> None:
+        """a pod wired with a schema its grant does not name: the first read is refused, and every later read
+        of the table is answered at once, without asking the broker (and waiting on it) again."""
+        bus = FakeNatsClient()
+        await EpochGenerationSource(bus).start_log()
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        log.granted_reads = (f"{schema_tenant('agent_granted')}.>",)
+        reader = EpochGenerationReader(bus, tenants=PodTenants(schema="agent_wrong"))
+        wrong_key = epoch_change_key(_OWN_TABLE, schema_tenant("agent_wrong"))
+
+        with pytest.raises(ChangeLogKeyRefusedError) as first:
+            await reader.read(_OWN_TABLE)
+        assert first.value.keys == (wrong_key,)
+        assert first.value.tenants == PodTenants(schema="agent_wrong")
+        assert "PodTenants.schema" in str(first.value), "the error names the fix"
+        assert log.read_keys == [wrong_key]
+        with pytest.raises(ChangeLogKeyRefusedError):
+            await reader.read(_OWN_TABLE)
+        state = await reader.log_state()
+        assert state is not None
+        with pytest.raises(ChangeLogKeyRefusedError):
+            await reader.changes_after(_OWN_TABLE, f"{state.incarnation}:0", f"{state.incarnation}:1")
+        assert log.read_keys == [wrong_key], "a refused table is never asked for again"
+
+    async def test_a_refusal_a_new_credential_cleared_is_asked_again(self) -> None:
+        """the client clears its refusals when a new credential takes over (which may name the key): the reader
+        asks the broker again then, and reads the table once the grant names it."""
+        bus = _RefusalRecordingClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        token = await source.advance_with_change(_OWN_TABLE, [_row("n1", schema_tenant("agent_a"))])
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        log.granted_reads = ()
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
+        own_key = epoch_change_key(_OWN_TABLE, schema_tenant("agent_a"))
+
+        with pytest.raises(ChangeLogKeyRefusedError) as refused:
+            await reader.read(_OWN_TABLE)
+        bus.refused = {f"$KV.{EPOCH_CHANGES_BUCKET}.{own_key}"}
+        with pytest.raises(ChangeLogKeyRefusedError):
+            await reader.read(_OWN_TABLE)
+        assert log.read_keys == [own_key], "held while the client still records the refusal"
+        assert refused.value.keys == (own_key,)
+
+        bus.refused = set()  # a renewal's successor: the client cleared what the old credential heard
+        log.granted_reads = None
+        assert await reader.read(_OWN_TABLE) == token
+
+    async def test_an_outage_stays_a_passing_failure(self) -> None:
+        """a log that cannot be reached is not a refusal: it is not remembered, and the next read asks again."""
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        token = await source.advance_with_change(_OWN_TABLE, [_row("n1", schema_tenant("agent_a"))])
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        reader = EpochGenerationReader(bus, tenants=_POD_A)
+        log.unreachable = KvError("broker down")
+
+        with pytest.raises(GenerationUnavailableError) as down:
+            await reader.read(_OWN_TABLE)
+        assert not isinstance(down.value, ChangeLogKeyRefusedError)
+        log.unreachable = None
+        assert await reader.read(_OWN_TABLE) == token
+
     def test_a_list_of_tenants_is_refused(self) -> None:
         with pytest.raises(TypeError, match="PodTenants"):
             EpochGenerationReader(FakeNatsClient(), tenants=[_A])  # type: ignore[arg-type]
@@ -337,3 +431,46 @@ class TestAWriterThatKnowsTheSchemaNamesEachRecordsTenant:
             epoch_change_key(_TABLE, None),
             epoch_change_key("group_members", None),
         ]
+
+
+#: a tool pod's own provider space, in the hub's spelling (``ns_<namespace id hex>``)
+_SPACE = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000c0de"))
+
+#: the collection classes over the tables 3tears hands an owner to declare among its own tables, built as the owner
+#: builds them and held here: the reader finds a table's declaration through the classes alive in the process (the
+#: coordination tables' classes are defined by their module)
+_OWNER_TABLES: tuple[type[SchemaBackedCollection[Any]], ...] = (
+    scope_epochs_collection(),
+    collection_for_schema(source_tokens_schema()),
+)
+_OWNER_TABLE_NAMES: tuple[str, ...] = (
+    *(cls.schema.name for cls in _OWNER_TABLES),
+    *(schema.name for schema in COORDINATION_TABLE_SCHEMAS),
+)
+
+
+class TestAnOwnersOwnTablesAreReadUnderItsOwnSchemaKey:
+    """a tool pod of a provider space reads the tables it declares among its own under ``s-ns_<hex>``.
+
+    The hub grants such a pod ``s-ns_<hex>.>`` (its own space) and the access tables' ``_all`` keys, and its broker
+    writes a switched table's changes under the schema the statement ran in. A table with no declared tenancy would
+    be read under ``_all``: refused by that grant, and missing the records even if granted.
+    """
+
+    @pytest.mark.parametrize("table", _OWNER_TABLE_NAMES)
+    async def test_the_pod_reads_its_schema_key_and_nothing_else(self, table: str) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        # the hub's broker, which knows the schema its statement ran in
+        token = await advance_for_write(source, table, [ChangedRow(ids=["r1"])], schema=_SPACE)
+        own_key = f"s-{_SPACE}.{table}.e"
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        assert [entry.key for entry in await log.records_after(">", 0, 100)] == [own_key]
+        log.read_keys.clear()
+        # the pod's grant, as the hub builds it for a tool pod of a provider space
+        log.granted_reads = (f"{schema_tenant(_SPACE)}.>", epoch_change_key("group_members", None))
+        reader = EpochGenerationReader(bus, tenants=PodTenants(schema=_SPACE))
+        assert await reader.read(table) == token
+        assert set(log.read_keys) == {own_key}
+        assert not [key for key in log.read_keys if key.startswith(("*", f"{ALL_TENANTS}."))]

@@ -15,6 +15,7 @@ import pytest
 from threetears.core.tenancy import schema_tenant
 from threetears.core.namespaces import (
     build_agent_schema_name,
+    build_namespace_schema_name,
     HITL_NAMESPACE_TYPE,
     PLURAL_PREFIX_AGENT,
     PLURAL_PREFIX_BY_NAMESPACE_TYPE,
@@ -343,3 +344,11 @@ def test_an_agents_schema_is_agent_and_its_hex() -> None:
     assert build_agent_schema_name(agent) == "agent_019470a8b5c37def81230000000000aa"
     # the schema is one subject token, so its tenant is its name, never a digest
     assert schema_tenant(build_agent_schema_name(agent)) == f"s-{build_agent_schema_name(agent)}"
+
+
+def test_a_non_agent_owners_schema_is_ns_and_the_namespace_rows_hex() -> None:
+    namespace = UUID("0192f0c4-7a10-7000-8000-00000000c0de")
+    # the hub's spelling (broker.namespace_provisioner), which names the schema it creates for a tool pod's space
+    assert build_namespace_schema_name(namespace) == "ns_0192f0c47a107000800000000000c0de"
+    # one subject token, so a tool pod's change-log tenant is its schema's name, never a digest
+    assert schema_tenant(build_namespace_schema_name(namespace)) == f"s-ns_{namespace.hex}"

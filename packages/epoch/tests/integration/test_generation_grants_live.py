@@ -8,7 +8,10 @@ themselves, through ``NatsClient``, as an agent pod and as a tool pod minted by 
 - the pod binds the epoch bucket the hub declared, reads a table's generation, and is pushed its
   latest value through ``watch_key``, which is how a pod follows the access tables;
 - the pod's advance is refused and surfaces as ``GenerationUnavailableError``, and the bucket still
-  holds the generation the hub wrote.
+  holds the generation the hub wrote;
+- a tool pod granted its own provider space's schema (``s-ns_<hex>``) reads a table it declares among its own
+  (``scope_epochs``) under that key; wired with a schema its grant does not name, its read is refused as a
+  ``ChangeLogKeyRefusedError`` (the client heard the server's violation), and a second read is answered at once.
 
 As in ``threetears.nats``'s live grant tests, the minted allow-lists are applied as config-mode
 ``authorization`` permissions: the grant strings are what is under test.
@@ -29,12 +32,18 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.exceptions import GenerationUnavailableError
+import time
+import uuid
+
+from threetears.core.collections.scope_epochs import scope_epochs_collection
+from threetears.core.exceptions import ChangeLogKeyRefusedError, GenerationUnavailableError
+from threetears.core.namespaces import build_namespace_schema_name
+from threetears.core.tenancy import PodTenants, schema_tenant
 from threetears.core.testing.fixtures import NATS_TEST_IMAGE
 from threetears.core.testing.services import running_nats
 from threetears.epoch import EpochGenerationReader, EpochGenerationSource
 from threetears.nats import NatsClient
-from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
+from threetears.nats.subject_permissions import EpochChangeGrant, Principal, PrincipalPermissions, build_permissions
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
@@ -186,6 +195,59 @@ async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Princ
             with pytest.raises(GenerationUnavailableError):
                 await EpochGenerationSource(pod).advance(_TABLE)
             assert await hub_source.current(_TABLE) == again
+        finally:
+            if pod is not None:
+                await pod.shutdown(drain_timeout=timedelta(seconds=2))
+            await hub.shutdown(drain_timeout=timedelta(seconds=2))
+
+
+#: the epochs table's class, built as its owner builds it and held so the reader finds its declared tenancy
+_SCOPE_EPOCHS = scope_epochs_collection()
+
+#: the tool pod's own provider space, and a schema its grant does not name
+_SPACE = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000c0de"))
+_NOT_ITS_SPACE = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000beef"))
+
+
+async def test_a_tool_pod_reads_its_own_space_and_a_wrong_schema_is_refused_at_once() -> None:
+    """the hub's grant for a provider pod (its space's schema whole) admits exactly that schema's records."""
+    previous = get_default_namespace()
+    set_default_namespace(_NS)
+    try:
+        permissions = build_permissions(
+            Principal.TOOL_POD,
+            pod_id=_POD,
+            conn_id=_POD,
+            epoch_change_grants=(EpochChangeGrant(tenant=schema_tenant(_SPACE)),),
+        )
+    finally:
+        set_default_namespace(previous)
+    pub_allow, sub_allow = _minted_allow_lists(permissions)
+    table = _SCOPE_EPOCHS.schema.name
+
+    with _nats_with_auth(_server_config(pub_allow, sub_allow)) as uri:
+        hub = await _connect(uri, user="admin", password=_ADMIN_PW, inbox_prefix=None)
+        pod: NatsClient | None = None
+        try:
+            hub_source = EpochGenerationSource(hub)
+            await hub_source.start_log()
+            # the hub's broker writes the pod's switched table under the schema its statement ran in
+            written = await hub_source.advance_with_change(table, None, tenant=schema_tenant(_SPACE))
+
+            pod = await _connect(uri, user="pod", password=_POD_PW, inbox_prefix=permissions.inbox_prefix)
+
+            # === SUCCEEDS: its own space's key ===============================================
+            assert await EpochGenerationReader(pod, tenants=PodTenants(schema=_SPACE)).read(table) == written
+
+            # === REFUSED, loudly: a schema the grant does not name ===========================
+            wrong = EpochGenerationReader(pod, tenants=PodTenants(schema=_NOT_ITS_SPACE))
+            with pytest.raises(ChangeLogKeyRefusedError) as refused:
+                await wrong.read(table)
+            assert refused.value.keys == (f"{schema_tenant(_NOT_ITS_SPACE)}.{table}.e",)
+            started = time.monotonic()
+            with pytest.raises(ChangeLogKeyRefusedError):
+                await wrong.read(table)
+            assert time.monotonic() - started < 1.0, "the remembered refusal waits on no broker deadline"
         finally:
             if pod is not None:
                 await pod.shutdown(drain_timeout=timedelta(seconds=2))

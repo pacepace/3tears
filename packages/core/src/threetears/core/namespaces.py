@@ -73,6 +73,7 @@ __all__ = [
     "build_agent_schema_name",
     "build_hitl_namespace_name",
     "build_namespace_name",
+    "build_namespace_schema_name",
     "build_tool_namespace_name",
     "build_tool_namespace_name_or_none",
     "build_tool_provider_node_name",
@@ -287,6 +288,27 @@ def build_agent_schema_name(agent_id: UUID) -> str:
     :rtype: str
     """
     return f"agent_{agent_id.hex}"
+
+
+def build_namespace_schema_name(namespace_id: UUID) -> str:
+    """build the database schema a NON-AGENT namespace owner's space lives in.
+
+    shape is ``ns_<32-char hex>``, from the owned namespace row's own id: a tool pod's provider space
+    (``tools.<provider>``) is the case that matters. Asked from every side of the change log's tenancy, as
+    :func:`build_agent_schema_name` is: the hub CREATES the schema and its broker keys a provider-space
+    table's change records by it (:func:`threetears.core.tenancy.schema_tenant`); the auth callout grants
+    the owning tool pod that key; the pod's reader asks for it (:class:`threetears.core.tenancy.PodTenants`).
+    A second spelling would leave the pod asking for keys no one writes and its grant does not name, and a
+    ``*`` read in their place is refused by a per-tenant grant.
+
+    ``agent_<hex>`` is a separate shape for an agent's own namespace and is never renamed to this one.
+
+    :param namespace_id: the owned namespace row's unique identifier
+    :ptype namespace_id: UUID
+    :return: the schema name, ``ns_<hex>``
+    :rtype: str
+    """
+    return f"ns_{namespace_id.hex}"
 
 
 def namespace_contains(node: str, name: str) -> bool:

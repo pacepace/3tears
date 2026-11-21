@@ -63,6 +63,7 @@ from threetears.core.backends import BrokerGenerationSource
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.tenancy import PodTenants
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.utils.cpu_quota import bound_native_threads, default_executor_workers, effective_cpu_count
 from threetears.epoch import EpochGenerationReader
@@ -276,6 +277,7 @@ async def build_tool_pod_collection_stack(
     nats_client: "NatsClient",
     pod_id: str,
     l1_metadata: "MetaData",
+    tenants: PodTenants,
     l1_db_name: str = TOOL_POD_L1_DB_NAME,
 ) -> CollectionRegistry:
     """build one tool pod's L1 + L2 collection tiers, scoped to its own ``tool_pods.id``.
@@ -316,6 +318,13 @@ async def build_tool_pod_collection_stack(
     :ptype pod_id: str
     :param l1_metadata: the pod's declared Collection tables, mirrored into its L1 database
     :ptype l1_metadata: MetaData
+    :param tenants: the tenants the pod reads the epoch change log as: ``PodTenants(schema=<its space's
+        ns_<hex>>)`` for a pod that owns a provider space, ``PodTenants()`` for one that owns none. Required,
+        and never ``None``: ``None`` is a platform reader's ``*.{table}.e`` wildcard, which the hub's
+        per-tenant change-log grants refuse, since NATS matches the literal subject. With its tenants the
+        pod's reader asks for ``s-{schema}.{table}.e`` for a table in its own space and ``_all.{table}.e`` for
+        a platform table (the access machinery among them) -- exactly the keys its grant names
+    :ptype tenants: PodTenants
     :param l1_db_name: name of this process's in-memory L1 database. The default is right for
         every deployment -- replicas are separate PROCESSES, and within one process every
         collection must share one L1 tier, which is why the name is fixed rather than random.
@@ -328,6 +337,7 @@ async def build_tool_pod_collection_stack(
     :return: the configured registry, with its invalidation listener running
     :rtype: CollectionRegistry
     :raises ValueError: if ``pod_id`` is not a uuid, so no collision-free scope can be derived
+    :raises TypeError: if ``tenants`` is not a :class:`~threetears.core.tenancy.PodTenants`
     :raises threetears.nats.errors.KvError: if the shared bucket cannot be bound within the attempt
         budget -- nothing has declared it, or this principal is not granted it
     :raises threetears.nats.errors.KvConfigMismatch: if the live bucket carries a configuration this
@@ -336,6 +346,10 @@ async def build_tool_pod_collection_stack(
     # scope FIRST, because it is the one failure that needs no network: a pod id that cannot
     # produce a collision-free scope is refused before a single JetStream request is issued.
     scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=pod_id)
+    # and the tenants, for the same reason: a pod handed none would read as a platform service, through a
+    # wildcard its grant can never admit, and every generation read would fail at its first request.
+    if not isinstance(tenants, PodTenants):
+        raise TypeError(f"a tool pod reads the change log as its own PodTenants, never every tenant; got {tenants!r}")
     # then the bucket, BEFORE the registry is configured: a refused or mismatched bucket must take
     # the process down at wiring, with nothing half-built behind it.
     # component=: several processes bind this same bucket, and the interesting failure is
@@ -354,12 +368,20 @@ async def build_tool_pod_collection_stack(
     # its reply; this source hands it to the collection. Its reader binds the epoch bucket the pod
     # is granted read of, so a collection caching absences can stamp them with a generation, and a
     # cache the pod derives from a table can follow it (``threetears.epoch.follow_tables``, or
-    # ``threetears.agent.acl.generation_follow.follow_caller_access_cache`` for the access tables).
-    registry.set_generation_source(BrokerGenerationSource(EpochGenerationReader(nats_client)))
+    # ``threetears.agent.acl.generation_follow.follow_caller_access_cache`` for the access tables). The
+    # reader asks for the pod's own keys only (``tenants``), the keys its grant names.
+    registry.set_generation_source(BrokerGenerationSource(EpochGenerationReader(nats_client, tenants=tenants)))
     await registry.start_invalidation_listener(nats_client)
     log.info(
         "tool pod collection stack wired",
-        extra={"extra_data": {"pod_id": pod_id, "kv_key_scope": scope, "tables": len(l1_metadata.tables)}},
+        extra={
+            "extra_data": {
+                "pod_id": pod_id,
+                "kv_key_scope": scope,
+                "tables": len(l1_metadata.tables),
+                "change_log_schema": tenants.schema,
+            }
+        },
     )
     return registry
 
@@ -614,6 +636,13 @@ class ToolServerBootstrap:
         before this stack existed; declaring tables on one is refused here, before the pod
         serves, rather than failing inside the connected callback on every restart.
 
+        The callback asks :meth:`collection_tenants` which tenants the pod reads the epoch change log
+        as, then wires the stack (:meth:`wire_collection_stack`) once. A host whose pod owns a provider
+        space overrides that hook, never this method, so the in-process check above and the once-per-pod
+        wiring stay here. A host that needs the built registry for work of its own (pointing it at its
+        L3) registers a connected callback after calling this one: callbacks run in the order registered,
+        so its callback finds :attr:`collection_registry` built.
+
         :param server: the tool server whose connection the stack rides on
         :ptype server: ToolServer
         :return: nothing
@@ -639,54 +668,117 @@ class ToolServerBootstrap:
                 extra={"extra_data": {"service": self._service_name, "pod_id": server.pod_id}},
             )
             return
+
         # EVERY tool-pod principal gets the stack, declared tables or not. The runtime holds
         # collections of its own on every pod's behalf -- the object-resolution cache and the
         # proxy-assertion replay anchor -- and the anchor is not optional: without it the guard
         # cannot tell a bucket it never had from one it lost, so every cold start refused the
         # pod's first proxied call. Gating the stack on host tables left every pod that declared
         # none with exactly that.
-        tables = self._collection_tables if self._collection_tables is not None else MetaData()
-
         async def _on_connected(nats_client: "NatsClient") -> None:
-            """build the pod's tiers on the freshly-established connection.
+            """build the pod's tiers on the freshly-established connection, under the tenants the host names.
 
             :param nats_client: the pod's connected canonical NATS client
             :ptype nats_client: NatsClient
             :return: nothing
             :rtype: None
             """
-            registry = await build_tool_pod_collection_stack(
-                nats_client=nats_client,
-                pod_id=server.pod_id,
-                l1_metadata=tables,
-            )
-            self._collection_registry = registry
-            # the runtime's OWN collection, wired here rather than by the host pod: it
-            # backs a resolver the pod never constructs either, and a store a host had
-            # to remember to build is one a host will forget to build.
-            self._object_resolutions = ObjectResolutionCollection(
-                registry,
-                DefaultCoreConfig(),
-                nats_client,
-            )
-            server.attach_object_resolution_cache(self._object_resolutions)
-            # THE SAME ARGUMENT, for the proxy-assertion guard. Without an anchor that guard
-            # cannot tell a bucket it never had from one it lost, so it applies its
-            # creation-time watermark to both -- and `proxy_assertion_nonces` is memory-backed,
-            # so it dies with the broker. Every cold start therefore refused its first proxied
-            # call, naming `proxy assertion nonce replay`, which is the one thing that had not
-            # happened.
-            #
-            # WIRED HERE BECAUSE NOWHERE ELSE CAN. An anchor reads through this registry, which
-            # needs a connected NATS client -- and the thing that connects is the ToolServer the
-            # pod has already finished constructing by then. So a pod cannot pass one at
-            # construction without deferring the lookup by hand, and every pod that did not
-            # think to got a silent refusal window after every restart. This callback runs
-            # BEFORE `serve` builds the guard, so the ordering is guaranteed rather than hoped
-            # for, and a pod that supplied its own anchor keeps it.
-            server.attach_assertion_replay_anchor(CollectionReplayAnchor(registry))
+            tenants = await self.collection_tenants(server, nats_client)
+            await self.wire_collection_stack(server, nats_client, tenants=tenants)
 
         server.add_connected_callback(_on_connected)
+
+    async def collection_tenants(self, server: "ToolServer", nats_client: "NatsClient") -> PodTenants:
+        """the tenants this pod reads the epoch change log as: ``PodTenants()`` unless a host says otherwise.
+
+        Asked once, inside :meth:`install_collection_stack`'s connected callback, on the pod's live
+        connection, before its stack is built and before the server subscribes or registers. The default
+        is a pod that owns no data space: it reads the platform tables' ``_all`` records, and a schema
+        table is refused (:class:`~threetears.core.exceptions.ChangeLogKeyRefusedError`, logged at ERROR)
+        rather than read through the ``*`` wildcard its grant never admits.
+
+        **Override it in a host whose pod owns a provider space**, and return
+        ``PodTenants(schema=<the space's ns_<hex>>)``, the schema whose change-log keys the hub grants it
+        (``s-ns_<hex>.>``). It may await: the SDK's ``ProviderToolPod`` runs its hub handshake here, which
+        rides this connection, and returns the schema the handshake's reply names. A pod with two or more
+        spaces has no one schema to read as, so it runs as ``PodTenants()`` (a documented limit).
+
+        :param server: the tool server whose connection the stack rides on
+        :ptype server: ToolServer
+        :param nats_client: the pod's connected canonical NATS client
+        :ptype nats_client: NatsClient
+        :return: the tenants
+        :rtype: PodTenants
+        """
+        return PodTenants()
+
+    async def wire_collection_stack(
+        self,
+        server: "ToolServer",
+        nats_client: "NatsClient",
+        *,
+        tenants: PodTenants,
+    ) -> CollectionRegistry:
+        """build the pod's collection stack on its connection and hand the runtime's collections to the server.
+
+        What :meth:`install_collection_stack`'s connected callback runs, with the tenants
+        :meth:`collection_tenants` names. A host whose pod owns a space overrides that hook rather than
+        calling this itself, so the stack is built in one place. Called once per pod, for a tool-pod
+        principal only.
+
+        :param server: the tool server whose connection the stack rides on
+        :ptype server: ToolServer
+        :param nats_client: the pod's connected canonical NATS client
+        :ptype nats_client: NatsClient
+        :param tenants: the tenants the pod reads the epoch change log as
+            (:func:`build_tool_pod_collection_stack`'s ``tenants``)
+        :ptype tenants: PodTenants
+        :return: the configured registry, also held as :attr:`collection_registry`
+        :rtype: CollectionRegistry
+        :raises ValueError: if the server's pod id is not a uuid
+        :raises TypeError: if ``tenants`` is not a :class:`~threetears.core.tenancy.PodTenants`
+        :raises RuntimeError: if this pod's stack is already wired
+        """
+        # once per pod: a second stack would leave the first one's invalidation listener and collections running,
+        # since teardown stops only the registry held here. A host names its tenants through collection_tenants,
+        # so the base class's one callback is the only caller.
+        if self._collection_registry is not None:
+            raise RuntimeError(
+                f"{self._service_name}'s collection stack is already wired; wire_collection_stack runs once per pod"
+            )
+        tables = self._collection_tables if self._collection_tables is not None else MetaData()
+        registry = await build_tool_pod_collection_stack(
+            nats_client=nats_client,
+            pod_id=server.pod_id,
+            l1_metadata=tables,
+            tenants=tenants,
+        )
+        self._collection_registry = registry
+        # the runtime's OWN collection, wired here rather than by the host pod: it
+        # backs a resolver the pod never constructs either, and a store a host had
+        # to remember to build is one a host will forget to build.
+        self._object_resolutions = ObjectResolutionCollection(
+            registry,
+            DefaultCoreConfig(),
+            nats_client,
+        )
+        server.attach_object_resolution_cache(self._object_resolutions)
+        # THE SAME ARGUMENT, for the proxy-assertion guard. Without an anchor that guard
+        # cannot tell a bucket it never had from one it lost, so it applies its
+        # creation-time watermark to both -- and `proxy_assertion_nonces` is memory-backed,
+        # so it dies with the broker. Every cold start therefore refused its first proxied
+        # call, naming `proxy assertion nonce replay`, which is the one thing that had not
+        # happened.
+        #
+        # WIRED HERE BECAUSE NOWHERE ELSE CAN. An anchor reads through this registry, which
+        # needs a connected NATS client -- and the thing that connects is the ToolServer the
+        # pod has already finished constructing by then. So a pod cannot pass one at
+        # construction without deferring the lookup by hand, and every pod that did not
+        # think to got a silent refusal window after every restart. This runs inside a connected callback,
+        # BEFORE `serve` builds the guard, so the ordering is guaranteed rather than hoped
+        # for, and a pod that supplied its own anchor keeps it.
+        server.attach_assertion_replay_anchor(CollectionReplayAnchor(registry))
+        return registry
 
     def run(self) -> None:
         """entrypoint: configure logging then drive the async serve loop.

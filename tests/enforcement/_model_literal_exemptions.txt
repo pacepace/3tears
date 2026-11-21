@@ -71,3 +71,7 @@ packages/evals/tests/test_providers_pricing.py::pins the default pricer's publis
 packages/evals/tests/test_report_writer_pricing.py::drives the shipped client on the Claude id the report writer's default pricer prices; the model id is the subject under test, not a default
 packages/evals/tests/test_writer_acceptance_dry.py::the 2026-11-06 acceptance incident's writer, whose published rates price the launch refusal under test; the subject under test, not a default
 packages/evals/tests/test_report_budget_fewest_turns.py::the 2026-11-06 acceptance incident's writer, a dearer editor and a model no acceptance run was recorded on, whose published rates price the writer eval's launch refusal and warning under test; the subject under test, not a default
+
+# the capability registry's priced entries for the current models, checked by id: the ids are the registry keys
+# under test (each must resolve with its price), not a model a caller picks, and none has a DEFAULT_* constant.
+packages/models/tests/unit/models/test_current_model_prices.py::registry keys under test: each current model id must resolve with its OpenRouter price

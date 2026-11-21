@@ -33,6 +33,7 @@ json matching this schema". Dispatch across providers lives in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import BaseMessage, convert_to_messages
@@ -324,6 +325,8 @@ def create_openai_embedding(
 
 # canonical OpenAI models. extend by calling register_capabilities() at
 # host-app boot time for additional ids.
+#: a price per 1M tokens over this is the price per token
+_PER_MILLION = Decimal(1_000_000)
 _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
     "gpt-4o": ModelCapabilities(
         model_name="gpt-4o",
@@ -394,6 +397,87 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=3072,
         max_embedding_tokens=8_191,
         supports_batch_embedding=True,
+    ),
+    # the gpt-6 family. prices: OpenRouter's catalogue, 2026-11-20 (https://openrouter.ai/api/v1/models),
+    # USD per 1M tokens (input/output), stored per token. temperature: refused (a 400) by the live API for
+    # every one of these, verified 2026-11-20, so False.
+    "gpt-6.2-sol": ModelCapabilities(
+        model_name="gpt-6.2-sol",
+        provider_name=OPENAI_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
+        # OpenAI's request surface; context window, output cap, vision and reasoning not verified
+        # for this id, so None.
+        # it refuses max_tokens (max_completion_tokens only), verified 2026-11-20; no capability
+        # field carries that yet
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("2") / _PER_MILLION,
+        cost_per_output_token=Decimal("10") / _PER_MILLION,
+    ),
+    "gpt-6.2-astra": ModelCapabilities(
+        model_name="gpt-6.2-astra",
+        provider_name=OPENAI_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
+        # OpenAI's request surface; context window, output cap, vision and reasoning not verified
+        # for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("8") / _PER_MILLION,
+        cost_per_output_token=Decimal("40") / _PER_MILLION,
+    ),
+    "gpt-6.1-terra": ModelCapabilities(
+        model_name="gpt-6.1-terra",
+        provider_name=OPENAI_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.MEDIUM,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
+        # OpenAI's request surface; context window, output cap, vision and reasoning not verified
+        # for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("1") / _PER_MILLION,
+        cost_per_output_token=Decimal("5") / _PER_MILLION,
+    ),
+    "gpt-6-luna": ModelCapabilities(
+        model_name="gpt-6-luna",
+        provider_name=OPENAI_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.SMALL,
+        model_status=ModelStatus.ACTIVE,
+        supports_streaming=True,
+        supports_tools=True,
+        requires_alternating_roles=False,
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
+        # OpenAI's request surface; context window, output cap, vision and reasoning not verified
+        # for this id, so None
+        accepts_temperature=False,
+        cost_per_input_token=Decimal("0.10") / _PER_MILLION,
+        cost_per_output_token=Decimal("0.50") / _PER_MILLION,
     ),
 }
 
