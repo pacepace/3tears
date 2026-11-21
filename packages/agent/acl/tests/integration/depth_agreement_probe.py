@@ -51,18 +51,15 @@ class SeededGrants:
     customer's own, the only shape this probe seeds.
     """
 
-    def __init__(self, pool: asyncpg.Pool, customer_id: uuid.UUID) -> None:
-        """capture the pool and the customer every seeded group belongs to.
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        """capture the pool the seeded grants and groups are read from.
 
         :param pool: pool over the fixture's tables
         :ptype pool: asyncpg.Pool
-        :param customer_id: the customer every seeded row belongs to
-        :ptype customer_id: uuid.UUID
         :return: nothing
         :rtype: None
         """
         self._pool = pool
-        self._customer_id = customer_id
 
     async def load_assignments_for_groups(
         self, group_ids: tuple[uuid.UUID, ...], namespace: Namespace
@@ -195,7 +192,7 @@ async def _verdicts(pool: asyncpg.Pool, groups: int) -> dict[str, bool]:
     registry.configure(l3_pool=pool, l2_client=bus, kv_key_scope="depthagree")
     members = GroupMemberCollection(registry, DefaultCoreConfig(), nats_client=bus)
     cache = AclCache(
-        membership_loader=CollectionMembershipLoader(members), grant_loader=SeededGrants(pool, customer_id)
+        membership_loader=CollectionMembershipLoader(members), grant_loader=SeededGrants(pool)
     )
     namespace = Namespace(id=uuid.uuid4(), customer_id=customer_id, namespace_type="thing", owner_agent_id=None)
     granted = await evaluate_decision(

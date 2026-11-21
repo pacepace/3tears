@@ -188,6 +188,50 @@ async def test_a_grant_whose_group_row_is_gone_admits_nothing(conn: asyncpg.Conn
     assert (by_set, by_clause) == (set(), set())
 
 
+async def test_a_group_with_no_row_still_carries_the_walk_to_its_parent(conn: asyncpg.Connection) -> None:
+    """Flips if a caller in group A, A with no row and a member of granting group B (with its row), loses B's
+    customer: the evaluator's membership walk reads no group row, so only the GRANTING group's row is required, and
+    an inner join of the group on every walked edge would drop A's edge and B's grant with it."""
+    await _allow_group_members(conn)
+    for table, constraint in (
+        ("role_assignments", "role_assignments_group_fk"),
+        ("group_members", "group_members_group_fk"),
+    ):
+        await conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT {constraint}")
+    customer, user = uuid.uuid4(), uuid.uuid4()
+    await conn.execute("INSERT INTO listed_things VALUES ($1, $2)", uuid.uuid4(), customer)
+    rowless, granting, role = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, 'granting')",
+        granting,
+    )
+    await conn.execute(
+        "INSERT INTO roles (role_id, customer_id, name, description, permissions) VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
+        role,
+        f"r{role}",
+    )
+    for group, kind, member in ((rowless, "user", user), (granting, "group", rowless)):
+        await conn.execute(
+            "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, $3, $4)",
+            uuid.uuid4(),
+            group,
+            kind,
+            member,
+        )
+    await conn.execute(
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type, customer_id) VALUES ('platform', $1, $2, $3, 'type_customer', $4, $5, $4)",
+        uuid.uuid4(),
+        role,
+        granting,
+        customer,
+        _TYPE,
+    )
+    assert await conn.fetchval("SELECT count(*) FROM groups WHERE group_id = $1", rowless) == 0
+    by_set, by_clause = await _admitted(conn, user)
+    assert (by_set, by_clause) == ({customer}, {customer})
+
+
 async def test_the_typed_set_reads_the_callers_memberships_then_their_groups_grants(
     conn: asyncpg.Connection,
 ) -> None:
