@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools: a tool pod reads the epoch change log under its own tenants, never the `*` wildcard
+
+**Changed (breaking for a direct caller of `build_tool_pod_collection_stack`):** a tool pod's generation source read
+the change log as a platform service, through `*.<table>.e`. The hub now grants each pod only its own change-log keys,
+and NATS matches the literal subject, so a per-tenant grant can never admit that wildcard: the read would wait to its
+deadline. `build_tool_pod_collection_stack` takes a required `tenants: PodTenants`, and the pod's reader asks for exactly
+the keys its grant names: `s-ns_<hex>.<table>.e` for a table in its own provider space, `_all.<table>.e` for the
+access machinery (groups, group_members, roles, role_assignments, namespaces). `None` (every tenant) is refused with a
+`TypeError`. Pass `tenants=PodTenants()` for a pod that owns no space, `PodTenants(schema=<its ns_<hex>>)` for one
+that does.
+
+`ToolServerBootstrap.install_collection_stack` wires every tool pod as `PodTenants()`: `_all` keys only, and a schema
+table is refused (`GenerationUnavailableError`) rather than read through the wildcard. The wiring is now
+`ToolServerBootstrap.wire_collection_stack(server, nats_client, *, tenants)`, public for a host that learns its tenants
+after connecting: the SDK's provider pod learns its space's schema from the hub's handshake and wires its stack with it.
+
+**Added:** `threetears.core.namespaces.build_namespace_schema_name(namespace_id)`, the hub's spelling of a non-agent
+space's schema (`ns_<hex>`), beside `build_agent_schema_name`, so the hub, its auth callout and a pod share one.
+
 ### enforcement: no-whole-reads counts an interpolated conjunct beside a key only in its own parentheses
 
 **Fixed (closes a gap in the gate):** a statement written as SQL was keyed by what the walk could see, whatever text

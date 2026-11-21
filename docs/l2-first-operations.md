@@ -70,7 +70,12 @@ The access machinery (groups, group_members, roles, role_assignments, namespaces
 access evaluator reads those rows across customers by id, so every follower must see every customer's change,
 and a pod keyed to its own customer would decide access on a row it never evicted. An agent's schema is
 `threetears.core.namespaces.build_agent_schema_name(agent_id)` (`agent_<hex>`), the one spelling the broker,
-the callout and the pod's `PodTenants(schema=...)` share.
+the callout and the pod's `PodTenants(schema=...)` share. A tool pod's provider space (`tools.<provider>`) lives
+in `threetears.core.namespaces.build_namespace_schema_name(namespace_id)` (`ns_<hex>`, from the namespace row's
+id), and its collection stack (`build_tool_pod_collection_stack(tenants=...)`) reads as
+`PodTenants(schema=<that schema>)`: `s-ns_<hex>.<table>.e` for its own tables, `_all.<table>.e` for the access
+machinery. A tool pod with no space reads as `PodTenants()`: `_all` keys only, and a schema table is refused.
+A tool pod never reads through the `*.<table>.e` wildcard, which a per-tenant grant cannot admit.
 
 A pod's reader picks each table's keys from the table's declared tenancy (`PodTenants.keys_for`), so the pod
 asks only for the keys its grant names; a key outside the grant would be refused by the broker and the read

@@ -37,7 +37,12 @@ from threetears.agent.tools.object_resolution_collection import (
     OBJECT_RESOLUTIONS_TABLE,
     ObjectResolutionCollection,
 )
+from threetears.agent.acl.collections import GroupMemberCollection
+from threetears.core.collections import BaseCollection
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
+from threetears.core.namespaces import build_namespace_schema_name
+from threetears.core.tenancy import TENANT_BY_SCHEMA, PodTenants
+from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationSource
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.observe import HealthCheck, HealthTier
@@ -71,6 +76,20 @@ def _collection_tables() -> MetaData:
     metadata = MetaData()
     Table("widgets", metadata, Column("id", String(64), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     return metadata
+
+
+#: a table in a tool pod's own provider space: declared tenant-by-schema, as every tables.yaml table is
+_SCHEMA_TABLE = "bootstrap_tenants_test_rows"
+
+
+class _SpaceRows(BaseCollection[Any]):
+    """a provider-space table, declared so the pod's reader picks its keys by its tenancy."""
+
+    tenancy = TENANT_BY_SCHEMA
+
+    @property
+    def table_name(self) -> str:
+        return _SCHEMA_TABLE
 
 
 def _stack_nats_client() -> MagicMock:
@@ -289,6 +308,64 @@ class TestTheCollectionStackRidesTheLifecycle:
         assert server.pod_id in str(caught.value)
         assert server.serve_called is False
         assert server.connected_callbacks == []
+
+    async def test_the_default_stack_reads_the_change_log_as_a_pod_of_no_space(self) -> None:
+        """a tool pod is never a platform reader: its stack asks for concrete ``_all`` keys, never ``*``.
+
+        The hub grants a pod its own change-log keys and NATS matches the literal subject, so a
+        ``*.{table}.e`` read is refused however wide the pod's own grant is. A pod whose host
+        names no data space reads the access machinery's ``_all`` record and nothing else.
+        """
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        token = await source.advance_with_change("group_members", None)
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        log.granted_reads = ("_all.group_members.e",)
+        client = _stack_nats_client()
+        client.change_log = bus.change_log
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](client)
+        registry = bootstrap.collection_registry
+        await run_task
+
+        assert registry is not None
+        assert GroupMemberCollection.tenancy.kind == "none"
+        assert await registry.generation_source.current("group_members") == token  # type: ignore[union-attr]
+        assert log.read_keys == ["_all.group_members.e"]
+
+    async def test_a_host_wires_the_stack_with_the_tenants_its_space_names(self) -> None:
+        """a host that learns its schema after connecting wires the same stack itself, with its tenants.
+
+        The provider pod learns its space's schema from the hub's handshake, which needs the
+        connection; so the wiring is a method a host calls once it knows, and the pod's own
+        schema key is what its reader asks for.
+        """
+        schema = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000c0de"))
+        bus = FakeNatsClient()
+        await EpochGenerationSource(bus).start_log()
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        own_key = f"s-{schema}.{_SCHEMA_TABLE}.e"
+        log.granted_reads = (own_key,)
+        client = _stack_nats_client()
+        client.change_log = bus.change_log
+        server = _FakeToolServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        registry = await bootstrap.wire_collection_stack(server, client, tenants=PodTenants(schema=schema))  # type: ignore[arg-type]
+
+        assert bootstrap.collection_registry is registry
+        assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
+        assert isinstance(server.object_resolution_cache, ObjectResolutionCollection)
+        # a table with no record yet reads as the log's ``:0``; what matters is the key it was read under
+        assert (await registry.generation_source.current(_SCHEMA_TABLE)).endswith(":0")  # type: ignore[union-attr]
+        assert log.read_keys == [own_key]
 
     async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
         """the stack carries a payload: the resolver's cache is wired without the host asking.
