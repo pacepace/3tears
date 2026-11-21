@@ -12,7 +12,7 @@ packages (bumped in lock-step).
 after entering could come before any host tick, and `added_lateness` refused them ("no host baseline at that
 moment"), which `trusted()` does not catch. Seen in discodon's port of this helper on its CI runners. The ticker
 now records a tick before it announces, so every moment after `__enter__` returns has a host tick under it.
-`test_the_host_has_ticked_before_it_says_it_is_ticking` pins that; it fails on the old ticker. No API change.
+`test_the_host_has_ticked_before_it_says_it_is_ticking` pins that; on an idle host it fails on the old ticker. No API change.
 
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
