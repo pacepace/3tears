@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -240,6 +241,9 @@ def _counts(**changes: Any) -> ClaimJudgeCounts:
         "judge_sent_settings": None,
         **dict.fromkeys(
             (
+                "hedged",
+                "attributed",
+                "contradicted",
                 "asserted_contradicted",
                 "hedged_contradicted",
                 "attributed_contradicted",
@@ -443,7 +447,8 @@ def test_a_unit_spanning_three_segments_holds_a_claim_in_each() -> None:
     trace = make_eval_trace(claim_evidence=evidence, claim_grades={"rules.claims": _grade(claims=claims)})
 
     assert [claim.unit for claim in trace.claim_grades["rules.claims"].claims] == [0, 0, 0]
-    assert _tally(units=1, units_with_false=1).units == 1, "a unit is counted once, whatever segments it spans"
+    with pytest.raises(ValidationError, match="1 units with a false claim, and 0 asserted contradicted claims"):
+        _tally(units=1, units_with_false=1)
     with pytest.raises(ValidationError, match="not its segment's text"):
         make_eval_trace(
             claim_evidence=evidence,
@@ -469,6 +474,22 @@ def test_a_trace_of_claim_evidence_and_no_judge_evidence_is_a_claims_only_cell()
 
     assert trace.judge_evidence is None and trace.judged_artifact is None
     assert EvalTrace.from_dict(trace.to_dict()) == trace
+
+
+@pytest.mark.parametrize("graded", [False, True], ids=["evidence-only", "evidence-and-grades"])
+def test_a_trace_holding_only_claim_shapes_is_written_beside_its_result(graded: bool) -> None:
+    """A claims-only cell of an unjudged kind records no turns, spans or ledger; its claim payload is still stored."""
+    storage, _ = memory_storage()
+    trace = (
+        _claims_trace(trace=[], result_id="res-1")
+        if graded
+        else make_eval_trace(trace=[], result_id="res-1", claim_evidence=_evidence_of_claims())
+    )
+    storage.save_eval_result(make_eval_result(id="res-1", scored_at=FIXED_AT), trace)
+
+    stored = storage.load_eval_result("res-1", "uni-1")
+    assert stored is not None and stored.has_trace
+    assert storage.load_eval_trace("res-1", "uni-1") == trace
 
 
 def test_a_trace_holds_grades_only_of_the_evidence_it_holds() -> None:
@@ -644,6 +665,69 @@ def test_a_tally_s_counts_nest_and_hold_one_entry_per_judge() -> None:
         _counts(asserted=2)
     with pytest.raises(ValidationError, match="grounded_specific"):
         _counts(grounded_specific=2)
+    with pytest.raises(ValidationError, match="greater_than_equal"):
+        _counts(claims=0, asserted=0, asserted_specific=0, grounded_specific=0)
+
+
+def _mixed(**changes: Any) -> ClaimJudgeCounts:
+    """Five claims: two asserted (one contradicted), two hedged (one also attributed, contradicted), one attributed."""
+    fields: dict[str, Any] = {
+        "claims": 5,
+        "asserted": 2,
+        "hedged": 2,
+        "attributed": 2,
+        "asserted_specific": 2,
+        "contradicted": 2,
+        "asserted_contradicted": 1,
+        "hedged_contradicted": 1,
+        "attributed_contradicted": 1,
+        "grounded_specific": 1,
+        "unverifiable": 1,
+        "web_checked": 1,
+        "web_decided": 1,
+        "true_ungrounded": 1,
+        **changes,
+    }
+    return _counts(**fields)
+
+
+def test_a_tally_holds_every_count_the_diagnostics_read_and_the_tags_nest() -> None:
+    """Hedged and attributed are counted apart, so each share exists; a claim carrying both counts under both."""
+    mixed = _mixed()
+    assert (mixed.hedged, mixed.attributed, mixed.contradicted) == (2, 2, 2)
+    assert _tally(units=2, units_with_false=1, by_judge=(mixed,)).units_with_false == 1
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        pytest.param({"hedged": 0, "attributed": 2}, "claims - asserted", id="unasserted-claims-untagged"),
+        pytest.param({"hedged": 4}, "hedged", id="more-hedged-than-unasserted"),
+        pytest.param({"hedged_contradicted": 2}, "hedged_contradicted", id="more-hedged-false-than-unasserted-false"),
+        pytest.param(
+            {"hedged_contradicted": 0, "attributed_contradicted": 0},
+            "contradicted - asserted_contradicted",
+            id="an-unasserted-contradiction-with-no-tag",
+        ),
+        pytest.param(
+            {"contradicted": 4, "unverifiable": 1}, "contradicted + unverifiable", id="more-verdicts-than-claims"
+        ),
+        pytest.param({"evidence_conflicts": 2}, "evidence_conflicts", id="more-conflicts-than-supported"),
+        pytest.param({"web_checked": 0, "web_decided": 0}, "true_ungrounded", id="true-ungrounded-unchecked"),
+        pytest.param({"web_decided": 3, "web_checked": 3}, "web_decided", id="web-decided-unasserted"),
+    ],
+)
+def test_counts_no_set_of_claims_could_give_are_refused(changes: dict[str, Any], named: str) -> None:
+    with pytest.raises(ValidationError, match=f"do not nest: .*{re.escape(named)}"):
+        _mixed(**changes)
+
+
+def test_a_tally_s_units_with_a_false_claim_rest_on_asserted_contradictions_and_grounding_on_documents() -> None:
+    with pytest.raises(ValidationError, match="2 units with a false claim, and 1 asserted contradicted"):
+        _tally(units=2, units_with_false=2, by_judge=(_mixed(),))
+    with pytest.raises(ValidationError, match="declared no documents"):
+        _tally(documents_declared=False)
+    assert _tally(documents_declared=False, by_judge=(_counts(grounded_specific=0),)).documents_declared is False
 
 
 def test_a_criterion_is_tallied_or_lost_never_both_and_a_loss_is_named() -> None:
