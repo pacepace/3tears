@@ -209,6 +209,16 @@ customer alone (it now opens that one). A platform group with platform membershi
 for a cross-customer shared-agent grant, is unchanged. `visible_customers`' statement reads each membership edge's
 customer, the granting group's and the role's; the clause joins `groups` (alias `vis_group`).
 
+### agent-acl: a grant whose group has no row opens no list
+
+**Fixed (security, narrows access):** `visible_customers` and `caller_visible_customer_clause` no longer count a
+grant whose group row is absent. The evaluator skips such a grant (an unresolved group, `_walk_assignments`); both
+readers left-joined the group, so its customer read as None and the grant counted as a platform group's. The schema's
+foreign keys from `role_assignments` and `group_members` to `groups` forbid the state in a migrated database; the
+readers now agree with the evaluator without leaning on them. The clause inner-joins `groups`; `visible_customers`'
+statement reads the group's id beside its customer (`group_row_id`), and a consumer's double of that read answers it
+too. The edges into such a group still carry the membership walk, as the evaluator's walk reads no group row.
+
 ### datasources: a catalog read leaves out a table in a schema its login cannot use
 
 `list_tables`, `list_columns` and `table_hashes` keep only the tables the datasource's login can

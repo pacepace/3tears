@@ -57,6 +57,16 @@ def test_returns_fragment_and_two_binds() -> None:
     assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in fragment
 
 
+def test_a_grant_counts_only_through_a_group_row() -> None:
+    """Flips if the clause left-joins the granting group: the evaluator skips a grant whose group row is absent
+    (``evaluator._walk_assignments``), and a left join reads that grant's group as a platform one, admitting it."""
+    fragment, _ = caller_visible_customer_clause(
+        user_id=uuid4(), customer_id_column="g.customer_id", scope_namespace_type="api_key"
+    )
+    assert "JOIN groups vis_group ON vis_group.group_id = ra.group_id" in fragment
+    assert "LEFT JOIN groups" not in fragment
+
+
 def test_default_param_offset_is_one() -> None:
     """the caller user_id bind defaults to ``$1``, namespace type to ``$2``.
 
@@ -379,6 +389,7 @@ class _Tables:
                         "member_id": member,
                         "customer_id": None,
                         "group_customer_id": None,
+                        "group_row_id": group,
                         "role_customer_id": None,
                         "group_id": group,
                         **{

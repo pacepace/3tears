@@ -122,7 +122,11 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 async def _seed_grant(conn: asyncpg.Connection, *, group_id: uuid.UUID, customer_id: uuid.UUID) -> None:
-    """seed one type_customer assignment of the reader role held by ``group_id`` over ``customer_id``."""
+    """seed one type_customer assignment of the reader role held by ``group_id`` over ``customer_id``, and the group's
+    row (a platform group): the clause counts a grant only through its group's row, as the evaluator resolves it."""
+    await conn.execute(
+        "INSERT INTO groups (group_id, customer_id) VALUES ($1, NULL) ON CONFLICT (group_id) DO NOTHING", group_id
+    )
     await conn.execute(
         "INSERT INTO role_assignments (assignment_id, role_id, group_id, scope_type, scope_customer_id,"
         " scope_namespace_type) VALUES ($1, $2, $3, 'type_customer', $4, 'thing')",

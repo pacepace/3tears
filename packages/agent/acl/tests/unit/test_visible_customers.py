@@ -37,7 +37,7 @@ class _Conn:
 
         :param grants: what the group's grants cover: ``is_all``, and ``customer_ids`` (each a ``type_customer``
             grant on the ``knowledge`` type), each through a role reading ``knowledge``; ``role`` the permissions of
-            the role every grant binds instead
+            the role every grant binds instead; ``group_absent`` the group has no row (the walk's lookup finds none)
         :ptype grants: dict[str, Any]
         :param pages: each page read's rows, in turn
         :ptype pages: list[list[dict[str, Any]]]
@@ -94,7 +94,14 @@ class _Conn:
             self.grant_reads.append((sql, params))
             # the caller's one membership edge, a platform row, beside each grant of its platform group
             (caller,) = [param for param in params if isinstance(param, UUID)]
-            edge = {"member_id": caller, "group_id": _GROUP, "customer_id": None, "group_customer_id": None}
+            group_row_id = None if self.grants.get("group_absent") else _GROUP
+            edge = {
+                "member_id": caller,
+                "group_id": _GROUP,
+                "customer_id": None,
+                "group_customer_id": None,
+                "group_row_id": group_row_id,
+            }
             return [{**edge, "namespace_customer_id": None, **grant} for grant in self._grant_rows()]
         self.page_reads.append((sql, params))
         return self.pages.pop(0) if self.pages else []
@@ -228,6 +235,19 @@ async def test_a_grant_through_a_role_acting_nowhere_on_the_type_covers_nothing(
         conn = _Conn({"is_all": True, "customer_ids": [uuid4()], "role": role}, [])
         visible = await visible_customers(conn, user_id=uuid4(), namespace_type="knowledge")
         assert visible == VisibleCustomers(is_all=False, customer_ids=()), role
+
+
+async def test_a_grant_whose_group_has_no_row_covers_nothing() -> None:
+    """Flips if the set counts a grant whose group row is absent: the evaluator skips that grant (an unresolved
+    group, ``evaluator._walk_assignments``), so a fleet-wide or a type grant held there opens no customer. The left
+    join that reads the group answers its customer as None for an absent row and a platform group alike, so the set
+    tells them apart by the group's own id."""
+    customer = uuid4()
+    conn = _Conn({"is_all": True, "customer_ids": [customer], "group_absent": True}, [])
+    visible = await visible_customers(conn, user_id=uuid4(), namespace_type="knowledge")
+    assert visible == VisibleCustomers(is_all=False, customer_ids=())
+    ((sql, _),) = conn.grant_reads
+    assert '"group_id" AS "group_row_id"' in sql, sql
 
 
 async def test_a_wildcard_role_or_one_double_encoded_counts_as_the_evaluator_reads_it() -> None:

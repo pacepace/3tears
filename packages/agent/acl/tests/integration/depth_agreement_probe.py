@@ -47,8 +47,8 @@ READER = Role(id=uuid.uuid4(), name="Reader", permissions={"thing": frozenset({"
 class SeededGrants:
     """the evaluator's grant side over the fixture's ``role_assignments`` rows.
 
-    every assignment grants :data:`READER`; groups belong to the customer they are evaluated
-    against, which is the only shape this probe seeds.
+    every assignment grants :data:`READER`; groups are read from the fixture's ``groups`` rows, the
+    customer's own, the only shape this probe seeds.
     """
 
     def __init__(self, pool: asyncpg.Pool, customer_id: uuid.UUID) -> None:
@@ -107,14 +107,21 @@ class SeededGrants:
         return {rid: READER for rid in role_ids if rid == READER.id}
 
     async def load_groups(self, group_ids: tuple[uuid.UUID, ...]) -> dict[uuid.UUID, object]:
-        """each group as the evaluated customer's.
+        """the seeded group rows of these ids, as the clause reads them: an id with no row resolves to none.
 
         :param group_ids: group ids to resolve
         :ptype group_ids: tuple[uuid.UUID, ...]
-        :return: one group row per id
+        :return: one group per id with a row
         :rtype: dict[uuid.UUID, object]
         """
-        return {gid: Group(id=gid, name=str(gid), customer_id=self._customer_id) for gid in group_ids}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT group_id, customer_id FROM groups WHERE group_id = ANY($1::uuid[])", list(group_ids)
+            )
+        return {
+            row["group_id"]: Group(id=row["group_id"], name=str(row["group_id"]), customer_id=row["customer_id"])
+            for row in rows
+        }
 
 
 async def _seed_chain(conn: asyncpg.Connection, groups: int, user_id: uuid.UUID, customer_id: uuid.UUID) -> None:
@@ -148,6 +155,10 @@ async def _seed_chain(conn: asyncpg.Connection, groups: int, user_id: uuid.UUID,
         chain[-1],
         customer_id,
     )
+    # every group of the chain has its row, the customer's: the evaluator resolves the granting group, and the clause
+    # counts a grant only through its group's row
+    for group_id in chain:
+        await conn.execute("INSERT INTO groups (group_id, customer_id) VALUES ($1, $2)", group_id, customer_id)
     edges = [(parent, "group", child) for child, parent in zip(chain, chain[1:], strict=False)]
     for group_id, member_type, member_id in [*edges, (chain[0], "user", user_id)]:
         await conn.execute(
