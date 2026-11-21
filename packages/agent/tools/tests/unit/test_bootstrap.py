@@ -167,6 +167,24 @@ class _ConcreteBootstrap(ToolServerBootstrap):
         self.register_log.append(True)
 
 
+class _SpaceBootstrap(_ConcreteBootstrap):
+    """a host whose pod owns a provider space: it names its tenants through the hook, after an await.
+
+    The await stands for the SDK provider pod's hub handshake, which rides the connection the hook is
+    handed and whose reply names the space's schema.
+    """
+
+    def __init__(self, *, server: _FakeToolServer, schema: str) -> None:
+        super().__init__(server=server, register_log=[])
+        self.schema = schema
+        self.asked_with: list[Any] = []
+
+    async def collection_tenants(self, server: Any, nats_client: Any) -> PodTenants:
+        self.asked_with.append(nats_client)
+        await asyncio.sleep(0)
+        return PodTenants(schema=self.schema)
+
+
 class TestRunAsync:
     """``run_async`` builds, registers, and serves until shutdown."""
 
@@ -366,6 +384,38 @@ class TestTheCollectionStackRidesTheLifecycle:
         # a table with no record yet reads as the log's ``:0``; what matters is the key it was read under
         assert (await registry.generation_source.current(_SCHEMA_TABLE)).endswith(":0")  # type: ignore[union-attr]
         assert log.read_keys == [own_key]
+
+    async def test_a_host_names_its_space_through_the_tenants_hook_and_the_base_wires_it(self) -> None:
+        """a host that owns a space overrides ``collection_tenants`` only: the base callback asks it, on the live
+        connection, and wires the one stack with its answer, so the pod reads its own schema's key."""
+        schema = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000c0de"))
+        bus = FakeNatsClient()
+        await EpochGenerationSource(bus).start_log()
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        own_key = f"s-{schema}.{_SCHEMA_TABLE}.e"
+        log.granted_reads = (own_key,)
+        client = _stack_nats_client()
+        client.change_log = bus.change_log
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _SpaceBootstrap(server=server, schema=schema)
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(server.connected_callbacks) == 1, "one callback: the base's, which asks the hook"
+        await server.connected_callbacks[0](client)
+        registry = bootstrap.collection_registry
+        await run_task
+
+        assert bootstrap.asked_with == [client]
+        assert registry is not None
+        assert (await registry.generation_source.current(_SCHEMA_TABLE)).endswith(":0")  # type: ignore[union-attr]
+        assert log.read_keys == [own_key]
+
+    async def test_the_tenants_hook_defaults_to_a_pod_of_no_space(self) -> None:
+        bootstrap = _ConcreteBootstrap(server=_FakeToolServer(), register_log=[])
+        assert await bootstrap.collection_tenants(bootstrap.server, _stack_nats_client()) == PodTenants()  # type: ignore[arg-type]
 
     async def test_a_stack_is_wired_once_per_pod(self) -> None:
         """a second wiring would leave the first stack's listener running: teardown stops only the one held."""

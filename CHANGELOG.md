@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, epoch, nats: a change-log read a pod's tenants cannot make is a wiring error, said at ERROR
+
+**Changed:** a pod's change-log reader that names no key for a table (a pod of no schema asked for a schema table), or
+whose key the broker refused (the pod's schema is not the one its host grants), raised `GenerationUnavailableError`,
+which a collection treated as an outage: a rate-limited warning, and a refused read waited to the broker's deadline
+every time. It now raises `threetears.core.exceptions.ChangeLogKeyRefusedError` (a `GenerationUnavailableError`,
+naming the table, the keys and the tenants), remembers the table, and answers later reads of it at once while the
+client still holds the refusal (a reconnect or a renewal's successor clears it, since a new credential may name the
+key; a pod whose tenants name no key for the table is refused for the reader's life). A
+collection logs it at ERROR once per table with the keys, the tenants and the fix, and counts each read it answers
+from L3 (`threetears_collection_change_log_refused_reads_total{table}`). A real outage keeps the warning.
+
+**Added:** `threetears.nats.KvReadRefusedError` (a `KvError`), raised by the change log for a read the server refused:
+the request went unanswered and the client heard the permissions violation on its subject. `NatsClient` records each
+subject the server refused a publish on (`NatsClient.publish_refused_since(fragment, since)`), the only place a
+refusal is visible, and clears the record when a new credential takes over. `FakeChangeLog` raises it for a key outside `granted_reads`.
+
 ### core: every table schema an owner declares among its own tables declares `TENANT_BY_SCHEMA`
 
 **Fixed:** `scope_epochs_schema()` declared no tenancy, so a pod's change-log reader read `scope_epochs` as
@@ -33,10 +50,23 @@ access machinery (groups, group_members, roles, role_assignments, namespaces). `
 `TypeError`. Pass `tenants=PodTenants()` for a pod that owns no space, `PodTenants(schema=<its ns_<hex>>)` for one
 that does.
 
-`ToolServerBootstrap.install_collection_stack` wires every tool pod as `PodTenants()`: `_all` keys only, and a schema
-table is refused (`GenerationUnavailableError`) rather than read through the wildcard. The wiring is now
-`ToolServerBootstrap.wire_collection_stack(server, nats_client, *, tenants)`, public for a host that learns its tenants
-after connecting: the SDK's provider pod learns its space's schema from the hub's handshake and wires its stack with it.
+`ToolServerBootstrap.install_collection_stack`'s connected callback awaits a new hook,
+`ToolServerBootstrap.collection_tenants(server, nats_client) -> PodTenants`, then wires the stack once
+(`wire_collection_stack`). The default is `PodTenants()`: `_all` keys only, and a schema table is refused
+(`ChangeLogKeyRefusedError`) rather than read through the wildcard. A host whose pod owns a provider space overrides
+the hook, never `install_collection_stack`, so the in-process-pod check and its `ToolPodConfigError` stay in the base
+class: the SDK's `ProviderToolPod` runs its hub handshake in the hook and returns `PodTenants(schema=<the schema the
+reply names>)`, which needs hub `d10d71d36` or later. A pod that owns two or more spaces runs as `PodTenants()` (a
+documented limit). Work that needs the built registry goes on a connected callback registered after
+`super().install_collection_stack(server)`; callbacks run in order.
+
+**Consumers that must move:** the geography pod (`14-eng-ai-bot-geography`, `GeographyToolPod`) and the client-delivery
+pod (`bl-eng-client-delivery`, `EvdToolPod`) own provider spaces but subclass `ToolServerBootstrap` directly, not the
+SDK's `ProviderToolPod`, so the SDK's hook does not reach them: on this release they read as `PodTenants()`, and every
+generation read of their own tables is refused and logged at ERROR (their reads were already refused by the hub's
+per-tenant grants, so this names the gap rather than opening it). Each moves its handshake into a
+`collection_tenants` override returning `PodTenants(schema=<the reply's schema_name>)`, or moves onto
+`ProviderToolPod`.
 
 **Added:** `threetears.core.namespaces.build_namespace_schema_name(namespace_id)`, the hub's spelling of a non-agent
 space's schema (`ns_<hex>`), beside `build_agent_schema_name`, so the hub, its auth callout and a pod share one.

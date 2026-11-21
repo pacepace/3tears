@@ -636,6 +636,13 @@ class ToolServerBootstrap:
         before this stack existed; declaring tables on one is refused here, before the pod
         serves, rather than failing inside the connected callback on every restart.
 
+        The callback asks :meth:`collection_tenants` which tenants the pod reads the epoch change log
+        as, then wires the stack (:meth:`wire_collection_stack`) once. A host whose pod owns a provider
+        space overrides that hook, never this method, so the in-process check above and the once-per-pod
+        wiring stay here. A host that needs the built registry for work of its own (pointing it at its
+        L3) registers a connected callback after calling this one: callbacks run in the order registered,
+        so its callback finds :attr:`collection_registry` built.
+
         :param server: the tool server whose connection the stack rides on
         :ptype server: ToolServer
         :return: nothing
@@ -669,19 +676,41 @@ class ToolServerBootstrap:
         # pod's first proxied call. Gating the stack on host tables left every pod that declared
         # none with exactly that.
         async def _on_connected(nats_client: "NatsClient") -> None:
-            """build the pod's tiers on the freshly-established connection, as a pod of no data space.
+            """build the pod's tiers on the freshly-established connection, under the tenants the host names.
 
             :param nats_client: the pod's connected canonical NATS client
             :ptype nats_client: NatsClient
             :return: nothing
             :rtype: None
             """
-            # no data space is named here, so the pod reads the platform tables' ``_all`` records and no
-            # schema's. A host whose pod owns a space learns its schema from the hub after connecting, and
-            # calls wire_collection_stack itself with it.
-            await self.wire_collection_stack(server, nats_client, tenants=PodTenants())
+            tenants = await self.collection_tenants(server, nats_client)
+            await self.wire_collection_stack(server, nats_client, tenants=tenants)
 
         server.add_connected_callback(_on_connected)
+
+    async def collection_tenants(self, server: "ToolServer", nats_client: "NatsClient") -> PodTenants:
+        """the tenants this pod reads the epoch change log as: ``PodTenants()`` unless a host says otherwise.
+
+        Asked once, inside :meth:`install_collection_stack`'s connected callback, on the pod's live
+        connection, before its stack is built and before the server subscribes or registers. The default
+        is a pod that owns no data space: it reads the platform tables' ``_all`` records, and a schema
+        table is refused (:class:`~threetears.core.exceptions.ChangeLogKeyRefusedError`, logged at ERROR)
+        rather than read through the ``*`` wildcard its grant never admits.
+
+        **Override it in a host whose pod owns a provider space**, and return
+        ``PodTenants(schema=<the space's ns_<hex>>)``, the schema whose change-log keys the hub grants it
+        (``s-ns_<hex>.>``). It may await: the SDK's ``ProviderToolPod`` runs its hub handshake here, which
+        rides this connection, and returns the schema the handshake's reply names. A pod with two or more
+        spaces has no one schema to read as, so it runs as ``PodTenants()`` (a documented limit).
+
+        :param server: the tool server whose connection the stack rides on
+        :ptype server: ToolServer
+        :param nats_client: the pod's connected canonical NATS client
+        :ptype nats_client: NatsClient
+        :return: the tenants
+        :rtype: PodTenants
+        """
+        return PodTenants()
 
     async def wire_collection_stack(
         self,
@@ -692,11 +721,10 @@ class ToolServerBootstrap:
     ) -> CollectionRegistry:
         """build the pod's collection stack on its connection and hand the runtime's collections to the server.
 
-        What :meth:`install_collection_stack`'s connected callback runs, public for a host whose pod's
-        tenants are known only after connecting: a pod that owns a provider space learns the space's
-        schema from the hub's handshake, which rides the connection, so it calls this once it knows,
-        from a connected callback of its own, before the server subscribes or registers. Call it once
-        per pod, for a tool-pod principal only.
+        What :meth:`install_collection_stack`'s connected callback runs, with the tenants
+        :meth:`collection_tenants` names. A host whose pod owns a space overrides that hook rather than
+        calling this itself, so the stack is built in one place. Called once per pod, for a tool-pod
+        principal only.
 
         :param server: the tool server whose connection the stack rides on
         :ptype server: ToolServer
@@ -712,8 +740,8 @@ class ToolServerBootstrap:
         :raises RuntimeError: if this pod's stack is already wired
         """
         # once per pod: a second stack would leave the first one's invalidation listener and collections running,
-        # since teardown stops only the registry held here. A host that wires its own stack does not also
-        # register the base class's callback (it overrides install_collection_stack).
+        # since teardown stops only the registry held here. A host names its tenants through collection_tenants,
+        # so the base class's one callback is the only caller.
         if self._collection_registry is not None:
             raise RuntimeError(
                 f"{self._service_name}'s collection stack is already wired; wire_collection_stack runs once per pod"

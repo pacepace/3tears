@@ -91,7 +91,14 @@ from uuid import uuid7
 from pydantic import BaseModel
 
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
-from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError, KvFullError, PublishError
+from threetears.nats.errors import (
+    KvBucketNotFoundError,
+    KvConfigMismatch,
+    KvError,
+    KvFullError,
+    KvReadRefusedError,
+    PublishError,
+)
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import contain, get_logger
 
@@ -1151,11 +1158,13 @@ class FakeChangeLog:
         :ptype key: str
         :return: None
         :rtype: None
-        :raises KvError: when :attr:`granted_reads` is set and no pattern of it covers ``key``
+        :raises KvReadRefusedError: when :attr:`granted_reads` is set and no pattern of it covers ``key``, as the
+            real log raises a read the server refused
         """
         self.read_keys.append(key)
         if self.granted_reads is not None and not any(_subject_matches(grant, key) for grant in self.granted_reads):
-            raise KvError(f"permissions violation for subject $KV.{self._bucket}.{key}")
+            subject = f"$KV.{self._bucket}.{key}"
+            raise KvReadRefusedError(f"permissions violation for subject {subject}", subject=subject)
 
     def _present_or_raise(self) -> None:
         """raise as the real log does when it is absent or unreachable.

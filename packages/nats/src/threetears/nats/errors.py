@@ -16,6 +16,7 @@ __all__ = [
     "KvConfigMismatch",
     "KvError",
     "KvFullError",
+    "KvReadRefusedError",
     "KvStoreExhaustedError",
     "KvValueTooLargeError",
     "LockLossReason",
@@ -224,6 +225,31 @@ class KvError(NatsClientError):
     """
 
     server_error_code: int | None = None
+
+
+class KvReadRefusedError(KvError):
+    """raised when the server refused this connection a read: its grant does not name the subject.
+
+    A NATS permissions violation leaves the connection up and answers the refused request with nothing, so
+    the read ends at its deadline; this says that deadline was the refusal (the client heard the violation
+    on the read's subject), not an unreachable broker. Retrying cannot fix it: the grant must name the
+    subject.
+
+    :ivar subject: the refused subject, as the server reported it
+    """
+
+    def __init__(self, message: str, *, subject: str) -> None:
+        """record the refused subject.
+
+        :param message: what was refused
+        :ptype message: str
+        :param subject: the refused subject
+        :ptype subject: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.subject = subject
 
 
 class KvBucketNotFoundError(KvError):

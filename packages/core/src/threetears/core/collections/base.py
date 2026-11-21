@@ -92,6 +92,7 @@ from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE, delete_marks_sql
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     L2LostError,
+    ChangeLogKeyRefusedError,
     ConcurrentModificationError,
     CorruptCacheEntry,
     GenerationNotCommittedError,
@@ -174,6 +175,50 @@ def _note_undeclared_tenancy(table: str) -> None:
         "collection class declares no tenancy; its change records go on the change log's _all key, readable by "
         "every reader of the table. Declare tenancy = TENANT_BY_SCHEMA, tenant_column(...) or no_tenant(reason)",
         extra={"extra_data": {"table": table}},
+    )
+
+
+#: tables whose change-log keys this process's pod was refused and that already said so: one ERROR per table
+_REFUSED_CHANGE_LOG_SAID: set[str] = set()
+
+
+def _refused_change_log_reads() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_collection_change_log_refused_reads_total",
+        description=(
+            "write-generation reads of a table whose change-log keys this pod's tenants cannot read (a wiring error: "
+            "the pod's schema is not the one its host grants), each answered from L3 with absence caching off"
+        ),
+        label_names=("table",),
+    )
+
+
+def _note_refused_change_log(exc: ChangeLogKeyRefusedError) -> None:
+    """count a generation read refused for the pod's tenants, and say it at ERROR once for the table.
+
+    Not the outage path: no retry fixes it, and an operator reading a passing warning would wait for a broker
+    that is up. The line names the keys, the tenants the pod is wired with, and the fix.
+
+    :param exc: the refusal
+    :ptype exc: ChangeLogKeyRefusedError
+    """
+    _refused_change_log_reads().labels(table=exc.table).inc()
+    if exc.table in _REFUSED_CHANGE_LOG_SAID:
+        return
+    _REFUSED_CHANGE_LOG_SAID.add(exc.table)
+    log.error(
+        "this pod cannot read the table's change-log keys, so its write generation is never readable and every "
+        "absence goes to L3. The host grants a tool pod s-<its schema>.> (and an agent's pod s-<its agent schema>.>); "
+        "check the pod's schema (PodTenants.schema) against the space its host granted",
+        extra={
+            "extra_data": {
+                "table": exc.table,
+                "keys": list(exc.keys),
+                "tenants": repr(exc.tenants),
+                "error": str(exc),
+            }
+        },
     )
 
 
@@ -1865,6 +1910,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
         try:
             return await source.current(self.table_name)
+        except ChangeLogKeyRefusedError as exc:
+            # a wiring error, not an outage: said at ERROR once, and the reader answers every later read at once
+            _note_refused_change_log(exc)
+            return None
         except GenerationUnavailableError as exc:
             # every lookup lands here while the source is down; one warning per interval says so.
             # absence of a previous warning means never warned, not a warning at time zero.

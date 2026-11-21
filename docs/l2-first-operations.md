@@ -77,9 +77,21 @@ id), and its collection stack (`build_tool_pod_collection_stack(tenants=...)`) r
 machinery. A tool pod with no space reads as `PodTenants()`: `_all` keys only, and a schema table is refused.
 A tool pod never reads through the `*.<table>.e` wildcard, which a per-tenant grant cannot admit.
 
+A host names its pod's tenants by overriding `ToolServerBootstrap.collection_tenants(server, nats_client)`
+(default `PodTenants()`), which the base connected callback awaits on the live connection before it builds the
+stack. The SDK's `ProviderToolPod` overrides it: it runs the hub handshake there and returns
+`PodTenants(schema=<the schema the handshake names>)`. That needs hub `d10d71d36` or later, the first hub whose
+handshake reply names the space's schema and whose grant names `s-ns_<hex>.>`; against an older hub the pod
+reads as `PodTenants()`. A pod that owns two or more spaces has no one schema to read as, so it runs as
+`PodTenants()` too: its own tables have no readable generation (a documented limit).
+
 A pod's reader picks each table's keys from the table's declared tenancy (`PodTenants.keys_for`), so the pod
-asks only for the keys its grant names; a key outside the grant would be refused by the broker and the read
-would wait to its deadline.
+asks only for the keys its grant names. A key outside the grant is refused by the broker, which answers the
+read with nothing: the first such read waits to its deadline, then the reader remembers the table as refused
+(`ChangeLogKeyRefusedError`) and answers later reads of it at once, until a new credential (a reconnect, a
+renewal) clears the client's record of the refusal and the reader asks again. A collection logs the refusal at
+ERROR once per table, naming the keys, the tenants and the fix, and counts each read it answers from L3
+(`threetears_collection_change_log_refused_reads_total{table}`); a real outage stays a rate-limited warning.
 
 A follower keeps one mark per table, and walks each key it may read after it, merged by the log's sequence.
 Detection is the same per key as it was per table: the log's first sequence (`aged_out`) and its incarnation
@@ -92,6 +104,9 @@ What a pod's host grants (`EpochChangeGrant`):
 
 - its own agent schema, whole: `EpochChangeGrant(tenant=schema_tenant(<its schema>))` (`s-...`, every table in
   it is its own);
+- for a tool pod that owns a provider space, that space's schema, whole:
+  `EpochChangeGrant(tenant=schema_tenant(build_namespace_schema_name(<the space's namespace id>)))`
+  (`s-ns_<hex>`, every table in it is the pod's own), which the pod reads as `PodTenants(schema=<that schema>)`;
 - for each platform table its role already reads (from the same source that grants it those rows): the table
   for its customer, `EpochChangeGrant(tenant=value_tenant(<customer id>), table=<table>)`, and for `_all`,
   `EpochChangeGrant(tenant=ALL_TENANTS, table=<table>)`. Never a customer's or `_all`'s whole prefix;

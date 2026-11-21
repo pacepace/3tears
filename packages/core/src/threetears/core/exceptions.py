@@ -7,6 +7,7 @@ from typing import Any
 from threetears.nats.errors import KvError
 
 __all__ = [
+    "ChangeLogKeyRefusedError",
     "ConcurrentModificationError",
     "RestoreTooLargeError",
     "CorruptCacheEntry",
@@ -32,6 +33,40 @@ class GenerationUnavailableError(Exception):
     marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
     advance leaves older markers valid over the write it just committed.
     """
+
+
+class ChangeLogKeyRefusedError(GenerationUnavailableError):
+    """Raised when a pod's tenants cannot read a table's change-log keys: a wiring error, not an outage.
+
+    The pod's reader names no key for the table (a pod of no schema asked for a schema table), or the broker
+    refused a key the reader asked for (the pod's grant does not name it: the pod's schema is not the one its
+    host grants). Retrying cannot fix either, so the reader remembers it and answers every later read of the
+    table at once, without waiting on the broker again, and a collection logs it at ERROR rather than as a
+    passing outage.
+
+    :ivar table: the table
+    :ivar keys: the change-log keys the reader asked for, empty when it could name none
+    :ivar tenants: the pod's tenants, as the reader was wired with them
+    """
+
+    def __init__(self, message: str, *, table: str, keys: tuple[str, ...], tenants: object) -> None:
+        """record what was refused.
+
+        :param message: what was refused and why
+        :ptype message: str
+        :param table: the table
+        :ptype table: str
+        :param keys: the change-log keys the reader asked for
+        :ptype keys: tuple[str, ...]
+        :param tenants: the pod's tenants (a :class:`~threetears.core.tenancy.PodTenants`)
+        :ptype tenants: object
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.table = table
+        self.keys = keys
+        self.tenants = tenants
 
 
 class RestoreTooLargeError(GenerationUnavailableError):

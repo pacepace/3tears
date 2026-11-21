@@ -1,9 +1,14 @@
 """which tenant a table's change records belong to, so a pod reads only its own tenants' changes.
 
 The epoch change log (``{ns}-epoch-changes``) keys every record by tenant first, then table:
-``{tenant}.{table}.e``. A pod's grant names its own tenants' keys (its agent's namespace, and the platform
-tables its role already reads for its customer and for ``_all``), so it reads only the records of the rows
-it may read, whose values (``ChangedRow.value``) are then no more readable than the collections bucket's.
+``{tenant}.{table}.e``. A pod's grant names its own tenants' keys (its agent's schema whole, ``s-agent_<hex>.>``;
+for a tool pod that owns a provider space, that space's schema whole, ``s-ns_<hex>.>``; and the platform tables
+its role already reads for its customer and for ``_all``), so it reads only the records of the rows it may read,
+whose values (``ChangedRow.value``) are then no more readable than the collections bucket's. A tool pod's own
+space is read as ``PodTenants(schema=<its ns_<hex>>)``, which its host names through
+``ToolServerBootstrap.collection_tenants``; the SDK's provider pod takes the schema from the hub's handshake
+reply (``schema_name``, from the hub of 2026-11-20 on; an older hub names none). A pod that owns two or more spaces has no one schema to read as, so it
+runs as ``PodTenants()`` (a documented limit: its own tables have no readable generation).
 Platform services (the hub, the registry, the gateway) read every tenant through the wildcard
 ``*.{table}.e``.
 
@@ -24,7 +29,9 @@ it spans customers and goes on ``_all``.
 
 **A pod reads by each table's declaration** (:class:`PodTenants`): a schema table under its own schema's key
 only, a platform table under its customer's key and ``_all``, so the keys it reads are exactly the keys its
-grant names, with no second table list to drift from the declarations.
+grant names, with no second table list to drift from the declarations. A table it cannot read (no key for its
+tenants, or a key the broker refuses) is a wiring error, not an outage:
+:class:`~threetears.core.exceptions.ChangeLogKeyRefusedError`, remembered by the reader and said at ERROR.
 
 **Detection is unchanged.** A follower walks each key it may read after its one mark per table, merged by
 the log's sequence; the token is still the log's global sequence. An interior record of a live log cannot
