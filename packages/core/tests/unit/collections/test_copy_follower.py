@@ -707,6 +707,30 @@ async def test_a_partition_then_a_key_it_holds_leaves_the_keys_newest_row(world:
     assert _copy(backend) == l3.held()
 
 
+async def test_a_partition_neither_the_copy_nor_l3_holds_a_row_of_names_no_stage_it_never_staged(world: Any) -> None:
+    """Flips if a partition that staged nothing hands the backend a change naming its keys or rows stage anyway: the
+    backend never made them, its apply failed on the missing table, and every pass after failed the same way, the
+    copy stuck (local burst replay, 0.95.0 gate 1: ``__stage__lsf_projections__keys does not exist``, 99 in a row)."""
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    # a load's partition of a state neither the copy nor L3 holds a row of (a reload that emptied it, an empty state)
+    log.count += 1
+    log.records[f"inc:{log.count}"] = EpochChange(
+        table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"state": "OH"}
+    )
+    lock.version += 1
+    assert await follower.catch_up()
+    assert follower.status().failures == 0
+    assert _copy(backend) == l3.held()
+    assert backend.staged_stages() == []
+    # and a key after it applies: the follower is not stuck
+    l3.put([("VA", 3, 7)])
+    log.commit([("VA", 3)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+
+
 async def test_a_follower_without_partitions_reads_the_record_as_the_whole_table() -> None:
     registry = CollectionRegistry()
     dropped: list[str] = []
