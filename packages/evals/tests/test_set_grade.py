@@ -141,6 +141,27 @@ def test_an_unverified_name_is_listed_and_never_counted_against_recall() -> None
     assert judged == {"picks_recall", "picks_core_recall"}
 
 
+def test_a_context_entity_never_counts_in_a_set_grade_named_or_missed() -> None:
+    """The key's context tier carries facts, never answers: a set grade reads the answer set alone, so a key with
+    context grades every output exactly as the same key without it, and a context entity named is unverified."""
+    with_context = ReferenceKey.model_validate(
+        {
+            **_KEY.model_dump(mode="json"),
+            "context": [{"name": "Mary Shelley", "aliases": ["Mary Wollstonecraft Shelley"]}, {"name": "Homer"}],
+        }
+    )
+    assert [e.name for e in with_context.entities] == [e.name for e in _KEY.entities], "context is outside the set"
+
+    for names in [(), ("Frankenstein", "Beloved"), ("Frankenstein", "Mary Shelley", "Homer", "An unlisted novel")]:
+        assert _grade(*names, key=with_context) == _grade(*names), names
+
+    grade = _grade("Frankenstein", "Mary Shelley", "Homer", key=with_context)
+    assert (grade.named, grade.verified, grade.key_size) == (3, 1, 4)
+    assert grade.found == ("Frankenstein",)
+    assert grade.unverified_names == ("Mary Shelley", "Homer")
+    assert FoldingMatcher().match(NamedEntity(name="mary shelley"), with_context) is None
+
+
 def test_only_recall_and_core_recall_judge_quality_and_the_rest_are_diagnostics() -> None:
     by_name = {d.name: d for d in _GRADER.descriptors()}
 
@@ -267,6 +288,13 @@ def test_a_host_matcher_replaces_the_default() -> None:
 def test_a_matcher_that_names_an_entity_the_key_lacks_is_refused() -> None:
     with pytest.raises(ValueError, match="'Ulysses', which the key does not hold"):
         _grade("Frankenstein", matcher=_NamesWhatTheKeyLacks())
+
+
+def test_a_matcher_that_answers_a_context_entity_is_refused_since_context_is_no_answer() -> None:
+    key = ReferenceKey.model_validate({**_KEY.model_dump(mode="json"), "context": [{"name": "Ulysses"}]})
+
+    with pytest.raises(ValueError, match="'Ulysses', which the key does not hold"):
+        _grade("Frankenstein", key=key, matcher=_NamesWhatTheKeyLacks())
 
 
 def test_a_changed_matcher_identity_changes_every_measure_definition() -> None:

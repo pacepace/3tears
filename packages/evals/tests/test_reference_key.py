@@ -11,6 +11,10 @@ Pinned here:
 - **Drift and reset follow it**: a corpus case whose key changed reads ``stale``, its reset writes a new revision
   holding the new key under a new id, and a live case carried into that revision keeps its key.
 - **The case material** a kind appends for its judges is one fixed text, pinned whole.
+- **The context tier** (durable 17.8): a key without context keeps the digest, seeded id, seed digest, document and
+  material it had before the tier (pinned from ``0bce2461a``); a key with context moves the first three and renders
+  the tier under a heading saying its entities are not answers; ``entities`` stays the answer set, and a name or alias
+  folds to one entity across all three tiers.
 """
 
 from __future__ import annotations
@@ -157,6 +161,38 @@ def test_an_entity_whose_alias_folds_to_its_own_name_is_one_entity_and_the_alias
 
 
 @pytest.mark.parametrize(
+    ("context", "said"),
+    [
+        ([{"name": "contoso"}], "'contoso' names both 'Contoso' and 'contoso'"),
+        ([{"name": "Seattle", "aliases": ["Fabrikam"]}], "'fabrikam' names both 'Fabrikam' and 'Seattle'"),
+        ([{"name": "Seattle"}, {"name": "Tacoma", "aliases": ["SEATTLE"]}], "'seattle' names both"),
+    ],
+    ids=["a context name like a core name", "a context alias like an acceptable name", "two context entities"],
+)
+def test_a_name_or_alias_folding_alike_across_any_two_tiers_is_refused(
+    context: list[dict[str, Any]], said: str
+) -> None:
+    with pytest.raises(ValidationError) as refused:
+        ReferenceKey.model_validate(_key(context=context))
+
+    assert said in str(refused.value), str(refused.value)
+
+
+def test_a_key_with_only_context_is_refused_since_a_key_names_an_answer() -> None:
+    with pytest.raises(ValidationError, match="names at least one entity, in core or acceptable"):
+        ReferenceKey.model_validate({"context": [{"name": "Seattle"}]})
+
+
+def test_entities_is_the_answer_set_and_fact_entities_is_every_tier() -> None:
+    key = ReferenceKey.model_validate(_key(context=[{"name": "Seattle"}, {"name": "Redmond"}]))
+
+    assert [e.name for e in key.entities] == ["Contoso", "Northwind Trading", "Fabrikam"]
+    assert [e.name for e in key.fact_entities] == ["Contoso", "Northwind Trading", "Fabrikam", "Redmond", "Seattle"]
+    plain = ReferenceKey.model_validate(_key())
+    assert plain.context == () and plain.fact_entities == plain.entities
+
+
+@pytest.mark.parametrize(
     "document",
     [
         {**_key(), "exhaustive": True},
@@ -232,6 +268,33 @@ def test_a_keyed_case_keeps_the_digest_seeded_id_seed_digest_and_document_it_had
     assert (seeded.content_hash, seeded.id) == (KEYED_DIGEST_BEFORE_CONTEXT, KEYED_SEEDED_ID_BEFORE_CONTEXT)
     assert corpus_case.digest() == seeded.seed_digest == KEYED_SEED_DIGEST_BEFORE_CONTEXT
     assert sorted(seeded.to_dict()["reference"]) == ["acceptable", "core", "type"], "stored as before, no context"
+
+
+def test_a_key_with_context_moves_the_digest_the_id_and_the_seed_digest_and_stores_its_context() -> None:
+    template = toyhost_template()
+    plain = _case(reference=_key(), stratum="lookalike")
+    context = [{"name": "Seattle", "facts": [{"claim": "In Washington.", "source_url": "https://example.org/sea"}]}]
+    with_context = _case(reference=_key(context=context), stratum="lookalike")
+    other_context = _case(reference=_key(context=[{"name": "Redmond"}]), stratum="lookalike")
+    seeded = [case.test_case(template) for case in (plain, with_context, other_context)]
+
+    assert len({case.content_hash for case in seeded}) == 3
+    assert len({case.id for case in seeded}) == 3
+    assert len({case.seed_digest for case in seeded}) == 3
+    stored = seeded[1].to_dict()
+    assert [entity["name"] for entity in stored["reference"]["context"]] == ["Seattle"]
+    read = EvalTestCase.from_dict(json.loads(json.dumps(stored)))
+    assert read == seeded[1] and read.to_dict() == stored
+    assert template_case_digest(read) == with_context.digest() == seeded[1].seed_digest
+
+
+def test_writing_the_context_in_another_order_moves_nothing() -> None:
+    template = toyhost_template()
+    first = _case(reference=_key(context=[{"name": "Seattle"}, {"name": "Redmond"}])).test_case(template)
+    second = _case(reference=_key(context=[{"name": "Redmond"}, {"name": "Seattle"}])).test_case(template)
+
+    assert (first.content_hash, first.id) == (second.content_hash, second.id)
+    assert first.to_dict()["reference"] == second.to_dict()["reference"]
 
 
 def test_adding_a_key_or_editing_one_alias_moves_the_digest_and_the_id() -> None:
@@ -375,3 +438,22 @@ def test_a_key_with_no_core_says_so_in_its_material() -> None:
     material = reference_material(ReferenceKey.model_validate({"acceptable": [{"name": "Fabrikam"}]}))
 
     assert material.splitlines()[1:] == ["Required (core): none.", "Also acceptable:", "  - Fabrikam"]
+
+
+def test_a_key_without_context_renders_no_context_heading_and_one_with_context_renders_it_last() -> None:
+    assert "Context" not in reference_material(ReferenceKey.model_validate(_key()))
+    keyed = ReferenceKey.model_validate(
+        _key(
+            context=[
+                {"name": "Seattle", "facts": [{"claim": "In Washington.", "source_url": "https://example.org/sea"}]},
+                {"name": "Redmond"},
+            ]
+        )
+    )
+
+    assert reference_material(keyed) == GOLDEN_MATERIAL + (
+        "\nContext (facts only; not answers):\n"
+        "  - Redmond\n"
+        "  - Seattle\n"
+        "    - In Washington. (source: https://example.org/sea)"
+    )
