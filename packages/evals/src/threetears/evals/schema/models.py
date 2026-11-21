@@ -6096,7 +6096,11 @@ class JudgeEvidence(CoreShapeModel):
 #: spent past what the cap set aside for the criterion), ``deadline`` (the
 #: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
 #: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
-#: vocabulary: a reader counts every loss, a reason it does not know by name.
+#: vocabulary: a reader counts every loss, a reason it does not know by name. One value is no loss:
+#: ``trace_pending`` (:data:`CLAIM_PENDING`), a row written before its trace whose trace write is not yet known to
+#: have landed; it reads as not yet known, never lost. Its grade is on the trace whenever the trace landed, so it is
+#: recoverable: re-grading the criterion from the trace's stored evidence settles it, and so would recomputing its
+#: tally from the stored grade, which needs the grade to record its ground step's loss (not stored yet).
 ClaimLoss = str
 
 #: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
@@ -6110,7 +6114,12 @@ KnownClaimLoss = Literal[
     "deadline",
     "evidence_over_cap",
     "trace_lost",
+    "trace_pending",
 ]
+
+#: The one value of :data:`ClaimLoss` that is no loss: a criterion whose tally waits on its trace's write, which every
+#: reader takes as not yet known, never as a lost criterion.
+CLAIM_PENDING: Final = "trace_pending"
 
 #: The claim losses this build knows, in the order its readers list them.
 CLAIM_LOSSES: Final[tuple[str, ...]] = get_args(KnownClaimLoss)

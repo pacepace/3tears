@@ -43,7 +43,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from itertools import islice
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -205,11 +205,13 @@ _READING_PROSE_IN_ITEMS: Final[Mapping[str, Sequence[str]]] = {
 }
 
 
-def _claims_lost_with_their_trace(result: EvalResult) -> EvalResult:
-    """``result`` with each claim criterion it tallied written lost instead (``trace_lost``): what a result whose
-    trace is not stored says of its claims, since every claim reading rests on the grade its trace holds.
+def _claims_held_back(result: EvalResult, state: Literal["trace_lost", "trace_pending"]) -> EvalResult:
+    """``result`` with each claim criterion it tallied recorded as ``state`` instead of its tally, since every claim
+    reading rests on the grade its trace holds: ``trace_lost`` once the trace is known not to have been written,
+    ``trace_pending`` while it is not yet known to have been.
 
     :param result: The result.
+    :param state: What its tallied criteria read.
     :return: A copy; ``result`` itself when it tallied none.
     """
     if not result.claim_tallies:
@@ -217,7 +219,7 @@ def _claims_lost_with_their_trace(result: EvalResult) -> EvalResult:
     return result.model_copy(
         update={
             "claim_tallies": {},
-            "claim_failures": {**result.claim_failures, **dict.fromkeys(result.claim_tallies, "trace_lost")},
+            "claim_failures": {**result.claim_failures, **dict.fromkeys(result.claim_tallies, state)},
         }
     )
 
@@ -2685,7 +2687,7 @@ class EvalStorage:
         """
         document = self._marked(result, trace)
         if trace is not None and document["has_trace"] and not self._save_trace(result, trace):
-            document = self._marked(_claims_lost_with_their_trace(result), trace)
+            document = self._marked(_claims_held_back(result, "trace_lost"), trace)
         self._save(document)
 
     def save_run_cell(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
@@ -2720,12 +2722,13 @@ class EvalStorage:
         and a later re-judge of it refuses, since the judge evidence it would resend was in
         the payload that did not land.
 
-        **A cell whose claim criteria were tallied is written lost first.** Its claim readings rest on the grades its
-        trace holds, and the trace lands after the row, so the row is first written with each tallied criterion lost
-        (``trace_lost``) and rewritten with its tallies once the trace has landed, conditionally on the row as read at
-        its lease epoch. A failed trace write therefore leaves the cell's claims recorded lost, never tallied on a grade
-        that is not stored; a failed read or rewrite leaves them lost too, which a re-grade takes up, and is logged,
-        and never fails the write. Every
+        **A cell whose claim criteria were tallied is written pending its trace first.** Its claim readings rest on
+        the grades its trace holds, and the trace lands after the row, so the row is first written with each tallied
+        criterion pending (``trace_pending``: not yet known), then rewritten, conditionally on the row as read at its
+        lease epoch: with its tallies once the trace has landed, or lost (``trace_lost``) once the trace write is known
+        to have failed. So no reading rests on a grade that is not stored, and none is recorded lost while its grade
+        may be. A read or rewrite that fails, or a process that stops between the writes, leaves the claims pending,
+        logged, and never fails the write. Every
         other reading of the row is the same in both writes.
 
         :param result: The result to persist. Never mutated — the marker is applied to
@@ -2741,12 +2744,16 @@ class EvalStorage:
         document = self._marked(result, trace)
         claimed = trace is not None and document["has_trace"] and bool(result.claim_tallies)
         self._write_cell_row(
-            result, self._marked(_claims_lost_with_their_trace(result), trace) if claimed else document
+            result, self._marked(_claims_held_back(result, "trace_pending"), trace) if claimed else document
         )
         if trace is None or not document["has_trace"]:
             return
-        if self._save_trace(result, trace) and claimed:
-            self._restore_claim_tallies(result, document)
+        landed = self._save_trace(result, trace)
+        if claimed:
+            # The trace landed: the tallies it backs are restored. It is known not to have: they are lost.
+            self._rewrite_claims(
+                result, document if landed else self._marked(_claims_held_back(result, "trace_lost"), trace)
+            )
 
     @staticmethod
     def _marked(result: EvalResult, trace: EvalTrace | None) -> dict[str, Any]:
@@ -2815,17 +2822,19 @@ class EvalStorage:
             f"eval result '{result.id}' (run {result.eval_run_id}) kept changing while its cell was being written"
         )
 
-    def _restore_claim_tallies(self, result: EvalResult, document: dict[str, Any]) -> None:
-        """Rewrite a run cell's row, written with its claims lost, with its tallies, now that its trace has landed.
+    def _rewrite_claims(self, result: EvalResult, document: dict[str, Any]) -> None:
+        """Rewrite a run cell's row, written with its claims pending its trace (``trace_pending``), once the trace
+        write is decided: with its tallies when the trace landed, or with them lost (``trace_lost``) when it is known
+        not to have.
 
         Conditional on the row as read here: one stored under another lease epoch, which only a later holding of
         the run writes, is left as it stands, and so is one that changed between the read and the rewrite. Every
-        failure of the read or the rewrite is logged and leaves the claims lost (``trace_lost``), which the row
-        itself records: the host sees the loss on the result, and a re-grade takes it up. It never fails the write:
-        the row and its trace have both landed.
+        failure of the read or the rewrite is logged and leaves the claims pending, which the row itself records: not
+        yet known, never a loss, since a trace that landed still holds every grade. It never fails the write: the
+        row has landed.
 
         :param result: The result as the cell produced it, its tallies on it.
-        :param document: Its document, marked.
+        :param document: The row to write, marked.
         """
         try:
             with _read_outage(f"eval result '{result.id}'"):
@@ -2835,10 +2844,10 @@ class EvalStorage:
                 return
             self._save(document, if_match=etag)
         except (ConflictError, StorageError) as unwritten:
-            # NOSILENT: the row stands with its claim criteria lost (trace_lost), which the result itself records.
+            # NOSILENT: the row stands with its claim criteria pending their trace, which the result itself records.
             log.error(
-                "eval_result %s (run %s, scope %s) keeps its claim criteria %s written lost: its trace landed and the "
-                "row's rewrite with their tallies did not — %s",
+                "eval_result %s (run %s, scope %s) keeps its claim criteria %s pending their trace (trace_pending): "
+                "the row's rewrite once its trace write was decided did not land — %s",
                 result.id,
                 result.eval_run_id,
                 result.scope_id,

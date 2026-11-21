@@ -25,7 +25,10 @@ ground call's failure costs groundedness alone, however the call fails (a deadli
 included), and truth stands. A criterion the cap sets aside is not counted among the run's cells not judged: the
 cell's dims were judged. A trace that is not stored
 loses the criteria it backs: their tallies are written lost (`trace_lost`), so no reading rests on a grade that is not
-stored. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
+stored. A run cell's row is written before its trace, so its tallied criteria are first written `trace_pending` (a new
+value of `CLAIM_LOSSES` that is no loss: not yet known), then restored once the trace lands, or written `trace_lost`
+once the trace write is known to have failed. A row left `trace_pending` (a store outage, or a process stopped between
+the writes) reads no claim reading and no loss; its grade is on the trace, so re-grading the criterion recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
 The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.
 `RepairBudget` and `PageBudget` now say their budgets are per step and separate.
 

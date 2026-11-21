@@ -24,6 +24,7 @@ from packages.evals.tests.off_loop import off_loop
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.claims.readings import claim_readings
 from threetears.evals.kernel.claims.grading import criterion_ceiling, criterion_fingerprint, criterion_steps
 from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
 from threetears.evals.kernel.provider import withhold_failure_detail
@@ -607,7 +608,7 @@ class _ReadFailsAfterTraceStore(InMemoryDocumentStore):
         return super().get_with_etag(doc_id, scope_id)
 
 
-async def test_a_read_failing_after_the_row_and_trace_landed_keeps_the_cell_written_and_its_claims_lost() -> None:
+async def test_a_read_failing_after_the_row_and_trace_landed_leaves_its_claims_pending_never_lost() -> None:
     result, trace = await _graded_cell()
     store = _ReadFailsAfterTraceStore()
 
@@ -616,7 +617,39 @@ async def test_a_read_failing_after_the_row_and_trace_landed_keeps_the_cell_writ
     store.traced = False
     stored = off_loop(EvalStorage(store).load_eval_result, result.id, result.scope_id)
     assert stored is not None, "the write did not fail: the row and its trace landed"
-    assert stored.claim_failures == {_CRITERION: "trace_lost"} and stored.claim_tallies == {}
+    assert stored.claim_failures == {_CRITERION: "trace_pending"} and stored.claim_tallies == {}
+    loaded = off_loop(EvalStorage(store).load_eval_trace, result.id, result.scope_id)
+    assert loaded is not None and set(loaded.claim_grades) == {_CRITERION}, "its grade is stored: recoverable"
+    assert claim_readings(_CRITERION, "trace_pending", grounded=True) == {}, "not yet known reads no reading"
+    assert claim_readings(_CRITERION, "trace_lost", grounded=True) == {f"{_CRITERION}_lost": 1.0}
+
+
+class _TraceRefusingThenReadlessStore(_TraceRefusingStore):
+    """Refuses every trace write, and every read after one: a store that went down as the trace was written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        self.refused = self.refused or document.get("doc_type") == "eval_trace"
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        if self.refused:
+            raise RuntimeError("the store's reads are down")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+async def test_a_failed_trace_whose_loss_could_not_be_written_leaves_its_claims_pending() -> None:
+    result, trace = await _graded_cell()
+    store = _TraceRefusingThenReadlessStore()
+
+    off_loop(EvalStorage(store).save_run_cell, result, trace)
+
+    store.refused = False
+    stored = off_loop(EvalStorage(store).load_eval_result, result.id, result.scope_id)
+    assert stored is not None and stored.claim_failures == {_CRITERION: "trace_pending"}
 
 
 async def _graded_cell() -> tuple[Any, Any]:

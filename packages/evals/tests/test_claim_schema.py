@@ -745,6 +745,7 @@ def test_a_criterion_is_tallied_or_lost_never_both_and_a_loss_is_named() -> None
         "deadline",
         "evidence_over_cap",
         "trace_lost",
+        "trace_pending",
     }
     with pytest.raises(ValidationError, match="both tallied and lost"):
         make_eval_result(claim_tallies={"rules.claims": _tally()}, claim_failures={"rules.claims": "trace_lost"})
