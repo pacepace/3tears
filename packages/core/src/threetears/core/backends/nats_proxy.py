@@ -307,8 +307,8 @@ def _raise_for_failed_reply(
     raise DataLayerUnavailableError(message)
 
 
-#: a statement binding more parameters than this (a multi-row write's page) has its request built and encoded
-#: on a thread: each parameter is converted in Python and the request passes through JSON several times, tens of
+#: a statement binding more values than this (a multi-row write's page) has its request built and encoded
+#: on a thread: each value is converted in Python and the request passes through JSON several times, tens of
 #: milliseconds for a page that on the event loop held every call the process answers
 _OFFLOAD_PARAMS = 256
 
@@ -316,12 +316,22 @@ _OFFLOAD_PARAMS = 256
 def _offloaded(params: Sequence[Any]) -> bool:
     """whether a statement's request is built and encoded on a thread rather than the event loop.
 
+    Counted by the values bound, an array parameter's each one of them: a key-led delete binds one array a key
+    column (``= ANY($1)``), seven arrays of 1,000 keys for a table of seven key columns, and counted as seven
+    parameters its 7,000 values were converted and encoded on the loop, ~5 ms a statement there (the 33,786-key
+    delete's loop-timing test held the loop 5.3-7.9 ms against its 5 ms bound, 2026-11-21).
+
     :param params: the statement's parameters
     :ptype params: Sequence[Any]
-    :return: whether it binds more than :data:`_OFFLOAD_PARAMS`
+    :return: whether it binds more than :data:`_OFFLOAD_PARAMS` values
     :rtype: bool
     """
-    return len(params) > _OFFLOAD_PARAMS
+    bound = 0
+    for value in params:
+        bound += len(value) if isinstance(value, (list, tuple)) else 1
+        if bound > _OFFLOAD_PARAMS:
+            return True
+    return False
 
 
 def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
