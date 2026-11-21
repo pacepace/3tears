@@ -19,12 +19,16 @@ across the documents, in their order, each document's best remaining tile per ro
 whole is recorded as truncated. Each step's selection is bounded on its own, so the documents a candidate fetched never
 take the case's share: truth reads the same case passages whatever an arm fetched, given the same claims.
 
-**A citation binds a value to its subject.** A passage citation quotes one sentence or table row of at most
-:data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, found verbatim in its document's full text by
-:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span`, and names, inside that quote, the words that name the
-claim's subject and the words that state the value. Both spans are found verbatim inside the stored quote. A value
-taken from a neighbouring sentence cannot be cited for this subject: its quote would not hold both. What is stored is
-the document's own slice and offsets, never the model's strings. A key fact is cited whole, with no quote.
+**A citation names a value and its subject, in one sentence or row.** A passage citation quotes at most
+:data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, found by
+:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the passage the call was shown and cited (never
+elsewhere in its document), and names, inside that quote, the words that name the claim's subject and the words that
+state the value. Both are found inside the stored quote, and no sentence end (``.``, ``!`` or ``?`` before a space or
+the end), semicolon or line break may lie between them. That narrows the neighbouring-value error, a value taken from
+the sentence or row next to the one about this subject, to one sentence or row. It does not prove the value belongs to
+that subject: a sentence stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932")
+stays the model's to bind, and calibration measures what remains. What is stored is the passage's own slice, never the
+model's strings. A key fact is cited whole, with no quote.
 
 **Batches.** One call per unit, holding every world claim of that unit, and one more for the claims outside any unit.
 A restatement is not asked again: it rides in its original's batch, shown beside it, and takes the original's
@@ -32,12 +36,18 @@ citations, suspicion and verdict, since it states the same fact. Session claims 
 never verified here; their finding is None.
 
 **Repair, not refusal.** A reply that will not parse, or does not answer exactly the claims asked, is asked again in
-full, naming why, up to three times, then raises (``unreadable``). A claim whose answer fails a check (a ref to no
-evidence shown, a quote not in its document or over the length, a missing or misplaced span, a suspect claim that
-cites evidence) is asked again alone, with its failure named, within the criterion's repair budget: its rounds, and
-the most items one cell may ask again. Only failing claims are asked again. Still failing, or past the budget, raises
-(``repair_budget_spent``); a reply cut short raises at once (``cut_short``). Every failure is
-:class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, costing the cell only this criterion.
+full, naming why, up to three times, then fails (``unreadable``). A claim whose answer fails a check (a ref to no
+evidence shown, a quote not in the passage cited or over the length, a missing or misplaced span, a subject and value
+in different sentences, a suspect claim that cites evidence) is asked again alone, with its failure named, within the
+repair budget: its rounds, and the most items one cell may ask again, which each step holds on its own. Only failing
+claims are asked again. Still failing, or past the budget, fails (``repair_budget_spent``); a reply cut short fails at
+once (``cut_short``).
+
+**Truth and groundedness fail apart.** A truth failure raises
+:class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, costing the cell this criterion. A ground
+failure never touches truth: the documents an arm fetched differ by arm, so they must not decide whether its cell
+keeps a truth reading. The verification comes back with every truth finding, no groundedness, and the ground step's
+loss on :attr:`Verification.ground_loss`, for the judge phase to record against the groundedness reading alone.
 
 **It records what it spent, and how it read.** Every completion is folded into the cell's ``judge`` ledger and
 recorded as a :class:`~threetears.evals.schema.models.ClaimCall`. :attr:`ClaimVerifier.identity` names the model and a
@@ -56,6 +66,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationError
@@ -84,6 +95,7 @@ from threetears.evals.schema.models import (
     EvidenceRef,
     GradedClaim,
     JudgeTemperature,
+    KnownClaimLoss,
     PageBudget,
     RepairBudget,
     TextSpan,
@@ -197,6 +209,37 @@ _REPAIR_TEMPLATE: Final = (
     "# Evidence\n\n{evidence}\n\n# The claim\n\n{claim}\n\n# Your answer\n\n{answer}\n\n# What is wrong\n\n{failure}"
 )
 
+#: What breaks one sentence or table row from the next, between a citation's subject and its value: a sentence end
+#: (``.``, ``!`` or ``?`` before a space or the end), a semicolon or a line break.
+_SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[;\n\r]")
+
+#: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
+#: shown, so part of the identity.
+_FAULTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "twice": "it cites {refs} more than once; cite each piece of evidence once",
+        "suspect": "it is marked suspect and cites evidence; suspect means no evidence given bears on the claim",
+        "unknown_ref": "it cites {ref}, which is no evidence shown here; cite the refs listed under Evidence",
+        "no_quote": "its citation of {ref} quotes nothing; a passage is cited with the sentence or row that states it",
+        "not_shown": (
+            "its quote of {ref} is not in passage {ref} as shown; a quote is one unbroken stretch of the passage it "
+            "cites, copied as it is written"
+        ),
+        "too_long": "its quote of {ref} runs {length} characters; a quote is one sentence or row of at most {cap}",
+        "no_span": "its citation of {ref} names no {what}; give the words of its quote that state the {what}",
+        "span_outside": "its {what} for {ref} is not in its quote; the {what} is words of the quoted sentence itself",
+        "apart": (
+            "its subject and value for {ref} stand in different sentences or rows of its quote; quote the one sentence "
+            "or row that states this value for this subject"
+        ),
+        "correction": "{failure}; and the last correction could not be used: {why}",
+        "shape": "it is not the shape the response format states ({problems})",
+        "answers": "it must answer claims {asked} once each, and it {problems}",
+        "missing": "leaves out claims {missing}",
+        "extra": "answers claims {extra} that were not asked, or more than once",
+    }
+)
+
 _NULLABLE_STRING: Final[dict[str, Any]] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
 _TRUTH_CITATION: Final[dict[str, Any]] = {
@@ -297,7 +340,8 @@ class ClaimFinding:
     :ivar truth_call: The call whose answer stands for it, by its place in :attr:`Verification.calls`: its batch's,
         or the repair that fixed it. A restatement's is its original's.
     :ivar ground_citations: Documents the candidate was given that support it, each checked; empty when not asked.
-    :ivar grounded: Whether one supports it; None when the criterion names no ``grounded_in``.
+    :ivar grounded: Whether one supports it; None when the criterion names no ``grounded_in``, or the ground step was
+        lost.
     """
 
     truth_citations: tuple[ClaimCitation, ...]
@@ -316,12 +360,18 @@ class Verification:
     :ivar calls: Every call made, in order.
     :ivar findings: One per claim, in the claims' order: a :class:`ClaimFinding` for a world claim, None for a session
         claim.
+    :ivar ground_loss: Why the ground step was lost (``cut_short``, ``unreadable`` or ``repair_budget_spent``), its
+        own loss and never the criterion's: the truth findings stand, and every finding's ``grounded`` reads None.
+        None when the step was not lost, or not asked.
+    :ivar ground_failure: What failed in the ground step, named, beside :attr:`ground_loss`; None with it.
     """
 
     evidence: tuple[EvidenceRef, ...]
     documents_truncated: tuple[str, ...]
     calls: tuple[ClaimCall, ...]
     findings: tuple[ClaimFinding | None, ...]
+    ground_loss: KnownClaimLoss | None = None
+    ground_failure: str | None = None
 
 
 @dataclass(frozen=True)
@@ -553,7 +603,7 @@ def _unreadable(refused: ValueError) -> str:
             f"{'/'.join(str(part) for part in error['loc']) or 'the reply'}: {error['msg']}"
             for error in refused.errors()[:5]
         )
-        return f"it is not the shape the response format states ({problems})"
+        return _FAULTS["shape"].format(problems=problems)
     return str(refused)
 
 
@@ -653,8 +703,9 @@ class ClaimVerifier:
     @property
     def identity(self) -> str:
         """``<model>|claimverify:<sha12>``: the model, and a digest of the prompts (with the host's guidance), the
-        reply schemas, the page budget and selection rule, the batch rule, the repair budget, ``grounded_in``, the
-        quote cap, the attempts and the verbatim fold's identity."""
+        reply schemas, the failures a repair is told, the sentence-break rule, the page budget and selection rule, the
+        batch rule, the repair budget, ``grounded_in``, the quote cap, the attempts and the verbatim fold's
+        identity."""
         digest = canonical_digest(
             {
                 "truth_system": self._system("truth"),
@@ -678,6 +729,8 @@ class ClaimVerifier:
                     self.ground_repair_response_format,
                 ],
                 "pages": self.pages.model_dump(mode="json"),
+                "faults": dict(_FAULTS),
+                "sentence_break": _SENTENCE_BREAK.pattern,
                 "selection": [_SELECTION_RULE, _ANCHOR_MIN_CHARS, _WORD.pattern],
                 "batches": _BATCH_RULE,
                 "repairs": self.repairs.model_dump(mode="json"),
@@ -718,11 +771,13 @@ class ClaimVerifier:
         :param documents: The cell's evidence documents, in order: ``()`` when the candidate was given none, None when
             undeclared.
         :param ledger: The cell's ``judge`` ledger.
-        :return: The evidence shown, the documents truncated, the calls made, and one finding per claim.
+        :return: The evidence shown, the documents truncated, the calls made, one finding per claim, and the ground
+            step's loss when it was lost.
         :raises ValueError: ``ledger`` is not the ``judge`` role's; ``grounded_in`` is named and the documents are
             undeclared; or a ``restates`` names no earlier original of its scope.
-        :raises ClaimGradingFailed: A reply was cut short, a batch's reply did not parse in its attempts, or a claim
-            still failed its checks within the repair budget.
+        :raises ClaimGradingFailed: A truth reply was cut short, a truth batch's reply did not parse in its attempts, or
+            a claim still failed its truth checks within the repair budget. The same in the ground step never raises:
+            it is :attr:`Verification.ground_loss`.
         """
         if ledger.role != _ROLE:
             raise ValueError(
@@ -778,20 +833,42 @@ class ClaimVerifier:
             shown["ground"] = _Shown((), number(ground_passages))
         calls: list[ClaimCall] = []
         checked: dict[tuple[_Step, int], _Checked] = {}
-        for step in _STEPS:
-            if step not in shown:
-                continue
-            for batch in batches:
-                answers, call = await self._ask_batch(step, batch, cell, shown[step], calls, ledger)
-                for position, answer in answers.items():
-                    checked[(step, position)] = self._check(answer, call, shown[step])
-        await self._repair(checked, cell, shown, calls, ledger)
+        await self._run_step("truth", batches, checked, cell, shown, calls, ledger)
+        lost: ClaimGradingFailed | None = None
+        if "ground" in shown:
+            try:
+                await self._run_step("ground", batches, checked, cell, shown, calls, ledger)
+            except ClaimGradingFailed as failed:
+                # Recorded, never swallowed: the loss rides on the verification for the groundedness reading alone.
+                lost = failed
         return Verification(
             evidence=_index(shown),
             documents_truncated=tuple(document.id for document in given if document.id in {*truth_cut, *ground_cut}),
             calls=tuple(calls),
-            findings=_findings(cell, checked, grounded=self.grounded_in is not None),
+            findings=_findings(cell, checked, grounded=self.grounded_in is not None and lost is None),
+            ground_loss=None if lost is None else lost.loss,
+            ground_failure=None if lost is None else str(lost),
         )
+
+    async def _run_step(
+        self,
+        step: _Step,
+        batches: Sequence[tuple[int, ...]],
+        checked: dict[tuple[_Step, int], _Checked],
+        cell: tuple[ExtractedClaim, ...],
+        shown: Mapping[_Step, _Shown],
+        calls: list[ClaimCall],
+        ledger: RoleUsageLedger,
+    ) -> None:
+        """Ask every batch under ``step``, check each answer, and repair what fails within the step's own budget.
+
+        :raises ClaimGradingFailed: A reply was cut short, a batch could not be used, or a claim still failed.
+        """
+        for batch in batches:
+            answers, call = await self._ask_batch(step, batch, cell, shown[step], calls, ledger)
+            for position, answer in answers.items():
+                checked[(step, position)] = self._check(answer, call, shown[step])
+        await self._repair(step, checked, cell, shown, calls, ledger)
 
     async def _complete(
         self,
@@ -865,12 +942,12 @@ class ClaimVerifier:
         citations: list[ClaimCitation] = []
         refs = [cited.ref.strip() for cited in answer.citations]
         if twice := sorted({ref for ref in refs if refs.count(ref) > 1}):
-            faults.append(f"it cites {', '.join(twice)} more than once; cite each piece of evidence once")
+            faults.append(_FAULTS["twice"].format(refs=", ".join(twice)))
         if answer.suspect and answer.citations:
-            faults.append("it is marked suspect and cites evidence; suspect means no evidence given bears on the claim")
+            faults.append(_FAULTS["suspect"])
         for ref, cited in zip(refs, answer.citations, strict=True):
             if ref not in shown.refs:
-                faults.append(f"it cites {ref}, which is no evidence shown here; cite the refs listed under Evidence")
+                faults.append(_FAULTS["unknown_ref"].format(ref=ref))
                 continue
             passage = shown.passage(ref)
             if passage is None:
@@ -886,34 +963,32 @@ class ClaimVerifier:
 
     async def _repair(
         self,
+        step: _Step,
         checked: dict[tuple[_Step, int], _Checked],
         cell: tuple[ExtractedClaim, ...],
         shown: Mapping[_Step, _Shown],
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
     ) -> None:
-        """Ask every failing claim again alone, with its failure named, within the repair budget; keep each answer
-        that passes.
+        """Ask every claim failing under ``step`` again alone, with its failure named, within that step's own repair
+        budget; keep each answer that passes.
 
-        :raises ClaimGradingFailed: The next round would ask more items than the cell's budget has left, a claim still
+        :raises ClaimGradingFailed: The next round would ask more items than the step's budget has left, a claim still
             fails after the rounds, or a repair reply was cut short.
         """
-        failing = sorted(
-            (item for item, found in checked.items() if found.fault is not None),
-            key=lambda item: (_STEPS.index(item[0]), item[1]),
-        )
+        failing = sorted(item for item, found in checked.items() if item[0] == step and found.fault is not None)
         asked = 0
         for _round in range(self.repairs.rounds):
             if not failing:
                 return
             if asked + len(failing) > self.repairs.max_items_per_cell:
                 raise ClaimGradingFailed(
-                    f"the claim verifier would ask {len(failing)} claim(s) again with {asked} of the cell's "
+                    f"the claim verifier would ask {len(failing)} {step} claim(s) again with {asked} of the step's "
                     f"{self.repairs.max_items_per_cell} repairs spent: {_named(failing, checked)}",
                     loss="repair_budget_spent",
                 )
             for item in failing:
-                step, position = item
+                position = item[1]
                 asked += 1
                 before = checked[item]
                 content, call = await self._complete(
@@ -938,7 +1013,7 @@ class ClaimVerifier:
                         answer=before.answer,
                         call=before.call,
                         citations=before.citations,
-                        fault=f"{before.fault}; and the last correction could not be used: {_unreadable(refused)}",
+                        fault=_FAULTS["correction"].format(failure=before.fault, why=_unreadable(refused)),
                     )
                     continue
                 checked[item] = self._check(answer, call, shown[step])
@@ -1002,17 +1077,11 @@ def _read_batch(step: _Step, content: str, batch: tuple[int, ...]) -> dict[int, 
     if sorted(named) != sorted(batch):
         missing = sorted(set(batch) - set(named))
         extra = sorted({position for position in named if position not in batch or named.count(position) > 1})
-        raise ValueError(
-            f"it must answer claims {list(batch)} once each, and it "
-            + "; ".join(
-                part
-                for part in (
-                    f"leaves out claims {missing}" if missing else "",
-                    f"answers claims {extra} that were not asked, or more than once" if extra else "",
-                )
-                if part
-            )
-        )
+        problems = [
+            *([_FAULTS["missing"].format(missing=missing)] if missing else []),
+            *([_FAULTS["extra"].format(extra=extra)] if extra else []),
+        ]
+        raise ValueError(_FAULTS["answers"].format(asked=list(batch), problems="; ".join(problems)))
     return dict(answers)
 
 
@@ -1030,36 +1099,32 @@ def _read_repair(step: _Step, content: str) -> _Answer:
 
 
 def _passage_citation(ref: str, cited: _Cited, passage: _Passage) -> tuple[ClaimCitation | None, str | None]:
-    """A passage citation checked: its quote the document's own sentence, its subject and value inside that quote.
+    """A passage citation checked: its quote a stretch of the passage shown, its subject and value inside that quote
+    and in one sentence or row of it.
 
     :return: The stored citation, or the failure named.
     """
     if cited.quote is None or not cited.quote.strip():
-        return None, f"its citation of {ref} quotes nothing; a passage is cited with the sentence or row that states it"
-    document = passage.document
-    span = verbatim_span(cited.quote, document.text)
+        return None, _FAULTS["no_quote"].format(ref=ref)
+    shown = passage.document.text[passage.start : passage.end]
+    span = verbatim_span(cited.quote, shown)
     if span is None:
-        return None, (
-            f"its quote of {ref} is not in that passage's document; a quote is one unbroken stretch of it, copied as it "
-            "is written"
-        )
-    quote = document.text[span[0] : span[1]]
+        return None, _FAULTS["not_shown"].format(ref=ref)
+    quote = shown[span[0] : span[1]]
     if len(quote) > CLAIM_QUOTE_CHARS:
-        return (
-            None,
-            f"its quote of {ref} runs {len(quote)} characters; a quote is one sentence or row of at most {CLAIM_QUOTE_CHARS}",
-        )
+        return None, _FAULTS["too_long"].format(ref=ref, length=len(quote), cap=CLAIM_QUOTE_CHARS)
     spans: dict[str, TextSpan] = {}
     for what, words in (("subject", cited.subject), ("value", cited.value)):
         if words is None or not words.strip():
-            return None, f"its citation of {ref} names no {what}; give the words of its quote that state the {what}"
+            return None, _FAULTS["no_span"].format(ref=ref, what=what)
         found = verbatim_span(words, quote)
         if found is None:
-            return None, (
-                f"its {what} for {ref} is not in its quote; the {what} is words of the quoted sentence itself, so the "
-                "value is bound to its subject"
-            )
+            return None, _FAULTS["span_outside"].format(ref=ref, what=what)
         spans[what] = TextSpan(start=found[0], end=found[1])
+    first, second = sorted((spans["subject"], spans["value"]), key=lambda found: found.start)
+    # The quote is the passage's own text, not a model's: where its sentences break is structure, read by position.
+    if second.start > first.end and _SENTENCE_BREAK.search(quote[first.end : second.start]):
+        return None, _FAULTS["apart"].format(ref=ref)
     return (
         ClaimCitation(
             ref=ref, stance=cited.stance, quote=quote, subject_span=spans["subject"], value_span=spans["value"]
@@ -1101,7 +1166,7 @@ def _findings(
             continue
         original = position if claim.restates is None else claim.restates
         truth = checked[("truth", original)]
-        ground = checked.get(("ground", original))
+        ground = checked.get(("ground", original)) if grounded else None
         ground_citations = () if ground is None else ground.citations
         findings.append(
             ClaimFinding(

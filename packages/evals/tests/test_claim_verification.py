@@ -5,10 +5,12 @@ spent and each reply is chosen. The truth step sees the case key's facts (``K1..
 documents (``S1..``) and never a document the candidate fetched; the ground step, asked only under ``grounded_in``,
 sees only those documents. Code derives every verdict: case support always reads supported, case contradiction
 contradicted, and only a claim no case evidence bears on that the model doubts is nominated for the web. Each
-citation's quote is the document's own sentence, with its subject and value found inside it, so a neighbouring value
-cannot be bound to this subject. Restatements ride with their original and take its answer; session claims are never
-verified. A failing answer is asked again alone within the repair budget; an unreadable batch is asked again in full;
-a cut-short reply raises at once. Passages are chosen by code under the page budget, the same way every time, with
+citation's quote is a stretch of the passage shown, with its subject and value found inside it and no sentence end,
+semicolon or line break between them: that narrows a neighbouring value to one sentence or row, and what one sentence
+leaves to the model calibration measures. Restatements ride with their original and take its answer; session claims
+are never verified. A failing answer is asked again alone within its step's repair budget; an unreadable batch is
+asked again in full; a cut-short reply fails at once. Truth and groundedness fail apart: a lost ground step leaves
+every truth finding as it was. Passages are chosen by code under the page budget, the same way every time, with
 truncation recorded. The identity moves with the budgets, ``grounded_in``, the guidance and the model, and is pinned
 for the shipped prompts, schemas and selection rule. The text is invented: a small press's history of one book, a
 table's house rule, and a source a summary must stay faithful to.
@@ -326,6 +328,76 @@ async def test_the_pamphlets_year_cited_for_the_bound_volume_is_asked_again_and_
     assert [call.role for call in grade.calls] == ["truth", "truth", "repair"]
 
 
+async def test_a_quote_spanning_two_sentences_cannot_bind_the_neighbours_value_and_is_asked_again() -> None:
+    both = _cite(
+        "S1",
+        quote="The pamphlet edition of Harrow Tales appeared in 1931. The bound volume of Harrow Tales followed in 1932.",
+        subject="The bound volume of Harrow Tales",
+        value="1931",
+    )
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, both)),
+            _batch(_answer(1), _answer(2)),
+            _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
+        ]
+    )
+
+    grade = _grade(_CLAIMS, await _verify(client))
+
+    assert "its subject and value for S1 stand in different sentences or rows of its quote" in client.calls[2]["user"]
+    assert (grade.claims[0].verdict, grade.claims[0].decided_by) == ("contradicted", 2)
+
+
+@pytest.mark.parametrize("joint", ["; the bound volume of Harrow Tales", "\nthe bound volume of Harrow Tales"])
+async def test_a_semicolon_or_a_line_break_between_subject_and_value_is_asked_again(joint: str) -> None:
+    text = f"The pamphlet edition of Harrow Tales appeared in 1931{joint} followed in 1932."
+    rows = EvidenceDocument(id="rows", provenance="case", title="Rows", text=text)
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, _cite("S1", quote=text, subject="the bound volume of Harrow Tales", value="1931"))),
+            _batch(_answer(1), _answer(2)),
+            _repair(
+                _cite(
+                    "S1",
+                    "contradicts",
+                    quote=f"{joint.strip('; ').strip()} followed in 1932.",
+                    subject="the bound volume of Harrow Tales",
+                    value="1932",
+                )
+            ),
+        ]
+    )
+
+    grade = _grade(_CLAIMS, await _verify(client, documents=(rows,)))
+
+    assert "stand in different sentences or rows" in client.calls[2]["user"]
+    assert grade.claims[0].verdict == "contradicted"
+
+
+async def test_one_sentence_naming_two_subjects_is_left_to_the_model_to_bind() -> None:
+    """Code narrows a neighbouring value to one sentence; inside one, which value belongs to which subject is the
+    model's reading, and calibration measures it."""
+    shared = EvidenceDocument(
+        id="shared",
+        provenance="case",
+        title="Shared",
+        text="Lantern Works issued the pamphlet in 1931 and the bound volume of Harrow Tales in 1932.",
+    )
+    client = _FakeScriptedClient(
+        [
+            _batch(
+                _answer(0, _cite("S1", quote=shared.text, subject="the bound volume of Harrow Tales", value="1931"))
+            ),
+            _batch(_answer(1), _answer(2)),
+        ]
+    )
+
+    grade = _grade(_CLAIMS, await _verify(client, documents=(shared,)))
+
+    assert grade.claims[0].verdict == "supported", "a misbinding within one sentence passes every code check"
+
+
 async def test_a_fact_the_key_omits_contradicts_nothing() -> None:
     client = _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _cite("K1")), _answer(2))])
 
@@ -526,6 +598,97 @@ async def test_a_ground_citation_of_a_case_passage_is_no_evidence_shown_there() 
     assert verification.findings[0] is not None and verification.findings[0].grounded is False
 
 
+_MESSY_PAGE = EvidenceDocument(
+    id="messy-page",
+    provenance="run",
+    title="A fetched page",
+    text="Lantern Works printed Harrow Tales. The bound volume of Harrow Tales followed in 1932.",
+)
+_BAD_GROUND = _ground_cite("S7", quote="nothing", subject="x", value="y")
+
+
+def _ground_repair(*citations: dict[str, Any]) -> _Reply:
+    return _Reply(content=json.dumps({"citations": list(citations)}))
+
+
+async def _truth_only() -> Verification:
+    return await _verify(
+        _FakeScriptedClient(
+            [
+                _batch(_answer(0, _BAD)),
+                _batch(_answer(1, _cite("K1")), _answer(2)),
+                _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
+            ]
+        )
+    )
+
+
+async def test_a_ground_step_past_its_own_repair_budget_loses_only_groundedness() -> None:
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, _BAD)),
+            _batch(_answer(1, _cite("K1")), _answer(2)),
+            _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
+            _ground((0, [_BAD_GROUND])),
+            _ground((1, [_BAD_GROUND]), (2, [_BAD_GROUND])),
+        ]
+    )
+
+    verification = await _verify(
+        client,
+        documents=(_PRESS, _MESSY_PAGE),
+        grounded_in=("run",),
+        repairs=RepairBudget(rounds=2, max_items_per_cell=1),
+    )
+    alone = await _truth_only()
+
+    assert verification.ground_loss == "repair_budget_spent"
+    assert verification.ground_failure is not None and "would ask 3 ground claim(s)" in verification.ground_failure
+    assert [f.truth_citations if f else None for f in verification.findings] == [
+        f.truth_citations if f else None for f in alone.findings
+    ]
+    assert all(f is not None and f.grounded is None and f.ground_citations == () for f in verification.findings)
+    graded = _grade(_CLAIMS, verification).claims
+    assert [claim.verdict for claim in graded] == ["contradicted", "supported", "unverifiable"]
+    assert [call.role for call in verification.calls] == ["truth", "truth", "repair", "ground", "ground"]
+
+
+@pytest.mark.parametrize(
+    ("ground_replies", "loss"),
+    [
+        ([_Reply(content="not json")] * 3, "unreadable"),
+        ([_Reply(content='{"claims": [', stop_reason="max_tokens")], "cut_short"),
+        (
+            [
+                _ground((0, [_BAD_GROUND])),
+                _ground((1, []), (2, [])),
+                _ground_repair(_BAD_GROUND),
+                _ground_repair(_BAD_GROUND),
+            ],
+            "repair_budget_spent",
+        ),
+    ],
+)
+async def test_a_lost_ground_step_leaves_every_truth_verdict_as_it_was(ground_replies: list[_Reply], loss: str) -> None:
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, _BAD)),
+            _batch(_answer(1, _cite("K1")), _answer(2)),
+            _repair(_CONTRADICTED_BY_THE_BOUND_VOLUME),
+            *ground_replies,
+        ]
+    )
+
+    verification = await _verify(client, documents=(_PRESS, _MESSY_PAGE), grounded_in=("run",))
+    alone = await _truth_only()
+
+    assert verification.ground_loss == loss
+    assert [claim.verdict for claim in _grade(_CLAIMS, verification).claims] == [
+        claim.verdict for claim in _grade(_CLAIMS, alone).claims
+    ]
+    assert all(f is not None and f.grounded is None for f in verification.findings)
+
+
 # --- the code checks, each a repair item ----------------------------------------------------------------------------
 
 _LONG = EvidenceDocument(
@@ -545,7 +708,7 @@ _LONG = EvidenceDocument(
         (_cite("S1"), "its citation of S1 quotes nothing"),
         (
             _cite("S1", quote="The bound volume came out in 1930.", subject="The bound volume", value="1930"),
-            "its quote of S1 is not in that passage's document",
+            "its quote of S1 is not in passage S1 as shown",
         ),
         (
             _cite("S1", "contradicts", quote="The bound volume of Harrow Tales followed in 1932.", value="1932"),
@@ -702,7 +865,7 @@ async def test_a_claim_still_failing_after_its_rounds_raises_naming_it_and_every
 async def test_more_failing_items_than_the_cells_repair_budget_raises_before_asking() -> None:
     client = _FakeScriptedClient([_batch(_answer(0, _BAD)), _batch(_answer(1, _BAD), _answer(2))])
 
-    with pytest.raises(ClaimGradingFailed, match="would ask 2 claim") as failed:
+    with pytest.raises(ClaimGradingFailed, match="would ask 2 truth claim") as failed:
         await _verify(client, repairs=RepairBudget(rounds=2, max_items_per_cell=1))
 
     assert failed.value.loss == "repair_budget_spent"
@@ -925,10 +1088,46 @@ async def test_a_fetched_document_never_moves_what_the_truth_step_reads() -> Non
         [_batch(_answer(0)), _batch(_answer(1), _answer(2)), _ground((0, [])), _ground((1, []), (2, []))]
     )
 
-    await _verify(without, documents=(_ARCHIVE,), pages=_TIGHT)
-    await _verify(with_it, documents=(_ARCHIVE, fetched), pages=_TIGHT, grounded_in=("run",))
+    alone = await _verify(without, documents=(_ARCHIVE,), pages=_TIGHT)
+    # Fetched first: under one budget shared across both steps' documents, it would take the archive's second tile.
+    beside = await _verify(with_it, documents=(fetched, _ARCHIVE), pages=_TIGHT, grounded_in=("run",))
 
+    def case_spans(verification: Verification) -> list[tuple[str, str | None, int, int]]:
+        return [
+            (entry.ref, entry.document, entry.span.start, entry.span.end)
+            for entry in verification.evidence
+            if entry.span is not None and entry.provenance == "case"
+        ]
+
+    assert (
+        case_spans(beside)
+        == case_spans(alone)
+        == [
+            ("S1", "archive", 0, _WIDTH),
+            ("S2", "archive", 2 * _WIDTH, 3 * _WIDTH),
+        ]
+    )
     assert [call["user"] for call in with_it.calls[:2]] == [call["user"] for call in without.calls]
+
+
+async def test_a_quote_from_a_part_of_the_document_the_call_was_not_shown_is_asked_again() -> None:
+    narrow = PageBudget(per_document_chars=_WIDTH, total_chars=_WIDTH, window_chars=_WIDTH)
+    unshown = _FILLER.strip()
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0)),
+            _batch(
+                _answer(1, _cite("S1", "contradicts", quote=unshown, subject="The cellar", value="ledgers")), _answer(2)
+            ),
+            _repair(_cite("S1", quote="Harrow Tales sold well in 1932.", subject="Harrow Tales", value="sold well")),
+        ]
+    )
+
+    verification = await _verify(client, documents=(_LEDGER,), pages=narrow)
+
+    assert _spans(verification) == [("S1", "ledger", _WIDTH, 2 * _WIDTH)]
+    assert unshown in _LEDGER.text
+    assert "its quote of S1 is not in passage S1 as shown" in client.calls[2]["user"]
 
 
 # --- refusals and identity ------------------------------------------------------------------------------------------
@@ -964,7 +1163,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 #: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:013e1de80ce9"
+_PINNED_IDENTITY = "scripted/verify|claimverify:7d2e9c2c37e1"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:
