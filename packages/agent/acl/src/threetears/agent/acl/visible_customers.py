@@ -196,12 +196,15 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
                 columns={"role_permissions": "permissions", "role_customer_id": "customer_id"},
                 left=True,
             ),
-            # the granting group, by its key: a customer's group counts only on its own customer
+            # the granting group, by its key: a customer's group counts only on its own customer, and a grant whose
+            # group has no row not at all (its id, beside the customer a platform group and an absent one both leave
+            # None). Left, not inner: the edge into a group with no row still carries the walk, as the evaluator's
+            # membership walk reads no group row
             Joined(
                 "groups",
                 on={"group_id": "group_id"},
                 by={"row_scope": AnyOf(_GROUP_SCOPES, cast=None)},
-                columns={"group_customer_id": "customer_id"},
+                columns={"group_customer_id": "customer_id", "group_row_id": "group_id"},
                 left=True,
             ),
             Joined(
@@ -257,8 +260,9 @@ class _CustomerWall:
     :data:`MAX_GROUP_MEMBERSHIP_DEPTH` groups up as the evaluator walks, and its group and role X admits too. Checked
     for X None (a platform namespace: every row a platform row), a grant counts on every customer.
 
-    A grant whose group row is absent is walled by its edges and its role alone: the schema's foreign key from
-    ``role_assignments`` to ``groups`` means a real grant always has one.
+    A grant whose group row is absent counts nowhere, as the evaluator skips a grant whose group it cannot resolve;
+    the schema's foreign key from ``role_assignments`` to ``groups`` forbids the state, and the wall does not lean on
+    it. The edges into such a group still carry the walk: the evaluator's membership walk reads no group row.
     """
 
     def __init__(self, user_id: UUID, rows: Sequence[dict[str, Any]]) -> None:
@@ -309,7 +313,8 @@ class _CustomerWall:
         :rtype: bool
         """
         return (
-            row["group_id"] in self._reached_for(customer)
+            row["group_row_id"] is not None
+            and row["group_id"] in self._reached_for(customer)
             and row["group_customer_id"] in (None, customer)
             and row["role_customer_id"] in (None, customer)
         )

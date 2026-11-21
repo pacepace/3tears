@@ -171,6 +171,7 @@ class _GrantedPool(ProxyPoolDouble):
                     "group_id": group,
                     "customer_id": None,
                     "group_customer_id": None,
+                    "group_row_id": group,
                     "role_customer_id": None,
                     "scope_type": "type_customer",
                     "scope_customer_id": customer,

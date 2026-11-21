@@ -56,7 +56,10 @@ the granting group, the granting group and the role name no customer or
 ``X`` (the evaluator's ``_filter_memberships`` and ``_walk_assignments``).
 visibility is never broader than the evaluator: a customer-B group's grant
 on customer A's namespace admits nothing of A, and a fleet-wide grant
-reached through customer C's rows admits C's rows alone.
+reached through customer C's rows admits C's rows alone. a grant counts
+only through its group's row (an inner join): the evaluator skips a grant
+whose group it cannot resolve, and a left join would read that grant's
+missing group as a platform one.
 
 the generator emits an ``EXISTS`` subquery joining
 ``role_assignments`` + ``roles`` + ``group_members`` + ``groups`` + ``namespaces``,
@@ -298,7 +301,7 @@ def caller_visible_customer_clause(
           FROM role_assignments ra
           JOIN roles vis_role ON vis_role.role_id = ra.role_id
           JOIN group_members gm ON gm.group_id = ra.group_id
-          LEFT JOIN groups vis_group ON vis_group.group_id = ra.group_id
+          JOIN groups vis_group ON vis_group.group_id = ra.group_id
           LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
          WHERE {_caller_membership_predicate(param_offset, customer_id_column)}
            AND {_customer_wall("vis_group", customer_id_column)}

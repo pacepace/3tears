@@ -104,6 +104,12 @@ async def _holder(conn: asyncpg.Connection, role_id: uuid.UUID, **scope: Any) ->
     :rtype: uuid.UUID
     """
     user_id, group_id = uuid.uuid4(), uuid.uuid4()
+    # the group's row, a platform group's: a grant counts only through its group's row, as the evaluator resolves it
+    await conn.execute(
+        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+        group_id,
+        f"g{group_id.hex}",
+    )
     await conn.execute(
         "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'user', $3)",
         uuid.uuid4(),
