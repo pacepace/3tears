@@ -36,6 +36,13 @@ version loads only the tables it reads the same way (from the newest, or the pre
 writer rewrites the tables it holds and keeps every other entry as it found it: a table it does not follow, or one it
 has not read again yet.
 
+**Forgetting tables** (:meth:`CopyCheckpoints.forget`) is an operator's act, never automatic: it drops the named
+tables from the newest and the previous checkpoint and retires their parts, so the next start finds no checkpoint
+holding them and reads each whole as its cold start, its mark taken at the log's head, while every other table loads.
+It is how a follower stuck behind on a table (an epoch the log cannot give: ``keys_unknown``, ``aged_out``) whose
+every replica restarts from a checkpoint older than that epoch is brought back: a start from the checkpoint walks the
+log from the stale mark again, a start that sees the table for the first time does not.
+
 **When.** Not on a timer: when the rows applied since the last checkpoint reach ``ratio`` (default half) of the rows it
 holds, once after the first warm, and once a table left out of the load is read again (:meth:`CopyCheckpoints.due`).
 Writes are counted in ``copy_checkpoint_writes_total{kind, outcome}``.
@@ -57,6 +64,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 from threetears.core.declared import whole_read
+from threetears.core.operator import operator_reset
 from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
@@ -1179,6 +1187,69 @@ class CopyCheckpoints:
                     exc, log=log, what=f"checkpoint objects could not be retired ({why}); the next write retires them"
                 )
                 return
+
+    @operator_reset(
+        "an operator's reset of a copy follower's tables in its checkpoint: the named tables leave the newest and the "
+        "previous checkpoint, so the next start reads each whole as its cold start at the log's head",
+        proof="packages/core/tests/unit/collections/test_copy_checkpoint.py::"
+        "test_forgotten_tables_load_as_a_cold_start_and_every_other_table_from_the_checkpoint",
+    )
+    async def forget(self, names: Iterable[str]) -> Checkpoint | None:
+        """drop the named tables from the newest and the previous checkpoint, and retire the objects only they named:
+        the next start reads each of them whole as its cold start (its mark taken at the log's head), and loads every
+        other table from the checkpoint. An operator's act (``@operator_reset``), never a load's or a start's.
+
+        A table derived from the followed ones stays in the manifest; a start that reads a followed table whole loads
+        no derived table, which its owner derives again. A replica running now whose parts of a forgotten table were
+        retired writes no checkpoint until it starts again (:meth:`write`): forget, then roll the pod.
+
+        :param names: the tables to forget, each one this copy holds
+        :ptype names: Iterable[str]
+        :return: the checkpoint the pointer names now; None when there is none, or another replica holds the
+            writer's lock or moved the pointer meanwhile (ask again)
+        :rtype: Checkpoint | None
+        :raises ValueError: when a name is not a table this copy holds
+        """
+        forgotten = frozenset(names)
+        unknown = sorted(forgotten - {t.name for t in self._tables})
+        if unknown:
+            raise ValueError(f"the copy holds no table {unknown}: nothing to forget")
+        lock = f"{self.base}-lock"
+        if await self._pointers.create(key=lock, value=self._owner.encode(), ttl=_CLAIM_TTL) is None:
+            return None
+        try:
+            found = await self.newest()
+            if found is None:
+                return None
+            newest, revision = found
+            previous = newest.previous
+            kept = Checkpoint(
+                seq=newest.seq + 1,
+                stamp=newest.stamp,
+                tables={n: e for n, e in newest.tables.items() if n not in forgotten},
+                previous=None
+                if previous is None
+                else Checkpoint(
+                    seq=previous.seq,
+                    stamp=previous.stamp,
+                    tables={n: e for n, e in previous.tables.items() if n not in forgotten},
+                ),
+            )
+            if await self._pointers.update(key=self.base, value=kept.encode(), revision=revision) is None:
+                return None
+        finally:
+            await self._pointers.delete(key=lock)
+        gone = newest.live() - kept.live()
+        await self._retire_quietly(sorted(gone), "forgotten by an operator")
+        for name in forgotten:
+            self._priors.pop(name, None)
+        log.warning(
+            "an operator forgot tables in the copy checkpoint; the next start reads each whole as its cold start",
+            extra={
+                "extra_data": {"base": self.base, "tables": sorted(forgotten), "seq": kept.seq, "retired": len(gone)}
+            },
+        )
+        return kept
 
     async def sweep(self) -> int:
         """retire every object of this base that neither the newest nor the previous checkpoint names and no live
