@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an Arrow upsert or delete sends at most `BULK_MAX_ROWS` rows a request
+
+**Fixed:** `save_arrow` and `delete_arrow` cut their requests by bytes alone, so a 5,000-row page went to the hub as
+one request, which the hub merges as one statement under the transaction's statement timeout (the rail's five
+seconds). A staged upsert costs ~1.16 ms a row on YugabyteDB at 179 columns (the hub's own measure), so that
+statement ran ~5.8 s and was cancelled (`QueryCanceledError`) on the election replay. An upsert's or a delete's
+request now carries at most `BULK_MAX_ROWS` (1,000) rows, as `save_rows` and `delete_rows` bound a statement. A copy
+is still cut by its bytes alone, as `save_rows` cuts a copy on the rail.
+
+**Added:** `max_rows` on `save_arrow`, `delete_arrow`, `ArrowWritingStore.write_arrow` and
+`_ProxyConnection.write_arrow_rows`: the most rows one request carries, at least one.
+
 ### models: the current OpenAI and Anthropic models are registered with their prices
 
 **Added:** capability entries for `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna` (OpenAI) and

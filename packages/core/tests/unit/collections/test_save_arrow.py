@@ -255,6 +255,54 @@ async def test_the_rows_are_cut_by_arrow_slices_every_request_within_the_budget(
     assert all(envelope[CONFLICT_COLUMNS_FIELD] == ["office_key", "geo_id"] for envelope, _r, _s in requests)
 
 
+def _request_rows(hub: _Hub) -> list[int]:
+    return [rows.num_rows for _envelope, rows, _size in hub.arrow_requests()]
+
+
+async def test_an_upsert_request_carries_no_more_rows_than_a_bulk_statement() -> None:
+    # the hub merges a request as one statement under the transaction's statement timeout: an upsert cut by bytes
+    # alone was one statement for a whole page (5,000 rows, ~5.8 s on YugabyteDB, cancelled at five)
+    hub = _Hub(write_arrow=True)
+    await _saved(hub, _table(2500))
+    assert _request_rows(hub) == [1000, 1000, 500]
+    sent = [geo for _envelope, rows, _size in hub.arrow_requests() for geo in rows.column("geo_id").to_pylist()]
+    assert sent == [f"{n:05d}" for n in range(2499, -1, -1)]
+
+
+async def test_a_delete_request_names_no_more_keys_than_a_bulk_statement() -> None:
+    hub = _Hub(write_arrow=True)
+    collection = _collection()
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        assert await collection.delete_arrow(_table(2500), conn=conn) == 2500
+    assert _request_rows(hub) == [1000, 1000, 500]
+
+
+async def test_a_copy_is_cut_by_its_bytes_alone_unless_the_caller_bounds_its_rows() -> None:
+    hub = _Hub(write_arrow=True)
+    await _saved(hub, _table(2500), copy=True)
+    assert _request_rows(hub) == [2500]
+    bounded = _Hub(write_arrow=True)
+    collection = _collection()
+    proxy = bounded.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        assert await collection.save_arrow(_table(2500), conn=conn, copy=True, max_rows=1200) == 2500
+    assert _request_rows(bounded) == [1200, 1200, 100]
+
+
+async def test_a_bound_under_one_row_is_refused() -> None:
+    collection = _collection()
+    proxy = _Hub(write_arrow=True).proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        with pytest.raises(ValueError, match="max_rows"):
+            await collection.save_arrow(_table(2), conn=conn, max_rows=0)
+        with pytest.raises(ValueError, match="max_rows"):
+            await collection.delete_arrow(_table(2), conn=conn, max_rows=0)
+
+
 # -- keys, settlement, L1 --------------------------------------------------------------------------------------------
 
 

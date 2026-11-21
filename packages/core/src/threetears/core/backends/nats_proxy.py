@@ -2709,6 +2709,7 @@ class _ProxyConnection:
         conflict_columns: Sequence[str] = (),
         update_columns: Sequence[str] = (),
         delete: bool = False,
+        max_rows: int | None = None,
     ) -> int:
         """write an Arrow table's rows to ``table_name`` in the open transaction, through the hub's Arrow write door.
 
@@ -2722,7 +2723,9 @@ class _ProxyConnection:
         The rows are cut into requests by Arrow slices, each request within the copy budget
         (:meth:`copy_budget_bytes`, else the ceiling and the server's ``max_payload``) with room for the envelope, and
         each slice's IPC stream is written on the copy build thread, taking turns with this loop: the rows never become
-        Python values.
+        Python values. With ``max_rows``, no request carries more rows than that either: the hub runs each request as
+        one statement under the transaction's statement timeout, so a statement's rows bound its time where its bytes
+        alone do not.
 
         :param table_name: the table
         :ptype table_name: str
@@ -2735,14 +2738,18 @@ class _ProxyConnection:
         :ptype update_columns: Sequence[str]
         :param delete: the rows are keys to delete
         :ptype delete: bool
+        :param max_rows: the most rows one request carries, at least one; None for the budget's bytes alone
+        :ptype max_rows: int | None
         :return: the rows the hub's statements counted: inserted, upserted or deleted
         :rtype: int
-        :raises ValueError: when no transaction is open, the hub announced no write door, or one row alone is past the
-            budget
+        :raises ValueError: when no transaction is open, the hub announced no write door, one row alone is past the
+            budget, or ``max_rows`` is under one
         :raises DataLayerUnavailableError: on broker error
         """
         if self.tx_id is None:
             raise ValueError("write_arrow_rows runs only inside an open transaction (l3.tx.copy)")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{table_name}: max_rows must be at least 1, got {max_rows}")
         if not self.write_arrow:
             raise ValueError(
                 "the hub holding this transaction announced no Arrow write door (write_arrow): it would insert the rows"
@@ -2763,11 +2770,12 @@ class _ProxyConnection:
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
         loop = asyncio.get_running_loop()
         total = int(rows.num_rows)
+        cap = total if max_rows is None else max_rows
         start = 0
-        count = first_request_rows(rows, limit) if total else 0
+        count = min(first_request_rows(rows, limit), cap) if total else 0
         written = 0
         while start < total:
-            sent, count = await _on_copy_thread(write_request_rows, rows, start, count, limit, loop)
+            sent, count = await _on_copy_thread(write_request_rows, rows, start, min(count, cap), limit, loop)
             envelope = {**self._copy_envelope(table_name, rows.column_names, sent), **fields}
             response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=sent.ipc)
             if not response.get("success", False):

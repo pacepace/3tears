@@ -2776,7 +2776,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
         return stamped, keys, CallerTransaction.enrollments(self, keys, stamped, turns)
 
-    async def save_arrow(self, rows: Any, *, conn: Any, copy: bool = False) -> int:
+    async def save_arrow(self, rows: Any, *, conn: Any, copy: bool = False, max_rows: int | None = None) -> int:
         """:meth:`save_rows` for rows already in an Arrow table: upserted (or, with ``copy``, inserted) as they are,
         through the store's Arrow write door, never a Python value a row.
 
@@ -2787,7 +2787,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         the duplicate check, the enrolment and the L1 eviction. The rows go to the hub as Arrow, cut by Arrow slices
         against the request budget (:meth:`~threetears.core.backends.sql.SqlL3Backend.write_arrow`); the hub stages
         them and merges them in one statement a request, so row triggers and change notes fire as for the bulk
-        ``INSERT ... VALUES``.
+        ``INSERT ... VALUES``. An upsert's request carries at most :attr:`BULK_MAX_ROWS` rows, as :meth:`save_rows`'s
+        statement does; a copy's is cut by its bytes alone, as :meth:`save_rows` cuts a copy on the rail
+        (:func:`~threetears.core.backends.protocol.copy_bounds`); ``max_rows`` bounds either.
+
+        WHY an upsert is bounded by rows (2026-11-21): the hub merges a request as ONE statement under the
+        transaction's statement timeout (the rail's five seconds), and a staged upsert costs ~1.16 ms a row on
+        YugabyteDB at 179 columns (the hub's ``_stage_rows`` table: 300 rows 344.7 ms, 64 rows 70.3 ms), so a
+        5,000-row page cut by bytes alone was one ~5.8 s statement, over the timeout on an idle database; the
+        election replay's page retried as upserts was cancelled so (``QueryCanceledError``). :attr:`BULK_MAX_ROWS`
+        keeps it ~1.2 s.
 
         **Falls back to** :meth:`save_rows` (the rows read into Python a slice at a time on a thread, today's cost)
         when the store has no Arrow write door or declines these rows
@@ -2801,14 +2810,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param copy: insert with ``COPY`` rather than upsert; a key already held fails the write
         :ptype copy: bool
+        :param max_rows: the most rows one request writes, at least one; when None, :attr:`BULK_MAX_ROWS` for an
+            upsert and the request's bytes alone for a copy
+        :ptype max_rows: int | None
         :return: how many rows were submitted
         :rtype: int
         :raises ValueError: as :meth:`save_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store, a
             collection that caches absences, defers its L3 writes or fences with a null-safe CAS; two rows sharing a
-            key
+            key; ``max_rows`` under one
         :raises KeyError: when the rows lack a key column, or a required column
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_arrow")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{self.table_name}.save_arrow: max_rows must be at least 1, got {max_rows}")
         store = self._durable_store()
         if store is None:
             raise ValueError(f"{type(self).__name__}.save_arrow: {self.table_name} has no durable store to write to")
@@ -2838,7 +2852,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         if arrow_store is None or plan is None:
             # no door for these rows: today's write, the rows read into Python off the loop
-            return await self.save_rows(await asyncio.to_thread(arrow_python_rows, rows), conn=conn, copy=copy)
+            return await self.save_rows(
+                await asyncio.to_thread(arrow_python_rows, rows), conn=conn, copy=copy, max_rows=max_rows
+            )
         # the keys read, checked and enrolled from a worker thread taking turns with the loop: on the loop, 33,786 of
         # them held it 6-7 ms with the collector held and 50-55 ms with it running (the WD2 bench, 179 columns,
         # 2026-11-16)
@@ -2847,7 +2863,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         transaction.enroll_all(enrollments)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
-        await arrow_store.write_arrow(self.table_name, stamped, plan, conn=conn)
+        bound = max_rows if max_rows is not None or copy else self.BULK_MAX_ROWS
+        await arrow_store.write_arrow(self.table_name, stamped, plan, conn=conn, max_rows=bound)
         log.debug(
             "Arrow bulk copy written on the caller's transaction"
             if copy
@@ -3550,9 +3567,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return entity_keys, CallerTransaction.enrollments(self, entity_keys, seen, turns)
 
-    async def delete_arrow(self, keys: Any, *, conn: Any) -> int:
+    async def delete_arrow(self, keys: Any, *, conn: Any, max_rows: int | None = None) -> int:
         """:meth:`delete_rows` for keys already in an Arrow table: deleted through the store's Arrow write door, the
-        keys sent as Arrow and merged by one ``DELETE ... USING`` a request.
+        keys sent as Arrow and merged by one ``DELETE ... USING`` a request, at most ``max_rows`` keys a request
+        (:attr:`BULK_MAX_ROWS` when None), as :meth:`delete_rows` names them a statement: the request is one
+        statement under the transaction's statement timeout (:meth:`save_arrow` has the measure).
 
         As :meth:`delete_rows`: on the caller's transaction only, every key leaving L1 now and settled with the rest
         when the transaction ends. The keys become Python only for the enrolment and the eviction. **Falls back to**
@@ -3564,12 +3583,17 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype keys: pyarrow.Table
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
         :ptype conn: Any
+        :param max_rows: the most keys one request names, at least one; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: as :meth:`delete_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store,
-            a collection that caches absences or defers its L3 writes; and when the keys lack a key column
+            a collection that caches absences or defers its L3 writes; when the keys lack a key column; when
+            ``max_rows`` is under one
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_arrow")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{self.table_name}.delete_arrow: max_rows must be at least 1, got {max_rows}")
         store = self._durable_store()
         if store is None:
             raise ValueError(
@@ -3600,12 +3624,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         if arrow_store is None or plan is None:
             # no door for these keys, or messages that carry each row's columns: today's delete
-            return await self.delete_rows(named, conn=conn)
+            return await self.delete_rows(named, conn=conn, max_rows=max_rows)
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
-        await arrow_store.write_arrow(self.table_name, keys, plan, conn=conn)
+        await arrow_store.write_arrow(
+            self.table_name, keys, plan, conn=conn, max_rows=max_rows if max_rows is not None else self.BULK_MAX_ROWS
+        )
         log.debug(
             "Arrow bulk delete written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": len(named)}},
