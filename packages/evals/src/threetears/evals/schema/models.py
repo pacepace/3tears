@@ -1699,7 +1699,7 @@ def declared_name(name: str, *, what: str) -> str:
 
 #: Where a document a claim is checked against came from. ``case``: the case's own evidence, the same for every arm (a
 #: summary's source, the rules in force, a gold passage). ``run``: what this cell's candidate was given or fetched
-#: itself (a retrieved passage, a page its research read), which differs by arm. Closed: truth reads only ``case``
+#: itself (a retrieved passage, a page it fetched and read), which differs by arm. Closed: truth reads only ``case``
 #: evidence and groundedness reads what a criterion names, so a provenance an older build cannot name would be read
 #: as evidence of the wrong kind.
 EvidenceProvenance = Literal["case", "run"]
@@ -1805,8 +1805,8 @@ class ClaimCriterion(EvalDocumentModel, CoreShapeModel):
         default=None,
         description=(
             "Which documents the candidate itself was given, that a claim's support by reads as grounded: `run` for "
-            "research or retrieval, `case` for a summary of its source. A set, kept in one order. None (the default): "
-            "no groundedness reading. Never case evidence the candidate was not shown."
+            "documents it retrieved or fetched, `case` for a summary of its source. A set, kept in one order. None "
+            "(the default): no groundedness reading. Never case evidence the candidate was not shown."
         ),
     )
     web: WebBudget | None = Field(
@@ -6366,6 +6366,7 @@ class GradedClaim(CoreShapeModel):
                 f"claim {self.claim!r}: its excerpt runs {self.start} to {self.end} and holds {len(self.excerpt)} "
                 "characters"
             )
+        # prose-canary: allow — `scope` here is the closed Literal world/session, not an insight's free-text scope
         if self.scope == "session":
             graded = (
                 self.truth_citations,
