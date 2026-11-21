@@ -1014,3 +1014,47 @@ async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: i
         assert sorted(zip(*got.to_pydict().values(), strict=True), key=repr) == sorted(
             zip(*want.to_pydict().values(), strict=True), key=repr
         ), table.name
+
+
+# --- an operator's forget ----------------------------------------------------------------------------
+
+
+async def test_forgotten_tables_load_as_a_cold_start_and_every_other_table_from_the_checkpoint() -> None:
+    """Flips if forget leaves a table in the newest or the previous checkpoint (a start would walk the log from its
+    stale mark again, stuck behind for good), drops a table it was not asked to, or keeps its parts in the store. An
+    operator's act: the method is marked ``@operator_reset``."""
+    copy, checkpoints, store, pointers = await _written_world()
+    # a second checkpoint, so the pointer keeps a previous that holds the table too
+    copy.put(_VOTES, _votes(_state("VA", 50) + _state("IL", 10, votes=2)), "v2", 2)
+    checkpoints.applied(10, {_VOTES: frozenset({"state:IL"})})
+    assert await checkpoints.write(copy.read) is not None
+    assert getattr(CopyCheckpoints.forget, "__operator_reset__", "")
+    kept = await checkpoints.forget([_VOTES])
+    assert kept is not None and _VOTES not in kept.tables and kept.previous is not None
+    assert _VOTES not in kept.previous.tables
+    assert not _part_names(store, _VOTES)
+    loaded, _, staged = await _stage_fresh(store, pointers)
+    assert staged.missing == {_VOTES: COLD_START}
+    assert dict(staged.marks) == {_RACES: "r1"}
+    assert loaded.held(_RACES) == copy.held(_RACES)
+
+
+async def test_forget_refuses_a_table_the_copy_does_not_hold_and_changes_nothing() -> None:
+    _, checkpoints, store, pointers = await _written_world()
+    before = dict(pointers.entries)
+    with pytest.raises(ValueError, match="holds no table"):
+        await checkpoints.forget(["nope"])
+    assert pointers.entries == before and _part_names(store, _VOTES)
+
+
+async def test_forget_while_another_replica_writes_changes_nothing() -> None:
+    _, checkpoints, store, pointers = await _written_world()
+    await pointers.create(key="copy-ckpt-lock", value=b"b")
+    assert await checkpoints.forget([_VOTES]) is None
+    assert _VOTES in (await checkpoints.newest())[0].tables and _part_names(store, _VOTES)
+
+
+async def test_forget_with_no_checkpoint_is_nothing() -> None:
+    copy, store, pointers = _Copy(), _Store(), _Pointers()
+    assert await _checkpoints(copy, store, pointers, "a").forget([_VOTES]) is None
+    assert "copy-ckpt-lock" not in pointers.entries

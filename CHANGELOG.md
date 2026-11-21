@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an operator can forget tables in a copy follower's checkpoint
+
+**Added:** `CopyCheckpoints.forget(names)`, an operator's reset (`@operator_reset`, never automatic). It drops the named
+tables from the newest and the previous checkpoint (the pointer moves by compare-and-set under the writer's lock) and
+retires the parts only they named, so the next start reads each whole as its cold start, its mark taken at the log's
+head, and loads every other table from the checkpoint. WHY: a follower behind on a table (`keys_unknown`: an epoch
+recorded with no notes bracket by a broker before the fix; or `aged_out`) applies nothing and writes no checkpoint,
+and a restart from the checkpoint walks the log from the same stale mark and is behind again. A reset that truncates
+the table does not help: the mark stays at the hole. When every replica of a pod is behind, only a start that sees
+the table for the first time comes back. Returns None when there is no checkpoint, or another replica holds the
+writer's lock or moved the pointer meanwhile; refuses a table the copy does not hold.
+
 ### datasources: a partitioned read of named parts can be bounded by conditions, held to the caller's counts
 
 **Added:** `where` on `read_partitions` and `read_partitions_arrow`: trusted conditions (`threetears.core.keyed.Fragment`,
