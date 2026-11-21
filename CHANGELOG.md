@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the claims family, and the readings of a claim tally (none produced yet)
+
+**Added (#1287):** a seventh engine measure family, `claims`, graded by a judge: a claim criterion's readings, which
+rank where a rubric dimension does, under the rubric rule, and never as code-graded measures (`CODE_GRADED_FAMILIES`
+is unchanged). The engine computes each reading from a result's `ClaimTally` on read, so none is stored. Three rank,
+each on its own and never in a composite: `<criterion>_false_per_unit` (asserted claims the case's evidence or a web
+quote contradicts, per unit; lower is better), `<criterion>_false_unit_share` (units holding at least one; lower is
+better) and, for a criterion declaring `grounded_in`, `<criterion>_grounded_share` (asserted specific claims a document
+the candidate itself was given supports; higher is better; a candidate given no document reads 0). Every other reading
+(`_false`, `_false_hedged`, `_false_attributed`, `_false_share`, `_claims`, `_units`, `_hedged_share`,
+`_unverifiable`, `_true_ungrounded`, `_web_settled_share`, `_evidence_conflicts`, `_web_checked`, `_web_skipped`,
+`_session_claims`, `_lost`) is a diagnostic, and each description states its population and its evidence. Session
+claims count in no world reading; hedged and attributed claims are graded and kept out of the asserted counts; a
+statement the text backs with a source is asserted. Nothing grades a criterion yet, so no result carries these.
+
+**Changed:** a template whose claim criterion's name, or a name `<criterion>_...` its readings take, is a measure the
+host or the engine describes is refused where it is admitted (create, seed, an update writing `claim_criteria`) and
+where it launches, naming the criterion and the measure.
+
+**For hosts:** a host measure family named `claims` is now refused at registration, as every engine family's name is;
+rename it. Rename a measure named like a claim criterion's readings, or the criterion. No stored shape changes.
+
 ### evals: the stored shapes of claim grading (no grading yet)
 
 **Added (provisional, #1287):** the shapes claim grading stores, ahead of the judge phase that fills them. A template

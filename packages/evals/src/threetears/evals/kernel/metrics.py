@@ -133,6 +133,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "CONFUSION_SEPARATOR",
     "CLASSIFIER_TRACK_MEASURES",
     "FRONTIER_RANKING_MEASURE",
+    "CLAIMS_FAMILY",
     "ENGINE_FAMILIES",
     "MATCH_MEASURE",
     "RUBRIC_FAMILY",
@@ -210,6 +211,9 @@ RUBRIC_FAMILY: MetricFamily = "rubric"
 _DUAL_AXIS_FAMILY: MetricFamily = "dual_axis"
 #: A figure built over several results or runs: pass^k, the composite, a comparison's effect size.
 _COMPOSITE_FAMILY: MetricFamily = "composite"
+#: A reading of a claim criterion's tally (#1287): counts and rates of the factual claims a judge listed in a cell's
+#: output and graded against evidence. Judge-graded, since a model lists and grades every claim it counts.
+CLAIMS_FAMILY: MetricFamily = "claims"
 
 #: Who produced a family's numbers. ``code`` is what the analysis generator may rank on and a bar on a
 #: described measure may name; ``judge`` is a model's opinion and never ranks.
@@ -359,7 +363,7 @@ _CLASS_STRICTNESS: dict[TransferabilityClass, int] = {
 
 
 class MeasureFamily(EvalBaseModel):
-    """One family of measures and who produces its numbers — the engine's six, or one a host declares.
+    """One family of measures and who produces its numbers — one of the engine's own, or one a host declares.
 
     A host declares a family when its measures are a kind of number none of the engine's families
     names: a table's play-quality reading, a reviewer's tally. Declaring it on the host's
@@ -393,6 +397,11 @@ ENGINE_FAMILIES: Mapping[MetricFamily, MeasureFamily] = {
             name=_COMPOSITE_FAMILY,
             graded_by="judge",
             description="A figure built over several results — pass^k, the composite, an effect size.",
+        ),
+        MeasureFamily(
+            name=CLAIMS_FAMILY,
+            graded_by="judge",
+            description="A reading of the factual claims a judge listed in an output and graded against evidence.",
         ),
     )
 }
@@ -601,7 +610,7 @@ class MetricDescriptor(EvalBaseModel):
         counts all read.
 
         A judge-graded number never decides a pass on its own: such a measure in an engine family a judge grades
-        (``rubric``, ``dual_axis``, ``composite``), or in no family, is no check. A host family's grading is settled
+        (``rubric``, ``dual_axis``, ``composite``, ``claims``), or in no family, is no check. A host family's grading is settled
         where the host declares it: :class:`~threetears.evals.kernel.host.measures.MeasureRegistry` refuses a
         check-shaped measure in a judge-graded family, so every host-family measure of this shape is code-graded.
         """
@@ -2357,6 +2366,13 @@ if _unnamed := reader_name_defects(_SEED):  # pragma: no cover - import-time inv
 #: decision to record and not an edit to make. The analysis bundle's ``_is_reportable`` carries which
 #: exclusion rests on what: ``rubric``/``dual_axis`` permanently (they are judged), ``composite``
 #: because no producer puts one on a bundle surface.
+#:
+#: **``claims`` is not admitted, and joins as a judge-graded family** (#1287): a model lists every claim it counts and
+#: grades each, so a claim reading is a judged reading. It ranks where a rubric dimension does, under the rubric rule
+#: (counted, caveated while its judge is unchecked), on the judged namespace keyed by reading name, and never here, so
+#: neither this set nor what the generator ranks on code-graded families moves. A family of its own rather than
+#: ``rubric``, because its readings are counts and rates over claims, not a score on a scale: a reader of the family
+#: knows the reading is no rubric dimension and has no ``RubricScale``.
 #:
 #: **``goal_state`` is admitted** on ``classifier``'s argument: a
 #: check's verdict is code compared against what the candidate did, with no judge in it. Its

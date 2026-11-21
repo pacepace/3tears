@@ -53,6 +53,7 @@ from threetears.evals.kernel.dsl import (
     undefined_fire_references,
     world_prose_matches,
 )
+from threetears.evals.kernel.claims.readings import claim_names_a_measure_holds
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost, IgnoresTemplateFields, TemplateCaseFields, TemplateChecks
 from threetears.evals.kernel.host.kinds import freeze
@@ -119,6 +120,25 @@ def validated_kind_spec(template: EvalTemplate, *, profile: HostProfile) -> Base
         raise ValidationFailedError(
             f"template {template.name!r}: {refused.message}", refused.details, remedy=refused.remedy
         ) from refused
+
+
+def refuse_claim_names_a_measure_holds(template: EvalTemplate, *, profile: HostProfile) -> None:
+    """Refuse a template whose claim criterion takes a name a described measure holds (#1287).
+
+    A criterion owns its name and every name ``<criterion>_...``, since its readings are judged readings keyed by
+    name; the template's own validation holds that against its rubric and its other criteria, and this against the
+    host's measures and the engine's core, which only the host knows. Asked where a template is admitted, where an
+    update writes its criteria, and again where it launches, since a host's measures may grow after a template is
+    written.
+
+    :param template: The template.
+    :param profile: The host, whose measure registry is checked.
+    :raises ValidationFailedError: A criterion's name, or a name its readings take, is a described measure's.
+    """
+    if (clash := claim_names_a_measure_holds(template, profile.measures)) is not None:
+        raise ValidationFailedError(
+            f"template {template.name!r}: {clash}", remedy="rename the claim criterion, or the host's measure"
+        )
 
 
 def refuse_ignored_template_fields(template: EvalTemplate, launchable: IgnoresTemplateFields) -> None:
@@ -274,6 +294,7 @@ def admit_template(
     _refuse_fields_its_kind_ignores(template, checks)
     checks.refuse_undeliverable_template(template)
     refuse_undeclared_judges(template, active_judge_config)
+    refuse_claim_names_a_measure_holds(template, profile=profile)
     return template
 
 
@@ -688,6 +709,10 @@ def update_template(
     # declares its dimensions is the one held to the rule.
     if "rubric" in fields:
         refuse_undeclared_judges(template, active_judge_config_in(host.storage, scope_id))
+    # Scoped the same way, to an update that WRITES the criteria: a stored template whose criterion a measure the host
+    # added since now shadows stays editable in its other fields, and its launch refuses it.
+    if "claim_criteria" in fields:
+        refuse_claim_names_a_measure_holds(template, profile=host.profile)
     # Unscoped, unlike its neighbours above, and the asymmetry is the point: those check the
     # names an update WRITES so a stored template stays editable around a name the catalog has
     # since dropped, whereas this one is checked against the MERGED template because the
@@ -1107,6 +1132,7 @@ __all__ = [
     "list_judge_configs",
     "list_rubric_dims",
     "list_templates",
+    "refuse_claim_names_a_measure_holds",
     "refuse_undeclared_judges",
     "refuse_unsupplied_world",
     "update_judge_config",

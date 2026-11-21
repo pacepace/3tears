@@ -1,6 +1,6 @@
 """A measure family is open: a host declares its own, and says whether code or a judge produced the number.
 
-The engine's six families are named constants (:data:`~threetears.evals.kernel.ENGINE_FAMILIES`). A
+The engine's seven families are named constants (:data:`~threetears.evals.kernel.ENGINE_FAMILIES`). A
 host whose measure is a kind of number none of them names declares a
 :class:`~threetears.evals.kernel.MeasureFamily` on its measure registry, and its ``graded_by`` decides
 what the engine does with it: a ``code`` family ranks and may be held to a bar, exactly as ``mechanical``
@@ -84,7 +84,16 @@ def test_a_code_graded_host_family_ranks_like_mechanical() -> None:
 
 
 def test_the_engines_families_are_named_constants_and_three_are_code_graded() -> None:
-    assert set(ENGINE_FAMILIES) == {"mechanical", "classifier", "goal_state", "rubric", "dual_axis", "composite"}
+    # `claims` joined as a judge-graded family (#1287), recorded at CODE_GRADED_FAMILIES: the code-graded set holds.
+    assert set(ENGINE_FAMILIES) == {
+        "mechanical",
+        "classifier",
+        "goal_state",
+        "rubric",
+        "dual_axis",
+        "composite",
+        "claims",
+    }
     assert CODE_GRADED_FAMILIES == {"mechanical", "classifier", "goal_state"}
 
 

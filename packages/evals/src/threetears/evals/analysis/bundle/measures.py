@@ -147,8 +147,9 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
       measures never reached a bundle and the proxy cost nothing; folding it in made
       every classifier campaign assemble a bundle carrying the parse-failure rates and
       **not accuracy, precision or recall** — the figures the campaign exists to produce.
-      The remaining exclusions: ``rubric`` and ``dual_axis`` are the judge-mediated ones
-      that rule actually names, and they stay out permanently. ``composite`` stays out because
+      The remaining exclusions: ``rubric``, ``dual_axis`` and ``claims`` are the judge-mediated ones
+      that rule actually names, and they stay out permanently (a claim reading ranks on the judged
+      namespace, as a rubric dimension does, never here). ``composite`` stays out because
       **no producer puts one on a bundle surface**, so admitting it would be widening on a
       case nothing exercises — which is how the ``mechanical``-only proxy came to be written.
 

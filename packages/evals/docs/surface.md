@@ -545,7 +545,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `run.SeedCorpus`: A host's authored definitions for one scope, already constructed through their production models.
 - `run.SeedOutcome`: What one seeding pass did, per doc type.
 - `run.SeedTemplateCase`: One of a template's own cases a seed corpus writes with it: a stimulus the host authored, under a name.
-- `run.TemplateField`: The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
+- `run.TemplateField`: The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it), the rubric a judge scores and the claim criteria a judge grades, which read evidence only a kind renders.
 - `ops.CaseRenamed`: A renamed case: which, and its name before and after.
 - `ops.CaseSetLine`: One version of a named case set.
 - `ops.CaseSetMint`: What minting a case set's next version names: the set, its template and its cases in order.
@@ -598,7 +598,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 
 - `schema.IntervalScale`: A real number with real spacing — `0.4`, `15`, `2000ms`.
 - `schema.LatencyMetrics`: Per-result latency decomposition: harvested OTel spans, plus what they miss.
-- `kernel.MeasureFamily`: One family of measures and who produces its numbers — the engine's six, or one a host declares.
+- `kernel.MeasureFamily`: One family of measures and who produces its numbers — one of the engine's own, or one a host declares.
 - `kernel.MetricDescriptor`: What a single measure is, independent of any particular value of it.
 
 ### Actions and jobs (4)

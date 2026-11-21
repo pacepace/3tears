@@ -285,7 +285,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`Floor`** · *host contract* · model · A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
 - **`JobLeases`** · class · The leases one process holds on its jobs' records, and the task that renews them.
 - **`JobStore`** · *host contract* · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
-- **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.
+- **`MeasureFamily`** · model · One family of measures and who produces its numbers — one of the engine's own, or one a host declares.
 - **`MetricDescriptor`** · *host contract* · model · What a single measure is, independent of any particular value of it.
 - **`NamedEntity`** · model · One entity an output named: what it was called, and any fields that came with it (a host tool's pick).
 - **`NotFoundError`** · *host contract* · exception · Resource not found (status 404).
