@@ -2254,6 +2254,12 @@ class _ClaimsClient:
     async def aclose(self) -> None:
         """Release nothing: the judge's client is the judge service's, which releases it with the run."""
 
+    async def __aenter__(self) -> _ClaimsClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> CompletionResult:
