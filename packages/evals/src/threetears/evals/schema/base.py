@@ -56,7 +56,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Annotated, Any, ClassVar, Self, get_args
@@ -492,6 +492,38 @@ class CoreShapeModel(BaseModel):
         if shape._newer_minor_fields is not None and shape._newer_minor_fields.fields:
             return True
         return any(self._holds_kept_fields(getattr(shape, name)) for name in _fields_holding_shapes(type(shape)))
+
+    def kept_field_paths(self) -> tuple[str, ...]:
+        """Where this shape holds, at any depth, a field a newer minor wrote that this build keeps without knowing it.
+
+        What a launch reads before it runs a definition a newer build stored: such a field is an instruction this
+        build would not carry out (a newer build's claim criterion, say), so the run would measure something else
+        under a digest the newer build does not share.
+
+        :return: Each kept field's path, dotted, an item of a list or tuple by its index and a mapping's value by its
+            key (``claim_criteria``, ``rubric[0].calibrated_by``), sorted; empty when it holds none.
+        """
+        return tuple(sorted(self._kept_paths(self, "")))
+
+    def _kept_paths(self, value: Any, at: str) -> Iterator[str]:
+        """The paths below ``at`` where ``value`` holds a field a newer minor's read kept (:meth:`kept_field_paths`)."""
+        if isinstance(value, CoreShapeModel):
+            yield from self._kept_paths_of_shape(value, at)
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                yield from self._kept_paths(item, f"{at}[{key!r}]")
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                yield from self._kept_paths(item, f"{at}[{index}]")
+
+    def _kept_paths_of_shape(self, shape: CoreShapeModel, at: str) -> Iterator[str]:
+        """:meth:`_kept_paths` for one shape: its own kept fields, then those below it."""
+        prefix = f"{at}." if at else ""
+        kept = shape._newer_minor_fields
+        if kept is not None:
+            yield from (f"{prefix}{key}" for key in kept.fields)
+        for name in _fields_holding_shapes(type(shape)):
+            yield from self._kept_paths(getattr(shape, name), f"{prefix}{name}")
 
 
 def _built_at_this_minor(space: VersionSpace) -> AfterValidator:

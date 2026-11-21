@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the stored shapes of claim grading (no grading yet)
+
+**Added (provisional, #1287):** the shapes claim grading stores, ahead of the judge phase that fills them. A template
+may declare `claim_criteria`, each a `ClaimCriterion` (`name`, `guidance`, `grounded_in`, `web` as a `WebBudget`,
+`pages` as a `PageBudget`, `repairs` as a `RepairBudget`, and `judge`, `builtin` only), and `claim_unit_names`, the
+noun a page prints for one unit of each criterion (`stop`, `answer`, `entry`), which is presentation. A criterion owns
+its name and every name `<name>_...` for its readings, so a rubric dimension or another criterion taking one is
+refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmentation`, its `Segment`s with units
+numbered 0..n-1, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
+`claim_grades` (criterion -> `ClaimGrade`, holding each `GradedClaim` with its `scope`, `world` or `session`, its
+verdict, citations and web check). Claim evidence sits beside `judge_evidence`, never in it, so no rubric label key or
+judged-output fingerprint moves, and a cell of an unjudged kind may carry it. A result may carry `claim_tallies`
+(criterion -> `ClaimTally`, with `units_with_false` and `session_claims`) and `claim_failures` (criterion -> a
+`ClaimLoss`, the open vocabulary `CLAIM_LOSSES`); a criterion is tallied or lost, never both, and a loss is never a
+judge error. Each field is left out of the document while unset: a template, trace or result carrying none is
+stored, digested and fingerprinted exactly as before. Nothing grades a criterion yet.
+
+**Changed:** a launch refuses a template that a newer build stored with a field this build does not know, naming each
+field (`EvalTemplate.kept_field_paths`), where it ran the template as if the field were not there. `claim_criteria` is
+a template field a kind may declare it ignores; the judge kind does.
+
+**For hosts (durable 17.9 and core 15.24, additive):** the stored caps are 3 MiB for a trace's claims payload
+(`CLAIM_TRACE_BYTES`, UTF-8 JSON, documents and web windows included) and 1 MiB for its documents
+(`CLAIM_DOCUMENT_BYTES`), so a host's store must hold a trace row of 3 MiB plus its turns and spans. Checked by reading
+this build's documents through the previous build's model: a 17.8 build reads a stored template carrying either
+template field, keeps it and writes it back unchanged, digests the template as if it declared no criterion, and
+launches it grading no claims (it has no refusal of a kept field); it refuses a corpus file carrying either field at
+boot seed (`extra_forbidden`). A 15.23 build reads a trace or result carrying the new fields, keeps them and writes
+them back. So upgrade every launching process before authoring or seeding a template with a criterion, and before a
+rollback archive or strip the criteria, or the rolled-back launcher runs those templates ungraded. Traces and results
+roll out and back in any order.
+
 ### evals: a set grade shows how each credit was earned, and why a name was refused (#1293)
 
 **Added:** `EntityMatcher.match` may answer an `EntityMatch` (the key entity's name and the matcher's reason, such as a

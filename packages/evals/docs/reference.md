@@ -186,7 +186,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 23`
+  <br>`= 24`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -199,7 +199,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 8`
+  <br>`= 9`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 17`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -537,8 +537,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`Callable[[LaunchRequest], Awaitable[EvalRun]]`
 - **`SubjectResolver`** · *host contract* · type alias · How a kind answers whether its host holds the subject a launch of it names, before anything is priced: `(subject_id, scope_id) -> None` when it does, `UnknownSubject` when it does not.
   <br>`Callable[[str, str], UnknownSubject | None]`
-- **`TemplateField`** · literal · The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
-  <br>`'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'`
+- **`TemplateField`** · literal · The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it), the rubric a judge scores and the claim criteria a judge grades, which read evidence only a kind renders.
+  <br>`'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'` | `'claim_criteria'`
 
 **Constants**
 
