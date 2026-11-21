@@ -4088,11 +4088,26 @@ def test_a_keyed_helper_s_own_helper_calls_are_judged_at_its_callers(tmp_path: P
     assert {"gather", "read_each_joined"} <= functions, found
 
 
+#: acl's visible_customers module as the real one writes it: the set read once, its fragment the listing's visibility
 _VISIBLE_ROWS_BODY = """
     from threetears.core.keyed import Fragment, keyset_rows
+    from threetears.core.sql_fragments import quote_identifier
 
-    async def visible_rows(conn, table, *, columns, user_id, namespace_type, customer_column, order, where=(), page=500):
-        clauses = [Fragment("TRUE", ())]
+    class VisibleCustomers:
+        def fragment(self, column, *, platform_rows=False):
+            return Fragment(f"{column} = ANY($1::uuid[])", (list(self.customer_ids),))
+
+    async def visible_customers(pool, *, user_id, namespace_type) -> VisibleCustomers:
+        return VisibleCustomers()
+
+    async def visible_rows(
+        conn, table, *, columns, user_id, namespace_type, customer_column, order, user_column=None, where=(), page=500
+    ):
+        visible = await visible_customers(conn, user_id=user_id, namespace_type=namespace_type)
+        clauses: list[Fragment] = [visible.fragment(f"t.{quote_identifier(customer_column)}", platform_rows=True)]
+        if user_column is not None:
+            owner = f"t.{quote_identifier(user_column)}"
+            clauses.append(Fragment(f"({owner} IS NULL OR {owner} = $1)", (user_id,)))
         return await keyset_rows(conn, table, columns=columns, by={}, order=order, page=page, visible=clauses, where=where)
 
     async def grants_whole(conn):
@@ -4139,6 +4154,397 @@ def test_visible_rows_is_judged_at_its_call_sites_by_the_order_each_pages_in(tmp
     assert "visible_rows" not in functions, found
     assert "by_date" not in functions, found
     assert {"by_name", "grants_whole"} <= functions, found
+
+
+#: one bounded page of the groups a reader's ``visible=`` narrows (``{visible}``): every reader below reads through the
+#: purposed index, so what its ``visible=`` holds is all that tells an admitted reader from a flagged one
+_VISIBLE_PAGE = (
+    'await keyset_page(conn, "groups", columns=["group_id"], by={{}}, order=[Sort("group_id", "uuid")], limit=5, '
+    "visible=[{visible}])"
+)
+
+
+def _reader(head: str, *body: str, visible: str = "visible.fragment(COLUMN)") -> str:
+    """one reader function: its ``def`` line, the statements before its page, and its page over ``visible``.
+
+    :param head: the ``async def ...:`` line
+    :ptype head: str
+    :param body: statements before the page, one a line
+    :ptype body: str
+    :param visible: the ``visible=`` element
+    :ptype visible: str
+    :return: the function's source
+    :rtype: str
+    """
+    lines = [head, *(f"    {line}" for line in body), f"    return {_VISIBLE_PAGE.format(visible=visible)}"]
+    return "\n".join(lines) + "\n\n"
+
+
+#: the readers a reviewed ``visible=`` admits, by module: every shape a consumer writes
+_ADMITTED: dict[str, dict[str, str]] = {
+    "app.py": {
+        "by_parameter": _reader("async def by_parameter(conn, visible: VisibleCustomers):"),
+        "by_an_optional_parameter": _reader(
+            "async def by_an_optional_parameter(conn, visible: VisibleCustomers | None):"
+        ),
+        "by_the_builder": _reader(
+            "async def by_the_builder(conn, user_id):",
+            'visible = await visible_customers(conn, user_id=user_id, namespace_type="group")',
+            visible="visible.fragment(COLUMN, platform_rows=True)",
+        ),
+        "by_a_local_helper": _reader(
+            "async def by_a_local_helper(conn, user_id):", "visible = await _visible_set(conn, user_id)"
+        ),
+        "by_the_class": _reader(
+            "async def by_the_class(conn):", "visible = VisibleCustomers(is_all=True, customer_ids=())"
+        ),
+        "by_an_annotated_assignment": _reader(
+            "async def by_an_annotated_assignment(conn, user_id):",
+            'visible: VisibleCustomers = await visible_customers(conn, user_id=user_id, namespace_type="group")',
+        ),
+        "by_the_package_s_attribute": _reader(
+            "async def by_the_package_s_attribute(conn, visible: acl.VisibleCustomers):"
+        ),
+        "by_the_package_s_builder": _reader(
+            "async def by_the_package_s_builder(conn, user_id):",
+            'visible = await acl.visible_customers(conn, user_id=user_id, namespace_type="group")',
+        ),
+        "by_a_keyword_column": _reader(
+            "async def by_a_keyword_column(conn, visible: VisibleCustomers):",
+            visible="visible.fragment(column=COLUMN)",
+        ),
+        "by_the_reviewed_clause_builder": _reader(
+            "async def by_the_reviewed_clause_builder(conn, user_id):",
+            visible="Fragment.of(caller_visible_customer_clause(user_id=user_id, customer_id_column=COLUMN, "
+            'scope_namespace_type="group"))',
+        ),
+    },
+    "typed.py": {
+        "by_a_type_checking_import": _reader("async def by_a_type_checking_import(conn, visible: VisibleCustomers):"),
+    },
+    "threetears/agent/acl/visible_customers.py": {
+        "by_the_package_itself": _reader(
+            "async def by_the_package_itself(conn, user_id):",
+            'visible = await visible_customers(conn, user_id=user_id, namespace_type="group")',
+            visible="visible.fragment('t.\"customer_id\"')",
+        ),
+    },
+}
+
+#: the readers whose ``visible=`` the walk cannot tie to the acl package, by module: each an unknown predicate
+_FLAGGED: dict[str, dict[str, str]] = {
+    "app.py": {
+        "lookalike_constructed": _reader("async def lookalike_constructed(conn):", "visible = Wide()"),
+        "lookalike_parameter": _reader("async def lookalike_parameter(conn, visible: Wide):"),
+        "lookalike_named_like_it": _reader("async def lookalike_named_like_it(conn, visible):"),
+        "lookalike_rebound": _reader(
+            "async def lookalike_rebound(conn, visible: VisibleCustomers):", "visible = Wide()"
+        ),
+        "lookalike_from_a_call": _reader("async def lookalike_from_a_call(conn, make):", "visible = await make(conn)"),
+        # an annotated parameter the function binds again some way no assignment judged says: each only the
+        # every-store-judged guard refuses (the parameter's own annotation is the reviewed class)
+        "lookalike_loop_rebound": (
+            "async def lookalike_loop_rebound(conn, visible: VisibleCustomers, wides):\n"
+            "    for visible in wides:\n"
+            f"        return {_VISIBLE_PAGE.format(visible='visible.fragment(COLUMN)')}\n\n"
+        ),
+        "lookalike_walrus": (
+            "async def lookalike_walrus(conn, visible: VisibleCustomers):\n"
+            "    if (visible := Wide()):\n"
+            f"        return {_VISIBLE_PAGE.format(visible='visible.fragment(COLUMN)')}\n\n"
+        ),
+        "lookalike_unpacked": _reader(
+            "async def lookalike_unpacked(conn, visible: VisibleCustomers):", "visible, _ = Wide(), 1"
+        ),
+        # an annotation that is not the reviewed class exactly
+        "lookalike_union_parameter": _reader(
+            "async def lookalike_union_parameter(conn, visible: VisibleCustomers | Wide):"
+        ),
+        "lookalike_other_module_parameter": _reader(
+            "async def lookalike_other_module_parameter(conn, visible: other.VisibleCustomers):"
+        ),
+        "lookalike_string_other_module": _reader(
+            'async def lookalike_string_other_module(conn, visible: "other.VisibleCustomers"):'
+        ),
+        "lookalike_union_return": _reader(
+            "async def lookalike_union_return(conn, user_id):", "visible = await _wide_set(conn, user_id)"
+        ),
+        "lookalike_other_return": _reader(
+            "async def lookalike_other_return(conn, user_id):", "visible = await _other_set(conn, user_id)"
+        ),
+        # a builder method of the reviewed builder's name on any object
+        "lookalike_builder_method": _reader(
+            "async def lookalike_builder_method(conn, clauses, user_id):",
+            visible="Fragment.of(clauses.three_scope_visibility_clause(user_id=user_id, customer_id_column=COLUMN, "
+            'user_id_column=COLUMN, scope_namespace_type="group"))',
+        ),
+    },
+    "shadowed.py": {
+        "local_class_of_the_same_name": _reader(
+            "async def local_class_of_the_same_name(conn, visible: VisibleCustomers):"
+        ),
+        "local_builder_of_the_same_name": _reader(
+            "async def local_builder_of_the_same_name(conn, user_id):",
+            'visible = await visible_customers(conn, user_id=user_id, namespace_type="group")',
+        ),
+        "local_clause_builder_of_the_same_name": _reader(
+            "async def local_clause_builder_of_the_same_name(conn, user_id):",
+            visible="Fragment.of(caller_visible_customer_clause(user_id=user_id, customer_id_column=COLUMN, "
+            'scope_namespace_type="group"))',
+        ),
+    },
+}
+
+#: the readers spelling a reviewed form's own name: refused as a name of its own (``reserved-name``)
+_RESERVED: dict[str, tuple[str, str]] = {
+    "spells_the_reviewed_receiver": (
+        "__threetears_reviewed_visible_customers__",
+        _reader(
+            "async def spells_the_reviewed_receiver(conn):",
+            visible="__threetears_reviewed_visible_customers__.fragment(COLUMN)",
+        ),
+    ),
+    "spells_the_reviewed_module": (
+        "__threetears_reviewed_acl__",
+        _reader(
+            "async def spells_the_reviewed_module(conn, user_id):",
+            visible="__threetears_reviewed_acl__.caller_visible_customer_clause(user_id=user_id, "
+            'customer_id_column=COLUMN, scope_namespace_type="group")',
+        ),
+    ),
+}
+
+#: each module's head: its imports and what its readers call
+_HEADS: dict[str, str] = {
+    "app.py": """\
+from threetears.core.collections.schema_backed import Index, TableSchema
+from threetears.core.keyed import Fragment, Sort, keyset_page
+from threetears.agent import acl
+from threetears.agent.acl import VisibleCustomers, caller_visible_customer_clause, visible_customers
+import other
+
+COLUMN = 't."customer_id"'
+
+GROUPS = TableSchema(
+    name="groups",
+    primary_key="group_id",
+    columns=[],
+    indexes=(Index("groups_by_customer", "customer_id", "group_id", purpose=PURPOSES),),
+)
+
+LISTED = ("groups",)
+
+
+class Wide:
+    def fragment(self, column, *, platform_rows=False):
+        return Fragment(f"({column} IS NOT NULL OR t.\\"owner_id\\" IS NOT NULL)", ())
+
+
+async def _visible_set(pool, user_id) -> VisibleCustomers:
+    return await visible_customers(pool, user_id=user_id, namespace_type="group")
+
+
+async def _wide_set(pool, user_id) -> VisibleCustomers | Wide:
+    return Wide()
+
+
+async def _other_set(pool, user_id) -> other.VisibleCustomers:
+    return other.VisibleCustomers()
+
+
+async def by_each_listed_table(conn, visible: VisibleCustomers):
+    # a loop over a module tuple: the call is copied per table (unparsed and parsed again), the receiver with it
+    for table in LISTED:
+        await keyset_page(
+            conn, table, columns=["group_id"], by={}, order=[Sort("group_id", "uuid")], limit=5,
+            visible=[visible.fragment(COLUMN)],
+        )
+
+
+""",
+    "typed.py": """\
+from typing import TYPE_CHECKING
+
+from threetears.core.keyed import Sort, keyset_page
+
+if TYPE_CHECKING:
+    from threetears.agent.acl import VisibleCustomers
+
+COLUMN = 't."customer_id"'
+
+
+""",
+    "threetears/agent/acl/visible_customers.py": """\
+from threetears.core.keyed import Fragment, Sort, keyset_page
+
+
+class VisibleCustomers:
+    def fragment(self, column, *, platform_rows=False):
+        return Fragment(f"{column} = ANY($1::uuid[])", (list(self.customer_ids),))
+
+
+async def visible_customers(pool, *, user_id, namespace_type) -> VisibleCustomers:
+    return VisibleCustomers()
+
+
+""",
+    "shadowed.py": """\
+from threetears.core.keyed import Fragment, Sort, keyset_page
+
+COLUMN = 't."customer_id"'
+
+
+class VisibleCustomers:
+    def fragment(self, column, *, platform_rows=False):
+        return Fragment("TRUE", ())
+
+
+async def visible_customers(pool, *, user_id, namespace_type) -> VisibleCustomers:
+    return VisibleCustomers()
+
+
+def caller_visible_customer_clause(*, user_id, customer_id_column, scope_namespace_type):
+    return "TRUE", []
+
+
+""",
+}
+
+
+def _visible_modules() -> dict[str, str]:
+    """every module the visible-fragment test walks: each head, then its readers; the index names every reader.
+
+    :return: module name onto its source
+    :rtype: dict[str, str]
+    """
+    readers: dict[str, list[tuple[str, str]]] = {module: [] for module in _HEADS}
+    for table in (_ADMITTED, _FLAGGED):
+        for module, functions in table.items():
+            readers[module].extend(functions.items())
+    for name, (_, source) in _RESERVED.items():
+        readers["shadowed.py"].append((name, source))
+    readers["app.py"].append(("by_each_listed_table", ""))
+    purposes = tuple(f"src/{module}::{name}" for module, functions in readers.items() for name, _ in functions)
+    return {
+        module: _HEADS[module].replace("PURPOSES", repr(purposes)) + "".join(source for _, source in functions)
+        for module, functions in readers.items()
+    }
+
+
+def test_a_visible_clause_is_trusted_only_when_the_walk_ties_it_to_the_acl_package(tmp_path: Path) -> None:
+    """Flips if a keyed read's ``visible=`` trusts a ``.fragment(...)`` or a caller-visibility builder the walk cannot
+    tie to :mod:`threetears.agent.acl` (each flagged as the unknown predicate it is, not merely as some finding), or
+    stops admitting a shape consumers write: an annotated parameter (bare, ``| None``, the package's attribute, a
+    ``TYPE_CHECKING`` import), a local bound to the builder, the class or a module function annotated to return it,
+    an annotated assignment, a keyword column, the package's own module, a loop's copy of the call. A source spelling
+    a reviewed form's own name is refused as a name of its own."""
+    found = _symbols(_config(tmp_path, _visible_modules()))
+    admitted = {name for functions in _ADMITTED.values() for name in functions} | {"by_each_listed_table"}
+    flagged = {name for functions in _FLAGGED.values() for name in functions}
+    assert not {function for function, _ in found} & admitted, found
+    unknown = "unknown-predicate keyset_page(visible)"
+    assert {(name, unknown) for name in flagged} <= found, sorted(
+        (name, symbol) for name, symbol in found if name in flagged
+    )
+    for name, (reserved, _) in _RESERVED.items():
+        assert (name, f"reserved-name {reserved}") in found, found
+
+
+#: a caller-visibility builder's clause interpolated into SQL, as the hub's admin metrics compose it
+#: (``aibots/hub/admin/metrics.py::visibility_clause``), and its look-alikes
+_SQL_CLAUSES = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.agent import acl
+    from threetears.agent.acl import caller_visible_customer_clause, three_scope_visibility_clause
+
+    USAGE = TableSchema(name="usage", primary_key="id", columns=[])
+
+    def visibility_clause(caller_user_id, customer_id_column, params):
+        clause, clause_params = caller_visible_customer_clause(
+            user_id=caller_user_id,
+            customer_id_column=customer_id_column,
+            scope_namespace_type="customer",
+            param_offset=len(params) + 1,
+        )
+        params.extend(clause_params)
+        return clause
+
+    async def the_hub_s_shape(conn, user_id, usage_id):
+        clause, params = caller_visible_customer_clause(
+            user_id=user_id, customer_id_column="u.customer_id", scope_namespace_type="customer", param_offset=2
+        )
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE {clause}", *params)
+
+    async def through_the_package(conn, user_id, usage_id):
+        clause, params = acl.caller_visible_customer_clause(
+            user_id=user_id, customer_id_column="u.customer_id", scope_namespace_type="customer", param_offset=2
+        )
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE {clause}", *params)
+
+    async def interpolated_directly(conn, user_id, usage_id):
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE {three_scope_visibility_clause(user_id=user_id)}",
+            usage_id,
+        )
+
+    async def lookalike_method(conn, clauses, user_id, usage_id):
+        clause, params = clauses.caller_visible_customer_clause(
+            user_id=user_id, customer_id_column="u.customer_id", scope_namespace_type="customer", param_offset=2
+        )
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE {clause}", *params)
+
+    async def lookalike_method_interpolated_directly(conn, clauses, user_id, usage_id):
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE {clauses.three_scope_visibility_clause(user_id=user_id)}",
+            usage_id,
+        )
+"""
+
+_SQL_CLAUSES_SHADOWED = """
+    def caller_visible_customer_clause(*, user_id, customer_id_column, scope_namespace_type, param_offset=1):
+        return "TRUE", []
+
+    def three_scope_visibility_clause(*, user_id):
+        # a text the walk cannot read: judged as what it is, never as the reviewed builder's
+        return build_clause(user_id)
+
+    async def local_builder_of_the_same_name(conn, user_id, usage_id):
+        clause, params = caller_visible_customer_clause(
+            user_id=user_id, customer_id_column="u.customer_id", scope_namespace_type="customer", param_offset=2
+        )
+        return await conn.fetch(f"SELECT u.id FROM usage u WHERE {clause}", *params)
+
+    async def local_builder_interpolated_directly(conn, user_id, usage_id):
+        return await conn.fetch(
+            f"SELECT u.id FROM usage u WHERE {three_scope_visibility_clause(user_id=user_id)}",
+            usage_id,
+        )
+"""
+
+
+def test_a_builder_s_clause_in_sql_is_trusted_only_when_the_walk_ties_it_to_the_acl_package(tmp_path: Path) -> None:
+    """Flips if a caller-visibility builder's clause interpolated into SQL (``WHERE {clause}``, bound from the builder
+    or written in place) reads as the reviewed keyed fragment though the walk cannot tie the builder to
+    :mod:`threetears.agent.acl` (a consumer's own function or a method of the same name: each the interpolation the
+    walk cannot see, ``unknown-predicate``), or stops reading as it when the walk can: the package imported as a
+    module, the builder written into the statement, a clause bound from the imported builder. The reviewed fragment
+    is a per-row filter on no key, so a statement filtered by it alone is the ``non-key-where`` it is; what trust
+    changes is that its predicate is the one reviewed. The hub's own shape (``visibility_clause``, which binds the
+    clause and hands it on) holds no statement and stays clean."""
+    found = _symbols(_config(tmp_path, {"app.py": _SQL_CLAUSES, "shadowed.py": _SQL_CLAUSES_SHADOWED}))
+    assert "visibility_clause" not in {function for function, _ in found}, found
+    reviewed, unknown = "non-key-where usage", "unknown-predicate usage"
+    tied = ("the_hub_s_shape", "through_the_package", "interpolated_directly")
+    untied = (
+        "lookalike_method",
+        "lookalike_method_interpolated_directly",
+        "local_builder_of_the_same_name",
+        "local_builder_interpolated_directly",
+    )
+    assert {(name, reviewed) for name in tied} <= found, found
+    assert not {(name, unknown) for name in tied} & found, found
+    assert {(name, unknown) for name in untied} <= found, found
+    assert not {(name, reviewed) for name in untied} & found, found
 
 
 _STAGE_TEMPLATE = """

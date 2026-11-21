@@ -6,6 +6,52 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### enforcement: no-whole-reads trusts an acl visibility clause only when it is tied to `threetears.agent.acl`
+
+**Fixed (closes a gap in the gate):** in a keyed read's `visible=`, the no-whole-reads walk trusted any `.fragment(...)`
+call and any call whose name was one of the caller-visibility builders, by name alone. A consumer's own class with a
+`fragment()` method, or its own function or method named `caller_visible_customer_clause`, passed unreviewed,
+whatever predicate it built. The hub had one such class, an OR across two columns over every customer's groups,
+which no longer exists.
+
+`visible=` now trusts two clauses, and only when the walk ties the call statically to `threetears.agent.acl`:
+
+- `<name>.fragment(...)` on `VisibleCustomers`. The name is a parameter annotated with the class exactly
+  (`VisibleCustomers`, `VisibleCustomers | None`, `acl.VisibleCustomers`, or a string spelling one). Or every
+  assignment of it is a call of `visible_customers(...)`, of the class, or of a module function annotated to return the
+  class exactly. The function binds the name no other way. A keyword column (`fragment(column=COLUMN)`) resolves as a
+  positional one does.
+- `caller_visible_customer_clause`, `customer_scope_visibility_clause` or `three_scope_visibility_clause`, alone or in
+  `Fragment.of(...)`, with its callee imported from the package.
+
+A name counts as the package's when it is imported from the package at module top level or under
+`if TYPE_CHECKING:`, reached through the package imported as a module, or defined by a module of the package itself.
+Anything else in `visible=` is an `unknown-predicate`. That covers:
+
+- a look-alike class, an unannotated parameter;
+- a union with another class or another module's `VisibleCustomers`;
+- a name rebound by assignment, loop, unpacking or walrus;
+- a local class or builder of the same name, or a builder method on any object.
+
+The hub's `test_no_whole_reads` passes under the new walker.
+
+Known-rejected (flagged, legitimate): a declaration assigned later, a method returning one, a helper handed a built
+clause.
+
+Accepted limits (coordinator ruling 2026-11-21): rebinding an imported name after the import, and shadowing a name
+in a comprehension, `lambda`, `except ... as`, `match` or `nonlocal` / `global`, are not caught.
+
+**Added:** `threetears.enforcement.no_whole_reads.helpers.REVIEWED_VISIBLE_RECEIVER` and `REVIEWED_ACL_MODULE`, the
+names the walk writes a tied clause onto. A source spelling either is itself a finding (`reserved-name`).
+
+The same tie now governs a builder's clause interpolated into raw SQL, bound (`clause, params =
+caller_visible_customer_clause(...)`, then `WHERE {clause}`) or written in place. Tied to the package, it reads as the
+reviewed keyed fragment. A consumer's own function or a method of the same name reads as the interpolation it is, an
+`unknown-predicate`. It was trusted by the builder's name.
+
+**Removed:** `threetears.enforcement.no_whole_reads.helpers.is_keyed_fragment`, the name test that path used. It has no
+caller left, in 3tears or its consumers.
+
 ### agent-acl: a grant opens a customer's lists only through an action of the bound type's own
 
 **Fixed (security, narrows access):** `visible_customers` and `caller_visible_customer_clause` (and so

@@ -34,6 +34,36 @@ function counts only when every one of them does. Migrations (a ``migrations`` d
 are not walked; DuckDB relations a module registers from in-memory rows are the rows being written, not a table.
 
 The walk can miss SQL assembled at run time from pieces it cannot see; it never invents a statement.
+
+**A keyed read's ``visible=`` trusts two reviewed acl clauses, and only when the walk ties them to the acl
+package** (:mod:`threetears.agent.acl`); anything else there is an ``unknown-predicate``:
+
+- ``<receiver>.fragment(...)`` (the caller's customers bound as a set), its receiver a name the function holding it
+  binds only as ``VisibleCustomers``: a parameter annotated with the class exactly (``VisibleCustomers``,
+  ``VisibleCustomers | None``, ``acl.VisibleCustomers``, or a string spelling one), and every assignment of it a call
+  of ``visible_customers(...)``, of the class, or of a module function annotated to return the class exactly; no
+  other binding of the name (a loop, an unpacking, a walrus) in that function;
+- a caller-visibility builder (``caller_visible_customer_clause``, ``customer_scope_visibility_clause``,
+  ``three_scope_visibility_clause``), alone or in ``Fragment.of(...)``, its callee the package's own.
+
+The same tie governs a builder's clause interpolated into SQL (``clause, params = caller_visible_customer_clause(...)``
+then ``WHERE {clause}``, or the call written into the statement): tied, it reads as the reviewed keyed fragment; a
+builder of the same name the walk cannot tie (a consumer's own function, a method on any object) reads as the
+interpolation it is.
+
+A name is the package's when the module imports it from the package (at its top level or under ``if
+TYPE_CHECKING:``), reaches it through the package imported as a module (``from threetears.agent import acl``), or is a
+module of the package defining it itself.
+
+Known-rejected shapes, legitimate but beyond what the walk ties (each an ``unknown-predicate``, never a silent pass):
+a ``visible: VisibleCustomers`` declared without a value and assigned later; a method (``self.visible_set(...)``)
+returning one; a helper handed a clause already built; a fragment on an attribute (``self.visible.fragment``).
+
+Limits, accepted (coordinator, 2026-11-21): the walk guards honest mistakes, not adversarial code. An import is read
+by the name the package exports (``from threetears.agent.acl import X as VisibleCustomers`` is ``X``), but a module
+rebinding an imported name afterwards (``VisibleCustomers = Wide``, its own ``def visible_customers``) still reads as
+the reviewed one, and so does a name shadowed by a comprehension or ``lambda`` target, ``except ... as``, a ``match``
+capture, or ``nonlocal`` / ``global`` rebinding from another function.
 """
 
 from __future__ import annotations
@@ -72,6 +102,8 @@ from threetears.enforcement.no_whole_reads.helpers import (
     COPY_CALLS,
     JUDGED_BY_STATEMENTS,
     KEYED_FRAGMENT_BUILDERS,
+    REVIEWED_ACL_MODULE,
+    REVIEWED_VISIBLE_RECEIVER,
     BUILDER_CALLS,
     KEYED_HELPER_CALLS,
     STEP_CALLS,
@@ -82,7 +114,6 @@ from threetears.enforcement.no_whole_reads.helpers import (
     PagerOrder,
     UNSEEN,
     helper_statements,
-    is_keyed_fragment,
     narrows,
     pager_order,
     templated,
@@ -149,7 +180,9 @@ DEFAULT_PAGER_CALLS: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: what a reviewed visibility clause (``caller_visible_customer_clause(...)``) reads as where it is placed: a bound
+#: what a reviewed visibility clause (``caller_visible_customer_clause(...)``, the builder tied to the acl package by
+#: :meth:`_ModuleWalk._reviewed_builder`; one the walk cannot tie is the interpolation it is) reads as where it is
+#: placed: a bound
 #: predicate on no key, a per-row filter
 _KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
 
@@ -245,6 +278,24 @@ _KEYED_HELPER_MODULES: Final = (
     # (coordinator ruling 2026-11-14)
     "threetears/core/fingerprint.py",
 )
+
+#: the package the reviewed caller's-customers set comes from: a name is the reviewed class or builder only when the
+#: module imports it from here, at its top level or under ``if TYPE_CHECKING:`` (or is a module of the package,
+#: :data:`_ACL_PATH`)
+_VISIBLE_PACKAGE: Final = "threetears.agent.acl"
+
+#: the package holding the reviewed builders, by its path under a source root: a name one of its own modules defines
+#: is the reviewed one
+_ACL_PATH: Final = "threetears/agent/acl/"
+
+#: the reviewed caller's-customers set, whose ``fragment`` binds the customers as a set (a keyed predicate)
+_VISIBLE_CLASS: Final = "VisibleCustomers"
+
+#: the reviewed function answering a :data:`_VISIBLE_CLASS`
+_VISIBLE_BUILDER: Final = "visible_customers"
+
+#: the method of :data:`_VISIBLE_CLASS` a ``visible=`` holds
+_VISIBLE_FRAGMENT_METHOD: Final = "fragment"
 
 #: what an expression reads as when it names a relation no statement is judged by where it is written (a declared
 #: transient producer's return, :data:`TRANSIENT_PRODUCED`; a keyed helper's relation parameter,
@@ -1238,8 +1289,6 @@ def _placeholder(value: ast.expr, constants: dict[str, str], produced: Produced 
     known = _constant_text(value, constants)
     if known is not None:
         return known
-    if isinstance(value, ast.Call) and is_keyed_fragment(value):
-        return _KEYED_FRAGMENT_TEXT
     if isinstance(value, ast.Call) and value.args:
         # ``{quote(TABLE)}``, ``{snapshot.relation(GEOS)}``: a call on a constant reads as the constant; a local copy's
         # relation (``.relation(NAME)``, ``.relation_reading(NAME, ...)``) as ``copy.<name>``, its own key namespace
@@ -2254,6 +2303,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 self.imports.update(
                     {alias.asname or alias.name: f"{statement.module}.{alias.name}" for alias in statement.names}
                 )
+        #: the names the module imports from the acl package (onto the name the package exports) and the names it
+        #: binds the package to as a module (:func:`_acl_bindings`): what ties a ``visible=`` clause to its review
+        self._acl_names, self._acl_modules = _acl_bindings(tree)
         #: relations the module registers from in-memory rows (DuckDB ``register("_bulk_rows", arrow)``): the rows
         #: being written, never a data table
         self._registered = {
@@ -2397,7 +2449,15 @@ class _ModuleWalk(ast.NodeVisitor):
                 and isinstance(node.value, ast.Call)
                 and (_final(node.value) in _FILTER_BUILDERS | KEYED_FRAGMENT_BUILDERS)
             ):
-                built = _KEYED_FRAGMENT_TEXT if is_keyed_fragment(node.value) else _filter_text(node.value)
+                # a caller-visibility builder's clause is the reviewed keyed fragment only when the walk ties the
+                # builder to the acl package; one of the same name it cannot tie binds no text, an unseen interpolation
+                built = (
+                    _KEYED_FRAGMENT_TEXT
+                    if self._reviewed_builder(node.value) is not None
+                    else None
+                    if _final(node.value) in KEYED_FRAGMENT_BUILDERS
+                    else _filter_text(node.value)
+                )
                 name = node.targets[0].elts[0].id
                 if built is not None and stores.get(name, 0) == 1:
                     env[name] = built
@@ -2525,6 +2585,20 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: str
         """
         return ast.unparse(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        """refuse a source that spells a reviewed form's name (:data:`REVIEWED_VISIBLE_RECEIVER`,
+        :data:`REVIEWED_ACL_MODULE`): only the walk writes them, onto a ``.fragment(...)`` or a builder call it has
+        tied to the acl package, and a source writing one would have any object's clause trusted.
+
+        :param node: the name
+        :ptype node: ast.Name
+        :return: nothing
+        :rtype: None
+        """
+        if node.id in {REVIEWED_VISIBLE_RECEIVER, REVIEWED_ACL_MODULE}:
+            self._hit(node, f"reserved-name {node.id}", self._spelled(node))
+        self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """walk a class body.
@@ -3434,6 +3508,35 @@ class _ModuleWalk(ast.NodeVisitor):
             text = _constant_text(value, self._envs[-1])
             if text is not None and not isinstance(value, ast.Constant):
                 return ast.Constant(text)
+            # the caller's customers bound as a set (``visible.fragment('t."customer_id"')``), its receiver tied to
+            # the reviewed VisibleCustomers: written onto the reviewed receiver, the one fragment a ``visible=`` trusts
+            # by name; a ``.fragment(...)`` on anything else stays as written, a predicate the walk cannot see
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr == _VISIBLE_FRAGMENT_METHOD
+                and self._reviewed_visible(value.func.value)
+            ):
+                receiver = ast.Name(REVIEWED_VISIBLE_RECEIVER, ast.Load())
+                return ast.Call(
+                    func=ast.Attribute(value=receiver, attr=_VISIBLE_FRAGMENT_METHOD, ctx=ast.Load()),
+                    args=[literal(argument) for argument in value.args],
+                    # ``fragment(column=COLUMN)`` resolves as the positional form does
+                    keywords=[ast.keyword(arg=k.arg, value=literal(k.value)) for k in value.keywords],
+                )
+            # a reviewed caller-visibility builder (``caller_visible_customer_clause(...)``, alone or in
+            # ``Fragment.of(...)``), its callee tied to the acl package: written onto the reviewed module, the one
+            # form a ``visible=`` trusts; a consumer's own function or method of the same name stays as written
+            if isinstance(value, ast.Call) and (built := self._reviewed_builder(value)) is not None:
+                return built
+            if (
+                isinstance(value, ast.Call)
+                and _final(value) == "of"
+                and value.args
+                and isinstance(value.args[0], ast.Call)
+                and (built := self._reviewed_builder(value.args[0])) is not None
+            ):
+                return ast.Call(func=value.func, args=[built, *value.args[1:]], keywords=value.keywords)
             # a collection's own schema name (``self.schema.name``): the table its class declares
             if (schema_name := self._schema_name_text(value)) is not None:
                 return ast.Constant(schema_name)
@@ -5720,6 +5823,167 @@ class _ModuleWalk(ast.NodeVisitor):
             )
         return known
 
+    def _acl_name(self, node: ast.expr) -> str | None:
+        """the acl export ``node`` names, as :data:`_VISIBLE_PACKAGE` exports it, or None when it names anything else:
+        a bare name the module imports from the package (at its top level or under ``if TYPE_CHECKING:``, by the
+        name exported, :func:`_acl_bindings`), a name a module of the package defines itself (:data:`_ACL_PATH`), an
+        attribute of the package imported as a module (``acl.VisibleCustomers``, ``threetears.agent.acl.X``), or a
+        string annotation spelling one of those.
+
+        :param node: a callee or an annotation, as written
+        :ptype node: ast.expr
+        :return: the export's name, or None
+        :rtype: str | None
+        """
+        named: str | None = None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                parsed = ast.parse(node.value, mode="eval").body
+            except SyntaxError:  # NOSILENT: a string annotation that is no expression names no acl export
+                parsed = None
+            named = self._acl_name(parsed) if parsed is not None else None
+        elif isinstance(node, ast.Name):
+            if node.id in self._acl_names:
+                named = self._acl_names[node.id]
+            elif _ACL_PATH in self.path and (node.id in self.module_classes or node.id in self.module_functions):
+                named = node.id
+        elif isinstance(node, ast.Attribute):
+            base = dotted(node.value)
+            if base is not None and (base in self._acl_modules or base == _VISIBLE_PACKAGE):
+                named = node.attr
+        return named
+
+    def _annotates_visible(self, annotation: ast.expr) -> bool:
+        """whether an annotation names the reviewed :data:`_VISIBLE_CLASS` exactly (:meth:`_acl_name`): the class, or
+        a union of it and None alone; ``VisibleCustomers | Wide``, ``other.VisibleCustomers`` or a string naming
+        another module's class never does.
+
+        :param annotation: the annotation
+        :ptype annotation: ast.expr
+        :return: whether it names the reviewed class
+        :rtype: bool
+        """
+        written: ast.expr | None = annotation
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                written = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:  # NOSILENT: a string annotation that is no expression names no class
+                written = None
+        arms: list[ast.expr] = []
+        pending = [] if written is None or isinstance(written, ast.Constant) else [written]
+        while pending:
+            arm = pending.pop()
+            if isinstance(arm, ast.BinOp) and isinstance(arm.op, ast.BitOr):
+                pending += [arm.left, arm.right]
+            else:
+                arms.append(arm)
+        named = [
+            arm
+            for arm in arms
+            if not (isinstance(arm, ast.Constant) and arm.value is None)
+            and not (isinstance(arm, ast.Name) and arm.id == "None")
+        ]
+        return bool(named) and all(self._acl_name(arm) == _VISIBLE_CLASS for arm in named)
+
+    def _visible_value(self, value: ast.expr) -> bool:
+        """whether ``value`` answers the reviewed :data:`_VISIBLE_CLASS`: a call (awaited or not) of the reviewed
+        builder or of the reviewed class (:meth:`_acl_name`), or of a function of this module whose return annotation
+        names the reviewed class exactly (``async def _visible_set(...) -> VisibleCustomers``, the type its own
+        checker holds it to).
+
+        :param value: the value a name is bound to
+        :ptype value: ast.expr
+        :return: whether it answers the reviewed class
+        :rtype: bool
+        """
+        called = value.value if isinstance(value, ast.Await) else value
+        callee = called.func if isinstance(called, ast.Call) else None
+        exported = self._acl_name(callee) if callee is not None else None
+        local = callee.id if isinstance(callee, ast.Name) and exported is None else None
+        annotated = [
+            statement
+            for statement in self._tree.body
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name == local
+        ]
+        return exported in {_VISIBLE_BUILDER, _VISIBLE_CLASS} or (
+            bool(annotated)
+            and all(
+                function.returns is not None and self._annotates_visible(function.returns) for function in annotated
+            )
+        )
+
+    def _reviewed_builder(self, call: ast.Call) -> ast.Call | None:
+        """a reviewed caller-visibility builder's call (:data:`KEYED_FRAGMENT_BUILDERS`, its callee tied to the acl
+        package by :meth:`_acl_name`) written onto :data:`REVIEWED_ACL_MODULE`, the one form a ``visible=`` trusts;
+        None for any other call, a consumer's own function or method of the same name included.
+
+        :param call: the call
+        :ptype call: ast.Call
+        :return: the rewritten call, or None
+        :rtype: ast.Call | None
+        """
+        exported = self._acl_name(call.func)
+        rewritten: ast.Call | None = None
+        if exported in KEYED_FRAGMENT_BUILDERS:
+            assert exported is not None
+            rewritten = ast.Call(
+                func=ast.Attribute(value=ast.Name(REVIEWED_ACL_MODULE, ast.Load()), attr=exported, ctx=ast.Load()),
+                args=call.args,
+                keywords=call.keywords,
+            )
+        return rewritten
+
+    def _reviewed_visible(self, receiver: ast.expr) -> bool:
+        """whether a ``.fragment(...)``'s receiver is the reviewed :data:`_VISIBLE_CLASS`, as far as the walk can tell
+        statically: a name the function that holds it binds only as one -- a parameter annotated with the reviewed
+        class, and every assignment of it a call answering one (:meth:`_visible_value`) -- and binds no other way (a
+        loop, an unpacking, an augmented or walrus assignment). Anything else, whatever its ``fragment`` builds, is not.
+
+        :param receiver: the receiver
+        :ptype receiver: ast.expr
+        :return: whether it is the reviewed class
+        :rtype: bool
+        """
+        if not isinstance(receiver, ast.Name) or not self._function_nodes:
+            return False
+        name = receiver.id
+        holder = next((function for function in reversed(self._function_nodes) if _binds_local(function, name)), None)
+        if holder is None:
+            return False
+        arguments = holder.args
+        parameters = [
+            argument
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                arguments.vararg,
+                arguments.kwarg,
+            )
+            if argument is not None and argument.arg == name
+        ]
+        reviewed = [
+            argument.annotation is not None and self._annotates_visible(argument.annotation) for argument in parameters
+        ]
+        stores = 0
+        for node in _scope_nodes(holder):
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+                stores += 1
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == name for target in node.targets
+            ):
+                reviewed.append(self._visible_value(node.value))
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+                and node.value is not None
+            ):
+                reviewed.append(self._visible_value(node.value))
+        assigned = len(reviewed) - len(parameters)
+        # every store of the name is one of the assignments judged: a loop, an unpacking or a walrus binding it is not
+        return bool(reviewed) and all(reviewed) and stores == assigned
+
     def _assignments_of(self, body: list[ast.stmt]) -> list[_Assigned]:
         """the assignments naming a class in ``body`` (:func:`_assignments`), read once per body.
 
@@ -5877,17 +6141,22 @@ class _ModuleWalk(ast.NodeVisitor):
     def _produced_by(self, node: ast.expr) -> str | None:
         """what an expression reads as when it names a relation judged elsewhere, where the walk is: a declared
         transient producer's return (a change set), or a keyed helper's relation parameter (judged at its call sites);
-        a collection's own schema name (``self.schema.name``) reads as the table its class declares.
+        a collection's own schema name (``self.schema.name``) reads as the table its class declares, and a
+        caller-visibility builder tied to the acl package (:meth:`_reviewed_builder`) as the reviewed keyed fragment.
 
         :param node: the expression
         :ptype node: ast.expr
         :return: :data:`TRANSIENT_PRODUCED`, :data:`HELPER_RELATION`, the declared table name, a bounded copy relation's
-            cut (:meth:`Bounded.relation`), or None for any other expression
+            cut (:meth:`Bounded.relation`), :data:`_KEYED_FRAGMENT_TEXT`, or None for any other expression
         :rtype: str | None
         """
         declared = self._schema_name_text(node)
         if declared is not None:
             return declared
+        if isinstance(node, ast.Call) and self._reviewed_builder(node) is not None:
+            # a caller-visibility builder written into a statement, tied to the acl package: the reviewed keyed
+            # fragment; one of the same name the walk cannot tie reads as the interpolation it is
+            return _KEYED_FRAGMENT_TEXT
         if self._bounded.key and isinstance(node, ast.Call) and _final(node) in _COPY_CALLS:
             # a copy accessor's relation, cut by a checked bounded producer's key (``limited_snapshot``): the cut it
             # reads, one the producer leaves whole as the copy relation it is
@@ -6122,6 +6391,50 @@ def _parent_map(tree: ast.Module) -> dict[ast.AST, ast.AST]:
         for child in ast.iter_child_nodes(node):
             parents[child] = node
     return parents
+
+
+def _type_checking(test: ast.expr) -> bool:
+    """whether an ``if`` test is ``TYPE_CHECKING`` (bare or ``typing.TYPE_CHECKING``): its imports name types only.
+
+    :param test: the test
+    :ptype test: ast.expr
+    :return: whether it is
+    :rtype: bool
+    """
+    return dotted(test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
+
+
+def _acl_bindings(tree: ast.Module) -> tuple[dict[str, str], frozenset[str]]:
+    """the names a module binds to the acl package's exports, and to the package as a module, from its top-level
+    imports and those under a top-level ``if TYPE_CHECKING:``.
+
+    ``from threetears.agent.acl import VisibleCustomers`` (or from a module of it) binds ``VisibleCustomers`` onto the
+    export it names (an ``as`` alias onto the name exported); ``from threetears.agent import acl`` and ``import
+    threetears.agent.acl as acl`` bind ``acl`` as the package.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: ``(names onto the export each names, the names bound to the package)``
+    :rtype: tuple[dict[str, str], frozenset[str]]
+    """
+    statements: list[ast.stmt] = []
+    for statement in tree.body:
+        if isinstance(statement, ast.If) and _type_checking(statement.test):
+            statements.extend(statement.body)
+        else:
+            statements.append(statement)
+    names: dict[str, str] = {}
+    modules: set[str] = set()
+    package, _, leaf = _VISIBLE_PACKAGE.rpartition(".")
+    for statement in statements:
+        if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
+            if statement.module == _VISIBLE_PACKAGE or statement.module.startswith(f"{_VISIBLE_PACKAGE}."):
+                names.update({alias.asname or alias.name: alias.name for alias in statement.names})
+            elif statement.module == package:
+                modules.update(alias.asname or alias.name for alias in statement.names if alias.name == leaf)
+        elif isinstance(statement, ast.Import):
+            modules.update(alias.asname for alias in statement.names if alias.name == _VISIBLE_PACKAGE and alias.asname)
+    return names, frozenset(modules)
 
 
 def _annotated_class(annotation: ast.expr) -> str:

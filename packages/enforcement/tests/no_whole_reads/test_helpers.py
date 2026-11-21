@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 from threetears.enforcement.no_whole_reads.helpers import (
+    REVIEWED_ACL_MODULE,
+    REVIEWED_VISIBLE_RECEIVER,
     UNSEEN,
     helper_statements,
-    is_keyed_fragment,
     narrows,
 )
 from threetears.enforcement.no_whole_reads.schema import COPY_PREFIX, SchemaCatalog, collect_schema
@@ -67,9 +68,18 @@ def schema(tmp_path: Path) -> SchemaCatalog:
     return collect_schema(tmp_path, (tmp_path / "src",))
 
 
+#: what a call written here spells for the names the walk writes a reviewed acl clause onto once it has tied it to
+#: the acl package: ``VisibleCustomers.fragment``'s receiver (:data:`REVIEWED_VISIBLE_RECEIVER`) and a builder's
+#: module (:data:`REVIEWED_ACL_MODULE`), names a source spelling is itself a finding
+_REVIEWED_SPELLED = {"REVIEWED_VISIBLE": REVIEWED_VISIBLE_RECEIVER, "REVIEWED_ACL": REVIEWED_ACL_MODULE}
+
+
 def _call(code: str) -> ast.Call:
     node = ast.parse(code).body[0]
     assert isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    for name in ast.walk(node.value):
+        if isinstance(name, ast.Name) and name.id in _REVIEWED_SPELLED:
+            name.id = _REVIEWED_SPELLED[name.id]
     return node.value
 
 
@@ -102,11 +112,12 @@ def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") 
         'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
         'visible=[exists_keyed("grants", on={"state": "state"}, by={"who": w})])',
         'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
-        "visible=[Fragment.of(caller_visible_customer_clause(user_id=u, customer_id_column=x, "
+        "visible=[Fragment.of(REVIEWED_ACL.caller_visible_customer_clause(user_id=u, customer_id_column=x, "
         "scope_namespace_type=n))])",
-        # the caller's visible customers as a bound set (VisibleCustomers.fragment): the page is theirs, by their index
+        # the caller's visible customers as a bound set (VisibleCustomers.fragment), as the walk writes it once it has
+        # tied the receiver to that class (``REVIEWED_VISIBLE``, see _call): the page is theirs, by their index
         'keyset_page(c, "relations", columns=cols, by={}, order=[Sort("name"), Sort("id", "uuid")], limit=5, '
-        "visible=[customers.fragment('t.\"customer_id\"', platform_rows=True)])",
+        "visible=[REVIEWED_VISIBLE.fragment('t.\"customer_id\"', platform_rows=True)])",
         # a sort by an expression an index holds
         'keyset_page(c, "relations", columns=cols, by={}, '
         'order=[Sort("name_key", expression=\'lower(t."name")\'), Sort("id", "uuid")], limit=5)',
@@ -306,6 +317,19 @@ def test_a_helper_naming_no_key_is_a_whole_read(code: str, kind: str, schema: Sc
             'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo")], limit=5, visible=[customers])',
             "visible",
         ),
+        # a builder as written, its callee not tied to the acl package by the walk: any function of the same name
+        (
+            'keyset_page(c, "results", columns=cols, by={"state": s}, order=[Sort("geo"), Sort("id")], limit=5, '
+            "visible=[Fragment.of(caller_visible_customer_clause(user_id=u, customer_id_column=x, "
+            "scope_namespace_type=n))])",
+            "visible",
+        ),
+        # a ``.fragment(...)`` as written, its receiver not tied to VisibleCustomers by the walk: any object's method
+        (
+            'keyset_page(c, "relations", columns=cols, by={}, order=[Sort("name"), Sort("id", "uuid")], limit=5, '
+            "visible=[customers.fragment('t.\"customer_id\"')])",
+            "visible",
+        ),
         ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s})', "column"),
         # a run-time column bound to a set of values: a predicate no one can see
         ('counts_by(c, "results", column=name, values=AnyOf(g), by={"state": s, **others})', "column"),
@@ -386,13 +410,6 @@ def test_an_ordered_step_is_judged_by_the_step_it_orders() -> None:
 def test_any_other_call_sends_nothing() -> None:
     assert list(helper_statements(_call('fetch("SELECT 1")'))) == []
     assert list(helper_statements(_call('empty_tables(c, ["results"])'))) == []
-
-
-def test_the_acl_visibility_builders_are_keyed_fragments() -> None:
-    assert is_keyed_fragment(
-        _call("caller_visible_customer_clause(user_id=u, customer_id_column=x, scope_namespace_type=n)")
-    )
-    assert not is_keyed_fragment(_call("build_clause(u)"))
 
 
 @pytest.mark.parametrize(
