@@ -1167,6 +1167,13 @@ the host declares it on its measure registry.
 compatibility forms (`É` is `é`, `ﬁ` is `fi`). It keeps accents (`é` is not `e`) and reads no word list, since both
 are rules of a language. A host binds its own normaliser to the grader as an `EntityMatcher`, which sees the whole key.
 
+**A grade shows how each credit was earned.** A matcher answers a key entity's name, an `EntityMatch` carrying the
+rule that found it (a tier label), a `MatchRefusal` carrying why it declined a name (`ambiguous`), or None. The grade
+records each credited spelling with its entity and reason (`SetGrade.credits`), and the refused picks with their reasons
+(`SetGrade.refusals`), apart from the names the key does not hold (`SetGrade.unlisted_names`). A refusal is still an
+unverified pick, so reasons move no count and no measure definition. The default gives every credit the reason
+`folded`, and refuses a name that is one of the key's context entities with the reason `context`.
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the

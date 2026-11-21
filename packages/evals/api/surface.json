@@ -658,8 +658,8 @@
     },
     "threetears.evals.schema.fold_name": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "fold_name(text: str) -> str",
+      "tier": "stable"
     },
     "threetears.evals.schema.GoalCheckControl": {
       "kind": "model",
@@ -1088,8 +1088,8 @@
     },
     "threetears.evals.schema.ReferenceKey": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ReferenceKey(type: Literal['entity_set'] = 'entity_set', core: tuple[ReferenceEntity, ...] = (), acceptable: tuple[ReferenceEntity, ...] = (), context: tuple[ReferenceEntity, ...] = ())",
+      "tier": "stable"
     },
     "threetears.evals.schema.REFUSAL_KINDS": {
       "kind": "constant (tuple)",
@@ -1883,6 +1883,11 @@
     },
     "threetears.evals.kernel.EntityExtractor": {
       "kind": "dataclass",
+      "signature": "EntityExtractor(client: CompletionClient, entity_kind: str, fields: tuple[str, ...] = ())",
+      "tier": "stable"
+    },
+    "threetears.evals.kernel.EntityMatch": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1999,7 +2004,7 @@
     "threetears.evals.kernel.EXTRACTED_SET_FAMILY": {
       "kind": "constant (MeasureFamily)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.kernel.failed_call_output": {
       "kind": "function",
@@ -2326,6 +2331,11 @@
       "signature": "",
       "tier": "stable"
     },
+    "threetears.evals.kernel.MatchRefusal": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.Materiality": {
       "kind": "literal",
       "signature": "",
@@ -2403,8 +2413,8 @@
     },
     "threetears.evals.kernel.NamedEntity": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "NamedEntity(name: str, fields: dict[str, str] = dict())",
+      "tier": "stable"
     },
     "threetears.evals.kernel.NonTerminalRunScan": {
       "kind": "class",
@@ -2543,8 +2553,8 @@
     },
     "threetears.evals.kernel.reference_material": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "reference_material(key: ReferenceKey) -> str",
+      "tier": "stable"
     },
     "threetears.evals.kernel.RefusedInput": {
       "kind": "exception",
@@ -2746,6 +2756,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.SetCredit": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.SetGrade": {
       "kind": "model",
       "signature": "",
@@ -2753,6 +2768,11 @@
     },
     "threetears.evals.kernel.SetGrader": {
       "kind": "class",
+      "signature": "SetGrader(prefix: str, *, reader_label: str, matcher: EntityMatcher | None = None, extractor: EntityExtractor | None = None) -> None",
+      "tier": "stable"
+    },
+    "threetears.evals.kernel.SetRefusal": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
