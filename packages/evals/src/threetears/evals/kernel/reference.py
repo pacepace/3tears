@@ -18,6 +18,11 @@ _NON_EXHAUSTIVE_LINE = (
 )
 
 
+#: The heading the key's context tier renders under, only when it has an entity: they carry facts, never answers, so a
+#: judge reading an answer that names one must not count it found.
+_CONTEXT_HEADING = "Context (facts only; not answers):"
+
+
 def _fact_line(fact: ReferenceFact) -> str:
     return f"    - {fact.claim} (source: {fact.source_url})"
 
@@ -36,7 +41,10 @@ def _part_lines(heading: str, entities: tuple[ReferenceEntity, ...]) -> list[str
 
 
 def reference_material(key: ReferenceKey) -> str:
-    """The key as plain text for a judge: the non-exhaustive line, then the core, then the acceptable others.
+    """The key as plain text for a judge: the non-exhaustive line, the core, the acceptable others, then the context.
+
+    The context part is rendered only when the key has a context entity, under a heading saying its entities are facts,
+    not answers, so a key without context renders exactly the text it rendered before the tier existed.
 
     Each entity is listed with the other names it goes by and its facts, each with where it is stated. The text is
     deterministic: the key keeps its parts in one order, so two keys that are the same key render the same text, and
@@ -50,6 +58,7 @@ def reference_material(key: ReferenceKey) -> str:
             _NON_EXHAUSTIVE_LINE,
             *_part_lines("Required (core):", key.core),
             *_part_lines("Also acceptable:", key.acceptable),
+            *(_part_lines(_CONTEXT_HEADING, key.context) if key.context else ()),
         ]
     )
 

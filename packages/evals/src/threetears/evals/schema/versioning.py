@@ -987,7 +987,14 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   digests its key with its content, so an edited key is a new case under a new id. A v17.6 build reading a case at
 #:   this minor keeps the key opaquely and writes it back; its drift digests that case without the key.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 7
+#: - **v17.8** — a reference key may carry a context tier, entities outside the answer set whose facts a grader may
+#:   check a reply against: ``ReferenceKey.context`` (a set of ``ReferenceEntity``; default empty). Written only when
+#:   it has an entity, so a key without context is stored, digested, identified and rendered for a judge exactly as
+#:   v17.7 stored it. A set grade never counts a context entity; a name or alias folds to one entity across all three
+#:   tiers. A v17.7 build reading a case at this minor keeps the context opaquely and writes it back; its drift digests
+#:   that case's key without the context.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 8
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a reference key carries a context tier, facts that are never answers
+
+**Added:** `ReferenceKey.context`, a third tier of `ReferenceEntity` beside `core` and `acceptable`: entities outside
+the answer set whose facts a grader may check a reply against (a city a stop is in, a person a pick is by). A set grade
+never counts one: `ReferenceKey.entities` stays the answer set (core, then acceptable), which `SetGrader` and
+`FoldingMatcher` read, so a key with context grades every output exactly as the same key without it, and a context
+entity an output names is unverified, as any name outside the answer set is. `ReferenceKey.fact_entities` (new) is
+every entity whose facts the key states, in all three tiers. A name or alias that folds alike for two entities is
+refused across all three tiers, and a key still names at least one core or acceptable entity, so a key of context
+alone is refused. The tier is a set, kept in one order. Left out of the document while empty, so a key without context
+is stored, digested, identified and seeded exactly as before (a keyed case's content hash, seeded id and seed digest
+are pinned from the build before the tier). `reference_material(key)` renders the tier last, under "Context (facts
+only; not answers):", and only when it has an entity, so the text every judge reads for a key without context, and
+its label fingerprint, do not move. A context entity a host matcher answers is refused as before, since it is not in
+the answer set. Engine path only.
+
+**For hosts (durable 17.8, additive):** a 17.7 build reads a stored case whose key carries `context`, keeps the tier
+opaquely and writes it back unchanged (checked by loading a case this build stored through the previous build's stored
+read). Its drift digests that case's key without the tier: after a rollback to a corpus without context, the case
+reads `current` where the corpus case matches it but for the context, and `customized` where its other content differs
+too, since the row's recorded seed digest includes the context (checked by running the previous build's drift over
+such a case; a reset of it then needs `overwrite_customized`). A 17.7 build refuses a corpus file whose key carries
+`context` at boot seed (`extra_forbidden`, naming `reference.context`). So upgrade the package before shipping a corpus
+with context, and roll the corpus back with any rollback of the package.
+
 ### evals: a test case carries a reference key, part of its identity
 
 **Added:** a case may carry `reference`, the entities its answer is graded against: a required `core` and the
