@@ -245,6 +245,7 @@
 "threetears.evals.schema.SecondJudge": "stable",
 "threetears.evals.schema.SecondJudgeScore": "provisional",
 "threetears.evals.schema.SecondJudging": "provisional",
+"threetears.evals.schema.Segment": "provisional",
 "threetears.evals.schema.ServedModelAttestation": "provisional",
 "threetears.evals.schema.SheetAsk": "provisional",
 "threetears.evals.schema.SheetCriterion": "provisional",

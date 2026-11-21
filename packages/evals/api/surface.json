@@ -1221,6 +1221,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.Segment": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ServedModelAttestation": {
       "kind": "model",
       "signature": "",

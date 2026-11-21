@@ -26,6 +26,31 @@ build. Declare the family `graded_by="code"` if code made the number, or drop th
 (`higher_is_better=None`) to keep it as a reading. No known host declares one: discodon's judged families
 (`hedged_claims`, `grounded_claims`, `extracted_set`) hold numeric measures only.
 
+### evals: segments, and the first step of claims grading (#1287)
+
+**Added (provisional, `threetears.evals.schema`):** `Segment(text, unit=None, tags={})`, one piece of a candidate's
+text as claims grading will read it, in the order the host cut it. A unit (an answer, an entry, a section, one item of
+a sequence) carries its index, and a cell's units are numbered 0..n-1, each once. Any other piece (a preamble, an
+aside) carries None: its claims count, but it is no unit. `tags` are the host's own labels, opaque to the engine and
+never shown to a model.
+
+**Engine-internal, nothing calls it yet:** the step that lists the factual claims a cell's segments state. It sees the
+segments' text only (no key, no document, no tag). It lists one proposition per claim, each with the segment's own
+excerpt and its offsets, found by a verbatim check that forgives typography and case, never a changed word. Each claim
+carries the tags `specific`, `hedged`, `attributed`, `scope` and `restates`. `attributed` marks a claim the text
+reports without vouching for it (a rumour, another party's statement); one the text backs with a source is its own.
+`scope` is `world` or `session`: a session claim is about the output or run itself, such as what was just presented or
+what comes next. A mixed line is split into one claim of each scope. `restates` names the first earlier claim of the
+same scope stating the same fact. The prompt's rules are domain-neutral, and a host's own examples go in its
+guidance. A reply that will not parse is asked again in full, and an item that fails a check (an excerpt not in its
+segment, a `restates` that names no earlier claim of its scope) is asked again alone, for two rounds. A failing item
+is never dropped: the step then fails, and that failure is no `ApparatusError`. Every call is billed to the `judge`
+ledger. The verbatim fold's identity digests its tables and the Unicode version. The claims criterion a template
+declares, and the judge-phase grading that calls this step, follow.
+
+**For hosts:** nothing to do yet. When claims grading lands, a kind cuts each cell's output into `Segment` values. No
+stored shape changes in this entry.
+
 ### evals: a set grade shows how each credit was earned, and why a name was refused (#1293)
 
 **Added:** `EntityMatcher.match` may answer an `EntityMatch` (the key entity's name and the matcher's reason, such as a
