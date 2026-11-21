@@ -709,7 +709,15 @@ class ToolServerBootstrap:
         :rtype: CollectionRegistry
         :raises ValueError: if the server's pod id is not a uuid
         :raises TypeError: if ``tenants`` is not a :class:`~threetears.core.tenancy.PodTenants`
+        :raises RuntimeError: if this pod's stack is already wired
         """
+        # once per pod: a second stack would leave the first one's invalidation listener and collections running,
+        # since teardown stops only the registry held here. A host that wires its own stack does not also
+        # register the base class's callback (it overrides install_collection_stack).
+        if self._collection_registry is not None:
+            raise RuntimeError(
+                f"{self._service_name}'s collection stack is already wired; wire_collection_stack runs once per pod"
+            )
         tables = self._collection_tables if self._collection_tables is not None else MetaData()
         registry = await build_tool_pod_collection_stack(
             nats_client=nats_client,

@@ -367,6 +367,17 @@ class TestTheCollectionStackRidesTheLifecycle:
         assert (await registry.generation_source.current(_SCHEMA_TABLE)).endswith(":0")  # type: ignore[union-attr]
         assert log.read_keys == [own_key]
 
+    async def test_a_stack_is_wired_once_per_pod(self) -> None:
+        """a second wiring would leave the first stack's listener running: teardown stops only the one held."""
+        server = _FakeToolServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+        client = _stack_nats_client()
+        await bootstrap.wire_collection_stack(server, client, tenants=PodTenants())  # type: ignore[arg-type]
+
+        with pytest.raises(RuntimeError, match="already wired"):
+            await bootstrap.wire_collection_stack(server, client, tenants=PodTenants(schema="ns_x"))  # type: ignore[arg-type]
+        assert client.subscribe_typed.await_count == 1, "the refused second wiring bound no second listener"
+
     async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
         """the stack carries a payload: the resolver's cache is wired without the host asking.
 

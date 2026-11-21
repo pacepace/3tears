@@ -178,7 +178,8 @@ class PodTenants:
     Which keys a table is read under follows the table's declared tenancy (:meth:`keys_for`), the same
     declaration its writer keys the records by and its host builds the pod's grant from.
 
-    :ivar schema: the namespace schema the pod reads as its own (an agent's ``agent_<hex>``; for a tool
+    :ivar schema: the namespace schema the pod reads as its own (an agent's ``agent_<hex>``; a tool pod's own
+        provider space's ``ns_<hex>``, :func:`threetears.core.namespaces.build_namespace_schema_name`; for a tool
         pod's owner stack, the owning agent's), or ``None`` when it reads no schema table
     :ivar customer: the customer the pod belongs to, or ``None`` for a pod of no one customer (it reads a
         platform table's ``_all`` records only)
