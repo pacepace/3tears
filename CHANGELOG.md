@@ -14,7 +14,7 @@ may declare `claim_criteria`, each a `ClaimCriterion` (`name`, `guidance`, `grou
 noun a page prints for one unit of each criterion (`stop`, `answer`, `entry`), which is presentation. A criterion owns
 its name and every name `<name>_...` for its readings, so a rubric dimension or another criterion taking one is
 refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmentation`, its `Segment`s (the extractor's) with units
-numbered 0..n-1, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
+numbered 0..n-1 with no gap, a unit spanning any number of segments, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
 `claim_grades` (criterion -> `ClaimGrade`, holding each `GradedClaim` with its `scope`, `world` or `session`, its
 verdict, citations and web check). Claim evidence sits beside `judge_evidence`, never in it, so no rubric label key or
 judged-output fingerprint moves, and a cell of an unjudged kind may carry it. A result may carry `claim_tallies`
@@ -61,7 +61,8 @@ build. Declare the family `graded_by="code"` if code made the number, or drop th
 
 **Added (provisional, `threetears.evals.schema`):** `Segment(text, unit=None, tags={})`, one piece of a candidate's
 text as claims grading will read it, in the order the host cut it. A unit (an answer, an entry, a section, one item of
-a sequence) carries its index, and a cell's units are numbered 0..n-1, each once. Any other piece (a preamble, an
+a sequence) carries its index, and a cell's units are numbered 0..n-1 with no gap; a unit may span several pieces
+(an entry's description and each of its facts), and its per-unit counts count it once. Any other piece (a preamble, an
 aside) carries None: its claims count, but it is no unit. `tags` are the host's own labels, opaque to the engine and
 never shown to a model.
 

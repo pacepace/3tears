@@ -414,12 +414,41 @@ def test_a_name_that_only_begins_like_a_criterion_s_is_its_own() -> None:
 # --- the evidence ------------------------------------------------------------------------------------------------
 
 
-def test_units_are_numbered_from_zero_each_once_as_the_extractor_numbers_them() -> None:
-    numbered = (Segment(text="a", unit=1), Segment(text="b"), Segment(text="c", unit=0))
+def test_units_are_numbered_from_zero_with_no_gap_and_a_unit_may_span_segments() -> None:
+    numbered = (Segment(text="a", unit=1), Segment(text="b"), Segment(text="c", unit=0), Segment(text="d", unit=1))
     assert _evidence_of_claims(segments=numbered).segments == numbered
-    for units in ((1,), (0, 2), (0, 0)):
-        with pytest.raises(ValidationError, match="numbered 0..n-1, each once"):
+    for units in ((1,), (0, 2), (0, 0, 2)):
+        with pytest.raises(ValidationError, match="numbered 0..n-1 with no gap"):
             _evidence_of_claims(segments=tuple(Segment(text="a", unit=unit) for unit in units))
+
+
+def test_a_unit_spanning_three_segments_holds_a_claim_in_each() -> None:
+    """A scout's entry: its description and two facts, each a segment of unit 0, each claim inside its own segment."""
+    texts = ("The mill stands by the river.", "Its wheel was built in 1901.", "The miller keeps two dogs.")
+    evidence = _evidence_of_claims(
+        segments=(Segment(text="A short summary."), *(Segment(text=text, unit=0) for text in texts))
+    )
+    claims = tuple(
+        _world_claim(
+            segment=place + 1,
+            excerpt=text,
+            claim=text,
+            end=len(text),
+            verdict="unverifiable",
+            graded_against=None,
+            truth_citations=(),
+        )
+        for place, text in enumerate(texts)
+    )
+    trace = make_eval_trace(claim_evidence=evidence, claim_grades={"rules.claims": _grade(claims=claims)})
+
+    assert [claim.unit for claim in trace.claim_grades["rules.claims"].claims] == [0, 0, 0]
+    assert _tally(units=1, units_with_false=1).units == 1, "a unit is counted once, whatever segments it spans"
+    with pytest.raises(ValidationError, match="not its segment's text"):
+        make_eval_trace(
+            claim_evidence=evidence,
+            claim_grades={"rules.claims": _grade(claims=(claims[0].model_copy(update={"segment": 2}),))},
+        )
 
 
 def test_documents_are_case_or_run_unique_by_id_and_capped_by_name() -> None:

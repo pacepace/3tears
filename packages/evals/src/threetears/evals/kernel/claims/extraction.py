@@ -212,16 +212,18 @@ class _Repaired(EvalBaseModel):
 
 
 def _check_units(segments: Sequence[Segment]) -> None:
-    """Refuse a cell whose units are not numbered 0..n-1, each once.
+    """Refuse a cell whose units are not numbered 0..n-1 with no gap, each in at least one segment.
+
+    A unit may span several segments (an entry's description and each of its facts), so a unit index may repeat.
 
     :param segments: The cell's segments.
     :raises ValueError: They are not.
     """
-    units = [segment.unit for segment in segments if segment.unit is not None]
-    if sorted(units) != list(range(len(units))):
+    units = sorted({segment.unit for segment in segments if segment.unit is not None})
+    if units != list(range(len(units))):
         raise ValueError(
-            f"a cell's units are numbered 0..n-1, each once, and its segments carry the unit indices {units}: the "
-            "host's segmentation numbers each unit"
+            f"a cell's units are numbered 0..n-1 with no gap, each in at least one segment, and its segments carry the "
+            f"unit indices {units}: the host's segmentation numbers each unit"
         )
 
 
@@ -312,7 +314,7 @@ class ClaimExtractor:
         :param ledger: The cell's ``judge`` ledger.
         :return: The checked claims.
         :raises ValueError: ``ledger`` is not the ``judge`` role's, or the segments' units are not numbered 0..n-1,
-            each once.
+            with no gap.
         :raises ClaimGradingFailed: A reply was cut short, no attempt's reply parsed, or an item still failed its
             checks after the repair rounds.
         """

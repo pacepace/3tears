@@ -7,8 +7,8 @@ Repair, not refusal: a reply that will not parse is asked again in full naming w
 excerpt not in its segment, a ``restates`` pointing forward or nowhere) is asked again alone with its failure named,
 for two rounds, then the extraction raises. Every claim carries a scope, ``world`` or ``session``: a back-announce
 line splits into a session claim and a world claim, and a ``restates`` crossing scopes is repaired; a cut-short reply raises at once. The failure is ``ClaimGradingFailed``,
-no ``ApparatusError``. Every completion is billed to the ``judge`` ledger. A cell's units are numbered 0..n-1, each
-once, or the cell is refused before any call; a segment's tags never reach a prompt. The identity names the model,
+no ``ApparatusError``. Every completion is billed to the ``judge`` ledger. A cell's units are numbered 0..n-1 with no
+gap, a unit spanning any number of segments, or the cell is refused before any call; a segment's tags never reach a prompt. The identity names the model,
 moves with the host's guidance, and is pinned for the shipped prompts, schemas, fold and budgets. The text is
 invented: a walking-tour guide's lines about made-up places.
 """
@@ -545,18 +545,34 @@ async def test_a_repair_reply_cut_short_is_refused_at_once_and_still_billed() ->
     "units",
     [
         pytest.param((1,), id="not-from-0"),
-        pytest.param((0, 0), id="repeated"),
         pytest.param((0, 2), id="a-gap"),
         pytest.param((1, 2, 3), id="shifted"),
     ],
 )
-async def test_units_not_numbered_0_to_n_minus_1_each_once_are_refused_before_any_call(units: tuple[int, ...]) -> None:
+async def test_units_not_numbered_0_to_n_minus_1_with_no_gap_are_refused_before_any_call(
+    units: tuple[int, ...],
+) -> None:
     client = _FakeScriptedClient([])
     cell = (Segment(text="Hello."), *(Segment(text=f"Unit {unit}.", unit=unit) for unit in units))
 
-    with pytest.raises(ValueError, match="numbered 0..n-1, each once"):
+    with pytest.raises(ValueError, match="numbered 0..n-1 with no gap"):
         await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
     assert client.calls == []
+
+
+async def test_a_unit_spanning_several_segments_is_accepted() -> None:
+    """An entry's description and its facts are one unit, each its own segment."""
+    client = _FakeScriptedClient([_listing()])
+    cell = (
+        Segment(text="A preamble."),
+        Segment(text="Unit 0.", unit=0),
+        Segment(text="Unit 0 again.", unit=0),
+        Segment(text="Unit 1.", unit=1),
+        Segment(text="Unit 1 more.", unit=1),
+    )
+
+    await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+    assert len(client.calls) == 1
 
 
 async def test_units_in_any_order_with_other_segments_between_are_accepted() -> None:

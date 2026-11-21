@@ -6189,14 +6189,17 @@ class ClaimEvidence(CoreShapeModel):
 
     @model_validator(mode="after")
     def _units_numbered_and_documents_capped(self) -> Self:
-        """Refuse units not numbered 0..n-1 each once (the extractor's own rule), two documents of one id, or documents
-        over their share of the trace.
+        """Refuse units not numbered 0..n-1 with no gap (the extractor's own rule; a unit may span several segments),
+        two documents of one id, or documents over their share of the trace.
 
         :raises ValueError: One of those.
         """
-        units = [segment.unit for segment in self.segments if segment.unit is not None]
-        if sorted(units) != list(range(len(units))):
-            raise ValueError(f"a cell's units are numbered 0..n-1, each once, and its segments carry the units {units}")
+        units = sorted({segment.unit for segment in self.segments if segment.unit is not None})
+        if units != list(range(len(units))):
+            raise ValueError(
+                f"a cell's units are numbered 0..n-1 with no gap, each in at least one segment, and its segments carry "
+                f"the units {units}"
+            )
         documents = self.documents or ()
         ids = [document.id for document in documents]
         if twice := sorted({doc_id for doc_id in ids if ids.count(doc_id) > 1}):
@@ -6548,8 +6551,13 @@ class ClaimTally(CoreShapeModel):
 
     criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it counts under.")
     documents_declared: bool = Field(description="The cell's evidence declared its documents (none, or some).")
-    units: int = Field(ge=0, description="The cell's units, the per-unit readings' denominator.")
-    units_with_false: int = Field(ge=0, description="Units holding at least one asserted contradicted world claim.")
+    units: int = Field(
+        ge=0, description="The cell's distinct units, the per-unit readings' denominator, never segments."
+    )
+    units_with_false: int = Field(
+        ge=0,
+        description="Distinct units holding at least one asserted contradicted world claim, in any of its segments.",
+    )
     session_claims: int = Field(ge=0, description="Claims about the output itself, graded by no truth step.")
     by_judge: tuple[ClaimJudgeCounts, ...] = Field(
         default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."

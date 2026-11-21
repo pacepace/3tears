@@ -22,8 +22,8 @@ class Segment(EvalDocumentModel, CoreShapeModel):
     unit: int | None = Field(
         default=None,
         ge=0,
-        description="The index of the unit this piece is, when it is one: a cell's units are numbered 0..n-1, each "
-        "once. None for any other piece (a preamble, an aside, a message between units), whose claims count but "
+        description="The index of the unit this piece is, or is part of: a cell's units are numbered 0..n-1 with no "
+        "gap, and a unit may span several pieces (an entry's description and each of its facts). None for any other piece (a preamble, an aside, a message between units), whose claims count but "
         "which is no unit.",
     )
     tags: dict[str, str] = Field(
