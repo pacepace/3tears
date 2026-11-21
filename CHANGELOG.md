@@ -13,7 +13,7 @@ may declare `claim_criteria`, each a `ClaimCriterion` (`name`, `guidance`, `grou
 `pages` as a `PageBudget`, `repairs` as a `RepairBudget`, and `judge`, `builtin` only), and `claim_unit_names`, the
 noun a page prints for one unit of each criterion (`stop`, `answer`, `entry`), which is presentation. A criterion owns
 its name and every name `<name>_...` for its readings, so a rubric dimension or another criterion taking one is
-refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmentation`, its `Segment`s with units
+refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmentation`, its `Segment`s (the extractor's) with units
 numbered 0..n-1, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
 `claim_grades` (criterion -> `ClaimGrade`, holding each `GradedClaim` with its `scope`, `world` or `session`, its
 verdict, citations and web check). Claim evidence sits beside `judge_evidence`, never in it, so no rubric label key or
@@ -37,6 +37,50 @@ boot seed (`extra_forbidden`). A 15.23 build reads a trace or result carrying th
 them back. So upgrade every launching process before authoring or seeding a template with a criterion, and before a
 rollback archive or strip the criteria, or the rolled-back launcher runs those templates ungraded. Traces and results
 roll out and back in any order.
+### evals: a judge-graded measure no longer passes or fails a trial
+
+**Fixed:** a host's check (a boolean, or a pass/fail scorer, with a better end) fails its trial on its value alone,
+and so moves the ranked pass rate, but the pass rule read every such check whatever its family. A host measure in a
+`graded_by="judge"` family could therefore fail trials and move pass^k, though nothing ranks on a judge-graded number
+and no judge identity or check stood behind it. `MeasureRegistry` now refuses such a measure at startup, naming the
+measure, its family and the rule, whether the host's family is declared `graded_by="judge"` or the measure names one of
+the engine's judged families (`rubric`, `dual_axis`, `composite`). This closes only that route. Rubric dimensions gate
+trials exactly as before, through their scores and the rubric threshold, and no existing eval's pass^k, census of
+trials, bar or report line moves: no measure the engine or a known host declares is a check in a judge-graded family.
+`MetricDescriptor.is_check` stays the one definition the pass rule and every report surface read; it now also answers
+False for such a measure, so a page never names a pass criterion the pass rule ignores. An undirected boolean and a
+directed numeric reading in a judged family are declared as before, and a check in a code-graded family, the engine's
+or a host's, fails its trials exactly as it did. Stored shapes, digests and pages are unchanged.
+
+**For hosts:** a registry that declares a directed boolean or pass/fail measure in a judge-graded family now fails to
+build. Declare the family `graded_by="code"` if code made the number, or drop the measure's better end
+(`higher_is_better=None`) to keep it as a reading. No known host declares one: discodon's judged families
+(`hedged_claims`, `grounded_claims`, `extracted_set`) hold numeric measures only.
+
+### evals: segments, and the first step of claims grading (#1287)
+
+**Added (provisional, `threetears.evals.schema`):** `Segment(text, unit=None, tags={})`, one piece of a candidate's
+text as claims grading will read it, in the order the host cut it. A unit (an answer, an entry, a section, one item of
+a sequence) carries its index, and a cell's units are numbered 0..n-1, each once. Any other piece (a preamble, an
+aside) carries None: its claims count, but it is no unit. `tags` are the host's own labels, opaque to the engine and
+never shown to a model.
+
+**Engine-internal, nothing calls it yet:** the step that lists the factual claims a cell's segments state. It sees the
+segments' text only (no key, no document, no tag). It lists one proposition per claim, each with the segment's own
+excerpt and its offsets, found by a verbatim check that forgives typography and case, never a changed word. Each claim
+carries the tags `specific`, `hedged`, `attributed`, `scope` and `restates`. `attributed` marks a claim the text
+reports without vouching for it (a rumour, another party's statement); one the text backs with a source is its own.
+`scope` is `world` or `session`: a session claim is about the output or run itself, such as what was just presented or
+what comes next. A mixed line is split into one claim of each scope. `restates` names the first earlier claim of the
+same scope stating the same fact. The prompt's rules are domain-neutral, and a host's own examples go in its
+guidance. A reply that will not parse is asked again in full, and an item that fails a check (an excerpt not in its
+segment, a `restates` that names no earlier claim of its scope) is asked again alone, for two rounds. A failing item
+is never dropped: the step then fails, and that failure is no `ApparatusError`. Every call is billed to the `judge`
+ledger. The verbatim fold's identity digests its tables and the Unicode version. The claims criterion a template
+declares, and the judge-phase grading that calls this step, follow.
+
+**For hosts:** nothing to do yet. When claims grading lands, a kind cuts each cell's output into `Segment` values. No
+stored shape changes in this entry.
 
 ### evals: a set grade shows how each credit was earned, and why a name was refused (#1293)
 

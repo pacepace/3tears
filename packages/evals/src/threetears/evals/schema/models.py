@@ -77,6 +77,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.schema.reading_states import SampleKind
+from threetears.evals.schema.claims import Segment
 from threetears.evals.schema.reference import ReferenceFact, ReferenceKey
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
@@ -6059,8 +6060,8 @@ class JudgeEvidence(CoreShapeModel):
 #
 # Beside JudgeEvidence, never on it: a field there would enter every rubric label key (fingerprint_judged_output
 # hashes its whole dump) and ride along with every batch read of judge evidence. Each shape is frozen and keeps its
-# strings as written, as JudgeEvidence does: a claim's excerpt is a slice of its segment's text, and a quote is
-# checked verbatim against what it quotes, so whitespace is part of what was read.
+# strings as written, as JudgeEvidence does: a quote is checked verbatim against what it quotes, so whitespace is part
+# of what was read. A segment is the extractor's own Segment (schema.claims), whose excerpts are slices of its text.
 
 #: The closed vocabularies of a claim's grade, each written inline on its field and listed closed in
 #: :mod:`~threetears.evals.schema.versioning`: a claim's ``scope`` (``world``, graded for truth, or ``session``, about
@@ -6143,34 +6144,6 @@ class TextSpan(CoreShapeModel):
             raise ValueError(f"a span of {what} ends at {self.end}, past its {len(text)} characters")
 
 
-class Segment(CoreShapeModel):
-    """One stretch of a candidate's output, as its host cut it, and the unit it belongs to, if any.
-
-    A unit is what a criterion's per-unit readings divide by: a stop a programme presents, an answer, an entry of a
-    draft. A segment of no unit (a summary line, an aside) has its claims counted, and adds nothing to the
-    denominator.
-    """
-
-    model_config = _CLAIM_RECORD
-
-    text: str = Field(min_length=1, description="The stretch, exactly as the output holds it.")
-    unit: int | None = Field(
-        default=None,
-        ge=0,
-        description="The unit it belongs to: a cell's units are numbered 0..n-1, each at least once. None for none.",
-    )
-    tags: dict[str, str] = Field(
-        default_factory=dict,
-        description="The host's own labels (an entity's id, a section's name), for its own readings: never in a prompt, "
-        "never read by the engine.",
-    )
-
-    @field_validator("text", mode="after")
-    @classmethod
-    def _text_not_blank(cls, text: str) -> str:
-        return _not_blank(text, "a segment's text")
-
-
 class EvidenceDocument(CoreShapeModel):
     """One document a cell's claims may be checked against: case evidence, or one the candidate itself was given."""
 
@@ -6216,15 +6189,14 @@ class ClaimEvidence(CoreShapeModel):
 
     @model_validator(mode="after")
     def _units_numbered_and_documents_capped(self) -> Self:
-        """Refuse units not numbered 0..n-1, two documents of one id, or documents over their share of the trace.
+        """Refuse units not numbered 0..n-1 each once (the extractor's own rule), two documents of one id, or documents
+        over their share of the trace.
 
         :raises ValueError: One of those.
         """
-        units = sorted({segment.unit for segment in self.segments if segment.unit is not None})
-        if units != list(range(len(units))):
-            raise ValueError(
-                f"a cell's units are numbered 0..n-1, each at least once, and its segments carry the units {units}"
-            )
+        units = [segment.unit for segment in self.segments if segment.unit is not None]
+        if sorted(units) != list(range(len(units))):
+            raise ValueError(f"a cell's units are numbered 0..n-1, each once, and its segments carry the units {units}")
         documents = self.documents or ()
         ids = [document.id for document in documents]
         if twice := sorted({doc_id for doc_id in ids if ids.count(doc_id) > 1}):

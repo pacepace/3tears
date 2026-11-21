@@ -597,8 +597,17 @@ class MetricDescriptor(EvalBaseModel):
     @property
     def is_check(self) -> bool:
         """Whether an observation of this measure passes or fails its trial: a boolean or a pass/fail measure with a
-        better end. The one definition the page's trials and the console's case counts both read."""
-        return self.higher_is_better is not None and (self.data_type == "boolean" or self.pass_fail)
+        better end, in a family code grades. The one definition the pass rule, the page's trials and the console's case
+        counts all read.
+
+        A judge-graded number never decides a pass on its own: such a measure in an engine family a judge grades
+        (``rubric``, ``dual_axis``, ``composite``), or in no family, is no check. A host family's grading is settled
+        where the host declares it: :class:`~threetears.evals.kernel.host.measures.MeasureRegistry` refuses a
+        check-shaped measure in a judge-graded family, so every host-family measure of this shape is code-graded.
+        """
+        if self.higher_is_better is None or not (self.data_type == "boolean" or self.pass_fail):
+            return False
+        return self.family is not None and (self.family not in ENGINE_FAMILIES or self.family in CODE_GRADED_FAMILIES)
 
     def check_failed(self, value: bool | float | str) -> bool:
         """Whether one observation of this check is on its wrong side: False (or 0) where higher is better, True

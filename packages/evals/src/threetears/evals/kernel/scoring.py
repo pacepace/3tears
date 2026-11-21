@@ -363,8 +363,8 @@ def failed_checks(result: ResultView, catalog: Mapping[str, MetricDescriptor]) -
     :func:`pool_pass_hat_k`) and a report's census of trials both read it, so a check that fails a trial in one fails
     it in the other. A check measure is one its descriptor calls a check
     (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`): a boolean with a better end, or a scorer
-    graded 0 or 1. A measure with no better end, a numeric one that is no pass/fail scorer, and one the catalog does
-    not describe fail nothing. The label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) fails on False
+    graded 0 or 1. A measure with no better end, a numeric one that is no pass/fail scorer, one the catalog does not
+    describe, and a check-shaped measure no code graded (which ``is_check`` reads as no check) fail nothing. The label (:data:`~threetears.evals.kernel.metrics.MATCH_MEASURE`) fails on False
     whatever the catalog holds, since an answer that is not the expected one is wrong in every host.
 
     :param result: The trial.

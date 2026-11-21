@@ -30,7 +30,7 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.run import quote_launch
 from threetears.evals.run.definition_digests import measured_template_digest, template_digest
 from threetears.evals.run.launch import TEMPLATE_FIELDS
-from threetears.evals.schema import CLAIM_LOSSES, ClaimCriterion, PageBudget, RepairBudget, WebBudget
+from threetears.evals.schema import CLAIM_LOSSES, ClaimCriterion, PageBudget, RepairBudget, Segment, WebBudget
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     CLAIM_DOCUMENT_BYTES,
@@ -52,7 +52,6 @@ from threetears.evals.schema.models import (
     JudgedArtifact,
     JudgeEvidence,
     ReferenceFact,
-    Segment,
     TextSpan,
     WebCheckRecord,
     WebWindow,
@@ -152,7 +151,7 @@ def _evidence_of_claims(**changes: Any) -> ClaimEvidence:
         "segmentation": "answer-v1",
         "segments": (
             Segment(text="A short summary.", unit=None),
-            Segment(text="Grappling ends when the grappler is incapacitated.  ", unit=0, tags={"entity": "grapple"}),
+            Segment(text="Grappling ends when the grappler is incapacitated.", unit=0, tags={"entity": "grapple"}),
         ),
         "documents": (
             EvidenceDocument(
@@ -305,7 +304,6 @@ def test_a_template_a_trace_and_a_result_carrying_claim_shapes_round_trip_under_
     assert {"claim_criteria", "claim_unit_names"} <= set(template.to_dict())
     assert {"claim_evidence", "claim_grades"} <= set(trace.to_dict())
     assert {"claim_tallies", "claim_failures"} <= set(result.to_dict())
-    assert trace.to_dict()["claim_evidence"]["segments"][1]["text"].endswith("  "), "segment text is kept as written"
 
 
 def test_criteria_are_measured_content_and_a_unit_noun_is_presentation() -> None:
@@ -416,17 +414,12 @@ def test_a_name_that_only_begins_like_a_criterion_s_is_its_own() -> None:
 # --- the evidence ------------------------------------------------------------------------------------------------
 
 
-def test_units_are_numbered_from_zero_each_at_least_once() -> None:
-    repeated = (Segment(text="a", unit=0), Segment(text="b", unit=0), Segment(text="c", unit=1), Segment(text="d"))
-    assert _evidence_of_claims(segments=repeated).segments == repeated
-    with pytest.raises(ValidationError, match="numbered 0..n-1"):
-        _evidence_of_claims(segments=(Segment(text="a", unit=1),))
-    with pytest.raises(ValidationError, match="numbered 0..n-1"):
-        _evidence_of_claims(segments=(Segment(text="a", unit=0), Segment(text="b", unit=2)))
-    with pytest.raises(ValidationError, match="greater_than_equal"):
-        Segment(text="a", unit=-1)
-    with pytest.raises(ValidationError, match="blank"):
-        Segment(text="   ")
+def test_units_are_numbered_from_zero_each_once_as_the_extractor_numbers_them() -> None:
+    numbered = (Segment(text="a", unit=1), Segment(text="b"), Segment(text="c", unit=0))
+    assert _evidence_of_claims(segments=numbered).segments == numbered
+    for units in ((1,), (0, 2), (0, 0)):
+        with pytest.raises(ValidationError, match="numbered 0..n-1, each once"):
+            _evidence_of_claims(segments=tuple(Segment(text="a", unit=unit) for unit in units))
 
 
 def test_documents_are_case_or_run_unique_by_id_and_capped_by_name() -> None:

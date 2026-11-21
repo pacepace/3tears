@@ -153,7 +153,6 @@ from threetears.evals.schema.models import (
     GradedClaim,
     PageBudget,
     RepairBudget,
-    Segment,
     TextSpan,
     WebBudget,
     WebCheckRecord,
@@ -268,6 +267,7 @@ from threetears.evals.schema.job_lease import (
     LeasedRecord,
     LostField,
 )
+from threetears.evals.schema.claims import Segment
 from threetears.evals.schema.reference import ReferenceEntity, ReferenceFact, ReferenceKey, fold_name
 from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, KnownRefusalKind, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
