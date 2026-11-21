@@ -1,4 +1,4 @@
-"""A claim criterion's readings (#1287, C2): the ``claims`` family, every reading computed from a tally, and the built
+"""A claim criterion's readings (#1287): the ``claims`` family, every reading computed from a tally, and the built
 controls, each moving only its own readings.
 
 - **The family.** ``claims`` is an engine family a judge grades: its readings are never a check and never code-graded,

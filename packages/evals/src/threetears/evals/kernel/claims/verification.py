@@ -134,6 +134,7 @@ _BATCH_RULE: Final = (
 
 #: What a claim is, for a check: the same fact about the same subject. Shared by every verify prompt.
 _CITING_RULES: Final = (
+    # one line: the only placeholder is CLAIM_QUOTE_CHARS, an int; every rule's line is written here in full
     "- Bind the value to its subject. Evidence that states a value for a neighbouring subject (another item, edition, "
     "date, person or place in the same passage) bears on nothing here, even when its value matches the claim's.\n"
     "- An omission contradicts nothing: evidence that does not state the claim's fact, or states other facts about "
@@ -488,7 +489,8 @@ class _Shown:
     def passage(self, ref: str) -> _Passage | None:
         return next((passage for shown, passage in self.passages if shown == ref), None)
 
-    def rendered(self) -> str:
+    def numbered(self) -> str:
+        """The facts and passages as a verify prompt numbers them, one block each: evidence, not a tool's result."""
         lines = [_FACT_TEMPLATE.format(ref=ref, entity=entity, claim=fact.claim) for ref, entity, fact in self.facts]
         lines += [
             _PASSAGE_TEMPLATE.format(
@@ -913,7 +915,7 @@ class ClaimVerifier:
 
         :raises ClaimGradingFailed: A reply was cut short, or none of the attempts' replies could be used.
         """
-        first = _USER_TEMPLATE.format(evidence=shown.rendered(), claims=_rendered_claims(batch, cell))
+        first = _USER_TEMPLATE.format(evidence=shown.numbered(), claims=_rendered_claims(batch, cell))
         user = first
         refused: ValueError | None = None
         for _attempt in range(_ATTEMPTS):
@@ -995,7 +997,7 @@ class ClaimVerifier:
                     role="repair",
                     system=self._repair_system(step),
                     user=_REPAIR_TEMPLATE.format(
-                        evidence=shown[step].rendered(),
+                        evidence=shown[step].numbered(),
                         claim=_rendered_claim(position, cell),
                         answer=json.dumps(_answer_json(step, before.answer), ensure_ascii=False),
                         failure=before.fault,
