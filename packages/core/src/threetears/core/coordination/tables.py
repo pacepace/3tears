@@ -161,6 +161,10 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
     live here, so a wave-2 consumer annotating the collection it got from
     :func:`coordination_collection` would otherwise have to import a private name across packages
     or fall back to ``Any`` and lose checking on exactly those calls.
+
+    Each table lives among its owner's tables, in the owner's own schema, so each schema declares
+    ``tenancy=TENANT_BY_SCHEMA``: the class reads it from there, and so does an owner that declares
+    :data:`COORDINATION_TABLE_SCHEMAS` among its tables.
     """
 
     primary_key_column: str | tuple[str, ...] = ("purpose", "key")
@@ -488,12 +492,11 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
 class CoordinationCountersCollection(CoordinationCollection):
     """windowed attempt counts: many increments, each cheap, none worth an L3 write on its own."""
 
-    tenancy = TENANT_BY_SCHEMA
-
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
     schema = TableSchema(
         name="coordination_counters",
+        tenancy=TENANT_BY_SCHEMA,
         primary_key=("purpose", "key"),
         columns=[
             *_common_columns(),
@@ -523,12 +526,11 @@ class CoordinationCountersCollection(CoordinationCollection):
 class CoordinationClaimsCollection(CoordinationCollection):
     """idempotency claims: the claim itself, and the outcome a retry must be given back."""
 
-    tenancy = TENANT_BY_SCHEMA
-
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
     schema = TableSchema(
         name="coordination_claims",
+        tenancy=TENANT_BY_SCHEMA,
         primary_key=("purpose", "key"),
         columns=[
             *_common_columns(),
@@ -563,13 +565,12 @@ class CoordinationRevocationsCollection(CoordinationCollection):
     """standing revocations: read on nearly every request, written rarely, and absence is the
     common answer -- which is what negative caching is for."""
 
-    tenancy = TENANT_BY_SCHEMA
-
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
     negative_cache_max_age: ClassVar[timedelta | None] = timedelta(seconds=_REVOCATION_NEGATIVE_CACHE_SECONDS)
     schema = TableSchema(
         name="coordination_revocations",
+        tenancy=TENANT_BY_SCHEMA,
         write_generation=WRITE_GENERATION,
         primary_key=("purpose", "key"),
         columns=[
@@ -606,14 +607,13 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
     one row per purpose goes to L2, once per guard.
     """
 
-    tenancy = TENANT_BY_SCHEMA
-
     caches_in_l1: ClassVar[bool] = False
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
     schema = TableSchema(
         name="coordination_redemptions",
+        tenancy=TENANT_BY_SCHEMA,
         primary_key=("purpose", "key"),
         # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
         columns=[*_common_columns(), *l2_order_columns()],

@@ -13,11 +13,15 @@ What these hold, on the in-memory log (the live NATS behaviour is pinned in
 - a reader is given a pod's PodTenants, never a list of tenants;
 - a record retention took from a follower's own key leaves it behind (``aged_out``), as per table before;
 - a platform reader (no tenants) reads every tenant through the wildcard;
-- the restore puts each tenant's notes, whole-table ones too, back under its own key.
+- the restore puts each tenant's notes, whole-table ones too, back under its own key;
+- every table 3tears hands an owner to declare among its own tables (the epochs, the fence, the coordination
+  tables) is read by a tool pod of a provider space under ``s-ns_<hex>.<table>.e``, the key the hub's broker
+  writes it under, never ``_all`` or the wildcard.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -27,7 +31,12 @@ from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import SchemaBackedCollection, collection_for_schema
+from threetears.core.collections.scope_epochs import scope_epochs_collection
+from threetears.core.coordination.source_token import source_tokens_schema
+from threetears.core.coordination.tables import COORDINATION_TABLE_SCHEMAS
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.namespaces import build_namespace_schema_name
 from threetears.core.tenancy import (
     ALL_TENANTS,
     TENANT_BY_SCHEMA,
@@ -337,3 +346,46 @@ class TestAWriterThatKnowsTheSchemaNamesEachRecordsTenant:
             epoch_change_key(_TABLE, None),
             epoch_change_key("group_members", None),
         ]
+
+
+#: a tool pod's own provider space, in the hub's spelling (``ns_<namespace id hex>``)
+_SPACE = build_namespace_schema_name(uuid.UUID("0192f0c4-7a10-7000-8000-00000000c0de"))
+
+#: the collection classes over the tables 3tears hands an owner to declare among its own tables, built as the owner
+#: builds them and held here: the reader finds a table's declaration through the classes alive in the process (the
+#: coordination tables' classes are defined by their module)
+_OWNER_TABLES: tuple[type[SchemaBackedCollection[Any]], ...] = (
+    scope_epochs_collection(),
+    collection_for_schema(source_tokens_schema()),
+)
+_OWNER_TABLE_NAMES: tuple[str, ...] = (
+    *(cls.schema.name for cls in _OWNER_TABLES),
+    *(schema.name for schema in COORDINATION_TABLE_SCHEMAS),
+)
+
+
+class TestAnOwnersOwnTablesAreReadUnderItsOwnSchemaKey:
+    """a tool pod of a provider space reads the tables it declares among its own under ``s-ns_<hex>``.
+
+    The hub grants such a pod ``s-ns_<hex>.>`` (its own space) and the access tables' ``_all`` keys, and its broker
+    writes a switched table's changes under the schema the statement ran in. A table with no declared tenancy would
+    be read under ``_all``: refused by that grant, and missing the records even if granted.
+    """
+
+    @pytest.mark.parametrize("table", _OWNER_TABLE_NAMES)
+    async def test_the_pod_reads_its_schema_key_and_nothing_else(self, table: str) -> None:
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        # the hub's broker, which knows the schema its statement ran in
+        token = await advance_for_write(source, table, [ChangedRow(ids=["r1"])], schema=_SPACE)
+        own_key = f"s-{_SPACE}.{table}.e"
+        log = bus.change_log(EPOCH_CHANGES_BUCKET)
+        assert [entry.key for entry in await log.records_after(">", 0, 100)] == [own_key]
+        log.read_keys.clear()
+        # the pod's grant, as the hub builds it for a tool pod of a provider space
+        log.granted_reads = (f"{schema_tenant(_SPACE)}.>", epoch_change_key("group_members", None))
+        reader = EpochGenerationReader(bus, tenants=PodTenants(schema=_SPACE))
+        assert await reader.read(table) == token
+        assert set(log.read_keys) == {own_key}
+        assert not [key for key in log.read_keys if key.startswith(("*", f"{ALL_TENANTS}."))]

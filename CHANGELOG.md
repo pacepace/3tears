@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: every table schema an owner declares among its own tables declares `TENANT_BY_SCHEMA`
+
+**Fixed:** `scope_epochs_schema()` declared no tenancy, so a pod's change-log reader read `scope_epochs` as
+undeclared, under `_all.scope_epochs.e`. A tool pod of a provider space (`PodTenants(schema="ns_<hex>")`) is granted
+`s-ns_<hex>.>` and the access tables' `_all` keys, so that read was refused; and the hub's broker writes the table's
+changes under `s-ns_<hex>`, so an `_all` reader would have missed them anyway. It now declares
+`tenancy=TENANT_BY_SCHEMA`, as `source_tokens_schema()` already did, and the reader asks for
+`s-ns_<hex>.scope_epochs.e`. The four coordination tables' schemas (`COORDINATION_TABLE_SCHEMAS`) declare it on the
+schema too, where an owner declaring them reads it; their classes read it from there (they declared it on the class
+before, so their tenancy, and the change-note trigger their migration renders, are unchanged).
+
+**Enforced:** `tests/enforcement/test_owner_tables_declare_tenancy.py` walks every `TableSchema(...)` in a package's
+source and fails on one that declares no tenancy, unless it is the schema of a class that declares one, or is listed
+with why no owner declares it (the L1-only tables of `VersionedAnswers` and `AccessShapeAnswers`, and the hub's
+`datasource_customers`).
+
 ### agent-tools: a tool pod reads the epoch change log under its own tenants, never the `*` wildcard
 
 **Changed (breaking for a direct caller of `build_tool_pod_collection_stack`):** a tool pod's generation source read

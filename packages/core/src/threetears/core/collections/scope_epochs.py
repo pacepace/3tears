@@ -124,6 +124,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
+from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 __all__ = [
     "SCOPE_EPOCHS_TABLE",
@@ -197,6 +198,10 @@ class EpochRecordBusyError(RuntimeError):
 def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
     """the epochs table, for the owner to declare among its tables.
 
+    It lives among its owner's tables, in the owner's own schema, so its tenancy is that schema
+    (``TENANT_BY_SCHEMA``): a change record of it belongs to that owner alone, and a pod reads it under its own
+    schema's key (``s-<schema>.<table>.e``), the key the hub writes it under and grants the owner.
+
     :param name: the table's name
     :ptype name: str
     :return: the schema, keyed on ``scope``
@@ -247,6 +252,7 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
             ),
         ),
         on_conflict="update",
+        tenancy=TENANT_BY_SCHEMA,
         l1_eviction=Declared(Policy.KEEP, "a writer's epoch and settle state: a reader treats it as complete"),
     )
 
