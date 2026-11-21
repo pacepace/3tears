@@ -139,7 +139,8 @@ is refused as before, and the registry is that ``Literal``'s values. The open vo
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
-(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``); on a durable shape, ``GapKind``
+(``OUT_OF_RUN_PURPOSES``), ``RefusalKind`` (``REFUSAL_KINDS``) and ``ClaimLoss`` (``CLAIM_LOSSES``); on a durable
+shape, ``GapKind``
 (``GAP_KINDS``).
 
 Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
@@ -187,6 +188,13 @@ the document, so extending one is a major. Each, and why:
   would be counted as neither, and a look erased.
 - ``ReferenceKey.type`` — how a case's reference key is graded against; a key of a type an older build cannot name
   would be graded as a set of entities it is not.
+- ``EvidenceProvenance`` — whether a document is case evidence, the same for every arm, or the cell's own; truth reads
+  only case evidence, so a provenance an older build cannot name would be read as evidence of the wrong kind.
+- On a claim's grade: ``GradedClaim.scope``, ``GradedClaim.verdict``, ``GradedClaim.graded_against``,
+  ``GradedClaim.nominated_by``, ``GradedClaim.web``, ``WebCheckRecord.outcome``, ``ClaimCitation.stance`` and
+  ``ClaimCall.role`` — the truth readings count by them (a session claim is in none, a verdict is derived from its
+  citations and its web check, only the judge nominates), so a value an older build cannot name would be counted as
+  the wrong one.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.
@@ -506,7 +514,20 @@ CORE_SCHEMA_VERSION: int = 15
 #:   it from its first write, so a bundle over it is fingerprinted with it from the start. An older build reads such a
 #:   row as the cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 23
+#: - **v15.24** — claim grading's stored shapes (#1287): a trace may carry ``EvalTrace.claim_evidence``
+#:   (``ClaimEvidence``: the host's segmentation, its segments with their units, the documents claims are checked
+#:   against and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
+#:   numbered evidence, every ``GradedClaim`` and every ``WebCheckRecord``), beside its judge evidence and never in it,
+#:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
+#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``ground_loss`` records a ground step lost
+#:   alone, costing only the groundedness reading) and ``EvalResult.claim_failures`` (criterion -> a
+#:   ``ClaimLoss``, an open vocabulary). Each is left out of the document while unset, so a trace or result carrying
+#:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
+#:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims
+#:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An
+#:   older build reads such a trace or result under its newer-minor tolerance, keeps the fields and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 24
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -994,7 +1015,16 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   tiers. A v17.7 build reading a case at this minor keeps the context opaquely and writes it back; its drift digests
 #:   that case's key without the context.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 8
+#: - **v17.9** — a template may declare claim criteria (#1287): ``EvalTemplate.claim_criteria`` (a list of
+#:   ``ClaimCriterion``: ``name``, ``guidance``, ``grounded_in``, ``web`` (``WebBudget``), ``pages`` (``PageBudget``),
+#:   ``repairs`` (``RepairBudget``) and ``judge``; default empty) and ``EvalTemplate.claim_unit_names`` (criterion ->
+#:   the noun a page calls one unit; default empty, presentation like ``goal_check_names``). Each is written only when
+#:   set, so a template without them is stored, digested and measured exactly as v17.8 stored it. A criterion is
+#:   measured content (``measured_template_digest``, ``template_digest``); a unit's noun is in neither. A v17.8 build
+#:   reading a template at this minor keeps both opaquely and writes them back; its digests read the template without
+#:   them, and its launch runs it grading no claims, since the refusal of a kept field at launch ships with this minor.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 9
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

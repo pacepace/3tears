@@ -32,7 +32,7 @@ from threetears.evals.run import (
 )
 from threetears.evals.run.launch import TEMPLATE_FIELDS
 from threetears.evals.run.authoring import refuse_ignored_template_fields
-from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
+from threetears.evals.schema import ClaimCriterion, EvalTemplate, PageBudget, Precondition, RepairBudget, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host, with_registry
@@ -81,6 +81,20 @@ def _judge_template(**fields: Any) -> EvalTemplate:
             {"preconditions": [Precondition(expression="state.inbox.unread == 3", presumes="the inbox starts full")]},
             "preconditions",
             id="preconditions",
+        ),
+        pytest.param(
+            {
+                "claim_criteria": [
+                    ClaimCriterion(
+                        name="rules.claims",
+                        pages=PageBudget(per_document_chars=100, total_chars=100, window_chars=10),
+                        repairs=RepairBudget(max_items_per_cell=1),
+                        judge="builtin",
+                    )
+                ]
+            },
+            "claim_criteria",
+            id="claim-criteria",
         ),
     ],
 )

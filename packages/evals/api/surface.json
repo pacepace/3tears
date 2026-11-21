@@ -258,7 +258,7 @@
     },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
-      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 8, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 17, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, source: str | None = None, collected_by: str | None = None, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
+      "signature": "CalibrationRating(schema_minor: DurableSchemaMinor = 9, doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: DurableSchemaVersion = 17, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, source: str | None = None, collected_by: str | None = None, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None, rated: RatedOutput | None = None, rated_withheld: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.schema.CallLedger": {
@@ -303,7 +303,7 @@
     },
     "threetears.evals.schema.CatalogRubricDim": {
       "kind": "model",
-      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 17, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 17, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "stable"
     },
     "threetears.evals.schema.CaveatReach": {
@@ -340,6 +340,51 @@
       "kind": "function",
       "signature": "check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.CLAIM_LOSSES": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimCall": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimCitation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimCriterion": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimEvidence": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimGrade": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimJudgeCounts": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimLoss": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimTally": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
@@ -558,12 +603,12 @@
     },
     "threetears.evals.schema.EvalResult": {
       "kind": "model",
-      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 23, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, model_unserved: bool = False, written_over: WrittenOver | None = None, judging_set_aside: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), measure_rereads: list[MeasureReread] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
+      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 24, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, model_unserved: bool = False, written_over: WrittenOver | None = None, judging_set_aside: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), measure_rereads: list[MeasureReread] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), claim_tallies: dict[DimName, ClaimTally] = dict(), claim_failures: dict[DimName, StoredClaimLoss] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRun": {
       "kind": "model",
-      "signature": "EvalRun(schema_minor: CoreSchemaMinor = 23, id: str = <lambda>(), doc_type: Literal['eval_run'] = 'eval_run', schema_version: CoreSchemaVersion = 15, scope_id: str, template_id: str | None = None, subject_snapshot: SubjectSnapshot, host_payload: VerbatimObject = dict(), candidate_model: str, k_runs: int, test_case_ids: list[str], apparatus_provenance: ApparatusProvenance, variation_counts: VariationCounts | None = None, candidate_kind: str, judge_model: str | None = None, model_role_provenance: dict[str, StoredRoleModelOrigin] | None = None, effective_judges: dict[DimName, str] | None = None, rubric_scales: dict[DimName, RubricScale], effective_judges_source: JudgeAttributionSource | None = None, judge_config_ids: dict[DimName, str] | None = None, judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = None, overlays: dict[str, Any] = dict(), apparatus_settings: dict[str, ApparatusSettingValue] = dict(), declared_margins: dict[str, float] = dict(), declared_measures: dict[str, MeasureDeclaration] = dict(), resolved_world_seed: dict[str, Any] = dict(), resolved_ambient_perturbation_turns: list[int] = list(), kind_spec: dict[str, Any] = dict(), world_placements: dict[str, WorldPlacement] | None = None, goal_check_proofs: dict[str, GoalCheckProof] | None = None, goal_check_proof_rules: int | None = None, refused_goal_checks: dict[str, str] | None = None, resolved_tools_allowed: list[str] | None = None, template_digest: str | None = None, cassette_mode: Literal['capture', 'replay', 'off'] = 'off', cassette_corpus_id: str | None = None, measure_latency: bool | None = None, cell_concurrency: int = 1, arm_schedule: ArmSchedule | None = None, simulator_model: str | None = None, judge_asked_settings: ClientRequestSettings | None = None, judge_temperature: float | None = None, simulator_asked_settings: ClientRequestSettings | None = None, simulator_prompt_digest: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: StoredCostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, package_version: str | None = None, package_rev: str | None = None, run_disclosure: RunDisclosure | None = None, max_metered_calls: int | None = None, max_metered_calls_origin: StoredMeteredCallOrigin | None = None, metered_calls_refused: int | None = None, case_set: CaseSetRef | None = None, cell_timeout_s: float | None = None, cell_timeout_s_origin: StoredCellTimeoutOrigin | None = None, turn_budget_s: float | None = None, context_key: str | None = None, context_components: ContextComponents | None = None, identity_version: int | None = None, measure_definitions: dict[str, str] | None = None, measure_attestation: MeasureAttestation | None = None, measure_remeasures: list[MeasureRemeasure] = list(), served_model_attestation: ServedModelAttestation | None = None, variant_levers: dict[str, SweepableValue] | None = None, launch_group_id: str | None = None, status: EvalRunStatus = 'pending', completeness: RunCompleteness | None = None, progress: dict[str, Any] = dict(), cancellation_reason: str | None = None, budget_stop_reason: str | None = None, budget_stops: list[BudgetStop] | None = None, failed_because: StoredFailedBecause | None = None, exhausted_because: StoredExhaustedBecause | None = None, error_details: list[str] = list(), created_at: str = utc_now_iso(), completed_at: str | None = None, archived: bool = False, labels: list[str] = list(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None, faults: FaultsField = list(), lifetimes: list[RunLifetime] = list())",
+      "signature": "EvalRun(schema_minor: CoreSchemaMinor = 24, id: str = <lambda>(), doc_type: Literal['eval_run'] = 'eval_run', schema_version: CoreSchemaVersion = 15, scope_id: str, template_id: str | None = None, subject_snapshot: SubjectSnapshot, host_payload: VerbatimObject = dict(), candidate_model: str, k_runs: int, test_case_ids: list[str], apparatus_provenance: ApparatusProvenance, variation_counts: VariationCounts | None = None, candidate_kind: str, judge_model: str | None = None, model_role_provenance: dict[str, StoredRoleModelOrigin] | None = None, effective_judges: dict[DimName, str] | None = None, rubric_scales: dict[DimName, RubricScale], effective_judges_source: JudgeAttributionSource | None = None, judge_config_ids: dict[DimName, str] | None = None, judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = None, overlays: dict[str, Any] = dict(), apparatus_settings: dict[str, ApparatusSettingValue] = dict(), declared_margins: dict[str, float] = dict(), declared_measures: dict[str, MeasureDeclaration] = dict(), resolved_world_seed: dict[str, Any] = dict(), resolved_ambient_perturbation_turns: list[int] = list(), kind_spec: dict[str, Any] = dict(), world_placements: dict[str, WorldPlacement] | None = None, goal_check_proofs: dict[str, GoalCheckProof] | None = None, goal_check_proof_rules: int | None = None, refused_goal_checks: dict[str, str] | None = None, resolved_tools_allowed: list[str] | None = None, template_digest: str | None = None, cassette_mode: Literal['capture', 'replay', 'off'] = 'off', cassette_corpus_id: str | None = None, measure_latency: bool | None = None, cell_concurrency: int = 1, arm_schedule: ArmSchedule | None = None, simulator_model: str | None = None, judge_asked_settings: ClientRequestSettings | None = None, judge_temperature: float | None = None, simulator_asked_settings: ClientRequestSettings | None = None, simulator_prompt_digest: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: StoredCostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, package_version: str | None = None, package_rev: str | None = None, run_disclosure: RunDisclosure | None = None, max_metered_calls: int | None = None, max_metered_calls_origin: StoredMeteredCallOrigin | None = None, metered_calls_refused: int | None = None, case_set: CaseSetRef | None = None, cell_timeout_s: float | None = None, cell_timeout_s_origin: StoredCellTimeoutOrigin | None = None, turn_budget_s: float | None = None, context_key: str | None = None, context_components: ContextComponents | None = None, identity_version: int | None = None, measure_definitions: dict[str, str] | None = None, measure_attestation: MeasureAttestation | None = None, measure_remeasures: list[MeasureRemeasure] = list(), served_model_attestation: ServedModelAttestation | None = None, variant_levers: dict[str, SweepableValue] | None = None, launch_group_id: str | None = None, status: EvalRunStatus = 'pending', completeness: RunCompleteness | None = None, progress: dict[str, Any] = dict(), cancellation_reason: str | None = None, budget_stop_reason: str | None = None, budget_stops: list[BudgetStop] | None = None, failed_because: StoredFailedBecause | None = None, exhausted_because: StoredExhaustedBecause | None = None, error_details: list[str] = list(), created_at: str = utc_now_iso(), completed_at: str | None = None, archived: bool = False, labels: list[str] = list(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None, faults: FaultsField = list(), lifetimes: list[RunLifetime] = list())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRunStamp": {
@@ -578,18 +623,33 @@
     },
     "threetears.evals.schema.EvalTemplate": {
       "kind": "model",
-      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), goal_check_names: dict[str, str] = dict(), stratum_names: dict[str, str] = dict(), revision: int = 1, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
+      "signature": "EvalTemplate(schema_minor: DurableSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['eval_template'] = 'eval_template', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', intent: str, candidate_kind: str, tools_required: list[str] = list(), universal: bool = False, tools_allowed: list[str] | None = None, variation_axes: list[VariationAxis] = list(), conversation: ConversationSpec | None = None, world_seed: WorldSeed = WorldSeed(), kind_spec: dict[str, Any] = dict(), preconditions: list[Precondition] = list(), goal_state_checks: list[str] = list(), goal_check_controls: GoalCheckControls | None = None, rubric: list[RubricDim] = list(), goal_check_names: dict[str, str] = dict(), claim_criteria: list[ClaimCriterion] = list(), claim_unit_names: dict[str, str] = dict(), stratum_names: dict[str, str] = dict(), revision: int = 1, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTestCase": {
       "kind": "model",
-      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 17, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), reference: ReferenceKey | None = None, stratum: str | None = None, name: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, seed_name: str | None = None, seed_digest: str | None = None, carried_from: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalTestCase(schema_minor: DurableSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['eval_test_case'] = 'eval_test_case', schema_version: DurableSchemaVersion = 17, scope_id: str, template_id: str | None, variation_params: dict[str, str] = dict(), host_payload: VerbatimObject = dict(), reference: ReferenceKey | None = None, stratum: str | None = None, name: str | None = None, content_hash: str | None = None, archived: bool = False, archived_reason: str | None = None, seed_name: str | None = None, seed_digest: str | None = None, carried_from: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalTrace": {
       "kind": "model",
-      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 23, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None)",
+      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 24, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None, claim_evidence: ClaimEvidence | None = None, claim_grades: dict[DimName, ClaimGrade] = dict())",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.EvidenceDocument": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.EvidenceProvenance": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.EvidenceRef": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.EXHAUSTED_BECAUSE": {
       "kind": "constant (tuple)",
@@ -686,6 +746,11 @@
       "signature": "GoalStateOutcome(expression: str, passed: bool, detail: str = '')",
       "tier": "stable"
     },
+    "threetears.evals.schema.GradedClaim": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.grouped_narrowed": {
       "kind": "function",
       "signature": "",
@@ -748,7 +813,7 @@
     },
     "threetears.evals.schema.JudgeConfig": {
       "kind": "model",
-      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso())",
+      "signature": "JudgeConfig(schema_minor: DurableSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['judge_config'] = 'judge_config', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', rubric_dim_id: DimName, prompt_template: str, model: str = '', temperature: float = 0.0, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso())",
       "tier": "stable"
     },
     "threetears.evals.schema.JudgeConfigTombstone": {
@@ -968,7 +1033,7 @@
     },
     "threetears.evals.schema.OutOfRunSpend": {
       "kind": "model",
-      "signature": "OutOfRunSpend(schema_minor: CoreSchemaMinor = 23, doc_type: Literal['eval_out_of_run_spend'] = 'eval_out_of_run_spend', schema_version: CoreSchemaVersion = 15, id: str = <lambda>(), scope_id: str, purpose: StoredOutOfRunPurpose, model: str, served_model: str | None = None, outcome: OutOfRunOutcome, failure: str | None = None, stop_reason: StopReason | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, sent_settings: ClientRequestSettings | None = None, unreadable: list[str] = list(), priced_ceiling_usd: float | None = None, cap_usd: float | None = None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, calls: int | None = None, unpriced_calls: int | None = None, raised_calls: int | None = None, priced_usd: float | None = None, admitted_by: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "OutOfRunSpend(schema_minor: CoreSchemaMinor = 24, doc_type: Literal['eval_out_of_run_spend'] = 'eval_out_of_run_spend', schema_version: CoreSchemaVersion = 15, id: str = <lambda>(), scope_id: str, purpose: StoredOutOfRunPurpose, model: str, served_model: str | None = None, outcome: OutOfRunOutcome, failure: str | None = None, stop_reason: StopReason | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, sent_settings: ClientRequestSettings | None = None, unreadable: list[str] = list(), priced_ceiling_usd: float | None = None, cap_usd: float | None = None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, calls: int | None = None, unpriced_calls: int | None = None, raised_calls: int | None = None, priced_usd: float | None = None, admitted_by: str | None = None, created_at: str = utc_now_iso())",
       "tier": "stable"
     },
     "threetears.evals.schema.OutOfRunSpendStore": {
@@ -978,6 +1043,11 @@
     },
     "threetears.evals.schema.page_by_doc_type": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.PageBudget": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1115,6 +1185,11 @@
       "kind": "constant (int)",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.RepairBudget": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.RepeatedScore": {
       "kind": "model",
@@ -1311,6 +1386,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.TextSpan": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ThinkingBinding": {
       "kind": "dataclass",
       "signature": "ThinkingBinding(prefix_mismatch_behavior: Literal['error', 'drop_block'] = 'error')",
@@ -1413,6 +1493,21 @@
     },
     "threetears.evals.schema.VersionSpace": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebBudget": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebCheckRecord": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebWindow": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1918,7 +2013,7 @@
     },
     "threetears.evals.kernel.EvalCampaign": {
       "kind": "model",
-      "signature": "EvalCampaign(schema_minor: DurableSchemaMinor = 8, id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, question: str = '', arms: list[CampaignArm] = list(), aspects: list[Aspect], floors: list[Floor] = list(), declared_at: str | None = None, declared_by: str = '', volume_per_month: float | None = None, call: CampaignCall | None = None, archived: bool = False, looks_rule: int | None = None, created_at: str = utc_now_iso(), created_by: str)",
+      "signature": "EvalCampaign(schema_minor: DurableSchemaMinor = 9, id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: DurableSchemaVersion = 17, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, question: str = '', arms: list[CampaignArm] = list(), aspects: list[Aspect], floors: list[Floor] = list(), declared_at: str | None = None, declared_by: str = '', volume_per_month: float | None = None, call: CampaignCall | None = None, archived: bool = False, looks_rule: int | None = None, created_at: str = utc_now_iso(), created_by: str)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalGenerationSlot": {
@@ -4233,7 +4328,7 @@
     },
     "threetears.evals.run.TemplateField": {
       "kind": "literal",
-      "signature": "'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'",
+      "signature": "'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'` | `'claim_criteria'",
       "tier": "stable"
     },
     "threetears.evals.run.TurnDriver": {

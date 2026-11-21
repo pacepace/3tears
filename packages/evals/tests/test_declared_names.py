@@ -360,9 +360,9 @@ PINNED: dict[str, str] = {
     # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0, a rating's evidence inputs 17.1, the
     # first screen's declaration and call fields 17.2, a campaign's looks rule and an aspect's membership 17.3, the
     # blind read 17.4, a blind read's preference stored as counts the minor after it (#1236), an aspect's undo 17.6, a
-    # case's reference key 17.7, the key's context tier 17.8. It is no part of what a run, cell, pool, pairing,
-    # analysis or reporter case keys on.
-    "durable version": "17.8",
+    # case's reference key 17.7, the key's context tier 17.8, a template's claim criteria 17.9. It is no part of what
+    # a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.9",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",

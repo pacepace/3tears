@@ -77,7 +77,8 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.schema.reading_states import SampleKind
-from threetears.evals.schema.reference import ReferenceKey
+from threetears.evals.schema.claims import Segment
+from threetears.evals.schema.reference import ReferenceFact, ReferenceKey
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -1670,7 +1671,9 @@ DECLARED_NAME_CHARS: Final[int] = 32
 #: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
 #: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
 #: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
-TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names", "stratum_names"})
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"goal_check_names", "stratum_names", "claim_unit_names"}
+)
 
 
 def declared_name(name: str, *, what: str) -> str:
@@ -1689,6 +1692,186 @@ def declared_name(name: str, *, what: str) -> str:
             "shorten it, or leave it out to print it whole"
         )
     return name
+
+
+# =============================================================================
+# Claim criteria — the claim-grading instrument a template declares (#1287)
+# =============================================================================
+
+#: Where a document a claim is checked against came from. ``case``: the case's own evidence, the same for every arm (a
+#: summary's source, the rules in force, a gold passage). ``run``: what this cell's candidate was given or fetched
+#: itself (a retrieved passage, a page it fetched and read), which differs by arm. Closed: truth reads only ``case``
+#: evidence and groundedness reads what a criterion names, so a provenance an older build cannot name would be read
+#: as evidence of the wrong kind.
+EvidenceProvenance = Literal["case", "run"]
+
+#: The most bytes the claims payload of one trace may hold, serialized as UTF-8 JSON: its claim evidence and every
+#: criterion's grade, documents and web windows included. Under the row limit a host's store must provide for a trace.
+#: It may rise in a later build and never fall, since a stored trace over a lower cap would no longer read.
+CLAIM_TRACE_BYTES: Final[int] = 3 * 1024 * 1024
+
+#: The most bytes of :data:`CLAIM_TRACE_BYTES` a cell's evidence documents may hold, serialized. A kind truncates its
+#: documents to fit and says so in each title; the engine never truncates.
+CLAIM_DOCUMENT_BYTES: Final[int] = 1024 * 1024
+
+#: The most bytes of :data:`CLAIM_TRACE_BYTES` the web windows a criterion may read in one cell may hold, a character
+#: counted at four bytes, the most UTF-8 spends on one. A :class:`WebBudget` whose windows could exceed it is refused.
+CLAIM_WINDOW_BYTES: Final[int] = 1024 * 1024
+
+#: The most UTF-8 bytes one character can take, at which a budget in characters is counted against a cap in bytes.
+_MAX_UTF8_BYTES: Final = 4
+
+
+class PageBudget(EvalDocumentModel, CoreShapeModel):
+    """How much of a cell's evidence documents a criterion's verify calls may read: passages chosen by code."""
+
+    per_document_chars: int = Field(ge=1, description="The most characters read from any one document.")
+    total_chars: int = Field(ge=1, description="The most characters read from all of a cell's documents together.")
+    window_chars: int = Field(ge=1, description="The length of one passage cut around what a claim names.")
+
+    @model_validator(mode="after")
+    def _windows_fit_documents(self) -> Self:
+        """Refuse a passage longer than a document's share, or a document's share longer than the whole.
+
+        :raises ValueError: ``window_chars`` exceeds ``per_document_chars``, or that exceeds ``total_chars``.
+        """
+        if not self.window_chars <= self.per_document_chars <= self.total_chars:
+            raise ValueError(
+                f"a page budget reads window_chars <= per_document_chars <= total_chars, and this one reads "
+                f"{self.window_chars}, {self.per_document_chars} and {self.total_chars}"
+            )
+        return self
+
+
+class RepairBudget(EvalDocumentModel, CoreShapeModel):
+    """How many items a criterion asks again, and how often, past which the cell is the criterion's loss."""
+
+    rounds: int = Field(default=2, ge=0, description="How many rounds a failing item is asked again alone.")
+    max_items_per_cell: int = Field(ge=0, description="The most items one cell may ask again, over every round.")
+
+
+class WebBudget(EvalDocumentModel, CoreShapeModel):
+    """How far a criterion's web check may go in one cell. A criterion with no budget checks nothing on the web."""
+
+    max_queries_per_claim: int = Field(ge=1, description="The most searches written for one nominated claim.")
+    max_checked_per_cell: int = Field(
+        ge=1, description="The most nominated claims checked in one cell; the rest are recorded as skipped for it."
+    )
+    results_per_query: int = Field(ge=1, description="The most pages read of one search's results.")
+    page_chars: int = Field(ge=1, description="The most characters of one page read and stored, in windows.")
+    window_chars: int = Field(ge=1, description="The length of one window cut from a page around what a claim names.")
+
+    @model_validator(mode="after")
+    def _windows_fit_the_trace(self) -> Self:
+        """Refuse a window longer than a page's share, or windows that could outgrow their share of the trace.
+
+        :raises ValueError: ``window_chars`` exceeds ``page_chars``, or the most a cell could read, at four bytes a
+            character, exceeds :data:`CLAIM_WINDOW_BYTES`.
+        """
+        if self.window_chars > self.page_chars:
+            raise ValueError(
+                f"a web budget's window_chars ({self.window_chars}) is at most its page_chars ({self.page_chars})"
+            )
+        most = self.max_checked_per_cell * self.max_queries_per_claim * self.results_per_query * self.page_chars
+        if most * _MAX_UTF8_BYTES > CLAIM_WINDOW_BYTES:
+            raise ValueError(
+                f"a web budget may read {most} characters of windows in one cell (max_checked_per_cell x "
+                f"max_queries_per_claim x results_per_query x page_chars), up to {most * _MAX_UTF8_BYTES} bytes, "
+                f"and a trace holds at most CLAIM_WINDOW_BYTES ({CLAIM_WINDOW_BYTES}) of windows; lower one of them"
+            )
+        return self
+
+
+class ClaimCriterion(EvalDocumentModel, CoreShapeModel):
+    """One claim-grading instrument a template declares: which claims its judge lists, and what it grades them against.
+
+    The engine lists the factual claims in a cell's output, grades each for truth against the case's evidence (and the
+    web, where a budget allows), and, where ``grounded_in`` names them, for support by the documents the candidate
+    itself was given. Its readings are judged readings keyed under its name, so the name, and every name that starts
+    with it and ``_``, belongs to it alone within the template. Stored with the template; how a page calls one unit
+    of its denominator is presentation, on the template (``EvalTemplate.claim_unit_names``).
+    """
+
+    name: DimName = Field(
+        description="Its namespaced name (`rules.claims`), unique in the template and owning every name `<name>_...`."
+    )
+    guidance: str = Field(
+        default="",
+        description=(
+            "The host's own notes on what counts as a claim in its domain, and how to read one, with its own "
+            "examples; sent with every prompt the criterion's judge is asked."
+        ),
+    )
+    grounded_in: tuple[EvidenceProvenance, ...] | None = Field(
+        default=None,
+        description=(
+            "Which documents the candidate itself was given, that a claim's support by reads as grounded: `run` for "
+            "documents it retrieved or fetched, `case` for a summary of its source. A set, kept in one order. None "
+            "(the default): no groundedness reading. Never case evidence the candidate was not shown."
+        ),
+    )
+    web: WebBudget | None = Field(
+        default=None, description="How far the web check may go in one cell; None checks nothing on the web."
+    )
+    pages: PageBudget = Field(description="How much of a cell's documents its verify calls read.")
+    repairs: RepairBudget = Field(description="How much it asks again before the cell is its loss.")
+    judge: JudgeDeclaration = Field(
+        description="Which judge grades it, declared as a rubric dimension's is. Only `builtin`: no configured claim "
+        "judge exists."
+    )
+
+    @field_validator("grounded_in", mode="after")
+    @classmethod
+    def _grounded_in_one_order(cls, given: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        """``grounded_in`` is a set: kept sorted, once each, and never empty, since an empty set is ``None``'s meaning.
+
+        :raises ValueError: It is empty.
+        """
+        if given is None:
+            return None
+        if not given:
+            raise ValueError("grounded_in names at least one provenance; leave it out for no groundedness reading")
+        return tuple(sorted(set(given)))
+
+    @field_validator("judge", mode="after")
+    @classmethod
+    def _built_in_judge_only(cls, judge: str) -> str:
+        """Refuse a configured judge, which no claim criterion has.
+
+        :raises ValueError: ``judge`` is ``configured``.
+        """
+        if judge != "builtin":
+            raise ValueError("a claim criterion is graded by the engine's built-in prompts; declare judge 'builtin'")
+        return judge
+
+
+def _refuse_claim_names_shared(template: EvalTemplate) -> None:
+    """Refuse a claim criterion whose name, or a name its readings could take, another criterion or a dimension holds.
+
+    :param template: The template.
+    :raises ValueError: Two criteria share a name, or a rubric dimension or another criterion is named a criterion's
+        name or that name and ``_`` and more.
+    """
+    criteria = [criterion.name for criterion in template.claim_criteria]
+    if twice := sorted({name for name in criteria if criteria.count(name) > 1}):
+        raise ValueError(f"claim_criteria names {', '.join(map(repr, twice))} more than once; name each apart")
+    names = [dim.name for dim in template.rubric] + criteria
+    for criterion in criteria:
+        taken = [name for name in names if name.startswith(f"{criterion}_") or name == criterion]
+        if len(taken) > 1:
+            others = sorted(set(taken) - {criterion}) or [criterion]
+            raise ValueError(
+                f"claim criterion {criterion!r} owns its name and every name {criterion + '_...'!r} for its readings, "
+                f"and the template also names {', '.join(map(repr, others))}; rename one"
+            )
+    if stray := sorted(set(template.claim_unit_names) - set(criteria)):
+        raise ValueError(
+            f"claim_unit_names names {', '.join(map(repr, stray))}, which "
+            + ("is not a claim criterion" if len(stray) == 1 else "are not claim criteria")
+            + " of this template; key each noun by a criterion's name"
+        )
+    for criterion, noun in template.claim_unit_names.items():
+        declared_name(noun, what=f"the unit of claim criterion {criterion!r}")
 
 
 class EvalTemplate(DurableDocumentModel):
@@ -1839,6 +2022,28 @@ class EvalTemplate(DurableDocumentModel):
             "or candidate, so naming a check changes nothing a run measures."
         ),
     )
+    # The claim-grading instruments (#1287), graded in the judge phase beside the rubric. Written only when one is
+    # declared, so a template without one is stored, digested and measured exactly as before the field existed.
+    claim_criteria: list[ClaimCriterion] = Field(
+        default_factory=list,
+        exclude_if=lambda criteria: not criteria,
+        description=(
+            "The claim criteria a run of this template grades: each lists the factual claims in a cell's output and "
+            "grades them for truth (and, where it names grounded_in, for support by the candidate's own documents). "
+            "Each name is unique in the template and owns every name that starts with it and `_`, which its readings "
+            "are keyed under, so no rubric dimension may take one. Empty (the default) grades no claims."
+        ),
+    )
+    # What a page calls one unit of each criterion's denominator: presentation only, like `goal_check_names`.
+    claim_unit_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page calls one unit of a claim criterion's denominator (`stop`, `answer`, `entry`), by the "
+            f"criterion's name: at most {DECLARED_NAME_CHARS} characters. A criterion with none here is printed per "
+            "unit. Read by no judge, simulator or candidate, so naming a unit changes nothing a run measures."
+        ),
+    )
     # What a page calls each stratum: presentation only, like `goal_check_names`.
     stratum_names: dict[str, str] = Field(
         default_factory=dict,
@@ -1940,7 +2145,9 @@ class EvalTemplate(DurableDocumentModel):
 
         :return: The validated template.
         :rtype: EvalTemplate
-        :raises ValueError: A name is keyed by no goal check of the template, is blank or too long, or is repeated.
+        :raises ValueError: A name is keyed by no goal check of the template, is blank or too long, or is repeated; or
+            a claim criterion's name, or a name its readings could take, is held by another
+            (:func:`_refuse_claim_names_shared`).
         """
         if stray := sorted(set(self.goal_check_names) - set(self.goal_state_checks)):
             raise ValueError(
@@ -1964,6 +2171,7 @@ class EvalTemplate(DurableDocumentModel):
             raise ValueError(
                 f"stratum_names gives {', '.join(map(repr, twice))} to more than one stratum; name each stratum apart"
             )
+        _refuse_claim_names_shared(self)
         return self
 
 
@@ -5846,6 +6054,583 @@ class JudgeEvidence(CoreShapeModel):
     the inputs (what was asked) and label keys over what was read, so a label does not carry across a re-render."""
 
 
+# =============================================================================
+# Claim evidence, grades and tallies — what claim grading stores (#1287)
+# =============================================================================
+#
+# Beside JudgeEvidence, never on it: a field there would enter every rubric label key (fingerprint_judged_output
+# hashes its whole dump) and ride along with every batch read of judge evidence. Each shape is frozen and keeps its
+# strings as written, as JudgeEvidence does: a quote is checked verbatim against what it quotes, so whitespace is part
+# of what was read. A segment is the extractor's own Segment (schema.claims), whose excerpts are slices of its text.
+
+#: The closed vocabularies of a claim's grade, each written inline on its field and listed closed in
+#: :mod:`~threetears.evals.schema.versioning`: a claim's ``scope`` (``world``, graded for truth, or ``session``, about
+#: the output or session itself), its ``verdict`` (``supported``, ``contradicted``, ``unverifiable``,
+#: ``true_ungrounded``), what decided it (``graded_against``: ``case`` or ``web``), who nominated it for the web check
+#: (``nominated_by``: only ``judge``, never the arm's pages), whether the web checked it (``web``: ``checked``,
+#: ``skipped_cap``, ``none``), what a web check found (``true``, ``false``, ``inconclusive``), a citation's ``stance``
+#: (``supports``, ``contradicts``) and a call's ``role`` (``extract``, ``truth``, ``ground``, ``repair``, ``web``).
+
+#: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
+#: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
+#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside), ``deadline`` (the
+#: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
+#: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
+#: vocabulary: a reader counts every loss, a reason it does not know by name.
+ClaimLoss = str
+
+#: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
+KnownClaimLoss = Literal[
+    "cut_short",
+    "unreadable",
+    "repair_budget_spent",
+    "port_error",
+    "cost_cap",
+    "deadline",
+    "evidence_over_cap",
+    "trace_lost",
+]
+
+#: The claim losses this build knows, in the order its readers list them.
+CLAIM_LOSSES: Final[tuple[str, ...]] = get_args(KnownClaimLoss)
+
+#: The type of a stored claim loss: one of :data:`CLAIM_LOSSES`, or, on a newer minor's stored read, one it added.
+StoredClaimLoss = Annotated[ClaimLoss, known_unless_newer_minor("claim loss", CLAIM_LOSSES)]
+
+#: The most characters a citation's or a web check's quote holds: one sentence or table row.
+CLAIM_QUOTE_CHARS: Final[int] = 300
+
+_CLAIM_RECORD = ConfigDict(extra="forbid", frozen=True)
+
+
+def _serialized_bytes(value: object) -> int:
+    """How many bytes ``value`` takes as UTF-8 JSON, as a store would hold it."""
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _not_blank(text: str, what: str) -> str:
+    """Refuse text that is empty or whitespace alone.
+
+    :raises ValueError: It is.
+    """
+    if not text.strip():
+        raise ValueError(f"{what} is blank")
+    return text
+
+
+class TextSpan(CoreShapeModel):
+    """A stretch of a text, by character offsets: from ``start`` up to ``end``, which is excluded."""
+
+    model_config = _CLAIM_RECORD
+
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _ends_after_it_starts(self) -> Self:
+        """:raises ValueError: ``end`` is not past ``start``."""
+        if self.end <= self.start:
+            raise ValueError(f"a span ends past where it starts, and this one runs {self.start} to {self.end}")
+        return self
+
+    def within(self, text: str, what: str) -> None:
+        """Refuse a span that runs past the end of ``text``.
+
+        :param text: The text it is a span of.
+        :param what: What it spans, for the refusal.
+        :raises ValueError: It runs past it.
+        """
+        if self.end > len(text):
+            raise ValueError(f"a span of {what} ends at {self.end}, past its {len(text)} characters")
+
+
+class EvidenceDocument(CoreShapeModel):
+    """One document a cell's claims may be checked against: case evidence, or one the candidate itself was given."""
+
+    model_config = _CLAIM_RECORD
+
+    id: str = Field(min_length=1, description="Its id, unique in the cell's evidence.")
+    provenance: EvidenceProvenance = Field(description="`case`, the same for every arm, or `run`, this cell's own.")
+    title: str = Field(min_length=1, description="Its title; a kind that truncated it says so here.")
+    url: str | None = Field(default=None, min_length=1, description="Where it was read, when it has an address.")
+    text: str = Field(min_length=1, description="Its text, as read; every quote of it is checked against this.")
+
+    @field_validator("text", mode="after")
+    @classmethod
+    def _text_not_blank(cls, text: str) -> str:
+        return _not_blank(text, "an evidence document's text")
+
+
+class ClaimEvidence(CoreShapeModel):
+    """What a cell's claims are listed from and graded against, as its kind rendered it.
+
+    Stored on the cell's trace (:attr:`EvalTrace.claim_evidence`), beside its judge evidence and never in it, so no
+    rubric label key reads it. The case's key facts are not here: the engine reads them off the case.
+    """
+
+    model_config = _CLAIM_RECORD
+
+    segmentation: str = Field(
+        min_length=1,
+        description="The host's name for how it cut the output into segments and units; change it whenever the "
+        "cutting changes, since it sets every per-unit denominator.",
+    )
+    segments: tuple[Segment, ...] = Field(min_length=1, description="The output, cut, in the order it reads.")
+    documents: tuple[EvidenceDocument, ...] | None = Field(
+        default=None,
+        description="The documents claims may be checked against. Empty: the candidate was given or fetched none, "
+        f"which is recorded. None: not declared. At most CLAIM_DOCUMENT_BYTES ({CLAIM_DOCUMENT_BYTES}) serialized.",
+    )
+    session: VerbatimJsonObject | None = Field(
+        default=None,
+        description="The run's own record (a play order, a game state), host-shaped, for a host's reading of session "
+        "claims against it: stored as written, read by no prompt and by nothing in the engine.",
+    )
+
+    @model_validator(mode="after")
+    def _units_numbered_and_documents_capped(self) -> Self:
+        """Refuse units not numbered 0..n-1 with no gap (the extractor's own rule; a unit may span several segments),
+        two documents of one id, or documents over their share of the trace.
+
+        :raises ValueError: One of those.
+        """
+        units = sorted({segment.unit for segment in self.segments if segment.unit is not None})
+        if units != list(range(len(units))):
+            raise ValueError(
+                f"a cell's units are numbered 0..n-1 with no gap, each in at least one segment, and its segments carry "
+                f"the units {units}"
+            )
+        documents = self.documents or ()
+        ids = [document.id for document in documents]
+        if twice := sorted({doc_id for doc_id in ids if ids.count(doc_id) > 1}):
+            raise ValueError(f"evidence documents {', '.join(map(repr, twice))} each appear more than once")
+        held = _serialized_bytes([document.model_dump(mode="json") for document in documents])
+        if held > CLAIM_DOCUMENT_BYTES:
+            raise ValueError(
+                f"a cell's evidence documents take {held} bytes, and CLAIM_DOCUMENT_BYTES allows {CLAIM_DOCUMENT_BYTES}; "
+                "the kind truncates them to fit and says so in each title"
+            )
+        return self
+
+
+class ClaimCitation(CoreShapeModel):
+    """One piece of evidence a verify call cited for a claim: its ref in the grade's index, its stance, its quote."""
+
+    model_config = _CLAIM_RECORD
+
+    ref: str = Field(min_length=1, description="The evidence it cites, by its ref in the grade's index (`K1`, `S3`).")
+    stance: Literal["supports", "contradicts"]
+    quote: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CLAIM_QUOTE_CHARS,
+        description="The sentence or row quoted, verbatim in the cited text; None for a key fact, which is quoted "
+        "whole.",
+    )
+    subject_span: TextSpan | None = Field(default=None, description="Where the quote names the claim's subject.")
+    value_span: TextSpan | None = Field(default=None, description="Where the quote states the value at issue.")
+
+    @model_validator(mode="after")
+    def _spans_inside_the_quote(self) -> Self:
+        """:raises ValueError: A span is set with no quote, or runs past it."""
+        for name, span in (("subject_span", self.subject_span), ("value_span", self.value_span)):
+            if span is None:
+                continue
+            if self.quote is None:
+                raise ValueError(f"a citation's {name} is a span of its quote, and it quotes nothing")
+            span.within(self.quote, "a citation's quote")
+        return self
+
+
+class EvidenceRef(CoreShapeModel):
+    """One numbered piece of evidence a grade's calls were shown: a passage of a document, or a key fact."""
+
+    model_config = _CLAIM_RECORD
+
+    ref: str = Field(min_length=1, description="How the calls cited it (`K1` a key fact, `S1` a passage).")
+    provenance: EvidenceProvenance = Field(description="Where it came from; a key fact is `case`.")
+    document: str | None = Field(default=None, min_length=1, description="The passage's document, by id.")
+    span: TextSpan | None = Field(default=None, description="Where the passage sits in its document's text.")
+    entity: str | None = Field(default=None, min_length=1, description="The key entity a key fact is about.")
+    fact: ReferenceFact | None = Field(default=None, description="The key fact.")
+
+    @model_validator(mode="after")
+    def _a_passage_or_a_fact(self) -> Self:
+        """:raises ValueError: It is neither a passage (document and span) nor a key fact (entity and fact), or both,
+        or a key fact that is not case evidence."""
+        passage = self.document is not None and self.span is not None
+        fact = self.entity is not None and self.fact is not None
+        loose = (self.document is None) != (self.span is None) or (self.entity is None) != (self.fact is None)
+        if passage == fact or loose:
+            raise ValueError(f"evidence {self.ref!r} is a passage (document and span) or a key fact (entity and fact)")
+        if fact and self.provenance != "case":
+            raise ValueError(f"key fact {self.ref!r} is case evidence, and its provenance reads {self.provenance!r}")
+        return self
+
+
+class ClaimCall(CoreShapeModel):
+    """One call a criterion's grade made, as the judge's identity is recorded for a rubric score."""
+
+    model_config = _CLAIM_RECORD
+
+    role: Literal["extract", "truth", "ground", "repair", "web"] = Field(
+        description="What it was asked: list the claims, verify against case evidence, verify against the candidate's "
+        "own documents, ask a failing item again, or write a search or read its results."
+    )
+    served_model: str | None = Field(
+        default=None, description="The model the provider said answered; None when the response named none."
+    )
+    judge_temperature: JudgeTemperature | None = Field(default=None, description="The temperature it was sent at.")
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None, description="The request settings it was sent with; None when unverified."
+    )
+
+
+class GradedClaim(CoreShapeModel):
+    """One claim a criterion listed in a cell's output, with its tags and what grading it found."""
+
+    model_config = _CLAIM_RECORD
+
+    segment: int = Field(ge=0, description="The segment it was said in, by its place in the evidence's segments.")
+    unit: int | None = Field(ge=0, description="That segment's unit, or None for a segment of none.")
+    claim: str = Field(min_length=1, description="The proposition, stated on its own.")
+    excerpt: str = Field(min_length=1, description="The segment's own text at start..end that the claim stands in.")
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+    scope: Literal["world", "session"] = Field(
+        description="`world`, graded for truth, or `session`, about the output itself."
+    )
+    specific: bool = Field(description="It states a detail a source could settle: a name, number, date or rule.")
+    hedged: bool = Field(description="The text marks it as its own uncertain recollection.")
+    attributed: bool = Field(
+        description="The text reports it without vouching for it: a rumour, another party's or a character's statement, "
+        "`some say`. A statement the text backs with a source (`the rules say`) is its own, and asserted."
+    )
+    restates: int | None = Field(
+        default=None, ge=0, description="The earlier claim of the same scope it says again, by its place; None."
+    )
+    truth_citations: tuple[ClaimCitation, ...] = ()
+    ground_citations: tuple[ClaimCitation, ...] = ()
+    suspect: bool = Field(default=False, description="No evidence covers it, and the judge doubts it.")
+    nominated_by: Literal["judge"] | None = Field(default=None, description="Who nominated it for the web check.")
+    verdict: Literal["supported", "contradicted", "unverifiable", "true_ungrounded"] | None = Field(
+        default=None, description="Its truth verdict; None for a session claim."
+    )
+    graded_against: Literal["case", "web"] | None = Field(
+        default=None, description="What decided the verdict; None for `unverifiable` and session claims."
+    )
+    grounded: bool | None = Field(
+        default=None,
+        description="Whether a document the candidate itself was given supports it; None where no criterion asked.",
+    )
+    evidence_conflict: bool = Field(default=False, description="Case evidence both supports and contradicts it.")
+    web: Literal["checked", "skipped_cap", "none"] = Field(
+        default="none", description="`checked` on the web, `skipped_cap` past the cell's budget, or `none`."
+    )
+    decided_by: int | None = Field(
+        default=None, ge=0, description="The call whose answer fixed the verdict, by its place in the grade's calls."
+    )
+
+    @model_validator(mode="after")
+    def _grade_reads_as_one(self) -> Self:
+        """Refuse a claim whose tags, verdict, evidence and web check contradict one another.
+
+        :raises ValueError: The excerpt's offsets are not its length; a session claim carries a truth or web grade; a
+            world claim has no verdict or no deciding call; the verdict and what decided it disagree; a web check
+            nobody nominated; or a ground citation that contradicts.
+        """
+        if self.end - self.start != len(self.excerpt) or self.end <= self.start:
+            raise ValueError(
+                f"claim {self.claim!r}: its excerpt runs {self.start} to {self.end} and holds {len(self.excerpt)} "
+                "characters"
+            )
+        # prose-canary: allow — `scope` here is the closed Literal world/session, not an insight's free-text scope
+        if self.scope == "session":
+            graded = (
+                self.truth_citations,
+                self.ground_citations,
+                self.suspect,
+                self.nominated_by,
+                self.verdict,
+                self.graded_against,
+                self.grounded is not None,
+                self.evidence_conflict,
+                self.web != "none",
+                self.decided_by is not None,
+            )
+            if any(graded):
+                raise ValueError(f"session claim {self.claim!r} is graded by no truth, ground or web step")
+            return self
+        if self.verdict is None or self.decided_by is None:
+            raise ValueError(f"world claim {self.claim!r} has a verdict and the call that decided it")
+        against = {"supported": {"case"}, "contradicted": {"case", "web"}, "true_ungrounded": {"web"}}
+        if self.graded_against not in against.get(self.verdict, {None}):
+            raise ValueError(
+                f"claim {self.claim!r} reads {self.verdict!r}, and graded_against reads {self.graded_against!r}"
+            )
+        if self.graded_against == "case" and not self.truth_citations:
+            raise ValueError(f"claim {self.claim!r} was decided by case evidence it cites none of")
+        if self.evidence_conflict and self.verdict != "supported":
+            raise ValueError(f"claim {self.claim!r}: case evidence in conflict reads supported, not {self.verdict!r}")
+        if (self.web != "none" or self.graded_against == "web") and self.nominated_by is None:
+            raise ValueError(f"claim {self.claim!r} went to the web check, and nobody nominated it")
+        if self.graded_against == "web" and self.web != "checked":
+            raise ValueError(f"claim {self.claim!r} was decided by the web, and its web check reads {self.web!r}")
+        if self.nominated_by is not None and not self.suspect:
+            raise ValueError(f"claim {self.claim!r} was nominated by the judge, which did not suspect it")
+        if any(citation.stance != "supports" for citation in self.ground_citations):
+            raise ValueError(f"claim {self.claim!r}: a ground citation only supports")
+        if self.grounded and not self.ground_citations:
+            raise ValueError(f"claim {self.claim!r} reads grounded, and cites no document that supports it")
+        return self
+
+
+class WebWindow(CoreShapeModel):
+    """One window of a page a web check read, stored so a repeat re-reads it and never searches again."""
+
+    model_config = _CLAIM_RECORD
+
+    url: str = Field(min_length=1)
+    title: str = ""
+    text: str = Field(min_length=1, description="The window, as read.")
+    snippet_only: bool = Field(default=False, description="Only the search result's snippet was read, not the page.")
+
+
+class WebCheckRecord(CoreShapeModel):
+    """What one claim's web check searched, read and found."""
+
+    model_config = _CLAIM_RECORD
+
+    claim: int = Field(ge=0, description="The claim checked, by its place in the grade's claims.")
+    queries: tuple[str, ...] = Field(min_length=1, description="The searches written for it, in order.")
+    urls: tuple[str, ...] = Field(default=(), description="Every result the searches returned, in order.")
+    windows: tuple[WebWindow, ...] = Field(default=(), description="The windows read.")
+    outcome: Literal["true", "false", "inconclusive"]
+    deciding_url: str | None = Field(default=None, min_length=1, description="The page whose quote decided it.")
+    quote: str | None = Field(default=None, min_length=1, max_length=CLAIM_QUOTE_CHARS)
+    subject_span: TextSpan | None = None
+    value_span: TextSpan | None = None
+
+    @model_validator(mode="after")
+    def _decided_by_a_quote_it_read(self) -> Self:
+        """Refuse a decisive check without a quote from a window it read, or an inconclusive one that names one.
+
+        :raises ValueError: One of those, or a span past its quote.
+        """
+        decided = (self.deciding_url, self.quote, self.value_span)
+        if self.outcome == "inconclusive":
+            if any(part is not None for part in (*decided, self.subject_span)):
+                raise ValueError(f"an inconclusive web check of claim {self.claim} names no deciding page or quote")
+            return self
+        if any(part is None for part in decided):
+            raise ValueError(
+                f"a web check of claim {self.claim} that reads {self.outcome!r} names its deciding url, its quote and "
+                "the quote's value span"
+            )
+        if self.deciding_url not in {window.url for window in self.windows}:
+            raise ValueError(f"web check of claim {self.claim}: its deciding url is no window it read")
+        for span in (self.subject_span, self.value_span):
+            if span is not None and self.quote is not None:
+                span.within(self.quote, "a web check's quote")
+        return self
+
+
+#: A web check's outcome, and the verdict and decider it gives the claim it checked.
+_WEB_VERDICTS: Final[Mapping[str, tuple[str, str | None]]] = MappingProxyType(
+    {"true": ("true_ungrounded", "web"), "false": ("contradicted", "web"), "inconclusive": ("unverifiable", None)}
+)
+
+
+class ClaimGrade(CoreShapeModel):
+    """What one claim criterion found in one cell: every call it made, the evidence it numbered, every claim it
+    listed and graded, and every web check, stored on the cell's trace (:attr:`EvalTrace.claim_grades`)."""
+
+    model_config = _CLAIM_RECORD
+
+    criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it graded under.")
+    claim_evidence_digest: str = Field(pattern=_SHA256_HEX, description="The claim evidence it graded, by digest.")
+    calls: tuple[ClaimCall, ...] = Field(min_length=1, description="Every call it made, in order.")
+    evidence: tuple[EvidenceRef, ...] = Field(default=(), description="The evidence its calls were shown, numbered.")
+    documents_truncated: tuple[str, ...] = Field(
+        default=(), description="The documents its page budget did not read whole, by id."
+    )
+    claims: tuple[GradedClaim, ...] = Field(default=(), description="Every claim it listed, in the order said.")
+    web: tuple[WebCheckRecord, ...] = Field(default=(), description="Every web check, in claim order.")
+
+    @model_validator(mode="after")
+    def _references_resolve(self) -> Self:
+        """Refuse a grade whose claims, citations and checks point at what it does not hold, or disagree with it.
+
+        :raises ValueError: Two refs alike; a citation of no ref; a deciding call it did not make; a restatement of no
+            earlier claim of its scope; a web check of no claim, of one twice, or for a claim not checked; or a claim's
+            verdict that is not the one its web check gives.
+        """
+        refs = [entry.ref for entry in self.evidence]
+        if twice := sorted({ref for ref in refs if refs.count(ref) > 1}):
+            raise ValueError(f"a claim grade numbers {', '.join(map(repr, twice))} more than once")
+        for place, claim in enumerate(self.claims):
+            if stray := sorted(
+                {c.ref for c in (*claim.truth_citations, *claim.ground_citations) if c.ref not in set(refs)}
+            ):
+                raise ValueError(
+                    f"claim {place} cites {', '.join(map(repr, stray))}, which the grade numbers no evidence"
+                )
+            if claim.decided_by is not None and claim.decided_by >= len(self.calls):
+                raise ValueError(
+                    f"claim {place} was decided by call {claim.decided_by}, and the grade made {len(self.calls)}"
+                )
+            if claim.restates is not None and not (
+                claim.restates < place and self.claims[claim.restates].scope == claim.scope
+            ):
+                raise ValueError(
+                    f"claim {place} restates claim {claim.restates}, which is no earlier claim of its scope"
+                )
+        checked = [record.claim for record in self.web]
+        if misplaced := sorted({place for place in checked if place >= len(self.claims) or checked.count(place) > 1}):
+            raise ValueError(f"the grade's web checks name claims {misplaced} more than once, or that it does not hold")
+        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked"}
+        if set(checked) != wanted:
+            raise ValueError(
+                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}"
+            )
+        for record in self.web:
+            claim = self.claims[record.claim]
+            if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
+                raise ValueError(
+                    f"claim {record.claim}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
+                    f"against {claim.graded_against!r}"
+                )
+        return self
+
+
+class ClaimJudgeCounts(CoreShapeModel):
+    """One judge's share of a cell's world claims under one criterion: the verdicts the calls of one key decided."""
+
+    model_config = _CLAIM_RECORD
+
+    served_model: str | None = Field(description="The model that served the deciding calls; None when unnamed.")
+    judge_temperature: JudgeTemperature | None = Field(description="The temperature they were sent at.")
+    judge_sent_settings: ClientRequestSettings | None = Field(description="The settings they were sent with.")
+    claims: int = Field(ge=1, description="World claims whose verdict a call of this key decided.")
+    asserted: int = Field(ge=0, description="Of them, those neither hedged nor attributed.")
+    hedged: int = Field(ge=0, description="Of them, those the text marks as its own uncertain recollection.")
+    attributed: int = Field(ge=0, description="Of them, those the text reports without vouching for them.")
+    asserted_specific: int = Field(ge=0)
+    contradicted: int = Field(ge=0, description="Of them, those contradicted, whatever their tags.")
+    asserted_contradicted: int = Field(ge=0)
+    hedged_contradicted: int = Field(ge=0)
+    attributed_contradicted: int = Field(ge=0)
+    grounded_specific: int = Field(ge=0, description="Asserted specific claims a grounded_in document supports.")
+    unverifiable: int = Field(ge=0)
+    true_ungrounded: int = Field(ge=0)
+    web_decided: int = Field(ge=0, description="Asserted claims whose verdict the web decided.")
+    evidence_conflicts: int = Field(ge=0)
+    web_checked: int = Field(ge=0)
+    web_skipped: int = Field(ge=0, description="Claims nominated past the cell's web budget.")
+
+    @model_validator(mode="after")
+    def _counts_nest(self) -> Self:
+        """Refuse counts no set of claims could give.
+
+        A claim not asserted is hedged, attributed or both, so hedged and attributed together cover those claims and
+        neither exceeds them; a contradiction among them is counted under each tag it carries, so the contradicted
+        claims are the asserted ones and at least as many as either tag's, and at most both tags' together.
+
+        :raises ValueError: A count exceeds the claims it is a part of, or the tags and contradictions disagree.
+        """
+        unasserted = self.claims - self.asserted
+        unasserted_contradicted = self.contradicted - self.asserted_contradicted
+        supported = self.claims - self.contradicted - self.unverifiable - self.true_ungrounded
+        parts = (
+            ("asserted", self.asserted, self.claims),
+            ("hedged", self.hedged, unasserted),
+            ("attributed", self.attributed, unasserted),
+            ("claims - asserted", unasserted, self.hedged + self.attributed),
+            ("asserted_specific", self.asserted_specific, self.asserted),
+            ("asserted_contradicted", self.asserted_contradicted, min(self.asserted, self.contradicted)),
+            ("contradicted - asserted_contradicted", unasserted_contradicted, unasserted),
+            ("hedged_contradicted", self.hedged_contradicted, min(self.hedged, unasserted_contradicted)),
+            ("attributed_contradicted", self.attributed_contradicted, min(self.attributed, unasserted_contradicted)),
+            (
+                "contradicted - asserted_contradicted",
+                unasserted_contradicted,
+                self.hedged_contradicted + self.attributed_contradicted,
+            ),
+            ("grounded_specific", self.grounded_specific, self.asserted_specific),
+            ("contradicted + unverifiable + true_ungrounded", self.claims - supported, self.claims),
+            ("evidence_conflicts", self.evidence_conflicts, supported),
+            ("web_checked + web_skipped", self.web_checked + self.web_skipped, self.claims),
+            ("true_ungrounded", self.true_ungrounded, self.web_checked),
+            ("web_decided", self.web_decided, min(self.asserted, self.web_checked)),
+        )
+        if over := sorted({name for name, part, whole in parts if part > whole}):
+            raise ValueError(f"a claim tally's counts do not nest: {', '.join(over)}")
+        return self
+
+
+class ClaimTally(CoreShapeModel):
+    """A cell's counts under one claim criterion, derived from its grade, on the result
+    (:attr:`EvalResult.claim_tallies`) so every reading is computed without reading the trace."""
+
+    model_config = _CLAIM_RECORD
+
+    criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it counts under.")
+    documents_declared: bool = Field(description="The cell's evidence declared its documents (none, or some).")
+    units: int = Field(
+        ge=0, description="The cell's distinct units, the per-unit readings' denominator, never segments."
+    )
+    units_with_false: int = Field(
+        ge=0,
+        description="Distinct units holding at least one asserted contradicted world claim, in any of its segments.",
+    )
+    session_claims: int = Field(ge=0, description="Claims about the output itself, graded by no truth step.")
+    by_judge: tuple[ClaimJudgeCounts, ...] = Field(
+        default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."
+    )
+    ground_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell lost its ground step alone (CLAIM_LOSSES), which costs it the groundedness reading "
+        "and no other: its truth counts stand, and it counts no grounded claim. None (left out) when the step was not "
+        "lost, or not asked.",
+    )
+
+    @model_validator(mode="after")
+    def _one_entry_per_judge(self) -> Self:
+        """Refuse counts the cell's claims could not give.
+
+        :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
+            holds a false claim only by holding one); a grounded claim where no documents were declared, or where the
+            ground step was lost; or two entries for one judge.
+        """
+        if self.units_with_false > self.units:
+            raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
+        false = sum(entry.asserted_contradicted for entry in self.by_judge)
+        if self.units_with_false > false:
+            raise ValueError(
+                f"a tally counts {self.units_with_false} units with a false claim, and {false} asserted contradicted "
+                "claims: each such unit holds one"
+            )
+        if not self.documents_declared and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError("a tally counts grounded claims, and the cell declared no documents to ground them")
+        if self.ground_loss is not None and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError(
+                f"a tally counts grounded claims, and the cell lost its ground step ({self.ground_loss!r}), which "
+                "grounds none"
+            )
+        keys = [
+            (
+                entry.served_model,
+                entry.judge_temperature,
+                None if entry.judge_sent_settings is None else request_settings_order(entry.judge_sent_settings),
+            )
+            for entry in self.by_judge
+        ]
+        if len(set(keys)) != len(keys):
+            raise ValueError("a tally holds two entries for one judge; one entry per judge key")
+        return self
+
+
 def eval_trace_doc_id(result_id: str) -> str:
     """Doc id for a result's :class:`EvalTrace` sibling.
 
@@ -5924,6 +6709,12 @@ class EvalTrace(CoreDocumentModel):
     #: ``None`` when nothing was read: a host with no world, a kind that never seeded through its world
     #: session, or a cell cut off before its end state was read.
     end_state: VerbatimJsonObject | None = None
+    #: What the cell's claims are listed from and graded against, as its kind rendered it (#1287): beside
+    #: ``judge_evidence``, never in it, and independent of it, so a cell of a kind whose declaration is unjudged may
+    #: carry it, and is claim-graded all the same. ``None`` (left out of the document) for a cell with none.
+    claim_evidence: ClaimEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: Each claim criterion's grade of this cell, by the criterion's name. Empty (left out) for a cell none graded.
+    claim_grades: dict[DimName, ClaimGrade] = Field(default_factory=dict, exclude_if=lambda grades: not grades)
 
     @model_validator(mode="after")
     def _evidence_and_its_declaration_travel_together(self) -> Self:
@@ -5931,12 +6722,44 @@ class EvalTrace(CoreDocumentModel):
 
         A re-judge reads both: evidence alone cannot say whether the transcript and outcome axes
         apply, and a declaration alone has nothing to send. An unjudged declaration has no
-        evidence by definition, so it is never stored.
+        evidence by definition, so it is never stored. Claim evidence is no part of the pair.
         """
         if (self.judge_evidence is None) != (self.judged_artifact is None):
             raise ValueError("judge_evidence and judged_artifact are stored together or not at all")
         if self.judged_artifact is JudgedArtifact.UNJUDGED:
             raise ValueError("an unjudged kind renders no judge evidence, so none is stored for it")
+        return self
+
+    @model_validator(mode="after")
+    def _claim_grades_read_their_evidence(self) -> Self:
+        """Refuse a claim grade with no claim evidence to have graded, a claim that is no slice of its segment, or a
+        claims payload over :data:`CLAIM_TRACE_BYTES`.
+
+        :raises ValueError: One of those.
+        """
+        if self.claim_grades and self.claim_evidence is None:
+            raise ValueError("a trace holds claim grades only beside the claim evidence they graded")
+        segments = self.claim_evidence.segments if self.claim_evidence is not None else ()
+        for criterion, grade in self.claim_grades.items():
+            for place, claim in enumerate(grade.claims):
+                if claim.segment >= len(segments):
+                    raise ValueError(f"{criterion} claim {place} names segment {claim.segment}, of {len(segments)}")
+                segment = segments[claim.segment]
+                if claim.unit != segment.unit:
+                    raise ValueError(
+                        f"{criterion} claim {place} reads unit {claim.unit}, and its segment is in unit {segment.unit}"
+                    )
+                if segment.text[claim.start : claim.end] != claim.excerpt:
+                    raise ValueError(f"{criterion} claim {place}'s excerpt is not its segment's text at its offsets")
+        if self.claim_evidence is not None or self.claim_grades:
+            held = _serialized_bytes(
+                self.model_dump(mode="json", include={"claim_evidence", "claim_grades"}, exclude_none=False)
+            )
+            if held > CLAIM_TRACE_BYTES:
+                raise ValueError(
+                    f"a trace's claim evidence and grades take {held} bytes, and CLAIM_TRACE_BYTES allows "
+                    f"{CLAIM_TRACE_BYTES}"
+                )
         return self
 
 
@@ -6809,6 +7632,25 @@ class EvalResult(CoreDocumentModel):
             "Empty when no judge reply was cut short."
         ),
     )
+    # Claim grading (#1287): the counts each criterion's grade gives this cell, and the criteria it lost. A loss is
+    # never a judge error: the cell keeps its pass, its rubric scores and every other reading, and leaves only that
+    # criterion's. Each is left out of the document while empty, so a result no criterion graded is stored as before.
+    claim_tallies: dict[DimName, ClaimTally] = Field(
+        default_factory=dict,
+        exclude_if=lambda tallies: not tallies,
+        description=(
+            "criterion -> this cell's counts under it, derived from its grade on the trace: what every claim reading is "
+            "computed from. Empty when no claim criterion graded the cell."
+        ),
+    )
+    claim_failures: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        exclude_if=lambda failures: not failures,
+        description=(
+            "criterion -> why the cell lost its readings (CLAIM_LOSSES): the criterion has no tally here, and every "
+            "other reading keeps the cell. Never a judge_error. Empty when no criterion was lost."
+        ),
+    )
 
     # Error taxonomy. A result's error is one of two kinds,
     # and scoring treats them oppositely (an infra failure
@@ -6842,6 +7684,18 @@ class EvalResult(CoreDocumentModel):
         if v != "eval_result":
             raise ValueError(f"doc_type must be 'eval_result', got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def _a_criterion_tallied_or_lost(self) -> Self:
+        """Refuse a criterion both tallied and lost: a lost criterion's counts rest on no stored grade.
+
+        :raises ValueError: A criterion is in both ``claim_tallies`` and ``claim_failures``.
+        """
+        if both := sorted(set(self.claim_tallies) & set(self.claim_failures)):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, both))} are both tallied and lost; a loss has no tally"
+            )
+        return self
 
     def judge_score(self, dim: str) -> RubricScore | None:
         """The judge's score for one dimension, wherever this result carries it.

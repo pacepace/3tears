@@ -2728,6 +2728,8 @@ class EvalStorage:
             or trace.judge_evidence is not None
             or trace.call_ledger is not None
             or trace.end_state is not None
+            or trace.claim_evidence is not None
+            or bool(trace.claim_grades)
         )
         return result.model_copy(update={"has_trace": produced}).to_dict()
 

@@ -70,6 +70,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import (
+    refuse_claim_names_a_measure_holds,
     refuse_ignored_template_fields,
     refuse_undeclared_judges,
     validated_kind_spec,
@@ -1298,8 +1299,8 @@ KindLauncher = Callable[[LaunchRequest], Awaitable[EvalRun]]
 LaunchArgument = Literal["n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"]
 
 #: The fields of a template a kind may never act on: what it states about tools, the cases it generates, a
-#: conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
-#: A template carrying one its kind ignores would run as if it said nothing, so a kind's registry entry declares them
+#: conversation, the world (its seed, what it presumes, the checks graded against it), the rubric a judge scores and
+#: the claim criteria a judge grades, which read evidence only a kind renders. A template carrying one its kind ignores would run as if it said nothing, so a kind's registry entry declares them
 #: (:attr:`LaunchableKind.ignored_template_fields`) and the dispatch refuses the template. Its identity, its intent and
 #: its kind spec — validated by the kind's own model — are every kind's.
 TemplateField = Literal[
@@ -1312,6 +1313,7 @@ TemplateField = Literal[
     "goal_state_checks",
     "goal_check_controls",
     "rubric",
+    "claim_criteria",
 ]
 
 #: Every :data:`TemplateField`, in the template's order.
@@ -1756,8 +1758,8 @@ def _launchable(
     :param apparatus_settings: The launch's apparatus settings, unvalidated.
     :return: The kind the template declares, read once; its registry entry; the overlays and the template's
         kind spec as the kind's models validated them; and the apparatus settings as the run stores them.
-    :raises ValidationFailedError: The template names a kind with no launcher, the launch supplies an
-        argument the kind cannot honour, a negative ``n_variations``, a variation model the
+    :raises ValidationFailedError: The template holds a field a newer build stored, names a kind with no launcher,
+        the launch supplies an argument the kind cannot honour, a negative ``n_variations``, a variation model the
         generation needs and the launch does not name or one nothing would call, an apparatus setting
         the kind does not honour, or the kind's models refuse the overlays or the spec.
     """
@@ -1767,6 +1769,16 @@ def _launchable(
         raise ValidationFailedError(
             f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}",
             remedy="pass 0, or the number of new cases to generate",
+        )
+    # A field a newer build stored on the template is an instruction this build would not carry out (a claim
+    # criterion, a dimension's new setting): the run would measure something else, under a template digest that
+    # build does not share. Its stored read keeps the field; a launch refuses it, by name.
+    if kept := template.kept_field_paths():
+        raise ValidationFailedError(
+            f"template {template.id!r} was stored by a newer build (durable minor {template.schema_minor}) and states "
+            + ", ".join(kept)
+            + ", which this build does not know; it would run as if the template had not stated them",
+            remedy=f"launch it from a build at durable minor {template.schema_minor} or newer",
         )
     candidate_kind = template.candidate_kind
     launchable = host.kinds.get(candidate_kind)
@@ -1788,6 +1800,7 @@ def _launchable(
             remedy="launch it without them",
         )
     refuse_ignored_template_fields(template, launchable)
+    refuse_claim_names_a_measure_holds(template, profile=host.eval_host.profile)
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
     )
@@ -1875,8 +1888,8 @@ async def _dispatch(
         the kind's models validated them, the apparatus settings validated against the kind, and the case set
         with its cases.
     :raises NotFoundError: The template is not found, or its kind's host holds no such subject.
-    :raises ValidationFailedError: The template names a kind with no launcher, the launch supplies an
-        argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
+    :raises ValidationFailedError: The template holds a field a newer build stored, names a kind with no launcher,
+        the launch supplies an argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
         the kind's spec model refuses, a negative ``n_variations``, a variation model the generation
         needs and the launch does not name or one nothing would call, an apparatus setting the kind does
         not honour, a model named twice, or a replay corpus that is not a capture of this template in this

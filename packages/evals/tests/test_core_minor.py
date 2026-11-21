@@ -587,6 +587,7 @@ def test_an_unknown_reasoning_effort_is_read_and_a_call_that_would_send_it_is_re
         ("EvalRun", "judge_config_provenance", {"conversation.tone": "from_a_newer_router"}),
         ("OutOfRunSpend", "purpose", "rerank"),
         ("EvalActionJob", "refusal", {"kind": "quota_exhausted", "status": 429}),
+        ("EvalResult", "claim_failures", {"rules.claims": "gremlins"}),
     ],
 )
 def test_every_open_vocabulary_round_trips_an_unknown_value_at_a_newer_minor(
@@ -698,6 +699,15 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "Aspect.undo": frozenset({"hard"}),
         "Aspect.undo_ignored": frozenset({"easy"}),
         "ReferenceKey.type": frozenset({"entity_set"}),
+        "EvidenceProvenance": values(models.EvidenceProvenance),
+        "GradedClaim.scope": frozenset({"world", "session"}),
+        "GradedClaim.verdict": frozenset({"supported", "contradicted", "unverifiable", "true_ungrounded"}),
+        "GradedClaim.graded_against": frozenset({"case", "web"}),
+        "GradedClaim.nominated_by": frozenset({"judge"}),
+        "GradedClaim.web": frozenset({"checked", "skipped_cap", "none"}),
+        "WebCheckRecord.outcome": frozenset({"true", "false", "inconclusive"}),
+        "ClaimCitation.stance": frozenset({"supports", "contradicts"}),
+        "ClaimCall.role": frozenset({"extract", "truth", "ground", "repair", "web"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),
@@ -766,7 +776,7 @@ def test_every_vocabulary_on_a_core_shape_is_open_or_listed_closed() -> None:
 
 
 def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
-    """The twelve open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
+    """The thirteen open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
     from threetears.evals.schema import versioning
 
     registries = {
@@ -782,6 +792,7 @@ def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
         "RefusalKind": "REFUSAL_KINDS",
         "FailedBecause": "FAILED_BECAUSE",
         "ExhaustedBecause": "EXHAUSTED_BECAUSE",
+        "ClaimLoss": "CLAIM_LOSSES",
     }
     import threetears.evals.schema as schema
 

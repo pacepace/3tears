@@ -6,6 +6,68 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the claims family, and the readings of a claim tally (none produced yet)
+
+**Added (#1287):** a seventh engine measure family, `claims`, graded by a judge: a claim criterion's readings, which
+rank where a rubric dimension does, under the rubric rule, and never as code-graded measures (`CODE_GRADED_FAMILIES`
+is unchanged). The engine computes each reading from a result's `ClaimTally` on read, so none is stored. Three rank,
+each on its own and never in a composite: `<criterion>_false_per_unit` (asserted claims the case's evidence or a web
+quote contradicts, per unit; lower is better), `<criterion>_false_unit_share` (units holding at least one; lower is
+better) and, for a criterion declaring `grounded_in`, `<criterion>_grounded_share` (asserted specific claims a document
+the candidate itself was given supports; higher is better; a candidate given no document reads 0). Every other reading
+(`_false`, `_false_hedged`, `_false_attributed`, `_false_share`, `_claims`, `_units`, `_hedged_share`,
+`_unverifiable`, `_true_ungrounded`, `_web_settled_share`, `_evidence_conflicts`, `_web_checked`, `_web_skipped`,
+`_session_claims`, `_lost`) is a diagnostic, and each description states its population and its evidence. Session
+claims count in no world reading; hedged and attributed claims are graded and kept out of the asserted counts; a
+statement the text backs with a source is asserted. `ClaimTally.ground_loss` (new, optional, a `ClaimLoss`, left out
+while None, in core 15.24 beside the other claim shapes) records a ground step lost alone: that cell reads no grounded
+share (never 0, which is what no research reads), a `_ground_lost` diagnostic counts it, and every truth reading
+stands. A grounded claim must cite a document the candidate was given, never a key fact. Nothing grades a criterion
+yet, so no result carries these.
+
+**Changed:** a template whose claim criterion's name, or a name `<criterion>_...` its readings take, is a measure the
+host or the engine describes is refused where it is admitted (create, seed, an update writing `claim_criteria`) and
+where it launches, naming the criterion and the measure.
+
+**For hosts:** a host measure family named `claims` is now refused at registration, as every engine family's name is;
+rename it. Rename a measure named like a claim criterion's readings, or the criterion. `ClaimTally.ground_loss` lands
+in the unreleased core 15.24 step: a 15.23 build keeps a result's `claim_tallies` whole and opaquely and writes them
+back, and nothing writes the field until the judge phase ships; rollout and rollback in any order.
+
+### evals: the stored shapes of claim grading (no grading yet)
+
+**Added (provisional, #1287):** the shapes claim grading stores, ahead of the judge phase that fills them. A template
+may declare `claim_criteria`, each a `ClaimCriterion` (`name`, `guidance`, `grounded_in`, `web` as a `WebBudget`,
+`pages` as a `PageBudget`, `repairs` as a `RepairBudget`, and `judge`, `builtin` only), and `claim_unit_names`, the
+noun a page prints for one unit of each criterion (`stop`, `answer`, `entry`), which is presentation. A criterion owns
+its name and every name `<name>_...` for its readings, so a rubric dimension or another criterion taking one is
+refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmentation`, its `Segment`s (the extractor's) with units
+numbered 0..n-1 with no gap, a unit spanning any number of segments, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
+`claim_grades` (criterion -> `ClaimGrade`, holding each `GradedClaim` with its `scope`, `world` or `session`, its
+verdict, citations and web check). Claim evidence sits beside `judge_evidence`, never in it, so no rubric label key or
+judged-output fingerprint moves, and a cell of an unjudged kind may carry it; a trace holding only claim evidence or
+grades is written beside its result. A result may carry `claim_tallies`
+(criterion -> `ClaimTally`: per cell `units`, `units_with_false` and `session_claims`, and per judge key the
+claims, asserted, hedged, attributed and contradicted counts every claim reading is computed from, refused where no
+set of claims could give them) and `claim_failures` (criterion -> a
+`ClaimLoss`, the open vocabulary `CLAIM_LOSSES`); a criterion is tallied or lost, never both, and a loss is never a
+judge error. Each field is left out of the document while unset: a template, trace or result carrying none is
+stored, digested and fingerprinted exactly as before. Nothing grades a criterion yet.
+
+**Changed:** a launch refuses a template that a newer build stored with a field this build does not know, naming each
+field (`EvalTemplate.kept_field_paths`), where it ran the template as if the field were not there. `claim_criteria` is
+a template field a kind may declare it ignores; the judge kind does.
+
+**For hosts (durable 17.9 and core 15.24, additive):** the stored caps are 3 MiB for a trace's claims payload
+(`CLAIM_TRACE_BYTES`, UTF-8 JSON, documents and web windows included) and 1 MiB for its documents
+(`CLAIM_DOCUMENT_BYTES`), so a host's store must hold a trace row of 3 MiB plus its turns and spans. Checked by reading
+this build's documents through the previous build's model: a 17.8 build reads a stored template carrying either
+template field, keeps it and writes it back unchanged, digests the template as if it declared no criterion, and
+launches it grading no claims (it has no refusal of a kept field); it refuses a corpus file carrying either field at
+boot seed (`extra_forbidden`). A 15.23 build reads a trace or result carrying the new fields, keeps them and writes
+them back. So upgrade every launching process before authoring or seeding a template with a criterion, and before a
+rollback archive or strip the criteria, or the rolled-back launcher runs those templates ungraded. Traces and results
+roll out and back in any order.
 ### evals: a judge-graded measure no longer passes or fails a trial
 
 **Fixed:** a host's check (a boolean, or a pass/fail scorer, with a better end) fails its trial on its value alone,
@@ -30,7 +92,8 @@ build. Declare the family `graded_by="code"` if code made the number, or drop th
 
 **Added (provisional, `threetears.evals.schema`):** `Segment(text, unit=None, tags={})`, one piece of a candidate's
 text as claims grading will read it, in the order the host cut it. A unit (an answer, an entry, a section, one item of
-a sequence) carries its index, and a cell's units are numbered 0..n-1, each once. Any other piece (a preamble, an
+a sequence) carries its index, and a cell's units are numbered 0..n-1 with no gap; a unit may span several pieces
+(an entry's description and each of its facts), and its per-unit counts count it once. Any other piece (a preamble, an
 aside) carries None: its claims count, but it is no unit. `tags` are the host's own labels, opaque to the engine and
 never shown to a model.
 
