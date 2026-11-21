@@ -18,9 +18,12 @@ key; any other run-time column, whatever it is named, is a predicate the rule ca
 ``estimated_rows`` read one row of each table, or the catalog, whatever they are passed: nothing of theirs is judged.
 
 Visibility: a listing's ``visible=`` clauses are judged each on its own, as the correlated probe it is
-(:func:`~threetears.core.keyed.exists_keyed`'s ``EXISTS``, its outer columns bound). A clause built by one of
-:data:`KEYED_FRAGMENT_BUILDERS` (the ACL's caller-visibility ``EXISTS``, reviewed once where it is written) is a keyed
-predicate wherever it is placed.
+(:func:`~threetears.core.keyed.exists_keyed`'s ``EXISTS``, its outer columns bound). Two reviewed acl clauses are keyed
+predicates there, each only in the form the walk writes once it has tied the call to the acl package: a builder of
+:data:`KEYED_FRAGMENT_BUILDERS` (the caller-visibility ``EXISTS``) on :data:`REVIEWED_ACL_MODULE`, and the caller's
+customers bound as a set (``VisibleCustomers.fragment``) on :data:`REVIEWED_VISIBLE_RECEIVER`. A builder or a
+``.fragment(...)`` the walk did not tie -- a consumer's own function, method or object of the same names -- is a
+predicate the walk cannot see.
 
 Pagers: ``after=`` and ``since=`` say where a read starts, not which rows it reads. A pager narrowed by them alone
 reads every row from that place on: :func:`narrows` counts them only beside a ``where`` / ``where_any`` / ``keys``.
@@ -59,8 +62,9 @@ __all__ = [
     "UNSEEN",
     "HelperStatement",
     "PagerOrder",
+    "REVIEWED_ACL_MODULE",
+    "REVIEWED_VISIBLE_RECEIVER",
     "helper_statements",
-    "is_keyed_fragment",
     "narrows",
     "pager_order",
     "templated",
@@ -233,9 +237,59 @@ KEYED_FRAGMENT_BUILDERS: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: methods building a reviewed visibility fragment for a keyed read's ``visible=``
-#: (``threetears.agent.acl.VisibleCustomers.fragment``): the caller's customers bound as a set, a keyed predicate
-_KEYED_FRAGMENT_METHODS: Final[frozenset[str]] = frozenset({"fragment"})
+#: the receiver a ``visible=`` element's ``.fragment(...)`` is rewritten onto once the walk has tied its receiver to
+#: the reviewed :class:`threetears.agent.acl.VisibleCustomers` (the caller's customers bound as a set, a keyed
+#: predicate). A ``.fragment(...)`` on any other receiver is judged as ordinary code: a predicate the walk cannot see.
+#: It is an identifier because the walk copies a call by unparsing and parsing it; a source spelling it is a finding of
+#: its own (``reserved-name``, the walker), so no consumer's object reads as the reviewed one.
+REVIEWED_VISIBLE_RECEIVER: Final[str] = "__threetears_reviewed_visible_customers__"
+
+#: the module a ``visible=`` element's caller-visibility builder (:data:`KEYED_FRAGMENT_BUILDERS`) is rewritten onto
+#: once the walk has tied its callee to the acl package (``__threetears_reviewed_acl__.caller_visible_customer_clause``):
+#: a builder of the same name a consumer writes, or a method of one, is judged as ordinary code. Reserved as
+#: :data:`REVIEWED_VISIBLE_RECEIVER` is.
+REVIEWED_ACL_MODULE: Final[str] = "__threetears_reviewed_acl__"
+
+
+def _reviewed_builder(element: ast.expr) -> bool:
+    """whether a ``visible=`` element is a reviewed caller-visibility builder's call: one of
+    :data:`KEYED_FRAGMENT_BUILDERS` on :data:`REVIEWED_ACL_MODULE`, the walk having tied its callee to the package.
+
+    :param element: the element, its arguments resolved
+    :ptype element: ast.expr
+    :return: whether it is
+    :rtype: bool
+    """
+    return (
+        isinstance(element, ast.Call)
+        and isinstance(element.func, ast.Attribute)
+        and element.func.attr in KEYED_FRAGMENT_BUILDERS
+        and isinstance(element.func.value, ast.Name)
+        and element.func.value.id == REVIEWED_ACL_MODULE
+    )
+
+
+#: the method of :data:`REVIEWED_VISIBLE_RECEIVER` building that fragment
+_REVIEWED_VISIBLE_METHOD: Final[str] = "fragment"
+
+
+def _reviewed_visible_fragment(element: ast.expr) -> bool:
+    """whether a ``visible=`` element is the reviewed caller's-customers fragment: a ``.fragment(...)`` on
+    :data:`REVIEWED_VISIBLE_RECEIVER`, the walk having tied its receiver to ``VisibleCustomers``.
+
+    :param element: the element, its arguments resolved
+    :ptype element: ast.expr
+    :return: whether it is
+    :rtype: bool
+    """
+    return (
+        isinstance(element, ast.Call)
+        and isinstance(element.func, ast.Attribute)
+        and element.func.attr == _REVIEWED_VISIBLE_METHOD
+        and isinstance(element.func.value, ast.Name)
+        and element.func.value.id == REVIEWED_VISIBLE_RECEIVER
+    )
+
 
 #: keywords that say where a pager starts, not which rows it reads
 START_KEYWORDS: Final[frozenset[str]] = frozenset({"after", "since"})
@@ -644,13 +698,9 @@ def _visible(call: ast.Call) -> list[str]:
         built = (
             element.args[0] if isinstance(element, ast.Call) and _name(element) == "of" and element.args else element
         )
-        if isinstance(built, ast.Call) and _name(built) in KEYED_FRAGMENT_BUILDERS:
+        if _reviewed_builder(built):
             continue
-        if (
-            isinstance(built, ast.Call)
-            and isinstance(built.func, ast.Attribute)
-            and built.func.attr in _KEYED_FRAGMENT_METHODS
-        ):
+        if _reviewed_visible_fragment(built):
             continue
         if not (isinstance(built, ast.Call) and _name(built) == "exists_keyed"):
             raise _Unseen("visible")
@@ -678,11 +728,8 @@ def _visible_columns(call: ast.Call) -> list[str]:
     if not isinstance(node, ast.Tuple | ast.List):
         return columns
     for element in node.elts:
-        if (
-            isinstance(element, ast.Call)
-            and isinstance(element.func, ast.Attribute)
-            and element.func.attr in _KEYED_FRAGMENT_METHODS
-        ):
+        if _reviewed_visible_fragment(element):
+            assert isinstance(element, ast.Call)
             written = _text(_argument(element, "column", 0), "visible")
             columns.append(written.split(".")[-1].strip('"'))
     return columns
@@ -1622,17 +1669,6 @@ def pager_order(call: ast.Call) -> PagerOrder | None:
     fixed = frozenset(column for column, how in pins if how in {"eq", "null"} or how.startswith(_LITERAL))
     nulls = frozenset(column for column, how in pins if how == "null")
     return PagerOrder(helper=helper, relation=relation, fixed=fixed, order=tuple(order), nulls=nulls)
-
-
-def is_keyed_fragment(call: ast.Call) -> bool:
-    """whether ``call`` builds a reviewed visibility clause: interpolated into a ``WHERE``, a keyed predicate.
-
-    :param call: a call the walk visits
-    :ptype call: ast.Call
-    :return: whether it does
-    :rtype: bool
-    """
-    return _name(call) in KEYED_FRAGMENT_BUILDERS
 
 
 def narrows(call: ast.Call, narrowing: frozenset[str] | Mapping[str, object]) -> bool:
