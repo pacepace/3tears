@@ -8,7 +8,6 @@ descriptors part way, the constructor unmapped what it had mapped through :meth:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +18,6 @@ from threetears.core import shared_arrow
 from threetears.core.shared_arrow import MappedVersion, Parts, SharedArrowStore
 
 
-def _fds() -> int:
-    return len(os.listdir("/dev/fd"))
-
-
 def test_a_version_mapped_part_way_raises_its_own_error_and_unmaps_what_it_mapped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -30,6 +25,7 @@ def test_a_version_mapped_part_way_raises_its_own_error_and_unmaps_what_it_mappe
     part = pa.table({"a": pa.array(range(4), pa.int64())})
     store.publish("v1", {"long": Parts(schema=part.schema, parts={f"p{index:03d}": part for index in range(12)})})
     mapped_before = 0
+    opened: list[Any] = []
     real = pa.memory_map
 
     def runs_out(file: Any, mode: str = "r") -> Any:
@@ -37,15 +33,18 @@ def test_a_version_mapped_part_way_raises_its_own_error_and_unmaps_what_it_mappe
         if mapped_before == 5:
             raise OSError(24, "Too many open files")
         mapped_before += 1
-        return real(file, mode)
+        opened.append(real(file, mode))
+        return opened[-1]
 
     # shared_arrow maps through the one pyarrow module, so patching it there is patching it in shared_arrow
     monkeypatch.setattr(pa, "memory_map", runs_out)
-    before = _fds()
     with pytest.raises(OSError, match="Too many open files"):
         MappedVersion(store.root, "v1")
     assert mapped_before == 5
-    assert _fds() == before, "a version mapped part way left descriptors open"
+    # the maps this version opened, each closed: counting the process's descriptors instead read another test's
+    # file closing in the same worker as a leak (19 before, 18 after, on a shared runner)
+    assert len(opened) == 5
+    assert all(handle.closed for handle in opened), "a version mapped part way left a map open"
 
 
 def test_a_let_go_frees_its_tables_handing_the_lock_over_between_them(
