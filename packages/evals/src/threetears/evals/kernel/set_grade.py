@@ -260,7 +260,8 @@ class SetGrade(EvalBaseModel):
     found: tuple[str, ...] = Field(description="The key entities the output named, by key name, core first.")
     core_missed: tuple[str, ...] = Field(description="The core entities the output did not name, in key order.")
     unverified_names: tuple[str, ...] = Field(
-        description="The named entities the key does not hold, as the output first spelled them, in its order."
+        description="Every unverified pick, as the output first spelled it, in its order: the names the key does not "
+        "hold and the picks the matcher refused, which `refusals` lists with their reasons."
     )
     credits: tuple[SetCredit, ...] = Field(
         default=(),
@@ -310,13 +311,15 @@ class SetGrade(EvalBaseModel):
 
     @property
     def unlisted_names(self) -> tuple[str, ...]:
-        """The unverified picks the matcher did not refuse: the names the key does not hold, in the output's order."""
+        """Only the names the key does not hold: the unverified picks less the ones the matcher refused, in the
+        output's order."""
         refused = {refusal.written for refusal in self.refusals}
         return tuple(name for name in self.unverified_names if name not in refused)
 
     @property
     def unverified(self) -> int:
-        """Named entities the key does not hold: unverified, never wrong."""
+        """Every unverified pick, never counted wrong: the names the key does not hold plus the picks the matcher
+        refused (:attr:`refusals`)."""
         return self.named - self.verified
 
     @property
