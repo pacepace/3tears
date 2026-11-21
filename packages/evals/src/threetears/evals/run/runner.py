@@ -1754,7 +1754,7 @@ async def _run_one_result(
             "nothing for a judge to read, and this run wires a judge service; pass no judge service, or wire a kind "
             "that renders what a judge reads"
         )
-    refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
+    _refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
     # The width the run executes at was sized from what the kind's launcher said the kind declares
     # (``KindWiring.max_concurrent_cells``); the kind's own declaration is the authority on whether it is safe
     # there. Refused before ``prepare``, and the RUN rather than the cell, like an unknown kind: every cell would
@@ -1904,7 +1904,7 @@ async def _run_one_result(
     refuse_inner_agent_usage(telemetry.usage)
     refuse_engine_derived_host_measures(candidate.host_measures)
     refuse_misfit_host_measures(candidate.host_measures, host.profile.measures)
-    hold_to_claim_criteria(candidate_kind_name, template, candidate)
+    _hold_to_claim_criteria(candidate_kind_name, template, candidate)
     # Due before the dims are judged, so a cut striking while they are loses every criterion on the record, too.
     if (
         judge_service is not None
@@ -2465,7 +2465,7 @@ def _with_claims(
     return judged._replace(usage=fold_judge_outcomes(outcomes, also_billed=billed).usage, claims=claims)
 
 
-def refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> None:
+def _refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> None:
     """Refuse a run whose template's claim criteria nothing would grade, or would grade otherwise than declared.
 
     A claim criterion is graded by the run's judge, so a run of a template declaring one needs a judge, whatever its
@@ -2489,7 +2489,7 @@ def refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> N
     refuse_unbuilt_claim_steps(template)
 
 
-def hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: CandidateOutput) -> None:
+def _hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: CandidateOutput) -> None:
     """Refuse output a template's claim criteria cannot grade.
 
     A template that declares claim criteria owes them the kind's claim evidence for every output it produced, whatever
@@ -2534,6 +2534,7 @@ async def judge_witnessed_output(
     concurrency: int,
     eval_run_id: str,
     settled: list[tuple[str, JudgeOutcome]] | None = None,
+    kind_name: str = "the witnessed cell's kind",
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, and its claims through the runner's
     own claims phase, as the runner gates them.
@@ -2554,14 +2555,15 @@ async def judge_witnessed_output(
     :param eval_run_id: The run.
     :param settled: A caller-owned list each returned call is appended to, the defect's billed call included,
         so a caller the phase raised to still holds what was paid for; ``None`` when it keeps none.
+    :param kind_name: The kind the run recorded the cell under, for a refusal's message.
     :return: What the phases left and their wall clock; ``(None, None)`` when the output gave them nothing to judge.
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
     :raises ValueError: The template declares claim criteria the output cannot be graded on
-        (:func:`hold_to_claim_criteria`), or one declares a step this build does not run.
+        (:func:`_hold_to_claim_criteria`), or one declares a step this build does not run.
     """
-    refuse_claim_criteria_unjudged(template, judged=True)
-    hold_to_claim_criteria(template.candidate_kind, template, output)
+    _refuse_claim_criteria_unjudged(template, judged=True)
+    _hold_to_claim_criteria(kind_name, template, output)
     claims_due = bool(template.claim_criteria) and output.claim_evidence is not None
     if not _judgeable(output) or (output.judge_evidence is None and not claims_due):
         return None, None
@@ -4470,7 +4472,7 @@ async def execute_run(
         )
 
     # Refused before any cell runs, so nothing has been spent: a template's claim criteria are the judge's to grade.
-    refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
+    _refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
 
     # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
     # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
