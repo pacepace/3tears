@@ -6302,7 +6302,10 @@ class GradedClaim(CoreShapeModel):
     )
     specific: bool = Field(description="It states a detail a source could settle: a name, number, date or rule.")
     hedged: bool = Field(description="The text marks it as its own uncertain recollection.")
-    attributed: bool = Field(description="The text reports it as someone else's claim (a rumour, `the rules say`).")
+    attributed: bool = Field(
+        description="The text reports it without vouching for it: a rumour, another party's or a character's statement, "
+        "`some say`. A statement the text backs with a source (`the rules say`) is its own, and asserted."
+    )
     restates: int | None = Field(
         default=None, ge=0, description="The earlier claim of the same scope it says again, by its place; None."
     )
@@ -6508,9 +6511,12 @@ class ClaimJudgeCounts(CoreShapeModel):
     served_model: str | None = Field(description="The model that served the deciding calls; None when unnamed.")
     judge_temperature: JudgeTemperature | None = Field(description="The temperature they were sent at.")
     judge_sent_settings: ClientRequestSettings | None = Field(description="The settings they were sent with.")
-    claims: int = Field(ge=0, description="World claims whose verdict a call of this key decided.")
+    claims: int = Field(ge=1, description="World claims whose verdict a call of this key decided.")
     asserted: int = Field(ge=0, description="Of them, those neither hedged nor attributed.")
+    hedged: int = Field(ge=0, description="Of them, those the text marks as its own uncertain recollection.")
+    attributed: int = Field(ge=0, description="Of them, those the text reports without vouching for them.")
     asserted_specific: int = Field(ge=0)
+    contradicted: int = Field(ge=0, description="Of them, those contradicted, whatever their tags.")
     asserted_contradicted: int = Field(ge=0)
     hedged_contradicted: int = Field(ge=0)
     attributed_contradicted: int = Field(ge=0)
@@ -6524,21 +6530,40 @@ class ClaimJudgeCounts(CoreShapeModel):
 
     @model_validator(mode="after")
     def _counts_nest(self) -> Self:
-        """:raises ValueError: A count of some claims exceeds the count of the claims it is a part of."""
-        parts = {
-            "asserted": (self.asserted, self.claims),
-            "asserted_specific": (self.asserted_specific, self.asserted),
-            "asserted_contradicted": (self.asserted_contradicted, self.asserted),
-            "grounded_specific": (self.grounded_specific, self.asserted_specific),
-            "web_decided": (self.web_decided, self.asserted),
-            "hedged_contradicted + attributed_contradicted + asserted_contradicted": (
-                self.hedged_contradicted + self.attributed_contradicted + self.asserted_contradicted,
-                self.claims,
+        """Refuse counts no set of claims could give.
+
+        A claim not asserted is hedged, attributed or both, so hedged and attributed together cover those claims and
+        neither exceeds them; a contradiction among them is counted under each tag it carries, so the contradicted
+        claims are the asserted ones and at least as many as either tag's, and at most both tags' together.
+
+        :raises ValueError: A count exceeds the claims it is a part of, or the tags and contradictions disagree.
+        """
+        unasserted = self.claims - self.asserted
+        unasserted_contradicted = self.contradicted - self.asserted_contradicted
+        supported = self.claims - self.contradicted - self.unverifiable - self.true_ungrounded
+        parts = (
+            ("asserted", self.asserted, self.claims),
+            ("hedged", self.hedged, unasserted),
+            ("attributed", self.attributed, unasserted),
+            ("claims - asserted", unasserted, self.hedged + self.attributed),
+            ("asserted_specific", self.asserted_specific, self.asserted),
+            ("asserted_contradicted", self.asserted_contradicted, min(self.asserted, self.contradicted)),
+            ("contradicted - asserted_contradicted", unasserted_contradicted, unasserted),
+            ("hedged_contradicted", self.hedged_contradicted, min(self.hedged, unasserted_contradicted)),
+            ("attributed_contradicted", self.attributed_contradicted, min(self.attributed, unasserted_contradicted)),
+            (
+                "contradicted - asserted_contradicted",
+                unasserted_contradicted,
+                self.hedged_contradicted + self.attributed_contradicted,
             ),
-            "unverifiable + true_ungrounded": (self.unverifiable + self.true_ungrounded, self.claims),
-            "web_checked + web_skipped": (self.web_checked + self.web_skipped, self.claims),
-        }
-        if over := [name for name, (part, whole) in parts.items() if part > whole]:
+            ("grounded_specific", self.grounded_specific, self.asserted_specific),
+            ("contradicted + unverifiable + true_ungrounded", self.claims - supported, self.claims),
+            ("evidence_conflicts", self.evidence_conflicts, supported),
+            ("web_checked + web_skipped", self.web_checked + self.web_skipped, self.claims),
+            ("true_ungrounded", self.true_ungrounded, self.web_checked),
+            ("web_decided", self.web_decided, min(self.asserted, self.web_checked)),
+        )
+        if over := sorted({name for name, part, whole in parts if part > whole}):
             raise ValueError(f"a claim tally's counts do not nest: {', '.join(over)}")
         return self
 
@@ -6565,9 +6590,22 @@ class ClaimTally(CoreShapeModel):
 
     @model_validator(mode="after")
     def _one_entry_per_judge(self) -> Self:
-        """:raises ValueError: More units with a false claim than units, or two entries for one judge."""
+        """Refuse counts the cell's claims could not give.
+
+        :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
+            holds a false claim only by holding one); a grounded claim where no documents were declared; or two
+            entries for one judge.
+        """
         if self.units_with_false > self.units:
             raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
+        false = sum(entry.asserted_contradicted for entry in self.by_judge)
+        if self.units_with_false > false:
+            raise ValueError(
+                f"a tally counts {self.units_with_false} units with a false claim, and {false} asserted contradicted "
+                "claims: each such unit holds one"
+            )
+        if not self.documents_declared and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError("a tally counts grounded claims, and the cell declared no documents to ground them")
         keys = [
             (
                 entry.served_model,

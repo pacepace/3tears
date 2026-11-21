@@ -17,8 +17,11 @@ refused. A trace may carry `claim_evidence` (`ClaimEvidence`: the host's `segmen
 numbered 0..n-1 with no gap, a unit spanning any number of segments, its `EvidenceDocument`s of provenance `case` or `run`, and an opaque `session` record) and
 `claim_grades` (criterion -> `ClaimGrade`, holding each `GradedClaim` with its `scope`, `world` or `session`, its
 verdict, citations and web check). Claim evidence sits beside `judge_evidence`, never in it, so no rubric label key or
-judged-output fingerprint moves, and a cell of an unjudged kind may carry it. A result may carry `claim_tallies`
-(criterion -> `ClaimTally`, with `units_with_false` and `session_claims`) and `claim_failures` (criterion -> a
+judged-output fingerprint moves, and a cell of an unjudged kind may carry it; a trace holding only claim evidence or
+grades is written beside its result. A result may carry `claim_tallies`
+(criterion -> `ClaimTally`: per cell `units`, `units_with_false` and `session_claims`, and per judge key the
+claims, asserted, hedged, attributed and contradicted counts every claim reading is computed from, refused where no
+set of claims could give them) and `claim_failures` (criterion -> a
 `ClaimLoss`, the open vocabulary `CLAIM_LOSSES`); a criterion is tallied or lost, never both, and a loss is never a
 judge error. Each field is left out of the document while unset: a template, trace or result carrying none is
 stored, digested and fingerprinted exactly as before. Nothing grades a criterion yet.
