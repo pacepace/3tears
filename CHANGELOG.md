@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a transaction whose caller is cancelled during `l3.tx.begin` leaves no session open
+
+**Fixed:** the hub opens a session when it reads `l3.tx.begin`; a caller cancelled before the answer arrived never
+learned the `tx_id`, so nothing ended the session and the hub held it, with its pooled connection, until its idle
+sweep rolled it back a minute later. On the election replay of 2026-11-21 nearly every failed load left one so: the
+load's failure cancelled its other states, one of them waiting on a begin (the hub's `idle>60s` rollbacks, each
+session's id stamped within milliseconds of the failure). `_ProxyTransaction.__aenter__` now shields the begin: on
+cancellation the begin runs to its answer and the session it opened is sent `l3.tx.rollback`; the caller's
+`CancelledError` is raised as before.
+
 ### core: an Arrow upsert or delete sends at most `BULK_MAX_ROWS` rows a request
 
 **Fixed:** `save_arrow` and `delete_arrow` cut their requests by bytes alone, so a 5,000-row page went to the hub as

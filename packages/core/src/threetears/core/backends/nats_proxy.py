@@ -123,6 +123,10 @@ _logger = get_logger(__name__)
 #: thread to run (``Thread.start``), 1-2 ms on a loaded host, which on the caller's event loop held a process's first
 #: copy that much longer than every later one. One thread: a build holds the interpreter lock but for its turns, so two
 #: at once would only share it
+#: the roll-backs of transactions begun for a caller that was cancelled while it waited for the begin's answer
+#: (:meth:`_ProxyTransaction.__aenter__`): each a task of its own, held here until it is done
+_BEGUN_FOR_NO_ONE: Final[set[asyncio.Task[None]]] = set()
+
 _COPY_BUILDS: Final = ThreadPoolExecutor(max_workers=1, thread_name_prefix="l3-copy-build")
 _COPY_BUILDS.submit(int).result()
 
@@ -2891,7 +2895,18 @@ class _ProxyTransaction:
             "statement_timeout_ms": self._backend.timeout_ms,
         }
         subject = Subjects.l3_tx("begin", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        # the begin is shielded: a caller cancelled while it waits for the answer (a sibling task's failure, a
+        # shutdown) leaves the hub holding a session no one ends, its connection taken from the hub's pool until the
+        # idle sweep rolls it back. The election replay of 2026-11-21 left one a minute so, each begun as a failed
+        # load cancelled its other states. So the begin runs to its answer, and a session it opened is rolled back.
+        begin = asyncio.ensure_future(self._backend.nats_request(subject, payload))
+        try:
+            response = await asyncio.shield(begin)
+        except asyncio.CancelledError:
+            ending = asyncio.ensure_future(self._roll_back_begun(begin))
+            _BEGUN_FOR_NO_ONE.add(ending)
+            ending.add_done_callback(_BEGUN_FOR_NO_ONE.discard)
+            raise
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")
         # a hub that reads a copy's rows as Arrow says so here; one that does not is sent JSON
@@ -2910,6 +2925,40 @@ class _ProxyTransaction:
             )
         self._connection.tx_id = UUID(raw_tx_id)
         return self
+
+    async def _roll_back_begun(self, begin: asyncio.Future[dict[str, Any]]) -> None:
+        """roll back the session a begin opened for a caller cancelled while it waited: once the begin is answered,
+        ``l3.tx.rollback`` for its ``tx_id``. A begin that failed opened nothing; a rollback that fails is logged, and
+        the hub's idle sweep ends the session as before.
+
+        :param begin: the begin's request, running
+        :ptype begin: asyncio.Future[dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            response = await begin
+        except Exception:  # prawduct:allow prawduct/broad-except -- NOSILENT: a begin that failed or went unanswered opened no session to end here
+            return
+        tx_id = response.get("tx_id")
+        if not response.get("success", False) or not isinstance(tx_id, str):
+            return
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": tx_id,
+        }
+        try:
+            await self._backend.nats_request(Subjects.l3_tx("rollback", namespace=self._backend.ns).path, payload)
+        except (
+            Exception
+        ) as exc:  # prawduct:allow prawduct/broad-except -- logged; the hub's idle sweep rolls the session back
+            contain(
+                exc,
+                log=_logger,
+                what="a transaction begun for a cancelled caller could not be rolled back; the hub's idle sweep ends it",
+                extra={"tx_id": tx_id},
+            )
 
     async def __aexit__(
         self,
