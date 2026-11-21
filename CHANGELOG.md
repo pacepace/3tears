@@ -17,7 +17,8 @@ never shown to a model.
 **Engine-internal, nothing calls it yet:** the step that lists the factual claims a cell's segments state. It sees the
 segments' text only (no key, no document, no tag). It lists one proposition per claim, each with the segment's own
 excerpt and its offsets, found by a verbatim check that forgives typography and case, never a changed word. Each claim
-carries the tags `specific`, `hedged`, `attributed` (the text reports someone else's claim), `scope` and `restates`.
+carries the tags `specific`, `hedged`, `attributed`, `scope` and `restates`. `attributed` marks a claim the text
+reports without vouching for it (a rumour, another party's statement); one the text backs with a source is its own.
 `scope` is `world` or `session`: a session claim is about the output or run itself, such as what was just presented or
 what comes next. A mixed line is split into one claim of each scope. `restates` names the first earlier claim of the
 same scope stating the same fact. The prompt's rules are domain-neutral, and a host's own examples go in its

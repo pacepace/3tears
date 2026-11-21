@@ -75,7 +75,9 @@ _RULES: Final = (
     "- What the wording takes for granted counts as stated: calling a thing the second of its kind states that "
     "there was a first.\n"
     "- A sweeping general or causal statement (that one event led to another) is a claim.\n"
-    "- Not claims: opinions, evaluations and impressions; questions, instructions and greetings.\n"
+    "- Not claims: opinions, evaluations and impressions; questions and greetings; and a bare instruction with no "
+    "factual content. An instruction or how-to that states a rule or a fact (what a thing does, what a step "
+    "requires) states that fact as a claim.\n"
     "- A claim is about the world, or about this output or session itself: what was just presented or played, what "
     "comes next, a result or count within the session (a roll, a score), a pointer to another part of this output "
     '("as noted above"). A sentence that does both is split: introducing what was just presented together with a '
@@ -88,8 +90,10 @@ _RULES: Final = (
     "a date, a place, a rule); false for a general statement.\n"
     "- hedged: true only when the text marks the claim as uncertain; false otherwise. A hedged claim is still a "
     "claim.\n"
-    "- attributed: true when the text reports the claim as someone else's (a rumour, a report, what a source says) "
-    "rather than stating it itself; false otherwise. An attributed claim is still a claim.\n"
+    "- attributed: true when the text reports the claim without vouching for it (a rumour, another party's or a "
+    'character\'s statement, "some say"); false otherwise. A statement the text makes and backs with a source '
+    '("the rules say", "according to its notes") is the text\'s own and not attributed. An attributed claim is '
+    "still a claim.\n"
     '- scope: "session" when the claim is about this output or session itself; "world" otherwise.\n'
     "- restates: when the claim states a fact an earlier claim of the same scope in the list already stated, that "
     "claim's position in the list, counting from 0; otherwise null."
@@ -160,8 +164,9 @@ class ExtractedClaim(EvalBaseModel):
         description="Whether the text marked it as uncertain. A hedged claim is still graded for truth."
     )
     attributed: bool = Field(
-        description="Whether the text reported it as someone else's claim rather than stating it. An attributed claim "
-        "is still graded for truth."
+        description="Whether the text reported it without vouching for it (a rumour, another party's statement). A "
+        "statement the text backs with a source is its own, not attributed. An attributed claim is still graded for "
+        "truth."
     )
     scope: ClaimScope = Field(
         description="What the claim is about: ``world``, a fact a source could settle, graded for truth; or "
@@ -324,13 +329,19 @@ class ClaimExtractor:
         for _round in range(_REPAIR_ROUNDS):
             if not failures:
                 break
-            still: dict[int, str] = {}
+            unreadable: dict[int, str] = {}
             for position in sorted(failures):
                 repaired, failure = await self._repair(position, listed, cell, failures[position], ledger)
                 listed[position] = repaired
                 if failure is not None:
-                    still[position] = failure
-            failures = still
+                    unreadable[position] = failure
+            # Every item is checked again, not only the repaired ones: a repair that changes a claim's scope can leave
+            # a restates pointing at it across scopes. A repaired item keeps the failure its repair named.
+            failures = {
+                position: unreadable.get(position, fault)
+                for position in range(len(listed))
+                if (fault := _fault(position, listed, cell))
+            }
         if failures:
             named = "; ".join(f"claim {position}: {failure}" for position, failure in sorted(failures.items()))
             raise ClaimGradingFailed(

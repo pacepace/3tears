@@ -188,7 +188,7 @@ async def test_the_claims_come_back_checked_with_each_excerpt_the_segments_own_s
     assert item["properties"]["scope"]["enum"] == ["world", "session"]
 
 
-async def test_an_attributed_claim_keeps_its_tag() -> None:
+async def test_a_rumour_comes_back_attributed() -> None:
     cell = (Segment(text="Some say the Varn Bridge was first planned in stone.", unit=0),)
     client = _FakeScriptedClient(
         [_listing(_item(0, "The Varn Bridge was first planned in stone.", "first planned in stone", attributed=True))]
@@ -197,7 +197,32 @@ async def test_an_attributed_claim_keeps_its_tag() -> None:
     (claim,) = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
 
     assert (claim.attributed, claim.hedged) == (True, False)
-    assert "attributed: true when the text reports the claim as someone else's" in client.calls[0]["system"]
+    assert "attributed: true when the text reports the claim without vouching for it" in client.calls[0]["system"]
+
+
+async def test_a_statement_backed_by_a_source_comes_back_asserted() -> None:
+    cell = (Segment(text="According to the harbour records, the Varn Bridge opened in 1894.", unit=0),)
+    client = _FakeScriptedClient(
+        [_listing(_item(0, "The Varn Bridge opened in 1894.", "the Varn Bridge opened in 1894", attributed=False))]
+    )
+
+    (claim,) = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert (claim.attributed, claim.hedged) == (False, False)
+    assert "backs with a source" in client.calls[0]["system"]
+    assert "is the text's own and not attributed" in client.calls[0]["system"]
+
+
+async def test_an_instruction_that_states_a_rule_carries_its_claim() -> None:
+    cell = (Segment(text="To cross at high tide, take the upper path: the lower one floods.", unit=0),)
+    client = _FakeScriptedClient([_listing(_item(0, "The lower path floods at high tide.", "the lower one floods"))])
+
+    (claim,) = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert claim.scope == "world"
+    system = client.calls[0]["system"]
+    assert "a bare instruction with no factual content" in system
+    assert "An instruction or how-to that states a rule or a fact" in system
 
 
 async def test_a_back_announce_splits_into_a_session_claim_and_a_world_claim() -> None:
@@ -251,6 +276,34 @@ async def test_a_restates_crossing_scopes_is_asked_again() -> None:
     repair = client.calls[1]
     assert "position 2" in repair["user"]
     assert "its restates names claim 0, a session claim, and this one is a world claim" in repair["user"]
+
+
+async def test_a_repair_that_changes_a_targets_scope_sends_its_restatement_to_repair() -> None:
+    cell = (
+        Segment(text="That was the Varn Bridge.", unit=0),
+        Segment(text="The Varn Bridge, the one we just crossed, opened in 1894.", unit=1),
+    )
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                # Claim 0 fails on its excerpt; claim 1 restates it, both world claims, so claim 1 passes at first.
+                _item(0, "The tour just visited the Varn Bridge.", "That was the bridge"),
+                _item(1, "The tour just visited the Varn Bridge.", "the one we just crossed", restates=0),
+                _item(1, "The Varn Bridge opened in 1894.", "opened in 1894"),
+            ),
+            # The repair fixes the excerpt and corrects the scope to session: claim 1 now restates across scopes.
+            _repair("The tour just visited the Varn Bridge.", "That was the Varn Bridge", scope="session"),
+            _repair("The tour just crossed the Varn Bridge.", "the one we just crossed", scope="session", restates=0),
+        ]
+    )
+
+    claims = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert [(claim.scope, claim.restates) for claim in claims] == [("session", None), ("session", 0), ("world", None)]
+    assert len(client.calls) == 3
+    second_round = client.calls[2]["user"]
+    assert "position 1" in second_round
+    assert "its restates names claim 0, a session claim, and this one is a world claim" in second_round
 
 
 async def test_a_segments_tags_never_reach_a_prompt() -> None:
@@ -564,7 +617,7 @@ async def test_the_hosts_guidance_reaches_both_prompts() -> None:
 #: The identity of :func:`_extractor` over a client of :data:`_MODEL`, from the shipped prompts, schemas, fold and
 #: budgets. Produced by ``ClaimExtractor.identity`` itself; it moves with any change to them, and with the fold's
 #: tables or Unicode version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/claims|claims:9d5550265098"
+_PINNED_IDENTITY = "scripted/claims|claims:b326c9108c71"
 
 
 def test_the_identity_names_the_model_and_moves_with_the_guidance() -> None:
