@@ -205,6 +205,23 @@ _READING_PROSE_IN_ITEMS: Final[Mapping[str, Sequence[str]]] = {
 }
 
 
+def _claims_lost_with_their_trace(result: EvalResult) -> EvalResult:
+    """``result`` with each claim criterion it tallied written lost instead (``trace_lost``): what a result whose
+    trace is not stored says of its claims, since every claim reading rests on the grade its trace holds.
+
+    :param result: The result.
+    :return: A copy; ``result`` itself when it tallied none.
+    """
+    if not result.claim_tallies:
+        return result
+    return result.model_copy(
+        update={
+            "claim_tallies": {},
+            "claim_failures": {**result.claim_failures, **dict.fromkeys(result.claim_tallies, "trace_lost")},
+        }
+    )
+
+
 @contextmanager
 def _read_outage(what: str, *, refusals: tuple[type[Exception], ...] = ()) -> Iterator[None]:
     """A backend failure inside the block, raised as the :class:`StorageError` (503) every path of a reading seam
@@ -2659,12 +2676,16 @@ class EvalStorage:
         :param result: The result to persist. Never mutated — the marker is applied to a copy.
         :param trace: The sibling payload, or ``None`` for a cell that produced none; an entirely empty trace writes no
             document.
+        A result whose claim criteria were tallied rests those readings on the grades its trace holds, so when its trace
+        is not written each tallied criterion is written lost instead (``trace_lost``): no reading rests on a grade
+        that is not stored.
+
         :raises StorageError: The RESULT was not persisted. A trace-write failure is logged and reads as ``missing``
             through ``has_trace``, not raised.
         """
         document = self._marked(result, trace)
-        if trace is not None and document["has_trace"]:
-            self._save_trace(result, trace)
+        if trace is not None and document["has_trace"] and not self._save_trace(result, trace):
+            document = self._marked(_claims_lost_with_their_trace(result), trace)
         self._save(document)
 
     def save_run_cell(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
@@ -2705,14 +2726,26 @@ class EvalStorage:
             An entirely empty trace writes no document: there is nothing to
             fetch, and a row per empty payload is the row count this split
             exists to keep down.
+        **A cell whose claim criteria were tallied is written lost first.** Its claim readings rest on the grades its
+        trace holds, and the trace lands after the row, so the row is first written with each tallied criterion lost
+        (``trace_lost``) and rewritten with its tallies once the trace has landed, conditionally on the row as this
+        write left it. A failed trace write therefore leaves the cell's claims recorded lost, never tallied on a grade
+        that is not stored; a failed rewrite leaves them lost too, which a re-grade takes up, and is logged. Every
+        other reading of the row is the same in both writes.
+
         :raises JobFenced: The rule above refused the write; nothing was written.
         :raises StorageError: The RESULT was not persisted — a cell's row included, when every attempt lost its race.
             A trace-write failure is logged and reads as ``missing`` through ``has_trace``, not raised.
         """
         document = self._marked(result, trace)
-        self._write_cell_row(result, document)
-        if trace is not None and document["has_trace"]:
-            self._save_trace(result, trace)
+        claimed = trace is not None and document["has_trace"] and bool(result.claim_tallies)
+        self._write_cell_row(
+            result, self._marked(_claims_lost_with_their_trace(result), trace) if claimed else document
+        )
+        if trace is None or not document["has_trace"]:
+            return
+        if self._save_trace(result, trace) and claimed:
+            self._restore_claim_tallies(result, document)
 
     @staticmethod
     def _marked(result: EvalResult, trace: EvalTrace | None) -> dict[str, Any]:
@@ -2781,8 +2814,39 @@ class EvalStorage:
             f"eval result '{result.id}' (run {result.eval_run_id}) kept changing while its cell was being written"
         )
 
-    def _save_trace(self, result: EvalResult, trace: EvalTrace) -> None:
-        """Write a result's trace payload; a failure is logged, never raised (see :meth:`save_eval_result`)."""
+    def _restore_claim_tallies(self, result: EvalResult, document: dict[str, Any]) -> None:
+        """Rewrite a run cell's row, written with its claims lost, with its tallies, now that its trace has landed.
+
+        Conditional on the row as :meth:`save_run_cell` left it: a row another writer has since replaced, or one
+        written under another lease epoch, is left as it stands. A failed rewrite is logged and leaves the claims
+        lost, which is true of what the row can show: a re-grade takes them up.
+
+        :param result: The result as the cell produced it, its tallies on it.
+        :param document: Its document, marked.
+        """
+        data, etag = self._store.get_with_etag(result.id, result.scope_id)
+        stored = self._of_type(EvalResult, data)
+        if stored is None or int(stored.get("lease_epoch", 0)) != result.lease_epoch:
+            return
+        try:
+            self._save(document, if_match=etag)
+        except (ConflictError, StorageError) as unwritten:
+            # NOSILENT: the row stands with its claim criteria lost (trace_lost), which the result itself records.
+            log.error(
+                "eval_result %s (run %s, scope %s) keeps its claim criteria %s written lost: its trace landed and the "
+                "row's rewrite with their tallies did not — %s",
+                result.id,
+                result.eval_run_id,
+                result.scope_id,
+                ", ".join(sorted(result.claim_tallies)),
+                unwritten,
+            )
+
+    def _save_trace(self, result: EvalResult, trace: EvalTrace) -> bool:
+        """Write a result's trace payload; a failure is logged, never raised (see :meth:`save_eval_result`).
+
+        :return: Whether it was written.
+        """
         try:
             self._save(trace.to_dict())
         except StorageError as unstored:
@@ -2796,6 +2860,8 @@ class EvalStorage:
                 result.scope_id,
                 unstored,
             )
+            return False
+        return True
 
     def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
         """Load an eval result by id + scope. Never carries the trace — see :meth:`load_eval_trace`.

@@ -79,7 +79,14 @@ from threetears.evals.kernel.candidate_kind import (
     UnknownCandidateKind,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import refresh_prices
+from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.claims.failures import ClaimGradingFailed
+from threetears.evals.kernel.claims.grading import (
+    claim_payload_bytes,
+    criterion_ceiling,
+    grade_criterion,
+    refuse_unbuilt_claim_steps,
+)
 from threetears.evals.kernel.covariates import (
     count_delivered_turns,
     count_dropped_tool_calls,
@@ -91,7 +98,7 @@ from threetears.evals.kernel.dsl import evaluate_with_detail
 from threetears.evals.kernel.errors import JobFenced, StorageError
 from threetears.evals.kernel.host.apparatus import ApparatusError, ReplayMiss
 from threetears.evals.kernel.host.eval_host import EvalHost
-from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult
 from threetears.evals.run.judge import defect_usage
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
@@ -114,6 +121,10 @@ from threetears.evals.schema.models import (
     BudgetStop,
     BudgetStopCurrency,
     CellTermination,
+    ClaimEvidence,
+    ClaimGrade,
+    ClaimTally,
+    CLAIM_TRACE_BYTES,
     ConversationStopCause,
     EvalResult,
     EvalRun,
@@ -124,6 +135,7 @@ from threetears.evals.schema.models import (
     JudgeCutShort,
     JudgedArtifact,
     JudgeEvidence,
+    KnownClaimLoss,
     LatencyMetrics,
     PreconditionOutcome,
     RoleUsage,
@@ -645,6 +657,73 @@ class _JudgeRecord(NamedTuple):
     #: Whether the run's cost cap had too little left for the phase, so it asked nothing it had not asked already
     #: (``EvalResult.judging_set_aside``).
     set_aside: bool = False
+    #: What the cell's claim criteria left, once they were graded; ``None`` for a cell no criterion graded.
+    claims: _ClaimsRecord | None = None
+
+
+@dataclass(frozen=True)
+class _ClaimsRecord:
+    """What a cell's claim criteria leave on its result and its trace, however the claims phase ended.
+
+    :ivar evidence: The claim evidence the kind rendered, stored on the trace; ``None`` when it alone outgrew the
+        trace's cap, and every criterion was lost to it.
+    :ivar tallies: criterion -> its counts, for each criterion that graded the cell (``EvalResult.claim_tallies``).
+    :ivar failures: criterion -> why the cell lost it, for each other (``EvalResult.claim_failures``).
+    :ivar grades: criterion -> its grade, for each tallied criterion (``EvalTrace.claim_grades``).
+    """
+
+    evidence: ClaimEvidence | None
+    tallies: Mapping[str, ClaimTally]
+    failures: Mapping[str, KnownClaimLoss]
+    grades: Mapping[str, ClaimGrade]
+
+
+@dataclass
+class _ClaimsPhase:
+    """One cell's claims phase as it runs: what it grades, and what each criterion has left so far.
+
+    Kept on the cell's sink, so a deadline striking inside a criterion still has every criterion already graded, the
+    calls already billed, and the evidence, and names each criterion that did not finish.
+
+    :ivar evidence: The claim evidence the kind rendered.
+    :ivar criteria: Every criterion the phase grades, in the template's order.
+    :ivar tallies: criterion -> its counts, as each lands.
+    :ivar failures: criterion -> its loss, as each is lost.
+    :ivar grades: criterion -> its grade, as each lands.
+    :ivar billed: Every completion a claims call returned, in order: what the cell's judge rows fold in beside its
+        dims' calls.
+    """
+
+    evidence: ClaimEvidence
+    criteria: tuple[str, ...]
+    tallies: dict[str, ClaimTally] = field(default_factory=dict)
+    failures: dict[str, KnownClaimLoss] = field(default_factory=dict)
+    grades: dict[str, ClaimGrade] = field(default_factory=dict)
+    billed: list[object] = field(default_factory=list)
+    #: Whether the evidence is stored on the trace: False once it alone outgrew the trace's cap.
+    stored: bool = True
+    #: Whether the phase has begun, after the dims. A cell is due its claims phase before its dims are judged, so a
+    #: cut striking while they are still judged loses every criterion too, never leaving one unrecorded.
+    begun: bool = False
+
+    def record(self, *, unfinished: KnownClaimLoss | None = None) -> _ClaimsRecord:
+        """What the phase leaves, every criterion that did not finish lost as ``unfinished``.
+
+        :param unfinished: The loss of a criterion neither graded nor lost; ``None`` asserts every one finished.
+        :return: The record.
+        :raises RuntimeError: ``unfinished`` is ``None`` and a criterion did not finish: the phase dropped one, which
+            no record may hide.
+        """
+        cut = [name for name in self.criteria if name not in self.tallies and name not in self.failures]
+        if cut and unfinished is None:
+            raise RuntimeError(f"the claims phase left criteria {', '.join(cut)} neither graded nor lost")
+        failures = {**self.failures, **dict.fromkeys(cut, unfinished)} if cut else dict(self.failures)
+        return _ClaimsRecord(
+            evidence=self.evidence if self.stored else None,
+            tallies=dict(self.tallies),
+            failures={name: loss for name, loss in failures.items() if loss is not None},
+            grades=dict(self.grades),
+        )
 
 
 def _judge_record(
@@ -992,6 +1071,10 @@ class _CellSink:
     #: The judge phase, once it has begun — what it reads and every dim it asks — so a cell cut
     #: off while it is judged keeps the evidence and can name the dims that did not finish.
     judging: _JudgePhase | None = None
+    #: The claims phase, once the cell is due one (before its dims are judged): what it grades and what each criterion
+    #: left, so a cell cut off inside a criterion keeps every criterion already graded and loses only those that did
+    #: not finish, and one cut off before the phase began loses each.
+    claiming: _ClaimsPhase | None = None
     #: The cell's handle on the run's cassette lane, once it has one — ``None`` for a run with
     #: cassettes off. Kept here so every exit, a cut-short one included, closes it and holds the
     #: kind's report to what the cell replayed.
@@ -1108,6 +1191,16 @@ class _CellSink:
         :param phase: What the judge reads and the dims it asks.
         """
         self.judging = phase
+        self.pending = "judge"
+
+    def begin_claims(self) -> None:
+        """Mark the claims phase begun, after the dims: the cell now waits on the judge.
+
+        :raises RuntimeError: No claims phase is due.
+        """
+        if self.claiming is None:
+            raise RuntimeError("a claims phase begins only once it is due (_CellSink.claiming)")
+        self.claiming.begun = True
         self.pending = "judge"
 
     def adopt(self, candidate: CandidateOutput) -> None:
@@ -1653,12 +1746,15 @@ async def _run_one_result(
             f"candidate kind {candidate_kind_name!r} declares no judged_artifact (got {judged_artifact!r}); every "
             "CandidateKind states what a judge reads of it — JudgedArtifact.TRANSCRIPT, DOCUMENT or UNJUDGED"
         )
-    if judge_service is not None and judged_artifact is JudgedArtifact.UNJUDGED:
+    # A kind graded by code has nothing for a rubric judge to read, but a template's claim criteria are graded by the
+    # judge whatever the kind declares: the judge then reads the kind's claim evidence alone.
+    if judge_service is not None and judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
         raise ValueError(
             f"candidate kind {candidate_kind_name!r} declares judged_artifact={judged_artifact.value!r}, so there is "
             "nothing for a judge to read, and this run wires a judge service; pass no judge service, or wire a kind "
             "that renders what a judge reads"
         )
+    refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
     # The width the run executes at was sized from what the kind's launcher said the kind declares
     # (``KindWiring.max_concurrent_cells``); the kind's own declaration is the authority on whether it is safe
     # there. Refused before ``prepare``, and the RUN rather than the cell, like an unknown kind: every cell would
@@ -1808,6 +1904,17 @@ async def _run_one_result(
     refuse_inner_agent_usage(telemetry.usage)
     refuse_engine_derived_host_measures(candidate.host_measures)
     refuse_misfit_host_measures(candidate.host_measures, host.profile.measures)
+    hold_to_claim_criteria(candidate_kind_name, template, candidate)
+    # Due before the dims are judged, so a cut striking while they are loses every criterion on the record, too.
+    if (
+        judge_service is not None
+        and template.claim_criteria
+        and candidate.claim_evidence is not None
+        and _judgeable(candidate)
+    ):
+        sink.claiming = _ClaimsPhase(
+            evidence=candidate.claim_evidence, criteria=tuple(criterion.name for criterion in template.claim_criteria)
+        )
 
     # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
     # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
@@ -1907,6 +2014,26 @@ async def _run_one_result(
             awaiting_room=sink.wait_for_room,
             judge_billed=sink.judge_billed,
         )
+    # 4b. Claims — each claim criterion the template declares, after the dims and on the same judge, over the claim
+    # evidence the kind rendered, whatever the kind declares a judge reads (a kind graded by code included). A
+    # criterion's every failure is its own loss, so nothing here moves the dims' scores or the trial's pass.
+    claiming = sink.claiming
+    if judge_service is not None and claiming is not None:
+        sink.begin_claims()
+        claims_ms = await _run_claims_phase(
+            claiming,
+            template=template,
+            test_case=test_case,
+            judge_service=judge_service,
+            eval_run_id=eval_run_id,
+            sink=sink,
+            gate=sink.judging_gate,
+            awaiting_room=sink.wait_for_room,
+            judge_billed=sink.judge_billed,
+            set_aside=judged.set_aside,
+        )
+        judged = _with_claims(judged, claiming.record(), outcomes=sink.judged, billed=claiming.billed)
+        judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
 
     # Second (and final) conditions sample — see _sample_concurrent_eval_jobs. Taken after
     # the judging that closes the cell, so the whole window is covered. The assembly folds
@@ -2093,6 +2220,309 @@ async def _judge_one_call_at_a_time(
     return _judge_record(phase, settled)
 
 
+class _ClaimsClient:
+    """The judge's client as one claim criterion's calls see it: each completion billed to the cell, and each call
+    sent only within the criterion's hold against the run's cost cap.
+
+    A priced hold sends a call only while what the criterion has billed and the call's own ceiling fit the ceiling it
+    was admitted at, so the criterion never spends past what the cap set aside for it; a call that would is refused,
+    and the criterion is lost to the cap. A hold the judge could not price sends a call only while the run is within
+    its cap (:meth:`_JudgeHold.may_send`), as a dimension's call under such a hold is. A refusal is
+    :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed` (``cost_cap``), which a ground call's loss
+    keeps to groundedness and every other call's makes the criterion's.
+    """
+
+    def __init__(
+        self, inner: Any, *, phase: _ClaimsPhase, sink: CellSink | None, hold: _JudgeHold | None, criterion: str
+    ) -> None:
+        """Bind the judge's client, the phase that keeps its completions, the cell's sink and the criterion's hold.
+
+        :param inner: The judge's client, which names its model.
+        :param phase: The cell's claims phase, which keeps every completion for the cell's judge rows.
+        :param sink: The cell's sink, which counts each completion in its judge spend; ``None`` for a witnessed cell.
+        :param hold: The criterion's hold against the run's cost cap; ``None`` when no enforcing cap bounds the cell.
+        :param criterion: The criterion's name, for a refusal.
+        """
+        self._inner = inner
+        self._phase = phase
+        self._sink = sink
+        self._hold = hold
+        self._criterion = criterion
+        self._billed: float | None = 0.0
+        self.model_name: str = getattr(inner, "model_name", "")
+
+    async def aclose(self) -> None:
+        """Release nothing: the judge's client is the judge service's, which releases it with the run."""
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        """Send one call within the criterion's hold, and bill what it returns.
+
+        :raises ClaimGradingFailed: The hold has too little left for the call (``cost_cap``).
+        """
+        if self._hold is not None:
+            self._admit(system=system, user=user, response_format=response_format)
+        completion: CompletionResult = await self._inner.generate(
+            system=system, user=user, response_format=response_format
+        )
+        self._phase.billed.append(completion)
+        cost = getattr(completion, "cost_usd", None)
+        self._billed = None if self._billed is None or cost is None else self._billed + cost
+        if self._sink is not None:
+            self._sink.add_spend("judge", cost)
+        return completion
+
+    def _admit(self, *, system: str, user: str, response_format: dict[str, Any] | None) -> None:
+        """Refuse a call the criterion's hold has no room for.
+
+        :raises ClaimGradingFailed: It has none (``cost_cap``).
+        """
+        hold = self._hold
+        assert hold is not None
+        if hold.usd is not None and self._billed is not None:
+            ceiling = call_ceiling(self._inner, system=system, user=user, response_format=response_format)
+            if ceiling is not None:
+                if self._billed + ceiling <= hold.usd:
+                    return
+                raise ClaimGradingFailed(
+                    f"claim criterion {self._criterion!r} has billed {self._billed} of the {hold.usd} its hold set "
+                    f"aside, and its next call can cost {ceiling}: the cap set aside too little for what it said",
+                    loss="cost_cap",
+                )
+        if not hold.may_send():
+            raise ClaimGradingFailed(
+                f"the run's cost cap had too little left for claim criterion {self._criterion!r}'s next call",
+                loss="cost_cap",
+            )
+
+
+async def _run_claims_phase(
+    phase: _ClaimsPhase,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    judge_service: JudgeService,
+    eval_run_id: str,
+    sink: CellSink | None,
+    gate: _JudgingGate | None = None,
+    awaiting_room: Callable[[bool], None] | None = None,
+    judge_billed: Callable[[], float] | None = None,
+    set_aside: bool = False,
+) -> float:
+    """Grade a cell under each claim criterion its template declares, in order, each under its own hold.
+
+    Run after the rubric dimensions, on the same judge, so the dims' hold is released before the first criterion is
+    admitted and each criterion's before the next. A criterion is admitted against the run's cost cap on its own
+    ceiling (:func:`~threetears.evals.kernel.claims.grading.criterion_ceiling`), and one the cap sets aside is lost to
+    it (``cost_cap``) with every criterion after it, since spend only grows: the dims' scores stand. Each criterion's
+    outcome lands on ``phase`` as it is decided, so a deadline striking inside one keeps the rest.
+
+    **Every way a criterion fails is its own loss, never a judge error**: a step's reply cut short, unreadable or past
+    its repairs, the cap, the provider failing a call (``provider_error``) and a grade over the trace's cap. The cell
+    keeps its pass, its rubric scores and every other criterion. A lost ground step costs only groundedness, and rides
+    on the tally. Raised instead, as the dims' phase raises them, and failing the run: a completion that breaks the
+    protocol in the extraction or a truth call, and a call the rig could not serve (a replay's miss).
+
+    :param phase: The cell's claims phase, which each criterion's outcome lands on.
+    :param template: The template, whose claim criteria are graded.
+    :param test_case: The case, whose reference key's facts are case evidence.
+    :param judge_service: The judge, whose default client the calls are sent on.
+    :param eval_run_id: The run, for the log line a failure writes.
+    :param sink: The cell's sink, which counts each call in the cell's spend; ``None`` for a witnessed cell.
+    :param gate: What admits each criterion against the run's cost cap; ``None`` when no enforcing cap bounds the
+        cell.
+    :param awaiting_room: Told ``True`` as a criterion starts waiting for the gate and ``False`` once admitted or set
+        aside, so a deadline striking during the wait is read as the cap's.
+    :param judge_billed: What the cell has been billed for judging so far, which each hold counts its calls against.
+    :param set_aside: Whether the cap already set the cell's dims aside: then no criterion is asked, and each is lost
+        to the cap.
+    :return: The phase's wall clock in milliseconds.
+    :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
+    :raises ApparatusError: The rig could not serve a call.
+    """
+    started = time.monotonic()
+    try:
+        criteria = {criterion.name: criterion for criterion in template.claim_criteria}
+        client = judge_service.default_client()
+        capped = set_aside
+        if (held := claim_payload_bytes(phase.evidence, {})) > CLAIM_TRACE_BYTES:
+            # The evidence alone outgrows the trace: no grade could be stored beside it, so none is asked, and the
+            # evidence is not stored either. Each criterion is lost to the cap, which the kind's own truncation avoids.
+            log.warning(
+                "Eval run %s: case=%s's claim evidence takes %d bytes, past CLAIM_TRACE_BYTES (%d); every claim "
+                "criterion is lost as evidence_over_cap",
+                eval_run_id,
+                test_case.id,
+                held,
+                CLAIM_TRACE_BYTES,
+            )
+            phase.stored = False
+            phase.failures.update(dict.fromkeys(phase.criteria, "evidence_over_cap"))
+            return 0.0
+        for name in phase.criteria:
+            criterion = criteria[name]
+            if capped:
+                phase.failures[name] = "cost_cap"
+                continue
+            hold: _JudgeHold | None = None
+            if gate is not None:
+                ceiling: float | None
+                try:
+                    await refresh_prices(client)
+                    ceiling = criterion_ceiling(criterion, phase.evidence, key=test_case.reference, client=client)
+                except (
+                    Exception
+                ) as e:  # prawduct:ok-broad-except — judge boundary; an unpriced criterion is admitted alone
+                    # NOSILENT: the criterion is admitted unpriced, one call at a time, each only within the cap.
+                    contain(
+                        e,
+                        log=log,
+                        what=f"Claim criterion {name} for case={test_case.id} could not be priced",
+                        level="warning",
+                    )
+                    ceiling = None
+                if awaiting_room is not None:
+                    awaiting_room(True)
+                hold = await gate.admit(ceiling, judge_billed)
+                # Not in a ``finally``: a cancel during the wait leaves it set, for the deadline's arm to read.
+                if awaiting_room is not None:
+                    awaiting_room(False)
+                if hold is None:
+                    capped = True
+                    phase.failures[name] = "cost_cap"
+                    continue
+            try:
+                graded = await grade_criterion(
+                    criterion,
+                    phase.evidence,
+                    key=test_case.reference,
+                    client=_ClaimsClient(client, phase=phase, sink=sink, hold=hold, criterion=name),
+                    graded=phase.grades,
+                )
+            except ClaimGradingFailed as failed:
+                # Recorded, never swallowed: the criterion's loss is on the cell, which keeps every other reading.
+                log.warning(
+                    "Eval run %s: claim criterion %s lost case=%s (%s): %s",
+                    eval_run_id,
+                    name,
+                    test_case.id,
+                    failed.loss,
+                    failed,
+                )
+                phase.failures[name] = failed.loss
+            except CompletionProtocolDefect:
+                log.error("Eval run %s: a claims completion breaks the protocol; the run fails", eval_run_id)
+                raise
+            except ApparatusError as fault:
+                log.error(
+                    "Eval run %s: the judge's rig could not serve a claims call; the run fails: %s", eval_run_id, fault
+                )
+                raise
+            except (
+                Exception
+            ) as e:  # prawduct:ok-broad-except — judge boundary; a provider's failure is this criterion's loss alone
+                # NOSILENT: the criterion is lost as provider_error on the cell, which keeps every other reading.
+                contain(
+                    e,
+                    log=log,
+                    what=f"Claim criterion {name} failed for case={test_case.id} in eval run {eval_run_id}",
+                    level="error",
+                )
+                phase.failures[name] = "provider_error"
+            else:
+                phase.grades[name] = graded.grade
+                phase.tallies[name] = graded.tally
+                if graded.ground_failure is not None:
+                    log.warning(
+                        "Eval run %s: claim criterion %s lost its ground step case=%s (%s): %s",
+                        eval_run_id,
+                        name,
+                        test_case.id,
+                        graded.tally.ground_loss,
+                        graded.ground_failure,
+                    )
+            finally:
+                if hold is not None:
+                    hold.release()
+    finally:
+        elapsed = (time.monotonic() - started) * 1000.0
+    return elapsed
+
+
+def _with_claims(
+    judged: _JudgeRecord, claims: _ClaimsRecord, *, outcomes: list[tuple[str, JudgeOutcome]], billed: Sequence[object]
+) -> _JudgeRecord:
+    """A cell's judge record with what its claim criteria left: their tallies and losses, and their calls folded into
+    the judge rows beside the dims'.
+
+    :param judged: What the dims' phase left, or the unjudged record.
+    :param claims: What the claims phase left.
+    :param outcomes: The dims' calls that returned, whose rows the record's usage is folded from again.
+    :param billed: Every completion the claims calls returned.
+    :return: The record.
+    """
+    return judged._replace(usage=fold_judge_outcomes(outcomes, also_billed=billed).usage, claims=claims)
+
+
+def refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> None:
+    """Refuse a run whose template's claim criteria nothing would grade, or would grade otherwise than declared.
+
+    A claim criterion is graded by the run's judge, so a run of a template declaring one needs a judge, whatever its
+    kind declares a judge reads; without one its criteria would grade nothing and say nothing. A criterion declaring a
+    step this build does not run is refused too (:func:`~threetears.evals.kernel.claims.grading.refuse_unbuilt_claim_steps`).
+
+    :param template: The run's template.
+    :param judged: Whether the run has a judge.
+    :raises ValueError: The template declares claim criteria and the run has no judge, or a criterion declares a step
+        this build does not run.
+    """
+    if not template.claim_criteria:
+        return
+    if not judged:
+        raise ValueError(
+            f"template {template.name!r} declares claim criteria "
+            + ", ".join(repr(criterion.name) for criterion in template.claim_criteria)
+            + ", which the run's judge grades, and this run has no judge; build its judge (build_judge_service) for "
+            "the kind, whatever it declares a judge reads"
+        )
+    refuse_unbuilt_claim_steps(template)
+
+
+def hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: CandidateOutput) -> None:
+    """Refuse output a template's claim criteria cannot grade.
+
+    A template that declares claim criteria owes them the kind's claim evidence for every output it produced, whatever
+    the kind declares a judge reads: without it the criteria would grade nothing and say nothing. A criterion naming
+    ``grounded_in`` reads the documents the candidate was given, so the evidence declares them (empty when it was given
+    none). An empty output owes none: nothing was produced, and nothing is graded.
+
+    :param kind_name: The kind, for the refusal's message.
+    :param template: The template, whose claim criteria the output is held to.
+    :param output: What the kind produced.
+    :raises ValueError: The output is not empty and carries no claim evidence, or a criterion with ``grounded_in``
+        meets evidence that declares no documents.
+    """
+    if not template.claim_criteria or not output.output:
+        return
+    evidence = output.claim_evidence
+    if evidence is None:
+        raise ValueError(
+            f"candidate kind {kind_name!r} produced output and rendered no claim_evidence, and template "
+            f"{template.name!r} declares claim criteria "
+            + ", ".join(repr(criterion.name) for criterion in template.claim_criteria)
+            + "; the kind renders its output's segments and documents for them"
+        )
+    if evidence.documents is None and (
+        grounded := [criterion.name for criterion in template.claim_criteria if criterion.grounded_in is not None]
+    ):
+        raise ValueError(
+            f"candidate kind {kind_name!r} rendered claim evidence that declares no documents, and claim criteria "
+            f"{', '.join(map(repr, grounded))} read the documents the candidate was given; declare them, empty when "
+            "it was given none"
+        )
+
+
 async def judge_witnessed_output(
     *,
     template: EvalTemplate,
@@ -2105,11 +2535,13 @@ async def judge_witnessed_output(
     eval_run_id: str,
     settled: list[tuple[str, JudgeOutcome]] | None = None,
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
-    """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
+    """Judge a host-observed cell's output through the runner's own judge phase, and its claims through the runner's
+    own claims phase, as the runner gates them.
 
-    The gate is the runner's (:func:`_judgeable`): an output with nothing in it, with no evidence rendered, or whose
-    candidate's model the provider does not serve, is not judged. Used by
-    :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+    The gate is the runner's (:func:`_judgeable`): an output with nothing in it, or whose candidate's model the
+    provider does not serve, is not judged. Its dims are judged when it rendered judge evidence, and its template's
+    claim criteria graded when it rendered claim evidence, after the dims, whatever the kind declares a judge reads.
+    Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
 
     :param template: The template whose intent and rubric the judge reads.
     :param test_case: The case the observation answers.
@@ -2122,30 +2554,55 @@ async def judge_witnessed_output(
     :param eval_run_id: The run.
     :param settled: A caller-owned list each returned call is appended to, the defect's billed call included,
         so a caller the phase raised to still holds what was paid for; ``None`` when it keeps none.
-    :return: What the phase left and its wall clock; ``(None, None)`` when the output gave it nothing to judge.
+    :return: What the phases left and their wall clock; ``(None, None)`` when the output gave them nothing to judge.
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
+    :raises ValueError: The template declares claim criteria the output cannot be graded on
+        (:func:`hold_to_claim_criteria`), or one declares a step this build does not run.
     """
-    if output.judge_evidence is None or not _judgeable(output):
+    refuse_claim_criteria_unjudged(template, judged=True)
+    hold_to_claim_criteria(template.candidate_kind, template, output)
+    claims_due = bool(template.claim_criteria) and output.claim_evidence is not None
+    if not _judgeable(output) or (output.judge_evidence is None and not claims_due):
         return None, None
-    phase = _JudgePhase(
-        judged_artifact=judged_artifact,
-        evidence=output.judge_evidence,
-        dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
-        judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
-        boundary_dims=boundary_dim_names(template.rubric),
-    )
-    return await _run_judge_phase(
-        phase,
-        template=template,
-        test_case=test_case,
-        judge_service=judge_service,
-        goal_outcomes=goal_outcomes,
-        concurrency=concurrency,
-        settled=settled if settled is not None else [],
-        eval_run_id=eval_run_id,
-        sink=None,
-    )
+    outcomes = settled if settled is not None else []
+    judged: _JudgeRecord = _unjudged_record()
+    judge_ms: float | None = None
+    if output.judge_evidence is not None:
+        phase = _JudgePhase(
+            judged_artifact=judged_artifact,
+            evidence=output.judge_evidence,
+            dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
+            boundary_dims=boundary_dim_names(template.rubric),
+        )
+        judged, judge_ms = await _run_judge_phase(
+            phase,
+            template=template,
+            test_case=test_case,
+            judge_service=judge_service,
+            goal_outcomes=goal_outcomes,
+            concurrency=concurrency,
+            settled=outcomes,
+            eval_run_id=eval_run_id,
+            sink=None,
+        )
+    if claims_due and output.claim_evidence is not None:
+        claiming = _ClaimsPhase(
+            evidence=output.claim_evidence, criteria=tuple(criterion.name for criterion in template.claim_criteria)
+        )
+        claims_ms = await _run_claims_phase(
+            claiming,
+            template=template,
+            test_case=test_case,
+            judge_service=judge_service,
+            eval_run_id=eval_run_id,
+            sink=None,
+        )
+        judged = _with_claims(judged, claiming.record(), outcomes=outcomes, billed=claiming.billed)
+        judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
+    assert judge_ms is not None
+    return judged, judge_ms
 
 
 #: The exclusions that are a fault the harness recorded on the cell (``infra_error``), which a run whose every cell
@@ -2562,6 +3019,8 @@ def assemble_completed_cell(
         judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
         judge_cut_short=judged.judge_cut_short,
         judging_set_aside=judged.set_aside,
+        claim_tallies=dict(judged.claims.tallies) if judged.claims is not None else {},
+        claim_failures=dict(judged.claims.failures) if judged.claims is not None else {},
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -2596,6 +3055,9 @@ def assemble_completed_cell(
             call_ledger=output.call_ledger,
             # What the world held when the cell ended — the other input a re-check re-grades from.
             end_state=end_state,
+            # What the claim criteria read, and each one's grade: what a re-grade and every claim reading rest on.
+            claim_evidence=judged.claims.evidence if judged.claims is not None else None,
+            claim_grades=dict(judged.claims.grades) if judged.claims is not None else {},
         ),
     )
 
@@ -2666,8 +3128,20 @@ def _cut_short_cell(
         dispatch's baseline; ``None`` where it does not.
     :return: The result and its trace.
     """
+    # A cut striking inside the claims phase struck after the dims had all returned: the wait it struck in, if any,
+    # was a criterion's, and the dims were not set aside.
+    claims = (
+        sink.claiming.record(unfinished="cost_cap" if judging_set_aside else "deadline")
+        if sink.claiming is not None
+        else None
+    )
     judged = (
-        _judge_record(sink.judging, sink.judged, unfinished=unfinished_judging, set_aside=judging_set_aside)
+        _judge_record(
+            sink.judging,
+            sink.judged,
+            unfinished=unfinished_judging,
+            set_aside=judging_set_aside and (sink.claiming is None or not sink.claiming.begun),
+        )
         if sink.judging is not None
         else None
     )
@@ -2688,6 +3162,9 @@ def _cut_short_cell(
         if judged is not None
         else {}
     )
+    claim_fields: dict[str, Any] = (
+        {"claim_tallies": dict(claims.tallies), "claim_failures": dict(claims.failures)} if claims is not None else {}
+    )
     result = EvalResult(
         id=cell_result_id(eval_run_id, test_case_id, model, k_iteration),
         scope_id=scope_id,
@@ -2702,6 +3179,7 @@ def _cut_short_cell(
         infra_error=errors.infra_error,
         metered_calls_refused=metered_calls_refused,
         **judge_fields,
+        **claim_fields,
         **_degraded_capture_fields(
             sink=sink,
             variant=variant,
@@ -2726,6 +3204,9 @@ def _cut_short_cell(
         # Read only once ``invoke`` returned, so a cell cut off before that stores none; one cut off
         # while judged keeps what was read.
         end_state=sink.end_state,
+        # The claim criteria already graded keep their grades, beside the evidence every criterion read.
+        claim_evidence=claims.evidence if claims is not None else None,
+        claim_grades=dict(claims.grades) if claims is not None else {},
     )
     return CellOutcome(result, trace)
 
@@ -2910,7 +3391,7 @@ def _degraded_capture_fields(
     :return: The keyword arguments every degraded ``EvalResult`` spreads.
     """
     side = sink.side()
-    judged = fold_judge_outcomes(sink.judged)
+    judged = fold_judge_outcomes(sink.judged, also_billed=sink.claiming.billed if sink.claiming is not None else ())
     if sink.cassettes is not None:
         # The cell ended here, wherever it was — inside ``prepare`` included, which the close after
         # ``invoke`` never reaches. Idempotent, so a cell already closed is unchanged.
@@ -3988,6 +4469,9 @@ async def execute_run(
             "scores with, or pass no judge service."
         )
 
+    # Refused before any cell runs, so nothing has been spent: a template's claim criteria are the judge's to grade.
+    refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
+
     # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
     # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
     template = template_as_graded(template, run.refused_goal_checks)
@@ -4332,7 +4816,9 @@ async def execute_run(
             msg = f"cell timeout while waiting on {waiting_on}: {timed_out}"
             if charged_to == "candidate":
                 errors.add_candidate(msg)
-            elif charged_to == "infra" or sink.judging is None:
+            elif charged_to == "infra" or (sink.judging is None and (sink.claiming is None or not sink.claiming.begun)):
+                # A deadline inside the claims phase is each unfinished criterion's loss alone (``deadline``): the
+                # dims already settled stand, and the cell keeps its pass.
                 errors.add_infra(msg)
             # Checks the kind already reported are kept as it reported them (``_degraded_capture_fields``).
             # A candidate-charged deadline before that cancelled the grading, so the checks a candidate

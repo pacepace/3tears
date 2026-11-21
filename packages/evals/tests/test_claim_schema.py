@@ -735,6 +735,7 @@ def test_a_criterion_is_tallied_or_lost_never_both_and_a_loss_is_named() -> None
         "cut_short",
         "unreadable",
         "repair_budget_spent",
+        "provider_error",
         "port_error",
         "cost_cap",
         "deadline",

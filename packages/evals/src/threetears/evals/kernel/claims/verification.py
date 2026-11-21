@@ -46,8 +46,11 @@ once (``cut_short``).
 **Truth and groundedness fail apart.** A truth failure raises
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, costing the cell this criterion. A ground
 failure never touches truth: the documents an arm fetched differ by arm, so they must not decide whether its cell
-keeps a truth reading. The verification comes back with every truth finding, no groundedness, and the ground step's
-loss on :attr:`Verification.ground_loss`, for the judge phase to record against the groundedness reading alone.
+keeps a truth reading. That holds for every way a ground call can fail: a reply cut short, unreadable or past its
+repairs, the run's cost cap, the provider failing the call, and a completion that breaks the protocol on it. The
+verification comes back with every truth finding, no groundedness, and the ground step's loss on
+:attr:`Verification.ground_loss`, for the judge phase to record against the groundedness reading alone. Only a call
+the rig could not serve (a replay's miss) is raised from the ground step, since that fails the run.
 
 **It records what it spent, and how it read.** Every completion is folded into the cell's ``judge`` ledger and
 recorded as a :class:`~threetears.evals.schema.models.ClaimCall`. :attr:`ClaimVerifier.identity` names the model and a
@@ -72,29 +75,26 @@ from typing import Any, Final, Literal
 from pydantic import Field, ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
-from threetears.evals.kernel.claims.extraction import ExtractedClaim
+from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.claims.extraction import ExtractedClaim, claim_call, echo_chars, filler
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.claims.verbatim import VERBATIM_FOLD, verbatim_span
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.completion import (
-    CompletionClient,
-    CompletionProtocolDefect,
-    CompletionResult,
-    sent_settings_of,
-)
+from threetears.evals.schema.claims import Segment
+from threetears.evals.schema.completion import CompletionClient, CompletionProtocolDefect
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import (
     CLAIM_QUOTE_CHARS,
-    MODEL_DEFAULT_TEMPERATURE,
     ClaimCall,
     ClaimCitation,
     EvidenceDocument,
     EvidenceProvenance,
     EvidenceRef,
     GradedClaim,
-    JudgeTemperature,
     KnownClaimLoss,
     PageBudget,
     RepairBudget,
@@ -102,11 +102,16 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.schema.reference import ReferenceFact, ReferenceKey
 
+log = get_logger(__name__)
+
 #: How many times one batch is asked in full: the first call and two more when a finished reply will not parse.
 _ATTEMPTS: Final = 3
 
 #: The ledger every verify call is billed to: it reads the candidate's output, as a judge does.
 _ROLE: Final = "judge"
+
+#: A ref as wide as any a step can number: what a priced prompt prints where a passage's ref will stand.
+_WIDEST_REF: Final = 999_999_999
 
 #: Something other than whitespace.
 _NOT_BLANK: Final = r"\S"
@@ -360,7 +365,8 @@ class Verification:
     :ivar calls: Every call made, in order.
     :ivar findings: One per claim, in the claims' order: a :class:`ClaimFinding` for a world claim, None for a session
         claim.
-    :ivar ground_loss: Why the ground step was lost (``cut_short``, ``unreadable`` or ``repair_budget_spent``), its
+    :ivar ground_loss: Why the ground step was lost (``cut_short``, ``unreadable``, ``repair_budget_spent``,
+        ``cost_cap`` or ``provider_error``), its
         own loss and never the criterion's: the truth findings stand, and every finding's ``grounded`` reads None.
         None when the step was not lost, or not asked.
     :ivar ground_failure: What failed in the ground step, named, beside :attr:`ground_loss`; None with it.
@@ -582,20 +588,6 @@ def _batches(claims: Sequence[ExtractedClaim]) -> list[tuple[int, ...]]:
     return [*batches, tuple(outside)] if outside else batches
 
 
-def _sent_temperature(completion: CompletionResult) -> JudgeTemperature:
-    """The temperature a completion was sent at, as its client reports it.
-
-    :raises CompletionProtocolDefect: The completion carries no ``temperature``.
-    """
-    try:
-        sent = completion.temperature
-    except AttributeError as missing:
-        raise CompletionProtocolDefect(
-            completion, "temperature", "a claim's grade records the temperature each call was sent at"
-        ) from missing
-    return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
-
-
 def _unreadable(refused: ValueError) -> str:
     """Why a reply could not be read, in a line a model can act on."""
     if isinstance(refused, ValidationError):
@@ -702,11 +694,16 @@ class ClaimVerifier:
 
     @property
     def identity(self) -> str:
-        """``<model>|claimverify:<sha12>``: the model, and a digest of the prompts (with the host's guidance), the
+        """``<model>|claimverify:<sha12>``: the model, and :attr:`definition`'s first twelve characters."""
+        return f"{self.model_name}|claimverify:{self.definition[:12]}"
+
+    @property
+    def definition(self) -> str:
+        """A digest of everything but the model that shapes a verdict: the prompts (with the host's guidance), the
         reply schemas, the failures a repair is told, the sentence-break rule, the page budget and selection rule, the
-        batch rule, the repair budget, ``grounded_in``, the quote cap, the attempts and the verbatim fold's
-        identity."""
-        digest = canonical_digest(
+        batch rule, the repair budget, ``grounded_in``, the quote cap, the attempts and the verbatim fold's identity.
+        What a criterion's fingerprint reads, since which model checked the claims is recorded on each call."""
+        return canonical_digest(
             {
                 "truth_system": self._system("truth"),
                 "ground_system": self._system("ground"),
@@ -740,7 +737,99 @@ class ClaimVerifier:
                 "fold": VERBATIM_FOLD.identity,
             }
         )
-        return f"{self.model_name}|claimverify:{digest[:12]}"
+
+    def price_ceiling(
+        self,
+        segments: Sequence[Segment],
+        *,
+        key: ReferenceKey | None,
+        documents: Sequence[EvidenceDocument] | None,
+    ) -> float | None:
+        """The most verifying the claims ``segments`` state can cost on this verifier's client, before they are listed.
+
+        Each step on its own: every batch the segments can give (one per unit, one for the segments outside any unit),
+        each asked in full up to its attempts, at the step's evidence bound and the echo allowance for the claims of
+        that batch's segments (:func:`~threetears.evals.kernel.claims.extraction.echo_chars`); and the most items the
+        repair budget lets the step ask again, each at the evidence bound and the allowance for one claim, its answer
+        and its failure. The evidence bound is the key's facts as shown, and, for the passages, every character the
+        page budget lets the step read of its documents with each passage's heading. The ground step is priced only
+        where it is asked: ``grounded_in`` named, and a document of those provenances given.
+
+        :param segments: The cell's segments.
+        :param key: The case's reference key, or None.
+        :param documents: The cell's evidence documents, or None when undeclared.
+        :return: The ceiling in dollars, or None when the client cannot price a call.
+        """
+        cell = tuple(segments)
+        given = tuple(documents or ())
+        facts = [] if key is None else [(entity.name, fact) for entity in key.fact_entities for fact in entity.facts]
+        steps: dict[_Step, str] = {
+            "truth": self._evidence_bound(
+                [
+                    _FACT_TEMPLATE.format(ref=f"K{at}", entity=entity, claim=fact.claim)
+                    for at, (entity, fact) in enumerate(facts, start=1)
+                ],
+                [document for document in given if document.provenance == "case"],
+            )
+        }
+        grounding = [document for document in given if self.grounded_in and document.provenance in self.grounded_in]
+        if grounding:
+            steps["ground"] = self._evidence_bound([], grounding)
+        units: dict[int | None, list[str]] = {}
+        for segment in cell:
+            units.setdefault(segment.unit, []).append(segment.text)
+        longest = max((segment.text for segment in cell), key=len, default="")
+        echo = filler(echo_chars())
+        total = 0.0
+        for step, evidence in steps.items():
+            for texts in units.values():
+                batch = call_ceiling(
+                    self.client,
+                    system=self._system(step),
+                    user=_AGAIN_TEMPLATE.format(
+                        user=_USER_TEMPLATE.format(evidence=evidence, claims=filler(echo_chars(*texts))),
+                        failure=echo,
+                    ),
+                    response_format=self.truth_response_format if step == "truth" else self.ground_response_format,
+                    attempts=_ATTEMPTS,
+                )
+                if batch is None:
+                    return None
+                total += batch
+            repair = call_ceiling(
+                self.client,
+                system=self._repair_system(step),
+                user=_REPAIR_TEMPLATE.format(
+                    evidence=evidence, claim=filler(echo_chars(longest)), answer=echo, failure=echo
+                ),
+                response_format=(
+                    self.truth_repair_response_format if step == "truth" else self.ground_repair_response_format
+                ),
+            )
+            if repair is None:
+                return None
+            total += repair * self.repairs.max_items_per_cell
+        return total
+
+    def _evidence_bound(self, facts: Sequence[str], documents: Sequence[EvidenceDocument]) -> str:
+        """Text at least as long, in UTF-8 bytes, as any evidence one step can be shown: ``facts`` as rendered, and
+        for each document every character the page budget lets the step read, with the heading of each passage those
+        characters could be cut into."""
+        budget = self.pages
+        passages = 0
+        heading = 0
+        for document in documents:
+            readable = min(len(document.text), budget.per_document_chars)
+            # Tiles are window_chars long but for a document's last; a step takes whole tiles within its share.
+            count = min(-(-len(document.text) // budget.window_chars), readable // budget.window_chars + 1)
+            title = json.dumps(document.title, ensure_ascii=False)
+            one = _PASSAGE_TEMPLATE.format(
+                ref=f"S{_WIDEST_REF}", title=title, start=len(document.text), end=len(document.text), text=""
+            )
+            passages += min(len(document.text.encode("utf-8")), 4 * readable)
+            heading += count * (len(one.encode("utf-8")) + 2)
+        passages = min(passages, 4 * budget.total_chars)
+        return "\n\n".join([*facts, "x" * (passages + heading)])
 
     def _with_guidance(self, prompt: str) -> str:
         return prompt + _GUIDANCE_HEADING + self.guidance.strip() if self.guidance.strip() else prompt
@@ -762,8 +851,8 @@ class ClaimVerifier:
         """Check every world claim in ``claims`` against the case's evidence, and against the candidate's own
         documents where ``grounded_in`` names them.
 
-        No world claim makes no call. What the client itself raises (a provider failure, a recording that holds no
-        answer) is not caught: it is the caller's to classify.
+        No world claim makes no call. What the client itself raises in a truth call (a provider failure, a recording
+        that holds no answer) is not caught: it is the caller's to classify.
 
         :param claims: The cell's claims, as the extractor listed them: each ``restates`` names an earlier claim of the
             same scope that restates nothing.
@@ -777,7 +866,9 @@ class ClaimVerifier:
             undeclared; or a ``restates`` names no earlier original of its scope.
         :raises ClaimGradingFailed: A truth reply was cut short, a truth batch's reply did not parse in its attempts, or
             a claim still failed its truth checks within the repair budget. The same in the ground step never raises:
-            it is :attr:`Verification.ground_loss`.
+            it is :attr:`Verification.ground_loss`, as is a ground call the provider failed or whose completion breaks
+            the protocol.
+        :raises ApparatusError: The rig could not serve a call (a replay's miss), in either step.
         """
         if ledger.role != _ROLE:
             raise ValueError(
@@ -841,6 +932,21 @@ class ClaimVerifier:
             except ClaimGradingFailed as failed:
                 # Recorded, never swallowed: the loss rides on the verification for the groundedness reading alone.
                 lost = failed
+            except ApparatusError:
+                # A replay's miss is no grading outcome: it fails the run, naming the call, as every judge call's does.
+                raise
+            except CompletionProtocolDefect as defect:
+                # Recorded, never swallowed: a ground call reads the candidate's own documents, which differ by arm,
+                # so how it fails must never cost the cell its truth reading. The loss names the defect.
+                lost = ClaimGradingFailed(
+                    f"a ground call's completion breaks the protocol: {defect}", loss="provider_error"
+                )
+            except Exception as failure:  # prawduct:ok-broad-except — provider boundary; a ground call's failure is groundedness's alone
+                # NOSILENT: the loss rides on the verification, naming the failure, for the groundedness reading alone.
+                contain(failure, log=log, what="a claim verifier's ground call failed", level="error")
+                lost = ClaimGradingFailed(
+                    f"a ground call failed: {type(failure).__name__}: {failure}", loss="provider_error"
+                )
         return Verification(
             evidence=_index(shown),
             documents_truncated=tuple(document.id for document in given if document.id in {*truth_cut, *ground_cut}),
@@ -886,14 +992,7 @@ class ClaimVerifier:
         """
         completion = await self.client.generate(system=system, user=user, response_format=response_format)
         ledger.add_llm_result(completion)
-        calls.append(
-            ClaimCall(
-                role=role,
-                served_model=getattr(completion, "served_model", None) or None,
-                judge_temperature=_sent_temperature(completion),
-                judge_sent_settings=sent_settings_of(completion),
-            )
-        )
+        calls.append(claim_call(role, completion))
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
             raise ClaimGradingFailed(f"the claim verifier's {role} reply was cut short: {cut_short}", loss="cut_short")
