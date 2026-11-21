@@ -1221,6 +1221,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.Segment": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ServedModelAttestation": {
       "kind": "model",
       "signature": "",
@@ -1706,16 +1711,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.ClaimExtractionFailed": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.ClaimExtractor": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.classifier_label_measure": {
       "kind": "function",
       "signature": "",
@@ -2008,11 +2003,6 @@
     },
     "threetears.evals.kernel.EXTRACTED_SET_FAMILY": {
       "kind": "constant (MeasureFamily)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.ExtractedClaim": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -2963,11 +2953,6 @@
     },
     "threetears.evals.kernel.UsageView": {
       "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.Utterance": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

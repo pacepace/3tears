@@ -345,7 +345,6 @@ from threetears.evals.kernel.surface import (
     TimeAxisBasis,
     TimePosition,
 )
-from threetears.evals.kernel.claim_extraction import ClaimExtractionFailed, ClaimExtractor, ExtractedClaim, Utterance
 from threetears.evals.kernel.entity_extraction import EntityExtractionFailed, EntityExtractor
 from threetears.evals.kernel.set_grade import (
     EXTRACTED_SET_FAMILY,
@@ -620,10 +619,6 @@ __all__ = [
     "ResultCondition",
     "ResultOutcome",
     "RoleUsageLedger",
-    "ClaimExtractionFailed",
-    "ClaimExtractor",
-    "ExtractedClaim",
-    "Utterance",
     "EXTRACTED_SET_FAMILY",
     "EntityExtractionFailed",
     "EntityExtractor",

@@ -1,14 +1,16 @@
-"""The claim extractor: the model step that lists the factual claims a cell's utterances assert, on a scripted client.
+"""The claim extractor: the step that lists the factual claims a cell's segments state, on a scripted client.
 
 Every behaviour is driven through a client that answers from a script and records what it was sent, so nothing is
-spent and each reply is chosen. The claims come back ordered by utterance, each excerpt the utterance's own slice at
-offsets the verbatim check found, ``restates`` renumbered with the order. Repair, not refusal: a reply that will not
-parse is asked again in full naming why; an item that fails a check (an excerpt not in its utterance or elided, a
-``restates`` pointing forward or nowhere) is asked again alone with its failure named, for two rounds, then the
-extraction raises; a cut-short reply raises at once. Every completion is billed to the ``judge`` ledger. The cell's
-stops are numbered 0..n-1, each once, or the cell is refused before any call. The identity names the model and moves
-with the host's segmentation and guidance, the prompts they enter, and is pinned for the shipped prompts, schemas and
-fold. The utterances are invented: a walking-tour guide's lines about made-up places.
+spent and each reply is chosen. The claims come back ordered by segment, each excerpt the segment's own slice at
+offsets the verbatim check found, ``restates`` resolved to the first claim of its chain and renumbered with the order.
+Repair, not refusal: a reply that will not parse is asked again in full naming why; an item that fails a check (an
+excerpt not in its segment, a ``restates`` pointing forward or nowhere) is asked again alone with its failure named,
+for two rounds, then the extraction raises. Every claim carries a scope, ``world`` or ``session``: a back-announce
+line splits into a session claim and a world claim, and a ``restates`` crossing scopes is repaired; a cut-short reply raises at once. The failure is ``ClaimGradingFailed``,
+no ``ApparatusError``. Every completion is billed to the ``judge`` ledger. A cell's units are numbered 0..n-1, each
+once, or the cell is refused before any call; a segment's tags never reach a prompt. The identity names the model,
+moves with the host's guidance, and is pinned for the shipped prompts, schemas, fold and budgets. The text is
+invented: a walking-tour guide's lines about made-up places.
 """
 
 from __future__ import annotations
@@ -20,23 +22,18 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel import (
-    ClaimExtractionFailed,
-    ClaimExtractor,
-    ExtractedClaim,
-    RoleUsageLedger,
-    Utterance,
-)
+from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
+from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.host import ApparatusError
+from threetears.evals.schema import Segment
 
 _MODEL = "scripted/claims"
 
-_SEGMENTATION = "tour-stops-v1"
-
 _CELL = (
-    Utterance(text="Welcome aboard! Today we walk the old harbour."),
-    Utterance(text="First stop: the Varn Bridge, built in 1894 by Hela Orsk. It’s a beauty.", stop_index=0),
-    Utterance(text="Next, the mill. Hela Orsk built this too, I believe, around 1901.", stop_index=1),
+    Segment(text="Welcome aboard! Today we walk the old harbour."),
+    Segment(text="First stop: the Varn Bridge, built in 1894 by Hela Orsk. It’s a beauty.", unit=0),
+    Segment(text="Next, the mill. Hela Orsk built this too, I believe, around 1901.", unit=1),
 )
 
 
@@ -97,12 +94,14 @@ class _FakeUnnamedClient:
 
 
 def _item(
-    utterance: int | None,
+    segment: int | None,
     claim: str,
     excerpt: str,
     *,
     specific: bool = True,
     hedged: bool = False,
+    attributed: bool = False,
+    scope: str = "world",
     restates: int | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
@@ -110,10 +109,12 @@ def _item(
         "excerpt": excerpt,
         "specific": specific,
         "hedged": hedged,
+        "attributed": attributed,
+        "scope": scope,
         "restates": restates,
     }
-    if utterance is not None:
-        item["utterance"] = utterance
+    if segment is not None:
+        item["segment"] = segment
     return item
 
 
@@ -132,15 +133,15 @@ _MILL_YEAR = _item(2, "The mill was built around 1901.", "around 1901", hedged=T
 
 
 def _extractor(client: _FakeScriptedClient, **options: Any) -> ClaimExtractor:
-    return ClaimExtractor(client=client, segmentation=_SEGMENTATION, **options)
+    return ClaimExtractor(client=client, **options)
 
 
-async def test_the_claims_come_back_checked_with_each_excerpt_the_utterances_own_slice() -> None:
+async def test_the_claims_come_back_checked_with_each_excerpt_the_segments_own_slice() -> None:
     client = _FakeScriptedClient(
         [
             _listing(
                 _BRIDGE_YEAR,
-                # The model straightens the apostrophe and changes case; the stored excerpt is the utterance's.
+                # The model straightens the apostrophe and changes case; the kept excerpt is the segment's.
                 _item(1, "The guide likes the bridge.", "it's a BEAUTY", specific=False),
                 _MILL_BUILDER,
             )
@@ -149,40 +150,131 @@ async def test_the_claims_come_back_checked_with_each_excerpt_the_utterances_own
 
     claims = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
-    stop_text = _CELL[1].text
-    start = stop_text.index("It’s")
+    text = _CELL[1].text
+    start = text.index("It’s")
     assert claims[1] == ExtractedClaim(
-        utterance=1,
-        stop_index=0,
+        segment=1,
+        unit=0,
         claim="The guide likes the bridge.",
         excerpt="It’s a beauty",
         start=start,
         end=start + len("It’s a beauty"),
         specific=False,
         hedged=False,
+        attributed=False,
+        scope="world",
         restates=None,
     )
-    assert [claim.stop_index for claim in claims] == [0, 0, 1]
+    assert [claim.unit for claim in claims] == [0, 0, 1]
     assert [claim.hedged for claim in claims] == [False, False, True]
     for claim in claims:
-        text = _CELL[claim.utterance].text
-        assert text[claim.start : claim.end] == claim.excerpt
+        assert _CELL[claim.segment].text[claim.start : claim.end] == claim.excerpt
     (call,) = client.calls
-    for index, utterance in enumerate(_CELL):
-        assert f"U{index}:\n{utterance.text}" in call["user"]
+    for index, segment in enumerate(_CELL):
+        assert f"Segment {index}:\n{segment.text}" in call["user"]
     schema = call["response_format"]["json_schema"]
     assert schema["strict"] is True
     item = schema["schema"]["properties"]["claims"]["items"]
-    assert item["required"] == ["utterance", "claim", "excerpt", "specific", "hedged", "restates"]
+    assert item["required"] == [
+        "segment",
+        "claim",
+        "excerpt",
+        "specific",
+        "hedged",
+        "attributed",
+        "scope",
+        "restates",
+    ]
+    assert item["properties"]["scope"]["enum"] == ["world", "session"]
 
 
-async def test_the_claims_are_ordered_by_utterance_and_restates_is_renumbered_with_them() -> None:
+async def test_an_attributed_claim_keeps_its_tag() -> None:
+    cell = (Segment(text="Some say the Varn Bridge was first planned in stone.", unit=0),)
+    client = _FakeScriptedClient(
+        [_listing(_item(0, "The Varn Bridge was first planned in stone.", "first planned in stone", attributed=True))]
+    )
+
+    (claim,) = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert (claim.attributed, claim.hedged) == (True, False)
+    assert "attributed: true when the text reports the claim as someone else's" in client.calls[0]["system"]
+
+
+async def test_a_back_announce_splits_into_a_session_claim_and_a_world_claim() -> None:
+    cell = (Segment(text="That was the Varn Bridge, from Hela Orsk's harbour plan. Next up, the mill.", unit=0),)
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _item(0, "The tour just visited the Varn Bridge.", "That was the Varn Bridge", scope="session"),
+                _item(
+                    0,
+                    "The Varn Bridge is part of Hela Orsk's harbour plan.",
+                    "the Varn Bridge, from Hela Orsk's harbour plan",
+                ),
+                _item(0, "The mill is the tour's next stop.", "Next up, the mill", scope="session"),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert [(claim.scope, claim.excerpt) for claim in claims] == [
+        ("session", "That was the Varn Bridge"),
+        ("world", "the Varn Bridge, from Hela Orsk's harbour plan"),
+        ("session", "Next up, the mill"),
+    ]
+    system = client.calls[0]["system"]
+    assert "about this output or session itself" in system
+    assert "A sentence that does both is split" in system
+    assert len(client.calls) == 1
+
+
+async def test_a_restates_crossing_scopes_is_asked_again() -> None:
+    cell = (
+        Segment(text="That was the Varn Bridge.", unit=0),
+        Segment(text="The Varn Bridge, as we just saw, spans the harbour.", unit=1),
+    )
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _item(0, "The tour just visited the Varn Bridge.", "That was the Varn Bridge", scope="session"),
+                _item(1, "The tour just visited the Varn Bridge.", "as we just saw", scope="session", restates=0),
+                _item(1, "The Varn Bridge spans the harbour.", "spans the harbour", restates=0),
+            ),
+            _repair("The Varn Bridge spans the harbour.", "spans the harbour", restates=None),
+        ]
+    )
+
+    claims = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert [(claim.scope, claim.restates) for claim in claims] == [("session", None), ("session", 0), ("world", None)]
+    repair = client.calls[1]
+    assert "position 2" in repair["user"]
+    assert "its restates names claim 0, a session claim, and this one is a world claim" in repair["user"]
+
+
+async def test_a_segments_tags_never_reach_a_prompt() -> None:
+    cell = (Segment(text="The Varn Bridge was built in 1894.", unit=0, tags={"entity": "landmark-zq7"}),)
+    client = _FakeScriptedClient(
+        [
+            _listing(_item(0, "The Varn Bridge was built in 1894.", "built in 1893")),
+            _repair("The Varn Bridge was built in 1894.", "built in 1894"),
+        ]
+    )
+
+    await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert len(client.calls) == 2
+    assert not any("landmark-zq7" in call["system"] + call["user"] for call in client.calls)
+
+
+async def test_the_claims_are_ordered_by_segment_and_restates_is_renumbered_with_them() -> None:
     client = _FakeScriptedClient(
         [
             _listing(
                 _MILL_BUILDER,
                 _BRIDGE_BUILDER,
-                # The mill line restates the builder, listed out of order: position 1 is heard first.
+                # The mill line restates the builder, listed out of order: position 1 appears first.
                 _item(2, "Hela Orsk built the mill.", "Hela Orsk built this too", restates=1),
             )
         ]
@@ -190,14 +282,29 @@ async def test_the_claims_are_ordered_by_utterance_and_restates_is_renumbered_wi
 
     claims = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
-    assert [claim.utterance for claim in claims] == [1, 2, 2]
+    assert [claim.segment for claim in claims] == [1, 2, 2]
     assert claims[0].claim == "Hela Orsk built the Varn Bridge."
     assert claims[2].restates == 0
-    assert all(claim.restates is None or claim.restates < at for at, claim in enumerate(claims))
     assert len(client.calls) == 1, "an order the model chose is no failure: nothing is asked again"
 
 
-async def test_an_excerpt_not_in_its_utterance_is_asked_again_alone_with_the_failure_named() -> None:
+async def test_a_restates_chain_is_resolved_to_its_first_claim() -> None:
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _BRIDGE_BUILDER,
+                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk built this too", restates=0),
+                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk", restates=1),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
+
+    assert [claim.restates for claim in claims] == [None, 0, 0]
+
+
+async def test_an_excerpt_not_in_its_segment_is_asked_again_alone_with_the_failure_named() -> None:
     client = _FakeScriptedClient(
         [
             _listing(_BRIDGE_YEAR, _item(2, "Hela Orsk built the mill.", "Orsk designed the mill"), _MILL_YEAR),
@@ -217,16 +324,16 @@ async def test_an_excerpt_not_in_its_utterance_is_asked_again_alone_with_the_fai
     assert repair["system"] != listing["system"]
     assert "position 1" in repair["user"]
     assert "Orsk designed the mill" in repair["user"]
-    assert "its excerpt is not in utterance U2" in repair["user"]
+    assert "its excerpt is not in segment 2" in repair["user"]
     assert _CELL[2].text in repair["user"]
-    assert _CELL[1].text not in repair["user"], "a failing item is asked about alone, with its own utterance"
-    assert "0: The Varn Bridge was built in 1894." in repair["user"], "the claims heard before it are listed"
-    assert "utterance" not in repair["response_format"]["json_schema"]["schema"]["properties"]
+    assert _CELL[1].text not in repair["user"], "a failing item is asked about alone, with its own segment"
+    assert "0: The Varn Bridge was built in 1894." in repair["user"], "the claims listed before it are shown"
+    assert "segment" not in repair["response_format"]["json_schema"]["schema"]["properties"]
     (row,) = ledger.rows()
     assert row.call_count == 2
 
 
-async def test_an_elided_excerpt_is_asked_again_naming_the_ellipsis() -> None:
+async def test_an_elided_excerpt_is_asked_again_as_one_not_in_its_segment() -> None:
     client = _FakeScriptedClient(
         [
             _listing(_item(1, "Hela Orsk built the Varn Bridge.", "the Varn Bridge… by Hela Orsk")),
@@ -237,7 +344,17 @@ async def test_an_elided_excerpt_is_asked_again_naming_the_ellipsis() -> None:
     (claim,) = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
     assert claim.excerpt == "built in 1894 by Hela Orsk"
-    assert "shortened with an ellipsis" in client.calls[1]["user"]
+    assert "its excerpt is not in segment 1; an excerpt is one unbroken stretch" in client.calls[1]["user"]
+
+
+async def test_an_excerpt_through_an_ellipsis_the_text_holds_is_kept() -> None:
+    cell = (Segment(text="The bridge opened… in 1894, late.", unit=0),)
+    client = _FakeScriptedClient([_listing(_item(0, "The bridge opened in 1894.", "opened... in 1894"))])
+
+    (claim,) = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert claim.excerpt == "opened… in 1894"
+    assert len(client.calls) == 1
 
 
 async def test_a_restates_pointing_forward_is_asked_again_and_the_correction_is_kept() -> None:
@@ -254,7 +371,7 @@ async def test_a_restates_pointing_forward_is_asked_again_and_the_correction_is_
 
     assert [claim.restates for claim in claims] == [None, None]
     repair = client.calls[1]
-    assert "its restates names claim 1, which is heard after it" in repair["user"]
+    assert "its restates names claim 1, which appears after it" in repair["user"]
     assert "position 0" in repair["user"]
     assert "# Claims listed before it\n\nnone" in repair["user"]
 
@@ -285,7 +402,7 @@ async def test_an_item_still_failing_after_two_repair_rounds_raises_naming_it_an
     )
     ledger = RoleUsageLedger(role="judge")
 
-    with pytest.raises(ClaimExtractionFailed, match=r"could not repair 1 claim\(s\) in 2 rounds: claim 1: its excerpt"):
+    with pytest.raises(ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 rounds: claim 1: its excerpt"):
         await _extractor(client).extract(_CELL, ledger=ledger)
 
     assert len(client.calls) == 3
@@ -313,13 +430,13 @@ async def test_an_unreadable_repair_reply_is_named_in_the_next_round() -> None:
 async def test_an_unreadable_reply_is_asked_again_in_full_naming_why_then_refused() -> None:
     unreadable = [
         _Reply(content="not json"),
-        _listing({"utterance": 1, "claim": "The Varn Bridge was built in 1894."}),  # the tags are missing
-        _listing(_item(5, "The Varn Bridge was built in 1894.", "built in 1894")),  # no such utterance
+        _listing({"segment": 1, "claim": "The Varn Bridge was built in 1894."}),  # the tags are missing
+        _listing(_item(5, "The Varn Bridge was built in 1894.", "built in 1894")),  # no such segment
     ]
     client = _FakeScriptedClient(unreadable)
     ledger = RoleUsageLedger(role="judge")
 
-    with pytest.raises(ClaimExtractionFailed, match="did not parse in 3 attempts"):
+    with pytest.raises(ClaimGradingFailed, match="did not parse in 3 attempts"):
         await _extractor(client).extract(_CELL, ledger=ledger)
 
     first, second, third = client.calls
@@ -331,22 +448,22 @@ async def test_an_unreadable_reply_is_asked_again_in_full_naming_why_then_refuse
     assert row.call_count == 3
 
 
-async def test_a_reply_naming_an_utterance_the_cell_lacks_is_asked_again_in_full() -> None:
+async def test_a_reply_naming_a_segment_the_cell_lacks_is_asked_again_in_full() -> None:
     client = _FakeScriptedClient(
         [_listing(_item(3, "The Varn Bridge was built in 1894.", "built in 1894")), _listing(_BRIDGE_YEAR)]
     )
 
     (claim,) = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
-    assert claim.utterance == 1
-    assert "claim 0 names utterance U3, and the utterances are U0 to U2" in client.calls[1]["user"]
+    assert claim.segment == 1
+    assert "claim 0 names segment 3, and the segments are 0 to 2" in client.calls[1]["user"]
 
 
 async def test_a_reply_cut_short_is_refused_at_once_and_still_billed() -> None:
     client = _FakeScriptedClient([_Reply(content='{"claims": [', stop_reason="max_tokens")])
     ledger = RoleUsageLedger(role="judge")
 
-    with pytest.raises(ClaimExtractionFailed, match="cut short"):
+    with pytest.raises(ClaimGradingFailed, match="cut short"):
         await _extractor(client).extract(_CELL, ledger=ledger)
 
     assert len(client.calls) == 1
@@ -363,7 +480,7 @@ async def test_a_repair_reply_cut_short_is_refused_at_once_and_still_billed() ->
     )
     ledger = RoleUsageLedger(role="judge")
 
-    with pytest.raises(ClaimExtractionFailed, match="cut short"):
+    with pytest.raises(ClaimGradingFailed, match="cut short"):
         await _extractor(client).extract(_CELL, ledger=ledger)
 
     assert len(client.calls) == 2
@@ -372,7 +489,7 @@ async def test_a_repair_reply_cut_short_is_refused_at_once_and_still_billed() ->
 
 
 @pytest.mark.parametrize(
-    "stops",
+    "units",
     [
         pytest.param((1,), id="not-from-0"),
         pytest.param((0, 0), id="repeated"),
@@ -380,35 +497,35 @@ async def test_a_repair_reply_cut_short_is_refused_at_once_and_still_billed() ->
         pytest.param((1, 2, 3), id="shifted"),
     ],
 )
-async def test_stops_not_numbered_0_to_n_minus_1_each_once_are_refused_before_any_call(stops: tuple[int, ...]) -> None:
+async def test_units_not_numbered_0_to_n_minus_1_each_once_are_refused_before_any_call(units: tuple[int, ...]) -> None:
     client = _FakeScriptedClient([])
-    cell = (Utterance(text="Hello."), *(Utterance(text=f"Stop {stop}.", stop_index=stop) for stop in stops))
+    cell = (Segment(text="Hello."), *(Segment(text=f"Unit {unit}.", unit=unit) for unit in units))
 
     with pytest.raises(ValueError, match="numbered 0..n-1, each once"):
         await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
     assert client.calls == []
 
 
-async def test_stops_in_any_order_with_other_utterances_between_are_accepted() -> None:
+async def test_units_in_any_order_with_other_segments_between_are_accepted() -> None:
     client = _FakeScriptedClient([_listing()])
     cell = (
-        Utterance(text="Stop one, then."),
-        Utterance(text="Later.", stop_index=1),
-        Utterance(text="An aside."),
-        Utterance(text="Earlier.", stop_index=0),
+        Segment(text="A preamble."),
+        Segment(text="Later.", unit=1),
+        Segment(text="An aside."),
+        Segment(text="Earlier.", unit=0),
     )
 
     assert await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge")) == ()
     assert len(client.calls) == 1
 
 
-@pytest.mark.parametrize(("text", "stop_index"), [("", None), ("  \n", None), ("Fine.", -1)])
-def test_a_blank_utterance_or_a_negative_stop_is_refused(text: str, stop_index: int | None) -> None:
+@pytest.mark.parametrize(("text", "unit"), [("", None), ("  \n", None), ("Fine.", -1)])
+def test_a_blank_segment_or_a_negative_unit_is_refused(text: str, unit: int | None) -> None:
     with pytest.raises(ValidationError):
-        Utterance(text=text, stop_index=stop_index)
+        Segment(text=text, unit=unit)
 
 
-async def test_no_utterances_make_no_call() -> None:
+async def test_no_segments_make_no_call() -> None:
     client = _FakeScriptedClient([])
     ledger = RoleUsageLedger(role="judge")
 
@@ -427,12 +544,7 @@ async def test_a_ledger_of_another_role_is_refused() -> None:
 
 def test_a_client_that_names_no_model_is_refused() -> None:
     with pytest.raises(ValueError, match="names its model"):
-        ClaimExtractor(client=_FakeUnnamedClient(), segmentation=_SEGMENTATION)
-
-
-def test_a_blank_segmentation_is_refused() -> None:
-    with pytest.raises(ValueError, match="segmentation"):
-        ClaimExtractor(client=_FakeScriptedClient([]), segmentation="  ")
+        ClaimExtractor(client=_FakeUnnamedClient())
 
 
 async def test_the_hosts_guidance_reaches_both_prompts() -> None:
@@ -450,27 +562,26 @@ async def test_the_hosts_guidance_reaches_both_prompts() -> None:
 
 
 #: The identity of :func:`_extractor` over a client of :data:`_MODEL`, from the shipped prompts, schemas, fold and
-#: budgets. Produced by ``ClaimExtractor.identity`` itself; it moves with any change to them, which is a new
-#: definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/claims|claims:06f3e7aa9695"
+#: budgets. Produced by ``ClaimExtractor.identity`` itself; it moves with any change to them, and with the fold's
+#: tables or Unicode version, which is a new definition: write the new value here deliberately.
+_PINNED_IDENTITY = "scripted/claims|claims:9d5550265098"
 
 
-def test_the_identity_names_the_model_and_moves_with_the_segmentation_and_the_prompts() -> None:
+def test_the_identity_names_the_model_and_moves_with_the_guidance() -> None:
     client = _FakeScriptedClient([])
     base = _extractor(client)
 
     assert base.identity == _PINNED_IDENTITY
     assert base.identity == _extractor(_FakeScriptedClient([])).identity
     others = {
-        ClaimExtractor(client=client, segmentation="tour-stops-v2").identity,
         _extractor(client, guidance="A dated restoration counts as a claim.").identity,
         _extractor(client, guidance="A named architect counts as a claim.").identity,
         _extractor(_FakeScriptedClient([], model_name="scripted/other")).identity,
     }
     assert base.identity not in others
-    assert len(others) == 4
+    assert len(others) == 3
     assert _extractor(client, guidance="  ").identity == base.identity, "blank guidance is no guidance"
 
 
-def test_a_failed_extraction_is_a_fault_of_the_rig() -> None:
-    assert issubclass(ClaimExtractionFailed, ApparatusError)
+def test_a_failed_grading_is_no_fault_of_the_rig() -> None:
+    assert not issubclass(ClaimGradingFailed, ApparatusError)

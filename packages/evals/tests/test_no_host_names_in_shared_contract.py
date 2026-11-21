@@ -201,6 +201,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/lever_words.py",
     # A case's reference key, which a host fills, and the case material a judge reads it as. No host is named.
     "schema/reference.py",
+    # The segments a candidate's text is cut into for claims grading: engine vocabulary every host fills.
+    "schema/claims.py",
     "kernel/reference.py",
     "kernel/declaration.py",
     "kernel/eval_scope.py",
@@ -275,11 +277,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # named set against a case's key, so a host noun here would reach every host's set measures.
     "kernel/set_grade.py",
     "kernel/entity_extraction.py",
-    # The model step that lists the factual claims a cell's utterances assert, and the verbatim check its excerpts and
-    # a claim grader's quotes pass: engine vocabulary for any host's claim grading, so a host noun here would reach
-    # every host's claim measures.
-    "kernel/claim_extraction.py",
-    "kernel/verbatim.py",
     # Where an eval file's relative paths resolve while `python -m threetears.evals FILE` loads it:
     # the engine's own loading vocabulary, read by Eval, Model, World, Judge and Log alike.
     "kernel/eval_file.py",
@@ -597,7 +594,9 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``gen/prompts`` is the two proposers' seed prompts, which belong to the gen package and are
 #: scanned on exactly the terms above. It is a nested tree because its parent
 #: ``gen`` is not classifiable whole yet: see :func:`test_every_eval_module_is_classified_one_way_or_the_other`.
-#: ``kernel/host`` and ``kernel/prompts`` are nested for the same reason: ``kernel`` and ``schema`` are
+#: ``kernel/claims`` is claims grading's engine-internal steps (listing a text's claims, the verbatim fold): one
+#: instrument every host's judge phase runs, so a host noun there would reach every host's claim readings.
+#: ``kernel/host``, ``kernel/claims`` and ``kernel/prompts`` are nested for the same reason: ``kernel`` and ``schema`` are
 #: classified module by module (every ``kernel/`` and ``schema/`` entry above).
 #:
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
@@ -619,6 +618,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: would report the design as a violation.
 _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "kernel/host",
+    "kernel/claims",
     "analysis",
     "kernel/prompts",
     "gen/prompts",
