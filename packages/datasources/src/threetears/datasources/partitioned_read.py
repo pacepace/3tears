@@ -321,21 +321,24 @@ def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int
 
 
 def _narrowed(where: Sequence[Fragment], *, before: int) -> tuple[str, list[Any]]:
-    """``where``'s conditions as `` AND (...)`` clauses after ``before`` parameters, and their parameters.
+    """``where``'s conditions as one conjunction after ``before`` parameters, and their parameters.
+
+    The statements write it as a whole conjunct in its own parentheses (``k = $1 AND ({narrowed})``), the one form in
+    which no ``OR`` its text may hold can unbind the key beside it (the no-whole-reads rule reads it so).
 
     :param where: the conditions, each written from ``$1``
     :ptype where: Sequence[Fragment]
     :param before: the parameters the statement binds ahead of them
     :ptype before: int
-    :return: the clauses (empty with no condition) and their parameters
+    :return: the conjunction (``TRUE`` with no condition) and its parameters
     :rtype: tuple[str, list[Any]]
     """
     clauses: list[str] = []
     bound: list[Any] = []
     for fragment in where:
-        clauses.append(f" AND ({renumbered(fragment, before + len(bound))})")
+        clauses.append(f"({renumbered(fragment, before + len(bound))})")
         bound += list(fragment.params)
-    return "".join(clauses), bound
+    return " AND ".join(clauses) or "TRUE", bound
 
 
 async def _boundaries(
@@ -368,12 +371,22 @@ async def _boundaries(
             if after is None
             else keyset_condition(["part__", *key], after, earlier=">", last=">", first=len(parts) + len(bound) + 1)
         )
-        sql = (
-            f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
-            f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
-            f"FROM {relation} WHERE {partition_by} IN ({placeholders}){narrowed}) AS paged "
-            f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
-        )
+        # the conditions a whole conjunct in their own parentheses, and only when there are any: a read with none is
+        # the statement it was
+        if where:
+            sql = (
+                f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
+                f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
+                f"FROM {relation} WHERE {partition_by} IN ({placeholders}) AND ({narrowed})) AS paged "
+                f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
+            )
+        else:
+            sql = (
+                f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
+                f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
+                f"FROM {relation} WHERE {partition_by} IN ({placeholders})) AS paged "
+                f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
+            )
         result = await client.query(datasource_name, sql, params=[*parts, *bound, *more])
         for row in result.rows:
             starts[str(row["part__"])].append(tuple(row[column] for column in key))
@@ -427,13 +440,27 @@ async def _read_pages(
                 # the part's pin written out, so the statement says it reads one part between two of its keys; each
                 # bound (an OR of key comparisons) in its own parentheses, so it only narrows the part
                 limit = int(page_size) + 1
-                sql = (
-                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}){narrowed} "  # noqa: S608 - trusted identifiers
-                    f"ORDER BY {ordering} LIMIT {limit}"
-                    if upper is not None
-                    else f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}){narrowed} "  # noqa: S608 - trusted identifiers
-                    f"ORDER BY {ordering} LIMIT {limit}"
-                )
+                # the conditions a whole conjunct in their own parentheses, and only when there are any
+                if upper is not None and where:
+                    sql = (
+                        f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}) "  # noqa: S608 - trusted identifiers
+                        f"AND ({narrowed}) ORDER BY {ordering} LIMIT {limit}"
+                    )
+                elif upper is not None:
+                    sql = (
+                        f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}) "  # noqa: S608 - trusted identifiers
+                        f"ORDER BY {ordering} LIMIT {limit}"
+                    )
+                elif where:
+                    sql = (
+                        f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({narrowed}) "  # noqa: S608 - trusted identifiers
+                        f"ORDER BY {ordering} LIMIT {limit}"
+                    )
+                else:
+                    sql = (
+                        f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) "  # noqa: S608 - trusted identifiers
+                        f"ORDER BY {ordering} LIMIT {limit}"
+                    )
                 result = await _ask(client, datasource_name, sql, [part, *params], types, {})
                 rows = result.rows
                 answered = len(rows)
@@ -453,7 +480,9 @@ async def _read_pages(
                     narrowed_same, bound_same = _narrowed(where, before=1 + len(key))
                     counted = await client.query(
                         datasource_name,
-                        f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}{narrowed_same}",  # noqa: S608
+                        f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same} AND ({narrowed_same})"  # noqa: S608
+                        if where
+                        else f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}",  # noqa: S608
                         params=[part, *cut_key, *bound_same],
                     )
                     if counted.rows and int(counted.rows[0]["n"]) == answered:
