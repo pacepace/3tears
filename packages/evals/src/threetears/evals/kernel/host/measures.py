@@ -142,9 +142,29 @@ class MeasureRegistry(HostAttributed):
         )
         seen: set[str] = set()
         known_families = set(ENGINE_FAMILIES) | {family.name for family in self._families}
+        graded_by = {
+            **{name: family.graded_by for name, family in ENGINE_FAMILIES.items()},
+            **{family.name: family.graded_by for family in self._families},
+        }
 
         by_name = {d.name: d for d in self._descriptors}
         for descriptor in self._descriptors:
+            # A check fails its trial, and so moves the ranked pass rate, on its value alone. A judge-graded number
+            # carries no judge identity and no check of the judge behind it here, and nothing ranks on one
+            # (`is_code_graded`), so a check in such a family would rank by the back door. Refused at startup, by
+            # name, rather than filtered out of the pass rule where no host would see it go.
+            # Read off the shape, not `is_check`: that answers False in an engine judged family, the very case named here.
+            check_shaped = descriptor.higher_is_better is not None and (
+                descriptor.data_type == "boolean" or descriptor.pass_fail
+            )
+            if check_shaped and descriptor.family is not None and graded_by.get(descriptor.family) == "judge":
+                shape = "a pass/fail scorer" if descriptor.pass_fail else "a boolean"
+                defects.append(
+                    f"{descriptor.name} is a check ({shape} with a better end) in family {descriptor.family}, which "
+                    "is graded by a judge — a check fails its trial on its value alone, and a judge-graded measure "
+                    "may not decide a pass: declare the family graded_by='code' if code made the number, or drop "
+                    "the measure's better end (higher_is_better=None)"
+                )
             if descriptor.name in seen:
                 defects.append(
                     f"{descriptor.name} is declared twice — lookups key by name, so one would shadow the other"
