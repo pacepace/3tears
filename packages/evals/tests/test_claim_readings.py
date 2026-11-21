@@ -39,6 +39,7 @@ from threetears.evals.kernel.claims.readings import (
 from threetears.evals.kernel.host import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.metrics import CLAIMS_FAMILY, CODE_GRADED_FAMILIES, is_code_graded, reader_name_defects
 from threetears.evals.run import admit_template, quote_launch
+from threetears.evals.run.authoring import update_template
 from threetears.evals.schema import ClaimCriterion, PageBudget, RepairBudget, Segment
 from threetears.evals.schema.models import (
     ClaimCall,
@@ -186,9 +187,15 @@ def _readings(
     web: tuple[WebCheckRecord, ...] = (),
     session: dict[str, Any] | None = None,
     calls: tuple[ClaimCall, ...] = _CALLS,
+    ground_loss: Any = None,
 ) -> dict[str, float]:
     """The cell's readings, as the judge phase would store its tally and the ranking path read it."""
-    tally = claim_tally(_grade(claims, web=web, calls=calls), _evidence(documents, session), grounded_in=grounded_in)
+    tally = claim_tally(
+        _grade(claims, web=web, calls=calls),
+        _evidence(documents, session),
+        grounded_in=grounded_in,
+        ground_loss=ground_loss,
+    )
     return claim_readings(_C, tally, grounded=grounded_in is not None)
 
 
@@ -243,6 +250,7 @@ def test_the_baseline_reads_no_false_claim_and_every_specific_claim_grounded() -
             "web_checked": 0.0,
             "web_skipped": 0.0,
             "session_claims": 1.0,
+            "ground_lost": 0.0,
             "lost": 0.0,
         }.items()
     }
@@ -434,15 +442,99 @@ def test_no_research_reads_a_grounded_share_of_zero_and_full_research_one() -> N
     assert _moved(_BASE, no_research) == {"grounded_share"}
 
 
-def test_undeclared_documents_or_no_grounded_in_give_no_grounded_share() -> None:
-    ungiven = tuple(
+def _ungrounded_by_none(claims: tuple[GradedClaim, ...] = _BASELINE) -> tuple[GradedClaim, ...]:
+    """The claims with no groundedness at all, as a verifier writes them when it asks none or loses the step."""
+    return tuple(
         claim if claim.scope == "session" else claim.model_copy(update={"ground_citations": (), "grounded": None})
-        for claim in _BASELINE
+        for claim in claims
     )
 
-    assert f"{_C}_grounded_share" not in _readings(ungiven, documents=None)
-    assert f"{_C}_grounded_share" not in _readings(ungiven, grounded_in=None)
+
+def test_no_grounded_in_gives_no_groundedness_reading() -> None:
+    readings = _readings(_ungrounded_by_none(), grounded_in=None)
+
+    assert not {f"{_C}_grounded_share", f"{_C}_ground_lost"} & set(readings)
     assert f"{_C}_grounded_share" not in claim_reading_names(_C, grounded=False)
+    assert f"{_C}_grounded_share" not in _readings(_ungrounded_by_none(), grounded_in=None, documents=None)
+
+
+def test_a_criterion_with_grounded_in_refuses_a_cell_whose_documents_are_undeclared() -> None:
+    """The verifier refuses the cell too: groundedness reads what the candidate was given, empty when it was nothing."""
+    with pytest.raises(ValueError, match="grounded_in reads the documents the candidate was given"):
+        _readings(documents=None)
+
+
+def test_a_lost_ground_step_gives_no_grounded_share_and_every_truth_reading_stands() -> None:
+    """The arm's own pages failed to read, so groundedness is lost alone: no R2 (never 0, the no-research reading),
+    the loss counted, and the truth readings exactly where they were, a planted lie among them."""
+    lost = _readings(_ungrounded_by_none(), ground_loss="unreadable")
+    lie_lost = _readings(_ungrounded_by_none(_swap(1, _false(1))), ground_loss="repair_budget_spent")
+    lie = _readings(_swap(1, _false(1)))
+
+    assert _moved(_BASE, lost) == {"grounded_share", "ground_lost"}
+    assert f"{_C}_grounded_share" not in lost and lost[f"{_C}_ground_lost"] == 1.0
+    assert _moved(lie, lie_lost) == {"grounded_share", "ground_lost"}
+
+
+def test_groundedness_agrees_with_whether_it_was_asked_and_whether_its_step_was_lost() -> None:
+    with pytest.raises(ValueError, match="asked its ground step, which was not lost; a lost step is the tally's"):
+        _readings(_ungrounded_by_none())
+    with pytest.raises(ValueError, match="lost its ground step \\('unreadable'\\)"):
+        _readings(ground_loss="unreadable")
+    with pytest.raises(ValueError, match="and the criterion asks no groundedness"):
+        _readings(_ungrounded_by_none(), grounded_in=None, ground_loss="unreadable")
+    with pytest.raises(ValueError, match="asks no groundedness"):
+        _readings(
+            tuple(
+                c if c.scope == "session" else c.model_copy(update={"ground_citations": (), "grounded": False})
+                for c in _BASELINE
+            ),
+            grounded_in=None,
+        )
+
+
+def test_a_tally_that_lost_its_ground_step_counts_no_grounded_claim_and_stores_the_loss_only_when_set() -> None:
+    counts = claim_tally(_grade(_BASELINE), _evidence((_CASE_DOCUMENT, _RUN_DOCUMENT)), grounded_in=("run",)).by_judge
+    with pytest.raises(ValueError, match="lost its ground step \\('cut_short'\\), which grounds none"):
+        ClaimTally(
+            criterion_fingerprint=_SHA,
+            documents_declared=True,
+            units=2,
+            units_with_false=0,
+            session_claims=1,
+            by_judge=counts,
+            ground_loss="cut_short",
+        )
+    lost = claim_tally(
+        _grade(_ungrounded_by_none()),
+        _evidence((_CASE_DOCUMENT, _RUN_DOCUMENT)),
+        grounded_in=("run",),
+        ground_loss="unreadable",
+    )
+
+    assert ClaimTally.model_validate(lost.model_dump(mode="json")) == lost
+    assert "ground_loss" not in claim_tally(
+        _grade(_BASELINE), _evidence((_CASE_DOCUMENT, _RUN_DOCUMENT)), grounded_in=("run",)
+    ).model_dump(mode="json")
+
+
+def test_a_key_fact_never_grounds_a_claim_even_under_grounded_in_case() -> None:
+    """A summary is grounded in the source it was shown; the case's key facts are never shown to the candidate."""
+    by_source = tuple(
+        claim if claim.scope == "session" else claim.model_copy(update={"ground_citations": _GROUNDS_CASE})
+        for claim in _BASELINE
+    )
+    by_key = (*by_source[:1], _claim(1, ground_citations=(ClaimCitation(ref="K1", stance="supports"),)), *by_source[2:])
+
+    assert _readings(by_source, grounded_in=("case",))[f"{_C}_grounded_share"] == 1.0
+    with pytest.raises(ValueError, match="cites key fact K1 as its ground, and a key fact is no document"):
+        _readings(by_key, grounded_in=("case",))
+
+
+def test_a_claim_s_unit_is_its_segment_s() -> None:
+    """R1b counts units off the segments, so a claim naming another unit than its segment's is refused."""
+    with pytest.raises(ValueError, match="claim 1 names unit 1, and its segment 1 is unit 0"):
+        _readings(_swap(1, _false(1, unit=1)))
 
 
 def test_case_support_grounds_a_claim_only_where_grounded_in_names_case() -> None:
@@ -669,3 +761,23 @@ async def test_a_launch_refuses_a_criterion_a_measure_the_host_added_since_now_h
             models=[RUN_MODELS[0]],
             scope_id=TOYHOST_SCOPE,
         )
+
+
+def test_an_update_writing_a_criterion_a_host_measure_holds_is_refused_and_one_leaving_it_is_not() -> None:
+    """Scoped to the write, as the update door's other gates are: a stored template whose criterion a measure the
+    host added since now holds stays editable in its other fields (its launch refuses it)."""
+    storage, store = memory_storage()
+    host, _ = toyhost_launch_host(storage=storage, profile=_colliding_profile("rules.claims_false"))
+    template = toyhost_template()
+    store.upsert(template.model_copy(update={"claim_criteria": [_criterion("rules.other")]}).to_dict())
+
+    with pytest.raises(ValidationFailedError, match="host describes the measure 'rules.claims_false'"):
+        update_template(
+            host.eval_host,
+            template.id,
+            template.scope_id,
+            {"claim_criteria": [_criterion().model_dump(mode="json")]},
+        )
+    store.upsert(template.model_copy(update={"claim_criteria": [_criterion()]}).to_dict())
+    edited = update_template(host.eval_host, template.id, template.scope_id, {"intent": "Read the form carefully."})
+    assert edited.intent == "Read the form carefully."

@@ -6587,14 +6587,21 @@ class ClaimTally(CoreShapeModel):
     by_judge: tuple[ClaimJudgeCounts, ...] = Field(
         default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."
     )
+    ground_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell lost its ground step alone (CLAIM_LOSSES), which costs it the groundedness reading "
+        "and no other: its truth counts stand, and it counts no grounded claim. None (left out) when the step was not "
+        "lost, or not asked.",
+    )
 
     @model_validator(mode="after")
     def _one_entry_per_judge(self) -> Self:
         """Refuse counts the cell's claims could not give.
 
         :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
-            holds a false claim only by holding one); a grounded claim where no documents were declared; or two
-            entries for one judge.
+            holds a false claim only by holding one); a grounded claim where no documents were declared, or where the
+            ground step was lost; or two entries for one judge.
         """
         if self.units_with_false > self.units:
             raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
@@ -6606,6 +6613,11 @@ class ClaimTally(CoreShapeModel):
             )
         if not self.documents_declared and any(entry.grounded_specific for entry in self.by_judge):
             raise ValueError("a tally counts grounded claims, and the cell declared no documents to ground them")
+        if self.ground_loss is not None and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError(
+                f"a tally counts grounded claims, and the cell lost its ground step ({self.ground_loss!r}), which "
+                "grounds none"
+            )
         keys = [
             (
                 entry.served_model,

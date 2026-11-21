@@ -19,14 +19,20 @@ the candidate itself was given supports; higher is better; a candidate given no 
 `_unverifiable`, `_true_ungrounded`, `_web_settled_share`, `_evidence_conflicts`, `_web_checked`, `_web_skipped`,
 `_session_claims`, `_lost`) is a diagnostic, and each description states its population and its evidence. Session
 claims count in no world reading; hedged and attributed claims are graded and kept out of the asserted counts; a
-statement the text backs with a source is asserted. Nothing grades a criterion yet, so no result carries these.
+statement the text backs with a source is asserted. `ClaimTally.ground_loss` (new, optional, a `ClaimLoss`, left out
+while None, in core 15.24 beside the other claim shapes) records a ground step lost alone: that cell reads no grounded
+share (never 0, which is what no research reads), a `_ground_lost` diagnostic counts it, and every truth reading
+stands. A grounded claim must cite a document the candidate was given, never a key fact. Nothing grades a criterion
+yet, so no result carries these.
 
 **Changed:** a template whose claim criterion's name, or a name `<criterion>_...` its readings take, is a measure the
 host or the engine describes is refused where it is admitted (create, seed, an update writing `claim_criteria`) and
 where it launches, naming the criterion and the measure.
 
 **For hosts:** a host measure family named `claims` is now refused at registration, as every engine family's name is;
-rename it. Rename a measure named like a claim criterion's readings, or the criterion. No stored shape changes.
+rename it. Rename a measure named like a claim criterion's readings, or the criterion. `ClaimTally.ground_loss` lands
+in the unreleased core 15.24 step: a 15.23 build keeps a result's `claim_tallies` whole and opaquely and writes them
+back, and nothing writes the field until the judge phase ships; rollout and rollback in any order.
 
 ### evals: the stored shapes of claim grading (no grading yet)
 

@@ -519,7 +519,8 @@ CORE_SCHEMA_VERSION: int = 15
 #:   against and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
 #:   numbered evidence, every ``GradedClaim`` and every ``WebCheckRecord``), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
-#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``) and ``EvalResult.claim_failures`` (criterion -> a
+#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``ground_loss`` records a ground step lost
+#:   alone, costing only the groundedness reading) and ``EvalResult.claim_failures`` (criterion -> a
 #:   ``ClaimLoss``, an open vocabulary). Each is left out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims

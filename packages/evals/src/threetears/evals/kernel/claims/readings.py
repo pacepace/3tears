@@ -36,7 +36,7 @@ from threetears.evals.schema import (
     EvidenceProvenance,
     EvalTemplate,
 )
-from threetears.evals.schema.models import ClaimCall, GradedClaim, request_settings_order
+from threetears.evals.schema.models import ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
 
 
 @dataclass(frozen=True)
@@ -223,6 +223,15 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             evidence="claims about the output or session itself (what was just presented, what comes next, a count "
             "of the session's own state), which no truth step grades and no world reading counts",
         ),
+        "ground_lost": _Reading(
+            "Cells whose groundedness was lost",
+            None,
+            share=True,
+            formula="1 when the cell lost its ground step alone, else 0",
+            population="every cell a criterion declaring grounded_in graded, not lost",
+            evidence="a lost ground step (a reply cut short or unreadable, the repair budget spent, on the candidate's "
+            "own documents) costs the cell its grounded share and no other reading: its truth readings stand",
+        ),
         "lost": _Reading(
             "Cells the criterion lost",
             None,
@@ -239,8 +248,8 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
 _RANKED: Final[frozenset[str]] = frozenset(
     suffix for suffix, reading in _READINGS.items() if reading.lower_is_better is not None
 )
-#: The reading only a criterion declaring ``grounded_in`` has.
-_GROUNDED: Final = "grounded_share"
+#: The readings only a criterion declaring ``grounded_in`` has.
+_GROUNDED: Final[frozenset[str]] = frozenset({"grounded_share", "ground_lost"})
 
 
 def claim_reading_names(criterion: str, *, grounded: bool) -> tuple[str, ...]:
@@ -250,14 +259,15 @@ def claim_reading_names(criterion: str, *, grounded: bool) -> tuple[str, ...]:
     :param grounded: Whether it declares ``grounded_in``, which alone gives the grounded share.
     :return: ``<criterion>_<suffix>`` for each of its readings.
     """
-    return tuple(f"{criterion}_{suffix}" for suffix in _READINGS if grounded or suffix != _GROUNDED)
+    return tuple(f"{criterion}_{suffix}" for suffix in _READINGS if grounded or suffix not in _GROUNDED)
 
 
 def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool) -> dict[str, float]:
     """One cell's readings under one criterion, computed from its tally, or its one reading when the criterion lost it.
 
     A reading whose population leaves the cell out is absent, never zero: a cell with no unit has no per-unit reading,
-    one with no asserted specific claim no grounded share. A cell whose documents were declared and are none (the
+    one with no asserted specific claim, or whose ground step was lost (:attr:`ClaimTally.ground_loss`), no grounded
+    share. A cell whose documents were declared and are none (the
     candidate was given or fetched nothing) reads a grounded share of 0 when it asserts a specific claim: it stated
     specifics with no source, which is what the reading ranks.
 
@@ -275,7 +285,9 @@ def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded:
         "false_per_unit": _ratio(count.asserted_contradicted, tally.units),
         "false_unit_share": _ratio(tally.units_with_false, tally.units),
         "grounded_share": (
-            _ratio(count.grounded_specific, count.asserted_specific) if grounded and tally.documents_declared else None
+            _ratio(count.grounded_specific, count.asserted_specific)
+            if grounded and tally.documents_declared and tally.ground_loss is None
+            else None
         ),
         "false": count.asserted_contradicted,
         "false_hedged": count.hedged_contradicted,
@@ -291,6 +303,7 @@ def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded:
         "web_checked": count.web_checked,
         "web_skipped": count.web_skipped,
         "session_claims": tally.session_claims,
+        "ground_lost": (0.0 if tally.ground_loss is None else 1.0) if grounded else None,
         "lost": 0.0,
     }
     return {f"{criterion}_{suffix}": float(value) for suffix, value in values.items() if value is not None}
@@ -384,7 +397,11 @@ def claim_names_a_measure_holds(template: EvalTemplate, measures: MeasureRegistr
 
 
 def claim_tally(
-    grade: ClaimGrade, evidence: ClaimEvidence, *, grounded_in: Collection[EvidenceProvenance] | None
+    grade: ClaimGrade,
+    evidence: ClaimEvidence,
+    *,
+    grounded_in: Collection[EvidenceProvenance] | None,
+    ground_loss: KnownClaimLoss | None = None,
 ) -> ClaimTally:
     """A cell's tally under one criterion, from its grade and the evidence it graded: the one place a claim's tags
     and grades become counts.
@@ -395,20 +412,35 @@ def claim_tally(
     - An **asserted** claim is neither hedged nor attributed; a statement the text backs with a source is asserted.
     - A **grounded** claim counts only when asserted and specific, and every ground citation must cite a document of a
       provenance ``grounded_in`` names: case evidence the candidate was not given never grounds, and is refused.
+      A key fact is never a document the candidate was given, so a ground citation of one is refused too.
+    - A **lost ground step** (``ground_loss``) costs only groundedness: every world claim's ``grounded`` reads None,
+      no claim is grounded, the truth counts stand, and the tally records the loss so no grounded share is read. A
+      world claim whose ``grounded`` is None under ``grounded_in`` with no such loss is refused, never read as 0.
     - **Units** are the evidence's distinct units, however many segments each spans; a unit holds a false claim when
-      any of its segments holds an asserted contradicted world claim.
+      any of its segments holds an asserted contradicted world claim, read off the segment, which a claim's ``unit``
+      must agree with.
 
     :param grade: The criterion's grade of the cell.
     :param evidence: The claim evidence it graded.
     :param grounded_in: The provenances the criterion declares its candidate was given, or None for a criterion with
         no groundedness reading.
+    :param ground_loss: Why the verifier lost the ground step alone (its ``Verification.ground_loss``), or None.
     :return: The tally.
     :raises ValueError: A claim cites the candidate's own (``run``) evidence for its truth, which only case evidence
         decides; a claim cites evidence of a provenance ``grounded_in`` does not name as its ground (any, where the
-        criterion asks no groundedness); a world claim names no deciding call; or a claim sits in a segment the
-        evidence does not hold.
+        criterion asks no groundedness), or a key fact as its ground; a world claim's groundedness disagrees with
+        whether the criterion asks it and whether its ground step was lost; a criterion with ``grounded_in`` grades a
+        cell whose documents are undeclared; a world claim names no deciding call; or a claim sits in a segment the
+        evidence does not hold, or names a unit other than its segment's.
     """
+    if grounded_in is None and ground_loss is not None:
+        raise ValueError(f"a ground step was lost ({ground_loss!r}), and the criterion asks no groundedness")
+    if grounded_in is not None and evidence.documents is None:
+        raise ValueError(
+            "a criterion with grounded_in reads the documents the candidate was given, and the cell declares none"
+        )
     provenance = {entry.ref: entry.provenance for entry in grade.evidence}
+    key_facts = {entry.ref for entry in grade.evidence if entry.fact is not None}
     allowed = frozenset(grounded_in or ())
     groups: dict[tuple[object, ...], list[GradedClaim]] = {}
     calls: dict[tuple[object, ...], ClaimCall] = {}
@@ -419,6 +451,8 @@ def claim_tally(
             raise ValueError(
                 f"claim {place} sits in segment {claim.segment}, and the evidence holds {len(evidence.segments)}"
             )
+        if claim.unit != (unit := evidence.segments[claim.segment].unit):
+            raise ValueError(f"claim {place} names unit {claim.unit}, and its segment {claim.segment} is unit {unit}")
         # prose-canary: allow — `scope` here is the closed Literal world/session, not an insight's free-text scope
         if claim.scope == "session":
             session += 1
@@ -432,10 +466,27 @@ def claim_tally(
                 f"claim {place} cites {', '.join(stray)} evidence as its ground, and the criterion is grounded in "
                 + (", ".join(sorted(allowed)) if allowed else "nothing")
             )
+        if facts := sorted(c.ref for c in claim.ground_citations if c.ref in key_facts):
+            raise ValueError(
+                f"claim {place} cites key fact {', '.join(facts)} as its ground, and a key fact is no document the "
+                "candidate was given"
+            )
+        asked = grounded_in is not None and ground_loss is None
+        if (claim.grounded is None) == asked:
+            raise ValueError(
+                f"claim {place} reads grounded={claim.grounded}, and the criterion "
+                + (
+                    "asks no groundedness"
+                    if grounded_in is None
+                    else f"lost its ground step ({ground_loss!r})"
+                    if ground_loss is not None
+                    else "asked its ground step, which was not lost; a lost step is the tally's ground_loss"
+                )
+            )
         if claim.decided_by is None:
             raise ValueError(f"world claim {place} names no call that decided it")
-        if claim.verdict == "contradicted" and _asserted(claim) and claim.unit is not None:
-            units_with_false.add(claim.unit)
+        if claim.verdict == "contradicted" and _asserted(claim) and unit is not None:
+            units_with_false.add(unit)
         call = grade.calls[claim.decided_by]
         key = (
             call.served_model,
@@ -451,6 +502,7 @@ def claim_tally(
         units_with_false=len(units_with_false),
         session_claims=session,
         by_judge=tuple(_counted(calls[key], claims) for key, claims in groups.items()),
+        ground_loss=ground_loss,
     )
 
 
