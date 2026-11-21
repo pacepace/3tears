@@ -347,7 +347,8 @@ class ClaimExtractor:
         if failures:
             named = "; ".join(f"claim {position}: {failure}" for position, failure in sorted(failures.items()))
             raise ClaimGradingFailed(
-                f"the claim extractor could not repair {len(failures)} claim(s) in {_REPAIR_ROUNDS} rounds: {named}"
+                f"the claim extractor could not repair {len(failures)} claim(s) in {_REPAIR_ROUNDS} rounds: {named}",
+                loss="repair_budget_spent",
             )
         return _checked(listed, cell)
 
@@ -362,7 +363,7 @@ class ClaimExtractor:
         ledger.add_llm_result(completion)
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
-            raise ClaimGradingFailed(f"the claim extractor's reply was cut short: {cut_short}")
+            raise ClaimGradingFailed(f"the claim extractor's reply was cut short: {cut_short}", loss="cut_short")
         return completion.content
 
     async def _list(self, cell: tuple[Segment, ...], ledger: RoleUsageLedger) -> list[_ListedClaim]:
@@ -385,7 +386,9 @@ class ClaimExtractor:
             except ValueError as refused:
                 unreadable = refused
                 user = _AGAIN_TEMPLATE.format(user=first, failure=_unreadable(refused))
-        raise ClaimGradingFailed(f"the claim extractor's reply did not parse in {_ATTEMPTS} attempts") from unreadable
+        raise ClaimGradingFailed(
+            f"the claim extractor's reply did not parse in {_ATTEMPTS} attempts", loss="unreadable"
+        ) from unreadable
 
     async def _repair(
         self,
