@@ -35,7 +35,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
 
-## The host's contract: 87 names a host implements or hands the engine
+## The host's contract: 89 names a host implements or hands the engine
 
 ### Ports a host implements (18)
 
@@ -58,16 +58,18 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### What a host builds and hands the engine (69)
+### What a host builds and hands the engine (71)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
 - `schema.EvalBaseModel`: Base model for the eval engine's own Pydantic models.
 - `schema.ProviderFailure`: What eval is allowed to know about a completion call that raised.
 - `schema.RunDisclosure`: What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
 - `kernel.default_job_timeout`: Enforce a job budget with `asyncio.timeout` and nothing else.
+- `kernel.EntityExtractor`: A model step that lists the entities of one kind a text names, with the fields asked for each.
 - `kernel.EvalStorage`: Storage for eval documents over one document store.
 - `kernel.JobLeases`: The leases one process holds on its jobs' records, and the task that renews them.
 - `kernel.RoleUsageLedger`: Accumulates one role's LLM spend across every call it makes in a cell.
+- `kernel.SetGrader`: One named set's grader: bound to its measure prefix, its matcher and its extractor, it declares the measures and grades with exactly what they name.
 - `kernel.ToolWrap`: What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.
 - `kernel.withhold_failure_detail`: Describe a failure by its class and nothing else — the safe default.
 - `kernel.WorldSession`: One cell's handle on the host's world, and the record of what happened to it.
@@ -130,7 +132,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 76
+## Functions a host's code calls: 78
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -138,22 +140,24 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 
 - `surface_tier`: A public name's stability tier in the installed build, by `root.name`.
 
-### `schema` (6)
+### `schema` (7)
 
 - `schema.bind_cell_identity`: Make `identity` the answer of `current_cell_identity` for the extent of the block.
 - `schema.check_after`: Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
 - `schema.current_cell_identity`: Return the cell the calling task is working for, or `None` outside any cell.
 - `schema.field_in_values`: Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
+- `schema.fold_name`: The name folded for matching: Unicode NFKC, case folded, whitespace runs as one space, ends stripped.
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
 - `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
 
-### `kernel` (7)
+### `kernel` (8)
 
 - `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
 - `kernel.extract_json`: Extract a JSON object from provider output.
 - `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
 - `kernel.fold_phase_timings`: Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
 - `kernel.prompt_drift`: Read a stored copy of a catalogue prompt against the package's shipped default.
+- `kernel.reference_material`: The key as plain text for a judge: the non-exhaustive line, the core, the acceptable others, then the context.
 - `kernel.seed_digest`: The canonical digest of a seed's content: what a host records when it seeds a slot from it.
 - `kernel.strict_response_format`: The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
 
@@ -402,7 +406,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `actions.ConformanceSample`: One launch a host can run end to end, which the engine's spend actions' happy paths build on.
 - `actions.ConformanceStage`: What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 
-## Shapes: 258 values a reader is handed
+## Shapes: 261 values a reader is handed
 
 ### Protocols the engine implements and hands a host (10)
 
@@ -640,11 +644,13 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `transports.fastmcp.CallTimedOut`: A call outlived the call timeout and was stopped before its action finished.
 - `providers.ProviderError`: A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
-### Other (1)
+### Other (3)
 
 - `RootExtra`: What one optional public root needs installed before it imports: the extra, and the modules it brings.
+- `schema.ReferenceKey`: The entities a case's answer is graded against, a required core and the others that also count, and the context entities a reply may state facts about that are never part of the answer.
+- `kernel.NamedEntity`: One entity an output named: what it was called, and any fields that came with it (a host tool's pick).
 
-### Constants (60)
+### Constants (61)
 
 - `__version__`: The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
 - `PUBLIC_ROOTS`: The public roots, as absolute module names.
@@ -673,6 +679,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `schema.RESERVED_DIM_IDS`: The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - `schema.USAGE_ROLES`: The values of `UsageRole` this build knows, in the order its readers list them.
 - `kernel.CONFUSION_CELL_MEASURE`: The core measure a classification's confusion-matrix cell is reported under.
+- `kernel.EXTRACTED_SET_FAMILY`: The family a set grade's measures carry when a model step listed the entities: the numbers are code's, over names a judge read off prose, so they are a judge's in the sense that decides ranking (`graded_by`).
 - `kernel.FIND_TEMPLATE`: How a caller finds a template's id.
 - `kernel.IDENTITY_VERSION`: One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
 - `kernel.JUDGE_KIND`: The `candidate_kind` a judge template declares.
@@ -783,12 +790,12 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | Kind | Names | Who meets it |
 |---|---|---|
 | `typed` | 12 | a newcomer writes it in an eval file |
-| `bound` | 93 | a host implements it or hands it to the engine |
+| `bound` | 95 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind an action of the catalogue, which an agent or operator invokes by name |
-| `invoked` | 92 | a function a host's own code calls, to make the engine act or do one step its way |
-| `received` | 258 | a value someone is handed and reads |
+| `invoked` | 94 | a function a host's own code calls, to make the engine act or do one step its way |
+| `received` | 261 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 489 | |
+| all | 496 | |
 
 Of these, 22 await demotion and 4 need a shipped example
 (issue #1199), each listed in its register's section above.

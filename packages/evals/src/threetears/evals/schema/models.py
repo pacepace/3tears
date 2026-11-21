@@ -2609,7 +2609,10 @@ class EvalTestCase(DurableDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "The case's reference key: the entities its answer is graded against, a required `core` and the "
-            "`acceptable` others that also count, each with its aliases and checkable facts. The package states "
+            "`acceptable` others that also count, each with its aliases and checkable facts, and at least one of "
+            "them. It may also carry `context`: entities outside the answer set whose facts a grader may check a "
+            "reply against, which a set grade never counts, so a context entity a reply names reads unverified; "
+            "`reference_material` renders it under its own heading saying they are not answers. The package states "
             "its shape and the host fills it. Never stimulus: a kind never hands it to the candidate, renders it for "
             "the judges that grade against it (`threetears.evals.kernel.reference_material`, appended to "
             "`JudgeEvidence.case_material`), and its code measures read it here. Part of the case: a template's own "

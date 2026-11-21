@@ -348,11 +348,15 @@ from threetears.evals.kernel.surface import (
 from threetears.evals.kernel.entity_extraction import EntityExtractionFailed, EntityExtractor
 from threetears.evals.kernel.set_grade import (
     EXTRACTED_SET_FAMILY,
+    EntityMatch,
     EntityMatcher,
     FoldingMatcher,
+    MatchRefusal,
     NamedEntity,
+    SetCredit,
     SetGrade,
     SetGrader,
+    SetRefusal,
 )
 from threetears.evals.kernel.usage_capture import (
     RoleUsageLedger,
@@ -622,11 +626,15 @@ __all__ = [
     "EXTRACTED_SET_FAMILY",
     "EntityExtractionFailed",
     "EntityExtractor",
+    "EntityMatch",
     "EntityMatcher",
     "FoldingMatcher",
+    "MatchRefusal",
     "NamedEntity",
+    "SetCredit",
     "SetGrade",
     "SetGrader",
+    "SetRefusal",
     "RunIndexEntry",
     "RunStore",
     "SeedPrompt",

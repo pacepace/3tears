@@ -23,6 +23,65 @@ build. Declare the family `graded_by="code"` if code made the number, or drop th
 (`higher_is_better=None`) to keep it as a reading. No known host declares one: discodon's judged families
 (`hedged_claims`, `grounded_claims`, `extracted_set`) hold numeric measures only.
 
+### evals: a set grade shows how each credit was earned, and why a name was refused (#1293)
+
+**Added:** `EntityMatcher.match` may answer an `EntityMatch` (the key entity's name and the matcher's reason, such as a
+tier label) or a `MatchRefusal` (a reason, such as `ambiguous`) beside a bare name or None. `SetGrade.credits` records
+each credited spelling as a `SetCredit` (the name as written, the key entity it earned, the reason), and
+`SetGrade.refusals` each refused pick as a `SetRefusal` (the name as first written, the reason), one of
+`unverified_names`; `SetGrade.unlisted_names` is the unverified picks nobody refused, the names the key does not hold.
+A refusal is still an unverified pick: every count, reading and measure definition is unchanged, the formula stays
+`set grade v1`, and readings graded before and after pool. `FoldingMatcher` gives every credit the reason `folded`, and
+refuses a name that folds to one of the key's context entities with the reason `context` (it was None); its identity
+stays `fold-v1`, since it credits exactly what it did. New, provisional: `EntityMatch`, `MatchRefusal`, `SetCredit`,
+`SetRefusal` (`threetears.evals.kernel`). Engine path only.
+
+**For hosts:** a matcher answering `str | None` works unchanged (its credits carry no reason), so nothing has to move;
+to show tiers and ambiguity, answer `EntityMatch(entity=..., reason=...)` and `MatchRefusal(reason="ambiguous")`
+instead. Code that calls `FoldingMatcher().match` directly now gets an `EntityMatch` or a `MatchRefusal` where it got a
+name (read `.entity`). A grade's JSON (`model_dump(mode="json")`) carries `credits` and `refusals` beside the other
+fields, and `SetGrade.model_validate` reads a grade stored without them. A build from before this change refuses a
+grade document carrying them (`extra_forbidden`, naming `credits` and `refusals`; checked by loading one through the
+previous build's `SetGrade`), so a host that validates stored grades back into `SetGrade` upgrades every reader before
+it writes new grades, and on a rollback drops the two keys first. A host that keeps the grade as a plain JSON payload is
+unaffected.
+
+### evals: the set-grading names a host imports are stable (#1292)
+
+**Changed:** `SetGrader`, `EntityExtractor`, `EXTRACTED_SET_FAMILY`, `NamedEntity` and `reference_material`
+(`threetears.evals.kernel`), and `ReferenceKey` and `fold_name` (`threetears.evals.schema`), move from provisional to
+stable: Discodon's set grader builds and declares a `SetGrader` per graded set, its own matcher reads `NamedEntity` and
+`ReferenceKey` and its exact tier is `fold_name`, and its hedged-claim grader renders `reference_material`.
+`EntityMatcher`, `SetGrade`, `FoldingMatcher`, `EntityExtractionFailed` and the match and provenance shapes stay
+provisional. The recorded Discodon host imports are regenerated from its develop at 3e05bd7a2.
+
+**For hosts:** nothing to change; a host's exemptions for these seven names end with the pin that includes this.
+
+### evals: a reference key carries a context tier, facts that are never answers
+
+**Added:** `ReferenceKey.context`, a third tier of `ReferenceEntity` beside `core` and `acceptable`: entities outside
+the answer set whose facts a grader may check a reply against (a city a stop is in, a person a pick is by). A set grade
+never counts one: `ReferenceKey.entities` stays the answer set (core, then acceptable), which `SetGrader` and
+`FoldingMatcher` read, so a key with context grades every output exactly as the same key without it, and a context
+entity an output names is unverified, as any name outside the answer set is. `ReferenceKey.fact_entities` (new) is
+every entity whose facts the key states, in all three tiers. A name or alias that folds alike for two entities is
+refused across all three tiers, and a key still names at least one core or acceptable entity, so a key of context
+alone is refused. The tier is a set, kept in one order. Left out of the document while empty, so a key without context
+is stored, digested, identified and seeded exactly as before (a keyed case's content hash, seeded id and seed digest
+are pinned from the build before the tier). `reference_material(key)` renders the tier last, under "Context (facts
+only; not answers):", and only when it has an entity, so the text every judge reads for a key without context, and
+its label fingerprint, do not move. A context entity a host matcher answers is refused as before, since it is not in
+the answer set. Engine path only.
+
+**For hosts (durable 17.8, additive):** a 17.7 build reads a stored case whose key carries `context`, keeps the tier
+opaquely and writes it back unchanged (checked by loading a case this build stored through the previous build's stored
+read). Its drift digests that case's key without the tier: after a rollback to a corpus without context, the case
+reads `current` where the corpus case matches it but for the context, and `customized` where its other content differs
+too, since the row's recorded seed digest includes the context (checked by running the previous build's drift over
+such a case; a reset of it then needs `overwrite_customized`). A 17.7 build refuses a corpus file whose key carries
+`context` at boot seed (`extra_forbidden`, naming `reference.context`). So upgrade the package before shipping a corpus
+with context, and roll the corpus back with any rollback of the package.
+
 ### evals: a test case carries a reference key, part of its identity
 
 **Added:** a case may carry `reference`, the entities its answer is graded against: a required `core` and the
