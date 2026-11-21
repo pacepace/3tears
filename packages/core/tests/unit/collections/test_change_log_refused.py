@@ -108,7 +108,7 @@ def _collection(source: _FailingSource) -> _Absences:
     l1.initialize(_metadata(table))
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=FakeNatsClient(), l3_pool=NoL3(), kv_key_scope=_SCOPE)
-    registry.set_generation_source(source)  # type: ignore[arg-type]
+    registry.set_generation_source(source)
     return _Absences(registry, table=table)
 
 
