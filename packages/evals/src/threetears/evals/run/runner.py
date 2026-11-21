@@ -82,6 +82,7 @@ from threetears.evals.kernel.candidate_kind import (
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
+    GradedCriterion,
     claim_payload_bytes,
     criterion_ceiling,
     grade_criterion,
@@ -151,6 +152,7 @@ from threetears.evals.schema.call_ledger import CallLedger
 from threetears.evals.schema.world_events import Firings, WorldEvent
 from threetears.evals.kernel.world_session import WorldSession
 from threetears.evals.kernel.usage_capture import (
+    CallUsage,
     ExternalRateTable,
     RoleUsageLedger,
     async_delivery_usage,
@@ -705,6 +707,10 @@ class _ClaimsPhase:
     #: Whether the phase has begun, after the dims. A cell is due its claims phase before its dims are judged, so a
     #: cut striking while they are still judged loses every criterion too, never leaving one unrecorded.
     begun: bool = False
+    #: criterion -> its grade and tally as its truth step left them, its ground step lost to the deadline, kept while
+    #: the ground step runs: a deadline striking there costs that criterion groundedness alone, as every other way a
+    #: ground step fails does, since how long the ground step takes grows with what the arm fetched.
+    provisional: dict[str, GradedCriterion] = field(default_factory=dict)
 
     def record(self, *, unfinished: KnownClaimLoss | None = None) -> _ClaimsRecord:
         """What the phase leaves, every criterion that did not finish lost as ``unfinished``.
@@ -717,12 +723,15 @@ class _ClaimsPhase:
         cut = [name for name in self.criteria if name not in self.tallies and name not in self.failures]
         if cut and unfinished is None:
             raise RuntimeError(f"the claims phase left criteria {', '.join(cut)} neither graded nor lost")
+        # A deadline inside a ground step leaves that criterion its truth: kept as its truth step left it.
+        kept = {name: self.provisional[name] for name in cut if unfinished == "deadline" and name in self.provisional}
+        cut = [name for name in cut if name not in kept]
         failures = {**self.failures, **dict.fromkeys(cut, unfinished)} if cut else dict(self.failures)
         return _ClaimsRecord(
             evidence=self.evidence if self.stored else None,
-            tallies=dict(self.tallies),
+            tallies={**self.tallies, **{name: graded.tally for name, graded in kept.items()}},
             failures={name: loss for name, loss in failures.items() if loss is not None},
-            grades=dict(self.grades),
+            grades={**self.grades, **{name: graded.grade for name, graded in kept.items()}},
         )
 
 
@@ -824,7 +833,9 @@ _JUDGING_SET_ASIDE = (
 class _OnSetAside(Protocol):
     """What a :class:`_JudgingGate` tells the run when the cap refuses a cell's judging (:meth:`_JudgingGate.set_aside`)."""
 
-    def __call__(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None: ...
+    def __call__(
+        self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False, counts_cell: bool = True
+    ) -> None: ...
 
 
 class _JudgeHold:
@@ -856,7 +867,7 @@ class _JudgeHold:
         billed = self._billed() - self._billed_at_admission if self._billed is not None else 0.0
         return max(self.usd - billed, 0.0)
 
-    def may_send(self, *, judge_faulted: bool = False) -> bool:
+    def may_send(self, *, judge_faulted: bool = False, counts_cell: bool = True) -> bool:
         """Whether the next call of a phase holding the judging alone may be sent: the run is within its cap.
 
         The first refusal is reported to the gate (:meth:`_JudgingGate.set_aside`), which stops the run; the phase
@@ -864,13 +875,15 @@ class _JudgeHold:
 
         :param judge_faulted: Whether the judge already failed the phase on a dim it asked, so a refusal leaves the
             cell the judge's fault rather than one the cap set aside.
+        :param counts_cell: Whether a refusal sets the cell's judging aside, which the run's stop record counts; a
+            claim criterion's refusal does not, since the cell's dims were judged before it was asked.
         :return: True while what the run has spent, landed and running, is within its cap.
         """
         running = self.gate.running()
         breach = self.gate.budget_gate(running)
         if breach is None:
             return True
-        self.gate.set_aside(breach, running, judge_faulted=judge_faulted)
+        self.gate.set_aside(breach, running, judge_faulted=judge_faulted, counts_cell=counts_cell)
         return False
 
     def release(self) -> None:
@@ -920,13 +933,17 @@ class _JudgingGate:
         # waiter at once and none can miss it.
         self._released = asyncio.Event()
 
-    async def admit(self, ceiling_usd: float | None, billed: Callable[[], float] | None = None) -> _JudgeHold | None:
+    async def admit(
+        self, ceiling_usd: float | None, billed: Callable[[], float] | None = None, *, counts_cell: bool = True
+    ) -> _JudgeHold | None:
         """Admit a judge phase whose calls cost at most ``ceiling_usd``, waiting while another phase holds.
 
         :param ceiling_usd: The phase's summed price ceiling, every attempt included; ``None`` when a call of it
             cannot be priced.
         :param billed: What the phase's cell has been billed for judging so far, which its hold counts its calls'
             bills against; ``None`` holds the whole ceiling until the phase ends.
+        :param counts_cell: Whether a refusal sets the cell's judging aside, which the run's stop record counts; a
+            claim criterion's does not, since the cell's dims were judged before it was asked.
         :return: The hold to release once the phase ends, or ``None``: the cell is set aside.
         """
         while True:
@@ -937,7 +954,7 @@ class _JudgingGate:
                     breach = self.budget_gate(running)
                     if breach is None:
                         return self._hold(None, billed)
-                    self.set_aside(breach, running)
+                    self.set_aside(breach, running, counts_cell=counts_cell)
                     return None
             elif not any(hold.usd is None for hold in self._holds):
                 held = math.fsum(hold.outstanding() for hold in self._holds)
@@ -946,7 +963,7 @@ class _JudgingGate:
                 if breach is None:
                     return self._hold(ceiling_usd, billed)
                 if not self._holds:
-                    self.set_aside(breach, pending)
+                    self.set_aside(breach, pending, counts_cell=counts_cell)
                     return None
             await released.wait()
 
@@ -988,15 +1005,19 @@ class _JudgingGate:
         released, self._released = self._released, asyncio.Event()
         released.set()
 
-    def set_aside(self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
+    def set_aside(
+        self, breach: CapBreach, pending: float | None, *, judge_faulted: bool = False, counts_cell: bool = True
+    ) -> None:
         """Report one cell set aside, with the breach that refused it.
 
         :param breach: The cap's reading that refused the phase or its next call.
         :param pending: What the breach counted beside what had landed; ``None`` when it was unpriced spend.
         :param judge_faulted: Whether the judge already failed the cell on a dim the phase asked first, so the cell
             is the judge's fault and not one the cap set aside; the run stops on the cap all the same.
+        :param counts_cell: Whether the cell's judging is set aside; ``False`` for a claim criterion, asked after the
+            cell's dims were judged, which loses that criterion alone (``cost_cap``) and stops the run all the same.
         """
-        self._on_set_aside(breach, pending, judge_faulted=judge_faulted)
+        self._on_set_aside(breach, pending, judge_faulted=judge_faulted, counts_cell=counts_cell)
 
 
 async def _judging_ceiling(template: EvalTemplate, judge_service: JudgeService, context: JudgeContext) -> float | None:
@@ -2230,6 +2251,11 @@ class _ClaimsClient:
     its cap (:meth:`_JudgeHold.may_send`), as a dimension's call under such a hold is. A refusal is
     :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed` (``cost_cap``), which a ground call's loss
     keeps to groundedness and every other call's makes the criterion's.
+
+    Each completion is billed once, as it is read: its spend and, where its client reports them, the settings it was
+    sent with. A completion whose ``sent_settings`` is the wrong type is billed for its spend alone and refused here
+    (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`), so no later fold of the cell's judge rows
+    reads it again: what it cost is counted wherever the cell is recorded, and the step that asked meets the defect.
     """
 
     def __init__(
@@ -2249,6 +2275,8 @@ class _ClaimsClient:
         self._hold = hold
         self._criterion = criterion
         self._billed: float | None = 0.0
+        #: Whether the run's cost cap refused a call (rather than the criterion's own hold), so no later criterion asks.
+        self.refused_by_cap = False
         self.model_name: str = getattr(inner, "model_name", "")
 
     async def aclose(self) -> None:
@@ -2266,18 +2294,27 @@ class _ClaimsClient:
         """Send one call within the criterion's hold, and bill what it returns.
 
         :raises ClaimGradingFailed: The hold has too little left for the call (``cost_cap``).
+        :raises CompletionProtocolDefect: The completion's ``sent_settings`` is the wrong type; its spend is billed.
         """
         if self._hold is not None:
             self._admit(system=system, user=user, response_format=response_format)
         completion: CompletionResult = await self._inner.generate(
             system=system, user=user, response_format=response_format
         )
-        self._phase.billed.append(completion)
-        cost = getattr(completion, "cost_usd", None)
-        self._billed = None if self._billed is None or cost is None else self._billed + cost
-        if self._sink is not None:
-            self._sink.add_spend("judge", cost)
+        try:
+            read = CallUsage.of(completion)
+        except CompletionProtocolDefect:
+            self._bill(CallUsage.billed(completion))
+            raise
+        self._bill(read)
         return completion
+
+    def _bill(self, usage: CallUsage) -> None:
+        """Count one call's spend in the criterion's hold and the cell's, and keep it for the cell's judge rows."""
+        self._phase.billed.append(usage)
+        self._billed = None if self._billed is None or usage.cost_usd is None else self._billed + usage.cost_usd
+        if self._sink is not None:
+            self._sink.add_spend("judge", usage.cost_usd)
 
     def _admit(self, *, system: str, user: str, response_format: dict[str, Any] | None) -> None:
         """Refuse a call the criterion's hold has no room for.
@@ -2296,7 +2333,8 @@ class _ClaimsClient:
                     f"aside, and its next call can cost {ceiling}: the cap set aside too little for what it said",
                     loss="cost_cap",
                 )
-        if not hold.may_send():
+        if not hold.may_send(counts_cell=False):
+            self.refused_by_cap = True
             raise ClaimGradingFailed(
                 f"the run's cost cap had too little left for claim criterion {self._criterion!r}'s next call",
                 loss="cost_cap",
@@ -2390,7 +2428,7 @@ async def _run_claims_phase(
                     ceiling = None
                 if awaiting_room is not None:
                     awaiting_room(True)
-                hold = await gate.admit(ceiling, judge_billed)
+                hold = await gate.admit(ceiling, judge_billed, counts_cell=False)
                 # Not in a ``finally``: a cancel during the wait leaves it set, for the deadline's arm to read.
                 if awaiting_room is not None:
                     awaiting_room(False)
@@ -2398,13 +2436,15 @@ async def _run_claims_phase(
                     capped = True
                     phase.failures[name] = "cost_cap"
                     continue
+            claims_client = _ClaimsClient(client, phase=phase, sink=sink, hold=hold, criterion=name)
             try:
                 graded = await grade_criterion(
                     criterion,
                     phase.evidence,
                     key=test_case.reference,
-                    client=_ClaimsClient(client, phase=phase, sink=sink, hold=hold, criterion=name),
+                    client=claims_client,
                     graded=phase.grades,
+                    truth_kept=partial(phase.provisional.__setitem__, name),
                 )
             except ClaimGradingFailed as failed:
                 # Recorded, never swallowed: the criterion's loss is on the cell, which keeps every other reading.
@@ -2451,6 +2491,11 @@ async def _run_claims_phase(
             finally:
                 if hold is not None:
                     hold.release()
+                # The run's cap refused a call: spend only grows, so no later criterion is asked, nor counted again.
+                capped = capped or claims_client.refused_by_cap
+            # Decided, so what its truth step kept is no longer what a deadline would fall back on. Not in the
+            # ``finally``: a deadline's cancel unwinds through that, and the deadline's arm reads what was kept.
+            phase.provisional.pop(name, None)
     finally:
         elapsed = (time.monotonic() - started) * 1000.0
     return elapsed
@@ -3103,6 +3148,7 @@ def _cut_short_cell(
     ungraded_goal_checks: Sequence[GoalStateOutcome] = (),
     metered_calls_refused: int | None = None,
     judging_set_aside: bool = False,
+    unfinished_claims: KnownClaimLoss | None = None,
 ) -> CellOutcome:
     """The two documents of a cell cut off before :func:`run_one_result` returned them.
 
@@ -3134,12 +3180,14 @@ def _cut_short_cell(
         cap, not the judge, left the dims unasked (``EvalResult.judging_set_aside``).
     :param metered_calls_refused: The cell's refused metered calls, where the caller still holds the
         dispatch's baseline; ``None`` where it does not.
+    :param unfinished_claims: The loss of each claim criterion the cut left unfinished; ``None`` reads it off the
+        cut: ``cost_cap`` while the judging waited for the cap's room, else ``deadline``.
     :return: The result and its trace.
     """
     # A cut striking inside the claims phase struck after the dims had all returned: the wait it struck in, if any,
     # was a criterion's, and the dims were not set aside.
     claims = (
-        sink.claiming.record(unfinished="cost_cap" if judging_set_aside else "deadline")
+        sink.claiming.record(unfinished=unfinished_claims or ("cost_cap" if judging_set_aside else "deadline"))
         if sink.claiming is not None
         else None
     )
@@ -4589,14 +4637,18 @@ async def execute_run(
             amounts.append(amount)
         return math.fsum(amounts)
 
-    def judging_set_aside(breach: CapBreach, pending: float | None, *, judge_faulted: bool = False) -> None:
+    def judging_set_aside(
+        breach: CapBreach, pending: float | None, *, judge_faulted: bool = False, counts_cell: bool = True
+    ) -> None:
         """Count a cell whose judging the cap set aside, and stop the run at the first: no new cell starts.
 
         A cell whose judge already failed it on a dim of the same phase (``judge_faulted``) is the judge's fault, not
-        a set-aside, so it is not counted; the cap still had too little left for its other dims, so the run stops.
+        a set-aside, so it is not counted; the cap still had too little left for its other dims, so the run stops. A
+        claim criterion the cap refused (``counts_cell`` False) is not counted either: the cell's dims were judged,
+        and the criterion's loss is on the cell (``EvalResult.claim_failures``, ``cost_cap``).
         """
         nonlocal cells_not_judged, judging_stop
-        if not judge_faulted:
+        if not judge_faulted and counts_cell:
             cells_not_judged += 1
         if judging_stop is not None:
             return
@@ -4617,7 +4669,11 @@ async def execute_run(
             breach.max_cost_usd,
             done,
             total,
-            "the judge's fault on a dim it asked first" if judge_faulted else "set aside unjudged",
+            "the judge's fault on a dim it asked first"
+            if judge_faulted
+            else "set aside unjudged"
+            if counts_cell
+            else "judged on its dims, with a claim criterion lost to the cap",
             len(in_flight) - 1,
         )
         stop.budget([judging_stop])
@@ -4920,6 +4976,8 @@ async def execute_run(
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
                 unfinished_judging=f"did not finish: the run failed on {type(defect).__name__}",
+                # A criterion the defect cut short was failed by a call, never by a deadline.
+                unfinished_claims="provider_error",
             )
             run_defect = defect
         # A write failure loses the cell — this loop holds no second copy that

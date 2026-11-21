@@ -130,6 +130,12 @@ class _Reply:
     cost_usd: float | None = 0.002
     price_source: str | None = "scripted"
     temperature: float | None = None
+    #: What the request was sent with, as the client reports it; a string is the wrong type, a defect.
+    sent_settings: Any = None
+
+
+#: A completion a real client returns with its ``sent_settings`` the wrong type: the host's defect, found on read.
+_DEFECTIVE = "defective"
 
 
 def _listing(*claims: dict[str, Any]) -> str:
@@ -187,6 +193,8 @@ class _FakeClaimsJudge:
             await asyncio.Event().wait()
         if isinstance(answer, BaseException):
             raise answer
+        if answer == _DEFECTIVE:
+            return _Reply(content=_ANSWERS[name], sent_settings="fast")
         return _Reply(content=answer)
 
     async def aclose(self) -> None:
@@ -305,7 +313,7 @@ async def test_a_provider_failing_a_call_loses_that_criterion_and_every_other_is
     "failure",
     [
         ConnectionError("the provider is unavailable"),
-        CompletionProtocolDefect(object(), "temperature", "a claim's grade records the temperature"),
+        _DEFECTIVE,
         "not json",
     ],
     ids=["provider", "protocol_defect", "unreadable"],
@@ -320,14 +328,45 @@ async def test_a_ground_call_failing_costs_groundedness_alone_and_truth_stands(f
     assert tally.ground_loss == ("unreadable" if failure == "not json" else "provider_error")
     assert (counts.asserted, counts.grounded_specific) == (1, 0), "the truth counts stand; nothing is grounded"
     assert trace.claim_grades[_CRITERION].claims[0].verdict == "supported"
+    if failure == _DEFECTIVE:
+        (row,) = [row for row in result.usage if row.role == "judge"]
+        assert row.call_count == 3, "the defective completion is billed, once"
 
 
 async def test_a_completion_breaking_the_protocol_in_a_truth_call_fails_the_run() -> None:
-    defect = CompletionProtocolDefect(object(), "temperature", "a claim's grade records the temperature")
-    judge = _FakeClaimsJudge(script={"claim_truth": [defect]})
+    judge = _FakeClaimsJudge(script={"claim_truth": [_DEFECTIVE]})
 
     with pytest.raises(CompletionProtocolDefect):
         await _cell(judge, _template(), _FakeClaimsKind(_output()))
+
+
+async def test_a_run_a_claims_completion_breaks_records_its_cell_with_what_it_spent_and_fails() -> None:
+    judge = _FakeClaimsJudge(script={"claim_listing": [_DEFECTIVE]})
+    template = _template()
+    host = toyhost_host()
+    case = _case(template)
+    run = make_eval_run(
+        scope_id="u", template_id=template.id, candidate_kind=_KIND, test_case_ids=[case.id], judge_model=_JUDGE
+    )
+    off_loop(host.storage.save_eval_run, run)
+    kind = _FakeClaimsKind(_output())
+
+    with pytest.raises(CompletionProtocolDefect):
+        await execute_run(
+            host,
+            run=run,
+            template=template,
+            test_cases=[case],
+            judge_service=_service(judge),
+            options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: kind}),
+        )
+
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    (row,) = [row for row in result.usage if row.role == "judge"]
+    assert (row.call_count, row.cost_usd) == (1, 0.002), "the defective call is billed once, and counted"
+    assert result.cost_usd == 0.002
+    assert result.claim_failures == {_CRITERION: "provider_error"}
+    assert result.infra_error is not None and "CompletionProtocolDefect" in result.infra_error
 
 
 async def test_the_extractions_repairs_count_against_the_criterions_repair_budget() -> None:
@@ -440,6 +479,19 @@ async def test_a_deadline_inside_the_claims_of_a_kind_graded_by_code_is_the_crit
     assert trace.claim_evidence == _EVIDENCE
 
 
+async def test_a_deadline_in_the_ground_step_costs_groundedness_alone_and_truth_stands() -> None:
+    judge = _FakeClaimsJudge(script={"claim_ground": ["hang"]})
+
+    result, trace, _ = await _judged_run(judge, _template(), _FakeClaimsKind(_output()), cell_timeout_s=0.5)
+
+    assert result.termination == "cell_timeout" and result.claim_failures == {}
+    tally = result.claim_tallies[_CRITERION]
+    (counts,) = tally.by_judge
+    assert tally.ground_loss == "deadline"
+    assert (counts.asserted, counts.grounded_specific) == (1, 0), "truth stands; nothing is grounded"
+    assert trace.claim_grades[_CRITERION].claims[0].verdict == "supported"
+
+
 async def test_a_criterion_the_cap_has_no_room_for_is_lost_to_it_and_the_rubric_dims_are_judged() -> None:
     # Each call is priced at $0.30: the dim's two attempts fit a $1 cap, and the criterion's 21 calls do not.
     judge = _FakeClaimsJudge(usd_per_call=0.3)
@@ -451,6 +503,22 @@ async def test_a_criterion_the_cap_has_no_room_for_is_lost_to_it_and_the_rubric_
     assert [score.dim for score in result.rubric_scores] == ["doc.clarity"] and not result.judging_set_aside
     assert not any(name.startswith("claim_") for name in judge.asked), "nothing of the criterion was asked"
     assert stopped is not None, "the cap had too little left, so the run starts no further cell"
+    assert stopped.stops[0].cells_not_judged == 0, "the cell's dims were judged: it is no cell the cap left unjudged"
+
+
+async def test_a_cap_refusing_an_unpriced_criterions_call_asks_no_later_criterion_and_counts_no_cell() -> None:
+    # Unpriced, so each criterion's calls are sent one at a time while the run is within its $0.003 cap. Each call
+    # costs $0.002: the extraction and the truth call go out, the ground call is refused, and the second criterion
+    # is never asked.
+    judge = _FakeClaimsJudge()
+    template = _template(_criterion("almanac.first"), _criterion("almanac.second"))
+
+    result, _, stopped = await _judged_run(judge, template, _FakeClaimsKind(_output()), cap_usd=0.003)
+
+    assert judge.asked == ["claim_listing", "claim_truth"]
+    assert result.claim_tallies["almanac.first"].ground_loss == "cost_cap", "truth stands; the cap cost groundedness"
+    assert result.claim_failures == {"almanac.second": "cost_cap"}
+    assert stopped is not None and stopped.stops[0].cells_not_judged == 0
 
 
 @dataclass
@@ -520,6 +588,35 @@ class _TraceRefusingStore(InMemoryDocumentStore):
         if document.get("doc_type") == "eval_trace":
             raise RuntimeError("the row is over the store's size limit")
         super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+class _ReadFailsAfterTraceStore(InMemoryDocumentStore):
+    """An in-memory store whose reads fail once a trace has landed, as a store whose reads went down would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.traced = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        super().upsert(document, if_match=if_match, create_only=create_only)
+        self.traced = self.traced or document.get("doc_type") == "eval_trace"
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        if self.traced:
+            raise RuntimeError("the store's reads are down")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+async def test_a_read_failing_after_the_row_and_trace_landed_keeps_the_cell_written_and_its_claims_lost() -> None:
+    result, trace = await _graded_cell()
+    store = _ReadFailsAfterTraceStore()
+
+    off_loop(EvalStorage(store).save_run_cell, result, trace)
+
+    store.traced = False
+    stored = off_loop(EvalStorage(store).load_eval_result, result.id, result.scope_id)
+    assert stored is not None, "the write did not fail: the row and its trace landed"
+    assert stored.claim_failures == {_CRITERION: "trace_lost"} and stored.claim_tallies == {}
 
 
 async def _graded_cell() -> tuple[Any, Any]:

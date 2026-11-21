@@ -21,7 +21,9 @@ repair budget, and never spends past what the cap set aside for it. A witnessed 
 so the trial keeps its pass, its rubric scores and every other criterion. This covers a reply cut short, unreadable or
 past its repairs, the cost cap (`cost_cap`), a deadline inside it (`deadline`), a grade past the trace's cap
 (`evidence_over_cap`), and the judge's provider failing a call (`provider_error`, a new value of `CLAIM_LOSSES`). A
-ground call's failure costs groundedness alone, however the call fails, and truth stands. A trace that is not stored
+ground call's failure costs groundedness alone, however the call fails (a deadline striking in the ground step
+included), and truth stands. A criterion the cap sets aside is not counted among the run's cells not judged: the
+cell's dims were judged. A trace that is not stored
 loses the criteria it backs: their tallies are written lost (`trace_lost`), so no reading rests on a grade that is not
 stored. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
 The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.

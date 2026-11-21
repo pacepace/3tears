@@ -66,7 +66,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
@@ -849,6 +849,7 @@ class ClaimVerifier:
         key: ReferenceKey | None,
         documents: Sequence[EvidenceDocument] | None,
         ledger: RoleUsageLedger,
+        truth_done: Callable[[Verification], None] | None = None,
     ) -> Verification:
         """Check every world claim in ``claims`` against the case's evidence, and against the candidate's own
         documents where ``grounded_in`` names them.
@@ -862,6 +863,9 @@ class ClaimVerifier:
         :param documents: The cell's evidence documents, in order: ``()`` when the candidate was given none, None when
             undeclared.
         :param ledger: The cell's ``judge`` ledger.
+        :param truth_done: Told, once the truth step has finished and before the ground step starts, what truth
+            found, with no claim grounded: so a caller whose deadline strikes in the ground step, whose length grows
+            with what the arm fetched, keeps truth. Not told when no ground step is asked.
         :return: The evidence shown, the documents truncated, the calls made, one finding per claim, and the ground
             step's loss when it was lost.
         :raises ValueError: ``ledger`` is not the ``judge`` role's; ``grounded_in`` is named and the documents are
@@ -929,6 +933,15 @@ class ClaimVerifier:
         await self._run_step("truth", batches, checked, cell, shown, calls, ledger)
         lost: ClaimGradingFailed | None = None
         if "ground" in shown:
+            if truth_done is not None:
+                truth_done(
+                    Verification(
+                        evidence=_index({"truth": shown["truth"]}),
+                        documents_truncated=tuple(document.id for document in given if document.id in truth_cut),
+                        calls=tuple(calls),
+                        findings=_findings(cell, checked, grounded=False),
+                    )
+                )
             try:
                 await self._run_step("ground", batches, checked, cell, shown, calls, ledger)
             except ClaimGradingFailed as failed:

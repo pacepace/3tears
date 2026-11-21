@@ -2673,13 +2673,13 @@ class EvalStorage:
 
         A failed trace write does not fail the result (:meth:`save_run_cell` says why).
 
-        :param result: The result to persist. Never mutated — the marker is applied to a copy.
-        :param trace: The sibling payload, or ``None`` for a cell that produced none; an entirely empty trace writes no
-            document.
         A result whose claim criteria were tallied rests those readings on the grades its trace holds, so when its trace
         is not written each tallied criterion is written lost instead (``trace_lost``): no reading rests on a grade
         that is not stored.
 
+        :param result: The result to persist. Never mutated — the marker is applied to a copy.
+        :param trace: The sibling payload, or ``None`` for a cell that produced none; an entirely empty trace writes no
+            document.
         :raises StorageError: The RESULT was not persisted. A trace-write failure is logged and reads as ``missing``
             through ``has_trace``, not raised.
         """
@@ -2720,19 +2720,20 @@ class EvalStorage:
         and a later re-judge of it refuses, since the judge evidence it would resend was in
         the payload that did not land.
 
+        **A cell whose claim criteria were tallied is written lost first.** Its claim readings rest on the grades its
+        trace holds, and the trace lands after the row, so the row is first written with each tallied criterion lost
+        (``trace_lost``) and rewritten with its tallies once the trace has landed, conditionally on the row as read at
+        its lease epoch. A failed trace write therefore leaves the cell's claims recorded lost, never tallied on a grade
+        that is not stored; a failed read or rewrite leaves them lost too, which a re-grade takes up, and is logged,
+        and never fails the write. Every
+        other reading of the row is the same in both writes.
+
         :param result: The result to persist. Never mutated — the marker is applied to
             a copy, so a caller holding this object cannot be surprised by it.
         :param trace: The sibling payload, or ``None`` for a cell that produced none.
             An entirely empty trace writes no document: there is nothing to
             fetch, and a row per empty payload is the row count this split
             exists to keep down.
-        **A cell whose claim criteria were tallied is written lost first.** Its claim readings rest on the grades its
-        trace holds, and the trace lands after the row, so the row is first written with each tallied criterion lost
-        (``trace_lost``) and rewritten with its tallies once the trace has landed, conditionally on the row as this
-        write left it. A failed trace write therefore leaves the cell's claims recorded lost, never tallied on a grade
-        that is not stored; a failed rewrite leaves them lost too, which a re-grade takes up, and is logged. Every
-        other reading of the row is the same in both writes.
-
         :raises JobFenced: The rule above refused the write; nothing was written.
         :raises StorageError: The RESULT was not persisted — a cell's row included, when every attempt lost its race.
             A trace-write failure is logged and reads as ``missing`` through ``has_trace``, not raised.
@@ -2817,18 +2818,21 @@ class EvalStorage:
     def _restore_claim_tallies(self, result: EvalResult, document: dict[str, Any]) -> None:
         """Rewrite a run cell's row, written with its claims lost, with its tallies, now that its trace has landed.
 
-        Conditional on the row as :meth:`save_run_cell` left it: a row another writer has since replaced, or one
-        written under another lease epoch, is left as it stands. A failed rewrite is logged and leaves the claims
-        lost, which is true of what the row can show: a re-grade takes them up.
+        Conditional on the row as read here: one stored under another lease epoch, which only a later holding of
+        the run writes, is left as it stands, and so is one that changed between the read and the rewrite. Every
+        failure of the read or the rewrite is logged and leaves the claims lost (``trace_lost``), which the row
+        itself records: the host sees the loss on the result, and a re-grade takes it up. It never fails the write:
+        the row and its trace have both landed.
 
         :param result: The result as the cell produced it, its tallies on it.
         :param document: Its document, marked.
         """
-        data, etag = self._store.get_with_etag(result.id, result.scope_id)
-        stored = self._of_type(EvalResult, data)
-        if stored is None or int(stored.get("lease_epoch", 0)) != result.lease_epoch:
-            return
         try:
+            with _read_outage(f"eval result '{result.id}'"):
+                data, etag = self._store.get_with_etag(result.id, result.scope_id)
+            stored = self._of_type(EvalResult, data)
+            if stored is None or int(stored.get("lease_epoch", 0)) != result.lease_epoch:
+                return
             self._save(document, if_match=etag)
         except (ConflictError, StorageError) as unwritten:
             # NOSILENT: the row stands with its claim criteria lost (trace_lost), which the result itself records.

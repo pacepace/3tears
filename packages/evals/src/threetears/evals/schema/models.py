@@ -6091,8 +6091,9 @@ class JudgeEvidence(CoreShapeModel):
 
 #: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
 #: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
-#: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol on a ground call),
-#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside), ``deadline`` (the
+#: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
+#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or a call would have
+#: spent past what the cap set aside for the criterion), ``deadline`` (the
 #: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
 #: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
 #: vocabulary: a reader counts every loss, a reason it does not know by name.

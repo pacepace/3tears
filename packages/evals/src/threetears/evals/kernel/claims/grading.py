@@ -23,14 +23,14 @@ Engine-internal: the judge phase calls it, and nothing here is exported.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Final
 
 from threetears.evals.kernel.claims.extraction import ClaimExtractor
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally
-from threetears.evals.kernel.claims.verification import ClaimVerifier, graded_claims
+from threetears.evals.kernel.claims.verification import ClaimVerifier, Verification, graded_claims
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.schema.completion import CompletionClient
 from threetears.evals.schema.hashing import canonical_digest
@@ -173,6 +173,7 @@ async def grade_criterion(
     key: ReferenceKey | None,
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
+    truth_kept: Callable[[GradedCriterion], None] | None = None,
 ) -> GradedCriterion:
     """Grade one cell under one criterion: list its claims, verify them, and keep the grade with its tally.
 
@@ -185,6 +186,9 @@ async def grade_criterion(
     :param client: The judge's client.
     :param graded: The grades the cell's trace already holds from the criteria graded before this one, which the
         trace's cap counts beside this one.
+    :param truth_kept: Told, before a ground step starts, the grade and tally its truth step leaves, its ground step
+        lost to the deadline (``ground_loss`` ``deadline``): what the cell keeps when a deadline strikes there, since
+        the ground step's length grows with what the arm fetched. Not told when that grade would not fit the trace.
     :return: The grade and its tally.
     :raises ClaimGradingFailed: A step failed (``cut_short``, ``unreadable``, ``repair_budget_spent``, or
         ``cost_cap`` from a client its hold refuses), or the grade would take the trace past
@@ -195,24 +199,49 @@ async def grade_criterion(
     ledger = RoleUsageLedger(role="judge")
     calls: list[ClaimCall] = []
     claims = await extractor.extract(evidence.segments, ledger=ledger, calls=calls)
-    verification = await verifier.verify(claims, key=key, documents=evidence.documents, ledger=ledger)
-    grade = ClaimGrade(
-        criterion_fingerprint=criterion_fingerprint(criterion, extractor, verifier),
-        claim_evidence_digest=claim_evidence_digest(evidence),
-        calls=(*calls, *verification.calls),
-        evidence=verification.evidence,
-        documents_truncated=verification.documents_truncated,
-        claims=graded_claims(claims, verification, calls_before=len(calls)),
-    )
-    held = claim_payload_bytes(evidence, {**graded, criterion.name: grade})
-    if held > CLAIM_TRACE_BYTES:
-        raise ClaimGradingFailed(
-            f"claim criterion {criterion.name!r}'s grade would take the trace's claims payload to {held} bytes, and "
-            f"CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
-            loss="evidence_over_cap",
+    fingerprint = criterion_fingerprint(criterion, extractor, verifier)
+
+    def kept(verification: Verification) -> GradedCriterion:
+        grade = ClaimGrade(
+            criterion_fingerprint=fingerprint,
+            claim_evidence_digest=claim_evidence_digest(evidence),
+            calls=(*calls, *verification.calls),
+            evidence=verification.evidence,
+            documents_truncated=verification.documents_truncated,
+            claims=graded_claims(claims, verification, calls_before=len(calls)),
         )
-    tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=verification.ground_loss)
-    return GradedCriterion(grade=grade, tally=tally, ground_failure=verification.ground_failure)
+        held = claim_payload_bytes(evidence, {**graded, criterion.name: grade})
+        if held > CLAIM_TRACE_BYTES:
+            raise ClaimGradingFailed(
+                f"claim criterion {criterion.name!r}'s grade would take the trace's claims payload to {held} bytes, "
+                f"and CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
+                loss="evidence_over_cap",
+            )
+        tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=verification.ground_loss)
+        return GradedCriterion(grade=grade, tally=tally, ground_failure=verification.ground_failure)
+
+    def truth_done(truth: Verification) -> None:
+        if truth_kept is None:
+            return
+        try:
+            truth_kept(
+                kept(
+                    replace(
+                        truth,
+                        ground_loss="deadline",
+                        ground_failure="the cell's deadline struck during the ground step",
+                    )
+                )
+            )
+        except ClaimGradingFailed:
+            # NOSILENT: a grade of truth alone that outgrows the trace is no fallback for a deadline; the full grade
+            # meets the same cap, which records the criterion's loss (evidence_over_cap) where it is decided.
+            return
+
+    verification = await verifier.verify(
+        claims, key=key, documents=evidence.documents, ledger=ledger, truth_done=truth_done
+    )
+    return kept(verification)
 
 
 __all__: list[str] = []
