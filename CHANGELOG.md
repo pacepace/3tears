@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a partitioned read of named parts can be bounded by conditions, held to the caller's counts
+
+**Added:** `where` on `read_partitions` and `read_partitions_arrow`: trusted conditions (`threetears.core.keyed.Fragment`,
+each written from `$1`) in every statement of the read (the page starts, the pages, a cut page's count, the
+part-by-part fallback), so only the rows they name are read and held to `counts`. For named parts only, without
+`prove` (the fingerprints name no condition); refused otherwise. WHY: a count taken before the read holds the rows
+as they were; the whole part read later holds the rows appended since too, and the read was refused. On the
+election replay of 2026-11-21 every cold start of the AP snapshots was refused so, all night. Bounded by the newest
+stamp the count saw, the read holds exactly the counted rows; the rows appended after are past the load's mark.
+
 ### core: a transaction whose caller is cancelled during `l3.tx.begin` leaves no session open
 
 **Fixed:** the hub opens a session when it reads `l3.tx.begin`; a caller cancelled before the answer arrived never
