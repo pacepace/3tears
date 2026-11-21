@@ -275,6 +275,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # named set against a case's key, so a host noun here would reach every host's set measures.
     "kernel/set_grade.py",
     "kernel/entity_extraction.py",
+    # The model step that lists the factual claims a cell's utterances assert, and the verbatim check its excerpts and
+    # a claim grader's quotes pass: engine vocabulary for any host's claim grading, so a host noun here would reach
+    # every host's claim measures.
+    "kernel/claim_extraction.py",
+    "kernel/verbatim.py",
     # Where an eval file's relative paths resolve while `python -m threetears.evals FILE` loads it:
     # the engine's own loading vocabulary, read by Eval, Model, World, Judge and Log alike.
     "kernel/eval_file.py",

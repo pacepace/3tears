@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: list the factual claims a cell's utterances assert (#1287, claim extraction)
+
+**Added (provisional, `threetears.evals.kernel`):** `ClaimExtractor(client, segmentation, guidance="")` lists every
+checkable factual proposition a cell's utterances assert, one proposition per claim, with one strict-schema model call
+that never sees the case's key, sources or the candidate's own findings. Its input is the cell's utterances in the
+order they were said, each an `Utterance(text, stop_index)`: an utterance that introduces one of the output's stops
+carries that stop's index, and any other (a message, an aside) carries None. A cell's stops are numbered 0..n-1, each
+once, or `extract` refuses the cell before any call. Each `ExtractedClaim` records its utterance and stop, the
+proposition, its `excerpt` with `start` and `end`, `specific`, `hedged` and `restates` (the position of an earlier
+claim stating the same fact). The claims come back ordered by utterance, and `restates` always names an earlier
+position. The excerpt is the utterance's own text at offsets a verbatim check found, never the model's copy: the check
+folds both sides alike (NFKC, case, typographic quotes and dashes, soft hyphen and zero-width characters, whitespace
+runs, `verbatim-fold-v1`) and refuses an excerpt shortened with an ellipsis. **Repair, not refusal:** a reply that will
+not parse is asked again in full, naming why, twice. An item that fails a check (an excerpt not in its utterance, an
+elided excerpt, a `restates` that names no earlier claim) is asked again alone, with its failure named, in up to two
+rounds. A failing item is never dropped or downgraded: one still failing raises `ClaimExtractionFailed`, as does a
+reply cut short, at once. `ClaimExtractionFailed` is an `ApparatusError`: out of a kind's `invoke` the runner excludes
+the cell as `apparatus_failed` and never scores it. Every completion, parsed or not, is billed to the `judge` ledger.
+The extractor's identity names its model and a digest of its prompts (with the host's `guidance`), reply schemas,
+verbatim fold, retry and repair budgets and the host's `segmentation`, so claims listed two ways never pool. The
+`specific` tag is the model's: no human label calibrates it yet. Nothing grades the claims yet: the claim grader
+follows. Engine path only.
+
+**For hosts:** cut each cell's output into `Utterance` values in the order they were said: one per stop introduction,
+carrying its stop's index (counted from 0 across the cell), and one per other thing said, carrying None. Name that
+cutting in `segmentation` (for example `"stops-v1"`) and change the name whenever the cutting changes, since it sets
+every per-stop denominator. Put any domain notes on what counts as a claim, with your own examples, in `guidance`.
+Extract inside `invoke` with the cell's `RoleUsageLedger(role="judge")`, its rows on `CandidateTelemetry.usage`, and
+let `ClaimExtractionFailed` reach the runner. Keep the judge client's sampling parameters fixed: they are not in the
+identity. No stored shape changes.
+
 ### evals: a test case carries a reference key, part of its identity
 
 **Added:** a case may carry `reference`, the entities its answer is graded against: a required `core` and the
