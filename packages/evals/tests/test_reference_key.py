@@ -56,6 +56,12 @@ CASE_KEY = f"template_case/{SUBJECT}/hurried-buyer"
 DIGEST_BEFORE_KEYS = "865c5fada1ca5ba247459b9a9407708e51b1e9963159b3f96920607689194084"
 SEEDED_ID_BEFORE_KEYS = "490aee8c-6404-5664-b80e-e16dbe493048"
 
+#: What the toy host's case keyed with :func:`_key` digests to, the id the seed gives it, and its seed digest with a
+#: stratum, at ``0bce2461a``, the build before the key's context tier: a key without context must keep all three.
+KEYED_DIGEST_BEFORE_CONTEXT = "15cd8da4b7ec764da2f7e115179b836d31184735e3dc5e778f7cb69a1a707585"
+KEYED_SEEDED_ID_BEFORE_CONTEXT = "5ff1ee81-ead3-5d61-9a7d-aff22cd37a4e"
+KEYED_SEED_DIGEST_BEFORE_CONTEXT = "ee9790a010b226edb3355e4665a4bf94b63c4d231c13f012ec4d573b29464025"
+
 
 def _key(**changes: Any) -> dict[str, Any]:
     """A key as a corpus file states it: two core entities with aliases and facts, and one acceptable other."""
@@ -216,6 +222,16 @@ def test_a_case_without_a_key_keeps_the_digest_and_seeded_id_it_had_before_keys(
     assert template_case_content_digest(case) == DIGEST_BEFORE_KEYS
     seeded = case.test_case(toyhost_template())
     assert (seeded.content_hash, seeded.id) == (DIGEST_BEFORE_KEYS, SEEDED_ID_BEFORE_KEYS)
+
+
+def test_a_keyed_case_keeps_the_digest_seeded_id_seed_digest_and_document_it_had_before_the_context_tier() -> None:
+    corpus_case = _case(reference=_key(), stratum="lookalike")
+    seeded = corpus_case.test_case(toyhost_template())
+
+    assert template_case_content_digest(corpus_case) == KEYED_DIGEST_BEFORE_CONTEXT
+    assert (seeded.content_hash, seeded.id) == (KEYED_DIGEST_BEFORE_CONTEXT, KEYED_SEEDED_ID_BEFORE_CONTEXT)
+    assert corpus_case.digest() == seeded.seed_digest == KEYED_SEED_DIGEST_BEFORE_CONTEXT
+    assert sorted(seeded.to_dict()["reference"]) == ["acceptable", "core", "type"], "stored as before, no context"
 
 
 def test_adding_a_key_or_editing_one_alias_moves_the_digest_and_the_id() -> None:
