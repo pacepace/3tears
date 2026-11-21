@@ -191,9 +191,7 @@ async def _verdicts(pool: asyncpg.Pool, groups: int) -> dict[str, bool]:
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool, l2_client=bus, kv_key_scope="depthagree")
     members = GroupMemberCollection(registry, DefaultCoreConfig(), nats_client=bus)
-    cache = AclCache(
-        membership_loader=CollectionMembershipLoader(members), grant_loader=SeededGrants(pool)
-    )
+    cache = AclCache(membership_loader=CollectionMembershipLoader(members), grant_loader=SeededGrants(pool))
     namespace = Namespace(id=uuid.uuid4(), customer_id=customer_id, namespace_type="thing", owner_agent_id=None)
     granted = await evaluate_decision(
         EvaluationContext(namespace=namespace, action="read", user_id=user_id), cache=cache

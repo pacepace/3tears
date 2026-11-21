@@ -458,7 +458,9 @@ class ArrowWritingStore(Protocol):
         """
         ...
 
-    async def write_arrow(self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any) -> int:
+    async def write_arrow(
+        self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any, max_rows: int | None = None
+    ) -> int:
         """write ``rows`` to ``table`` as ``plan`` says, on the caller's transaction; a failing write fails it.
 
         :param table: the table
@@ -469,6 +471,8 @@ class ArrowWritingStore(Protocol):
         :ptype plan: ArrowWritePlan
         :param conn: the caller's connection
         :ptype conn: Any
+        :param max_rows: the most rows one statement writes; None for no bound but the request's bytes
+        :ptype max_rows: int | None
         :return: the rows the database counted: inserted, upserted or deleted
         :rtype: int
         """

@@ -123,6 +123,10 @@ _logger = get_logger(__name__)
 #: thread to run (``Thread.start``), 1-2 ms on a loaded host, which on the caller's event loop held a process's first
 #: copy that much longer than every later one. One thread: a build holds the interpreter lock but for its turns, so two
 #: at once would only share it
+#: the roll-backs of transactions begun for a caller that was cancelled while it waited for the begin's answer
+#: (:meth:`_ProxyTransaction.__aenter__`): each a task of its own, held here until it is done
+_BEGUN_FOR_NO_ONE: Final[set[asyncio.Task[None]]] = set()
+
 _COPY_BUILDS: Final = ThreadPoolExecutor(max_workers=1, thread_name_prefix="l3-copy-build")
 _COPY_BUILDS.submit(int).result()
 
@@ -303,8 +307,8 @@ def _raise_for_failed_reply(
     raise DataLayerUnavailableError(message)
 
 
-#: a statement binding more parameters than this (a multi-row write's page) has its request built and encoded
-#: on a thread: each parameter is converted in Python and the request passes through JSON several times, tens of
+#: a statement binding more values than this (a multi-row write's page) has its request built and encoded
+#: on a thread: each value is converted in Python and the request passes through JSON several times, tens of
 #: milliseconds for a page that on the event loop held every call the process answers
 _OFFLOAD_PARAMS = 256
 
@@ -312,12 +316,22 @@ _OFFLOAD_PARAMS = 256
 def _offloaded(params: Sequence[Any]) -> bool:
     """whether a statement's request is built and encoded on a thread rather than the event loop.
 
+    Counted by the values bound, an array parameter's each one of them: a key-led delete binds one array a key
+    column (``= ANY($1)``), seven arrays of 1,000 keys for a table of seven key columns, and counted as seven
+    parameters its 7,000 values were converted and encoded on the loop, ~5 ms a statement there (the 33,786-key
+    delete's loop-timing test held the loop 5.3-7.9 ms against its 5 ms bound, 2026-11-21).
+
     :param params: the statement's parameters
     :ptype params: Sequence[Any]
-    :return: whether it binds more than :data:`_OFFLOAD_PARAMS`
+    :return: whether it binds more than :data:`_OFFLOAD_PARAMS` values
     :rtype: bool
     """
-    return len(params) > _OFFLOAD_PARAMS
+    bound = 0
+    for value in params:
+        bound += len(value) if isinstance(value, (list, tuple)) else 1
+        if bound > _OFFLOAD_PARAMS:
+            return True
+    return False
 
 
 def _may_send_again(error: RequestError, *, idempotent: bool) -> bool:
@@ -2709,6 +2723,7 @@ class _ProxyConnection:
         conflict_columns: Sequence[str] = (),
         update_columns: Sequence[str] = (),
         delete: bool = False,
+        max_rows: int | None = None,
     ) -> int:
         """write an Arrow table's rows to ``table_name`` in the open transaction, through the hub's Arrow write door.
 
@@ -2722,7 +2737,9 @@ class _ProxyConnection:
         The rows are cut into requests by Arrow slices, each request within the copy budget
         (:meth:`copy_budget_bytes`, else the ceiling and the server's ``max_payload``) with room for the envelope, and
         each slice's IPC stream is written on the copy build thread, taking turns with this loop: the rows never become
-        Python values.
+        Python values. With ``max_rows``, no request carries more rows than that either: the hub runs each request as
+        one statement under the transaction's statement timeout, so a statement's rows bound its time where its bytes
+        alone do not.
 
         :param table_name: the table
         :ptype table_name: str
@@ -2735,14 +2752,18 @@ class _ProxyConnection:
         :ptype update_columns: Sequence[str]
         :param delete: the rows are keys to delete
         :ptype delete: bool
+        :param max_rows: the most rows one request carries, at least one; None for the budget's bytes alone
+        :ptype max_rows: int | None
         :return: the rows the hub's statements counted: inserted, upserted or deleted
         :rtype: int
-        :raises ValueError: when no transaction is open, the hub announced no write door, or one row alone is past the
-            budget
+        :raises ValueError: when no transaction is open, the hub announced no write door, one row alone is past the
+            budget, or ``max_rows`` is under one
         :raises DataLayerUnavailableError: on broker error
         """
         if self.tx_id is None:
             raise ValueError("write_arrow_rows runs only inside an open transaction (l3.tx.copy)")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{table_name}: max_rows must be at least 1, got {max_rows}")
         if not self.write_arrow:
             raise ValueError(
                 "the hub holding this transaction announced no Arrow write door (write_arrow): it would insert the rows"
@@ -2763,11 +2784,12 @@ class _ProxyConnection:
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
         loop = asyncio.get_running_loop()
         total = int(rows.num_rows)
+        cap = total if max_rows is None else max_rows
         start = 0
-        count = first_request_rows(rows, limit) if total else 0
+        count = min(first_request_rows(rows, limit), cap) if total else 0
         written = 0
         while start < total:
-            sent, count = await _on_copy_thread(write_request_rows, rows, start, count, limit, loop)
+            sent, count = await _on_copy_thread(write_request_rows, rows, start, min(count, cap), limit, loop)
             envelope = {**self._copy_envelope(table_name, rows.column_names, sent), **fields}
             response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=sent.ipc)
             if not response.get("success", False):
@@ -2883,7 +2905,18 @@ class _ProxyTransaction:
             "statement_timeout_ms": self._backend.timeout_ms,
         }
         subject = Subjects.l3_tx("begin", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        # the begin is shielded: a caller cancelled while it waits for the answer (a sibling task's failure, a
+        # shutdown) leaves the hub holding a session no one ends, its connection taken from the hub's pool until the
+        # idle sweep rolls it back. The election replay of 2026-11-21 left one a minute so, each begun as a failed
+        # load cancelled its other states. So the begin runs to its answer, and a session it opened is rolled back.
+        begin = asyncio.ensure_future(self._backend.nats_request(subject, payload))
+        try:
+            response = await asyncio.shield(begin)
+        except asyncio.CancelledError:
+            ending = asyncio.ensure_future(self._roll_back_begun(begin))
+            _BEGUN_FOR_NO_ONE.add(ending)
+            ending.add_done_callback(_BEGUN_FOR_NO_ONE.discard)
+            raise
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")
         # a hub that reads a copy's rows as Arrow says so here; one that does not is sent JSON
@@ -2902,6 +2935,40 @@ class _ProxyTransaction:
             )
         self._connection.tx_id = UUID(raw_tx_id)
         return self
+
+    async def _roll_back_begun(self, begin: asyncio.Future[dict[str, Any]]) -> None:
+        """roll back the session a begin opened for a caller cancelled while it waited: once the begin is answered,
+        ``l3.tx.rollback`` for its ``tx_id``. A begin that failed opened nothing; a rollback that fails is logged, and
+        the hub's idle sweep ends the session as before.
+
+        :param begin: the begin's request, running
+        :ptype begin: asyncio.Future[dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            response = await begin
+        except Exception:  # prawduct:allow prawduct/broad-except -- NOSILENT: a begin that failed or went unanswered opened no session to end here
+            return
+        tx_id = response.get("tx_id")
+        if not response.get("success", False) or not isinstance(tx_id, str):
+            return
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": tx_id,
+        }
+        try:
+            await self._backend.nats_request(Subjects.l3_tx("rollback", namespace=self._backend.ns).path, payload)
+        except (
+            Exception
+        ) as exc:  # prawduct:allow prawduct/broad-except -- logged; the hub's idle sweep rolls the session back
+            contain(
+                exc,
+                log=_logger,
+                what="a transaction begun for a cancelled caller could not be rolled back; the hub's idle sweep ends it",
+                extra={"tx_id": tx_id},
+            )
 
     async def __aexit__(
         self,

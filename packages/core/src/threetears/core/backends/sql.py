@@ -1226,11 +1226,13 @@ class SqlL3Backend:
             sort_by=tuple(schema.pk_columns) if kind == "copy" else (),
         )
 
-    async def write_arrow(self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any) -> int:
+    async def write_arrow(
+        self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any, max_rows: int | None = None
+    ) -> int:
         """write an Arrow table's rows to ``table`` as :meth:`arrow_write_plan` planned, on the caller's transaction:
         the request's table built by Arrow on a thread (each column cast to the type the door carries, a copy ordered
         by key), then sent through the connection's write door (``write_arrow_rows``), cut by Arrow slices against the
-        request budget. A failing request fails the caller's transaction.
+        request budget and, given, ``max_rows``. A failing request fails the caller's transaction.
 
         :param table: the table
         :ptype table: str
@@ -1240,6 +1242,8 @@ class SqlL3Backend:
         :ptype plan: ArrowWritePlan
         :param conn: the caller's connection, its transaction open and its hub's door announced
         :ptype conn: Any
+        :param max_rows: the most rows one request (one statement at the hub) carries; None for the budget's bytes alone
+        :ptype max_rows: int | None
         :return: the rows the hub's statements counted
         :rtype: int
         """
@@ -1252,6 +1256,7 @@ class SqlL3Backend:
             conflict_columns=plan.conflict_columns,
             update_columns=plan.update_columns,
             delete=plan.kind == "delete",
+            max_rows=max_rows,
         )
         _logger.debug(
             "Arrow write", extra={"extra_data": {"table": table, "kind": plan.kind, "rows": int(rows.num_rows)}}

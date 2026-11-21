@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from functools import partial
 from typing import Annotated, Any, Final, TypeVar
 
-from threetears.core.keyed import DeclaredKey, KeyColumn
+from threetears.core.keyed import DeclaredKey, Fragment, KeyColumn, renumbered
 from threetears.core.keyed import Selected
 from threetears.observe import get_logger
 
@@ -43,12 +43,14 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     IncompleteReadError,
     RelationFingerprintResult,
+    _Filters,
     _ask,
     _count,
     _group_start,
     _head,
     _joined,
     _key_at,
+    _pages,
     _read_all,
     keyset_condition,
     plain_columns,
@@ -318,6 +320,24 @@ def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int
     return keyset_condition(key, values, earlier="<" if below else ">", last="<" if below else ">=", first=first)
 
 
+def _narrowed(where: Sequence[Fragment], *, before: int) -> tuple[str, list[Any]]:
+    """``where``'s conditions as `` AND (...)`` clauses after ``before`` parameters, and their parameters.
+
+    :param where: the conditions, each written from ``$1``
+    :ptype where: Sequence[Fragment]
+    :param before: the parameters the statement binds ahead of them
+    :ptype before: int
+    :return: the clauses (empty with no condition) and their parameters
+    :rtype: tuple[str, list[Any]]
+    """
+    clauses: list[str] = []
+    bound: list[Any] = []
+    for fragment in where:
+        clauses.append(f" AND ({renumbered(fragment, before + len(bound))})")
+        bound += list(fragment.params)
+    return "".join(clauses), bound
+
+
 async def _boundaries(
     client: DatasourceQueryClient,
     datasource_name: str,
@@ -327,14 +347,17 @@ async def _boundaries(
     partition_by: KeyColumn,
     parts: Sequence[str],
     page_size: int,
+    where: Sequence[Fragment] = (),
 ) -> dict[str, list[tuple[Any, ...]]]:
-    """each part's page starts: the key of its first row and of every ``page_size``-th row after.
+    """each part's page starts: the key of its first row and of every ``page_size``-th row after, of the rows ``where``
+    names (:func:`read_partitions`).
 
     :return: part -> its page starts, in key order
     :rtype: dict[str, list[tuple[Any, ...]]]
     """
     keys = ", ".join(key)
     placeholders = ", ".join(f"${index + 1}" for index in range(len(parts)))
+    narrowed, bound = _narrowed(where, before=len(parts))
     starts: dict[str, list[tuple[Any, ...]]] = {part: [] for part in parts}
     # a reply the hub cut (its row cap or its bytes) holds the first starts: the read goes on past the last one it
     # holds (each start is its own row, so none is split), until a reply comes back whole
@@ -343,15 +366,15 @@ async def _boundaries(
         past, more = (
             ("", [])
             if after is None
-            else keyset_condition(["part__", *key], after, earlier=">", last=">", first=len(parts) + 1)
+            else keyset_condition(["part__", *key], after, earlier=">", last=">", first=len(parts) + len(bound) + 1)
         )
         sql = (
             f"SELECT part__, {keys} FROM (SELECT {partition_by} AS part__, {keys}, "  # noqa: S608 - trusted identifiers
             f"ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {keys}) AS row__ "
-            f"FROM {relation} WHERE {partition_by} IN ({placeholders})) AS paged "
+            f"FROM {relation} WHERE {partition_by} IN ({placeholders}){narrowed}) AS paged "
             f"WHERE MOD(row__ - 1, {int(page_size)}) = 0{f' AND ({past})' if past else ''} ORDER BY part__, {keys}"
         )
-        result = await client.query(datasource_name, sql, params=[*parts, *more])
+        result = await client.query(datasource_name, sql, params=[*parts, *bound, *more])
         for row in result.rows:
             starts[str(row["part__"])].append(tuple(row[column] for column in key))
         if not result.truncated:
@@ -374,8 +397,9 @@ async def _read_pages(
     starts: Sequence[tuple[Any, ...]],
     page_size: int,
     types: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
 ) -> list[Callable[[], Awaitable[Any]]]:
-    """one call per page of a part, each reading from its start up to the next page's.
+    """one call per page of a part, each reading from its start up to the next page's, of the rows ``where`` names.
 
     :return: the calls, in key order
     :rtype: list[Callable[[], Awaitable[list[dict[str, Any]]]]]
@@ -398,14 +422,16 @@ async def _read_pages(
                 if index + 1 < len(starts):
                     upper, more = _bound(key, starts[index + 1], below=True, first=2 + len(params))
                     params += more
+                narrowed, bound = _narrowed(where, before=1 + len(params))
+                params += bound
                 # the part's pin written out, so the statement says it reads one part between two of its keys; each
                 # bound (an OR of key comparisons) in its own parentheses, so it only narrows the part
                 limit = int(page_size) + 1
                 sql = (
-                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}) "  # noqa: S608 - trusted identifiers
+                    f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) AND ({upper}){narrowed} "  # noqa: S608 - trusted identifiers
                     f"ORDER BY {ordering} LIMIT {limit}"
                     if upper is not None
-                    else f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}) "  # noqa: S608 - trusted identifiers
+                    else f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND ({lower}){narrowed} "  # noqa: S608 - trusted identifiers
                     f"ORDER BY {ordering} LIMIT {limit}"
                 )
                 result = await _ask(client, datasource_name, sql, [part, *params], types, {})
@@ -424,10 +450,11 @@ async def _read_pages(
                 if not kept and cut_key is not None:
                     # one key a reply (wide rows): whole when the part holds no more rows of it, one keyed count says
                     same = " AND ".join(f"{column} = ${index}" for index, column in enumerate(key, 2))
+                    narrowed_same, bound_same = _narrowed(where, before=1 + len(key))
                     counted = await client.query(
                         datasource_name,
-                        f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}",  # noqa: S608
-                        params=[part, *cut_key],
+                        f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}{narrowed_same}",  # noqa: S608
+                        params=[part, *cut_key, *bound_same],
                     )
                     if counted.rows and int(counted.rows[0]["n"]) == answered:
                         kept = answered
@@ -480,6 +507,7 @@ async def _read_partitions(
     counts: Mapping[str, int] | None = None,
     prove: bool = False,
     types: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
 ) -> AsyncIterator[tuple[str, Any]]:
     """every part of a relation (or the ``parts`` asked for) over the read rail, pages read side by side, one part at a time.
 
@@ -541,13 +569,23 @@ async def _read_partitions(
     :param prove: fingerprint every part before and after its batch's read (the old proof); off by
         default, and always on when ``parts`` is None
     :ptype prove: bool
+    :param where: trusted conditions on the relation's columns, each written from ``$1`` with its own parameters:
+        only the rows they name are read and held to ``counts``. For named parts only (the fingerprints name no
+        condition). WHY: a count taken earlier holds the rows as they were; a read bounded to those rows (an
+        append-only relation's rows at or before the newest stamp the count saw) holds the same ones however many are
+        appended meanwhile, where the whole part read later holds more and was refused (the election replay of
+        2026-11-21: every cold start of the AP snapshots, all night)
+    :ptype where: Sequence[Fragment]
     :return: each part's value and rows, in sorted order
     :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
     :raises IncompleteReadError: when a part moved during each of its batch's reads, or its pages do not
         hold exactly its rows, or a part's value is NULL
     :raises DatasourceQueryError: when the hub refuses a statement (an older hub refuses the grouped
         fingerprint as ``MALFORMED_REQUEST``)
+    :raises ValueError: when ``where`` is given without named parts, or with ``prove``
     """
+    if where and (parts is None or prove):
+        raise ValueError(f"{relation}: a read bounded by conditions names its parts and proves them by their counts")
     if parts is not None and not prove:
         async for part, rows in _read_named_partitions(
             client,
@@ -562,6 +600,7 @@ async def _read_partitions(
             batch_rows=batch_rows,
             counts=counts or {},
             types=types,
+            where=where,
         ):
             yield part, rows
         return
@@ -746,8 +785,9 @@ async def _read_named_partitions(
     batch_rows: int,
     counts: Mapping[str, int],
     types: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
 ) -> AsyncIterator[tuple[str, Any]]:
-    """:func:`read_partitions` over named parts, by key, with no fingerprint.
+    """:func:`read_partitions` over named parts, by key, with no fingerprint, of the rows ``where`` names.
 
     A part with a count is batched by it; a part without one is a batch of its own, so a batch's rows
     stay bounded by what is known of them. Each batch's page starts come in one statement, its pages are
@@ -775,6 +815,7 @@ async def _read_named_partitions(
             partition_by=partition_by,
             parts=members,
             page_size=page_size,
+            where=where,
         )
         calls: list[Callable[[], Awaitable[Any]]] = []
         spans: dict[str, tuple[int, int]] = {}
@@ -790,6 +831,7 @@ async def _read_named_partitions(
                 starts=starts[part],
                 page_size=page_size,
                 types=types,
+                where=where,
             )
             spans[part] = (len(calls), len(calls) + len(pages))
             calls += pages
@@ -802,14 +844,15 @@ async def _read_named_partitions(
                 raise
             pages_read = []
             for part in members:
-                rows = await _read_all(
+                rows = await _pages(
                     client,
                     datasource_name,
                     columns=columns,
                     relation=relation,
                     key=key,
-                    where={partition_by: part},
+                    filters=_Filters(where={partition_by: part}, where_in={}, fragments=tuple(where)),
                     page_size=page_size,
+                    max_pages=10_000,
                     types=types,
                 )
                 spans[part] = (len(pages_read), len(pages_read) + 1)
@@ -924,6 +967,7 @@ async def read_partitions(
     batch_rows: int = _BATCH_ROWS,
     counts: Mapping[str, int] | None = None,
     prove: bool = False,
+    where: Sequence[Fragment] = (),
 ) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
     """a relation's parts read whole in bulk, a part at a time (:func:`_read_partitions` says how).
 
@@ -944,6 +988,7 @@ async def read_partitions(
         batch_rows=batch_rows,
         counts=counts,
         prove=prove,
+        where=where,
     ):
         yield part, rows
 
@@ -963,6 +1008,7 @@ async def read_partitions_arrow(
     batch_rows: int = _BATCH_ROWS,
     counts: Mapping[str, int] | None = None,
     prove: bool = False,
+    where: Sequence[Fragment] = (),
 ) -> AsyncIterator[tuple[str, Any]]:
     """:func:`read_partitions`, each part's rows one Arrow table: the same statements, each reply read by
     :meth:`~threetears.datasources.query_client.DatasourceQueryClient.query_arrow`, so no row is a Python object.
@@ -988,5 +1034,6 @@ async def read_partitions_arrow(
         counts=counts,
         prove=prove,
         types=types,
+        where=where,
     ):
         yield part, rows

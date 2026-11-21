@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a partitioned read of named parts can be bounded by conditions, held to the caller's counts
+
+**Added:** `where` on `read_partitions` and `read_partitions_arrow`: trusted conditions (`threetears.core.keyed.Fragment`,
+each written from `$1`) in every statement of the read (the page starts, the pages, a cut page's count, the
+part-by-part fallback), so only the rows they name are read and held to `counts`. For named parts only, without
+`prove` (the fingerprints name no condition); refused otherwise. WHY: a count taken before the read holds the rows
+as they were; the whole part read later holds the rows appended since too, and the read was refused. On the
+election replay of 2026-11-21 every cold start of the AP snapshots was refused so, all night. Bounded by the newest
+stamp the count saw, the read holds exactly the counted rows; the rows appended after are past the load's mark.
+
+### core: a transaction whose caller is cancelled during `l3.tx.begin` leaves no session open
+
+**Fixed:** the hub opens a session when it reads `l3.tx.begin`; a caller cancelled before the answer arrived never
+learned the `tx_id`, so nothing ended the session and the hub held it, with its pooled connection, until its idle
+sweep rolled it back a minute later. On the election replay of 2026-11-21 nearly every failed load left one so: the
+load's failure cancelled its other states, one of them waiting on a begin (the hub's `idle>60s` rollbacks, each
+session's id stamped within milliseconds of the failure). `_ProxyTransaction.__aenter__` now shields the begin: on
+cancellation the begin runs to its answer and the session it opened is sent `l3.tx.rollback`; the caller's
+`CancelledError` is raised as before.
+
+### core: an Arrow upsert or delete sends at most `BULK_MAX_ROWS` rows a request
+
+**Fixed:** `save_arrow` and `delete_arrow` cut their requests by bytes alone, so a 5,000-row page went to the hub as
+one request, which the hub merges as one statement under the transaction's statement timeout (the rail's five
+seconds). A staged upsert costs ~1.16 ms a row on YugabyteDB at 179 columns (the hub's own measure), so that
+statement ran ~5.8 s and was cancelled (`QueryCanceledError`) on the election replay. An upsert's or a delete's
+request now carries at most `BULK_MAX_ROWS` (1,000) rows, as `save_rows` and `delete_rows` bound a statement. A copy
+is still cut by its bytes alone, as `save_rows` cuts a copy on the rail.
+
+**Added:** `max_rows` on `save_arrow`, `delete_arrow`, `ArrowWritingStore.write_arrow` and
+`_ProxyConnection.write_arrow_rows`: the most rows one request carries, at least one.
+
 ### models: the current OpenAI and Anthropic models are registered with their prices
 
 **Added:** capability entries for `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna` (OpenAI) and

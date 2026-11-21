@@ -143,3 +143,31 @@ async def test_a_page_sent_off_the_loop_carries_the_statement_and_its_parameters
     sent = json.loads(broker.raw[-1])
     assert (sent["query"], sent["operation"]) == (query, "insert")
     assert sent["params"] == [schema_sql.transport_param(value) for value in params]
+
+
+async def test_a_statement_binding_arrays_of_a_page_of_values_is_built_and_encoded_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a key-led delete binds one array a key column (= ANY($1)): seven arrays of 1,000 keys counted as seven
+    # parameters were converted and encoded on the loop, ~5 ms a statement (the 33,786-key delete's loop-timing test
+    # held the loop 5.3-7.9 ms against its 5 ms bound, 2026-11-21)
+    converted, encoded = _Threads(), _Threads()
+    monkeypatch.setattr(nats_proxy, "transport_param", converted.wrap(schema_sql.transport_param))
+    proxy = _Broker().proxy()
+    monkeypatch.setattr(proxy, "encode_request", encoded.wrap(proxy.encode_request))
+    arrays = [[f"k{column}-{i}" for i in range(1000)] for column in range(7)]
+    async with proxy.acquire() as conn, conn.transaction():
+        converted.seen.clear()
+        encoded.seen.clear()
+        await conn.execute("DELETE FROM pages WHERE race = ANY($1) AND geo = ANY($2)", *arrays)
+        loop_thread = threading.get_ident()
+        assert converted.seen and loop_thread not in converted.seen
+        assert encoded.seen and loop_thread not in encoded.seen
+
+
+async def test_a_few_short_arrays_are_encoded_where_they_are_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    encoded = _Threads()
+    proxy = _Broker().proxy()
+    monkeypatch.setattr(proxy, "encode_request", encoded.wrap(proxy.encode_request))
+    await proxy.execute("DELETE FROM pages WHERE race = ANY($1) AND geo = ANY($2)", ["a", "b"], ["c", "d"])
+    assert encoded.seen == {threading.get_ident()}
