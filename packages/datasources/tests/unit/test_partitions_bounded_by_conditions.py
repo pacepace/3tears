@@ -40,7 +40,9 @@ class _AppendingHub:
         self._db = duckdb.connect()
         self._db.execute("CREATE SCHEMA s")
         self._db.execute("CREATE TABLE s.snapshots (state VARCHAR, race INTEGER, uploaded VARCHAR)")
-        rows = [(state, race, "2026-11-04 00:30:00") for state in _STATES for race in range(30)]
+        rows: list[tuple[str, int, str | None]] = [
+            (state, race, "2026-11-04 00:30:00") for state in _STATES for race in range(30)
+        ]
         rows += [(state, 100, None) for state in _STATES]
         self._db.executemany("INSERT INTO s.snapshots VALUES (?, ?, ?)", rows)
 

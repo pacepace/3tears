@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from threetears.core import shared_arrow
@@ -39,7 +39,8 @@ def test_a_version_mapped_part_way_raises_its_own_error_and_unmaps_what_it_mappe
         mapped_before += 1
         return real(file, mode)
 
-    monkeypatch.setattr(shared_arrow.pa, "memory_map", runs_out)
+    # shared_arrow maps through the one pyarrow module, so patching it there is patching it in shared_arrow
+    monkeypatch.setattr(pa, "memory_map", runs_out)
     before = _fds()
     with pytest.raises(OSError, match="Too many open files"):
         MappedVersion(store.root, "v1")
