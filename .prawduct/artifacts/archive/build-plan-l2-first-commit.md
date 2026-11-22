@@ -1,3 +1,11 @@
+---
+lifecycle: completed
+archived: 2026-11-22
+maintained: false
+---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
+
 # Build plan: the L2-first write path
 
 Owner decisions of 2026-11-08 (Pace), from the reports design `design-streaming-loads.md`, sections

@@ -7,7 +7,13 @@ base: report-kit/analyst
 working-branches: []
 last_validated: 2026-10-31
 partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in isolated worktrees off 02 (03 owns the scoring judge, 04 the case bank and sets; disjoint files); 05 serial in the main session; 06 is a live spend, main session only, after the owner names a cap
+lifecycle: completed
+archived: 2026-11-22
+unbuilt_at_archive: 8 of 8 chunks not done (Chunk 01, Chunk 02, Chunk 02b, …) — the scope shipped, but this plan did not finish with it
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Goals
 

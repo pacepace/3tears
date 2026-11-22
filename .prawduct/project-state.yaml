@@ -1,0 +1,316 @@
+# Project State — 3tears
+#
+# Single source of truth for all project decisions.
+# Read at session start to understand where things stand.
+#
+# Fields start as null and are filled during discovery.
+# Partially-populated state is normal throughout discovery.
+
+# =============================================================================
+# CLASSIFICATION
+# =============================================================================
+# Populated during discovery. Confirmed with the user before planning.
+
+classification:
+  # Product domain. Values: utility, social, marketplace, productivity, b2b,
+  # content, automation, developer-tool, education, health, finance,
+  # entertainment, communication. May be multiple for hybrid products.
+  domain: [developer-tool]
+
+  # Structural characteristics — architectural facts that determine what KINDS
+  # of artifacts a product needs. These are a small, stable set (6) that drive
+  # artifact generation. null = not applicable.
+  structural:
+    # User-facing interface. modality: screen|terminal|voice|spatial|minimal; platform: mobile|web|desktop|cross-platform
+    has_human_interface: false  # libraries; the web/ packages are building blocks for host apps, not a UI of their own
+    # Runs without user interaction. trigger: scheduled|event-driven|always-on
+    runs_unattended: null  # a library; host apps run it
+    # Exposes or consumes APIs. consumers: internal|external|both
+    # If it exposes one, record the API decisions in design_decisions below.
+    exposes_programmatic_interface:
+      kind: library
+      consumers: external  # published to PyPI (and npm for web/); consumed by host apps such as Discodon
+    # Multiple distinct user types. parties: [list of distinct user types]
+    has_multiple_party_types: null
+    # Handles sensitive information. categories: [PII, financial, health, etc.]; regulatory: [list]
+    handles_sensitive_data:
+      categories: [credentials]  # datasource passwords, API keys, NATS credentials pass through host config
+    # Multiple processes or services communicating at runtime. topology: monolith-with-workers|client-server|microservices|pipeline
+    multi_process_distributed:
+      topology: client-server  # many pods share L2 (NATS KV) and L3 (PostgreSQL) through the library
+
+  # Domain-specific characteristics — what makes THIS product unique in its domain.
+  # Dynamically identified, not from a predefined list.
+  # Each: { characteristic: string, implications: [string] }
+  domain_characteristics: []
+
+  # Risk and complexity profile.
+  risk_profile:
+    # Overall risk: low, medium, high.
+    # Drives discovery depth (methodology/discovery.md "Risk Calibration").
+    overall: null
+    # Specific risk factors identified during classification.
+    # Each: { factor, level (low/medium/high), rationale }
+    factors: []
+
+  # Prior art surfaced during discovery (via web search or domain knowledge).
+  # Informational — informs scope decisions, not a gate.
+  # Each: { name, url (optional), relevance, relationship (alternative|complement|reference) }
+  prior_art: []
+
+# =============================================================================
+# PRODUCT DEFINITION
+# =============================================================================
+# Populated during discovery and definition.
+
+product_definition:
+  # One-sentence description of what this product is and why it exists. The
+  # near-term and North Star live in prose in the product brief's Vision section.
+  vision: "A family of Python packages for apps that run on many pods and host LLM agents: data objects over three cache tiers (L1 SQLite, L2 NATS KV, L3 PostgreSQL or git) so every pod reads locally and writes stay coherent."
+
+  # Measurable success criteria. What does "this worked" look like?
+  goals: []
+
+  # Who uses this product and what they need.
+  users:
+    # Each persona:
+    #   name: string
+    #   description: string
+    #   technical_level: none | basic | intermediate | advanced
+    #   primary_needs: [string]
+    #   constraints: [string]
+    personas: []
+
+  # Core user flows (UI), operations (API), or pipeline stages (automation).
+  # Each: { name, description, steps (optional), priority (must-have/nice-to-have) }
+  core_flows: []
+
+  # Scope decisions.
+  scope:
+    v1: []                # Must have for initial release
+    accommodate: []       # Design for but don't build yet; every alignment pass keeps these possible
+    later: []             # Not needed for v1 to be useful
+    never: []             # Explicitly out of scope. Each: { item, rationale }
+
+  # Product identity.
+  product_identity:
+    name: "3tears"
+    personality: null     # Brand personality, mood (null for internal tools)
+    visual_preferences: null  # Look/feel preferences (null for non-visual products)
+
+  platform: python-library  # Python 3.14+ packages on PyPI; JavaScript web packages on npm
+
+  # Non-functional requirements, calibrated to risk.
+  nonfunctional:
+    performance: null
+    scalability: null
+    uptime: null
+    cost_constraints: null
+
+  regulatory: []          # Each: { regulation, applicability, impact }
+  cost_estimates: []      # Each: { item, estimated_monthly_cost, notes }
+
+# =============================================================================
+# TECHNICAL DECISIONS
+# =============================================================================
+# Every entry includes rationale.
+# Each: { decision, rationale, alternatives_considered, date }
+
+technical_decisions:
+  architecture: []
+  technology: []
+  data_model: []
+  integrations: []
+  operational: []
+
+# =============================================================================
+# DESIGN DECISIONS
+# =============================================================================
+# UX, IA, and design decisions. Some fields (like error_handling_approach) apply
+# to all products; others (like visual_direction) only apply to products with a UI.
+# Each: { decision, rationale, date }
+
+design_decisions:
+  information_architecture: []
+  interaction_patterns: []
+  accessibility_approach: null
+  error_handling_approach: null
+  # API decisions — populate when classification.structural.exposes_programmatic_interface is set.
+  # These record the DECISION (including a deliberate "none — internal-only"), not a mandate to
+  # version. A deferral must be dated and carry a revisit trigger. See the api-contract artifact.
+  # api_versioning_approach: { scheme, deprecation_policy, stability_tiers,
+  #                            status: active|deferred, rationale, revisit_trigger (if deferred), date }
+  api_versioning_approach:
+    scheme: "One family version for every 3tears* package (lockstep); intra-family dependencies bounded >=X.Y.0,<X.Y+1.0; a public API addition ships in a MINOR bump, everything else a patch"
+    deprecation_policy: "None beyond the alpha notice: until 1.0.0 the public API can change between minor versions, so consumers pin the whole family to one exact version (README Status)"
+    stability_tiers: "A leading underscore is not public API; everything else under threetears.* is"
+    status: active
+    rationale: "Unbounded siblings let pip resolve a mixed family that installs clean and breaks at runtime (docs/releasing.md); API added inside a minor lets an earlier patch satisfy the bound and lack the symbol (v0.24.7, BLD-7QM3)"
+    enforced_by: [tests/enforcement/test_intra_family_version_bounds.py, tests/enforcement/test_api_growth_requires_a_minor_bump.py]
+    date: 2026-11-22
+  # api_error_model_approach: { envelope (e.g. RFC-7807/problem+json), codes, status, rationale, date }
+  api_error_model_approach: null
+  observability_approach: null    # Signal types, correlation context, sensitive data filtering, operational model
+  infrastructure_dependencies: null  # External services (DB, queue, auth, APIs), mock boundaries, integration test strategy
+  visual_direction: null
+
+# =============================================================================
+# OPEN QUESTIONS
+# =============================================================================
+# Unresolved decisions. Normal during discovery, shrinks toward zero
+# before artifact generation. Hedged product answers stay open in the
+# brief's Open Questions instead.
+# Each:
+#   question: string
+#   blocking: string (what can't proceed)
+#   waiting_on: "user" | "research"
+#   priority: high | medium | low
+
+open_questions: []
+
+# =============================================================================
+# USER EXPERTISE PROFILE
+# =============================================================================
+# Inferred from conversation signals, never self-assessed.
+# Drives vocabulary, explanation depth, and involvement calibration.
+
+user_expertise:
+  product_thinking: null      # none | basic | intermediate | advanced
+  technical_depth: null
+  design_sensibility: null
+  domain_knowledge: null
+  operational_awareness: null
+  evidence: []                # Each: { dimension, signal, inferred_from }
+
+# =============================================================================
+# BUILD PREFERENCES
+# =============================================================================
+# Developer preferences captured during discovery (testing approach, code style,
+# tooling). Optional — only when the user expresses preferences.
+
+build_preferences:
+  file_path: artifacts/project-preferences.md
+  last_updated: 2026-11-22
+  source: inferred               # discovery | inferred | iteration
+
+# =============================================================================
+# HEALTH CHECK
+# =============================================================================
+# Tracks periodic health check state. Health checks are triggered by
+# accumulating staleness signals, not by a fixed cadence.
+
+health_check:
+  last_full_check: null
+  last_check_findings: null
+
+# =============================================================================
+# ARTIFACT MANIFEST
+# =============================================================================
+# Tracks generated artifacts and their relationships.
+
+artifact_manifest:
+  # Each:
+  #   name: string
+  #   file_path: string (relative to project root)
+  #   version: integer
+  #   depends_on: [artifact names]
+  artifacts: []
+
+# =============================================================================
+# BUILD STATE
+# =============================================================================
+# Runtime tracking during building. Updated after each chunk.
+
+build_state:
+  source_root: packages/      # each package's src/ under packages/ and packages/agent/
+
+# =============================================================================
+# OPTIONAL KEYS
+# =============================================================================
+# Each key below is optional and explained in the plugin's
+# docs/project-state-keys.md (`/prawduct:methodology project-state`):
+# read it before setting one.
+
+# DEPRECATED: a plan claims its branch by `branch:` frontmatter
+# (`prawduct-hook plan bind`); read only while no plan does.
+# active_build_plan: artifacts/build-plan-my-scope.md
+
+# The branch feature work integrates onto. Set it on a gitflow repo.
+# base_branch: develop
+
+# A second root for build-plan file refs (plans written from a subdir).
+# build_plan_ref_root: plugin
+
+# The paths where a missed defect costs most; a diff touching one gets the
+# deeper review. A declared list REPLACES the defaults rather than adding.
+# risk_surfaces:
+#   - src/auth/
+
+# Which of your files carry the release version, read by check-released.
+# release_version_files:
+#   - path: VERSION
+#     format: bare
+
+# consumer_digest:
+#   path: CHANGELOG.md
+
+# Require every judgeable changed file to be referenced by test evidence.
+coverage_required: false
+
+# The exact suite invocation, when it isn't `python -m pytest` over tests/.
+# Evidence comes from the testament unit suite, the same run ./scripts/test.sh hands off to.
+test_command: testament run --suite default --junit-xml {junit_xml}
+# test_commands:    (several environments; instead of test_command)
+# tests_dirs: tests
+# test_rerun_command: pytest --junit-xml={junit_xml} {pytest_node_ids}
+# test_rerun_commands:    (one per test_commands)
+# flaky_policy: warn
+# Paths your tests read as data:
+# suite_coupled_prefixes:
+#   - documentation/
+
+# Learnings budgets: every rule is one line; core.md is capped and only the
+# owner raises it.
+# learnings_budgets:
+#   critic.md: {kb: 20, reason: "why this area needs more"}
+
+# Block `/prawduct:pr create` while operator-verification entries are pending.
+operator_verification_required: false
+
+# The most full review rounds one build-plan scope may buy; null disables it.
+review_round_budget: 6
+
+# Dev builds only; false opts out of the paired native reviews.
+# native_review_pairing: false
+
+# Advisory size thresholds:
+# oversized_file_threshold_kb: 40
+# evidence_store_threshold_mb: 50
+
+# The API versioning decision that resolves the api-versioning advisory.
+api_versioning_decided: 2026-11-22 — see design_decisions.api_versioning_approach
+
+# Backlog resolution facts, written by /prawduct:backlog.
+# backlog_format_version:
+# backlog_backend:
+# backlog_archive_scope:
+# backlog_prefixes: []
+# backlog_external_imports: []
+# backlog_last_groomed_at:
+
+# =============================================================================
+# CHANGE LOG
+# =============================================================================
+# One fragment per change in .prawduct/changes/; shipped ones move to change-log-archive/.
+# Fragment format: templates/change-fragment.md in the prawduct plugin.
+
+# Distribution mode — set by /prawduct:migrate (v2.0.0 plugin cutover).
+# `plugin` tells the legacy file-sync hook to stand down (Chunk 8).
+distribution: plugin
+
+# Integration base branch — the branch feature work merges into. Every
+# gate that resolves a diff base (coverage, cumulative Critic, PR) anchors
+# here; without it they guess `main` and a gitflow repo reviews the whole
+# develop..main promotion delta. Written at onboard because origin/HEAD
+# named `develop`. Change it if this repo integrates somewhere else.
+base_branch: develop

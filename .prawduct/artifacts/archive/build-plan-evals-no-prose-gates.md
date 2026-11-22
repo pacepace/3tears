@@ -6,7 +6,13 @@ branch: evals/no-prose-gates
 depends_on: []
 partition: "serial -- one removal across one package's report and generator; the call sites interlock, so a second agent would collide in build.py"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.78.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

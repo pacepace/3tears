@@ -5,7 +5,12 @@ scope: web-pwa
 branch: feat/web-pwa
 partition: "serial -- one builder; the workspace, the package and the release wiring land together"
 last_validated: 2026-11-16
+lifecycle: completed
+archived: 2026-11-22
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan: web/ workspace and @3tears/pwa
 

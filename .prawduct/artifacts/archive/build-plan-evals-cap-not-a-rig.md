@@ -6,7 +6,14 @@ branch: fix/evals-cap-not-a-rig
 depends_on: [evals-run-resume]
 partition: "serial -- one small defect fix in one package; a second agent would cost more in coordination than it saves"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.78.0
+unbuilt_at_archive: 1 of 1 chunks not done (Chunk 01) — the scope shipped, but this plan did not finish with it
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

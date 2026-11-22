@@ -7,7 +7,13 @@ depends_on: []
 governed_by: []
 partition: "delegated in waves, isolated worktrees, at most 3 at once: A = 00 || 02; B = 01 || 03 || 04; C = 05 || 06; D = 07 then 08. Chunk 02 splits packages/evals/src/threetears/evals/analysis/report/campaign_page.py and packages/evals/tests/test_campaign_page.py so 03/04/05/06 own disjoint modules, meeting only at named seams; packages/evals/src/threetears/evals/analysis/report/campaign/common.py and packages/evals/src/threetears/evals/analysis/report/model.py are frozen after 02"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.80.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan: a senior campaign report, for any eval shape
 
