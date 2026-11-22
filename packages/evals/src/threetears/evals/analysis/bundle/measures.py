@@ -257,13 +257,16 @@ def _walked_fields(model: type[BaseModel]) -> tuple[str, ...]:
 #: measured in its cell, so the measure walk must not read their scalars as observations. A
 #: re-judge's record carries its own ``cost_usd`` — spend an operator paid after the run —
 #: and walking it would pool that as a second cost observation of the cell, beside the prose
-#: of its timestamp, prior error and model reported as measurements the registry lost. A repeat
+#: of its timestamp, prior error and model reported as measurements the registry lost; a re-judge of the claim
+#: criteria (``claim_rescores``) carries its own spend the same way. A repeat
 #: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
 #: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
 #: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
 #: A re-read of the result's host measures keeps the values the cell wrote before it: the measurement is the value
 #: ``host_measures`` holds now, and walking the record would pool the superseded one beside it.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds", "measure_rereads"})
+RECORD_CARRIERS: frozenset[str] = frozenset(
+    {"judge_rescores", "claim_rescores", "judge_repeats", "judge_seconds", "measure_rereads"}
+)
 
 
 def _carrier_fields() -> tuple[tuple[str, bool, tuple[str, ...]], ...]:

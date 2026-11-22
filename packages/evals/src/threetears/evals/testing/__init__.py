@@ -22,7 +22,9 @@ into a JSONL file once and replays them exactly with no network, refusing by nam
 (:mod:`threetears.evals.testing.recorded_completions`). Beside it, the recorded tool turns,
 :class:`RecordedTurns`, which keep a tool-calling loop's replies alone, per named session and in order, with the
 snapshot id a placeholder, and replay them while the tools run live, a session asked one turn more than it holds
-refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The negotiation check:
+refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). And the recorded web search,
+:class:`RecordedWebSearch`, which records a host's web search port once and replays it by port and query, refusing a
+query it does not hold (:mod:`threetears.evals.testing.recorded_web_search`). The negotiation check:
 :func:`check_refusal_negotiation` scripts
 three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
 cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
@@ -73,6 +75,7 @@ from threetears.evals.testing.recorded_completions import (
     ReplayedCompletion,
 )
 from threetears.evals.testing.recorded_turns import RecordedTurns
+from threetears.evals.testing.recorded_web_search import RecordedWebSearch
 from threetears.evals.testing.store_conformance import (
     STORE_CONFORMANCE_CASES,
     StoreConformanceCase,
@@ -102,6 +105,7 @@ __all__ = [
     "RecordedCompletions",
     "RecordedPrompt",
     "RecordedTurns",
+    "RecordedWebSearch",
     "RecordingRefused",
     "ReplayedCompletion",
     "StoreConformanceCase",

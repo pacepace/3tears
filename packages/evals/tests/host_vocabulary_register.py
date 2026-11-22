@@ -342,7 +342,9 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/claims/verbatim.py": {},
     "kernel/claims/grading.py": {},
     "kernel/claims/verification.py": {},
+    "kernel/claims/web.py": {},
     "schema/claims.py": {},
+    "schema/web_search.py": {},
     "kernel/out_of_run.py": {},
     "schema/out_of_run_spend.py": {},
     "kernel/offload.py": {},
@@ -502,5 +504,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "testing/readings_conformance.py": {},
     "testing/recorded_completions.py": {},
     "testing/recorded_turns.py": {},
+    "testing/recorded_web_search.py": {},
     "testing/store_conformance.py": {},
 }

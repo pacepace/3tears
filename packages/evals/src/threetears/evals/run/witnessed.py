@@ -413,6 +413,7 @@ async def record_witnessed_cell(
         # holds the output to the same checks again, idempotently.
         goal_outcomes = hold_to_goal_checks(candidate_kind, template.goal_state_checks, output)
         settled: list[tuple[str, JudgeOutcome]] = []
+        claims_billed: list[object] = []
         try:
             async with judge_service:
                 judged, judge_ms = await judge_witnessed_output(
@@ -426,12 +427,14 @@ async def record_witnessed_cell(
                     eval_run_id=run.id,
                     settled=settled,
                     kind_name=candidate_kind,
+                    claims_billed=claims_billed,
                 )
         except CompletionProtocolDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
-            # found were paid for, so they count against the run's judge ceiling as a judged cell's would.
-            if settled:
-                fold = fold_judge_outcomes(settled)
+            # found were paid for, its claim criteria's included, so they count against the run's judge ceiling as a
+            # judged cell's would.
+            if settled or claims_billed:
+                fold = fold_judge_outcomes(settled, also_billed=claims_billed)
                 # Beside their cost, what their dropped sends may have billed, as a judged cell's judging counts it.
                 judging.count_unrecorded(
                     None if fold.cost_usd is None else fold.cost_usd + maybe_billed_usd(fold.usage, {"judge"})
@@ -702,17 +705,15 @@ async def _recorded_judge(
     :param run: The judged witnessed run.
     :param judged_artifact: What the kind's judge reads.
     :return: The judge service and the template.
-    :raises ValueError: The kind declares nothing a judge reads, or the host supplies no completion clients.
+    :raises ValueError: The kind declares nothing a judge reads and the template declares no claim criteria, or the
+        host supplies no completion clients.
     :raises ValidationFailedError: The run's recorded apparatus cannot be reproduced (see the rejudge checks).
     :raises NotFoundError: The template or a recorded config does not load.
     """
-    if judged_artifact is JudgedArtifact.UNJUDGED:
-        raise ValueError(
-            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
-            "reads; a run naming a judge claims every cell was scored by it"
-        )
-    judge_model = recorded_judge_pins(run, request_settings="today")
     template, configs = await run_blocking(host.blocking_executor, _recorded_apparatus, host, run, judged_artifact)
+    judge_model = recorded_judge_pins(
+        run, request_settings="today", claims_only=judged_artifact is JudgedArtifact.UNJUDGED
+    )
     # A dim the run recorded no config for is scored by the judge's built-in prompt, as a launch scores it.
     service = JudgeService(
         client_factory=judge_clients_for_run(host.completion_clients("a judged witnessed cell"), judge_model),
@@ -733,9 +734,16 @@ def _recorded_apparatus(
     :param run: The judged witnessed run.
     :param judged_artifact: What the kind's judge reads, which picks the dims scored.
     :return: The template and the recorded config of each scored dim that recorded one.
+    :raises ValueError: The kind declares nothing a judge reads and the template declares no claim criteria.
     """
     storage = host.storage
     template = judged_template(storage, run, run.scope_id)
+    # A kind graded by code is judged on its template's claim criteria alone, which no dimension's judge records.
+    if judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
+        raise ValueError(
+            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
+            "reads; a run naming a judge claims every cell was scored by it"
+        )
     dims = recorded_judged_dims(run, template, judged_artifact)
     return template, recorded_judge_configs(storage, run, dims, run.scope_id)
 

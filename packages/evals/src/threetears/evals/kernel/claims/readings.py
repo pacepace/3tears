@@ -36,7 +36,7 @@ from threetears.evals.schema import (
     EvidenceProvenance,
     EvalTemplate,
 )
-from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
+from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, request_settings_order
 
 
 @dataclass(frozen=True)
@@ -206,13 +206,14 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             evidence="world claims of every tag the judge doubted, no case evidence covered, and the web budget reached",
         ),
         "web_skipped": _Reading(
-            "Claims past the web budget",
+            "Claims the web did not check",
             None,
             share=False,
-            formula="world claims nominated for the web check past the cell's budget",
+            formula="world claims nominated for the web check and not checked: past the cell's budget, refused by the "
+            "cost cap, or cut by the cell's deadline",
             population=_TALLIED,
-            evidence="world claims of every tag the judge doubted, no case evidence covered, and the cell's web budget "
-            "did not reach; each reads unverifiable",
+            evidence="world claims of every tag the judge doubted and no case evidence covered, that the web did not "
+            "check; each reads unverifiable, never false",
         ),
         "session_claims": _Reading(
             "Claims about the session itself",
@@ -404,7 +405,7 @@ def claim_tally(
     evidence: ClaimEvidence,
     *,
     grounded_in: Collection[EvidenceProvenance] | None,
-    ground_loss: KnownClaimLoss | None = None,
+    ground_loss: ClaimLoss | None = None,
 ) -> ClaimTally:
     """A cell's tally under one criterion, from its grade and the evidence it graded: the one place a claim's tags
     and grades become counts.
@@ -422,12 +423,16 @@ def claim_tally(
     - **Units** are the evidence's distinct units, however many segments each spans; a unit holds a false claim when
       any of its segments holds an asserted contradicted world claim, read off the segment, which a claim's ``unit``
       must agree with.
+    - A **failed web step** costs only the web's decisions: the claims it left undecided read ``lost`` and count
+      unverifiable, and the tally carries the grade's ``web_loss``, read off the stored grade so a tally recomputed
+      from it keeps the loss.
 
     :param grade: The criterion's grade of the cell.
     :param evidence: The claim evidence it graded.
     :param grounded_in: The provenances the criterion declares its candidate was given, or None for a criterion with
         no groundedness reading.
-    :param ground_loss: Why the verifier lost the ground step alone (its ``Verification.ground_loss``), or None.
+    :param ground_loss: Why the ground step alone was lost (the verifier's ``Verification.ground_loss``, as the grade
+        records it in ``ClaimGrade.ground_loss``), or None.
     :return: The tally.
     :raises ValueError: A claim cites the candidate's own (``run``) evidence for its truth, which only case evidence
         decides; a claim cites evidence of a provenance ``grounded_in`` does not name as its ground (any, where the
@@ -506,6 +511,7 @@ def claim_tally(
         session_claims=session,
         by_judge=tuple(_counted(calls[key], claims) for key, claims in groups.items()),
         ground_loss=ground_loss,
+        web_loss=grade.web_loss,
     )
 
 

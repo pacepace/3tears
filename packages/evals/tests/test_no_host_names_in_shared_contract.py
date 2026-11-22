@@ -203,6 +203,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/reference.py",
     # The segments a candidate's text is cut into for claims grading: engine vocabulary every host fills.
     "schema/claims.py",
+    # The web search port claims grading's web check sends its queries to: a page and a search, named by no host.
+    "schema/web_search.py",
     "kernel/reference.py",
     "kernel/declaration.py",
     "kernel/eval_scope.py",

@@ -704,7 +704,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "GradedClaim.verdict": frozenset({"supported", "contradicted", "unverifiable", "true_ungrounded"}),
         "GradedClaim.graded_against": frozenset({"case", "web"}),
         "GradedClaim.nominated_by": frozenset({"judge"}),
-        "GradedClaim.web": frozenset({"checked", "skipped_cap", "none"}),
+        "GradedClaim.web": frozenset({"checked", "skipped_cap", "lost", "none"}),
         "WebCheckRecord.outcome": frozenset({"true", "false", "inconclusive"}),
         "ClaimCitation.stance": frozenset({"supports", "contradicts"}),
         "ClaimCall.role": frozenset({"extract", "truth", "ground", "repair", "web"}),

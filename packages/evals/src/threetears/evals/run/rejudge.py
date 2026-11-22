@@ -13,6 +13,17 @@ answer to "can this result's judge input be rebuilt from what its run recorded?"
 (:func:`reproducible_judge_inputs`) — asked by :func:`~threetears.evals.run.lifecycle.rejudge_result` before it pays
 for a call and by the judge freeze before it renders one. Every refusal exists because a re-score
 under an apparatus the run did not record would be a different measurement filed under the old one.
+
+**Claim criteria** are re-judged beside the dims, by the same rule (:func:`reproducible_claim_inputs`): from the claim
+evidence the cell's trace stores, by the run's judge pin, and only under the definition the cell recorded for each
+criterion (``EvalResult.claim_fingerprints``), refused by name when today's fingerprints otherwise. A lost criterion
+is graded again whole; a completed grade is never asked again, a lost ground step on it included, since its truth
+stands. A criterion whose tally waited on its trace (``trace_pending``) costs no call and passes no apparatus check
+(:func:`settled_pending_claims`): its tally is recomputed from the grade the trace stores
+(:func:`~threetears.evals.kernel.claims.grading.grade_tally`), and once the cell's writes are done a pending criterion
+whose trace was never stored is lost (``trace_lost``). A run settles its own pending rows when a holding of it ends and
+when one takes it up (:func:`settle_pending_claims`), and a re-judge settles any left. Claims calls bind no inputs, so a
+replay keys each by its prompt: a document changed since the recording is another call, and misses.
 """
 
 from __future__ import annotations
@@ -20,13 +31,24 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.claims.grading import (
+    GradedCriterion,
+    criterion_fingerprints,
+    grade_tally,
+    refuse_web_without_search,
+)
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.run_pages import iter_stored_results
+from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.web_search import WebSearch
 from threetears.evals.kernel.scoring import boundary_dim_names
 from threetears.evals.schema.models import (
+    CLAIM_PENDING,
     DEFAULT_JUDGE_TEMPERATURE,
     NON_TERMINAL_RUN_STATUSES,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
+    ClaimRescore,
     JudgedArtifact,
     JudgeRescore,
     judge_config_of,
@@ -36,10 +58,17 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import fold_judge_outcomes, judge_config_ids_for
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, FIND_TEST_CASE, RELAUNCH_TO_REJUDGE
 
+log = get_logger(__name__)
+
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.completion import CompletionClient
     from threetears.evals.schema.models import (
+        ClaimEvidence,
+        ClaimGrade,
+        ClaimLoss,
         ClientRequestSettings,
+        RoleUsage,
         EvalResult,
         EvalRun,
         EvalTemplate,
@@ -186,6 +215,287 @@ def reproducible_judge_inputs(
     )
 
 
+class ReproducibleClaimInputs(NamedTuple):
+    """What a re-judge of a result's lost claim criteria reads, each as its run recorded it, and what it grades again."""
+
+    template: EvalTemplate
+    test_case: EvalTestCase
+    #: The run's judge pin, which every claims call is sent on.
+    judge_model: str
+    #: The cell's trace as stored, whose claim evidence a criterion is graded again from.
+    trace: EvalTrace
+    #: The lost criteria to grade again whole, in the template's order.
+    regrade: tuple[str, ...]
+
+    @property
+    def claim_evidence(self) -> ClaimEvidence:
+        """The claim evidence the cell's trace stores, that each criterion is graded again from."""
+        evidence = self.trace.claim_evidence
+        assert evidence is not None  # reproducible_claim_inputs refuses a trace without it
+        return evidence
+
+
+def reproducible_claim_inputs(
+    storage: JudgeInputStore,
+    result: EvalResult,
+    run: EvalRun,
+    scope_id: str,
+    *,
+    client: CompletionClient,
+    web: WebSearch | None = None,
+) -> ReproducibleClaimInputs:
+    """Load what a re-judge of ``result``'s lost claim criteria reads, refusing any input its run did not record.
+
+    The claims half of :func:`reproducible_judge_inputs`, by the same rule: the run has ended, its judge pin and its
+    request settings are today's (``request_settings="today"``, since a call is sent), its template was not edited
+    since it launched, and its case loads. Each lost criterion is graded again whole from the claim evidence the trace
+    stores, only under the definition the cell recorded for it (``EvalResult.claim_fingerprints``): today's
+    fingerprint otherwise, or none recorded, refuses it by name, as a dim asked by another prompt is refused. A
+    completed grade is never asked again. A pending criterion (``trace_pending``) is settled with no call and under
+    none of these checks (:func:`settle_pending_claims`) before this is asked; one still pending here holds no stored
+    grade, and is graded again.
+
+    :param storage: The eval store the result lives in.
+    :param result: The result whose claim criteria are re-judged.
+    :param run: Its run.
+    :param scope_id: The partition they live in.
+    :param client: The judge's client every claims call would be sent on, which names its model; today's
+        fingerprints are read through it.
+    :param web: The web search a lost criterion with a web budget is graded again on, live, as the run's launch
+        required; ``None`` refuses such a criterion by name, before any call.
+    :return: The records, and the criteria to grade again.
+    :raises ValidationFailedError: The result lost no criterion; the run is still running or recorded no judge; a
+        criterion it lost is no longer the template's, declares a web budget and no web search is given, would grade
+        under another definition than the cell recorded, or has no stored claim evidence to be graded again from.
+    :raises NotFoundError: The template or the case does not load.
+    """
+    if not result.claim_failures:
+        raise ValidationFailedError(
+            f"result '{result.id}' lost no claim criterion, so there is none to re-judge",
+            remedy="read its claim readings as they are",
+        )
+    if run.status in NON_TERMINAL_RUN_STATUSES:
+        raise ValidationFailedError(
+            f"run '{run.id}' is {run.status} — its results are still being written",
+            remedy=f"wait for it to end (job_poll run:{run.id}), then ask again",
+        )
+    judge_model = recorded_judge_pins(run, request_settings="today", claims_only=True)
+    template = judged_template(storage, run, scope_id)
+    criteria = {criterion.name: criterion for criterion in template.claim_criteria}
+    if strays := sorted(set(result.claim_failures) - set(criteria)):
+        raise ValidationFailedError(
+            f"result '{result.id}' lost claim criteria {', '.join(map(repr, strays))}, which template "
+            f"'{template.id}' no longer declares",
+            remedy=RELAUNCH_TO_REJUDGE,
+        )
+    regrade = tuple(name for name in criteria if name in result.claim_failures)
+    try:
+        # A lost criterion is graded again whole, its web step included, so one with a web budget searches live.
+        refuse_web_without_search([criteria[name] for name in regrade], template=template.name, web=web)
+    except ValueError as unsearched:
+        raise ValidationFailedError(
+            str(unsearched), remedy="pass the run's web search to the re-judge (web_search)"
+        ) from unsearched
+    trace = storage.load_eval_trace(result.id, scope_id)
+    if trace is None or trace.claim_evidence is None:
+        raise ValidationFailedError(
+            f"result '{result.id}' lost claim criteria {', '.join(map(repr, regrade))}, and its trace stores no claim "
+            "evidence to grade them again from",
+            remedy=RELAUNCH_TO_REJUDGE,
+        )
+    today = criterion_fingerprints(template, client)
+    for name in regrade:
+        recorded = result.claim_fingerprints.get(name)
+        if recorded is None:
+            raise ValidationFailedError(
+                f"result '{result.id}' records no fingerprint for claim criterion {name!r}, so the definition it would "
+                "be graded again under cannot be told to be the one its run graded",
+                remedy=RELAUNCH_TO_REJUDGE,
+            )
+        if recorded != today[name]:
+            raise ValidationFailedError(
+                f"result '{result.id}' was due claim criterion {name!r} under fingerprint {recorded[:12]}, and it would "
+                f"now be graded under {today[name][:12]}; a new grade would be a different instrument's",
+                remedy=RELAUNCH_TO_REJUDGE,
+            )
+    test_case = storage.load_test_case(result.test_case_id, scope_id)
+    if test_case is None:
+        raise NotFoundError("test_case", result.test_case_id, remedy=FIND_TEST_CASE)
+    return ReproducibleClaimInputs(
+        template=template, test_case=test_case, judge_model=judge_model, trace=trace, regrade=regrade
+    )
+
+
+def apply_claim_rejudge(
+    result: EvalResult,
+    inputs: ReproducibleClaimInputs,
+    regraded: dict[str, GradedCriterion | ClaimLoss],
+    *,
+    usage: list[RoleUsage],
+    cost_usd: float | None,
+) -> tuple[EvalResult, EvalTrace | None]:
+    """Land a claims re-judge on the result and its trace where the claims phase would have put it.
+
+    Each criterion graded again lands its tally on the result and its grade on the trace, or its loss again. Every
+    other criterion, tallied or lost, is left as it stands. A :class:`~threetears.evals.schema.models.ClaimRescore`
+    recording it is appended.
+
+    :param result: The stored result. Not mutated.
+    :param inputs: What the re-judge read (:func:`reproducible_claim_inputs`).
+    :param regraded: criterion -> its new grade, or its loss, for each of ``inputs.regrade``.
+    :param usage: The re-judge's judge-role usage rows.
+    :param cost_usd: What it cost; ``None`` when any call went unpriced.
+    :return: The result as it now stands, and the trace to store first when a grade moved on it (``None`` when none
+        did).
+    :raises ValueError: ``regraded`` does not name exactly the criteria ``inputs`` grades again.
+    """
+    if set(regraded) != set(inputs.regrade):
+        raise ValueError(
+            f"a claims re-judge grades again {sorted(inputs.regrade)}, and its outcomes name {sorted(regraded)}"
+        )
+    tallies = dict(result.claim_tallies)
+    failures = dict(result.claim_failures)
+    lost: dict[str, ClaimLoss] = {}
+    grades: dict[str, ClaimGrade] = {}
+    for name, outcome in regraded.items():
+        if isinstance(outcome, str):
+            failures[name] = lost[name] = outcome
+        else:
+            failures.pop(name)
+            tallies[name] = outcome.tally
+            grades[name] = outcome.grade
+    trace: EvalTrace | None = None
+    if grades or set(regraded) & set(inputs.trace.claim_grades):
+        kept = {name: grade for name, grade in inputs.trace.claim_grades.items() if name not in regraded}
+        trace = inputs.trace.model_copy(update={"claim_grades": {**kept, **grades}})
+    rescore = ClaimRescore(
+        criteria=list(inputs.regrade),
+        prior={name: result.claim_failures[name] for name in inputs.regrade},
+        lost=lost,
+        judge_model=inputs.judge_model,
+        usage=usage,
+        cost_usd=cost_usd,
+    )
+    # Every criterion moved is in exactly one of the two maps, and each new tally carries the fingerprint the cell
+    # recorded for it (a regraded one was refused otherwise).
+    updated = result.model_copy(
+        update={
+            "claim_tallies": tallies,
+            "claim_failures": failures,
+            "claim_rescores": [*result.claim_rescores, rescore],
+        }
+    )
+    return updated, trace
+
+
+def settled_pending_claims(
+    result: EvalResult, trace: EvalTrace | None, template: EvalTemplate, *, lose_untraced: bool = True
+) -> EvalResult | None:
+    """``result`` with each criterion pending its trace (``trace_pending``) settled from what is stored, with no call.
+
+    A pending criterion's tally is recomputed from the grade its trace stores and nothing else
+    (:func:`~threetears.evals.kernel.claims.grading.grade_tally`: the grade records its ground step's loss, so a lost
+    groundedness stays exactly that, and truth stands). Where its trace was never stored, or holds no claim evidence,
+    it is lost (``trace_lost``) unless ``lose_untraced`` is False: lose one only once every write of the cell is done
+    (its holding has ended), when a trace absent is a trace that never landed. A pending criterion whose trace holds its
+    evidence and no grade for it, or that its template no longer declares, is left pending, for a re-judge.
+
+    Read under no apparatus check: nothing is asked, so an edited template or moved request settings change nothing.
+    The template is read for each criterion's ``grounded_in`` alone, which the grade's own claims are held to (a
+    grade that disagrees with it is refused, never read as no groundedness).
+
+    :param result: The stored result.
+    :param trace: Its trace as stored, or ``None`` when none is.
+    :param template: Its run's template.
+    :param lose_untraced: Whether a criterion whose trace is absent is lost (``trace_lost``); False leaves it pending,
+        for when the trace's write may still land (a take-up's start: an earlier holder's trace write is not fenced).
+    :return: The result as it then stands, or ``None`` when no pending criterion was settled.
+    :raises ValueError: A stored grade does not give a tally under its criterion.
+    """
+    pending = [name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING]
+    if not pending:
+        return None
+    criteria = {criterion.name: criterion for criterion in template.claim_criteria}
+    evidence = None if trace is None else trace.claim_evidence
+    tallies = dict(result.claim_tallies)
+    failures = dict(result.claim_failures)
+    for name in pending:
+        if evidence is None:
+            if lose_untraced:
+                failures[name] = "trace_lost"
+            continue
+        assert trace is not None
+        if name not in trace.claim_grades or name not in criteria:
+            continue
+        tallies[name] = grade_tally(trace.claim_grades[name], evidence, criteria[name])
+        failures.pop(name)
+    if failures == result.claim_failures:
+        return None
+    return result.model_copy(update={"claim_tallies": tallies, "claim_failures": failures})
+
+
+def settle_pending_claims(
+    storage: EvalStorage,
+    run_id: str,
+    scope_id: str,
+    template: EvalTemplate,
+    *,
+    through_epoch: int,
+    lose_untraced: bool = True,
+) -> list[str]:
+    """Settle every row of a run whose claim criteria are pending their trace, written at or before a holding.
+
+    Each row a holding at ``through_epoch`` or before wrote is settled as :func:`settled_pending_claims` settles it,
+    conditionally on the row as read, so a row another writer moved meanwhile is left as it stands. A row a later
+    holding wrote is never touched: its writes may still be in flight. Asked when a holding of the run ends, for its
+    own rows and every earlier holding's, and when a holding takes the run up, for the earlier holdings' rows. A
+    take-up recovers only rows whose grade is stored (``lose_untraced=False``): an earlier holder's trace write is not
+    fenced by its lease, so it may still land, and only the holding's end loses a row whose trace is absent.
+
+    **It never raises a row's failure**: a grade that gives no tally, a lost race or a store that fails leaves that
+    row pending, logged, and the rest are settled; a re-judge settles it later. Blocking: called off the event loop.
+
+    :param storage: The run's store.
+    :param run_id: The run.
+    :param scope_id: Its scope.
+    :param template: The run's template, whose criteria name what each grade is held to.
+    :param through_epoch: The latest holding whose rows are settled.
+    :param lose_untraced: Whether a row whose trace is absent is lost (``trace_lost``), or left pending.
+    :return: The ids of the rows settled.
+    :raises StorageError: The run's rows could not be listed.
+    """
+    if not template.claim_criteria:
+        return []
+    settled: list[str] = []
+    for row in iter_stored_results(storage, run_id, scope_id):
+        if row.lease_epoch > through_epoch or CLAIM_PENDING not in row.claim_failures.values():
+            continue
+        try:
+            result, etag = storage.load_eval_result_with_etag(row.id, scope_id)
+            if result is None or result.lease_epoch > through_epoch:
+                continue
+            updated = settled_pending_claims(
+                result, storage.load_eval_trace(row.id, scope_id), template, lose_untraced=lose_untraced
+            )
+            if updated is None:
+                continue
+            storage.replace_eval_result(updated, if_match=etag)
+        except (ValueError, ConflictError, StorageError) as unsettled:
+            # NOSILENT: the row stands with its criteria pending, which it records itself; a re-judge settles it.
+            log.error(
+                "eval_result %s (run %s, scope %s) keeps claim criteria pending their trace: %s",
+                row.id,
+                run_id,
+                scope_id,
+                unsettled,
+            )
+            continue
+        settled.append(row.id)
+    if settled:
+        log.info("eval.settle_pending_claims run=%s scope=%s settled %d row(s)", run_id, scope_id, len(settled))
+    return settled
+
+
 def _refuse_another_judge_prompt(
     result: EvalResult, run_configs: dict[str, str], dims: list[str], today: dict[str, str]
 ) -> None:
@@ -246,7 +556,7 @@ def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
     return f"asked its judge for request settings {recorded!r} and a judge call now asks for {JUDGE_REQUEST_SETTINGS!r}"
 
 
-def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy) -> str:
+def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy, claims_only: bool = False) -> str:
     """The run's judge pin, refusing a run whose judging apparatus it did not record.
 
     One check behind every path that scores a result under a run's recorded judge — a re-judge, a
@@ -255,6 +565,8 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
 
     :param run: The run.
     :param request_settings: How the run's recorded request settings are treated — see :data:`RequestSettingsPolicy`.
+    :param claims_only: Whether the judge is asked only its template's claim criteria, which the pin grades on the
+        built-in prompts: then an attribution naming no dimension is the record of a judge that scores none.
     :return: The run's judge pin.
     :raises ValidationFailedError: The run names no judge, recorded no attribution, no config set or no
         request settings, or (``"today"``) recorded settings, or a judge temperature, other than the ones
@@ -265,7 +577,7 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             f"run '{run.id}' was not judged, so there is no judgement to reproduce",
             remedy="name a judged run, or launch the template with a judge (run_launch with judge_model)",
         )
-    if not run.effective_judges:
+    if not run.effective_judges and not (claims_only and run.effective_judges is not None):
         raise ValidationFailedError(
             f"run '{run.id}' recorded no judge attribution, so which judge scored which dim cannot be reproduced",
             remedy=RELAUNCH_TO_REJUDGE,
@@ -513,14 +825,19 @@ if TYPE_CHECKING:
 
 __all__ = [
     "JudgeInputStore",
+    "ReproducibleClaimInputs",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
+    "apply_claim_rejudge",
     "apply_rejudge",
     "failed_judge_dims",
     "judged_template",
     "recorded_judge_configs",
     "recorded_judge_pins",
     "recorded_judged_dims",
+    "reproducible_claim_inputs",
     "reproducible_judge_inputs",
     "request_settings_drift",
+    "settle_pending_claims",
+    "settled_pending_claims",
 ]
