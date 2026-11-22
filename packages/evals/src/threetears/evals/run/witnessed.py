@@ -285,8 +285,9 @@ async def record_witnessed_cell(
     (``user_done``, ``simulator_error``, ``budget_stopped``) are refused here. The run's terminal state is the host's to
     write too, as the job manager writes a commissioned run's, with public names alone: ``status="completed"``,
     ``completed_at`` and ``completeness=summarize_completeness(run, cells)``, ``cells`` being one
-    ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, the ``persisted`` flag what its
-    save returned (both from :mod:`threetears.evals.kernel`), saved with ``host.storage.save_eval_run``. A run left
+    ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, ``persisted`` True where its
+    ``host.storage.save_eval_result`` returned and False where it raised ``StorageError`` (all three from
+    :mod:`threetears.evals.kernel`), saved with ``host.storage.save_eval_run``. A run left
     ``running`` past its process is written lost by :func:`~threetears.evals.run.sweep_abandoned_runs`.
 
     :param host: The host the run belongs to — its profile resolves the run's contestant identity.

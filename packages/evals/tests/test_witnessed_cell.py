@@ -25,6 +25,7 @@ from threetears.evals.kernel import (
     CandidateOutput,
     CandidateTelemetry,
     CellSummary,
+    StorageError,
     summarize_completeness,
 )
 from threetears.evals.schema import (
@@ -258,7 +259,12 @@ async def test_a_host_closes_its_witnessed_run_through_public_doors_and_no_sweep
     cells = []
     for k in (1, 2):
         result, trace = await _record(host, run, case, _output(), k_iteration=k, result_id=f"r-{k}")
-        cells.append(CellSummary.from_result(result, persisted=off_loop(host.storage.save_eval_result, result, trace)))
+        try:
+            off_loop(host.storage.save_eval_result, result, trace)
+            persisted = True
+        except StorageError:
+            persisted = False
+        cells.append(CellSummary.from_result(result, persisted=persisted))
 
     closed = run.model_copy(
         update={"status": "completed", "completed_at": _AT, "completeness": summarize_completeness(run, cells)}
