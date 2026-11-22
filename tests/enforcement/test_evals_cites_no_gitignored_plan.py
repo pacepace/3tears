@@ -1,4 +1,4 @@
-"""Enforcement: the evals package's prose cites no plan, chunk, review or question that lives only in a gitignored file.
+"""Enforcement: the evals package's prose cites no plan, chunk, review or question that lives only outside the package.
 
 The evals package is built from plans kept under ``.prawduct/``, which no installed wheel carries and which are
 archived as the work ships. A comment that says "(Q3)", "owner ruling Q3", "plan §2.3", "moved at C5b", "chunk 6" or

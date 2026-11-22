@@ -236,6 +236,8 @@ __marimo__/
 !.prawduct/operator-verification.md
 !.prawduct/owner-rulings.md
 !.prawduct/runbooks/
+# Raw eval data a session kept beside its plans (answer keys, transcripts, judge scores): local only.
+.prawduct/artifacts/blind-read-*/
 
 # macOS folder metadata
 .DS_Store

@@ -5,6 +5,13 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-22.** On the untracked notes in the `evals/main` worktree's `.prawduct/artifacts/`: "yes to
+your recommendations, and move those discodon-*.md files to the discodon repo's docs for its own
+agent to sort out", then "yes commit" for the four dated analyses. The design notes and analyses
+are committed on `evals/main`; the second opinions and upgrade notes are deleted; the two discodon
+notes went to Discodon, whose session deleted them and filed pacepace/discodon#3593. Raw eval data
+stays local under `.prawduct/artifacts/blind-read-*/` (`.gitignore`).
+
 **2026-11-22.** "yes push, but we cannot merge PR's." Sessions push work branches and
 never merge a PR; the maintainer merges. Landed in `project-preferences.md` § Workflow (PR merge).
 
