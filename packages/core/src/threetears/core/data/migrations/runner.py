@@ -33,8 +33,9 @@ DataStore bound to that connection, holding the lock -- its ``execute``,
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Mapping, Protocol
 
 from threetears.core.ddl.ddl_lock import DdlLockPolicy
 from threetears.core.ddl.errors import (
@@ -48,8 +49,10 @@ from threetears.core.data.migrations.registry import MigrationFunc, PackageMigra
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.ddl.session import MigrationSession
 from threetears.core.collections.generation import noted_tables
-from threetears.core.data.migrations.change_notes import give_noted_tables_their_note_trigger
-from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
+from threetears.core.data.migrations.change_notes import (
+    give_noted_tables_their_note_trigger,
+    switched_tables_without_notes,
+)
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 from threetears.observe import contain, get_logger, traced
@@ -93,6 +96,31 @@ _INSERT_VERSION_SQL = "INSERT INTO _schema_migrations (version, package, descrip
 
 _DELETE_VERSION_SQL = "DELETE FROM _schema_migrations WHERE version = $1 AND package = $2"
 
+#: the database's clock, as a change note is stamped by it: a run's window is read on it
+_CLOCK_SQL = "SELECT clock_timestamp() AS now, current_schema() AS schema_name"
+
+
+class _RunWindowAnnouncer(Protocol):
+    """announces the writes a migration run made to switched tables, from the change notes of its window.
+
+    A migration writes rows with no collection and no advance, so its writes reach no follower unless its window is
+    announced: :meth:`~threetears.core.collections.lost_writes.WriteBackstop.announce_window` is the one.
+    """
+
+    async def announce_window(self, since: datetime, until: datetime, *, schema: str | None = None) -> Any:
+        """advance every switched table of ``schema`` the window's notes name.
+
+        :param since: the run's start, by the database's clock
+        :ptype since: datetime
+        :param until: the run's end
+        :ptype until: datetime
+        :param schema: the schema the run wrote in
+        :ptype schema: str | None
+        :return: what was done
+        :rtype: Any
+        """
+        ...
+
 
 class MigrationRunner:
     """
@@ -108,16 +136,24 @@ class MigrationRunner:
     :ptype lock_policy: DdlLockPolicy | None
     """
 
-    def __init__(self, *, lock_policy: DdlLockPolicy | None = None) -> None:
+    def __init__(
+        self, *, lock_policy: DdlLockPolicy | None = None, announcer: _RunWindowAnnouncer | None = None
+    ) -> None:
         """
         initialize an empty runner with no registered packages.
 
         :param lock_policy: how a run waits for the database-wide DDL lock;
             defaults to a 1s poll with no deadline, reporting every 30s
         :ptype lock_policy: DdlLockPolicy | None
+        :param announcer: announces each run's writes to switched tables
+            (:class:`_RunWindowAnnouncer`, the process's
+            :class:`~threetears.core.collections.lost_writes.WriteBackstop`); ``None``
+            announces none, said at WARNING after every run that applied a migration
+        :ptype announcer: _RunWindowAnnouncer | None
         """
         self._packages: dict[str, PackageMigrations] = {}
         self._lock_policy = lock_policy if lock_policy is not None else DdlLockPolicy()
+        self._announcer = announcer
 
     @property
     def packages(self) -> Mapping[str, PackageMigrations]:
@@ -188,10 +224,12 @@ class MigrationRunner:
         :raises MigrationFailedError: wrapping original migration exception
         """
         async with self._locked(store) as session:
+            began = await _clock(session)
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.PLATFORM, target, applied)
             await _rebuild_unusable_indexes(session)
+            await self._announce_run(session, began, result)
         return result
 
     @traced
@@ -220,10 +258,12 @@ class MigrationRunner:
         :raises MigrationFailedError: wrapping original migration exception
         """
         async with self._locked(store) as session:
+            began = await _clock(session)
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.AGENT, target, applied)
             await _rebuild_unusable_indexes(session)
+            await self._announce_run(session, began, result)
         return result
 
     @traced
@@ -311,6 +351,7 @@ class MigrationRunner:
             msg = f"downgrade steps must be >= 1, got {steps}"
             raise MigrationError(msg)
         async with self._locked(store) as session:
+            began = await _clock(session)
             await self._ensure_migrations_table(session)
             history = await self._query_history(session)
             in_scope = {p.name for p in self._packages.values() if p.scope == scope}
@@ -340,6 +381,7 @@ class MigrationRunner:
                     pkg = self._packages[pkg_name]
                     down = pkg.downgrades[version_num]
                     count += await self._run_downgrade(session, pkg_name, version_num, down)
+            await self._announce_run(session, began, count)
         return count
 
     @traced
@@ -462,11 +504,13 @@ class MigrationRunner:
             raise KeyError(msg)
         package = self._packages[package_name]
         async with self._locked(store) as session:
+            began = await _clock(session)
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             self._verify_ledger_identity([package], applied)
             count = await self._apply_package_pending(session, package, applied)
             await _rebuild_unusable_indexes(session)
+            await self._announce_run(session, began, count)
         return count
 
     def pending_sequence(self, scope: MigrationScope) -> list[tuple[str, int]]:
@@ -557,18 +601,48 @@ class MigrationRunner:
         for package in ordered:
             applied_count = await self._apply_package_pending(store, package, applied, target)
             count += applied_count
-        # still under the run's DDL lock: every switched-on table these packages create carries its
-        # write-mark trigger from this run, a table created before the trigger existed included
+        # still under the run's DDL lock: every switched-on table these packages create carries its change-note
+        # triggers from this run, where the ring is installed (the keeper's install gives them otherwise). The note
+        # trigger is the table's switch (threetears.core.collections.lost_writes.tables_switched_by_trigger) and the
+        # record a lost advance is announced from, so a declared table left without one is refused, naming why
         tables = sorted({name for package in ordered for name in package.write_generation_tables})
         if tables:
-            await give_switched_tables_their_trigger(store, tables)
-            # and each of them this process's classes note carries its change-note triggers from this run,
-            # where the ring is installed (the keeper's install gives them otherwise)
             declared = set(tables)
             noted = [each for each in noted_tables() if each.table in declared]
             if noted:
                 await give_noted_tables_their_note_trigger(store, noted)
+            unnoted = await switched_tables_without_notes(store, tables, noted)
+            if unnoted:
+                raise MigrationError(
+                    "switched-on tables this run declares carry no change-note trigger, so a lost epoch advance of "
+                    f"theirs could never be announced: {unnoted}"
+                )
         return count
+
+    async def _announce_run(self, store: DataStore, began: datetime, count: int) -> None:
+        """announce the run's writes to switched tables, from the change notes of its window, once it applied any.
+
+        :param store: the run's locked store
+        :ptype store: DataStore
+        :param began: the run's start, by the database's clock
+        :ptype began: datetime
+        :param count: the migrations it applied (or rolled back)
+        :ptype count: int
+        :return: nothing
+        :rtype: None
+        """
+        if count < 1:
+            return
+        rows = await store.query(_CLOCK_SQL)
+        ended, schema = rows[0]["now"], str(rows[0]["schema_name"])
+        if self._announcer is None:
+            log.warning(
+                "a migration run wrote with no announcer: followers of the switched tables it wrote are not told; "
+                "give the runner the process's WriteBackstop (MigrationRunner(announcer=...))",
+                extra={"extra_data": {"schema": schema, "since": began.isoformat(), "until": ended.isoformat()}},
+            )
+            return
+        await self._announcer.announce_window(began, ended, schema=schema)
 
     async def _apply_package_pending(
         self,
@@ -998,6 +1072,19 @@ async def _rebuild_unusable_indexes(store: DataStore) -> None:
     schema = rows[0]["schema_name"] if rows else None
     if schema:
         await rebuild_unusable_indexes(_Fetching(store), [schema])
+
+
+async def _clock(store: DataStore) -> datetime:
+    """the database's clock now, as a change note is stamped by it.
+
+    :param store: the run's store
+    :ptype store: DataStore
+    :return: ``clock_timestamp()``
+    :rtype: datetime
+    """
+    rows = await store.query(_CLOCK_SQL)
+    now: datetime = rows[0]["now"]
+    return now
 
 
 def _as_data_store(store: DataStore | MigrationSession) -> DataStore:

@@ -33,6 +33,7 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
     create_collection_write_marks,
 )
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
+from threetears.core.coordination.migrations.v006_drop_write_mark_triggers import drop_write_mark_triggers
 from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
@@ -294,6 +295,7 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
             3: create_collection_write_marks,
             4: index_write_marks_by_table,
             5: range_expiry_indexes,
+            6: drop_write_mark_triggers,
         }
 
     @pytest.mark.asyncio

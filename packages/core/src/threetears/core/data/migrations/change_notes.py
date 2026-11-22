@@ -21,6 +21,7 @@ from typing import Any
 from threetears.core.collections.generation import NotedTable
 from threetears.core.ddl.change_notes import (
     NOTE_PUT_FUNCTION,
+    NOTE_TRIGGER,
     NOTE_TRIGGERS,
     NOTE_TRUNCATE_TRIGGER,
     legacy_truncate_trigger_drop_sql,
@@ -32,7 +33,7 @@ from threetears.core.ddl.change_notes import (
 )
 from threetears.observe import get_logger
 
-__all__ = ["give_noted_tables_their_note_trigger"]
+__all__ = ["give_noted_tables_their_note_trigger", "switched_tables_without_notes"]
 
 log = get_logger(__name__)
 
@@ -148,3 +149,46 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
     if given:
         log.info("noted tables given their change-note triggers", extra={"extra_data": {"tables": given}})
     return given
+
+
+async def switched_tables_without_notes(
+    store: Any, tables: Sequence[str], noted: Sequence[NotedTable]
+) -> dict[str, str]:
+    """the declared switched-on tables of the run's schema that carry no change-note row trigger, with why.
+
+    The note trigger is a switched table's switch and the only record its lost advance is announced from
+    (:mod:`threetears.core.collections.lost_writes`): a table without one would have its writes followed by nothing when
+    an advance is lost. Judged only where the ring is installed (the run's schema, or the one schema holding it); before
+    it is, the keeper's install gives the triggers and nothing is judged.
+
+    :param store: the run's locked ``DataStore``, bound to the target schema
+    :ptype store: Any
+    :param tables: the switched-on tables the run's packages declare
+    :ptype tables: Sequence[str]
+    :param noted: the noted tables this process declares (:func:`~threetears.core.collections.generation.noted_tables`)
+    :ptype noted: Sequence[NotedTable]
+    :return: ``schema.table -> why`` for each one without the trigger
+    :rtype: dict[str, str]
+    """
+    here = str((await store.query("SELECT current_schema() AS schema"))[0]["schema"])
+    holders = [str(row["schema"]) for row in await store.query(_RING_SCHEMAS, NOTE_PUT_FUNCTION)]
+    if here not in holders and len(holders) != 1:
+        return {}
+    present = [str(row["table_name"]) for row in await store.query(_TABLES_HERE, sorted(set(tables)))]
+    if not present:
+        return {}
+    carrying = {
+        str(row["table_name"]) for row in await store.query(_TRIGGERS_HERE, [NOTE_TRIGGER]) if row["table_name"]
+    }
+    declared = {each.table for each in noted}
+    missing: dict[str, str] = {}
+    for table in present:
+        if table in carrying:
+            continue
+        missing[f"{here}.{table}"] = (
+            "a key or invalidation column whose text form is not exact (only uuid, text, varchar, integers and "
+            "timestamptz are)"
+            if table in declared
+            else "no collection class this process imports declares it with one readable primary key"
+        )
+    return missing

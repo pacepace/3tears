@@ -71,6 +71,38 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
+        attr_name="_whole_left_out",
+        rationale=(
+            "the scopes a staged whole read left out because a write held them, with their rows, kept beside the stage they belong to: forgotten with it, and a restart stages its reads again"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/utils/write_ledger.py",
+        class_name="WriteLedger",
+        attr_name="_open",
+        rationale=(
+            "the start of each L3 write open on this process's connections: a fact about this process alone, whose death ends them; its watermark is what reaches NATS (the backstop's beat), so another process never reads this"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/utils/write_ledger.py",
+        class_name="WriteLedger",
+        attr_name="_ended",
+        rationale=(
+            "the oldest start of this process's writes that ended in each second of the last minute: per-process by nature, read only into the watermark the backstop publishes to NATS"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/utils/write_ledger.py",
+        class_name="WriteLedger",
+        attr_name="_lost",
+        rationale=(
+            "the advances this process lost and retries, each a coroutine closure over its source: not serializable, and held in the watermark the backstop publishes, so a process that dies with some is recovered from NATS by another"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
         attr_name="_whole",
         rationale=(
             "the tables to read whole at the next apply and why (a cold start, a reset, a schema change, an older writer's record): heard from the registry, which a restart hears again"

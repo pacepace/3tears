@@ -106,7 +106,7 @@ checks and reports; it never writes a note, reloads anything or repairs.
 change log is shared by every database whose writers advance through it (the hub's platform database, identity-core's
 own), and one keeper, the hub's, owns its lifecycle: it alone declares the log, declares and labels a lost one's
 restore, marks the log's position and scrubs. A second database still needs its own ring, for what its notes name
-inside that database: its write-mark reconciler names a lost write's rows from them
+inside that database: its writers' backstop names a lost write's rows from them
 (:func:`~threetears.core.collections.change_notes.noted_rows_since`) instead of recording keys unknown, and its
 followers page a bracketed keys-unknown record's keys from them
 (:class:`~threetears.core.collections.change_notes.PoolNotedKeysReader`). Its keeper is built ``keeps_log=False``:

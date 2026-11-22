@@ -1,11 +1,18 @@
-"""the write-mark queue's SQL: its table, the trigger function and each table's trigger.
+"""what is left of the write-mark queue: its names, its table, and the release the table is dropped by.
 
-Below every package that runs it -- the migration runner gives switched-on tables their trigger, the
-reconciler (:mod:`threetears.core.collections.write_marks`) installs and drains them -- so neither imports
-the other for it. The reconciler re-exports every name.
+Until 0.95 every write to a switched-on table ran a per-row trigger that inserted a mark into
+``collection_write_marks`` in its own transaction, and a reconciler advanced the table from each mark. It cost each
+write on YugabyteDB about three times an upsert (a per-row trigger defeats the batched existence check) plus a row
+inserted and later deleted, and its reconciler raced writers into re-announcing their commits (2026-11-22). Its job --
+announcing an advance lost after a commit -- is now the writer's own, with no L3 write a commit
+(:mod:`threetears.core.collections.lost_writes`). Coordination migration v006 takes every mark trigger and the
+function down.
 
-What a write mark and a change note cost a bulk write on YugabyteDB, and why the mark stays a row trigger:
-``docs/writing-to-l3-on-yugabytedb.md``.
+**Rolling upgrade (expand/contract).** The table stays, empty, until :data:`WRITE_MARKS_CONTRACT_RELEASE`: an older
+replica mid-roll still reads it (its writers read and clear their own marks, its reconciler counts and drains it), and
+its install backstop may put triggers back, which the new backstop takes down again
+(:meth:`~threetears.core.collections.lost_writes.WriteBackstop.drop_leftover_write_mark_triggers`). The contract migration drops the
+table in that release; ``tests/unit/coordination/test_write_marks_contract.py`` fails the build there until it does.
 """
 
 from __future__ import annotations
@@ -16,16 +23,16 @@ from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
     "MARK_FUNCTION",
+    "WRITE_MARKS_CONTRACT_RELEASE",
     "WRITE_MARKS_TABLE",
     "WRITE_MARK_TRIGGER",
-    "write_mark_trigger_sql",
-    "delete_marks_sql",
-    "marks_page_sql",
     "write_marks_ddl",
-    "write_marks_index_sql",
 ]
 
-#: the queue of committed writes not yet reconciled
+#: the release whose contract migration drops :data:`WRITE_MARKS_TABLE`, and by which the leftover-trigger sweep is gone
+WRITE_MARKS_CONTRACT_RELEASE: Final[str] = "0.96.0"
+
+#: the queue older replicas still read mid-roll, empty from 0.95 on
 WRITE_MARKS_TABLE: Final[str] = "collection_write_marks"
 
 #: the queue's table, ``{schema}`` its schema (quoted): written out whole, so it declares the queue's key where it is read
@@ -36,180 +43,21 @@ _MARKS_TABLE_DDL: Final[str] = (
     "date_created TIMESTAMPTZ NOT NULL DEFAULT now())"
 )
 
-#: the queue's ``(table_name, id)`` index, ``{schema}`` its schema (quoted): written out whole with its declaration,
-#: so the hub's read of a commit's marks by table, and a writer's of the marks its advance covers, are judged keyed
-#: through it
-_MARKS_INDEX_DDL: Final[str] = (
-    "-- purpose: src/aibots/hub/broker/proxy.py::QueryProxy._marks_for; "
-    "packages/core/src/threetears/core/collections/base.py::BaseCollection._marks_before_advance\n"
-    "-- plan_test: packages/core/tests/integration/test_write_marks_by_table_live.py"
-    "::test_a_commits_marks_are_read_through_the_table_index\n"
-    'CREATE INDEX IF NOT EXISTS "collection_write_marks_table" ON {schema}."collection_write_marks" (table_name, id)'
-)
-
-#: the trigger function every switched-on table's trigger calls
+#: the trigger function the mark triggers called; dropped by coordination v006
 MARK_FUNCTION: Final[str] = "threetears_mark_collection_write"
 
-#: the trigger's name on every switched-on table: a row trigger that marks a transaction's first changed row.
-#: 0.78.0 and before gave a statement trigger this name, which marked a statement that changed no row too; a
-#: trigger of this name that is not per row is missing to the installers, which replace it
+#: the mark trigger's name on every switched-on table; dropped by coordination v006
 WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_write_mark"
-
-#: the transaction-local setting a table's first marked row sets, so the rest of the transaction's rows of
-#: that table mark nothing; named by the table's oid, which is always a valid setting name
-_MARKED_SETTING: Final[str] = "'threetears.write_mark.t' || TG_RELID::text"
-
-
-#: the transaction-local setting each mark's id is added to (comma-separated), so the writer that commits the
-#: transaction clears exactly its own marks (:func:`own_write_marks_sql`, read inside the transaction before its
-#: COMMIT). Clearing every mark of the tables it wrote also cleared a concurrent writer's, committed before that
-#: writer's own advance: an advance of that writer that then failed was never repaired, the reconciler having
-#: nothing left to drain (2026-11-22)
-WRITE_MARK_IDS_SETTING: Final[str] = "threetears.write_mark.ids"
-
-
-def own_write_marks_sql() -> str:
-    """the statement a writer runs inside its transaction, before its COMMIT, for the ids of the marks it made.
-
-    Answers one text value: the ids comma-separated, ``''`` or NULL when the transaction marked nothing (or the
-    queue's function predates the setting: the writer then clears nothing, and the reconciler advances its tables
-    once more after they settle, never missing one).
-
-    :return: the ``SELECT``
-    :rtype: str
-    """
-    return f"SELECT current_setting('{WRITE_MARK_IDS_SETTING}', true)"
-
-
-def parse_own_write_marks(value: str | None) -> tuple[int, ...]:
-    """the mark ids :func:`own_write_marks_sql` answered.
-
-    :param value: its answer
-    :ptype value: str | None
-    :return: the ids, in the order marked
-    :rtype: tuple[int, ...]
-    """
-    return tuple(int(part) for part in (value or "").split(",") if part)
 
 
 def write_marks_ddl(schema: str) -> tuple[str, ...]:
-    """the statements that create the marks table and the trigger function in ``schema``, idempotently.
-
-    The function names the marks table by its schema, so a trigger on a table in any other schema
-    (an agent's) writes the one queue.
+    """the statement that creates the (now empty) marks table in ``schema``, idempotently: coordination v003's body,
+    kept so a new database's ledger holds the same versions as an old one's. Its ``(table_name, id)`` index (v004) is
+    created no more: an older replica reads it only on a database that already has it.
 
     :param schema: the schema that holds the queue (the platform schema)
     :ptype schema: str
     :return: the statements, in order; run them one at a time (YugabyteDB runs no DDL in a transaction)
     :rtype: tuple[str, ...]
     """
-    return (
-        _MARKS_TABLE_DDL.format(schema=quote_identifier(schema)),
-        _mark_function_sql(schema),
-        write_marks_index_sql(schema),
-    )
-
-
-def write_marks_index_sql(schema: str) -> str:
-    """the statement that gives the marks table its ``(table_name, id)`` index, idempotently.
-
-    Every commit the hub's broker answers reads the marks of the tables it wrote (``WHERE table_name =
-    ANY(...)``), to clear those its advances cover. With only the id key, each read scanned every mark queued,
-    and every tombstone a cleared one left: a cost on every write that grew with the queue. The index answers
-    a table's marks alone. A table's marks are one a writing transaction, so its index entries are few.
-
-    :param schema: the schema that holds the queue
-    :ptype schema: str
-    :return: the ``CREATE INDEX`` statement
-    :rtype: str
-    """
-    return _MARKS_INDEX_DDL.format(schema=quote_identifier(schema))
-
-
-def marks_page_sql(schema: str) -> str:
-    """the statement that reads one page of the queue, in id order, after the id ``$2``: ``$1`` marks at most.
-
-    A keyset page by the queue's key: each page starts where the last ended, so a drain reads every mark once,
-    in the order the writes committed them, and never the marks it already passed.
-
-    :param schema: the schema that holds the queue
-    :ptype schema: str
-    :return: the ``SELECT``, answering ``id``, ``table_name`` and ``date_created``
-    :rtype: str
-    """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    return f"SELECT id, table_name, date_created FROM {marks} WHERE id > $2 ORDER BY id LIMIT $1"  # noqa: S608
-
-
-def delete_marks_sql(schema: str) -> str:
-    """the statement that deletes the marks whose ids are ``$1`` (a ``bigint[]``).
-
-    :param schema: the schema that holds the queue
-    :ptype schema: str
-    :return: the ``DELETE``
-    :rtype: str
-    """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    return f"DELETE FROM {marks} WHERE id = ANY($1::bigint[])"  # noqa: S608
-
-
-def _mark_function_sql(schema: str) -> str:
-    """the statement that creates, or replaces, the trigger function in ``schema``.
-
-    One mark per table per transaction that changed a row of it: the first changed row inserts the mark and
-    sets a transaction-local setting, and every later row of that table in the transaction finds it set and
-    marks nothing. A statement that changes no row fires no row trigger, so it marks nothing (an idempotent
-    ``INSERT ... WHERE NOT EXISTS`` that found its row, ``UPDATE ... WHERE false``): each mark is an advance,
-    and an advance no follower heard drops the table from every follower's caches. ``ROLLBACK TO SAVEPOINT``
-    takes back the mark and the setting together, so a later row in the transaction marks again.
-    YugabyteDB has no transition tables (``REFERENCING``), which a statement trigger would need to tell a
-    statement that changed nothing.
-
-    :param schema: the schema that holds the queue
-    :ptype schema: str
-    :return: the ``CREATE OR REPLACE FUNCTION`` statement
-    :rtype: str
-    """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    function = f"{quote_identifier(schema)}.{quote_identifier(MARK_FUNCTION)}"
-    return (
-        f"CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $mark$\n"
-        "DECLARE\n"
-        "  mark bigint;\n"
-        "  made text;\n"
-        "BEGIN\n"
-        f"  IF current_setting({_MARKED_SETTING}, true) = '1' THEN\n"
-        "    RETURN NULL;\n"
-        "  END IF;\n"
-        f"  PERFORM set_config({_MARKED_SETTING}, '1', true);\n"
-        f"  INSERT INTO {marks} (table_name) VALUES (TG_TABLE_NAME) RETURNING id INTO mark;\n"
-        # the transaction's own marks, for its writer to clear exactly them (WRITE_MARK_IDS_SETTING)
-        f"  made := current_setting('{WRITE_MARK_IDS_SETTING}', true);\n"
-        f"  PERFORM set_config('{WRITE_MARK_IDS_SETTING}', "
-        "CASE WHEN made IS NULL OR made = '' THEN mark::text ELSE made || ',' || mark::text END, true);\n"
-        "  RETURN NULL;\n"
-        "END\n"
-        "$mark$"
-    )
-
-
-def write_mark_trigger_sql(*, marks_schema: str, table_schema: str, table: str) -> str:
-    """the statement that gives one table its write-mark trigger.
-
-    Row-level, behind the function's per-transaction setting (:func:`mark_function_sql`): one mark per
-    transaction that changed a row of the table, and none for a statement that changed none.
-
-    :param marks_schema: the schema holding the queue and its function
-    :ptype marks_schema: str
-    :param table_schema: the table's schema
-    :ptype table_schema: str
-    :param table: the table
-    :ptype table: str
-    :return: the ``CREATE TRIGGER`` statement
-    :rtype: str
-    """
-    return (
-        f"CREATE TRIGGER {quote_identifier(WRITE_MARK_TRIGGER)} "
-        f"AFTER INSERT OR UPDATE OR DELETE ON {quote_identifier(table_schema)}.{quote_identifier(table)} "
-        f"FOR EACH ROW EXECUTE FUNCTION {quote_identifier(marks_schema)}.{quote_identifier(MARK_FUNCTION)}()"
-    )
+    return (_MARKS_TABLE_DDL.format(schema=quote_identifier(schema)),)

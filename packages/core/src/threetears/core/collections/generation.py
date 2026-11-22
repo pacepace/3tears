@@ -857,9 +857,8 @@ def tables_written_l2_first() -> frozenset[str]:
     """every table whose writes commit in NATS first, by the classes defined here.
 
     Such a table's epoch is advanced, naming its rows, before its row reaches L3; an L3 write of it
-    (the writer's own, or the saver's) is already covered. So the write-mark reconciler deletes a mark
-    on one without advancing it again, which it would do as a change to the whole table, and the
-    trigger install leaves such a table without one.
+    (the writer's own, or the saver's) is already covered. So a lost write's recovery
+    (:mod:`threetears.core.collections.lost_writes`) never advances one again from its notes.
 
     :return: the table names
     :rtype: frozenset[str]
@@ -936,7 +935,7 @@ async def advance_for_write(
     :ptype keys_unknown: bool
     :param tenancy: the table's tenancy, for a writer that knows it otherwise than by a class it imported: a table
         switched on by its trigger alone, which no class here declares, lives in the schema its write ran in
-        (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`), so it is
+        (:func:`~threetears.core.collections.lost_writes.tables_switched_by_trigger`), so it is
         :data:`~threetears.core.tenancy.TENANT_BY_SCHEMA`. ``None`` reads the classes (:func:`tenancy_of_table`)
     :ptype tenancy: Tenancy | None
     :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values
@@ -1060,9 +1059,9 @@ def switched_tables_not_noted() -> dict[str, str]:
     """every table with a write generation that :func:`noted_tables` leaves out, with why: the tables whose missed
     writes the change notes can never name.
 
-    Each switched-on table's lost advance is reconciled from its notes (the write-mark reconciler); one with no note
-    trigger is answered ``no_notes``, recorded keys unknown with no bracket, and every follower is behind on it until
-    it restarts (2026-11-16). The enforcement census (``threetears.enforcement.collection_census``) lists these
+    Each switched-on table's lost advance is announced from its notes (:mod:`threetears.core.collections.lost_writes`);
+    one with no note trigger leaves nothing to announce from, and the migration runner refuses to create it switched on
+    (``switched_tables_without_notes``). The enforcement census (``threetears.enforcement.collection_census``) lists these
     so none ships silently.
 
     :return: ``table -> why``, in table order: classes naming it with different keys, or no class naming a key readable

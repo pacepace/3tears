@@ -59,7 +59,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
     if held_contract:
         pkg.version(2)(drop_lookup_indexes)
     # the grants are followed by write generation: the run that creates the table, and every run
-    # after, gives it its write-mark and change-note triggers
+    # after, gives it its change-note triggers
     pkg.mark_write_generation(McpToolGrantCollection.schema)
     runner.register(pkg)
     return pkg

@@ -1,8 +1,8 @@
 """a table switched off: the inverse of the runner's two hooks, inside the run (or upgrade) that turns it off.
 
-A table switched on carries the write-mark trigger (:func:`~threetears.core.data.migrations.write_marks.give_switched_tables_their_trigger`)
-and, when its key's text form is exact, its change-note function and triggers
-(:func:`~threetears.core.data.migrations.change_notes.give_noted_tables_their_note_trigger`). A table its owner no
+A table switched on carries its change-note function and triggers
+(:func:`~threetears.core.data.migrations.change_notes.give_noted_tables_their_note_trigger`), and until 0.95 the
+write-mark trigger, which one switched on before may still carry. A table its owner no
 longer declares ``write_generation`` must lose them, or every write keeps queueing marks and notes for a table nothing
 follows. :func:`switch_off` drops the write-mark trigger, every trigger running the table's note function, the shared
 truncate trigger an earlier install gave, and the note function itself, each ``IF EXISTS``: safe to run twice, and on

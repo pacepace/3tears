@@ -96,9 +96,9 @@ _logger = get_logger(__name__)
 #: imports this name.
 HUB_CAPABILITIES_FIELD: Final = "hub_capabilities"
 
-#: the broker advances a table switched on by its write-mark trigger alone (a tool pod's own table, which no class
+#: the broker advances a table switched on by its change-note trigger alone (a tool pod's own table, which no class
 #: the hub imports declares), keyed by the schema it lives in
-#: (:func:`~threetears.core.collections.write_marks.tables_switched_by_trigger`). A pod whose copy follows such
+#: (:func:`~threetears.core.collections.lost_writes.tables_switched_by_trigger`; the write-mark trigger until 0.95). A pod whose copy follows such
 #: tables (:class:`~threetears.core.collections.copy_follower.CopyFollower`) refuses to serve without it: a hub
 #: without it advances nothing for them, and the copy would be silently stale.
 GENERATION_BY_TRIGGER: Final = "generation_by_trigger"

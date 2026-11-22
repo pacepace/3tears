@@ -17,8 +17,8 @@ inside one of them sees the other. So:
 
 - :func:`find_unnoted_switched_tables` lists every table a class switches on (``tables_with_write_generation``) that
   no change-note trigger notes (not in ``noted_tables``): two classes naming it with different keys, or none naming a
-  readable key. The write-mark reconciler can never name such a table's missed writes (``no_notes``), so every
-  follower stays behind on it until it restarts.
+  readable key. A lost advance of such a table could never be announced from its notes, so the migration runner
+  refuses to create it switched on.
 
 - :func:`find_transaction_read_gaps` lists the trees' own classes that read their store their own
   way (``fetch_from_store``), may leave columns of a write to the database

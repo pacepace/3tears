@@ -104,9 +104,9 @@ class PackageMigrations:
     def mark_write_generation(self, *tables: Any) -> None:
         """declare tables this package creates whose writes advance a write generation.
 
-        The runner gives each its write-mark trigger at the end of every run, under the run's DDL
-        lock, so a switched-on table carries its trigger from the run that creates it
-        (``threetears.core.collections.write_marks``). Each is the table's ``TableSchema`` with
+        The runner gives each its change-note triggers at the end of every run, under the run's DDL
+        lock, so a switched-on table carries them from the run that creates it, and refuses one it cannot give them
+        (``threetears.core.collections.lost_writes``). Each is the table's ``TableSchema`` with
         ``write_generation=WRITE_GENERATION`` -- the declaration the collection class reads too -- or, for a
         collection with no ``TableSchema``, its table name.
 

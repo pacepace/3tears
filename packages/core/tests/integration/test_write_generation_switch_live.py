@@ -1,9 +1,10 @@
 """live: a table switched off loses what the runner's two hooks gave it, and nothing else does.
 
-Against a real database (the session ``db_container``). A schema holds the write-mark queue (coordination's
-migrations at platform scope) and the change-note ring, as the platform schema does; a table there is switched on by
-the two hooks, then off by :func:`switch_off`: its write-mark trigger, its note triggers and its note function go,
-each ``IF EXISTS``, so the step runs twice and on a dropped table. A same-named table in another schema keeps its own.
+Against a real database (the session ``db_container``). A schema holds coordination's migrations at platform scope
+and the change-note ring, as the platform schema does; a table there is switched on by the runner's note hook, then
+off by :func:`switch_off`: its note triggers and its note function go (and a write-mark trigger, which a table
+switched on before 0.95 may carry), each ``IF EXISTS``, so the step runs twice and on a dropped table. A same-named
+table in another schema keeps its own.
 """
 
 from __future__ import annotations
@@ -20,20 +21,18 @@ from threetears.core.data.migrations import MigrationRunner
 from threetears.core.data.migrations.change_notes import give_noted_tables_their_note_trigger
 from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.data.migrations.write_generation_switch import switch_off, write_generation_triggers_on
-from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
-from threetears.core.ddl.change_notes import NOTE_TRIGGERS, note_function_name
-from threetears.core.ddl.write_marks import WRITE_MARK_TRIGGER
+from threetears.core.ddl.change_notes import NOTE_RING_SIZE, NOTE_TRIGGERS, note_function_name, note_table
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
 
 _TABLE = "switched_widgets"
-_ON = {WRITE_MARK_TRIGGER, *NOTE_TRIGGERS}
+_ON = set(NOTE_TRIGGERS)
 
 
 async def _schema(conn: asyncpg.Connection, schema: str) -> ConnectionSession:
-    """``schema`` holding the queue, the ring and the table, switched on by the two hooks, bound to the session."""
+    """``schema`` holding the ring and the table, switched on by the note hook, bound to the session."""
     await conn.execute(f"CREATE SCHEMA {schema}")
     await conn.execute(f"SET search_path TO {schema}")
     runner = MigrationRunner()
@@ -42,7 +41,6 @@ async def _schema(conn: asyncpg.Connection, schema: str) -> ConnectionSession:
     await runner.apply_for_platform_schema(session)
     await install_note_ring(conn, schema)
     await conn.execute(f"CREATE TABLE {schema}.{_TABLE} (id TEXT PRIMARY KEY, n INTEGER)")
-    await give_switched_tables_their_trigger(session, [_TABLE])
     await give_noted_tables_their_note_trigger(session, [NotedTable(_TABLE, keys=("id",), tenancy=TENANT_BY_SCHEMA)])
     return session
 
@@ -86,9 +84,13 @@ async def test_switching_off_takes_the_triggers_and_the_note_function_away_and_o
 
     assert await write_generation_triggers_on(session, _TABLE) == frozenset()
     assert await _functions(first, schema) == set()
-    # a write to it leaves no mark and no note
+    # a write to it leaves no note
     await first.execute(f"INSERT INTO {schema}.{_TABLE} VALUES ('a', 1)")
-    assert await first.fetchval(f"SELECT count(*) FROM {schema}.collection_write_marks") == 0
+    for index in range(NOTE_RING_SIZE):
+        assert (
+            await first.fetchval(f"SELECT count(*) FROM {schema}.{note_table(index)} WHERE table_name = $1", _TABLE)
+            == 0
+        )
     # the same-named table of the other schema keeps all of its own
     assert await write_generation_triggers_on(ConnectionSession(second), _TABLE) == _ON
     assert await _functions(second, other) == {note_function_name(other, _TABLE)}
@@ -104,7 +106,6 @@ async def test_switching_off_twice_and_after_the_table_is_dropped_is_safe(
     assert await write_generation_triggers_on(session, _TABLE) == frozenset()
 
     # switched on again, then the table dropped before its switch-off ran: the function is still taken away
-    await give_switched_tables_their_trigger(session, [_TABLE])
     await give_noted_tables_their_note_trigger(session, [NotedTable(_TABLE, keys=("id",), tenancy=TENANT_BY_SCHEMA)])
     assert await _functions(first, schema) == {note_function_name(schema, _TABLE)}
     await first.execute(f"DROP TABLE {schema}.{_TABLE}")

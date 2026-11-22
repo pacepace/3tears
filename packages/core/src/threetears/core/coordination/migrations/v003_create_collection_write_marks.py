@@ -1,18 +1,16 @@
-"""coordination v003: the write-mark queue and its trigger function (receiver-trust Chunk 12).
+"""coordination v003: the write-mark queue (receiver-trust Chunk 12), now only the empty table older replicas read.
 
-A switched-on table's trigger inserts a mark into ``collection_write_marks`` in the same transaction
-as the write, and the reconciler advances the table's generation from it
-(:mod:`threetears.core.collections.write_marks`). This creates the queue and the function in the
-schema the runner binds, named by that schema so a trigger in any other schema writes the one queue.
-The triggers themselves are installed by the reconciler, on every switched-on table in every schema,
-because agent schemas are created after migrations run.
+Until 0.95 a switched-on table's trigger inserted a mark into ``collection_write_marks`` and a reconciler advanced the
+table from it, and v003 created the queue and the trigger function. The marks are gone
+(:mod:`threetears.core.ddl.write_marks`, coordination v006); v003 still creates the table, empty, so a database created
+now holds what an older replica mid-roll reads, until the contract release drops it.
 
 Each statement is idempotent and run on its own: YugabyteDB runs no DDL in a transaction.
 """
 
 from __future__ import annotations
 
-from threetears.core.collections.write_marks import write_marks_ddl
+from threetears.core.ddl.write_marks import write_marks_ddl
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -22,7 +20,7 @@ log = get_logger(__name__)
 
 
 async def create_collection_write_marks(store: DataStore) -> None:
-    """create the write-mark queue and its trigger function in the bound schema.
+    """create the write-mark queue in the bound schema (its trigger function is no longer created).
 
     :param store: DataStore bound to the target schema via search_path
     :ptype store: DataStore

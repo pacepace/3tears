@@ -73,7 +73,6 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/base.py::BaseCollection._cache_committed_row",
             f"{_CORE}/collections/base.py::BaseCollection._async_propagate_write",
             f"{_CORE}/collections/base.py::BaseCollection._drop_unread_row",
-            f"{_CORE}/collections/base.py::BaseCollection._clear_marks",
             f"{_CORE}/collections/base.py::BaseCollection._withdraw_from_caches",
             f"{_CORE}/collections/base.py::BaseCollection.invalidate_cache_many",
             # the row's L2 put, behind save_entity
@@ -110,8 +109,10 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
             f"{_CORE}/cache/duckdb.py::_insert_through_arrow",
             f"{_CORE}/cache/sqlite.py::SQLiteBackend",
-            # the epoch machinery's own ledgers: the write marks, the scope epochs and the source fence
-            f"{_CORE}/collections/write_marks.py::WriteMarkReconciler",
+            # the writer ledger's connection class: it passes each statement (a COPY included) to asyncpg as it was
+            # sent, noting only when it began; the write is its caller's, judged where that caller sends it
+            f"{_CORE}/utils/write_ledger.py::write_ledger_connection_class",
+            # the epoch machinery's own ledgers: the scope epochs and the source fence
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
             f"{_CORE}/coordination/source_token.py::clear_signals",
