@@ -307,21 +307,21 @@ async def rejudge_result(
         configs=inputs.configs if inputs is not None else {},
         failure_describer=host.failure_describer,
     )
-    claim_inputs = (
-        await run_blocking(
-            host.blocking_executor,
-            partial(reproducible_claim_inputs, client=judge_service.default_client()),
-            storage,
-            result,
-            run,
-            scope_id,
-        )
-        if result.claim_failures
-        else None
-    )
     updated = result
-    billing: _BilledClaimsClient | None = None
     async with judge_service:
+        # Inside the service, so a refusal still releases the client its fingerprints were read through.
+        claim_inputs = (
+            await run_blocking(
+                host.blocking_executor,
+                partial(reproducible_claim_inputs, client=judge_service.default_client()),
+                storage,
+                result,
+                run,
+                scope_id,
+            )
+            if result.claim_failures
+            else None
+        )
         if inputs is not None:
             context = build_judge_context(
                 template=inputs.template,

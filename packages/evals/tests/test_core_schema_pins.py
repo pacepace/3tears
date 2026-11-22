@@ -94,11 +94,11 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_judge_temperature_check": "4d8e401d407bc1c345e8db2ec255ef407cc3be286ee0c3ecbc999137d615c442",
     "eval_launch": "231668558a55ada65632949e463fc611988bf64ec5756ea8b21753835e160160",
     "eval_out_of_run_spend": "c6145bc279f1868ea5316a09b214fa44da57af58d578993cfebc0c1d225759a8",
-    "eval_result": "48f38ebd988eeb573ad0af1ad55d0b4255d99b6b5e040f02536fb5c488221896",
+    "eval_result": "fd7f5a3ce510d36471e8fdd2c69a8d0fd25e29d83e292f76dce3ad14f3d433de",
     "eval_run": "fcd46b5389e78e0a32c44586ef49418e50720b9e8ccf0ffe27ef9e125e1697ff",
     "eval_second_judge_pass": "f8d98681f6379a7e5cbd540af34e0881c872c6f31293384b53d6db45365a7293",
     "eval_sweep": "1e3b43af8cec4e082d59441517e958a6d7cf06daa37a121165188ef6c2726119",
-    "eval_trace": "bf1ef981e4a24a6acf0fae4aac22285cca6d9c3951ed1fdfdc2952d60a12495f",
+    "eval_trace": "d8a9bed197a0dd76fa1639dd9f65749914fda3c54552b4b080e6e7b95ba8906d",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving

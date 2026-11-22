@@ -711,12 +711,6 @@ async def _recorded_judge(
     :raises NotFoundError: The template or a recorded config does not load.
     """
     template, configs = await run_blocking(host.blocking_executor, _recorded_apparatus, host, run, judged_artifact)
-    # A kind graded by code is judged on its template's claim criteria alone, which no dimension's judge records.
-    if judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
-        raise ValueError(
-            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
-            "reads; a run naming a judge claims every cell was scored by it"
-        )
     judge_model = recorded_judge_pins(
         run, request_settings="today", claims_only=judged_artifact is JudgedArtifact.UNJUDGED
     )
@@ -740,9 +734,16 @@ def _recorded_apparatus(
     :param run: The judged witnessed run.
     :param judged_artifact: What the kind's judge reads, which picks the dims scored.
     :return: The template and the recorded config of each scored dim that recorded one.
+    :raises ValueError: The kind declares nothing a judge reads and the template declares no claim criteria.
     """
     storage = host.storage
     template = judged_template(storage, run, run.scope_id)
+    # A kind graded by code is judged on its template's claim criteria alone, which no dimension's judge records.
+    if judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
+        raise ValueError(
+            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
+            "reads; a run naming a judge claims every cell was scored by it"
+        )
     dims = recorded_judged_dims(run, template, judged_artifact)
     return template, recorded_judge_configs(storage, run, dims, run.scope_id)
 

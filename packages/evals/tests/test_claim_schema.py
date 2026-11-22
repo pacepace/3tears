@@ -742,6 +742,7 @@ def test_a_criterion_is_tallied_or_lost_never_both_and_a_loss_is_named() -> None
         "provider_error",
         "port_error",
         "cost_cap",
+        "hold_exceeded",
         "deadline",
         "evidence_over_cap",
         "trace_lost",
