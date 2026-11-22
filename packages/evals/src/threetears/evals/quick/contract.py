@@ -67,6 +67,7 @@ from threetears.evals.quick.one_call import (
     launched_as_run,
     refuse_an_unusable_cap,
 )
+from threetears.evals.quick.claims import unchecked_truth
 from threetears.evals.quick.continuation import (
     MEMORY_WHERE,
     design_facts,
@@ -85,6 +86,7 @@ from threetears.evals.quick.result import (
     refuse_an_unusable_margin,
     refuse_an_unusable_undo,
     with_judge_examples,
+    with_said,
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
@@ -773,7 +775,7 @@ class Eval:
             result = filed()
             closed, _loose = read_blind(judge, host, keyed, control, scope_id, self.name, runs=runs_of)
             drawn.extend([closed.read.id] if closed is not None else [])
-            return with_judge_examples(
+            said_result = with_judge_examples(
                 replace(
                     result,
                     store=where,
@@ -784,6 +786,11 @@ class Eval:
                 ),
                 examples,
             )
+            claims = self.plan.claims
+            if claims is not None and not claims.checks_truth:
+                # Nothing decided a claim's truth, so its false claims read 0 whatever the answers say: said beside them.
+                said_result = with_said(said_result, unchecked_truth(claims.name), anchor="claims-unchecked")
+            return said_result
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
         drawn: list[str] = []

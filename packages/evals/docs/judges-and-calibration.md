@@ -1199,7 +1199,10 @@ its own, and none enters a case's pass:
 - **The web**: with `search=`, a `WebSearch` port (a `RecordedWebSearch` replays one offline), a claim no case evidence
   covers that the grader doubts is checked on the web, within `web=`, a `WebBudget`.
 
-The run's judge model is the grader's, so an eval graded by a `Judge` and `Claims` gives both one model.
+A `Claims` with nothing to check a claim against (no `case_documents`, no `search`, no `grounded_in`) is refused,
+since its every reading would read 0. With `grounded_in="run"` alone, nothing decides truth, and the result says its
+false claims were not checked. The run's judge model is the grader's, so an eval graded by a `Judge` and `Claims`
+gives both one model, and calls the `Judge`'s client for both.
 
 ## What to read next
 

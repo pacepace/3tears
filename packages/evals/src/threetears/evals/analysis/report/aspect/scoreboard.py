@@ -31,7 +31,7 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
 )
 from threetears.evals.analysis.report.number_forms.kinds import Role
-from threetears.evals.analysis.report.verdict import cause_short, caveat_lines
+from threetears.evals.analysis.report.verdict import cause_short, caveat_lines, claim_caveat_lines
 from threetears.evals.analysis.report.words import campaign_arm_tags, label_case
 from threetears.evals.analysis.style import GLOSSARY, ArmName, arm_display_name, lever_reader_name
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -271,6 +271,10 @@ def _scoreboard_blocks(
     blocks += [
         DisclosureBlock(section="scoreboard", source="caveat", text=line, term="case floor")
         for line in caveat_lines(bundle, arm)
+    ]
+    # A claim criterion's cells that are not what they appear, each on the arms it touches.
+    blocks += [
+        DisclosureBlock(section="scoreboard", source="caveat", text=line) for line in claim_caveat_lines(bundle, arm)
     ]
     if bundle.all_failed_cells:
         every_failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))

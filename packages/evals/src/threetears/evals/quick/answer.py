@@ -71,8 +71,8 @@ class Answer:
         ``served_model``), never the one requested. ``None`` when the response named none: the run then records
         only the id asked for, and its summary says which model answered is unconfirmed, since a provider may
         answer an id with a model of its choosing.
-    :ivar documents: What the candidate read while answering: each passage it was given or page it fetched, a
-        :class:`Document` or its text. ``()`` says it read none; ``None`` (the default) says nothing, which a
+    :ivar documents: Provisional, as :class:`Document` is: its type may change in any release. What the candidate
+        read while answering: each passage it was given or page it fetched, a :class:`Document` or its text. ``()`` says it read none; ``None`` (the default) says nothing, which a
         ``Claims`` grader reading the candidate's own documents (``grounded_in="run"``) refuses, since no read
         could tell it from none.
     """

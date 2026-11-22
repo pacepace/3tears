@@ -26,7 +26,8 @@ import pytest
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.off_loop import off_loop
 from threetears.evals import Answer, Claims, Document, Eval, Judge, grader
-from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.quick import as_host
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.claims.readings import claim_readings
 from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND
@@ -155,6 +156,9 @@ class _FakeSearch:
         return 0.0
 
 
+#: A search port no test here searches: what a grader built only to be refused is handed.
+_SEARCH = _FakeSearch(WebPage(url="https://example.org/none", title="None", text="Nothing here."))
+
 #: Each case's source, which decides truth for every arm: a bridge's year, a tower's height.
 CASES = [
     {"id": "bridge", "town": "Wexley", "source": "The Wexley bridge opened in 1932. It crosses the river once."},
@@ -265,6 +269,12 @@ async def test_what_the_candidate_read_grounds_its_claims_and_reading_nothing_re
     assert (read.provenance, read.title) == ("run", "archive notes")
     stored = off_loop(get_result_trace, result.host.storage, first)
     assert "archive" not in json.dumps(stored.trace), "the answer is stored as it was given, its documents apart"
+    unchecked = (
+        "False claims on answer.claims were not checked: no case evidence or web search decides a claim's truth, so "
+        "they read 0 whatever the answers say; its grounded share reads what the answers say."
+    )
+    assert unchecked in result.render()
+    assert unchecked in report_markdown(result.report) and unchecked in campaign_report_markdown(result.page)
 
 
 async def test_an_answer_that_says_nothing_of_what_it_read_fails_a_run_grounded_in_it() -> None:
@@ -350,6 +360,10 @@ async def test_a_doubted_claim_is_checked_on_the_search_given_and_a_skipped_one_
     assert "| False claims per answer (answer.claims, judged) | 0.50 ± 0 | 2 |" in page_text
     caveats = {caveat.id: caveat.cls for caveat in report_input(campaign_bundle(result.report.bundle)).caveat_list}
     assert caveats["claims_web_skipped:answer.claims"] == "B", "a claim the web budget skipped is said"
+    assert (
+        "The web budget of answer.claims skipped claims in 2 cells of two_claims: each reads unverifiable, never false, "
+        "so its false claims there may be undercounted."
+    ) in page_text, "and the page says so under its scoreboard"
     assert caveats["judge_uncalibrated"] == "C", "a claims grader checked against nothing yet is said"
 
 
@@ -402,7 +416,9 @@ def test_a_case_s_documents_read_from_a_field_or_a_callable() -> None:
     assert rendered.evidence({"text": "Its text."}, "An answer.", None).segments == (
         Segment(text="An answer.", unit=0),
     )
-    assert Claims(_FakeClaimsGrader()).evidence({}, "An answer.", None).documents is None, "nothing declared"
+    assert Claims(_FakeClaimsGrader(), grounded_in="run").evidence({}, "An answer.", None).documents is None, (
+        "nothing declared"
+    )
 
 
 @pytest.mark.parametrize(
@@ -422,7 +438,14 @@ def test_a_case_s_documents_read_from_a_field_or_a_callable() -> None:
         pytest.param(lambda: Claims(_FakeClaimsGrader(), grounded_in="web"), "not 'web'", id="grounded-in-web"),
         pytest.param(lambda: Claims(_FakeClaimsGrader(), case_documents=3), "names the case's field", id="documents"),
         pytest.param(
-            lambda: Eval(CASES, careful, [Claims(_FakeClaimsGrader()), Claims(_FakeClaimsGrader(), "other")]),
+            lambda: Eval(
+                CASES,
+                careful,
+                [
+                    Claims(_FakeClaimsGrader(), case_documents="source"),
+                    Claims(_FakeClaimsGrader(), "other", search=_SEARCH),
+                ],
+            ),
             "graded by one Claims",
             id="two-claims",
         ),
@@ -430,12 +453,26 @@ def test_a_case_s_documents_read_from_a_field_or_a_callable() -> None:
             lambda: Eval(
                 CASES,
                 careful,
-                [Judge(_FakeClaimsGrader(model_name="other/judge"), {"clear": "Clear."}), Claims(_FakeClaimsGrader())],
+                [
+                    Judge(_FakeClaimsGrader(model_name="other/judge"), {"clear": "Clear."}),
+                    Claims(_FakeClaimsGrader(), case_documents="source"),
+                ],
             ),
             "give both the same model",
             id="two-models",
         ),
-        pytest.param(lambda: grader(Claims(_FakeClaimsGrader())), "list it bare", id="wrapped"),
+        pytest.param(lambda: grader(Claims(_FakeClaimsGrader(), search=_SEARCH)), "list it bare", id="wrapped"),
+        pytest.param(
+            lambda: Claims(_FakeClaimsGrader()),
+            "give it case_documents= (the case's own evidence, which decides truth), search= (a web search port, which "
+            "checks a doubted claim), or grounded_in='run'",
+            id="nothing-to-check-against",
+        ),
+        pytest.param(
+            lambda: Claims(_FakeClaimsGrader(), grounded_in="case", search=_SEARCH),
+            "Claims(grounded_in='case') reads the case's own documents, and no case_documents= names them",
+            id="grounded-in-case-with-no-case-documents",
+        ),
     ],
 )
 def test_a_claims_grader_that_could_not_grade_as_declared_is_refused_where_it_is_written(build: Any, said: str) -> None:
@@ -452,3 +489,28 @@ def test_what_a_candidate_read_is_held_as_documents() -> None:
         Answer("An answer.", documents=[3])
     with pytest.raises(ValueError, match="a non-blank string"):
         Document("  ")
+
+
+def test_documents_whose_titles_alone_overflow_their_room_leave_the_cell_out_by_name() -> None:
+    """The cut ends: where titles and addresses alone fill the room, no cut of the texts could, and it says so."""
+    claims = Claims(_FakeClaimsGrader(), grounded_in="run")
+    read = [Document("A page.", title="t" * (CLAIM_DOCUMENT_BYTES // 2))]
+
+    with pytest.raises(ValueError, match=r"take \d+ bytes beside their text, each cut to one character"):
+        claims.evidence({}, "An answer.", read)
+
+
+async def test_renaming_the_unit_keeps_the_case_set_and_its_stamp() -> None:
+    """What a page calls a unit is presentation: renamed, the case set and the template's updated_at stand."""
+    first = Eval(CASES, careful, [Claims(_FakeClaimsGrader(), case_documents="source")], k=1)
+    host = as_host([first], store=MEMORY)
+    before = (await first.run(host=host)).summary.template_id or ""
+    stored = off_loop(get_template, host, before, first.name)
+
+    renamed = Eval(CASES, careful, [Claims(_FakeClaimsGrader(), unit="reply", case_documents="source")], k=1)
+    after = (await renamed.run(host=host)).summary.template_id
+
+    assert after == before
+    again = off_loop(get_template, host, before, first.name)
+    assert again.claim_unit_names == {"answer.claims": "reply"}
+    assert again.updated_at == stored.updated_at, "no run's reading of the template moved"

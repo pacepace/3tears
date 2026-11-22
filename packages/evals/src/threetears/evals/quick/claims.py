@@ -42,7 +42,14 @@ The second ranks an arm that looked its answer up above one that recalled it, by
 
 **The judge's client is required.** The model is an id, a :class:`~threetears.evals.providers.Model`, or any
 completion client that names its model, read as :class:`~threetears.evals.quick.judged.Judge` reads one, and lent to
-the run as a judge's is. An eval graded by a ``Judge`` and ``Claims`` grades both on one judge model.
+the run as a judge's is. An eval graded by a ``Judge`` and ``Claims`` grades both on one judge model, through
+**the Judge's client**: the two must name one model, and this grader's own client is then never called, whatever
+settings it was built with.
+
+**Nothing to check against is refused.** With no ``case_documents``, no ``search`` and no ``grounded_in``, every
+reading would read 0 whatever the answers say. With ``grounded_in="run"`` alone (a retrieval answer graded on its
+own sources), the grounded share reads what the answers say and nothing decides truth: the result says its false
+claims were not checked.
 """
 
 from __future__ import annotations
@@ -53,7 +60,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.claims.readings import ranked_claim_reading_names
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
 from threetears.evals.schema import (
     ClaimCriterion,
@@ -144,13 +150,15 @@ class Claims:
         :param search: A web search port (:class:`~threetears.evals.schema.WebSearch`) a claim no case evidence
             covers, that the grader doubts, is checked on; a recorded one
             (:class:`~threetears.evals.testing.RecordedWebSearch`) replays offline. ``None``: no web.
-        :param web: How far the web check may go in one cell; ``None`` takes a generic budget (two searches for each doubted claim, five claims a cell) when ``search`` is
-            given. Needs ``search``.
+        :param web: How far the web check may go in one cell; ``None`` takes a generic budget (two searches for each
+            doubted claim, five claims a cell) when ``search`` is given. Needs ``search``.
         :param pages: How much of a cell's documents each verify step reads.
         :param repairs: How much each step asks again before the cell is the criterion's loss.
         :raises ValueError: A client naming no model; a name, unit or guidance that is not text; a ``grounded_in``
             naming another provenance; a web budget with no search; a ``case_documents`` that is neither a field
-            name nor a callable; or a criterion the engine refuses.
+            name nor a callable; nothing to check a claim against (no ``case_documents``, no ``search`` and no
+            ``grounded_in``), whose every reading would read 0; ``grounded_in="case"`` with no ``case_documents``;
+            or a criterion the engine refuses.
         """
         self.client, self.model = judge_client(model, grader="Claims")
         if not isinstance(name, str) or not name.strip():
@@ -168,10 +176,25 @@ class Claims:
                     "Claims(case_documents=...) names the case's field holding its evidence, or is a callable "
                     f"rendering a case's documents, not {case_documents!r}"
                 )
+        if case_documents is None and search is None and grounded_in is None:
+            raise ValueError(
+                "Claims has nothing to check a claim against, so every reading would read 0 whatever the answers say: "
+                "give it case_documents= (the case's own evidence, which decides truth), search= (a web search port, "
+                "which checks a doubted claim), or grounded_in='run' (the documents each answer says it read)"
+            )
+        provenances = _provenances(grounded_in)
+        if provenances is not None and "case" in provenances and case_documents is None:
+            raise ValueError(
+                "Claims(grounded_in='case') reads the case's own documents, and no case_documents= names them, so "
+                "its grounded share would read 0 for every arm: name the case's field or render its documents"
+            )
         if segments is not None and not callable(segments):
             raise ValueError(f"Claims(segments=...) is a callable (case, answer) -> pieces, not {segments!r}")
         self.unit = unit
         self.search = search
+        #: Whether anything decides a claim's truth: the case's documents or the web. Without either, only the
+        #: grounded share reads what the answers say.
+        self.checks_truth = case_documents is not None or search is not None
         self._segments = segments
         self._case_documents = case_documents
         self.segmentation = segmentation if segmentation is not None else _cut_name(segments)
@@ -179,9 +202,9 @@ class Claims:
             raise ValueError("Claims(segmentation=...) names the cut, and this one is blank")
         try:
             self.criterion = ClaimCriterion(
-                name=dim_name(name),
+                name=_dim_name(name),
                 guidance=guidance,
-                grounded_in=_provenances(grounded_in),
+                grounded_in=provenances,
                 web=(web or _DEFAULT_WEB) if search is not None else None,
                 pages=pages,
                 repairs=repairs,
@@ -201,19 +224,9 @@ class Claims:
         return self.criterion.name
 
     @property
-    def grounded(self) -> bool:
-        """Whether it reads a grounded share."""
-        return self.criterion.grounded_in is not None
-
-    @property
     def reads_run_documents(self) -> bool:
         """Whether its grounded share reads the candidate's own documents, which each answer must then declare."""
         return self.criterion.grounded_in is not None and "run" in self.criterion.grounded_in
-
-    @property
-    def readings(self) -> tuple[str, ...]:
-        """The readings that rank: the two truth readings, then the grounded share with ``grounded_in``."""
-        return ranked_claim_reading_names(self.criterion.name, grounded=self.grounded)
 
     def clients(self) -> CompletionClients:
         """The host client factory a run graded by it is built with: its client, lent, for the judge role alone.
@@ -300,7 +313,19 @@ class Claims:
         return _documents_in(rendered, "case_documents")
 
 
-def dim_name(name: str) -> str:
+def unchecked_truth(criterion: str) -> str:
+    """What a result says of a criterion that nothing decided the truth of: its false claims were not checked.
+
+    :param criterion: The criterion's stored name.
+    :return: The sentence.
+    """
+    return (
+        f"False claims on {criterion} were not checked: no case evidence or web search decides a claim's truth, so "
+        "they read 0 whatever the answers say; its grounded share reads what the answers say."
+    )
+
+
+def _dim_name(name: str) -> str:
     """``name`` as a stored criterion name: as given when it carries a context, under ``answer.`` when bare."""
     return name if "." in name else f"{DIMENSION_CONTEXT}.{name}"
 
@@ -357,20 +382,37 @@ def _fitted(documents: list[Document], provenance: EvidenceProvenance) -> tuple[
     """``documents`` as stored evidence, cut to fit their half of what one cell's documents may hold.
 
     The case's documents and the candidate's own each get half, apart, so what an arm fetched never cuts the case's
-    evidence: truth reads the same case documents whatever an arm read. A cut document says so in its title.
+    evidence: truth reads the same case documents whatever an arm read. A cut document says so in its title. Each is
+    cut to an equal share of the room its titles and addresses leave, and the share halves until they fit.
+
+    :raises ValueError: Their titles and addresses alone, every text cut to one character, run past the half: no cut
+        of the texts could fit them, so the cell is left out by name.
     """
     if not documents:
         return ()
     share = CLAIM_DOCUMENT_BYTES // 2
-    texts = [document.text for document in documents]
-    while _held(documents, texts) > share:
-        # Each document at most an equal share of what is left after the fields beside its text, the longest first.
-        room = max(1, (share - _held(documents, [""] * len(texts))) // len(texts))
-        cut = [_cut_bytes(text, room) for text in texts]
-        if cut == texts:
-            room //= 2
-            cut = [_cut_bytes(text, room) for text in texts]
-        texts = cut
+    whole = _stored(documents, [document.text for document in documents], provenance)
+    if _bytes(whole) <= share:
+        return whole
+    fixed = _bytes(_stored(documents, [document.text[:1] for document in documents], provenance))
+    if fixed > share:
+        raise ValueError(
+            f"the {len(documents)} {provenance} document(s) take {fixed} bytes beside their text, each cut to one "
+            f"character, and they may hold {share}: give fewer documents, or shorter titles and addresses"
+        )
+    room = (share - fixed) // len(documents)
+    while room >= 1:
+        cut = _stored(documents, [_cut_bytes(document.text, room) for document in documents], provenance)
+        if _bytes(cut) <= share:
+            return cut
+        room //= 2
+    raise ValueError(f"the {provenance} documents could not be cut to fit the {share} bytes they may hold")
+
+
+def _stored(
+    documents: Sequence[Document], texts: Sequence[str], provenance: EvidenceProvenance
+) -> tuple[EvidenceDocument, ...]:
+    """``documents`` as stored evidence with ``texts``, each one cut saying so in its title."""
     stored: list[EvidenceDocument] = []
     for index, (document, text) in enumerate(zip(documents, texts, strict=True)):
         title = document.title or document.url or f"{provenance} document {index + 1}"
@@ -384,12 +426,10 @@ def _fitted(documents: list[Document], provenance: EvidenceProvenance) -> tuple[
     return tuple(stored)
 
 
-def _held(documents: Sequence[Document], texts: Sequence[str]) -> int:
-    """About how many bytes ``documents`` take stored with ``texts``, as the cap counts them."""
-    return sum(
-        len(json.dumps([document.title, document.url, text], ensure_ascii=False).encode("utf-8")) + 64
-        for document, text in zip(documents, texts, strict=True)
-    )
+def _bytes(stored: Sequence[EvidenceDocument]) -> int:
+    """How many bytes ``stored`` take as the cell's cap counts them: UTF-8 JSON, compact."""
+    dumped = [document.model_dump(mode="json") for document in stored]
+    return len(json.dumps(dumped, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
 def _cut_bytes(text: str, room: int) -> str:
@@ -400,4 +440,4 @@ def _cut_bytes(text: str, room: int) -> str:
     return kept if kept.strip() else text[:1]
 
 
-__all__ = ["Claims"]
+__all__ = ["Claims", "unchecked_truth"]

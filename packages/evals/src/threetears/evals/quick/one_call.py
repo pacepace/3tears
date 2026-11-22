@@ -91,7 +91,12 @@ from threetears.evals.schema import (
 )
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import CompletionProtocolDefect
-from threetears.evals.schema.models import PASS_FAIL_SCORES, RubricScale, stored_variation
+from threetears.evals.schema.models import (
+    PASS_FAIL_SCORES,
+    TEMPLATE_PRESENTATION_FIELDS,
+    RubricScale,
+    stored_variation,
+)
 from threetears.evals.kernel.host import (
     SHARED_CORE,
     ApparatusError,
@@ -1489,8 +1494,9 @@ def _template_id(
     two runs of one template are compared on. A world run's starting states and goal checks are its cases'
     and its template's, so they are addressed too. A judged run's intent is what its judge reads as each
     case's task, so two judged calls that state different intents never share, or overwrite, one template. A claims
-    grader's criterion is the template's too, and so is what a page calls its unit: addressed, so renaming a unit is a
-    new case set, never an edit of the one earlier runs were stored against.
+    grader's criterion is the template's too, and addressed. What a page calls its unit is not: it is presentation
+    (:data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS`), so renaming it keeps the case set and
+    the comparison over it.
     """
     addressed: Any = cases
     if labels is not None or judge is not None or seeds is not None or claims is not None:
@@ -1507,7 +1513,7 @@ def _template_id(
             addressed["seeds"] = seeds
             addressed["goal_checks"] = list(goal_checks)
         if claims is not None:
-            addressed["claims"] = {"criterion": claims.criterion.model_dump(mode="json"), "unit": claims.unit}
+            addressed["claims"] = claims.criterion.model_dump(mode="json")
     try:
         digest = canonical_digest(addressed)
     except TypeError as unencodable:
@@ -1525,18 +1531,24 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
     would restamp ``updated_at``, and a template stamped after a run launched reads as edited since: that run's
     summary withholds its intent and a rejudge of it is refused. So a stored definition that matches this one in
     everything but its stamps is left alone, and one that differs (an unjudged template's intent, say) is a real
-    edit, saved with its original ``created_at``.
+    edit, saved with its original ``created_at``. One that differs only in how a page prints it
+    (:data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS`: a renamed unit) is saved with its
+    original ``updated_at`` too, as authoring keeps it, since no run's reading of the template moved.
 
     A stored case's ``name`` is fill-only: a call fills it when the store holds none and never overwrites one, so a
     case renamed since (:func:`~threetears.evals.ops.case_rename`) keeps its name through the next call.
     """
     stored = host.storage.load_template(template.id, template.scope_id)
-    if stored is None or stored.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != template.model_dump(
-        mode="json", exclude=_LIFECYCLE_STAMPS
-    ):
-        host.storage.save_template(
-            template if stored is None else template.model_copy(update={"created_at": stored.created_at})
-        )
+    if stored is None:
+        host.storage.save_template(template)
+    else:
+        was, now = (held.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) for held in (stored, template))
+        moved = {key for key in was.keys() | now.keys() if was.get(key) != now.get(key)}
+        if moved:
+            kept = {"created_at": stored.created_at}
+            if moved <= TEMPLATE_PRESENTATION_FIELDS:
+                kept["updated_at"] = stored.updated_at
+            host.storage.save_template(template.model_copy(update=kept))
     _save_cases_unless_unchanged(host, test_cases)
 
 
