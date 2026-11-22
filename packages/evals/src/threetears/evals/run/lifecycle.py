@@ -19,8 +19,10 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Protocol
+from functools import partial
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
@@ -31,10 +33,22 @@ from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
-from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.kernel.claims.grading import GradedCriterion, grade_or_loss
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.usage_capture import CallUsage
+from threetears.evals.run.judge_service import JudgeFold, JudgeService, fold_judge_outcomes, judge_clients_for_run
+from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
+from threetears.evals.run.rejudge import (
+    ReproducibleClaimInputs,
+    apply_claim_rejudge,
+    apply_rejudge,
+    failed_judge_dims,
+    recorded_judge_pins,
+    reproducible_claim_inputs,
+    reproducible_judge_inputs,
+)
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
 from threetears.evals.schema.logs import contain, get_logger
@@ -228,13 +242,21 @@ async def rejudge_result(
     result_id: str,
     scope_id: str,
 ) -> EvalResult:
-    """Re-score a finished result's failed judge dimensions from the evidence its judge read.
+    """Re-score a finished result's failed judge dimensions and lost claim criteria from the evidence its judge read.
 
     The dims re-asked are the ones the result holds neither a score nor a recorded "can't tell"
     for (see :func:`~threetears.evals.run.rejudge.failed_judge_dims`) — a can't-tell is the
     judge's answer and is never re-asked — and the outcomes land where the
     judge phase would have put them, with a :class:`~threetears.evals.schema.models.JudgeRescore`
     recording the re-judge on the result (:func:`~threetears.evals.run.rejudge.apply_rejudge`).
+
+    **Claim criteria are re-judged beside them.** Each criterion the result lost (``EvalResult.claim_failures``) is
+    graded again whole from the claim evidence its trace stores, in the template's order, and each pending one
+    (``trace_pending``) has its tally recomputed from the grade its trace stores, with no call
+    (:func:`~threetears.evals.run.rejudge.reproducible_claim_inputs`). A completed grade is never asked again. The new
+    grades are written to the trace before the result, and a
+    :class:`~threetears.evals.schema.models.ClaimRescore` records it all on the result
+    (:func:`~threetears.evals.run.rejudge.apply_claim_rejudge`). A criterion lost again is recorded with its new loss.
 
     **It re-asks the same judge the same question, or refuses.** What the judge reads about the
     candidate is the evidence the cell's kind rendered for the first judge, read back off the
@@ -243,7 +265,8 @@ async def rejudge_result(
     input is taken from what the run recorded at launch, through
     :func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` — the one check the judge
     freeze makes too — with the request settings pinned to today's (``request_settings=
-    "today"``), since a re-judge sends a call. Falling back to today's value for any
+    "today"``), since a re-judge sends a call. A claim criterion is graded again only under the definition the cell
+    recorded for it (``EvalResult.claim_fingerprints``). Falling back to today's value for any
     input would score the dim under a different apparatus and file it under the old one,
     which is worse than leaving it missing. All refusals are raised before any judge
     call is paid for.
@@ -254,85 +277,239 @@ async def rejudge_result(
     :param result_id: The result to re-judge.
     :param scope_id: The partition the result's run lives in.
     :return: The result as stored after the re-judge. Dims that failed again stay missing
-        and are named in its recomposed ``judge_error``.
+        and are named in its recomposed ``judge_error``; criteria lost again stay lost, with their new loss.
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
-    :raises ValidationFailedError: The result has no failed judge dimension, or an apparatus
-        input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
-        names which input and why).
+    :raises ValidationFailedError: The result has neither a failed judge dimension nor a lost claim criterion, or an
+        apparatus input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` and
+        :func:`~threetears.evals.run.rejudge.reproducible_claim_inputs` name which input and why).
     :raises ConflictError: The rewrite did not land — something else wrote the result
         between the read and the write, or the write failed (storage reports both
         as one ``False``). Nothing was stored, and the judge spend is on the log line.
     :raises ValueError: The host supplies no completion clients, so nothing could re-judge.
     :raises CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
         Nothing is stored; the spend is on the log line.
+    :raises ApparatusError: The rig could not serve a claims call (a replay's miss). Nothing is stored.
     :raises StorageError: The result was re-scored and stored but its run's excluded-cell count
-        could not be updated.
+        could not be updated, or a claims re-judge's trace did not land (then nothing was stored).
     """
     storage = host.storage
     clients = host.completion_clients("a re-judge")
     # Every read and write below is a store call, so each runs on the host's blocking executor, off the loop.
-    result, etag, run, inputs, failed = await run_blocking(
-        host.blocking_executor, _rejudge_inputs, storage, result_id, scope_id
-    )
-    template = inputs.template
-
-    context = build_judge_context(
-        template=template,
-        test_case=inputs.test_case,
-        goal_outcomes=result.goal_state_outcomes,
-        judged_artifact=inputs.judged_artifact,
-        judge_evidence=inputs.judge_evidence,
+    read = await run_blocking(host.blocking_executor, _rejudge_inputs, storage, result_id, scope_id)
+    result, etag, run, inputs, failed = read.result, read.etag, read.run, read.inputs, read.failed
+    judge_model = (
+        inputs.judge_model
+        if inputs is not None
+        else recorded_judge_pins(run, request_settings="today", claims_only=True)
     )
     judge_service = JudgeService(
-        client_factory=judge_clients_for_run(clients, inputs.judge_model),
-        configs=inputs.configs,
+        client_factory=judge_clients_for_run(clients, judge_model),
+        configs=inputs.configs if inputs is not None else {},
         failure_describer=host.failure_describer,
     )
-    async with judge_service:
-        outcomes = await judge_dims(
-            template=template, judge_service=judge_service, context=context, only=frozenset(failed)
+    claim_inputs = (
+        await run_blocking(
+            host.blocking_executor,
+            partial(reproducible_claim_inputs, client=judge_service.default_client()),
+            storage,
+            result,
+            run,
+            scope_id,
         )
-
-    updated = apply_rejudge(result, template, outcomes, judge_model=inputs.judge_model)
-    rescore = updated.judge_rescores[-1]
+        if result.claim_failures
+        else None
+    )
+    updated = result
+    billing: _BilledClaimsClient | None = None
+    async with judge_service:
+        if inputs is not None:
+            context = build_judge_context(
+                template=inputs.template,
+                test_case=inputs.test_case,
+                goal_outcomes=result.goal_state_outcomes,
+                judged_artifact=inputs.judged_artifact,
+                judge_evidence=inputs.judge_evidence,
+            )
+            outcomes = await judge_dims(
+                template=inputs.template, judge_service=judge_service, context=context, only=frozenset(failed)
+            )
+            updated = apply_rejudge(result, inputs.template, outcomes, judge_model=inputs.judge_model)
+        trace = None
+        if claim_inputs is not None:
+            billing = _BilledClaimsClient(judge_service.default_client())
+            try:
+                regraded = await _regrade_claims(claim_inputs, billing, result_id=result_id)
+            except CompletionProtocolDefect, ApparatusError:
+                log.error(
+                    "eval.rejudge_result result=%s run=%s — a claims call could not be read or served, so nothing was "
+                    "stored; the claims calls cost %s",
+                    result_id,
+                    run.id,
+                    _dollars(_claims_fold(billing).cost_usd),
+                )
+                raise
+            fold = _claims_fold(billing)
+            updated, trace = apply_claim_rejudge(
+                updated, claim_inputs, regraded, usage=fold.usage, cost_usd=fold.cost_usd
+            )
+    spent = _rejudge_spend(updated, before=result)
     try:
+        if trace is not None:
+            # The grades first: no tally the rewrite lands stands before the grade it is read from.
+            await run_blocking(host.blocking_executor, storage.replace_eval_trace, trace)
         await run_blocking(host.blocking_executor, storage.replace_eval_result, updated, if_match=etag)
     except (ConflictError, StorageError) as e:
         log.error(
             "eval.rejudge_result lost its write result=%s run=%s — the re-judge cost %s and nothing was stored",
             result_id,
             run.id,
-            _dollars(rescore.cost_usd),
+            _dollars(spent),
         )
         if isinstance(e, ConflictError):
             raise ConflictError(
                 f"result '{result_id}' changed while it was being re-judged; nothing was stored",
-                remedy="re-read it and re-judge again if a dim is still missing",
+                remedy="re-read it and re-judge again if a dim is still missing or a claim criterion still lost",
             ) from e
         raise
     await run_blocking(
         host.blocking_executor, _recount_rejudged_exclusion, storage, run.id, scope_id, before=result, after=updated
     )
-    log.info(
-        "eval.rejudge_result result=%s run=%s dims=%s scored=%s failed_again=%s cost=%s",
-        result_id,
-        run.id,
-        ",".join(rescore.dims),
-        ",".join(f"{dim}={score}" for dim, score in rescore.scores.items()) or "-",
-        ",".join(rescore.errors) or "-",
-        _dollars(rescore.cost_usd),
-    )
+    if inputs is not None:
+        rescore = updated.judge_rescores[-1]
+        log.info(
+            "eval.rejudge_result result=%s run=%s dims=%s scored=%s failed_again=%s cost=%s",
+            result_id,
+            run.id,
+            ",".join(rescore.dims),
+            ",".join(f"{dim}={score}" for dim, score in rescore.scores.items()) or "-",
+            ",".join(rescore.errors) or "-",
+            _dollars(rescore.cost_usd),
+        )
+    if claim_inputs is not None:
+        claims = updated.claim_rescores[-1]
+        log.info(
+            "eval.rejudge_result result=%s run=%s criteria=%s recovered=%s lost_again=%s cost=%s",
+            result_id,
+            run.id,
+            ",".join(claims.criteria) or "-",
+            ",".join(claims.recovered) or "-",
+            ",".join(f"{name}={loss}" for name, loss in claims.lost.items()) or "-",
+            _dollars(claims.cost_usd),
+        )
     return updated
 
 
-def _rejudge_inputs(
-    storage: EvalStorage, result_id: str, scope_id: str
-) -> tuple[EvalResult, str | None, EvalRun, ReproducibleJudgeInputs, list[str]]:
-    """Everything a re-judge reads before it pays for a call, or the refusal — the store reads of
-    :func:`rejudge_result`.
+class _BilledClaimsClient:
+    """The judge's client as a claims re-judge's calls see it: each completion billed once, as it is read.
 
-    :return: The result, the etag its rewrite must present, its run, the run's reproduced judge inputs, and the
-        dims to re-ask.
+    A completion whose ``sent_settings`` is the wrong type is billed for its spend alone before the defect is raised to
+    the step that asked, so what the re-judge paid is still on its log line.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        """Bind the judge's client.
+
+        :param inner: The client, which names its model.
+        """
+        self._inner = inner
+        self.model_name: str = getattr(inner, "model_name", "")
+        #: Every call's usage, in order.
+        self.billed: list[CallUsage] = []
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        """Send one call and bill what it returns.
+
+        :raises CompletionProtocolDefect: The completion's ``sent_settings`` is the wrong type; its spend is billed.
+        """
+        completion: CompletionResult = await self._inner.generate(
+            system=system, user=user, response_format=response_format
+        )
+        try:
+            usage = CallUsage.of(completion)
+        except CompletionProtocolDefect:
+            self.billed.append(CallUsage.billed(completion))
+            raise
+        self.billed.append(usage)
+        return completion
+
+    async def aclose(self) -> None:
+        """Release nothing: the judge's client is the judge service's, which releases it."""
+
+    async def __aenter__(self) -> _BilledClaimsClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+async def _regrade_claims(
+    inputs: ReproducibleClaimInputs, client: _BilledClaimsClient, *, result_id: str
+) -> dict[str, GradedCriterion | str]:
+    """Grade each criterion a claims re-judge grades again, whole, in order, beside the grades the trace keeps.
+
+    :return: criterion -> its grade, or its loss.
+    :raises CompletionProtocolDefect: A completion in an extraction or a truth call breaks the protocol.
+    :raises ApparatusError: The rig could not serve a call.
+    """
+    evidence = inputs.claim_evidence
+    assert evidence is not None or not inputs.regrade  # reproducible_claim_inputs refuses a regrade without evidence
+    criteria = {criterion.name: criterion for criterion in inputs.template.claim_criteria}
+    kept = {} if inputs.trace is None else dict(inputs.trace.claim_grades)
+    graded = {name: grade for name, grade in kept.items() if name not in inputs.regrade}
+    regraded: dict[str, GradedCriterion | str] = {}
+    for name in inputs.regrade:
+        assert evidence is not None
+        outcome = await grade_or_loss(
+            criteria[name],
+            evidence,
+            key=inputs.test_case.reference,
+            client=client,
+            graded=graded,
+            what=f"Re-judge of result {result_id}: claim criterion {name}",
+        )
+        regraded[name] = outcome
+        if not isinstance(outcome, str):
+            graded[name] = outcome.grade
+    return regraded
+
+
+def _claims_fold(client: _BilledClaimsClient) -> JudgeFold:
+    """What a claims re-judge's calls cost, folded as the cell's judge rows fold them."""
+    return fold_judge_outcomes([], also_billed=client.billed)
+
+
+def _rejudge_spend(updated: EvalResult, *, before: EvalResult) -> float | None:
+    """What a re-judge's rescores, of its dims and of its claim criteria, cost together; ``None`` when any is
+    unpriced."""
+    added = [
+        *(rescore.cost_usd for rescore in updated.judge_rescores[len(before.judge_rescores) :]),
+        *(rescore.cost_usd for rescore in updated.claim_rescores[len(before.claim_rescores) :]),
+    ]
+    if any(cost is None for cost in added):
+        return None
+    return math.fsum(cost for cost in added if cost is not None)
+
+
+class _RejudgeRead(NamedTuple):
+    """Everything a re-judge reads before it pays for a call."""
+
+    result: EvalResult
+    etag: str | None
+    run: EvalRun
+    #: The run's reproduced judge inputs, when a judge dimension failed; ``None`` when only claim criteria were lost.
+    inputs: ReproducibleJudgeInputs | None
+    #: The dims to re-ask.
+    failed: list[str]
+
+
+def _rejudge_inputs(storage: EvalStorage, result_id: str, scope_id: str) -> _RejudgeRead:
+    """Everything a re-judge reads before it pays for a call, or the refusal — the store reads of
+    :func:`rejudge_result`, its claim criteria's apart (:func:`~threetears.evals.run.rejudge.reproducible_claim_inputs`).
+
+    :return: The result, the etag its rewrite must present, its run, the run's reproduced judge inputs when a dim
+        failed, and the dims to re-ask.
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
     :raises ValidationFailedError: Nothing to re-judge, or an apparatus input cannot be reproduced.
     """
@@ -341,12 +518,14 @@ def _rejudge_inputs(
     result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
     if result is None:
         raise NotFoundError("result", result_id, remedy=FIND_RESULT)
-    if result.judge_error is None:
+    if result.judge_error is None and not result.claim_failures:
         raise ValidationFailedError(
-            f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge",
+            f"result '{result_id}' has no judge_error and lost no claim criterion — nothing failed to re-judge",
             remedy="re-judge only a result whose judging failed; to measure its judge again, use a judge repeat",
         )
     run = get_run(storage, result.eval_run_id, scope_id)
+    if result.judge_error is None:
+        return _RejudgeRead(result, etag, run, None, [])
     failed = failed_judge_dims(result, list(run.effective_judges or {}))
     inputs = reproducible_judge_inputs(
         storage, result, run, scope_id, request_settings="today", config_dims=failed, same_judge_dims=failed
@@ -354,13 +533,16 @@ def _rejudge_inputs(
     # Narrowed to the dims this result was judged on: a document's run attributes the two
     # conversation axes, which its cell was never asked and so holds no score for.
     failed = [dim for dim in failed if dim in inputs.dims]
+    if not failed and result.claim_failures:
+        # Every dim is answered; the lost claim criteria are what is left to re-judge.
+        return _RejudgeRead(result, etag, run, None, [])
     if not failed:
         raise ValidationFailedError(
             f"result '{result_id}' carries a judge_error but holds a score or a can't-tell for every dim its run "
             "judged, so there is no dimension to re-judge",
             remedy="read its scores as they are; to measure its judge again, use a judge repeat",
         )
-    return result, etag, run, inputs, failed
+    return _RejudgeRead(result, etag, run, inputs, failed)
 
 
 def _dollars(cost_usd: float | None) -> str:

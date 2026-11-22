@@ -11,7 +11,10 @@ where it names ``grounded_in``, against the documents the candidate itself was g
 **Every way a criterion fails is its own loss**, raised as
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed` with the loss the cell records: a step's reply
 cut short, unreadable or past its repairs, and a grade whose payload would not fit the trace
-(``evidence_over_cap``). A lost ground step is not a failure here: it rides on the tally, and truth stands.
+(``evidence_over_cap``). :func:`grade_or_loss` turns each, and a provider's failure, into the loss the cell records,
+for the judge phase and a re-judge alike. A lost ground step is not a failure here: it rides on the grade and its
+tally (``ground_loss``), and truth stands, so a tally recomputed from a stored grade (:func:`grade_tally`) reads a lost
+groundedness as exactly that.
 
 **The web check is not built yet.** A criterion with a web budget is refused before any call
 (:func:`refuse_unbuilt_claim_steps`), so a template stating one never runs as if it stated none; every claim a
@@ -31,9 +34,11 @@ from threetears.evals.kernel.claims.extraction import ClaimExtractor
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally
 from threetears.evals.kernel.claims.verification import ClaimVerifier, Verification, graded_claims
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
-from threetears.evals.schema.completion import CompletionClient
+from threetears.evals.schema.completion import CompletionClient, CompletionProtocolDefect
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import (
     CLAIM_TRACE_BYTES,
     ClaimCall,
@@ -42,8 +47,11 @@ from threetears.evals.schema.models import (
     ClaimGrade,
     ClaimTally,
     EvalTemplate,
+    KnownClaimLoss,
 )
 from threetears.evals.schema.reference import ReferenceKey
+
+log = get_logger(__name__)
 
 #: The revision of how a criterion grades, in its fingerprint: raised with any change to the order of the steps, to
 #: what each is handed, or to how a grade and its tally are built from them.
@@ -102,6 +110,44 @@ def criterion_fingerprint(criterion: ClaimCriterion, extractor: ClaimExtractor, 
             "verification": verifier.definition,
         }
     )
+
+
+def criterion_fingerprints(template: EvalTemplate, client: CompletionClient) -> dict[str, str]:
+    """Each claim criterion's fingerprint (:func:`criterion_fingerprint`), by name, in the template's order.
+
+    What a cell records for every criterion its claims phase is due (``EvalResult.claim_fingerprints``), graded or
+    lost, so a re-judge of a lost one can tell whether it would still grade under the same definition.
+
+    :param template: The template.
+    :param client: The judge's client, which names its model; the fingerprint does not read it.
+    :return: criterion -> fingerprint.
+    :raises ValueError: The client names no model.
+    """
+    return {
+        criterion.name: criterion_fingerprint(criterion, *criterion_steps(criterion, client))
+        for criterion in template.claim_criteria
+    }
+
+
+def grade_tally(grade: ClaimGrade, evidence: ClaimEvidence, criterion: ClaimCriterion) -> ClaimTally:
+    """The tally a stored grade gives, recomputed from it alone: what the cell's result stores for the criterion.
+
+    The grade records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a recomputed tally loses
+    groundedness exactly where the grading did, and never truth.
+
+    :param grade: The criterion's grade of the cell, as the trace stores it.
+    :param evidence: The claim evidence it graded, as the trace stores it.
+    :param criterion: The criterion, whose ``grounded_in`` the counts read.
+    :return: The tally.
+    :raises ValueError: The grade does not grade ``evidence`` (another digest), or its claims do not give a tally
+        (:func:`~threetears.evals.kernel.claims.readings.claim_tally`).
+    """
+    if grade.claim_evidence_digest != claim_evidence_digest(evidence):
+        raise ValueError(
+            f"claim criterion {criterion.name!r}'s grade names claim evidence {grade.claim_evidence_digest[:12]}, "
+            f"and the trace stores {claim_evidence_digest(evidence)[:12]}"
+        )
+    return claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
 
 
 def claim_evidence_digest(evidence: ClaimEvidence) -> str:
@@ -191,7 +237,7 @@ async def grade_criterion(
         the ground step's length grows with what the arm fetched. Not told when that grade would not fit the trace.
     :return: The grade and its tally.
     :raises ClaimGradingFailed: A step failed (``cut_short``, ``unreadable``, ``repair_budget_spent``, or
-        ``cost_cap`` from a client its hold refuses), or the grade would take the trace past
+        ``cost_cap`` or ``hold_exceeded`` from a client its hold refuses), or the grade would take the trace past
         :data:`~threetears.evals.schema.models.CLAIM_TRACE_BYTES` (``evidence_over_cap``).
     """
     extractor, verifier = criterion_steps(criterion, client)
@@ -209,6 +255,7 @@ async def grade_criterion(
             evidence=verification.evidence,
             documents_truncated=verification.documents_truncated,
             claims=graded_claims(claims, verification, calls_before=len(calls)),
+            ground_loss=verification.ground_loss,
         )
         held = claim_payload_bytes(evidence, {**graded, criterion.name: grade})
         if held > CLAIM_TRACE_BYTES:
@@ -217,7 +264,7 @@ async def grade_criterion(
                 f"and CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
                 loss="evidence_over_cap",
             )
-        tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=verification.ground_loss)
+        tally = grade_tally(grade, evidence, criterion)
         return GradedCriterion(grade=grade, tally=tally, ground_failure=verification.ground_failure)
 
     def truth_done(truth: Verification) -> None:
@@ -234,14 +281,59 @@ async def grade_criterion(
                 )
             )
         except ClaimGradingFailed:
-            # NOSILENT: a grade of truth alone that outgrows the trace is no fallback for a deadline; the full grade
-            # meets the same cap, which records the criterion's loss (evidence_over_cap) where it is decided.
+            # NOSILENT: a grade of truth alone that outgrows the trace is no fallback for a deadline, so none is kept.
+            # The criterion is recorded all the same: evidence_over_cap once the full grade meets the same cap, or
+            # deadline when the deadline strikes in the ground step first.
             return
 
     verification = await verifier.verify(
         claims, key=key, documents=evidence.documents, ledger=ledger, truth_done=truth_done
     )
     return kept(verification)
+
+
+async def grade_or_loss(
+    criterion: ClaimCriterion,
+    evidence: ClaimEvidence,
+    *,
+    key: ReferenceKey | None,
+    client: CompletionClient,
+    graded: Mapping[str, ClaimGrade],
+    what: str,
+    truth_kept: Callable[[GradedCriterion], None] | None = None,
+) -> GradedCriterion | KnownClaimLoss:
+    """Grade one cell under one criterion (:func:`grade_criterion`), or name the loss the cell records instead.
+
+    Every way the criterion fails is its own loss, logged: a step's (:class:`ClaimGradingFailed`), and the provider
+    failing a call (``provider_error``). Raised instead, failing what asked, since neither is an outcome of the cell:
+    a completion that breaks the protocol in the extraction or a truth call, and a call the rig could not serve (a
+    replay's miss).
+
+    :param criterion: The criterion.
+    :param evidence: The cell's claim evidence.
+    :param key: The case's reference key, or None.
+    :param client: The judge's client.
+    :param graded: The grades the cell's trace already holds from criteria graded before this one.
+    :param what: What is graded, for the log line a loss writes ("Eval run r: claim criterion c for case=k").
+    :param truth_kept: See :func:`grade_criterion`.
+    :return: The grade and its tally, or the loss.
+    :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
+    :raises ApparatusError: The rig could not serve a call.
+    """
+    try:
+        return await grade_criterion(criterion, evidence, key=key, client=client, graded=graded, truth_kept=truth_kept)
+    except ClaimGradingFailed as failed:
+        # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.
+        log.warning("%s lost (%s): %s", what, failed.loss, failed)
+        return failed.loss
+    except CompletionProtocolDefect, ApparatusError:
+        raise
+    except (
+        Exception
+    ) as e:  # prawduct:ok-broad-except — judge boundary; a provider's failure is this criterion's loss alone
+        # NOSILENT: returned as provider_error, which the cell records as the criterion's loss.
+        contain(e, log=log, what=f"{what} failed", level="error")
+        return "provider_error"
 
 
 __all__: list[str] = []

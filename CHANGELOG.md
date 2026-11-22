@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: re-judging claim criteria, and pricing them before launch
+
+**Added (#1287):** `rejudge_result` re-judges a finished cell's lost claim criteria beside its failed dims, from the
+claim evidence its trace stores, by the run's judge pin. A lost criterion is graded again whole; a completed grade is
+never asked again, a lost ground step on it included. A criterion whose tally waited on its trace (`trace_pending`) is
+recovered with no call: its tally is recomputed from the grade the trace stores, and once the run has ended a pending
+criterion whose trace was never stored reads `trace_lost`. The new grades are written to the trace before the result,
+and each re-judge is recorded on `EvalResult.claim_rescores` (`ClaimRescore`), whose spend stays out of the cell's.
+A grade now records its ground step's loss (`ClaimGrade.ground_loss`), so a recomputed tally loses groundedness alone,
+never truth. Each cell records the fingerprint of every criterion it was due (`EvalResult.claim_fingerprints`), graded
+or lost, and a re-judge refuses a criterion by name when today's fingerprint differs, or none was recorded. New
+public names: `reproducible_claim_inputs`, `ReproducibleClaimInputs`, `apply_claim_rejudge`
+(`threetears.evals.run.rejudge`), `ClaimRescore` (`threetears.evals.schema`), `EvalStorage.replace_eval_trace` and
+`JudgeService.failure_describer`.
+
+**Added:** a subject arm's call floor (`price_subject_call_floor`) prices each claim criterion's hold before launch,
+over the smallest claim evidence a cell can render, so an arm whose cap cannot hold even that is refused before any
+launcher runs, naming the criterion; a criterion the judge's client cannot price refuses the arm under a cap. A
+witnessed cell of a kind graded by code is graded on its template's claim criteria, and a witnessed claims call that
+breaks the protocol still counts what it cost against the run's judge ceiling.
+
+**Changed:** a claims call the provider refused for the calling account stops the run after its cell
+(`AccountExhaustedError`), as a dimension's does, whichever step it was; the criterion is lost (`provider_error`, or a
+ground loss) and the cell keeps its trial. A call that would spend past the ceiling its criterion was priced and held
+at is lost as `hold_exceeded`, a new value of `CLAIM_LOSSES`, no longer as `cost_cap`: its reply outgrew what the price
+assumed, which is the pricing's miss, not the cap's.
+
+**For hosts:** a claims re-judge needs the host's completion clients, as a dims re-judge does; a recovery of pending
+criteria sends no call. `ClaimGrade.ground_loss`, `EvalResult.claim_fingerprints` and `EvalResult.claim_rescores` join
+core minor 15.24, which has not shipped: a released 15.23 build reads them under its newer-minor tolerance and keeps
+them, and the unreleased build before them refuses them by name, so deploy and roll back the integration line as one.
+
 ### evals: claim criteria graded in the judge phase
 
 **Added (#1287):** the judge phase grades every claim criterion a template declares, after the rubric dimensions and on
@@ -28,12 +60,12 @@ loses the criteria it backs: their tallies are written lost (`trace_lost`), so n
 stored. A run cell's row is written before its trace, so its tallied criteria are first written `trace_pending` (a new
 value of `CLAIM_LOSSES` that is no loss: not yet known), then restored once the trace lands, or written `trace_lost`
 once the trace write is known to have failed. A row left `trace_pending` (a store outage, or a process stopped between
-the writes) reads no claim reading and no loss; its grade is on the trace, so re-grading the criterion recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
+the writes) reads no claim reading and no loss; its grade is on the trace, so a re-judge recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
 The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.
 `RepairBudget` and `PageBudget` now say their budgets are per step and separate.
 
-**Not yet:** a criterion declaring a `web` budget is refused at the run, since the web check is not built. Re-judging a
-cell's claims from stored evidence is not built either, and nor is the quick path's door.
+**Not yet:** a criterion declaring a `web` budget is refused at the run, since the web check is not built, and nor is
+the quick path's door.
 
 **For hosts:** a template with claim criteria needs a judge at launch, whatever its kind declares a judge reads:
 `build_judge_service` now builds one for an unjudged kind whose template declares claim criteria, and a launch whose

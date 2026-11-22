@@ -520,8 +520,11 @@ CORE_SCHEMA_VERSION: int = 15
 #:   numbered evidence, every ``GradedClaim`` and every ``WebCheckRecord``), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
 #:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``ground_loss`` records a ground step lost
-#:   alone, costing only the groundedness reading) and ``EvalResult.claim_failures`` (criterion -> a
-#:   ``ClaimLoss``, an open vocabulary). Each is left out of the document while unset, so a trace or result carrying
+#:   alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the grade) and
+#:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
+#:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
+#:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``). Each is left
+#:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims
 #:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An

@@ -36,7 +36,7 @@ from threetears.evals.schema import (
     EvidenceProvenance,
     EvalTemplate,
 )
-from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
+from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, request_settings_order
 
 
 @dataclass(frozen=True)
@@ -404,7 +404,7 @@ def claim_tally(
     evidence: ClaimEvidence,
     *,
     grounded_in: Collection[EvidenceProvenance] | None,
-    ground_loss: KnownClaimLoss | None = None,
+    ground_loss: ClaimLoss | None = None,
 ) -> ClaimTally:
     """A cell's tally under one criterion, from its grade and the evidence it graded: the one place a claim's tags
     and grades become counts.
@@ -427,7 +427,8 @@ def claim_tally(
     :param evidence: The claim evidence it graded.
     :param grounded_in: The provenances the criterion declares its candidate was given, or None for a criterion with
         no groundedness reading.
-    :param ground_loss: Why the verifier lost the ground step alone (its ``Verification.ground_loss``), or None.
+    :param ground_loss: Why the ground step alone was lost (the verifier's ``Verification.ground_loss``, as the grade
+        records it in ``ClaimGrade.ground_loss``), or None.
     :return: The tally.
     :raises ValueError: A claim cites the candidate's own (``run``) evidence for its truth, which only case evidence
         decides; a claim cites evidence of a provenance ``grounded_in`` does not name as its ground (any, where the

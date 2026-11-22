@@ -77,6 +77,7 @@
 "threetears.evals.schema.ClaimGrade": "provisional",
 "threetears.evals.schema.ClaimJudgeCounts": "provisional",
 "threetears.evals.schema.ClaimLoss": "provisional",
+"threetears.evals.schema.ClaimRescore": "provisional",
 "threetears.evals.schema.ClaimTally": "provisional",
 "threetears.evals.schema.ClientRequestSettings": "host-contract",
 "threetears.evals.schema.CompletenessSource": "provisional",

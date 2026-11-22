@@ -2913,6 +2913,19 @@ class EvalStorage:
         """
         self._save(result.to_dict(), if_match=if_match)
 
+    def replace_eval_trace(self, trace: EvalTrace) -> None:
+        """Rewrite a stored result's trace in place, raising when it does not land.
+
+        For a rewrite of a finished result whose claim tallies rest on grades its trace does not hold yet (a claims
+        re-judge): the trace is written first, and the result only once it has landed, so a tally never stands before
+        the grade it is read from. Unlike a cell's own trace write (:meth:`save_eval_result`), a failure is raised,
+        since the caller has not written the result yet and must not.
+
+        :param trace: The trace as it should now stand.
+        :raises StorageError: The write failed.
+        """
+        self._save(trace.to_dict())
+
     def load_eval_trace(self, result_id: str, scope_id: str) -> EvalTrace | None:
         """Load one result's trace payload; ``None`` when it has none.
 
