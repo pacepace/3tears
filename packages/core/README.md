@@ -12,7 +12,18 @@ L1 (SQLite, in-process, sync)  ->  L2 (NATS KV, shared, async)  ->  L3 (PostgreS
 - **L2**: NATS KV shared cache. Async. Cross-pod consistency for multi-instance deployments.
 - **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.), or a git working tree (`threetears.core.backends.git`: rows as files, every change set one commit). Async. Source of truth.
 
-Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes flow down (L1 -> L2 -> L3, with optional deferred flush).
+Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access).
+
+### Write order
+
+`save_entity()` writes the tiers in one of four orders, chosen by how the collection is wired:
+
+| Collection | Order |
+|---|---|
+| L3 pool, writes immediate (the default) | **L3 -> L2 -> L1.** L3 commits first. L2 then takes the row as a compare-and-swap at the revision read before the L3 write, and L1 takes it only if L2 did; if a later write of the key got in first, the key is dropped from both and the next read goes to L3. |
+| Write-behind (`l3_write_policy="write_behind"`, or a non-`ALWAYS` flush strategy for a table in `collection_flush_tables`) | **L1 -> L2 -> L3 at flush.** The row is queued in the write buffer and reaches L3 on the next flush (see Flush Strategies). |
+| `l2_first` declared, with L2 and L3 wired | **L2 -> L3.** The write commits in NATS and lands in L2; L3 is made to match from L2, by the writer before `save_entity()` returns (`wait_for_l3=True`, the default) or by the saver after. |
+| No L3 pool | **L1 -> L2.** L2 (or L1) is the store. |
 
 ## Install
 
@@ -183,7 +194,7 @@ entity = await users.get(user_id)
 # Create a new entity (not persisted until save)
 entity = users.create({"user_id": uuid7(), "name_display": "Alice", ...})
 
-# Save through three-tier write path (L3 -> L1 -> L2)
+# Save through the three-tier write path (see Write order)
 await users.save_entity(entity)
 # Or via entity directly:
 await entity.save()
