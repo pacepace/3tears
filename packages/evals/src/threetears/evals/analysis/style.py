@@ -711,8 +711,8 @@ GLOSSARY: dict[str, str] = {
     ),
     "passed": "Usable trials that met every check and cleared every judged bar.",
     "answered": (
-        "Usable trials the candidate answered in full; where no grader says pass or fail, the arms are compared on how "
-        "often they answered, never on a pass rate."
+        "Usable trials the candidate answered in full; where nothing graded can fail a trial, the arms are compared on "
+        "how often they answered, never on a pass rate."
     ),
     "answer marks": "● answered, ✗ failed to answer, – lost to the test setup; one mark per repeat.",
     "answer outcome": "How a trial ended: answered, failed to answer, or lost to the test setup.",
