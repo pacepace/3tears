@@ -8,18 +8,20 @@ Claims grading's web check sends its queries to a host's port (:class:`~threetea
 under its identity, which the replay answers under too, so a replayed run's spend names the same search. A query the
 judge writes the same way again is answered with what it was answered first: a recording keeps one answer per query,
 the first it saw, so replays are the same whatever order a run's cells search in. Recording, a query the file already
-holds is answered from it too, so the recording run grades on what its replay serves.
+holds is answered from it too, so the recording run grades on what its replay serves; a query it searched live itself
+and is asked again is answered with that first answer, at no cost, and is no replay.
 
 **A miss is refused, never searched live.** A query the recording does not hold, a missing or unreadable file, a line
 from a newer format, or a second identity recorded onto one file, raises
 :class:`~threetears.evals.testing.RecordingRefused`, a :class:`~threetears.evals.kernel.host.ReplayMiss`: the cell is
 recorded ``apparatus_failed`` naming the search, and the run fails with it, as a replayed completion's miss does.
 
-**Replayed grades say so.** Every answer the recording serves says it was replayed
-(:attr:`~threetears.evals.schema.WebSearchResult.replayed`), and a grade it decided is stored as replayed
-(:attr:`~threetears.evals.schema.ClaimGrade.web_replayed`): no live search stands behind it. An answer the recording
-serves reports it cost nothing (``usd`` 0.0), which is what it is billed at whatever rate the run declares; replaying,
-:meth:`RecordedWebSearch.price_ceiling` is ``0.0``.
+**Replayed grades say so.** Every answer served from a recording made before this port was built says it was
+replayed (:attr:`~threetears.evals.schema.WebSearchResult.replayed`), and a grade it decided is stored as replayed
+(:attr:`~threetears.evals.schema.ClaimGrade.web_replayed`): no live search of this run stands behind it. A repeat of a
+query this port itself searched live is not: the run that searched it grades on its own live answer. An answer the
+recording serves, replayed or repeated, reports it cost nothing (``usd`` 0.0), which is what it is billed at whatever
+rate the run declares; replaying, :meth:`RecordedWebSearch.price_ceiling` is ``0.0``.
 
 Line format 1: ``{"format": 1, "identity": str, "query": str, "pages": [{"url", "title", "text", "snippet_only"}]}``.
 """
@@ -73,6 +75,9 @@ class RecordedWebSearch:
         self._inner = inner
         self._identity = identity
         self._recorded = recorded
+        #: The queries the recording held when this port was built: an answer to one of these is a replay. A query
+        #: this port searched live itself, and is asked again, is answered from what it recorded and is no replay.
+        self._earlier = frozenset(recorded)
         self._remedy = (
             f"re-record it ({rerecord})"
             if rerecord is not None
@@ -140,9 +145,10 @@ class RecordedWebSearch:
     async def search(self, query: str) -> WebSearchResult:
         """Answer ``query``: from the recording when it holds it, else from the live port, whose answer is recorded.
 
-        An answer the recording serves, replaying or recording, costs nothing and says it was replayed, so a
-        recording run grades a repeated query on the answer its replay will serve. A live answer is the inner port's,
-        as it returned it.
+        An answer the recording serves, replaying or recording, costs nothing, so a recording run grades a repeated
+        query on the answer its replay will serve. It says it was replayed when the recording held it before this port
+        was built, and not when this port searched it live itself. A live answer is the inner port's, as it returned
+        it.
 
         :param query: The search.
         :return: Its result.
@@ -151,7 +157,7 @@ class RecordedWebSearch:
         with self._lock:
             held = self._recorded.get(query)
         if held is not None:
-            return WebSearchResult(pages=held, usd=0.0, replayed=True)
+            return WebSearchResult(pages=held, usd=0.0, replayed=query in self._earlier)
         if self._inner is None:
             raise RecordingRefused(
                 self._path, f"it holds no search {query!r} for the web search {self.identity!r}", self._remedy

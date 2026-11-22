@@ -518,6 +518,50 @@ def graded_claims(
     return tuple(graded)
 
 
+def redecided_claims(claims: Sequence[GradedClaim], web: Mapping[int, WebGraded]) -> tuple[GradedClaim, ...]:
+    """A stored grade's claims with the web outcomes of a web step finished again: each claim in ``web``, and each
+    restatement of it, decided anew by the verdict table (:func:`truth_verdict`) from its stored case citations and
+    suspicion. Every other claim, and everything else about these, stands as stored.
+
+    :param claims: The grade's claims, as stored.
+    :param web: What the web step left, by the position of each claim it checked again; each one the grade left
+        ``lost``, nominated, of the world and restating nothing.
+    :return: One graded claim per claim, in order.
+    :raises ValueError: A web outcome is given for a claim the stored grade did not leave lost, or one that restates.
+    """
+    if stray := sorted(
+        position
+        for position in web
+        if position >= len(claims) or claims[position].web != "lost" or claims[position].restates is not None
+    ):
+        raise ValueError(
+            f"web outcomes are given for claims {stray}, which the stored grade did not leave lost, or which restate "
+            "another"
+        )
+    redone: list[GradedClaim] = []
+    for position, claim in enumerate(claims):
+        checked = web.get(position if claim.restates is None else claim.restates)
+        if checked is None:
+            redone.append(claim)
+            continue
+        verdict = truth_verdict(claim.truth_citations, suspect=claim.suspect, web=checked.outcome)
+        redone.append(
+            GradedClaim.model_validate(
+                {
+                    **claim.model_dump(),
+                    "nominated_by": verdict.nominated_by,
+                    "verdict": verdict.verdict,
+                    "graded_against": verdict.graded_against,
+                    "evidence_conflict": verdict.evidence_conflict,
+                    "web": checked.outcome if checked.outcome in {"skipped_cap", "lost"} else "checked",
+                    # A claim no verdict call decided keeps the call it was decided by before: its truth call.
+                    "decided_by": claim.decided_by if checked.call is None else checked.call,
+                }
+            )
+        )
+    return tuple(redone)
+
+
 @dataclass(frozen=True)
 class _Passage:
     """One numbered passage: a stretch of a document, by offsets in its text."""

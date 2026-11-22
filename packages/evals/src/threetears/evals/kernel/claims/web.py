@@ -486,8 +486,14 @@ class WebChecker:
         search: Search,
         ledger: RoleUsageLedger,
         calls_before: int,
+        checked_before: int = 0,
+        repairs_spent: int = 0,
     ) -> WebCheck:
         """Check each nominated claim on the web, in order, within the cell's budget.
+
+        A web step a stored grade lost is finished by calling this again over the claims it left ``lost``, with what
+        it had already spent of the cell's budgets, so the claims it checked are never searched again and the cell's
+        bounds hold across both.
 
         :param claims: The cell's claims, as listed.
         :param nominated: The positions of the claims the judge nominated, each a world claim that restates nothing,
@@ -496,6 +502,9 @@ class WebChecker:
         :param ledger: The cell's ``judge`` ledger.
         :param calls_before: How many of the grade's calls precede this step's, so each deciding call is a place in
             the grade's calls.
+        :param checked_before: How many of the cell's claims were already checked, which count against
+            ``max_checked_per_cell``.
+        :param repairs_spent: How many answers the step already asked again, which count against its repair budget.
         :return: The calls, the records and each nominated claim's outcome, with the step's loss if it failed.
             **Every way the step fails is its own loss, never the criterion's**, as the ground step's is: a reply cut
             short (``cut_short``), unreadable after its attempts (``unreadable``), an answer still failing within the
@@ -524,11 +533,15 @@ class WebChecker:
         calls: list[ClaimCall] = []
         records: list[WebCheckRecord] = []
         outcomes: dict[int, WebGraded] = {}
-        repairs = _Budget(left=self.repairs.max_items_per_cell)
+        if checked_before < 0 or repairs_spent < 0:
+            raise ValueError(
+                f"a web step resumes after {checked_before} checks and {repairs_spent} repairs; neither is below 0"
+            )
+        repairs = _Budget(left=max(self.repairs.max_items_per_cell - repairs_spent, 0))
         order = list(nominated)
         lost: ClaimGradingFailed | None = None
         for at, position in enumerate(order):
-            if at >= self.budget.max_checked_per_cell:
+            if checked_before + at >= self.budget.max_checked_per_cell:
                 outcomes[position] = WebGraded("skipped_cap")
                 continue
             try:
