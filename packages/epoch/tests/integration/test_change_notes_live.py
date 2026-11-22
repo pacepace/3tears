@@ -880,7 +880,9 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
         for statement in write_marks_ddl(schema):
             await pool.execute(statement)
         await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reconciler = WriteMarkReconciler(
+            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
+        )
         reader = EpochGenerationReader(bus)
 
         async def last() -> Any:
@@ -955,7 +957,7 @@ class TestTheReconcilerKeysEachSchemasChange:
                 await pool.execute(statement)
             await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
             reconciler = WriteMarkReconciler(
-                pool, generation_source=source, marks_schema=schema, tables=lambda: [table]
+                pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
             )
             await pool.execute(f"INSERT INTO {other}.{table} VALUES ('seed', 'o', '1')")
             await reconciler.run_pass()
@@ -1009,7 +1011,7 @@ class TestTheReconcilerKeysEachSchemasChange:
                 await pool.execute(statement)
             await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
             reconciler = WriteMarkReconciler(
-                pool, generation_source=source, marks_schema=schema, tables=lambda: [table]
+                pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
             )
             await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('a1', 'o', '1')")
             await reconciler.run_pass()
@@ -1041,7 +1043,9 @@ class TestAReconciledWriteTooLargeToRecordReachesAFollower:
         for statement in write_marks_ddl(schema):
             await pool.execute(statement)
         await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reconciler = WriteMarkReconciler(
+            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
+        )
         reader = EpochGenerationReader(bus)
 
         # a follower whose reader names a commit's keys from its notes, as a pod's broker transport does
@@ -1086,7 +1090,9 @@ class TestAReconciledWriteTooLargeToRecordReachesAFollower:
         for statement in write_marks_ddl(schema):
             await pool.execute(statement)
         await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reconciler = WriteMarkReconciler(
+            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
+        )
         reader = EpochGenerationReader(bus)
         registry = CollectionRegistry()
         registry.follow_generation(table)
@@ -1136,7 +1142,9 @@ class TestAFollowerOnADirectPoolReadsTheNotesItself:
         for statement in write_marks_ddl(schema):
             await pool.execute(statement)
         await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reconciler = WriteMarkReconciler(
+            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
+        )
         reader = EpochGenerationReader(bus)
 
         # wired as the hub wires its own registries: on the direct pool, with a reader of the notes over it

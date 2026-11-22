@@ -272,6 +272,15 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
     return distinct(union(first, second, third, keep_all=True), _NOTE_COLUMNS)
 
 
+#: how far before the oldest marked write a whole-table note is still its own: the mark is stamped at its
+#: transaction's start (``now()``) and the transaction's notes after it on the same node's clock, so only the
+#: nodes' skew separates them (YugabyteDB bounds it at max_clock_skew_usec, 500 ms by default). A whole-table note
+#: older than this belongs to an earlier write, whose advance was heard: re-recorded, it told every follower to drop
+#: the table and read it whole again (2026-11-22 replay: one operator reset re-announced three times by the
+#: reconciler, each a whole read on every follower, one of which left five states out of the copy)
+_WHOLE_NOTE_SKEW: Final = timedelta(seconds=5)
+
+
 async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
     """the rows the change notes say ``table``'s writes changed since ``since``, or why they cannot say.
 
@@ -325,6 +334,9 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # the reach as the statement's legs compute it (since less half the wait, wait_seconds a DOUBLE PRECISION), as
     # _noted_keys_read computes it from the same ring row
     reach = since - timedelta(seconds=float(ring["wait_seconds"]) / 2)
+    # the whole-table notes of the marked writes themselves: none stamped before the oldest one began (less the skew)
+    whole_from = since - _WHOLE_NOTE_SKEW
+    whole_from_micros = (whole_from - _EPOCH) // _CLOCK_GRAIN
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
     if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
         return "not_covered"
@@ -340,7 +352,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
         # rest, and the caller's bracket of keys does not carry one: read them alone, from the whole-table notes'
         # own partial index, so a truncate in the window still reaches every follower whole (2026-11-16: before,
         # this answered "too_many_rows" and the truncate's removed rows stayed in followers).
-        whole = await _noted_whole_since(pool, notes_schema, table, reach, ring)
+        whole = await _noted_whole_since(pool, notes_schema, table, whole_from, ring)
         return NotedRows(
             whole_table=bool(whole),
             whole_tenants=tuple(change.tenant for change in whole),
@@ -351,7 +363,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # reach they name (a whole-table note keeps it as its columns), as a restore folds them
     reaches: dict[str | None, list[Any]] = {}
     for note in notes:
-        if note[7] is None:
+        if note[7] is None and note[5] >= whole_from_micros:
             reaches.setdefault(None if note[10] is None else str(note[10]), []).append(note[9])
     whole = tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
     # a plain or reset change covers its own tenant's rows (or every tenant's, when it is _all's), never another

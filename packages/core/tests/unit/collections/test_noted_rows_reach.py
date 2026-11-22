@@ -51,10 +51,14 @@ class _Record(tuple[Any, ...]):
         return super().__getitem__(_FIELDS.index(item) if isinstance(item, str) else item)
 
 
-def _note(key_text: str | None, keys: list[str] | None, columns: Any, tenant: str | None) -> _Record:
+def _note(
+    key_text: str | None, keys: list[str] | None, columns: Any, tenant: str | None, *, noted: datetime = _EPOCH
+) -> _Record:
     """one row of ``noted_rows_since``'s statement: the ring (no switch yet; its columns answered on the first note
-    alone, as ``read_row_beside(first=)`` answers them), then a note."""
-    return _Record((0, 0, _EPOCH, 60.0, _EPOCH, True, True, key_text, keys, columns, tenant))
+    alone, as ``read_row_beside(first=)`` answers them), then a note stamped ``noted`` (microseconds since the epoch,
+    as the statement answers it)."""
+    micros = (noted - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(microseconds=1)
+    return _Record((0, 0, _EPOCH, 60.0, _EPOCH, micros, True, key_text, keys, columns, tenant))
 
 
 class _Notes:
@@ -157,6 +161,16 @@ async def test_a_whole_note_naming_no_reach_is_the_plain_whole_table() -> None:
     assert [(row.ids, row.tenant) for row in noted.rows] == [(["y"], "s2")]
 
 
+async def test_a_whole_note_older_than_the_marked_writes_is_not_theirs() -> None:
+    """Flips if a whole-table note stamped before the oldest marked write began (an earlier write's, whose advance
+    was heard) comes back as one of the marked writes' changes: the reconciler then re-recorded it, and every
+    follower dropped the table and read it whole again (2026-11-22 replay: one reset, re-announced three times)."""
+    old_reset = _note(None, None, _RESET, None, noted=_EPOCH - timedelta(minutes=3))
+    noted = await _noted([old_reset, _note("x", ["x"], None, "s1")])
+    assert noted.whole == ()
+    assert [row.ids for row in noted.rows] == [["x"]]
+
+
 async def test_the_reconciler_records_a_load_s_mark_with_its_prefixes_and_a_reset_with_its_reason() -> None:
     """Flips if the write-mark reconciler records a load's leftover mark as the legacy whole table (followers would
     read it whole) or a reset without its reason."""
@@ -170,6 +184,7 @@ async def test_the_reconciler_records_a_load_s_mark_with_its_prefixes_and_a_rese
             generation_source=source,
             marks_schema="platform",
             tables=lambda: (_TABLE,),
+            settle_seconds=0.0,
         )
         assert _TABLE not in tables_written_l2_first(), "a class in this process claims the test's table L2-first"
         done = await reconciler.run_pass()

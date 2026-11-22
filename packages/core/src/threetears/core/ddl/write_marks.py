@@ -60,6 +60,38 @@ WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_write_mark"
 _MARKED_SETTING: Final[str] = "'threetears.write_mark.t' || TG_RELID::text"
 
 
+#: the transaction-local setting each mark's id is added to (comma-separated), so the writer that commits the
+#: transaction clears exactly its own marks (:func:`own_write_marks_sql`, read inside the transaction before its
+#: COMMIT). Clearing every mark of the tables it wrote also cleared a concurrent writer's, committed before that
+#: writer's own advance: an advance of that writer that then failed was never repaired, the reconciler having
+#: nothing left to drain (2026-11-22)
+WRITE_MARK_IDS_SETTING: Final[str] = "threetears.write_mark.ids"
+
+
+def own_write_marks_sql() -> str:
+    """the statement a writer runs inside its transaction, before its COMMIT, for the ids of the marks it made.
+
+    Answers one text value: the ids comma-separated, ``''`` or NULL when the transaction marked nothing (or the
+    queue's function predates the setting: the writer then clears nothing, and the reconciler advances its tables
+    once more after they settle, never missing one).
+
+    :return: the ``SELECT``
+    :rtype: str
+    """
+    return f"SELECT current_setting('{WRITE_MARK_IDS_SETTING}', true)"
+
+
+def parse_own_write_marks(value: str | None) -> tuple[int, ...]:
+    """the mark ids :func:`own_write_marks_sql` answered.
+
+    :param value: its answer
+    :ptype value: str | None
+    :return: the ids, in the order marked
+    :rtype: tuple[int, ...]
+    """
+    return tuple(int(part) for part in (value or "").split(",") if part)
+
+
 def write_marks_ddl(schema: str) -> tuple[str, ...]:
     """the statements that create the marks table and the trigger function in ``schema``, idempotently.
 
@@ -142,12 +174,19 @@ def _mark_function_sql(schema: str) -> str:
     function = f"{quote_identifier(schema)}.{quote_identifier(MARK_FUNCTION)}"
     return (
         f"CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $mark$\n"
+        "DECLARE\n"
+        "  mark bigint;\n"
+        "  made text;\n"
         "BEGIN\n"
         f"  IF current_setting({_MARKED_SETTING}, true) = '1' THEN\n"
         "    RETURN NULL;\n"
         "  END IF;\n"
         f"  PERFORM set_config({_MARKED_SETTING}, '1', true);\n"
-        f"  INSERT INTO {marks} (table_name) VALUES (TG_TABLE_NAME);\n"
+        f"  INSERT INTO {marks} (table_name) VALUES (TG_TABLE_NAME) RETURNING id INTO mark;\n"
+        # the transaction's own marks, for its writer to clear exactly them (WRITE_MARK_IDS_SETTING)
+        f"  made := current_setting('{WRITE_MARK_IDS_SETTING}', true);\n"
+        f"  PERFORM set_config('{WRITE_MARK_IDS_SETTING}', "
+        "CASE WHEN made IS NULL OR made = '' THEN mark::text ELSE made || ',' || mark::text END, true);\n"
         "  RETURN NULL;\n"
         "END\n"
         "$mark$"

@@ -104,6 +104,15 @@ INSTALL_LOCK_POLICY: Final[DdlLockPolicy] = DdlLockPolicy(poll_interval=0.5, max
 _PAGE_SIZE: Final[int] = 500
 _MAX_PAGES_PER_PASS: Final[int] = 20
 
+#: how long a mark is left to its writer before a pass reconciles it: a writer (the hub's broker after each commit
+#: it answers, a collection after its own advance) advances its table and then deletes its own marks, within about
+#: a second, under load a few. A mark is visible from its commit, so a pass that drained every mark it read caught
+#: writes in that second and advanced each a second time: on the 2026-11-22 replay, three passes in two minutes
+#: re-recorded one table's writes, and with them an old operator reset every follower then read whole again. A mark
+#: a pass first saw at least this long ago is one its writer did not clear (died, timed out, failed): reconciled then,
+#: late but never lost
+_SETTLE_SECONDS: Final[float] = 30.0
+
 #: the most marks the queue gauges count; above it they report "at least" this many
 _OBSERVE_CAP: Final[int] = 10_000
 
@@ -511,9 +520,13 @@ class WriteMarkReconciler:
         lease: KVLease | None = None,
         notes_schema: str | None = None,
         tables_schema: str | None = None,
+        settle_seconds: float = _SETTLE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if page_size < 1 or max_pages < 1:
             raise ValueError("a reconcile pass reads at least one page of at least one mark")
+        if settle_seconds < 0:
+            raise ValueError("a mark is left to its writer for no time or more, never less")
         self._pool = pool
         self._source = generation_source
         self._marks_schema = marks_schema
@@ -523,6 +536,12 @@ class WriteMarkReconciler:
         self._page_size = page_size
         self._max_pages = max_pages
         self._lease = lease
+        self._settle_seconds = settle_seconds
+        self._clock = clock
+        #: each queued mark's id, with when a pass first read it (this process's clock): a mark is reconciled once
+        #: it has been left to its writer for the settle time (:data:`_SETTLE_SECONDS`)
+        self._first_seen: dict[int, float] = {}
+        self._applied_ids: set[int] = set()
 
     async def install_triggers(self) -> list[str]:
         """give every switched-on table of the declaring schema that lacks one its trigger: the backstop, under the
@@ -580,13 +599,19 @@ class WriteMarkReconciler:
         behind = True
         started = time.monotonic()
         after = 0
+        now = self._clock()
+        seen: dict[int, float] = {}
         for _ in range(self._max_pages):
             # a keyset page of the queue after the last mark read: a table that failed this pass is passed over, its
             # marks left for the next pass
             page = await self._pool.fetch(marks_page_sql(self._marks_schema), self._page_size, after)
             if page:
                 after = max(int(row["id"]) for row in page)
-                wanted = [row for row in page if row["table_name"] not in failed]
+                for row in page:
+                    seen[int(row["id"])] = self._first_seen.get(int(row["id"]), now)
+                # a mark its writer may still clear is left to it (read again by the next pass)
+                ready = [row for row in page if now - seen[int(row["id"])] >= self._settle_seconds]
+                wanted = [row for row in ready if row["table_name"] not in failed]
             else:
                 wanted = []
             if wanted:
@@ -599,10 +624,15 @@ class WriteMarkReconciler:
                 if ids:
                     await self._pool.execute(delete_marks_sql(self._marks_schema), ids)
                     applied += len(ids)
+                    self._applied_ids.update(ids)
             if len(page) < self._page_size:
                 behind = False
                 break
         _APPLIED.inc(applied)
+        # the marks this pass read and left: a mark not read again is gone (its writer cleared it, or this pass
+        # applied it); one past the page budget is first seen again by the pass that reaches it
+        self._first_seen = {mark: at for mark, at in seen.items() if mark not in self._applied_ids}
+        self._applied_ids = set()
         if behind or failed:
             log.warning(
                 "write marks left queued after a reconcile pass; followers of these tables see the writes only "

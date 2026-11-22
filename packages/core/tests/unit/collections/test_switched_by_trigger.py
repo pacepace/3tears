@@ -132,6 +132,7 @@ async def _reconciled(triggered: set[tuple[str, str]]) -> list[str | None]:
         generation_source=source,
         marks_schema="platform",
         tables=lambda: (),
+        settle_seconds=0.0,
     )
     await reconciler.run_pass()
     return [tenant for *_, tenant in source.records]

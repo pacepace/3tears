@@ -153,7 +153,7 @@ def _reconciler(queue: _Queue, source: _Generations, **kwargs: Any) -> WriteMark
         generation_source=source,
         marks_schema="platform",
         tables=lambda: ("groups", "revocations"),
-        **kwargs,
+        **{"settle_seconds": 0.0, **kwargs},
     )
 
 
@@ -166,6 +166,37 @@ async def test_each_marked_table_is_advanced_once_and_its_marks_deleted() -> Non
     assert sorted(source.advanced) == ["groups", "revocations"]
     assert queue.marks == {}
     assert (done.applied, done.behind) == (4, False)
+
+
+async def test_a_mark_is_left_to_its_writer_until_it_settles_then_reconciled_once() -> None:
+    # 2026-11-22 replay: passes that drained every mark they read caught writes whose writer (the hub, after its
+    # commit) had not yet cleared its own marks, and advanced each a second time
+    queue = _Queue(["groups"])
+    source = _Generations()
+    now = [100.0]
+    reconciler = _reconciler(queue, source, settle_seconds=30.0, clock=lambda: now[0])
+
+    first = await reconciler.run_pass()
+    assert (source.advanced, first.applied) == ([], 0)
+    assert len(queue.marks) == 1  # left to its writer
+    now[0] += 29.0
+    assert (await reconciler.run_pass()).applied == 0
+    now[0] += 1.0
+    settled = await reconciler.run_pass()
+    assert (source.advanced, settled.applied, queue.marks) == (["groups"], 1, {})
+
+
+async def test_a_mark_its_writer_clears_while_it_settles_is_never_advanced() -> None:
+    queue = _Queue(["groups"])
+    source = _Generations()
+    now = [100.0]
+    reconciler = _reconciler(queue, source, settle_seconds=30.0, clock=lambda: now[0])
+
+    await reconciler.run_pass()
+    queue.marks.clear()  # the writer advanced and deleted its own mark
+    now[0] += 60.0
+    await reconciler.run_pass()
+    assert source.advanced == []
 
 
 class _ElectionResults(BaseCollection[BaseEntity]):
@@ -270,6 +301,7 @@ async def test_a_pod_table_named_as_a_switched_on_table_is_never_switched_on_by_
         generation_source=_Generations(),
         marks_schema="platform",
         tables=lambda: ["coordination_redemptions"],
+        settle_seconds=0.0,
     )
 
     assert await reconciler.install_triggers() == ["platform.coordination_redemptions"]

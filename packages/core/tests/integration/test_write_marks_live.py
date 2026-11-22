@@ -43,6 +43,7 @@ from threetears.core.collections.write_marks import (
     write_marks_ddl,
 )
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.ddl.write_marks import own_write_marks_sql, parse_own_write_marks
 
 pytestmark = pytest.mark.integration
 
@@ -168,7 +169,9 @@ async def test_a_committed_write_whose_advance_never_ran_is_applied_by_the_next_
 
     assert await _marks(pool, platform) == [_TABLE]
     source = _Generations()
-    reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=platform, tables=lambda: [_TABLE])
+    reconciler = WriteMarkReconciler(
+        pool, generation_source=source, marks_schema=platform, tables=lambda: [_TABLE], settle_seconds=0.0
+    )
     done = await reconciler.run_pass()
 
     assert source.advanced == [_TABLE]
@@ -228,6 +231,32 @@ async def test_a_write_of_many_rows_in_one_transaction_leaves_one_mark(
         await conn.execute(f"DELETE FROM {agent}.{_TABLE} WHERE id = 'c'")
         await conn.execute(f"INSERT INTO {platform}.{_TABLE} VALUES ('z', 9)")  # another table: its own mark
     assert await _marks(pool, platform) == [_TABLE, _TABLE, _TABLE]
+
+
+async def test_each_transaction_reads_exactly_its_own_marks_before_its_commit(
+    schemas: tuple[asyncpg.Pool, str, str],
+) -> None:
+    # a writer clears the marks it reads here, never a concurrent writer's (2026-11-22: clearing every mark of the
+    # tables written also took a concurrent writer's, whose failed advance then had nothing to repair it)
+    pool, platform, agent = schemas
+    for schema in (agent, platform):
+        await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE], table_schema=schema)
+    async with pool.acquire() as one, pool.acquire() as two, one.transaction(), two.transaction():
+        await one.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1), ('b', 2)")
+        await two.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('c', 3)")
+        savepoint = one.transaction()
+        await savepoint.start()
+        await one.execute(f"INSERT INTO {platform}.{_TABLE} VALUES ('x', 1)")
+        await savepoint.rollback()  # its mark, and its id in the setting, go back together
+        await one.execute(f"INSERT INTO {platform}.{_TABLE} VALUES ('y', 2)")
+        mine = parse_own_write_marks(await one.fetchval(own_write_marks_sql()))
+        theirs = parse_own_write_marks(await two.fetchval(own_write_marks_sql()))
+        assert len(mine) == 2 and len(theirs) == 1
+        assert not set(mine) & set(theirs)
+    rows = await pool.fetch(f"SELECT id FROM {platform}.{WRITE_MARKS_TABLE} ORDER BY id")
+    assert sorted([*mine, *theirs]) == [int(row["id"]) for row in rows]
+    async with pool.acquire() as conn, conn.transaction():
+        assert parse_own_write_marks(await conn.fetchval(own_write_marks_sql())) == ()
 
 
 async def test_a_row_rolled_back_to_a_savepoint_takes_its_mark_back_and_a_later_row_marks_again(
@@ -302,7 +331,9 @@ async def test_a_busy_ddl_lock_defers_the_install_and_the_drain_still_runs(
     # a write before any trigger exists, then one marked by hand as a trigger would
     await pool.execute(f"INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) VALUES ($1)", _TABLE)
     source = _Generations()
-    reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=platform, tables=lambda: [_TABLE])
+    reconciler = WriteMarkReconciler(
+        pool, generation_source=source, marks_schema=platform, tables=lambda: [_TABLE], settle_seconds=0.0
+    )
 
     holder = await pool.acquire()
     try:
@@ -417,7 +448,7 @@ async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_mark
 
     drain = _Generations()
     done = await WriteMarkReconciler(
-        pool, generation_source=drain, marks_schema=platform, tables=lambda: [_TABLE]
+        pool, generation_source=drain, marks_schema=platform, tables=lambda: [_TABLE], settle_seconds=0.0
     ).run_pass()
 
     assert drain.advanced == [_TABLE]
