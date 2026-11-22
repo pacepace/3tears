@@ -8,8 +8,8 @@ packages (bumped in lock-step).
 
 ### evals: a silent candidate, undeclared documents, and `CLAIM_DOCUMENT_BYTES`
 
-**Changed (#1287):** a candidate that said nothing in an output holding other parties' lines (a persona cut off, or
-silent) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
+**Changed (#1287):** a candidate that said nothing in an output holding other parties' lines (cut off, or given
+no turn) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
 claims call and spends nothing; its grade lists no claim (`calls=()`), and its tally is marked `silent` with no unit
 and no claim. A silent cell carries no claim reading at all: it is in no reading's population, never reads as 0 false
 claims in its arm's mean, and is no loss, so it never withholds a reading. Each arm counts its silent cells beside

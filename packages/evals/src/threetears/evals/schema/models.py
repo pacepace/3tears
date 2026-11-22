@@ -6222,8 +6222,8 @@ class ClaimEvidence(CoreShapeModel):
     )
     segments: tuple[Segment, ...] = Field(
         description="The output, cut, in the order it reads. Empty: the candidate said nothing in an output that holds "
-        "other parties' lines (a persona cut off, or silent), so the cell is graded with no call and carries no claim "
-        "reading, never a reading of 0 (`ClaimTally.silent`)."
+        "other parties' lines (a candidate cut off, or given no turn), so the cell is graded with no call and carries "
+        "no claim reading, never a reading of 0 (`ClaimTally.silent`)."
     )
     documents: tuple[EvidenceDocument, ...] | None = Field(
         default=None,
