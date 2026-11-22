@@ -259,10 +259,15 @@ async def test_measuring_soundly_runs_after_the_world_it_names(capsys: pytest.Ca
 
 
 async def _stand_in_judge(*, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-    """The page's ``client``: passes the one dimension the engine's prompt asks for, as a model would answer."""
-    asked = re.search(r'single key "([^"]+)"', system)
-    assert asked is not None, "the judge prompt no longer names the one key its reply carries"
-    reply = {"reasoning": "stand-in", "criteria_scores": {asked.group(1): "pass"}}
+    """The page's ``client``: passes the one dimension the engine's prompt asks for, as a model would answer, and finds
+    no claim in an answer its ``Claims`` lists the claims of."""
+    reply: dict[str, Any]
+    if (response_format or {}).get("json_schema", {}).get("name") == "claim_listing":
+        reply = {"claims": []}
+    else:
+        asked = re.search(r'single key "([^"]+)"', system)
+        assert asked is not None, "the judge prompt no longer names the one key its reply carries"
+        reply = {"reasoning": "stand-in", "criteria_scores": {asked.group(1): "pass"}}
     return SimpleNamespace(
         content=json.dumps(reply),
         input_tokens=None,

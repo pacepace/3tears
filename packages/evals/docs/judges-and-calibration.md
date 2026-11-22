@@ -1174,6 +1174,71 @@ records each credited spelling with its entity and reason (`SetGrade.credits`), 
 unverified pick, so reasons move no count and no measure definition. The default gives every credit the reason
 `folded`, and refuses a name that is one of the key's context entities with the reason `context`.
 
+## Grading the claims in an answer: `Claims`
+
+A `Judge` scores an answer as a whole. `Claims(model, name="claims", *, unit="answer", segments=None,
+case_documents=None, grounded_in=None, guidance="", search=None, web=None, pages=..., repairs=...)`, listed among the
+graders, has a model list the factual claims each answer makes and checks each one. Its readings rank arms, each on its
+own, and none enters a case's pass:
+
+| Reading | What it counts | Better |
+|---|---|---|
+| False claims per answer (`answer.claims_false_per_unit`) | Claims the case's evidence contradicts, per answer | Lower |
+| Share of answers with a false claim (`answer.claims_false_unit_share`) | Answers holding at least one | Lower |
+| Grounded share of specific claims (`answer.claims_grounded_share`), with `grounded_in` | Specific claims the candidate's own documents support | Higher |
+
+The case's own evidence decides truth, the same for every arm: `case_documents` names the field holding it (a text, a
+list of texts, or mappings with `text`, `title` and `url`), or is a callable rendering a case's documents.
+
+```python
+from threetears.evals import Claims, Eval
+
+LANDMARKS = [
+    {"town": "Wexley", "source": "The Wexley bridge opened in 1932."},
+    {"town": "Harlow", "source": "The Harlow tower stands 90 metres tall."},
+]
+
+
+async def describe(case):
+    """Say one fact about the town's landmark."""
+    return f"The {case['town']} landmark is old."
+
+
+claims = Claims(client, case_documents="source")  # each case's source decides its claims' truth
+result = await Eval(LANDMARKS, describe, [claims], k=1).run(store=":memory:", scope="landmarks")
+print(result.summary.render())
+```
+
+What the candidate read rides beside its answer, on `Answer.documents`, and never in it. `grounded_in="run"` reads it
+for the grounded share. An arm that read nothing returns `documents=()` and reads a share of 0. An answer that says
+nothing of what it read fails a run grounded in it, since a missing list could not be told from an empty one.
+
+```python
+from threetears.evals import Answer, Document
+
+
+async def recall(case):
+    """Say one fact about the town's landmark."""
+    return Answer(f"The {case['town']} landmark is old.", documents=())  # it read nothing, and says so
+
+
+async def look_up(case):
+    """Say one fact about the town's landmark."""
+    return Answer(case["source"], documents=[Document(case["source"], title="town archive")])
+
+
+grounded = Claims(client, case_documents="source", grounded_in="run")
+arms = {"recall": recall, "look-up": look_up}
+result = await Eval(LANDMARKS, arms, [grounded], k=1, name="landmarks").run(store=":memory:")
+```
+
+Each answer is one unit, unless a `segments` callable cuts it: `(case, answer) -> [...]`, each piece its text (a unit of
+its own, in order) or a `Segment` (from `threetears.evals.schema`) for a piece outside every unit, a unit spanning several
+pieces, or your own tags. `unit="entry"` names the unit on the page. With `search=`, a `WebSearch` port (a
+`RecordedWebSearch` from `threetears.evals.testing` replays one offline), a claim no case evidence covers that the
+grader doubts is checked on the web, within `web=`, a `WebBudget`. The run's judge model is the grader's, so an eval
+graded by a `Judge` and `Claims` gives both one model.
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the

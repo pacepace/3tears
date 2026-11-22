@@ -12,7 +12,8 @@ build the same value.
   comparison**: its first key is the control and every other arm is tested against it. Arms named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``) are the cells of a factorial design. A mapping of one is one arm, named.
 - **grader** is one grader or a list (:mod:`threetears.evals.quick.graders`): a function, a field name, an
-  expression over a world, a :class:`~threetears.evals.quick.judged.Judge`, any of the first two wrapped by
+  expression over a world, a :class:`~threetears.evals.quick.judged.Judge`, a
+  :class:`~threetears.evals.quick.claims.Claims`, any of the first two wrapped by
   :func:`~threetears.evals.quick.graders.grader`.
 
 Everything else is defaulted: the runs are kept in ``.evals/evals.sqlite`` under the working directory, in a scope
@@ -385,8 +386,8 @@ class Eval:
         :param cases: The cases, or a file of them (:func:`load_cases`), read now.
         :param runner: The thing under test: a function, ``World(...)(agent)``, a ``Log``, or a mapping of them, whose
             first key is the control.
-        :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``, each of the
-            first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
+        :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``,
+            ``Claims``, each of the first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
             pass or fail; one annotated ``-> float`` or ``-> int``, or given a range, grades a number
             (:func:`~threetears.evals.quick.graders.declares_a_check`).
         :param k: Repeats per case, per arm.
@@ -669,7 +670,7 @@ class Eval:
                     keyed,
                     factors,
                     levels=filed_levels,
-                    kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+                    kind=CALLABLE_KIND if judge is None and self.plan.claims is None else JUDGED_CALLABLE_KIND,
                     control=control,
                     scope_id=scope_id,
                     name=self.name,
@@ -720,6 +721,7 @@ class Eval:
             expected=None if self.plan.classifier is None else partial(expected_label, name=self.plan.classifier),
             label_field=self.plan.classifier,
             judge=judge,
+            claims=self.plan.claims,
             world=self.world,
             goal_checks=self.plan.goal_checks,
             k=self.k,

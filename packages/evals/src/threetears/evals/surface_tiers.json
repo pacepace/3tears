@@ -3,7 +3,9 @@
 "tiers": {
 "threetears.evals.__version__": "host-contract",
 "threetears.evals.Answer": "host-contract",
+"threetears.evals.Claims": "provisional",
 "threetears.evals.declared_names": "provisional",
+"threetears.evals.Document": "provisional",
 "threetears.evals.Eval": "host-contract",
 "threetears.evals.Example": "host-contract",
 "threetears.evals.grader": "host-contract",

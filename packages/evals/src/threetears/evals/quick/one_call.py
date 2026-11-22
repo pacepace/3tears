@@ -77,6 +77,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.schema import (
     DEFAULT_LAUNCH_K_RUNS,
+    ClaimEvidence,
     DocumentStore,
     EvalRun,
     EvalTemplate,
@@ -145,7 +146,7 @@ from threetears.evals.kernel.remedies import FIND_TEMPLATE
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
-from threetears.evals.quick.answer import Answer, unwrap_answer
+from threetears.evals.quick.answer import Answer, Document, unwrap_answer
 from threetears.evals.quick.continuation import (
     EarlierComparison,
     canonical_json,
@@ -157,6 +158,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.bundle.trials import RedrawnCells, committed_order, redrawn_cells
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
+from threetears.evals.quick.claims import Claims
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.logged import Log
@@ -415,6 +417,27 @@ class _GraderContradictsItsDeclaration(CandidateKindDefect):
 
         :param message: What it returned, how it is declared, and what to write.
         :param kind: The kind whose grader it is.
+        :param declared: The kind's ``judged_artifact``.
+        :param has_evidence: Whether the cell carried judge evidence.
+        """
+        super().__init__(kind, declared=declared, has_evidence=has_evidence)
+        self.args = (message,)
+
+
+class _DocumentsUndeclared(CandidateKindDefect):
+    """A runner's answer declared no documents, and its eval's ``Claims`` reads the candidate's own
+    (``grounded_in="run"``).
+
+    The runner is the eval's own wiring, so every answer would do it: a grounded share over answers that said nothing
+    of what they read would read as research that found nothing. So the run fails at the first such answer, naming
+    the fix, rather than every cell reading a grounded share of nothing.
+    """
+
+    def __init__(self, message: str, *, kind: str, declared: JudgedArtifact, has_evidence: bool) -> None:
+        """Say what the answer lacked and how to declare it.
+
+        :param message: What it lacked, and what to return.
+        :param kind: The kind whose runner it is.
         :param declared: The kind's ``judged_artifact``.
         :param has_evidence: Whether the cell carried judge evidence.
         """
@@ -746,6 +769,7 @@ def callable_kind(
     judge: Judge | None = None,
     tools: Mapping[str, Tool] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
+    claims: Claims | None = None,
 ) -> CandidateKind:
     """The kind over a plain async candidate and its scorers, for a host of your own to launch.
 
@@ -769,6 +793,8 @@ def callable_kind(
     :param tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
     :param ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
         named here.
+    :param claims: The claims grader whose evidence each answer carries, for a template declaring its criterion
+        (graded by the run's judge, under :data:`JUDGED_CALLABLE_KIND`); ``None`` for none.
     :return: The kind: one instance serves every cell of a run.
     """
     _refuse_unnamed_or_repeated(scorers)
@@ -785,6 +811,7 @@ def callable_kind(
         judge=judge,
         tools=tools,
         ranges={**held, **(ranges or {})},
+        claims=claims,
     )
 
 
@@ -816,6 +843,10 @@ class CallableKind:
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
+    A kind with a claims grader renders each answer's claim evidence
+    (:meth:`~threetears.evals.quick.claims.Claims.evidence`) whatever it declares a judge reads, and the run's judge
+    grades its claims after the rubric; an answer that cannot be cut excludes its cell, and one declaring no
+    documents to a grader reading the candidate's own fails the run.
     A kind with tools hands the candidate each cell's own :class:`~threetears.evals.quick.tools.CellTools`,
     wired to the cell's cassettes when it is handed any; a rig fault a tool call met excludes the cell even
     when the candidate caught it.
@@ -840,6 +871,7 @@ class CallableKind:
         recording: ToolRecording | None = None,
         ranges: Mapping[str, tuple[float, float]] | None = None,
         positions: Mapping[str, int] | None = None,
+        claims: Claims | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
@@ -858,8 +890,10 @@ class CallableKind:
             id, which an error line names a case given no ``id`` by (:func:`_case_called`): the quick path passes the
             cases it stores, in their order. ``None`` (a host's own kind, :func:`callable_kind`) names such a case by
             its stored id.
+        :param claims: The claims grader whose evidence each answer carries, or ``None``.
         """
         self._candidate = candidate
+        self._claims = claims
         self._positions = dict(positions or {})
         self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
@@ -926,8 +960,11 @@ class CallableKind:
         try:
             # Every Model call the runner makes is added to this call's own ledger, and lands as its spend.
             with cell_spend() as ledger:
-                answer, telemetry = unwrap_answer(await _call_candidate(self._candidate, case, instance.tools))
+                returned = await _call_candidate(self._candidate, case, instance.tools)
+                answer, telemetry = unwrap_answer(returned)
             telemetry = spent(ledger, telemetry)
+            # What the candidate read, beside its answer and never in it: no grader or judge reads it as the answer.
+            read = returned.documents if isinstance(returned, Answer) else None
         except ApparatusError:
             raise  # the rig's fault under the candidate (a replay miss fails the run) is the engine's to record
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell, unless the provider's answer says the account was refused or the provider declined the call
@@ -976,6 +1013,26 @@ class CallableKind:
                 # The judge's material is the rig: the cell is excluded, and with no evidence to read it
                 # stores no answer either, since a judged kind's every stored answer carries its evidence.
                 return CandidateOutput(infra_errors=[str(unrenderable)], telemetry=telemetry)
+        claim_evidence: ClaimEvidence | None = None
+        if self._claims is not None:
+            graded = answer.answer if isinstance(answer, WorldOutcome) else answer
+            if read is None and self._claims.reads_run_documents:
+                raise _DocumentsUndeclared(
+                    f"the runner answered case {_case_called(test_case, self._positions)} without saying what it "
+                    f"read, and Claims {self._claims.name!r} reads the candidate's own documents "
+                    "(grounded_in='run'): return Answer(value, documents=[...]), with documents=() where it read none",
+                    kind=JUDGED_CALLABLE_KIND,
+                    declared=self.judged_artifact,
+                    has_evidence=evidence is not None,
+                )
+            try:
+                claim_evidence = self._claims.evidence(
+                    case, graded, cast(tuple[Document, ...], read) if read is not None else None
+                )
+            except ValueError as unrenderable:
+                # The cut and the case's documents are the rig: the cell is excluded, and stores no answer, since a
+                # claims-graded answer is stored with what its claims are read from.
+                return CandidateOutput(infra_errors=[str(unrenderable)], telemetry=telemetry)
         trace = [_as_stored(answer)]
         measures: dict[str, bool | float | str] = {}
         if self._classifies:
@@ -995,6 +1052,7 @@ class CallableKind:
                     output=trace,
                     infra_errors=[said],
                     judge_evidence=evidence,
+                    claim_evidence=claim_evidence,
                     telemetry=telemetry,
                 )
             # Held to its declaration first: a function grader's every value is a verdict or a reading, never a cell
@@ -1002,7 +1060,7 @@ class CallableKind:
             if (contradicted := self._contradiction(name, score, _case_called(test_case, self._positions))) is not None:
                 raise _GraderContradictsItsDeclaration(
                     contradicted,
-                    kind=CALLABLE_KIND if self._judge is None else JUDGED_CALLABLE_KIND,
+                    kind=CALLABLE_KIND if self._judge is None and self._claims is None else JUDGED_CALLABLE_KIND,
                     declared=self.judged_artifact,
                     has_evidence=evidence is not None,
                 )
@@ -1013,10 +1071,17 @@ class CallableKind:
                     output=trace,
                     infra_errors=[f"the grader {name} returned {score!r}, not a finite number or a bool"],
                     judge_evidence=evidence,
+                    claim_evidence=claim_evidence,
                     telemetry=telemetry,
                 )
             measures[name] = float(score)
-        return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence, telemetry=telemetry)
+        return CandidateOutput(
+            output=trace,
+            host_measures=measures,
+            judge_evidence=evidence,
+            claim_evidence=claim_evidence,
+            telemetry=telemetry,
+        )
 
     def _contradiction(self, name: str, score: object, case: str) -> str | None:
         """What is wrong with a function grader's value on ``case``, by what it declares it grades, and the fix;
@@ -1413,6 +1478,7 @@ def _template_id(
     goal_checks: Sequence[str] = (),
     *,
     intent: str | None = None,
+    claims: Claims | None = None,
 ) -> str:
     """The id the case set is addressed by: its cases, a classifier's expected labels and a judge's rubric with them.
 
@@ -1422,10 +1488,12 @@ def _template_id(
     shared with an unjudged call. The judge's model is not part of it: that is the run's apparatus, which
     two runs of one template are compared on. A world run's starting states and goal checks are its cases'
     and its template's, so they are addressed too. A judged run's intent is what its judge reads as each
-    case's task, so two judged calls that state different intents never share, or overwrite, one template.
+    case's task, so two judged calls that state different intents never share, or overwrite, one template. A claims
+    grader's criterion is the template's too, and so is what a page calls its unit: addressed, so renaming a unit is a
+    new case set, never an edit of the one earlier runs were stored against.
     """
     addressed: Any = cases
-    if labels is not None or judge is not None or seeds is not None:
+    if labels is not None or judge is not None or seeds is not None or claims is not None:
         addressed = {"cases": cases}
         if labels is not None:
             addressed["expected"] = labels
@@ -1438,6 +1506,8 @@ def _template_id(
         if seeds is not None:
             addressed["seeds"] = seeds
             addressed["goal_checks"] = list(goal_checks)
+        if claims is not None:
+            addressed["claims"] = {"criterion": claims.criterion.model_dump(mode="json"), "unit": claims.unit}
     try:
         digest = canonical_digest(addressed)
     except TypeError as unencodable:
@@ -1939,6 +2009,20 @@ class _WiredArm:
         return self.arm if self.arm is not None else self.model
 
 
+def judging_client(judge: Judge | None, claims: Claims | None) -> tuple[CompletionClients, str] | None:
+    """The client factory an eval's judge phase is built on, and the model it pins: the ``Judge``'s, else the
+    ``Claims``'s; ``None`` for an eval no model grades.
+
+    The two share one model (:func:`~threetears.evals.quick.graders.plan_graders` refuses two), since a run's judge
+    phase grades its rubric and its claims on one judge.
+    """
+    if judge is not None:
+        return judge.clients(), judge.model
+    if claims is not None:
+        return claims.clients(), claims.model
+    return None
+
+
 def _admit_nothing_to_check(_checked: object) -> None:
     """A template check of a host with nothing to check: it admits."""
 
@@ -1952,6 +2036,7 @@ def _launch_host(
     *,
     max_cost_usd: float | None = None,
     preparing: Sequence[_WiredArm] = (),
+    claims: Claims | None = None,
 ) -> LaunchHost:
     """``host`` as a launching host whose one kind runs each arm's kind over ``cases``, judged by ``judge`` when given.
 
@@ -1965,10 +2050,12 @@ def _launch_host(
     A judged kind's launcher builds its judge as every judged launcher does, with
     :func:`~threetears.evals.run.build_judge_service` over the run's template, on a host whose client
     factory lends the judge's client — so the run's judge pin, its per-dimension attribution and the
-    service that scores it come from one resolution.
+    service that scores it come from one resolution. A claims grader is judged the same way, on its own lent client
+    where there is no ``Judge`` (the two share one model), and its web search, if it has one, is the run's.
     """
     declared: WorldRegistry | None = host.profile.world
-    kind_name = CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND
+    lent = judging_client(judge, claims)
+    kind_name = CALLABLE_KIND if lent is None else JUDGED_CALLABLE_KIND
 
     def place(_run: EvalRun) -> dict[str, WorldPlacement]:
         assert declared is not None
@@ -1993,16 +2080,18 @@ def _launch_host(
     async def launch(request: LaunchRequest) -> EvalRun:
         arm = arm_of(request)
         run_judge: RunJudge | None = None
-        if judge is not None:
-            # It reads the judge configs the template names from the store, so it runs off the loop.
+        if lent is not None:
+            clients, judge_model = lent
+            # It reads the judge configs the template names from the store, so it runs off the loop. A claims-only
+            # eval's kind renders nothing for a rubric: its criterion is graded by the judge alone.
             run_judge = await run_blocking(
                 host.blocking_executor,
                 partial(
                     build_judge_service,
-                    replace(host, clients=judge.clients()),
+                    replace(host, clients=clients),
                     request.template,
-                    judge.model,
-                    judged_artifact=JudgedArtifact.DOCUMENT,
+                    judge_model,
+                    judged_artifact=JudgedArtifact.UNJUDGED if judge is None else JudgedArtifact.DOCUMENT,
                 ),
             )
         subject = SubjectSnapshot(subject_id=arm.subject, subject_label=arm.subject, state={})
@@ -2019,13 +2108,14 @@ def _launch_host(
                 # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
                 max_concurrent_cells=CallableKind.max_concurrent_cells,
                 observed=arm.observed,
+                web_search=claims.search if claims is not None else None,
             ),
         )
 
     # The judge pin is the one launch argument a judged kind honours: an eval names its judge's model. No cassette
     # mode is: a world of lookups records and replays its own answers (ToolRecording), never the engine's corpus.
     unhonoured: set[LaunchArgument] = {"simulator_model", "judge_config_ids", "n_variations", "cassette_mode"}
-    if judge is None:
+    if lent is None:
         unhonoured.add("judge_model")
 
     def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
@@ -2048,6 +2138,8 @@ def _launch_host(
     }
     if judge is None:
         ignored.add("rubric")
+    if claims is None:
+        ignored.add("claim_criteria")
     # The launch registry is the template checks' ``kinds``. A one-call run admits no template through the engine, so
     # each check admits: a decision stated here rather than a default.
     checks = TemplateChecks(
@@ -2130,6 +2222,7 @@ def _kind_factory(
     recording: ToolRecording | None,
     ranges: Mapping[str, tuple[float, float]],
     positions: Mapping[str, int],
+    claims: Claims | None = None,
 ) -> KindFactory:
     """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind,
     each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
@@ -2144,6 +2237,7 @@ def _kind_factory(
             recording=recording,
             ranges=ranges,
             positions=positions,
+            claims=claims,
         )
         return lambda _cell: kind
     stateful = world
@@ -2157,6 +2251,7 @@ def _kind_factory(
             judge=judge,
             ranges=ranges,
             positions=positions,
+            claims=claims,
         )
 
     def cell_kind(context: CellContext) -> WorldCellKind:
@@ -2176,6 +2271,7 @@ def _logged_kind_factory(
     judge: Judge | None,
     ranges: Mapping[str, tuple[float, float]],
     positions: Mapping[str, int],
+    claims: Claims | None = None,
 ) -> KindFactory:
     """The factory building each cell's kind for a logged runner: the cell's case and repeat served from the log,
     each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
@@ -2190,6 +2286,7 @@ def _logged_kind_factory(
             judge=judge,
             ranges=ranges,
             positions=positions,
+            claims=claims,
         )
 
     return cell_kind
@@ -2262,6 +2359,7 @@ async def launch_arms(
     intent: str | None = None,
     world: World | None = None,
     goal_checks: Sequence[str] = (),
+    claims: Claims | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     max_cost_usd: float | None = None,
     subject: str | None = None,
@@ -2311,6 +2409,8 @@ async def launch_arms(
     :param intent: What every case asks, which a judge reads; ``None`` takes the first line of the runners' docstring.
     :param world: The world every arm's agent acts on, or ``None``.
     :param goal_checks: Goal-state checks over a world with state, each reported as passed or failed per cell.
+    :param claims: The claims grader every arm's answers are graded by, on the judge's model, or ``None``. Its
+        criterion is the template's, so it is part of what the case set's id digests.
     :param k: Repeats per case, per arm.
     :param max_cost_usd: The most each arm's run may spend, in US dollars; ``None`` runs uncapped, which every summary
         states.
@@ -2338,7 +2438,7 @@ async def launch_arms(
     stimulus = [{key: value for key, value in case.items() if key not in RESERVED_CASE_KEYS} for case in plain_cases]
     refuse_an_unusable_cap(max_cost_usd)
     goal_checks = list(goal_checks)
-    if not scorers and expected is None and judge is None and not goal_checks:
+    if not scorers and expected is None and judge is None and claims is None and not goal_checks:
         raise ValueError(
             "an eval needs at least one grader — a function, a field name, an expression or a Judge: a run nothing "
             "grades measures nothing"
@@ -2351,7 +2451,7 @@ async def launch_arms(
     _refuse_a_sync_candidate_handed_tools(arms, why="a world's tools" if world is not None else None)
     labels = None if expected is None else _expected_labels(stimulus, expected, names)
     seeds = _world_seeds(world, given_seeds, goal_checks, host, names)
-    _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
+    _refuse_an_undeclared_callable_contract(host, judged=judge is not None or claims is not None)
     _refuse_undeclared_measures(host, scorers)
     models: list[str] = []
     for arm in arms:
@@ -2363,18 +2463,26 @@ async def launch_arms(
                     f"{arm.candidate!r} has no __name__ to label its arm by; name the arm ({{'<name>': runner}})"
                 )
         models.append(model)
-    graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
+    graded_by = (
+        "the judge and every scorer grade"
+        if judge is not None
+        else "the claims grader and every scorer grade"
+        if claims is not None
+        else "every scorer grades"
+    )
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
     addressed_intent = template_intent if judge is not None else None
-    template_id = _template_id(addressed, labels, judge, seeds, goal_checks, intent=addressed_intent)
+    template_id = _template_id(addressed, labels, judge, seeds, goal_checks, intent=addressed_intent, claims=claims)
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
         name=template_name,
         intent=template_intent,
-        candidate_kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+        candidate_kind=CALLABLE_KIND if judge is None and claims is None else JUDGED_CALLABLE_KIND,
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
+        claim_criteria=[claims.criterion] if claims is not None else [],
+        claim_unit_names={claims.name: claims.unit} if claims is not None else {},
     )
 
     def cases_of(template_id: str) -> list[EvalTestCase]:
@@ -2433,6 +2541,7 @@ async def launch_arms(
                     None if seeds is None else seeds[: earlier.first_cases],
                     goal_checks,
                     intent=addressed_intent,
+                    claims=claims,
                 ),
             )
         )
@@ -2520,6 +2629,7 @@ async def launch_arms(
                 judge=judge,
                 ranges=ranges,
                 positions=positions,
+                claims=claims,
             )
             if isinstance(arm.candidate, Log)
             else _kind_factory(
@@ -2532,6 +2642,7 @@ async def launch_arms(
                 recording=recording,
                 ranges=ranges,
                 positions=positions,
+                claims=claims,
             ),
             arm=arm.arm,
             shared_subject=subject,
@@ -2549,6 +2660,7 @@ async def launch_arms(
         world,
         max_cost_usd=max_cost_usd,
         preparing=preparing,
+        claims=claims,
     )
 
     # The order the bet reads, committed before any answer: the earlier launches' cases where they stand, and this
@@ -2581,7 +2693,7 @@ async def launch_arms(
                 models=[] if wired_arm.requested_model is None else [wired_arm.requested_model],
                 k_runs=k,
                 scope_id=scope_id,
-                judge_model=judge.model if judge is not None else None,
+                judge_model=judge.model if judge is not None else claims.model if claims is not None else None,
                 overlays=dict(arm.levers) if arm.levers else None,
                 max_cost_usd=max_cost_usd,
                 launch_group=group,
