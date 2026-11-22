@@ -12,9 +12,14 @@ packages (bumped in lock-step).
 no turn) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
 claims call and spends nothing; its grade lists no claim (`calls=()`), and its tally is marked `silent` with no unit
 and no claim. A silent cell carries no claim reading at all: it is in no reading's population, never reads as 0 false
-claims in its arm's mean, and is no loss, so it never withholds a reading. Each arm counts its silent cells beside
-its mean, and a class-B caveat (`claims_silent:<criterion>`) names each arm that has some, with a line on the page
-under the scoreboard. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
+claims in its arm's mean, and is no loss. But silence is missing data that may track arm (an arm quiet on its hard
+cells would lower its false claims by selection), so the test that withholds a reading on uneven loss counts silent
+cells as unread beside lost ones: arms silent on shares of cells that differ beyond chance have the reading withheld
+(`trials_lost`). The same test now counts the cells a host's claim reader could not read beside lost ones, for the
+readings derived from the criterion. Each arm counts its silent cells beside its mean, and a class-B caveat
+(`claims_silent:<criterion>`) names each arm that has some, with a line on the page under the scoreboard saying the
+candidate said nothing on so many of that arm's cells; its step takes no action (`candidate_silent`, new), since
+nothing in the catalogue repairs what a candidate chose to say. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
 a kind that forgot from a candidate that said nothing.
 
 **Changed (#1287):** claim evidence whose `documents` is None under a criterion naming `grounded_in` is no longer
@@ -40,10 +45,14 @@ claim criteria a result lost, whole or their web step alone, through `rejudge_re
 names them (`Regrade.claim_criteria`, new) and what grading them cost (`Regrade.claim_cost_usd`, new). Applied, a
 criterion with a web budget and no `web_search` is refused by name before anything is written or spent. The
 `result_regrade` action, which makes no model call, now refuses `apply` on a result with such criteria as it refuses
-one with failed judged dims; `judges=false` stores the re-graded checks alone.
+one with failed judged dims, and its `apply` description says so; `judges=false` stores the re-graded checks alone.
+A criterion still pending is no loss and never due a paid re-grade: `regrade` reports it apart
+(`Regrade.claims_pending`, new) and, applied, settles it from the stored grade with no call and no web search, and the
+action applies over it.
 
 **For hosts:** render `segments=()` for a cell whose candidate said nothing, rather than leaving `claim_evidence`
-None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent` and the report input's `Judged.silent`
+None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent`, the report input's `Judged.silent` and
+the no-action reason `candidate_silent`
 (each left out while unset, so no stored document without a silent cell moves) and the loss `documents_undeclared`.
 The build before them is at the same unreleased core minor (15.24) and refuses each by name (an empty `segments` or
 `calls` as too short, the new fields as `extra_forbidden`, the loss as one it does not know), so deploy and roll back

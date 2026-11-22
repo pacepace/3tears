@@ -988,7 +988,8 @@ class JudgedArm(EvalDocumentModel):
         description=(
             "On a claim reading: cells whose candidate said nothing (`ClaimTally.silent`), left out of `n` and the "
             "mean and counted as no loss: with no unit and no claim the cell has no denominator, so it never reads as 0 "
-            "false claims."
+            "false claims. Counted as unread, beside lost cells, by the test that withholds a reading whose arms left "
+            "different shares of cells unread."
         ),
     )
     n_web_skipped: int = Field(

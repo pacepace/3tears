@@ -29,7 +29,8 @@ passes), or one of whose checks no longer evaluates.
 
 **Lost claim criteria are graded again through the same door** (:func:`~threetears.evals.run.rejudge.claims_due_rejudge`:
 each lost whole, and each whose web step alone was lost), on the run's judge, and a criterion with a web budget on the
-web search the caller hands in; one with no search to search on is refused by name before anything is written.
+web search the caller hands in; one with no search to search on is refused by name before anything is written. A
+criterion still pending is no loss: applying settles it from its stored grade with no call, and no port is asked for.
 
 **Judged dims are asked again, never re-scored from a guess.** A judge's reply is not stored, so a judged dim can be
 graded again only by asking its judge. The dims re-asked are those the result's judging failed to answer
@@ -75,7 +76,12 @@ from threetears.evals.schema.goal_grammar import (
     speaks_the_goal_language,
 )
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
+from threetears.evals.schema.models import (
+    CLAIM_PENDING,
+    NON_TERMINAL_RUN_STATUSES,
+    ApparatusProvenance,
+    GoalStateOutcome,
+)
 from threetears.evals.schema.world_events import Firings
 
 if TYPE_CHECKING:
@@ -135,6 +141,11 @@ class Regrade(EvalBaseModel):
         default_factory=list,
         description="The claim criteria the result lost, whole or their web step alone: graded again when applied, "
         "otherwise what applying grades again. A criterion lost to the trace's cap is never among them.",
+    )
+    claims_pending: list[str] = Field(
+        default_factory=list,
+        description="The claim criteria whose tally still waits on the stored grade: no loss, and settled from that "
+        "grade with no call when applied (lost as trace_lost where no trace was ever stored), never graded again.",
     )
     claim_cost_usd: float | None = Field(
         default=None,
@@ -201,6 +212,7 @@ async def regrade(
     report.judges_not_regraded = read.judges_not_regraded
     claims = list(read.claim_criteria)
     report.claim_criteria = claims
+    report.claims_pending = list(read.claims_pending)
     if apply and (failed or claims):
         # Refused here, before the checks are written, rather than after.
         host.completion_clients("a re-grade's judged dims and claim criteria")
@@ -216,7 +228,8 @@ async def regrade(
                 f"result '{result.id}' changed while it was being re-graded; nothing was stored",
                 remedy="re-grade it again",
             ) from raced
-    if apply and (failed or claims):
+    if apply and (failed or claims or report.claims_pending):
+        # A pending criterion alone asks nothing: the re-judge settles it from the stored grade and returns.
         rejudged = await rejudge_result(host, result.id, scope_id, web_search=web_search, external_rates=external_rates)
         if claims and rejudged.claim_rescores:
             report.claim_cost_usd = rejudged.claim_rescores[-1].cost_usd
@@ -260,6 +273,7 @@ class _Read:
     failed_judge_dims: list[str]
     judges_not_regraded: str | None
     claim_criteria: tuple[str, ...]
+    claims_pending: tuple[str, ...]
 
 
 def _read(storage: EvalStorage, result_id: str, scope_id: str, *, judges: bool) -> _Read:
@@ -296,6 +310,9 @@ def _read(storage: EvalStorage, result_id: str, scope_id: str, *, judges: bool) 
         failed_judge_dims=failed,
         judges_not_regraded=why_not,
         claim_criteria=tuple(dict.fromkeys(name for names in claims_due_rejudge(result) for name in names))
+        if judges
+        else (),
+        claims_pending=tuple(name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING)
         if judges
         else (),
     )

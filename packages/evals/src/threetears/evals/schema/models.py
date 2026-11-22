@@ -6789,8 +6789,9 @@ class ClaimTally(CoreShapeModel):
         exclude_if=lambda value: not value,
         description="The candidate said nothing in the cell (its claim evidence holds no segment): graded with no "
         "call, it counts no unit and no claim, and carries no claim reading at all, so it is in no reading's "
-        "population and never reads as 0 false claims; it is no loss, and each arm counts it apart. False (left out) "
-        "for a cell with something said.",
+        "population and never reads as 0 false claims; it is no loss, and each arm counts it apart. Its absence may "
+        "track arm, so arms silent on shares of cells that differ beyond chance have the readings withheld, as uneven "
+        "losses do. False (left out) for a cell with something said.",
     )
     grounded: bool = Field(
         default=False,

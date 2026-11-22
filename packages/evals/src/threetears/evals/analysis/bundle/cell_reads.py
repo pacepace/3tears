@@ -202,9 +202,9 @@ def judged_measures(
     (:func:`~threetears.evals.kernel.claims.readings.describe_judged_reading`), a rate or a share and never a level on
     a rubric scale. Only the three that rank are summarised here; the diagnostics stay in the projection. Each arm
     counts the cells its criterion lost, the cells still pending and the cells its candidate said nothing in apart from
-    its mean, a pending or silent cell as no loss,
-    and the cells whose web check skipped a claim past its budget. The reading is withheld (``trials_lost``) where two
-    arms' shares of cells lost differ beyond chance, by one test across every arm (:func:`_differential_claim_loss`).
+    its mean, a pending or silent cell as no loss, and the cells whose web check skipped a claim past its budget. The
+    reading is withheld (``trials_lost``) where the arms' shares of cells left unread (lost, silent, or unread by the
+    host's reader) differ beyond chance, by one test across every arm (:func:`_differential_claim_loss`).
 
     :param records: The assembly's score projection rows.
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
@@ -347,6 +347,12 @@ def _web_skipped_cells(members: Sequence[ResultView], criterion: str) -> int:
 #: The level the test of claim losses across arms rejects at: a reading whose losses it calls uneven is withheld.
 _CLAIM_LOSS_LEVEL = 0.05
 
+#: The outcomes of a claim reading's row that leave a cell the reading could have been read on with no reading: its
+#: criterion lost it, its candidate said nothing in it, or the host's reader could not read it. Each is missing data
+#: that may track arm (an arm going quiet on its hard cells lowers its false claims by selection), so the test of
+#: uneven loss counts them alike. Only a lost cell counts as a loss; a pending cell is in no side, not yet known.
+_UNREAD_CLAIM_OUTCOMES: frozenset[str] = frozenset({CLAIM_LOST_OUTCOME, CLAIM_SILENT_OUTCOME, CLAIM_UNREAD_OUTCOME})
+
 
 def _web_lost_cells(members: Sequence[ResultView], criterion: str) -> int:
     """How many of a cell's results lost the criterion's web step to a failure (the port, a malformed reply, a verdict
@@ -359,10 +365,13 @@ def _web_lost_cells(members: Sequence[ResultView], criterion: str) -> int:
 
 
 def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bool:
-    """Whether a claim reading's arms lost its cells at shares that differ beyond chance, by one test across every arm.
+    """Whether a claim reading's arms left its cells unread at shares that differ beyond chance, by one test across
+    every arm.
 
-    Each cell the reading could have been read on (read, or lost; a pending or harness-faulted cell is in neither) is
-    one trial of a case: lost or kept. The test is the Cochran-Mantel-Haenszel test of general association between arm
+    Each cell the reading could have been read on (read, or left unread: lost, silent, or unread by the host's reader
+    for a derived reading; a pending or harness-faulted cell is in neither) is one trial of a case: unread or kept. A
+    silent cell is no loss and is in no mean, but its absence may track arm as a loss's may, so an arm silent on a
+    sharply higher share of cells has the reading withheld as one that lost them would. The test is the Cochran-Mantel-Haenszel test of general association between arm
     and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
     is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
     of moves nothing on its own. Its p is the statistic's conditional permutation p at every size, never the chi-square
@@ -404,10 +413,10 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
     tables: dict[str, list[tuple[int, bool]]] = defaultdict(list)
     for arm, rows in enumerate(by_cell.values()):
         for row in rows:
-            if row.outcome == CLAIM_LOST_OUTCOME or (
+            if row.outcome in _UNREAD_CLAIM_OUTCOMES or (
                 row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES and row.value is not None
             ):
-                tables[row.test_case_id].append((arm, row.outcome == CLAIM_LOST_OUTCOME))
+                tables[row.test_case_id].append((arm, row.outcome in _UNREAD_CLAIM_OUTCOMES))
     informative = [
         cells
         for _, cells in sorted(tables.items())

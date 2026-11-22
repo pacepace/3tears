@@ -37,6 +37,7 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.analysis.agreement import claim_judge_keys
 from threetears.evals.analysis.bundle.cell_reads import judged_measures, judged_values
 from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.caveats import caveat_step
 from threetears.evals.analysis.bundle.bars import bar_adjudications
 from threetears.evals.analysis.first_screen import RANKS
 from threetears.evals.analysis.floors import floor_readings
@@ -493,9 +494,11 @@ def _lookup_silent(case: int, k: int) -> dict[str, Any]:
     return held
 
 
-def test_an_arm_silent_in_most_cells_is_counted_apart_read_on_what_it_said_and_never_a_loss() -> None:
+def test_an_arm_silent_in_most_cells_is_counted_apart_read_on_what_it_said_never_a_loss_and_withheld() -> None:
     """Silent cells have no denominator: each ranked reading leaves them out of ``n`` and the mean (never a 0 false
-    claims in the arm's mean), counts them on the arm, withholds nothing for them, and the control is untouched."""
+    claims in the arm's mean) and counts them on the arm, never as a loss. Silence is missing data that may track arm
+    (an arm quiet on its hard cells lowers its false claims by selection), so an arm silent on a sharply higher share
+    of cells than the control has each reading withheld, as a lopsided loss does."""
     bundle = _bundle(lookup=_lookup_silent)
     speaking = [(case, k) for case in range(CASES) for k in range(1, K + 1) if not (case * K + k) % 3]
     silent = CASES * K - len(speaking)
@@ -512,13 +515,30 @@ def test_an_arm_silent_in_most_cells_is_counted_apart_read_on_what_it_said_and_n
             0,
         )
         assert (memory.n, memory.n_claim_silent) == (CASES * K, 0)
-        assert measure.withheld is None, "silence is no loss, so nothing is withheld for it"
+        assert measure.withheld is not None and measure.withheld.reason == "trials_lost"
     rate = next(m for m in bundle.judged_measures if m.name == f"{RULES}_false_per_unit")
     lookup = next(arm for arm in rate.arms if arm.variant_key == fixture_variant_key(LOOKUP))
     said = [
         float(_lookup_cell(case, k)["claim_tallies"][RULES].by_judge[0].asserted_contradicted) for case, k in speaking
     ]
     assert lookup.mean == pytest.approx(sum(said) / len(said)), "the mean is over the cells the arm spoke in"
+
+
+def test_equal_silence_on_both_arms_withholds_nothing() -> None:
+    """The control: both arms silent on the same share of cells, in the same cases, so silence tracks no arm and every
+    reading is read on the cells each spoke in."""
+
+    def memory_silent(case: int, k: int) -> dict[str, Any]:
+        held = _memory_cell(case, k)
+        if (case * K + k) % 3:
+            held["claim_tallies"][RULES] = _SILENT_TALLY
+        return held
+
+    bundle = _bundle(memory=memory_silent, lookup=_lookup_silent)
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        assert {arm.n_claim_silent for arm in measure.arms} == {16}
+        assert measure.withheld is None, name
 
 
 def test_a_silent_arm_raises_a_class_b_caveat_naming_it_and_the_page_says_so() -> None:
@@ -528,6 +548,8 @@ def test_a_silent_arm_raises_a_class_b_caveat_naming_it_and_the_page_says_so() -
     reading = built.judged[f"{RULES}_false_per_unit"]
 
     assert (caveat.kind, caveat.cls) == ("claims_silent", "B")
+    step = caveat_step(caveat)
+    assert (step.remedy, step.no_action) == ("no_action", "candidate_silent"), "no rig is blamed for silence"
     assert caveat.arms == list(reading.silent), "only the arm that was silent"
     assert sum(reading.silent.values()) == 16 and not reading.lost
     assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "silence is never a loss"

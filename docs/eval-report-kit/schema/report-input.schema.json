@@ -3332,7 +3332,8 @@
         "unclassed_kind",
         "method_only",
         "no_interval_to_gain",
-        "lift_not_shown"
+        "lift_not_shown",
+        "candidate_silent"
        ],
        "type": "string"
       },

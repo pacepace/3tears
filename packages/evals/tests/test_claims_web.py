@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,8 @@ from threetears.evals.kernel.claims.readings import claim_tally
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.lifecycle import rejudge_result
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
+from threetears.evals.ops import OpsHost
 from threetears.evals.run import regrade
 from threetears.evals.run.runner import StoredCell, StoredCells, judge_witnessed_output
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
@@ -1027,6 +1030,72 @@ async def test_a_regrade_of_a_lost_web_criterion_with_no_port_is_refused_by_name
     assert again.asked == [], "refused before any call"
     after, etag_after = off_loop(host.storage.load_eval_result_with_etag, result.id, "u")
     assert (after, etag_after) == (before, etag), "nothing was written, the re-graded checks included"
+
+
+async def test_the_regrade_action_names_a_lost_claim_criterion_and_refuses_to_grade_it_with_no_model_call() -> None:
+    """The action makes no model call: it reports the lost criterion, refuses ``apply`` naming it, and with
+    ``judges=false`` stores the re-graded checks alone, asking and searching nothing."""
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), again, _FakeWebSearch())
+    before = off_loop(host.storage.load_eval_result, result.id, "u")
+    (tool, *_) = eval_catalogue().mount_all(standard_tools())
+    caller = Caller(scope_id="u", identity="agent:regrade")
+
+    async def call(**params: Any) -> Any:
+        return await tool.call(
+            {"action": "result_regrade", "result_id": result.id, **params}, host=OpsHost.reading(host), caller=caller
+        )
+
+    reported, refused, checks_only = await call(), await call(apply=True), await call(apply=True, judges=False)
+
+    assert not reported.is_error and reported.structured is not None
+    assert reported.structured["claim_criteria"] == [_CRITERION]
+    assert refused.is_error and _CRITERION in refused.text and "asking its judge again spends" in refused.text
+    assert not checks_only.is_error and checks_only.structured is not None and checks_only.structured["applied"]
+    assert again.asked == []
+    after = off_loop(host.storage.load_eval_result, result.id, "u")
+    assert after is not None and before is not None and after.claim_failures == before.claim_failures
+
+
+async def _pending_web_cell() -> tuple[Any, Any, _FakeWebJudge]:
+    """A web criterion graded and its grade stored, its row then left pending, as a row written before its trace is."""
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(), again, _FakeWebSearch())
+    assert result.claim_tallies and not result.claim_failures
+    pending = result.model_copy(update={"claim_tallies": {}, "claim_failures": {_CRITERION: "trace_pending"}})
+    _, etag = off_loop(host.storage.load_eval_result_with_etag, result.id, "u")
+    off_loop(partial(host.storage.replace_eval_result, pending, if_match=etag))
+    return host, result, again
+
+
+async def test_a_pending_criterion_is_never_due_a_paid_regrade_and_is_settled_free_with_no_port() -> None:
+    host, result, again = await _pending_web_cell()
+
+    reported = await regrade(host, result.id, "u", checks=False)
+    assert (reported.claim_criteria, reported.claims_pending) == ([], [_CRITERION]), "pending is no loss to pay for"
+
+    applied = await regrade(host, result.id, "u", checks=False, apply=True)
+
+    assert applied.claim_criteria == [] and again.asked == [], "settled with no call and no port"
+    stored = off_loop(host.storage.load_eval_result, result.id, "u")
+    assert stored is not None and stored.claim_failures == {}
+    assert stored.claim_tallies[_CRITERION] == result.claim_tallies[_CRITERION], "recomputed from the stored grade"
+
+
+async def test_the_regrade_action_applies_over_a_pending_criterion_without_refusing_it() -> None:
+    host, result, again = await _pending_web_cell()
+    (tool, *_) = eval_catalogue().mount_all(standard_tools())
+
+    applied = await tool.call(
+        {"action": "result_regrade", "result_id": result.id, "apply": True},
+        host=OpsHost.reading(host),
+        caller=Caller(scope_id="u", identity="agent:regrade"),
+    )
+
+    assert not applied.is_error and applied.structured is not None and applied.structured["claim_criteria"] == []
+    assert again.asked == []
+    stored = off_loop(host.storage.load_eval_result, result.id, "u")
+    assert stored is not None and stored.claim_failures == {}
 
 
 async def test_a_take_up_grades_the_cells_it_runs_on_the_runs_own_web_search() -> None:

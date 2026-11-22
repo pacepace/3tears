@@ -979,10 +979,20 @@ class ResultRegradeParams(EvalBaseModel):
     result_id: ResultId
     checks: Annotated[bool, Field(description="Re-grade the result's check dims (goal checks) from its trace.")] = True
     judges: Annotated[
-        bool, Field(description="Name its judged dims whose judging failed; this action never asks a judge.")
+        bool,
+        Field(
+            description="Name its judged dims whose judging failed and the claim criteria it lost; this action never "
+            "asks a judge."
+        ),
     ] = True
     apply: Annotated[
-        bool, Field(description="Store the re-graded check verdicts; false (the default) reports and writes nothing.")
+        bool,
+        Field(
+            description="Store the re-graded check verdicts, and settle claim criteria still pending from their stored "
+            "grade at no cost; false (the default) reports and writes nothing. A result with judged dims whose judging "
+            "failed or claim criteria it lost is refused, since grading them again spends and this action makes no "
+            "model call: apply with judges=false to store the checks alone."
+        ),
     ] = False
 
 

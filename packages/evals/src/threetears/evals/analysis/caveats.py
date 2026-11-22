@@ -175,7 +175,8 @@ CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
         "claims_lost": "B",  # a claim criterion lost some cells: the reading rests on fewer than were run
         "claims_pending": "B",  # some cells' claim tallies wait on their stored grade: not yet known
         "claims_unread": "B",  # the host's claim reader could not read some cells: its derived readings rest on fewer
-        "claims_silent": "B",  # the candidate said nothing in some cells: the readings rest on the cells it spoke in
+        "claims_silent": "B",  # the candidate said nothing in some cells: the readings rest on the cells it spoke in,
+        # and an arm silent on a different share of cells is withheld as a lopsided loss is; no act repairs it
         "claims_web_skipped": "B",  # some cells' web checks skipped claims past their budget: read unverifiable
         "claims_web_lost": "B",  # some cells' web steps failed, a cause apart from the budget: read unverifiable
         "request_settings": "B",  # default: the code page's "request settings not confirmed"
@@ -242,8 +243,6 @@ _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
         "claims_lost": "resume_or_rerun",
         "claims_pending": "resume_or_rerun",
         "claims_unread": "repair_rig",
-        # A candidate silent in its cell was given no turn or was cut off: the session that ran it is what to look at.
-        "claims_silent": "repair_rig",
         "claims_web_skipped": "resume_or_rerun",
         "claims_web_lost": "repair_rig",
         "request_settings": "record_and_rerun",
@@ -1260,7 +1259,10 @@ def remedy(caveat: CaveatEntry) -> Remedy:
 
 
 def _no_action(caveat: CaveatEntry) -> NoActionReason:
-    """Why no act closes a caveat: its kind only ever lands in the method section, or the package does not class it."""
+    """Why no act closes a caveat: the candidate said nothing on some cells (what it did, never a rig's fault to
+    repair), its kind only ever lands in the method section, or the package does not class it."""
+    if caveat.kind == "claims_silent":
+        return "candidate_silent"
     return "method_only" if caveat.kind in CLASS_OF_KIND and CLASS_OF_KIND[caveat.kind] is None else "unclassed_kind"
 
 
