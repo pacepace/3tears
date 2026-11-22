@@ -20,18 +20,22 @@ search of its run stands behind it, and every check over it reads not available 
 :func:`repeat_agreement` pairs a first grade's claims with a repeat's, per question: the pass/fail pairs on truth (the
 claim read false or not) and on groundedness, and the web outcomes of the claims both readings decided on the web.
 
-:func:`repeat_ceiling` prices a repeat before it is made, at its worst case under the criterion's budgets.
+:func:`repeat_ceiling` prices a repeat before it is made, at its worst case under the criterion's budgets, and
+:func:`refuse_repeat_past_cap` refuses repeats whose worst cases pass the out-of-run cap.
 
 Engine-internal: nothing here is exported.
 """
 
 from __future__ import annotations
 
+import math
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from threetears.evals.kernel.claims.extraction import ExtractedClaim
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.claims.grading import (
     claim_evidence_digest,
     criterion_fingerprint,
@@ -84,6 +88,33 @@ def repeat_ceiling(
     if verification is None or web is None:
         return None
     return verification + web
+
+
+def refuse_repeat_past_cap(ceilings: Sequence[float | None], cap_usd: float | None, *, what: str) -> None:
+    """Refuse, before any call, repeats whose worst cases together pass the out-of-run cap, or that cannot be priced
+    under an enforced one: unknown is not $0.
+
+    :param ceilings: Each cell's worst case (:func:`repeat_ceiling`); None where it could not be priced.
+    :param cap_usd: The out-of-run cap; None where the host enforces none, and nothing is refused.
+    :param what: The repeat, as a refusal names it.
+    :raises ValidationFailedError: An unpriced cell under an enforced cap, or ceilings past it.
+    """
+    if cap_usd is None:
+        return
+    cap = round_half_even(cap_usd, 2)
+    if None in ceilings:
+        raise ValidationFailedError(
+            f"{what} cannot be priced before it is made: a judge's client cannot bound what a call costs, and the "
+            f"out-of-run cap ${cap} is enforced. Nothing was called",
+            remedy="give the host's client a rate for the judge's model, or name a judge it can price",
+        )
+    worst = math.fsum(c for c in ceilings if c is not None)
+    if worst > cap_usd:
+        raise ValidationFailedError(
+            f"{what} are priced at up to ${round_half_even(worst, 4)} under the criterion's repair budget, above the "
+            f"out-of-run cap ${cap}. Nothing was called",
+            remedy="a cheaper judge, or a larger out-of-run cap",
+        )
 
 
 @dataclass(frozen=True)

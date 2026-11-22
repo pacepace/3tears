@@ -64,9 +64,6 @@ ClaimTruthVerdict = Literal["contradicted", "true_ungrounded", "unverifiable", "
 #: agreement with itself), or another judge (``model``, a second judge's reading of the same claims and windows).
 ClaimRepeatAgainst = Literal["itself", "model"]
 
-#: What a web check of a claim found, as a stored web record says it.
-ClaimWebOutcome = Literal["true", "false", "inconclusive"]
-
 #: The strata of each stratifier, in the order a draw lists them.
 STRATA_OF: Final[Mapping[str, tuple[ClaimStratum, ...]]] = MappingProxyType(
     {
@@ -276,10 +273,10 @@ class ClaimItemRepeat(EvalDocumentModel, CoreShapeModel):
     grounded: bool | None = Field(
         default=None, description="Whether the repeat grounded the claim; None where its ground step read none."
     )
-    first_web: ClaimWebOutcome | None = Field(
+    first_web: Literal["true", "false", "inconclusive"] | None = Field(
         default=None, description="What the first grade's web check of the claim found; None where it checked none."
     )
-    web: ClaimWebOutcome | None = Field(
+    web: Literal["true", "false", "inconclusive"] | None = Field(
         default=None,
         description="What the repeat found reading the first grade's stored windows again; None where it read none. "
         "Nothing is searched.",
@@ -430,7 +427,6 @@ __all__ = [
     "ClaimItemView",
     "ClaimItemRepeat",
     "ClaimRepeatAgainst",
-    "ClaimWebOutcome",
     "ShownEvidence",
     "item_view_digest",
 ]

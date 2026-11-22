@@ -94,7 +94,6 @@
 "threetears.evals.schema.ClaimTally": "provisional",
 "threetears.evals.schema.ClaimTruthVerdict": "provisional",
 "threetears.evals.schema.ClaimVerdict": "provisional",
-"threetears.evals.schema.ClaimWebOutcome": "provisional",
 "threetears.evals.schema.ClientRequestSettings": "host-contract",
 "threetears.evals.schema.CompletenessSource": "provisional",
 "threetears.evals.schema.CompletionClient": "host-contract",

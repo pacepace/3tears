@@ -466,11 +466,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.ClaimWebOutcome": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
       "signature": "ClientRequestSettings(max_tokens: int, reasoning_max_tokens: int | None = None, reasoning_effort: StoredReasoningEffort | None = None, strict_output: bool = False, unsent_reasoning_max_tokens: int | None = None)",

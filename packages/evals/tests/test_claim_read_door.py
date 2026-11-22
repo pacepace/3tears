@@ -112,18 +112,23 @@ def _world(*, usd_per_call: float | None = 0.002) -> tuple[OpsHost, OpsFixture, 
     template = toyhost_template().model_copy(update={"claim_criteria": [CRITERION]})
     off_loop(storage.save_template, template)
     fingerprint = criterion_fingerprint(CRITERION, *criterion_steps(CRITERION, _FakeClaimsJudge()))
-    redefined = 0
+    redefined = shelves = 0
     for run_id in fixture.campaign.run_ids:
         run = off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE)
         assert run is not None
-        off_loop(storage.save_eval_run, run.model_copy(update={"template_id": template.id, "judge_model": JUDGE}))
+        off_loop(
+            storage.save_eval_run,
+            run.model_copy(update={"template_id": template.id, "judge_model": JUDGE, "judge_temperature": 0.0}),
+        )
         for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE):
             verdict = VERDICTS[int(result.test_case_id.rsplit("-", 1)[1]) % len(VERDICTS)]
             other = redefined < 2 and verdict == "supported"
             redefined += int(other)
+            # The built text names its cell; a shelf number stands for it, so no stored id reaches the sheet.
+            shelves += 1
             cell = graded_cell(
                 run_id,
-                result.id,
+                f"shelf {shelves}",
                 [verdict],
                 case_id=result.test_case_id,
                 grounded=[verdict != "unverifiable"],
@@ -234,7 +239,7 @@ async def test_a_plan_per_stratum_is_fixed_before_the_draw_and_one_past_its_stra
     assert planned == {"contradicted": 3, "true_ungrounded": 0, "unverifiable": 0, "supported": 4}
     assert past.is_error and "planned past" in past.text, past.text
     assert both.is_error and "one of the two" in both.text, both.text
-    assert unknown.is_error and "no stored grade" in unknown.text, unknown.text
+    assert unknown.is_error and "holds a stored grade" in unknown.text, unknown.text
 
 
 # --- the sheet gives nothing away ------------------------------------------------------------------------------

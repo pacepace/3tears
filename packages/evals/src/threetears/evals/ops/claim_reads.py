@@ -40,7 +40,6 @@ catalogue: none is exported from :mod:`threetears.evals.ops`.
 from __future__ import annotations
 
 import hashlib
-import math
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -61,7 +60,7 @@ from threetears.evals.analysis.claim_read import (
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import claim_evidence_digest, criterion_fingerprint, criterion_steps
-from threetears.evals.kernel.claims.repeat import repeat_ceiling, repeat_grade
+from threetears.evals.kernel.claims.repeat import refuse_repeat_past_cap, repeat_ceiling, repeat_grade
 from threetears.evals.kernel.errors import ConflictError, EvalServiceError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.job_context import running_job
@@ -1164,20 +1163,11 @@ async def claim_read_repeat(
             await refresh_prices(client)
         for cell in plan.cells:
             cell.ceiling = repeat_ceiling(cell.criterion, cell.evidence, key=cell.key, client=plan.clients[cell.model])
-        ceilings = [cell.ceiling for cell in plan.cells]
-        if cap is not None and None in ceilings:
-            raise ValidationFailedError(
-                f"the repeat of claim read {read_id} cannot be priced before it is made: a judge's client cannot "
-                f"bound what a call costs, and the out-of-run cap ${cap} is enforced. Nothing was called",
-                remedy="give the host's client a rate for the judge's model, or name a judge it can price",
-            )
-        worst = math.fsum(c for c in ceilings if c is not None)
-        if cap is not None and worst > cap:
-            raise ValidationFailedError(
-                f"the repeat of claim read {read_id}'s {len(plan.cells)} cell(s) is priced at up to ${worst:.4f} "
-                f"under the criterion's repair budget, above the out-of-run cap ${cap}. Nothing was called",
-                remedy="a cheaper judge, or a larger out-of-run cap",
-            )
+        refuse_repeat_past_cap(
+            [cell.ceiling for cell in plan.cells],
+            cap,
+            what=f"the repeat of claim read {read_id}'s {len(plan.cells)} cell(s)",
+        )
     # prawduct:ok-broad-except — not handled: the clients built are released, and what refused is re-raised
     except BaseException:
         await release()
@@ -1280,5 +1270,4 @@ __all__ = [
     "claim_read_repeat",
     "claim_read_sheet",
     "claim_reads_list",
-    "keep_repeats",
 ]
