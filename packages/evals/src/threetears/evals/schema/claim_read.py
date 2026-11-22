@@ -48,6 +48,12 @@ ClaimStratifier = Literal["truth", "grounded"]
 #: One stratum of a draw: a truth verdict, or ``grounded`` / ``ungrounded``.
 ClaimStratum = Literal["contradicted", "true_ungrounded", "unverifiable", "supported", "grounded", "ungrounded"]
 
+#: Why a draw left a claim out: its grade was made under another definition of the criterion (``redefined``); its
+#: stored evidence is not what was graded (``other_evidence``); a recording served its grade's web results, so no live
+#: search of its run stands behind it (``replayed``); it restates an earlier claim, whose verdict it takes
+#: (``restatement``); no ground step read it, where groundedness is asked or stratified by (``no_ground_reading``).
+ClaimExclusion = Literal["redefined", "other_evidence", "replayed", "restatement", "no_ground_reading"]
+
 #: A truth verdict, as a graded claim stores it.
 ClaimTruthVerdict = Literal["contradicted", "true_ungrounded", "unverifiable", "supported"]
 
@@ -85,19 +91,31 @@ class ClaimStratumDraw(EvalDocumentModel, CoreShapeModel):
     stratum: ClaimStratum
     population: int = Field(ge=0, description="The claims in the stratum, over every arm.")
     cells: int = Field(ge=0, description="The distinct cells those claims come from.")
-    planned: int = Field(ge=0, description="The draws planned of it, fixed before any was drawn.")
-    drawn: int = Field(
+    planned: int = Field(
         ge=0,
-        description="The draws it gave: the planned count, or fewer where the per-cell cap left too few claims.",
+        description="The draws planned of it, fixed before any was drawn: each of its claims is selected at the rate "
+        "planned over population.",
+    )
+    drawn: int = Field(
+        ge=0, description="The draws it gave: about the plan, by chance, less what the per-cell cap took."
+    )
+    by_arm: dict[str, int] = Field(
+        default_factory=dict,
+        description="Its claims of each arm, by arm key: what each arm's answered items of the stratum stand for.",
     )
 
     @model_validator(mode="after")
-    def _drawn_within_planned_within_population(self) -> Self:
-        """:raises ValueError: More drawn than planned, or more planned than the stratum holds."""
-        if not self.drawn <= self.planned <= self.population:
+    def _within_population(self) -> Self:
+        """:raises ValueError: More planned or drawn than the stratum holds, or arms' claims that are not its own."""
+        if self.planned > self.population or self.drawn > self.population:
             raise ValueError(
-                f"stratum {self.stratum!r} draws {self.drawn} of {self.planned} planned of {self.population} claims; "
-                "a stratum draws at most what was planned, and plans at most what it holds"
+                f"stratum {self.stratum!r} plans {self.planned} and draws {self.drawn} of {self.population} claims; a "
+                "stratum plans and draws at most what it holds"
+            )
+        if sum(self.by_arm.values()) != self.population or any(count < 1 for count in self.by_arm.values()):
+            raise ValueError(
+                f"stratum {self.stratum!r}'s claims by arm, {self.by_arm}, add up to its {self.population}, each arm "
+                "named holding at least one"
             )
         return self
 
@@ -114,11 +132,10 @@ class ClaimDraw(EvalDocumentModel, CoreShapeModel):
         "criterion draw the same items.",
     )
     strata: list[ClaimStratumDraw] = Field(description="Every stratum of the stratifier, in its order.")
-    excluded: dict[str, int] = Field(
+    excluded: dict[ClaimExclusion, int] = Field(
         default_factory=dict,
-        description="Claims left out of the population, counted by reason: a grade made under another definition of "
-        "the criterion, stored evidence other than what was graded, a grade whose web results a recording served "
-        "(replayed), a restatement (it takes its original's verdict), no groundedness reading.",
+        description="Claims left out of the population, counted by why (ClaimExclusion). Every figure is read over the "
+        "rest, and says how many were left out.",
     )
 
     @model_validator(mode="after")
@@ -182,6 +199,12 @@ class ClaimItem(EvalDocumentModel, CoreShapeModel):
     verdict: ClaimTruthVerdict = Field(description="The instrument's truth verdict. Never shown.")
     grounded: bool | None = Field(
         default=None, description="Whether the instrument grounded it; None where no ground step read it. Never shown."
+    )
+    inclusion: float = Field(
+        gt=0.0,
+        le=1.0,
+        description="Its chance of being drawn: its stratum's rate times its chance of surviving its cell's cap. Every "
+        "figure weights its answer by one over it. Never shown.",
     )
     view_digest: str = Field(pattern=r"^[0-9a-f]{64}$", description="item_view_digest of the view: the label key.")
     view: ClaimItemView
@@ -282,6 +305,8 @@ class ClaimRead(DurableDocumentModel):
                 )
             if "grounded" in self.questions and item.grounded is None:
                 raise ValueError(f"item {item.item!r} is asked groundedness, and no ground step read its claim")
+        if strays := sorted({arm for stratum in self.draw.strata for arm in stratum.by_arm} - keys):
+            raise ValueError(f"the draw counts claims of arms {strays}, which are no arms of the read")
         if over := sorted(cell for cell, count in per_cell.items() if count > self.draw.per_cell):
             raise ValueError(f"cells {over} give more than {self.draw.per_cell} items")
         for stratum in self.draw.strata:
@@ -311,6 +336,7 @@ __all__ = [
     "STRATA_OF",
     "ClaimAnswer",
     "ClaimDraw",
+    "ClaimExclusion",
     "ClaimItem",
     "ClaimQuestion",
     "ClaimRead",

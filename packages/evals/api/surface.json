@@ -376,6 +376,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimExclusion": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimGrade": {
       "kind": "model",
       "signature": "",

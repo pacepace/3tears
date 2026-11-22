@@ -76,6 +76,7 @@
 "threetears.evals.schema.ClaimCriterion": "provisional",
 "threetears.evals.schema.ClaimDraw": "provisional",
 "threetears.evals.schema.ClaimEvidence": "provisional",
+"threetears.evals.schema.ClaimExclusion": "provisional",
 "threetears.evals.schema.ClaimGrade": "provisional",
 "threetears.evals.schema.ClaimItem": "provisional",
 "threetears.evals.schema.ClaimItemView": "provisional",

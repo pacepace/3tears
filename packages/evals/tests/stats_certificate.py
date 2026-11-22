@@ -208,8 +208,8 @@ Through = Literal["restated", "product"]
 #: as metrics those its claims read (:func:`recorded_fields`): ``n`` newcomers or comparisons read; ``hits`` the
 #: claim's event (separated, missed, crossed); ``better`` and ``worse`` the strong evidence each way; ``held`` how many
 #: held what an exact claim asserts of each; ``low`` and ``high`` the intervals whose lower end passed the true
-#: difference, and whose upper end fell short of it.
-FIELDS = ("n", "hits", "better", "worse", "held", "low", "high")
+#: difference, and whose upper end fell short of it; ``arm_low`` and ``arm_high`` the same of one arm's figure.
+FIELDS = ("n", "hits", "better", "worse", "held", "low", "high", "arm_low", "arm_high")
 
 
 @dataclass(frozen=True)
@@ -767,6 +767,8 @@ async def run_product(shard: Shard) -> dict[str, int]:
             sum(outcome.leaned for outcome in outcomes),
             low=sum(outcome.low_missed for outcome in outcomes),
             high=sum(outcome.high_missed for outcome in outcomes),
+            arm_low=sum(outcome.arm_low_missed for outcome in outcomes),
+            arm_high=sum(outcome.arm_high_missed for outcome in outcomes),
         )
     if shard.job == "engine-counted":
         separated, _ = await engine.simulate(
@@ -1262,6 +1264,7 @@ def _claims() -> list[Claim]:
         seeds = (
             f"claim-read-{row}-<index>, 0-{read.draws - 1} in shards of 100, through draw_claim_read and its reading"
         )
+        arms = len(read.arms)
         if row.startswith("lopsided"):
             claims.append(
                 Claim(
@@ -1276,14 +1279,19 @@ def _claims() -> list[Claim]:
                 )
             )
             continue
-        arms = len(read.recalls)
+        arms_read = (
+            f"{arms} arms alike"
+            if row.startswith("equal")
+            else f"{arms} arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on "
+            f"{'groundedness under the draw by truth verdict' if read.question == 'grounded' else 'truth'}"
+        )
+        common = f"At {arms_read}, {read.planned} labels and at most two claims a cell"
         claims.extend(
             [
                 Claim(
                     f"claim-read.{row}.lower",
-                    f"At {arms} arms, {read.planned} labels and at most two claims a cell, the smoothed stratified "
-                    "bootstrap's one-sided 95% lower end of kappa sits above the campaign's own kappa at most 6% of "
-                    "the time.",
+                    f"{common}, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the "
+                    "time: its nominal 5%, within a tolerance of one point.",
                     group,
                     "low",
                     "at_most",
@@ -1292,8 +1300,8 @@ def _claims() -> list[Claim]:
                 ),
                 Claim(
                     f"claim-read.{row}.upper",
-                    f"At {arms} arms, {read.planned} labels and at most two claims a cell, its one-sided 97.5% upper "
-                    "end falls short of the campaign's own kappa at most 3.5% of the time.",
+                    f"{common}, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% "
+                    "of the time: its nominal 2.5%, within a tolerance of one point.",
                     group,
                     "high",
                     "at_most",
@@ -1302,8 +1310,8 @@ def _claims() -> list[Claim]:
                 ),
                 Claim(
                     f"claim-read.{row}.lean",
-                    f"Under equal recall at {arms} arms, the one permutation test across every arm reads a lean at "
-                    "most α plus one point.",
+                    f"{common}, the one lean test across every arm reads a lean at most 6% of the time: its nominal α "
+                    "of 5%, within a tolerance of one point.",
                     group,
                     "hits",
                     "at_most",
@@ -1312,6 +1320,31 @@ def _claims() -> list[Claim]:
                 ),
             ]
         )
+        if row.startswith("equal"):
+            claims.extend(
+                [
+                    Claim(
+                        f"claim-read.{row}.arm-lower",
+                        f"{common}, an arm's recall's one-sided 95% lower end sits above the instrument's recall on "
+                        "that arm at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+                        group,
+                        "arm_low",
+                        "at_most",
+                        0.06,
+                        seeds,
+                    ),
+                    Claim(
+                        f"claim-read.{row}.arm-upper",
+                        f"{common}, an arm's recall's one-sided 97.5% upper end falls short of the instrument's recall "
+                        "on that arm at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+                        group,
+                        "arm_high",
+                        "at_most",
+                        0.035,
+                        seeds,
+                    ),
+                ]
+            )
     return claims
 
 

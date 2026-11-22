@@ -36,6 +36,7 @@ from threetears.evals.schema.reading_states import (
 from threetears.evals.schema.claim_read import (
     ClaimAnswer,
     ClaimDraw,
+    ClaimExclusion,
     ClaimItem,
     ClaimQuestion,
     ClaimRead,
@@ -455,6 +456,7 @@ __all__ = [
     "BlindAnswer",
     "ClaimAnswer",
     "ClaimDraw",
+    "ClaimExclusion",
     "ClaimItem",
     "ClaimQuestion",
     "ClaimRead",

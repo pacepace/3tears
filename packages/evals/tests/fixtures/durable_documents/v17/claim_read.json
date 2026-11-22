@@ -37,13 +37,14 @@
   "doc_type": "claim_read",
   "draw": {
     "excluded": {
-      "a restatement, which takes its original's verdict": 1
+      "restatement": 1
     },
     "per_cell": 2,
     "population_digest": "9999999999999999999999999999999999999999999999999999999999999999",
     "seed": 7,
     "strata": [
       {
+        "by_arm": {},
         "cells": 0,
         "drawn": 0,
         "planned": 0,
@@ -51,6 +52,7 @@
         "stratum": "contradicted"
       },
       {
+        "by_arm": {},
         "cells": 0,
         "drawn": 0,
         "planned": 0,
@@ -58,6 +60,7 @@
         "stratum": "true_ungrounded"
       },
       {
+        "by_arm": {},
         "cells": 0,
         "drawn": 0,
         "planned": 0,
@@ -65,6 +68,9 @@
         "stratum": "unverifiable"
       },
       {
+        "by_arm": {
+          "k-control": 3
+        },
         "cells": 2,
         "drawn": 1,
         "planned": 1,
@@ -81,6 +87,7 @@
       "case_id": "case-1",
       "claim": 0,
       "grounded": null,
+      "inclusion": 0.25,
       "item": "0b5b9abb32a0",
       "result_id": "res-a",
       "run_id": "run-a",

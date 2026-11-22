@@ -67,7 +67,7 @@ DURABLE_SHAPE_DIGESTS: dict[str, str] = {
     "blind_read": "a0499961129776ba1743a0aa960fb47f8164da0d2836bdc5387404b7beda7b62",
     "calibration_rating": "d94b117332f440e35c12532e7b5bd8dbfbe5726cf9ebc449f67f4eb621db44ac",
     "case_set": "6d861cec19358d1cf6134780974cf9d16afa6312b67cf501f9959eab18e110bd",
-    "claim_read": "6557e4ab2263f55718e797547be5c80697e081e0924378130864ccaed6647f82",
+    "claim_read": "13db3affd8ed5e75ae3af0460c44ea755e765900f0aa46bb8e1e8964b9506fb1",
     "eval_analyst_gap": "282cf01b6791ab624cbaf24175f2825f22fce3c5ef80c8fb635c97e8bcf589f8",
     "eval_campaign": "8d8ece91fbdf5a3cc9de2ed63c0a7744c917bbe0bcde09b234e25645d6ed0c49",
     "eval_template": "66ea02948b64c844362f08210569aafe01d8dfca37e5c34d4b3492377c010843",
@@ -140,7 +140,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     # a served model and a reviewer check, where it held none; its person's preference names no served model.
     "v17/blind_read.json": "abedc5ff4965a019f10656233c0384347a4e0471aa044f51371edd6cbd2e2e71",
     # A claim read as durable 17.10 first stores one: a supported claim drawn by truth verdict, answered by one person.
-    "v17/claim_read.json": "53d2849136b5b948b5316911e22f18cdc808f12b7bc6112de59ea9408d9748c0",
+    "v17/claim_read.json": "0a97bb900a5bea7a8846d7de6e61323e074a5ff13915afd7a1615d49666c2e20",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

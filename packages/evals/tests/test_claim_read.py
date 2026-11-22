@@ -123,7 +123,8 @@ def test_a_draw_takes_at_most_two_claims_a_cell_and_counts_each_stratum() -> Non
         for s in ("contradicted", "true_ungrounded", "unverifiable", "supported")
     }
     assert sum(s.population for s in read.draw.strata) == sum(len(c.grade.claims) for c in _campaign())
-    assert all(s.drawn <= s.planned for s in read.draw.strata)
+    assert all(s.drawn <= s.population and sum(s.by_arm.values()) == s.population for s in read.draw.strata)
+    assert all(0.0 < item.inclusion <= 1.0 for item in read.items)
 
 
 def test_a_draw_reads_the_same_whatever_order_its_cells_come_in() -> None:
@@ -152,6 +153,8 @@ def test_what_no_check_may_read_is_left_out_and_counted() -> None:
         EXCLUDED_RESTATEMENT: 1,
     }
     assert [(item.result_id, item.claim) for item in read.items] == [("x3", 0)]
+    # The reading says what the draw left out, so a read over what is left never stands for the whole campaign.
+    assert dict(read_claim_calibration(read).excluded) == read.draw.excluded
 
 
 def test_an_item_shows_the_claim_as_the_instrument_read_it_and_nothing_it_concluded() -> None:
@@ -213,14 +216,15 @@ def test_a_claim_read_is_stored_and_read_back_whole() -> None:
 
 
 def _weighted_read() -> tuple[ClaimRead, set[str]]:
-    """Ten contradicted and ninety supported claims, five and ten drawn: people fail four of the five and one of the
-    ten, so every weighted figure can be worked by hand (weights 2 and 9)."""
+    """Ten contradicted claims drawn whole and ninety supported ones drawn at a ninth: people fail eight of the ten
+    and, of the supported drawn, the share that stands for nine of the ninety, so every weighted figure can be worked
+    by hand (the population's 2x2 is 8, 2, 9 and 81 of 100)."""
     cells = [graded_cell("run-a", f"c{at}", ["contradicted", "contradicted"]) for at in range(5)]
     cells += [graded_cell("run-a", f"s{at}", ["supported", "supported"]) for at in range(45)]
-    read = _draw(cells, arms=[_ARMS[0]], planned={"contradicted": 5, "supported": 10})
+    read = _draw(cells, arms=[_ARMS[0]], planned={"contradicted": 10, "supported": 90})
     contradicted = sorted(item.item for item in read.items if item.stratum == "contradicted")
     supported = sorted(item.item for item in read.items if item.stratum == "supported")
-    return read, {*contradicted[:4], supported[0]}
+    return read, {*contradicted[:8], *supported[:9]}
 
 
 def test_the_population_figures_are_weighted_by_stratum_and_carry_an_interval() -> None:
@@ -235,10 +239,16 @@ def test_the_population_figures_are_weighted_by_stratum_and_carry_an_interval() 
     assert reading.bias.value == pytest.approx(10 / 17)
     expected = 0.1 * 0.17 + 0.9 * 0.83
     assert reading.kappa.value == pytest.approx((0.89 - expected) / (1 - expected))
-    for estimate in (reading.kappa, reading.recall, reading.precision):
+    assert reading.false_fail.value == pytest.approx(0.02 / 0.83)
+    (arm,) = reading.arms
+    shown = (reading.kappa, reading.recall, reading.precision, reading.false_fail, arm.recall, arm.precision)
+    for estimate in shown:
         assert estimate.lower is not None and estimate.upper is not None
         assert estimate.lower <= estimate.value <= estimate.upper  # type: ignore[operator]
-    assert {s.stratum: (s.items, s.agreed) for s in reading.strata}["contradicted"] == (5, 0.8)
+        assert -1.0 <= estimate.lower and estimate.upper <= 1.0, "an interval is held to its figure's range"
+    # The arm's false fails rest on two answered claims of eighty-three passes: too few for any interval.
+    assert arm.false_fail.value == pytest.approx(0.02 / 0.83) and arm.false_fail.lower is None
+    assert {s.stratum: (s.items, s.agreed) for s in reading.strata}["contradicted"] == (10, 0.8)
 
 
 def test_the_floor_counts_cells_and_not_claims() -> None:

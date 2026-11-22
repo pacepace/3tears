@@ -380,9 +380,11 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 ClaimStratumDraw(stratum="contradicted", population=0, cells=0, planned=0, drawn=0),
                 ClaimStratumDraw(stratum="true_ungrounded", population=0, cells=0, planned=0, drawn=0),
                 ClaimStratumDraw(stratum="unverifiable", population=0, cells=0, planned=0, drawn=0),
-                ClaimStratumDraw(stratum="supported", population=3, cells=2, planned=1, drawn=1),
+                ClaimStratumDraw(
+                    stratum="supported", population=3, cells=2, planned=1, drawn=1, by_arm={"k-control": 3}
+                ),
             ],
-            excluded={"a restatement, which takes its original's verdict": 1},
+            excluded={"restatement": 1},
         ),
         items=[
             ClaimItem(
@@ -395,6 +397,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 claim=0,
                 verdict="supported",
                 grounded=None,
+                inclusion=0.25,
                 view_digest=item_view_digest(_CLAIM_VIEW),
                 view=_CLAIM_VIEW,
             )

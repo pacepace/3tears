@@ -20,6 +20,15 @@ def test_kappas_lower_end_rarely_sits_above_the_campaigns_own_kappa_at_two_claim
 
     assert sum(outcome.low_missed for outcome in outcomes) <= 4
     assert sum(outcome.high_missed for outcome in outcomes) <= 3
+    assert sum(outcome.arm_low_missed for outcome in outcomes) <= 4
+
+
+def test_a_fair_instrument_over_arms_whose_verdict_mixes_differ_sharply_is_rarely_read_as_leaning() -> None:
+    """One arm researched (few false claims, small cells, unsettled claims supported), one did not; the instrument is
+    fair on both. At the certified false-lean rate (about 5%), more than four leans in twenty draws happens about three
+    times in a thousand, and so for groundedness under the draw by truth verdict."""
+    assert sum(one("mixed.2-arms", _OFFSET + index).leaned for index in range(20)) <= 4
+    assert sum(one("mixed-grounded.2-arms", _OFFSET + index).leaned for index in range(20)) <= 4
 
 
 def test_one_arm_whose_instrument_misses_most_of_its_false_claims_is_read_as_a_lean() -> None:
