@@ -24,6 +24,22 @@ What the grader reads, each the eval's to say:
 - **The web**, with ``search``: a port the grader checks a doubted claim on, within a budget (``web``), whose
   searches are recorded as the run's spend.
 
+Two short examples. The first grades each answer's claims against its case's ``source``::
+
+    claims = Claims(model, case_documents="source")
+    result = await Eval(cases, describe, [claims]).run()
+
+The second ranks an arm that looked its answer up above one that recalled it, by what each read::
+
+    async def look_up(case):
+        return Answer(case["source"], documents=[Document(case["source"], title="archive")])
+
+    async def recall(case):
+        return Answer(remembered(case), documents=())  # it read nothing, and says so
+
+    grounded = Claims(model, case_documents="source", grounded_in="run")
+    result = await Eval(cases, {"recall": recall, "look-up": look_up}, [grounded], name="landmarks").run()
+
 **The judge's client is required.** The model is an id, a :class:`~threetears.evals.providers.Model`, or any
 completion client that names its model, read as :class:`~threetears.evals.quick.judged.Judge` reads one, and lent to
 the run as a judge's is. An eval graded by a ``Judge`` and ``Claims`` grades both on one judge model.
@@ -55,34 +71,19 @@ from threetears.evals.schema.models import CLAIM_DOCUMENT_BYTES
 from threetears.evals.quick.answer import Document
 from threetears.evals.quick.judged import DIMENSION_CONTEXT, BorrowedJudgeClient, answer_text, judge_client
 
-#: Cuts one answer into the pieces its claims are listed from: takes the case and the answer, returns the pieces in
-#: the order they read, each its text (a unit of its own, numbered in order) or a
-#: :class:`~threetears.evals.schema.Segment`.
-Segmenter = Callable[[Mapping[str, Any], Any], Sequence[Segment | str]]
-
-#: Renders a case's evidence: takes the case, returns its documents, each a
-#: :class:`~threetears.evals.quick.answer.Document` or its text.
-CaseDocuments = Callable[[Mapping[str, Any]], Sequence[Document | str]]
-
-#: The criterion's name when none is given, namespaced as a judge's bare dimension is (``answer.claims``).
-DEFAULT_CLAIMS_NAME = "claims"
-
-#: What one unit of the default cut is called on a page: the whole answer is one.
-DEFAULT_UNIT = "answer"
-
 #: How the default cut is named in each cell's evidence: the whole answer, one unit.
-WHOLE_ANSWER = "whole-answer-v1"
+_WHOLE_ANSWER = "whole-answer-v1"
 
 #: How much of a cell's documents each verify step reads by default: up to 8,000 characters of one document and
 #: 32,000 in all, in passages of 1,200 cut around what a claim names.
-DEFAULT_PAGES = PageBudget(per_document_chars=8000, total_chars=32000, window_chars=1200)
+_DEFAULT_PAGES = PageBudget(per_document_chars=8000, total_chars=32000, window_chars=1200)
 
 #: How much a step asks again by default before the cell is the criterion's loss: two rounds, eight items.
-DEFAULT_REPAIRS = RepairBudget(rounds=2, max_items_per_cell=8)
+_DEFAULT_REPAIRS = RepairBudget(rounds=2, max_items_per_cell=8)
 
 #: How far the web check goes by default once a search is given: two searches for each doubted claim, five claims a
 #: cell, the first three results of each, 6,000 characters of a page read in windows of 1,500.
-DEFAULT_WEB = WebBudget(
+_DEFAULT_WEB = WebBudget(
     max_queries_per_claim=2, max_checked_per_cell=5, results_per_query=3, page_chars=6000, window_chars=1500
 )
 
@@ -104,18 +105,18 @@ class Claims:
     def __init__(
         self,
         model: str | CompletionClient,
-        name: str = DEFAULT_CLAIMS_NAME,
+        name: str = "claims",
         *,
-        unit: str = DEFAULT_UNIT,
-        segments: Segmenter | None = None,
+        unit: str = "answer",
+        segments: Callable[[Mapping[str, Any], Any], Sequence[Segment | str]] | None = None,
         segmentation: str | None = None,
-        case_documents: str | CaseDocuments | None = None,
+        case_documents: str | Callable[[Mapping[str, Any]], Sequence[Document | str]] | None = None,
         grounded_in: str | Iterable[str] | None = None,
         guidance: str = "",
         search: WebSearch | None = None,
         web: WebBudget | None = None,
-        pages: PageBudget = DEFAULT_PAGES,
-        repairs: RepairBudget = DEFAULT_REPAIRS,
+        pages: PageBudget = _DEFAULT_PAGES,
+        repairs: RepairBudget = _DEFAULT_REPAIRS,
     ) -> None:
         """Declare the claims grader.
 
@@ -143,7 +144,7 @@ class Claims:
         :param search: A web search port (:class:`~threetears.evals.schema.WebSearch`) a claim no case evidence
             covers, that the grader doubts, is checked on; a recorded one
             (:class:`~threetears.evals.testing.RecordedWebSearch`) replays offline. ``None``: no web.
-        :param web: How far the web check may go in one cell; ``None`` takes :data:`DEFAULT_WEB` when ``search`` is
+        :param web: How far the web check may go in one cell; ``None`` takes a generic budget (two searches for each doubted claim, five claims a cell) when ``search`` is
             given. Needs ``search``.
         :param pages: How much of a cell's documents each verify step reads.
         :param repairs: How much each step asks again before the cell is the criterion's loss.
@@ -181,7 +182,7 @@ class Claims:
                 name=dim_name(name),
                 guidance=guidance,
                 grounded_in=_provenances(grounded_in),
-                web=(web or DEFAULT_WEB) if search is not None else None,
+                web=(web or _DEFAULT_WEB) if search is not None else None,
                 pages=pages,
                 repairs=repairs,
                 judge="builtin",
@@ -304,10 +305,10 @@ def dim_name(name: str) -> str:
     return name if "." in name else f"{DIMENSION_CONTEXT}.{name}"
 
 
-def _cut_name(segments: Segmenter | None) -> str:
+def _cut_name(segments: Callable[..., object] | None) -> str:
     """The default name of a cut: the whole answer's, or a callable's qualified name."""
     if segments is None:
-        return WHOLE_ANSWER
+        return _WHOLE_ANSWER
     named = getattr(segments, "__qualname__", None) or getattr(segments, "__name__", None)
     return named if isinstance(named, str) and named.strip() else type(segments).__qualname__
 
@@ -399,14 +400,4 @@ def _cut_bytes(text: str, room: int) -> str:
     return kept if kept.strip() else text[:1]
 
 
-__all__ = [
-    "DEFAULT_CLAIMS_NAME",
-    "DEFAULT_PAGES",
-    "DEFAULT_REPAIRS",
-    "DEFAULT_UNIT",
-    "DEFAULT_WEB",
-    "WHOLE_ANSWER",
-    "CaseDocuments",
-    "Claims",
-    "Segmenter",
-]
+__all__ = ["Claims"]

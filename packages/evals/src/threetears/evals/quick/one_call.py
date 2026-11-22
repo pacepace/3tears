@@ -429,7 +429,7 @@ class _DocumentsUndeclared(CandidateKindDefect):
     (``grounded_in="run"``).
 
     The runner is the eval's own wiring, so every answer would do it: a grounded share over answers that said nothing
-    of what they read would read as research that found nothing. So the run fails at the first such answer, naming
+    of what they read would read as a candidate that read nothing. So the run fails at the first such answer, naming
     the fix, rather than every cell reading a grounded share of nothing.
     """
 
