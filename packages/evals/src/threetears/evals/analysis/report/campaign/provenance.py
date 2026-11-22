@@ -61,7 +61,7 @@ __all__ = [
     "aspect_provenance_blocks",
     "calibration_blocks",
     "caveat_blocks",
-    "claim_calibration_sentences",
+    "calibration_sentences",
     "for_the_campaign",
     "provenance_blocks",
     "question_blocks",
@@ -172,7 +172,7 @@ def _lines(bundles: Sequence[AnalysisContextBundle], names: AspectNames | None =
         lines.append(("latency", _LATENCY_LINE.format(where=where(contended, total))))
     if unconfirmed := [named(bundle.aspect) for bundle in bundles if bundle.request_settings_disclosure]:
         lines.append(("settings", _SETTINGS_LINE.format(where=where(unconfirmed, total))))
-    if directional := [named(bundle.aspect) for bundle in bundles if _calibration_sentences(bundle)]:
+    if directional := [named(bundle.aspect) for bundle in bundles if calibration_sentences(bundle)]:
         lines.append(("judge", _JUDGE_LINE.format(where=where(directional, total))))
     return lines
 
@@ -321,7 +321,7 @@ def calibration_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     :param bundle: The aspect's evidence.
     :return: The line, or nothing.
     """
-    said = _calibration_sentences(bundle)
+    said = calibration_sentences(bundle)
     if not said:
         return []
     return [
@@ -335,7 +335,7 @@ def calibration_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     ]
 
 
-def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
+def calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
     """Each judge not yet calibrated against people, as a state and its next step, never as a failure.
 
     A new judge has no labels, so on a first campaign this is said on every report: where the judge stands and what
@@ -362,10 +362,10 @@ def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
             f"Judge {judge} {state} on {', '.join(dims)}: {why}, so its scores are directional. "
             f"Rate about {more} of its outputs to calibrate it."
         )
-    return said + claim_calibration_sentences(bundle)
+    return said + _claim_calibration_sentences(bundle)
 
 
-def claim_calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
+def _claim_calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
     """Each claim criterion whose readings stand on no calibrated judge, as a state, in a rubric dimension's words: its
     judge is uncalibrated on the criterion, so its readings are directional. A claim reading's arm carries the weakest
     evidence tier of the judges that decided its claims (``JudgedArm.evidence_tier``); one below ``calibrated`` on any
@@ -402,7 +402,7 @@ def _setup_detail(
     if kind == "settings":
         return _settings_in_words(forms.stored_counts((bundle.request_settings_disclosure or "").strip())) or None
     if kind == "judge":
-        return " ".join(_calibration_sentences(bundle)) or None
+        return " ".join(calibration_sentences(bundle)) or None
     if kind == "cost":
         return COST_ROUTING_CAVEAT if priced_aspects([bundle]) else None
     sentence = reader_latency_sentence((bundle.latency_contended or "").strip())

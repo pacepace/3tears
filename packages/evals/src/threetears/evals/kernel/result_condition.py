@@ -123,8 +123,9 @@ _JUDGING_RENAMED: Final[dict[str, JudgingState]] = {"set_aside": "not_asked"}
 
 #: Why a result is a candidate failure. ``model_failed``: a model the configuration runs
 #: failed, recorded in ``candidate_error``. ``code_raised``: the candidate's own code raised a programming error
-#: (``EvalResult.candidate_code_raised``), recorded there too: a bug in the host's code, which no other model would
-#: fix. ``turn_budget``: the host's turn budget ended one of
+#: while handling the reply (``EvalResult.candidate_code_raised``), recorded there too: usually a bug in that code,
+#: though an empty or malformed reply from its model can set one off, so the lever is the runner's handling of the
+#: reply. ``turn_budget``: the host's turn budget ended one of
 #: the candidate's turns before it finished. ``output_cap``: the provider cut one of the
 #: candidate's turns off at the output cap. Three arms because the reader's remedy differs —
 #: a different model or provider for the first, a faster configuration (fewer rounds, less
@@ -134,7 +135,9 @@ _JUDGING_RENAMED: Final[dict[str, JudgingState]] = {"set_aside": "not_asked"}
 CandidateFailureCause = Literal["model_failed", "code_raised", "turn_budget", "output_cap"]
 
 #: The exceptions a candidate's own code raises and no model call does: a missing key or index, a value of the wrong
-#: type, a missing attribute or name, an assertion. The programming errors ``docs/exceptions.md`` names (its contain
+#: type, a missing attribute or name, an assertion. The code may raise them reading a reply its model gave empty or
+#: malformed (an ``IndexError`` on no choices, a ``TypeError`` from parsing nothing), so a report names the code that
+#: raised and its handling of the reply, never the code alone as the fault. The programming errors ``docs/exceptions.md`` names (its contain
 #: tripwire's), with ``LookupError`` beside them, since a ``KeyError`` on a case field is the commonest. A provider's
 #: or a client library's failure is none of these. A kind running the host's code as the candidate sets
 #: ``CandidateOutput.code_raised`` for one.
@@ -470,10 +473,11 @@ _MODEL_FAILED_DISCLOSURE = (
 )
 
 #: The candidate-failure line when the candidate's own code raised: the model-failed line would send a reader to swap
-#: a model that may never have been called.
+#: a model that may never have been called, though the reply it handled may have been empty or malformed.
 _CODE_RAISED_DISCLOSURE = (
-    "The candidate's own code raised a programming error, a bug in the host's code rather than a failed model, so "
-    "this result is scored as a hard fail rather than on its content, and any goal-state check on it counts as failed."
+    "The candidate's own code raised while handling the reply, usually a bug in that code, though an empty or "
+    "malformed reply from its model can set one off, so this result is scored as a hard fail rather than on its "
+    "content, and any goal-state check on it counts as failed: check the runner's handling of the reply."
 )
 
 _SCORING_DISCLOSURE: dict[ResultOutcome, str | None] = {

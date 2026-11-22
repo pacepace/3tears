@@ -7992,9 +7992,9 @@ class EvalResult(CoreDocumentModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="True where `candidate_error` is the candidate's own code raising a programming error (a "
-        "KeyError, a TypeError), not a model it runs failing: the trial fails all the same, and a report names the "
-        "host's code as the cause and fixing it as the remedy. Null (left out) otherwise, so a result stored "
-        "before it existed reads as it did.",
+        "KeyError, a TypeError) while handling the reply, not a call to a model it runs failing: the trial fails all "
+        "the same, and a report names that code as the cause and its handling of the reply as what to check. Null "
+        "(left out) otherwise, so a result stored before it existed reads as it did.",
     )
     infra_error: str | None = Field(default=None)
 

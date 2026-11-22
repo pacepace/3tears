@@ -999,8 +999,8 @@ class CallableKind:
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
                 candidate_errors=[said],
-                # A programming error is the runner's own code failing, which no model call raises: still the
-                # candidate's failure, but named as the host's bug, never as a model to change.
+                # A programming error is the runner's own code failing while it handles the reply, which no model call
+                # raises: still the candidate's failure, named as its code's, with its handling of the reply to check.
                 code_raised=isinstance(raised, PROGRAMMING_ERRORS),
                 host_measures=missed,
                 # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.

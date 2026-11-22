@@ -899,7 +899,16 @@ def assemble_context_bundle(
         control=control,
         names=names,
     )
-    bundle.all_failed_cells, bundle.all_failed = all_failed(bundle.cell_measures)
+    bundle.all_failed_cells, bundle.all_failed = all_failed(
+        bundle.cell_measures,
+        # A cell whose every candidate failure was its own code raising is said so, never as its model's refusal.
+        code_raised={
+            key
+            for key, members in results_by_cell.items()
+            if (failed := [result for result in members if result.candidate_error])
+            and all(result.candidate_code_raised for result in failed)
+        },
+    )
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
     # for the same reason: its cells are measure collections the catalog has to describe.
     bundle.time_axis, bundle.time_axis_withheld = time_axis(

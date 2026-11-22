@@ -157,6 +157,25 @@ def holds_a_check(bundle: AnalysisContextBundle) -> bool:
     )
 
 
+def reads_answered(bundle: AnalysisContextBundle) -> bool:
+    """Whether the aspect's pass rate is read as the share of trials answered: nothing it grades can fail a trial
+    (:func:`holds_a_check`), and some arm failed some trial anyway, by failing to answer (its runner raised, its model
+    call failed, its turn was cut). There a trial passes exactly when its candidate answered it, so the rate compares
+    the arms' answering and is named for that, never a pass rate. Where every arm answered every trial it would count
+    nothing, and no surface reads it.
+
+    :param bundle: The aspect's evidence.
+    :return: Whether the aspect reads an answered share in place of a pass rate.
+    """
+    return not holds_a_check(bundle) and any(sum(board.failed.values()) for board in bundle.scoreboard)
+
+
+def reads_a_rate(bundle: AnalysisContextBundle) -> bool:
+    """Whether the aspect has a rate of trials to read at all: a pass rate where something it grades can fail a trial,
+    or the share answered where an arm failed to answer one (:func:`reads_answered`)."""
+    return holds_a_check(bundle) or reads_answered(bundle)
+
+
 def declared_readings(bundle: AnalysisContextBundle) -> list[str]:
     """The readings the aspect's design lists, in order (``AspectDesign.measure_order``); none where it lists none."""
     design = bundle.declared.design if bundle.declared is not None else None

@@ -132,7 +132,9 @@ def unwrap_answer(returned: Any) -> tuple[Any, CandidateTelemetry]:
     :return: The answer's value and a telemetry carrying its ``candidate`` usage row; a plain answer as given,
         with telemetry that reports no usage. An ``Answer`` that reports no model, no served model, no token count
         and no cost (one returned only to carry its ``documents``) reports no usage either: it says no call was made,
-        so no unpriced call is counted and no model's identity is asked after.
+        so no unpriced call is counted and no model's identity is asked after. A runner that does call a model must
+        name it (``model=``) for the call to count: left with every spend field unset, it reads as no call, as a
+        plain return does, and its unpriced spend goes unsaid.
     """
     if not isinstance(returned, Answer):
         return returned, CandidateTelemetry()

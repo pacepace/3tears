@@ -55,7 +55,9 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     measure_blocks,
     measured_figure,
     pair_blocks,
+    ANSWERED_WORDS,
     pairs_words,
+    rate_words,
     reads_undecided,
     row_figures,
     row_sentence,
@@ -84,6 +86,7 @@ from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_advice, contrast_evidence
 from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.verdict import (
+    answered_sentences,
     graded_contrast,
     led_sentences,
     led_verdicts,
@@ -347,6 +350,8 @@ def _lead_blocks(
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
         report = reports[aspect.label]
+        # Whether the lead has said how many trials each arm answered where nothing graded can fail one.
+        answered_said = False
         if bundle_stopped_short(report.bundle) is not None:
             # No verdict over a run that did not finish: the page opened on what stopped it (``_stopped_blocks``).
             continue
@@ -383,9 +388,14 @@ def _lead_blocks(
                 decision.removesuffix(".")
                 for decision in led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on)
             ]
-        elif not holds_a_check(report.bundle):
-            # Nothing the aspect grades can fail a trial, so it has no pass rate to lead on: its own verdict line, as
-            # its page and the quick print say it, nothing decided, so nothing set in bold.
+        elif (
+            not holds_a_check(report.bundle)
+            and not readings.on_aspect(aspect.label)
+            and not any(pair.aspect == aspect.label for pair in readings.pairs)
+        ):
+            # Nothing the aspect grades can fail a trial and no row compares how often the arms answered, so it has no
+            # rate to lead on: its own verdict line, as its page and the quick print say it, nothing decided, so
+            # nothing set in bold.
             line = aspect_verdict(
                 report.bundle,
                 measure_order=order,
@@ -394,6 +404,7 @@ def _lead_blocks(
             )
             undecided = undecided or line.undecided
             said = line.lead or line.text
+            answered_said = True
             # The undecided reading's own words open with a capital, as a sentence does; an arm's name is as given.
             said = said[:1].upper() + said[1:] if said.startswith("the evidence ") else said
             sentences.append(f"On {names(aspect.label)}: {said}" if several else said)
@@ -402,12 +413,15 @@ def _lead_blocks(
                 continue
         elif rows := readings.on_aspect(aspect.label):
             undecided = undecided or reads_undecided(readings, aspect.label)
+            # Where nothing graded can fail a trial, the row is the share answered and is named so.
+            words = rate_words([report.bundle])
+            answered_said = words is ANSWERED_WORDS
             for row in rows:
                 decision = (
-                    f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
+                    f"{words.heading}{on}: {row_sentence(row, readings.control_label)}"
                     f"{'' if row.confirmatory or not asked else ', a lead'}"
                 )
-                sentences.append(f"{decision}. {row_figures(row, readings.control_label, forms=forms)}")
+                sentences.append(f"{decision}. {row_figures(row, readings.control_label, forms=forms, words=words)}")
                 decisions.append(decision)
         elif paired := pairs_words(readings, aspect.label, marked=asked):
             undecided = undecided or reads_undecided(readings, aspect.label)
@@ -433,6 +447,10 @@ def _lead_blocks(
         labels = readings.arm_labels()
         if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), case_namer(report.bundle)):
             sentences.append(ungraded.strip())
+        # Where nothing graded can fail a trial, an arm that failed to answer some says how many it answered, so the
+        # lead never reads as every case answered.
+        if not answered_said and (answered := answered_sentences(report.bundle, lambda key: labels.get(key, key))):
+            sentences.append(answered.strip())
 
     if not sentences:
         # Every aspect has a run that did not finish, so the page's opening is all there is to lead with.

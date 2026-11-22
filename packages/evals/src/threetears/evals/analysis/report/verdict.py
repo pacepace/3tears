@@ -66,6 +66,7 @@ from threetears.evals.analysis.bundle.trials import (
     declared_readings,
     holds_a_check,
     pass_count,
+    reads_answered,
 )
 from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.cells import split_arms, unread_arms
@@ -163,9 +164,14 @@ FAIL_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         short="model failed",
     ),
     "code_raised": CauseWords(
-        words="the candidate's own code raised a programming error, a bug in the host's code rather than a failed model",
-        remedy="read the failed trials' errors below: fix the host's code they name, then rerun the arm; no other model"
-        " would change it",
+        words=(
+            "the candidate's own code raised while handling the reply: usually a bug in that code, though an empty or"
+            " malformed reply from its model can set one off"
+        ),
+        remedy=(
+            "read the failed trials' errors below and check the runner's handling of the reply: fix or guard the code"
+            " they name, then rerun the arm"
+        ),
         short="code raised",
     ),
     "turn_budget": CauseWords(
@@ -390,7 +396,7 @@ class VerdictLine:
             object.__setattr__(self, "lead", self.text)
 
 
-def passed_clause(arm: str, count: PassCount) -> str:
+def passed_clause(arm: str, count: PassCount, *, verb: str = "passed") -> str:
     """One arm's pass count as every surface states it, the one owner of that clause: ``reply passed 18 of 20
     cases``, or ``reply passed 40 of 40 trials on 20 cases`` where cases ran more than once; where trials ran that
     nothing graded (a grader that raised, a declined call), the count is every trial that ran and says how many
@@ -405,6 +411,8 @@ def passed_clause(arm: str, count: PassCount) -> str:
     :param arm: The arm, as the page names it.
     :param count: Its count, read off the census
         (:func:`~threetears.evals.analysis.bundle.trials.pass_count`).
+    :param verb: What the count counts: ``passed``, or ``answered`` where nothing graded can fail a trial and the
+        count is of the trials answered (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`).
     :return: The clause, with no closing stop.
     """
     lost = count.ungraded
@@ -424,9 +432,9 @@ def passed_clause(arm: str, count: PassCount) -> str:
         return f"{arm} failed on {every}{more}, so no answer was graded{error}"
     trials, cases = (count.ran, count.cases) if lost else (count.graded, count.graded_cases)
     said = (
-        f"{arm} passed {count.passed} of {cases} cases"
+        f"{arm} {verb} {count.passed} of {cases} cases"
         if trials == cases
-        else f"{arm} passed {count.passed} of {trials} trials on {cases} cases"
+        else f"{arm} {verb} {count.passed} of {trials} trials on {cases} cases"
     )
     if not lost:
         return said
@@ -701,8 +709,9 @@ def verdict_line(
         missed = "" if count.none_answered else _missed_cases(bundle, named)
         return VerdictLine(rule="one_arm", text=result + ungraded_sentence(count, named) + missed, lead=result)
     declared_question = bundle.question_declared
-    # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them.
-    ungraded = ungraded_sentences(bundle, arm, case_name or (lambda case: case))
+    # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them; and where
+    # nothing graded can fail a trial, an arm that failed to answer some says how many it answered.
+    ungraded = ungraded_sentences(bundle, arm, case_name or (lambda case: case)) + answered_sentences(bundle, arm)
     answered = [board for board in boards if board.usable]
     if answered and all(pass_count(bundle, board).none_answered for board in answered):
         # No arm gave an answer a grader read (each runner raised on every case): there is nothing to compare, and
@@ -795,6 +804,20 @@ def verdict_line(
         decisions=(result,),
         undecided=undecided,
     )
+
+
+def answered_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """`` v2 answered 8 of 12 cases.`` for each arm that failed to answer some trial where nothing graded can fail one
+    (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`), so its line never reads as every case answered;
+    an arm that answered none says so in its own clause. Empty elsewhere."""
+    if not reads_answered(bundle):
+        return ""
+    said = ""
+    for board in bundle.scoreboard:
+        count = pass_count(bundle, board)
+        if sum(board.failed.values()) and not count.none_answered:
+            said += f" {passed_clause(arm(board.variant_key), count, verb='answered')}."
+    return said
 
 
 def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
@@ -1006,6 +1029,9 @@ def _one_arm(bundle: AnalysisContextBundle, board: ArmScoreboard, arm: Callable[
         # Whatever its graders are, none read an answer: what failed is the runner, which the clause says.
         return passed_clause(arm(board.variant_key), count)
     if not graded:
+        if sum(board.failed.values()):
+            # It failed to answer some: how many it answered is what the line can say, never that it ran them all.
+            return f"{passed_clause(arm(board.variant_key), count, verb='answered')}; {_no_check_words(bundle)}"
         if board.ran == board.cases:
             ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} cases"
         else:

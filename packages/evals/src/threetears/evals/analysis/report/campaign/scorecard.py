@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Final
 from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
@@ -94,7 +95,7 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     table_row,
 )
-from threetears.evals.analysis.bundle.trials import holds_a_check, pass_count
+from threetears.evals.analysis.bundle.trials import holds_a_check, pass_count, reads_answered
 from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.report.verdict import interval_words, not_graded_words, passed_clause
 from threetears.evals.analysis.caveats import UnkeptPlan, unkept_plan
@@ -156,6 +157,41 @@ _CONTRAST_WORDS: dict[str, str] = {
 
 #: The contrast verdict that says what a row's reading says, for the two readings a contrast can also reach.
 _CONTRAST_OF: dict[str, str] = {"better": "improved", "worse": "regressed"}
+
+
+@dataclass(frozen=True)
+class RateWords:
+    """How a page words an aspect's rate of trials: a pass rate, or where nothing graded can fail a trial and an arm
+    failed to answer some, the share answered (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`).
+
+    :ivar heading: The reading's name, as a lead or a row heads it (``Pass rate``, ``Answered``).
+    :ivar measure: As a column head names it after an arm (``pass rate``, ``answered``).
+    :ivar verb: What an arm did with a trial it counts (``passed``, ``answered``).
+    :ivar term: The glossary term a column of the counts carries.
+    """
+
+    heading: str
+    measure: str
+    verb: str
+    term: str
+
+
+#: A pass rate's words.
+PASS_WORDS: Final = RateWords(heading=PASS_RATE, measure=PASS_RATE.lower(), verb="passed", term="passed")
+
+#: The share answered's words, where nothing graded can fail a trial.
+ANSWERED_WORDS: Final = RateWords(heading="Answered", measure="answered", verb="answered", term="answered")
+
+
+def rate_words(bundles: Iterable[AnalysisContextBundle]) -> RateWords:
+    """The words for the rate of the aspects ``bundles`` hold: the share answered where every one reads it
+    (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`), else a pass rate.
+
+    :param bundles: The aspects' evidence.
+    :return: The words.
+    """
+    held = list(bundles)
+    return ANSWERED_WORDS if held and all(reads_answered(bundle) for bundle in held) else PASS_WORDS
 
 
 def _rate_level(forms: PageForms, level: float) -> Printed:
@@ -228,7 +264,7 @@ def _row_words(row: AspectReading) -> str:
     return READING_WORDS[row.reading]
 
 
-def row_figures(row: AspectReading, control: str, *, forms: PageForms) -> str:
+def row_figures(row: AspectReading, control: str, *, forms: PageForms, words: RateWords = PASS_WORDS) -> str:
     """The figures a row's reading rests on, as sentences the lead says after its decision, each arm the subject and
     each figure as the matrix's fold prints it: what each arm passed of its trials, then what the interval the row was
     read on allows the arm to be against the control, in points; and for a row left unclear against its margin, the
@@ -238,18 +274,20 @@ def row_figures(row: AspectReading, control: str, *, forms: PageForms) -> str:
     :param row: The row.
     :param control: The control, as the page names it.
     :param forms: The page's forms.
+    :param words: How the row's rate is worded: what each arm did with the trials it counts.
     :return: The sentences.
     """
     unit = "trials" if row.control_trials != row.control_cases or row.arm_trials != row.arm_cases else "cases"
+    verb = words.verb
     if row.control_trials == row.arm_trials:
         said = [
-            f"Of {row.control_trials} {unit} each, {control} passed {row.control_passed} and {row.arm_label} "
+            f"Of {row.control_trials} {unit} each, {control} {verb} {row.control_passed} and {row.arm_label} "
             f"{row.arm_passed}."
         ]
     else:
         said = [
-            f"Of {row.control_trials} {unit}, {control} passed {row.control_passed}.",
-            f"Of {row.arm_trials}, {row.arm_label} passed {row.arm_passed}.",
+            f"Of {row.control_trials} {unit}, {control} {verb} {row.control_passed}.",
+            f"Of {row.arm_trials}, {row.arm_label} {verb} {row.arm_passed}.",
         ]
     interval, _ = _shown_interval(row)
     if interval is not None:
@@ -530,7 +568,12 @@ def table_blocks(
     if readings.readings:
         blocks += [
             _change_matrix(campaign, readings, reports, names, readings.control, rates, forms),
-            _change_rows(readings, names, forms),
+            _change_rows(
+                readings,
+                names,
+                forms,
+                rate_words(reports[row.aspect].bundle for row in readings.readings if row.aspect in reports),
+            ),
         ]
     else:
         _no_equal_weight_row(campaign, readings, reports, "no candidate was compared on any aspect")
@@ -592,12 +635,13 @@ def _change_matrix(
     labels = readings.arm_labels()
     named = readings.control_label
     candidates = list(dict.fromkeys(row.arm for row in readings.readings))
+    words = rate_words(reports[row.aspect].bundle for row in readings.readings if row.aspect in reports)
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="cases", header="Cases", term="cases"),
-        TableColumn(key=_arm_column(control), header=f"▸ {named} · {_MEASURE}", term="control"),
+        TableColumn(key=_arm_column(control), header=f"▸ {named} · {words.measure}", term="control"),
         *(
-            TableColumn(key=_arm_column(arm), header=f"{labels[arm]} · {_MEASURE} vs {named}", term="change")
+            TableColumn(key=_arm_column(arm), header=f"{labels[arm]} · {words.measure} vs {named}", term="change")
             for arm in candidates
         ),
     ]
@@ -860,16 +904,18 @@ def _floor_state(row: AspectReading, campaign: EvalCampaign, readings: CampaignR
     return "held" if all(status == "held" for status in statuses) else "unclear"
 
 
-def _change_rows(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> TableBlock:
-    """The matrix's readings one row per aspect × candidate, folded: the cases, each arm's passes, the change and the
-    interval it was read on, the margin and the reading."""
+def _change_rows(
+    readings: CampaignReadings, names: AspectNames, forms: PageForms, words: RateWords = PASS_WORDS
+) -> TableBlock:
+    """The matrix's readings one row per aspect × candidate, folded: the cases, each arm's passes (or trials answered,
+    by ``words``), the change and the interval it was read on, the margin and the reading."""
     control = readings.control_label
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="arm", header="Arm"),
         TableColumn(key="cases", header="Cases", term="cases"),
         TableColumn(key="control", header=f"▸ {control}", term="control"),
-        TableColumn(key="passed", header="Arm passed", term="passed"),
+        TableColumn(key="passed", header=f"Arm {words.verb}", term=words.term),
         TableColumn(key="change", header="Change", term="change"),
         TableColumn(key="interval", header="Interval (pts)", term="interval"),
         TableColumn(key="margin", header="Margin (pts)", term="margin"),
@@ -1202,9 +1248,15 @@ def _unchecked_aspects(campaign: EvalCampaign, reports: Mapping[str, Report]) ->
 
 def _no_pass_rate_lines(campaign: EvalCampaign, reports: Mapping[str, Report], names: AspectNames) -> list[str]:
     """A line for each aspect with no pass rate to read, since nothing graded can fail a trial there: a pass rate would
-    count every answered trial as passed, so no row or pair reads one."""
+    count every answered trial as passed, so no row or pair reads one; where an arm failed to answer some trial, the
+    rate read is the share of trials each arm answered, and the line says that is what it compares."""
     return [
-        f"{names(label)} has no pass rate: no grader there says pass or fail, so its readings are read on their own."
+        f"{names(label)} has no pass rate: no grader there says pass or fail, so "
+        + (
+            "what its row compares is how often each arm answered."
+            if reads_answered(reports[label].bundle)
+            else "its readings are read on their own."
+        )
         for label in _unchecked_aspects(campaign, reports)
     ]
 
@@ -1443,14 +1495,26 @@ def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisCon
     :return: The words.
     :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
-    if bundle is not None and not holds_a_check(bundle):
-        # Nothing it grades can fail a trial, so it has no pass rate to show, as its own verdict line says; an arm that
-        # answered no case says that, as its line does, since no grader read an answer of it.
+    if (
+        bundle is not None
+        and not holds_a_check(bundle)
+        and not readings.on_aspect(aspect)
+        and not any(pair.aspect == aspect for pair in readings.pairs)
+    ):
+        # Nothing it grades can fail a trial and no row compares the arms' answering, so it has no rate to show, as its
+        # own verdict line says: an arm that answered no case says that, one that failed to answer some how many it
+        # answered, since no grader read an answer it did not give.
         labels = readings.arm_labels()
-        counts = [(board.variant_key, pass_count(bundle, board)) for board in bundle.scoreboard]
-        failed = [passed_clause(labels.get(key, key), count) for key, count in counts if count.none_answered]
-        graded = ["no grader here says pass or fail"] if len(failed) < len(counts) or not counts else []
-        return "; ".join([*failed, *graded])
+        said: list[str] = []
+        for board in bundle.scoreboard:
+            count = pass_count(bundle, board)
+            label = labels.get(board.variant_key, board.variant_key)
+            if count.none_answered:
+                said.append(passed_clause(label, count))
+            elif sum(board.failed.values()):
+                said.append(passed_clause(label, count, verb="answered"))
+        answered_some = any(not pass_count(bundle, board).none_answered for board in bundle.scoreboard)
+        return "; ".join([*said, *(["no grader here says pass or fail"] if answered_some or not said else [])])
     if readings.kind == "choice":
         return pairs_words(readings, aspect) or "not compared"
     if readings.kind == "measurement":
@@ -1577,13 +1641,14 @@ def pair_blocks(
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
         no matrix is laid out.
     """
+    words = rate_words(reports[pair.aspect].bundle for pair in readings.pairs if pair.aspect in reports)
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         TableColumn(key="first", header="First arm"),
         TableColumn(key="second", header="Second arm"),
         TableColumn(key="cases", header="Cases", term="cases"),
-        TableColumn(key="first_passed", header="First passed", term="passed"),
-        TableColumn(key="second_passed", header="Second passed", term="passed"),
+        TableColumn(key="first_passed", header=f"First {words.verb}", term=words.term),
+        TableColumn(key="second_passed", header=f"Second {words.verb}", term=words.term),
         TableColumn(key="change", header="Change (pts)", term="change"),
         TableColumn(key="interval", header="Interval (pts)", term="interval"),
         TableColumn(key="ahead", header="Ahead"),
@@ -1632,7 +1697,7 @@ def pair_blocks(
     else:
         _no_equal_weight_row(campaign, readings, reports, "no pair of arms was read on any aspect")
     unchecked = _no_pass_rate_lines(campaign, reports, names)
-    if len(unchecked) == len(campaign.aspects):
+    if not readings.pairs and len(unchecked) == len(campaign.aspects):
         # No aspect has a pass rate to pair the arms on: each says so, and no table of pairs stands empty.
         return [*blocks, *(DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in unchecked)]
     blocks.append(
@@ -1877,9 +1942,12 @@ def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> st
     """A measure as the page names it on its aspect, and as every other surface names it
     (:func:`~threetears.evals.analysis.style.measure_name_of`): a goal check by its name on the aspect
     (declared, else what it tests), any other measure by its reader name; the pass rate as a name, capitalised as the
-    others are (``Pass rate``)."""
+    others are (``Pass rate``), or where nothing graded can fail a trial, the share answered (``Answered``)."""
     if reading.measure == PASSED_READING:
-        name = reading_name(reports[reading.aspect].bundle, reading.measure)
+        bundle = reports[reading.aspect].bundle
+        if reads_answered(bundle):
+            return ANSWERED_WORDS.heading
+        name = reading_name(bundle, reading.measure)
         return label_case(name)
     return measure_name_of(reports[reading.aspect].bundle, reading.measure)
 
@@ -2114,7 +2182,7 @@ def measured_figure(reading: MeasureReading, bundle: AnalysisContextBundle) -> s
     board = next((board for board in bundle.scoreboard if board.variant_key == reading.arm), None)
     if board is None:
         return None
-    return passed_clause(reading.arm_label, pass_count(bundle, board))
+    return passed_clause(reading.arm_label, pass_count(bundle, board), verb=rate_words([bundle]).verb)
 
 
 def _rate_counts(

@@ -503,7 +503,7 @@ class CellFacts(EvalDocumentModel):
         return self
 
 
-def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
+def all_failed_sentence(n_all_failed: int, n_cells: int, *, code_raised: bool = False) -> str:
     """The one sentence every surface says about cells where no result took a turn (:attr:`CellFacts.all_failed`).
 
     Stated once, here, because two readers say it — the bundle the analysis is written from, and the
@@ -513,16 +513,23 @@ def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
 
     :param n_all_failed: The cells where no result took a turn, at least one.
     :param n_cells: The cells on the surface.
+    :param code_raised: Whether every such cell's failures were the candidate's own code raising, which the sentence
+        then names, never its model.
     :return: The sentence.
     """
+    cause = (
+        "the candidate's own code raised while handling the reply"
+        if code_raised
+        else "the candidate's model refused or errored"
+    )
     if n_all_failed == n_cells:
         return (
-            "Every result failed: the candidate's model refused or errored on every call and took no turn, so there "
+            f"Every result failed: {cause} on every call and took no turn, so there "
             "is no cost or latency to read — not a fast, free arm — and every failure counts against its arm in "
             "each rate, bar and judged score."
         )
     return (
-        f"Every result failed in {n_all_failed} of {n_cells} cells: the candidate's model refused or errored on "
+        f"Every result failed in {n_all_failed} of {n_cells} cells: {cause} on "
         "every call there and took no turn, so those cells have no cost or latency to read — not a fast, free arm "
         "— and every failure counts against its arm in each rate, bar and judged score."
     )

@@ -15,7 +15,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.trials import holds_a_check
+from threetears.evals.analysis.bundle.trials import holds_a_check, reads_answered
 from threetears.evals.analysis.cells import split_arms
 from threetears.evals.analysis.report.aspect.common import _at, _control_key, _cost_ruler, _per_reply
 from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
@@ -188,6 +188,7 @@ def _scoreboard_blocks(
             "ran": board.ran,
             "usable": board.usable,
             "passed": None if apart else board.passed,
+            "answered": None if apart else board.passed,
             "check": None if apart else board.failed.get("check", 0),
             "judged": None if apart else board.failed.get("judged", 0),
             # A number on the cost's ruler, not its text: the page right-aligns a column of numbers, and the cell
@@ -214,6 +215,9 @@ def _scoreboard_blocks(
                 TableColumn(key="judged", header="Failed by judge", term="failed by judge"),
             ]
             if graded
+            # Where an arm failed to answer some trial, how many each answered is what can be compared.
+            else [TableColumn(key="answered", header="Answered", term="answered")]
+            if reads_answered(bundle)
             else []
         ),
         *([TableColumn(key="other", header=_other_failures_header(other_causes))] if other_causes else []),
@@ -301,7 +305,11 @@ def _scoreboard_blocks(
             causes = {cause for cause, count in failed_by.get(key, {}).items() if count}
             by_cause.setdefault(bool(causes) and causes <= {"code_raised"}, []).append(arm(key))
         for code, named in sorted(by_cause.items()):
-            failed = "its own code raised on every case" if code else "the model refused or errored on every call"
+            failed = (
+                "its own code raised while handling the reply on every case"
+                if code
+                else "the model refused or errored on every call"
+            )
             blocks.append(
                 DisclosureBlock(
                     section="scoreboard",

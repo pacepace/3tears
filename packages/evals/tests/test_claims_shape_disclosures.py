@@ -247,6 +247,47 @@ async def test_one_arm_graded_by_claims_alone_states_no_pass_rate_and_its_judge_
     assert UNCALIBRATED in page and UNCALIBRATED in aspect
     (header,) = _lines(aspect, r"^\| Arm \| Ran \|")
     assert header == "| Arm | Ran | Usable | Cost per 1,000 replies |", "no count of passes or grader failures"
+    for shown in (page, aspect):
+        assert "✓" not in shown and "Every one passed" not in shown and "pass^k" not in shown, "no mark says passed"
+        assert "12 trials ran. Every one was answered." in shown
+        terms = {line.split("**")[1] for line in _lines(shown, r"^- \*\*")}
+        assert not terms & {"passed", "failed by check", "failed by judge", "marks", "flag", "outcome"}, terms
+
+
+async def test_an_arm_failing_to_answer_where_nothing_can_fail_a_trial_is_compared_on_how_often_it_answered() -> None:
+    """A runner crashing on 3 of 12 cases of an eval graded by numbers alone: no pass rate, but the share answered is
+    read, compared and said, so a crashing arm is never read on its survivors alone."""
+
+    def length(case: Mapping[str, Any], answer: str) -> float:
+        return float(len(answer))
+
+    result = await Eval(CASES, {"recalls": recalls, "buggy": buggy}, [length], k=1, name="lengths").run(store=MEMORY)
+
+    printed, page, aspect = result.render(), campaign_report_markdown(result.page), report_markdown(result.report)
+    assert "buggy answered 9 of 12 cases." in printed.splitlines()[0]
+    (lead,) = _lines(page, r"^\*\*")[:1]
+    assert "buggy answered 9 of 12 cases." in lead, lead
+    assert _lines(page, r"^\| Aspect \| Cases \| ▸ recalls · answered \| buggy · answered vs recalls \|$")
+    assert (
+        "lengths has no pass rate: no grader there says pass or fail, so what its row compares is how often each"
+        in page
+    )
+    assert "Pass rate" not in page
+    (header,) = _lines(aspect, r"^\| Arm \| Ran \|")
+    assert "| Usable | Answered | Code raised |" in header
+    assert _lines(aspect, r"^\| case 1 \| regression \| ● \| ✗ \(failed: code raised ×1\) \|")
+    assert "24 trials ran. Of them 21 were answered and 3 failed to answer." in aspect
+
+
+async def test_one_arm_failing_to_answer_some_says_how_many_it_answered() -> None:
+    def length(case: Mapping[str, Any], answer: str) -> float:
+        return float(len(answer))
+
+    result = await Eval(CASES, buggy, [length], k=1, name="lengths").run(store=MEMORY)
+
+    said = "buggy answered 9 of 12 cases; no grader here says pass or fail."
+    assert result.render().splitlines()[0].startswith(f"lengths: {said}")
+    assert f"**{said}**" in campaign_report_markdown(result.page), "never 'ran 12 of 12'"
 
 
 async def test_two_arms_graded_by_claims_alone_are_compared_on_their_claim_readings_and_no_pass_rate() -> None:
@@ -273,6 +314,14 @@ async def test_a_claims_eval_with_a_judged_dimension_keeps_its_pass_rate() -> No
     assert "| bridges | Pass rate | 100% (12 of 12 cases) |" in page
     (header,) = _lines(report_markdown(result.report), r"^\| Arm \| Ran \|")
     assert "| Passed | Failed by check | Failed by judge |" in header
+    # The quiet print names each judge not yet calibrated, the rubric dimension's as the claim criterion's, so none
+    # left unsaid reads as calibrated.
+    printed = result.render()
+    assert (
+        f"Judge {MODEL} is uncalibrated on answer clear: no human labels yet, so its scores are directional. Rate about "
+        "20 of its outputs to calibrate it."
+    ) in printed
+    assert UNCALIBRATED in printed
 
 
 async def test_an_eval_graded_by_numbers_alone_states_no_pass_rate_either() -> None:
@@ -500,6 +549,9 @@ async def test_a_runner_s_own_programming_error_is_named_as_the_host_s_code() ->
     (header,) = _lines(aspect, r"^\| Arm \| Ran \|")
     assert "| Code raised |" in header
     assert len(_lines(aspect, r"\| buggy \| failed \| code raised \|")) == 3
+    # Named as the code's, with the reply's handling to check, since an empty or malformed reply can set it off too.
+    assert "check the runner's handling of the reply" in aspect
+    assert "no other model" not in aspect
 
 
 async def test_a_runner_whose_own_code_raises_on_every_case_is_said_so() -> None:
@@ -511,8 +563,11 @@ async def test_a_runner_whose_own_code_raises_on_every_case_is_said_so() -> None
     )
 
     aspect = report_markdown(result.report)
-    assert "Every trial of broken failed: its own code raised on every case." in aspect
+    assert "Every trial of broken failed: its own code raised while handling the reply on every case." in aspect
     assert "the model refused or errored" not in aspect
+    assert result.report.bundle.all_failed is not None
+    assert "the candidate's own code raised while handling the reply on every call" in result.report.bundle.all_failed
+    assert "model refused" not in result.report.bundle.all_failed, "the stored sentence names the cause too"
 
 
 async def test_a_runner_raising_what_a_client_raises_is_still_read_as_its_model_failing() -> None:

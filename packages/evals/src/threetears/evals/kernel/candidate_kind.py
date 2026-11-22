@@ -339,13 +339,14 @@ class CandidateOutput(EvalBaseModel):
     """
 
     code_raised: bool = False
-    """The candidate failed because its own code raised a programming error (a ``KeyError``, a ``TypeError``), not
-    because a model it runs failed.
+    """The candidate failed because its own code raised a programming error (a ``KeyError``, a ``TypeError``) while
+    handling the reply, not because a call to a model it runs failed.
 
     Set by a kind that runs the host's code as the candidate, where the raise is one no model call makes
     (:data:`~threetears.evals.kernel.result_condition.PROGRAMMING_ERRORS`). The trial still fails, counted against the
-    candidate as any failure to answer is, but a report names the host's code as the cause and fixing it as the remedy,
-    never a different model. Requires a ``candidate_errors`` entry: it says why that failure happened.
+    candidate as any failure to answer is, and a report names the code that raised as the cause and the runner's
+    handling of the reply as what to check: usually a bug, though an empty or malformed reply can set one off.
+    Requires a ``candidate_errors`` entry: it says why that failure happened.
     """
 
     host_measures: dict[str, bool | float | str] = {}
