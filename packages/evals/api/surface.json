@@ -4821,6 +4821,16 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.ClaimCheckReading": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ClaimQuestionCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.compare_two_runs": {
       "kind": "function",
       "signature": "",

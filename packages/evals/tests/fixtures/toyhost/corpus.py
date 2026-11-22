@@ -44,8 +44,7 @@ from threetears.evals.schema import (
 )
 from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
-from threetears.evals.schema import SubjectSnapshot, SweepableValue
-from threetears.evals.schema.claim_read import ClaimRead
+from threetears.evals.schema import ClaimRead, SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY, TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
