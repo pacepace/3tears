@@ -6,6 +6,47 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `Claims` on the quick path, and `Answer.documents`
+
+**Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,
+case_documents=None, grounded_in=None, guidance="", search=None, web=None, pages=..., repairs=...)`, a grader an eval
+lists as it lists a `Judge`. Its template declares one claim criterion (`answer.claims` by default), and the engine
+lists and checks each answer's factual claims in its judge phase: false claims per answer and the share of answers
+holding one, and, with `grounded_in`, the grounded share of specific claims. Each ranks on its own, appears on the
+page beside the other readings, and is no lead or bar a grader's reading is. An eval graded by `Claims` alone is judged:
+its template is the judged callable kind's, and its run's judge pin is the grader's model. An eval graded by a `Judge`
+and `Claims` grades both on one model, through the `Judge`'s client (the `Claims` client is then never called), and two
+models are refused when the eval is built, as are two `Claims`, a `web` budget with no `search`, a `grounded_in` other
+than `run` and `case`, `grounded_in="case"` with no `case_documents`, and a `Claims` with nothing to check a claim
+against (no `case_documents`, no `search`, no `grounded_in`), whose every reading would read 0. With
+`grounded_in="run"` alone, nothing decides truth: the print and the result's pages say its false claims were not
+checked, beside the grounded share that reads what the answers say.
+
+- **The case's evidence** is a field of the case (`case_documents="source"`: a text, a list of texts, or mappings with
+  `text`, `title` and `url`) or a callable rendering a case's documents. A case missing the field is left out of the
+  run by name.
+- **What a candidate read** rides on `Answer.documents` (new, optional, and provisional as `Document` is): each passage it was given or page it fetched,
+  a `Document(text, title=None, url=None)` (new) or its text. `()` says it read none, and reads a grounded share of
+  0. `None` says nothing, and fails a run whose `Claims` reads the candidate's own documents (`grounded_in="run"`),
+  naming the fix. The documents are stored as the cell's claim evidence, never in its answer. The case's documents and
+  the candidate's each take half of what one cell's documents may hold, apart, and a document cut to fit says so in its
+  title, so what an arm read never cuts the case's evidence. Documents whose titles and addresses alone overflow their
+  half leave the cell out by name.
+- **Each answer is one unit** unless `segments` cuts it: `(case, answer) -> [...]`, text pieces each a unit in order,
+  or `Segment` values for a piece in no unit, a unit spanning pieces, or the host's own tags. `unit` names it on the
+  page and is presentation only: the criterion is part of the case set's id and the unit is not, so a renamed unit
+  keeps the case set, its comparison and its template's `updated_at`.
+- **The web:** `search=` takes a `WebSearch` port, or a `RecordedWebSearch` to replay one, and turns the web check on at
+  `web=` (a `WebBudget`; a generic default when left out).
+
+**Added:** the aspect page says each claims caveat under its scoreboard, on the arm it touches: cells a criterion lost,
+cells pending, cells its claim reader could not read, and cells whose web check skipped claims past the budget or
+failed. Before this only the report's caveat list held them.
+
+`Claims` and `Document` are provisional, served by `threetears.evals.quick` (`from threetears.evals.quick import Claims,
+Document`), not the package root, whose names are the stable ladder. `Answer.documents` is optional and defaults to `None`, so a runner returning an
+`Answer` without it is unchanged; nothing stored gains a field.
+
 ### evals: a host's own readings of a claim criterion's grade
 
 **Added (#1287), provisional:** a host may read a claim criterion's grade into readings of its own. It declares each as

@@ -1616,6 +1616,42 @@ def with_judge_examples(result: Result, examples: JudgeExamples | None) -> Resul
     )
 
 
+def with_said(result: Result, line: str, *, anchor: str) -> Result:
+    """``result`` saying ``line`` beside its readings: printed with its disclosures, and on its pages after their
+    caveats (the aspect page's under its scoreboard, the campaign page's under its warnings).
+
+    For what the eval knows of how it was graded and the runs do not store, so the line is set on this result's
+    pages, as its judge's examples are; a page read again from the store has none.
+
+    :param result: The result.
+    :param line: The sentence.
+    :param anchor: The id the line carries on each page.
+    :return: The result, saying it.
+    """
+    report = result.report.model_copy(
+        update={
+            "blocks": _placed(
+                result.report.blocks, DisclosureBlock(section="scoreboard", source="caveat", text=line, anchor=anchor)
+            )
+        }
+    )
+    page = result.page.model_copy(
+        update={
+            "blocks": _placed(
+                result.page.blocks, DisclosureBlock(section="warnings", source="caveat", text=line, anchor=anchor)
+            )
+        }
+    )
+    return replace(result, disclosures=(*result.disclosures, line), report=report, page=page)
+
+
+def _placed(blocks: Sequence[Any], line: DisclosureBlock) -> list[Any]:
+    """``blocks`` with ``line`` after the last block of its section, else at the end."""
+    held = list(blocks)
+    at = max((index for index, block in enumerate(held) if block.section == line.section), default=len(held) - 1)
+    return [*held[: at + 1], line, *held[at + 1 :]]
+
+
 def _campaign_name(name: str) -> str:
     """An eval's name as its campaign holds it: whole within :data:`DECLARED_NAME_CHARS`, else cut at a word to fit,
     an ellipsis marking the cut (its first characters where its first word alone runs past)."""
@@ -1832,4 +1868,5 @@ __all__ = [
     "refuse_an_unusable_margin",
     "refuse_an_unusable_undo",
     "with_judge_examples",
+    "with_said",
 ]

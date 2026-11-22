@@ -12,7 +12,8 @@ build the same value.
   comparison**: its first key is the control and every other arm is tested against it. Arms named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``) are the cells of a factorial design. A mapping of one is one arm, named.
 - **grader** is one grader or a list (:mod:`threetears.evals.quick.graders`): a function, a field name, an
-  expression over a world, a :class:`~threetears.evals.quick.judged.Judge`, any of the first two wrapped by
+  expression over a world, a :class:`~threetears.evals.quick.judged.Judge`, a
+  :class:`~threetears.evals.quick.claims.Claims`, any of the first two wrapped by
   :func:`~threetears.evals.quick.graders.grader`.
 
 Everything else is defaulted: the runs are kept in ``.evals/evals.sqlite`` under the working directory, in a scope
@@ -66,6 +67,7 @@ from threetears.evals.quick.one_call import (
     launched_as_run,
     refuse_an_unusable_cap,
 )
+from threetears.evals.quick.claims import unchecked_truth
 from threetears.evals.quick.continuation import (
     MEMORY_WHERE,
     design_facts,
@@ -84,6 +86,7 @@ from threetears.evals.quick.result import (
     refuse_an_unusable_margin,
     refuse_an_unusable_undo,
     with_judge_examples,
+    with_said,
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
@@ -385,8 +388,8 @@ class Eval:
         :param cases: The cases, or a file of them (:func:`load_cases`), read now.
         :param runner: The thing under test: a function, ``World(...)(agent)``, a ``Log``, or a mapping of them, whose
             first key is the control.
-        :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``, each of the
-            first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
+        :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``,
+            ``Claims``, each of the first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
             pass or fail; one annotated ``-> float`` or ``-> int``, or given a range, grades a number
             (:func:`~threetears.evals.quick.graders.declares_a_check`).
         :param k: Repeats per case, per arm.
@@ -669,7 +672,7 @@ class Eval:
                     keyed,
                     factors,
                     levels=filed_levels,
-                    kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+                    kind=CALLABLE_KIND if judge is None and self.plan.claims is None else JUDGED_CALLABLE_KIND,
                     control=control,
                     scope_id=scope_id,
                     name=self.name,
@@ -720,6 +723,7 @@ class Eval:
             expected=None if self.plan.classifier is None else partial(expected_label, name=self.plan.classifier),
             label_field=self.plan.classifier,
             judge=judge,
+            claims=self.plan.claims,
             world=self.world,
             goal_checks=self.plan.goal_checks,
             k=self.k,
@@ -771,7 +775,7 @@ class Eval:
             result = filed()
             closed, _loose = read_blind(judge, host, keyed, control, scope_id, self.name, runs=runs_of)
             drawn.extend([closed.read.id] if closed is not None else [])
-            return with_judge_examples(
+            said_result = with_judge_examples(
                 replace(
                     result,
                     store=where,
@@ -782,6 +786,11 @@ class Eval:
                 ),
                 examples,
             )
+            claims = self.plan.claims
+            if claims is not None and not claims.checks_truth:
+                # Nothing decided a claim's truth, so its false claims read 0 whatever the answers say: said beside them.
+                said_result = with_said(said_result, unchecked_truth(claims.name), anchor="claims-unchecked")
+            return said_result
 
         # Filing the campaign and reading its report and labels are store reads and writes, so they run off the loop.
         drawn: list[str] = []

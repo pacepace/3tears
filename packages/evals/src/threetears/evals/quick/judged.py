@@ -143,7 +143,7 @@ class ExampleGrade:
         :return: ``"Done: your year is refunded in full." graded pass on grounded, must fail (no refund after 30
             days)``; with repeats that differ, each verdict with how many of them gave it.
         """
-        answer = " ".join(_answer_text(self.example.answer).split())
+        answer = " ".join(answer_text(self.example.answer).split())
         if len(answer) > _QUOTED_ANSWER_CHARS:
             answer = answer[: _QUOTED_ANSWER_CHARS - 1] + "…"
         counted = {verdict: self.verdicts.count(verdict) for verdict in self.verdicts}
@@ -500,11 +500,12 @@ class BorrowedJudgeClient:
         """Leave the client open for its owner."""
 
 
-def judge_client(model: str | CompletionClient) -> tuple[CompletionClient, str]:
+def judge_client(model: str | CompletionClient, *, grader: str = "Judge") -> tuple[CompletionClient, str]:
     """The client a judge calls and the model the run records it as, from what ``Judge(model=...)`` was handed.
 
     :param model: A :class:`~threetears.evals.providers.Model`; any completion client that names its model
         (``model_name``); or a model id, which builds a :class:`~threetears.evals.providers.Model` that calls it.
+    :param grader: The grader it was handed to, as a refusal names it (``Judge``, ``Claims``).
     :return: The client, and its model's name.
     :raises ValueError: A client that names no model, or a model id the completion client refuses (no key for its
         provider, naming the variable).
@@ -517,7 +518,7 @@ def judge_client(model: str | CompletionClient) -> tuple[CompletionClient, str]:
     name = getattr(model, "model_name", None)
     if not isinstance(name, str) or not name.strip():
         raise ValueError(
-            f"Judge(model=...) takes a model id, a Model, or a client that names its model (model_name); "
+            f"{grader}(model=...) takes a model id, a Model, or a client that names its model (model_name); "
             f"{type(model).__name__} names none, and the run records which model judged"
         )
     return model, name
@@ -563,11 +564,12 @@ def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any, *, expect
             raise ValueError(
                 f"the judge's case_material gave {material!r}; the material an answer is judged against is text"
             )
-    return JudgeEvidence(case_material=material, artifact=_answer_text(answer))
+    return JudgeEvidence(case_material=material, artifact=answer_text(answer))
 
 
-def _answer_text(answer: Any) -> str:
-    """The answer as the judge reads it."""
+def answer_text(answer: Any) -> str:
+    """The answer as a judge reads it, and as the claims grader cuts it by default: a string as written, anything
+    else as JSON (its ``repr`` when JSON cannot hold it), and :data:`EMPTY_ANSWER` for one that renders blank."""
     if isinstance(answer, str):
         text = answer
     else:
@@ -588,5 +590,6 @@ __all__ = [
     "Example",
     "ExampleGrade",
     "JudgeExamples",
+    "answer_text",
     "judge_evidence",
 ]

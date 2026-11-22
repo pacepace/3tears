@@ -25,6 +25,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from functools import cache
 
@@ -623,6 +624,42 @@ def test_losses_pending_cells_and_skipped_web_checks_each_raise_a_class_b_caveat
         assert (caveat.kind, caveat.cls) == (kind, "B")
         assert caveat.arms == [lookup_label], "only the arm whose cells it touches"
     assert f"claims_lost:{SCOUT}" not in caveats
+
+
+def test_the_aspect_page_says_each_claims_caveat_under_its_scoreboard_on_the_arm_it_touches() -> None:
+    """Lost, pending, web-skipped and web-lost cells each get a line on the page, naming the arm and its cells; the
+    control, which lost nothing, is named in none."""
+
+    def lookup(case: int, k: int) -> dict[str, Any]:
+        held = _lookup_losing("cut_short", share=6)(case, k)
+        if case == 1 and k == 1:
+            del held["claim_tallies"][RULES]
+            held["claim_failures"] = {RULES: "trace_pending"}
+        if case == 2 and k == 1:
+            held["claim_tallies"][RULES] = _tally(grounded=3, skipped=1)
+        if case == 3 and k == 1:
+            held["claim_tallies"][RULES] = _tally(grounded=3, skipped=1, web_loss="port_error")
+        return held
+
+    page = report_markdown(
+        build_code_only_report(_bundle(lookup=lookup), assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c")
+    )
+    said = {
+        "lost": r"^Claim grading lost 4 cells of (?P<arm>.+) on rules\.claims, so its readings there rest on the "
+        r"cells it graded\.$",
+        "pending": r"^The claims on rules\.claims are not yet known for 1 cell of (?P<arm>.+): each waits on its stored "
+        r"grade, which is no loss\.$",
+        "web skipped": r"^The web budget of rules\.claims skipped claims in 2 cells of (?P<arm>.+): each reads "
+        r"unverifiable, never false, so its false claims there may be undercounted\.$",
+        "web lost": r"^The web check of rules\.claims failed in 1 cell of (?P<arm>.+): its undecided claims read "
+        r"unverifiable, never false, so its false claims there may be undercounted\.$",
+    }
+    named = set()
+    for kind, pattern in said.items():
+        (line,) = [match for match in (re.match(pattern, held) for held in page.splitlines()) if match]
+        named.add(line["arm"])
+    assert len(named) == 1, "every line names the one arm whose cells it counts, and no other"
+    assert "scout.claims" not in "\n".join(line for line in page.splitlines() if "cell" in line and "claims" in line)
 
 
 def test_a_claim_the_web_never_checked_is_never_a_false_claim() -> None:

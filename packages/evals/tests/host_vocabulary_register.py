@@ -435,6 +435,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "negotiation/settings.py": {},
     "quick/__init__.py": {},
     "quick/answer.py": {},
+    "quick/claims.py": {},
     "quick/blind.py": {},
     "quick/cli.py": {},
     "quick/contract.py": {},
