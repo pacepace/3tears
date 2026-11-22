@@ -123,6 +123,7 @@ from threetears.evals.quick.blind import (
     read_labels,
 )
 from threetears.evals.run.blind_review import REVIEWER_PURPOSE, plan_review
+from threetears.evals.quick.claims import ClaimCell, claim_cell
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER
@@ -355,6 +356,52 @@ class Result:
         :raises ValueError: ``arm`` names no arm, or is ``None`` on a comparison.
         """
         return self._arm(arm).misses()
+
+    def claim_cells(self, arm: str | None = None, *, criterion: str | None = None) -> list[ClaimCell]:
+        """PROVISIONAL. Every cell's claims under the eval's :class:`~threetears.evals.quick.Claims`: each cell's
+        readings, the criterion's own and your own, and its claims with their verdicts. Reads the store.
+
+        :param arm: Only this arm's cells, by its key in :attr:`arms`; ``None`` keeps every arm's.
+        :param criterion: The criterion, by its stored name (``answer.claims``); ``None`` for the one the eval's cells
+            were graded under.
+        :return: One :class:`~threetears.evals.quick.ClaimCell` per cell the criterion graded or lost, arm by arm in
+            the order given, then in case order and repeat; a cell left out before its claims were graded has none.
+        :raises ValueError: ``arm`` names no arm; or ``criterion`` is ``None`` and no claim criterion, or more than
+            one, graded the cells.
+        """
+        if arm is not None:
+            _refuse_an_unknown_arm(self.arms, arm)
+        runs = self._arm_runs()
+        stored = {
+            name: [result for run_id in runs[name] for result in list_results(self.host.storage, run_id, self.scope_id)]
+            for name in self.arms
+            if arm is None or name == arm
+        }
+        if criterion is None:
+            due = sorted(
+                {held for results in stored.values() for result in results for held in result.claim_fingerprints}
+            )
+            if len(due) != 1:
+                raise ValueError(
+                    "this result's cells were graded under no claim criterion: grade the eval with Claims"
+                    if not due
+                    else f"this result's cells were graded under {len(due)} claim criteria ({', '.join(due)}); name one"
+                )
+            (criterion,) = due
+        cells: list[ClaimCell] = []
+        for name, results in stored.items():
+            # Each cell named as every other line names it, and read in the order the arm's results list.
+            named = {held.case_id: (place, held.case) for place, held in enumerate(self.arms[name].case_results or ())}
+            ordered = sorted(
+                results,
+                key=lambda result: (named.get(result.test_case_id, (len(named), ""))[0], result.k_iteration),
+            )
+            for result in ordered:
+                trace = get_result_trace(self.host.storage, result) if result.has_trace else None
+                case = named.get(result.test_case_id, (0, result.test_case_id))[1]
+                if (cell := claim_cell(name, case, result, trace, criterion)) is not None:
+                    cells.append(cell)
+        return cells
 
     def _arm(self, arm: str | None) -> EvalSummary:
         if arm is None:

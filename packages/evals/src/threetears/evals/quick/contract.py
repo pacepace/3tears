@@ -67,7 +67,7 @@ from threetears.evals.quick.one_call import (
     launched_as_run,
     refuse_an_unusable_cap,
 )
-from threetears.evals.quick.claims import unchecked_truth
+from threetears.evals.quick.claims import Claims, unchecked_truth
 from threetears.evals.quick.continuation import (
     MEMORY_WHERE,
     design_facts,
@@ -990,8 +990,21 @@ def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:
     A margin, a range or a guardrail declared on a grader is read off the host's measure, so a host that declares
     the measure without it would run the eval as though nothing had been declared.
 
-    :raises ValueError: A grader's margin, range or guardrail the host's measure of it does not carry.
+    :raises ValueError: A grader's margin, range or guardrail the host's measure of it does not carry; or readings of
+        your own on ``Claims`` the host does not declare as they are declared, or reads through another reader.
     """
+    claims = plan.claims
+    if claims is not None and claims.derived:
+        measures = host.profile.measures
+        unread = [descriptor.name for descriptor in claims.derived if measures.get(descriptor.name) != descriptor]
+        # The host reads through the Claims as_host was built over: this one, or one declaring the same readings.
+        reading = getattr(host.profile.claim_readers.get(claims.name), "__self__", None)
+        if unread or not isinstance(reading, Claims) or reading.unlike(claims) is not None:
+            raise ValueError(
+                f"host {host.profile.host_id!r} does not read the readings Claims {claims.name!r} declares "
+                f"({', '.join(claims.readings)}) as it declares them; build the host with as_host over this eval, so "
+                "the two are one declaration"
+            )
     for scorer in plan.scorers:
         name = scorer.__name__
         descriptor = host.profile.measures.get(name)
@@ -1032,8 +1045,8 @@ def as_host(
         :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none, and a call needing
         them is refused. A judge brings its own client for the run.
     :return: The host.
-    :raises ValueError: No evals, two graders of one name declared differently, evals stating different levers, or evals
-        on two worlds.
+    :raises ValueError: No evals, two graders of one name declared differently, two ``Claims`` of one name declaring
+        different readings of their own, evals stating different levers, or evals on two worlds.
     """
     if not evals:
         raise ValueError("as_host builds a host for the evals given, and none was")
@@ -1041,7 +1054,15 @@ def as_host(
     margins: dict[str, float] = {}
     ranges: dict[str, tuple[float, float]] = {}
     guardrails: dict[str, Any] = {}
+    claims: dict[str, Claims] = {}
     for ev in evals:
+        if (graded := ev.plan.claims) is not None:
+            known_claims = claims.setdefault(graded.name, graded)
+            if (unlike := known_claims.unlike(graded)) is not None:
+                raise ValueError(
+                    f"two Claims named {graded.name!r} declare different readings of their own: one {unlike}; one host "
+                    "reads one set of readings of a criterion through one reader, so name them apart or share it"
+                )
         for scorer in ev.plan.scorers:
             known = scorers.get(scorer.__name__)
             if known is not None and known is not scorer and _declared(ev.plan, scorer) != _declared_by(evals, known):
@@ -1073,6 +1094,8 @@ def as_host(
         store=opened,
         clients=clients,
         guardrails=guardrails,
+        derived=[descriptor for graded in claims.values() for descriptor in graded.derived],
+        claim_readers={name: graded.read for name, graded in claims.items() if graded.derived},
     )
 
 
