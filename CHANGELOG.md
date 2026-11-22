@@ -25,6 +25,12 @@ packages (bumped in lock-step).
 - **Every uncalibrated judge is said on the quiet print**, a rubric dimension's and a claims criterion's, in the
   words the pages use (`Judge <model> is uncalibrated on answer.claims: no person has checked its claim verdicts yet,
   so its readings are directional.`). The pages now say it for a claims judge too.
+- **A claims judge is said in the state its claim read left it.** Where the campaign has a closed claim read of a
+  criterion, of the definition its grades were made under, the print and both pages say what that read's check
+  against people decided, question by question: calibrated (met), not calibrated (not met), or not yet calibrated
+  (undecided, or too little to decide), and name each arm its lean test read no rate on. With no closed read the
+  judge is uncalibrated, as before. A met check leaves no reading directional, so it raises no first-screen line, and
+  the campaign page states it in its own `Judge checked against people` row.
 - **The quiet print says what qualifies a claim reading**, as the aspect page does: cells lost, pending or unread,
   claims skipped past the web budget, a web check that failed, and web checks that read a recording. That last line is
   new on the page too, with a class-B caveat, `claims_web_replayed:<criterion>`.
@@ -43,7 +49,12 @@ packages (bumped in lock-step).
   that cause too. Any other raise reads as before.
 
 **For hosts:** a host kind that runs the host's own code as its candidate may set `CandidateOutput.code_raised` beside
-its `candidate_errors` for a raise from `kernel.result_condition.PROGRAMMING_ERRORS`. A campaign with an aspect nothing
+its `candidate_errors` for a raise from `kernel.result_condition.PROGRAMMING_ERRORS`. A host store that assembles a
+campaign's bundle itself (`CampaignReadStore`) must answer `query_claim_reads(scope_id, /, *, campaign_id=None)`, as
+`EvalStorage` does; the bundle carries each criterion's check (`AnalysisContextBundle.claim_checks`) and its evidence
+the reads it stands on (`EvidenceManifest.claim_reads`), each left out while none, so a campaign with no closed claim
+read fingerprints as it did, and one closing a read moves its fingerprint. A floor on an aspect with no rate to row is
+read and sized as before. A campaign with an aspect nothing
 graded can fail a trial on, where every arm answered every trial, reads no pass-rate row or pair there, so its
 comparison family is smaller: re-reading such a stored campaign under this build can move another reading's verdict,
 since the family is corrected together. New stored fields, each left out of the document while unset, so a document

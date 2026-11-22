@@ -1286,6 +1286,16 @@ def settle_blocks(
     :return: The table and its note; nothing where no reading is to settle.
     """
     sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports, forms)]
+    # A floor on an aspect no row reads (nothing graded there can fail a trial, and every arm answered) is sized on
+    # its own: the aspect has no rate, but the floor reads rates of its own, a cost or a check it names.
+    rowed = {(row.aspect, row.arm) for row in readings.readings}
+    unrowed = list(dict.fromkeys((status.aspect, status.arm, status.arm_label) for status in readings.floors))
+    sizings += [
+        sizing
+        for aspect, arm, label in unrowed
+        if (aspect, arm) not in rowed and aspect in reports
+        for sizing in _floor_sizings(aspect, arm, label, None, campaign, readings, reports[aspect].bundle, forms)
+    ]
     if not sizings:
         return []
     words = rate_words(reports[sizing.aspect].bundle for sizing in sizings if sizing.aspect in reports)
@@ -1357,25 +1367,47 @@ def _sizings(
             projection=row.projection,
         )
         found.append(own)
+    return _floor_sizings(row.aspect, row.arm, row.arm_label, row, campaign, readings, bundle, forms, found=found)
+
+
+def _floor_sizings(
+    aspect: str,
+    arm: str,
+    arm_label: str,
+    row: AspectReading | None,
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    bundle: AnalysisContextBundle,
+    forms: PageForms,
+    *,
+    found: list[_Sizing] | None = None,
+) -> list[_Sizing]:
+    """What would settle each rate floor on ``aspect`` left unclear for ``arm``, after ``found`` (the row's own
+    sizing, where the arm has a row there): a floor whose count is the row's own joins its row, as one quantity is one
+    row; on an aspect with no row (``row`` None), each floor is sized alone."""
+    found = list(found or [])
+    own = found[0] if found and not found[0].floor else None
     control = readings.control
     if control is None:
         return found
-    figures = floor_readings(bundle, control, row.arm, check_names=bundle.named_checks())
+    figures = floor_readings(bundle, control, arm, check_names=bundle.named_checks())
     per_case = case_cost_usd(bundle)
     for status in readings.floors:
         floor = floor_of(campaign.floors, status.floor)
-        if status.aspect != row.aspect or status.arm != row.arm or status.status != "unclear" or floor is None:
+        if status.aspect != aspect or status.arm != arm or status.status != "unclear" or floor is None:
             continue
         clause = floor.clause
         if not isinstance(clause, RateDrop):
             continue
-        verdict = read_floor(floor, figures, control=readings.control_label, candidate=row.arm_label)
+        verdict = read_floor(floor, figures, control=readings.control_label, candidate=arm_label)
         # One source for the count and the rate deciding it: where any unclear rate cannot be projected, neither is.
         rates = rate_projections(verdict, per_case_usd=per_case)
         deciding = None if rates is None else _deciding_rate(rates)
         projection = None if rates is None else reduce(SampleProjection.joined, (one for _, one in rates))
         if (
             own is not None
+            and row is not None
+            and row.margin is not None
             and deciding is not None
             and deciding.rate.measure is None
             and clause.max_points == row.margin
@@ -1394,8 +1426,8 @@ def _sizings(
             continue
         found.append(
             _Sizing(
-                aspect=row.aspect,
-                arm=row.arm_label,
+                aspect=aspect,
+                arm=arm_label,
                 shows=f"the {forms.declared(clause.max_points).text}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding, rate_words([bundle])),
                 why=reason_words(forms.said(verdict.reason if deciding is None else deciding.reason)) or "",

@@ -677,7 +677,7 @@ class Result:
         arm_of = {variant: arm for arm, variant in self.arm_variants.items()}
         return [
             *claim_caveat_lines(bundle, lambda key: _shown_arm_name(arm_of.get(key, key))),
-            *calibration_sentences(bundle),
+            *calibration_sentences(bundle, lambda key: _shown_arm_name(arm_of.get(key, key))),
         ]
 
     def _why(self, miss: CaseResult) -> list[str]:

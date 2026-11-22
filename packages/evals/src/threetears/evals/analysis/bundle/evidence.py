@@ -34,6 +34,9 @@ The components:
   that rule can move this component with no store write (accepted: the rule decides a printed tier).
 - ``insights``: every prior insight of the subject the assembly read, as of its cutoff (:data:`_INSIGHT`), before
   the cap on how many a bundle carries, and each one retracted, by id.
+- ``claim_reads``: each closed claim read a claim criterion's judge check stands on: its id, its criterion and its
+  definition, when it was closed, and what its check decided on each question and which arms its lean test read no
+  rate on. Left out where no check stands on one, so a campaign with none fingerprints as it did.
 - ``host_declarations``: :func:`~threetears.evals.analysis.bundle.schema.host_declarations_digest`, as the bundle
   carries it.
 
@@ -134,6 +137,7 @@ if TYPE_CHECKING:
     from threetears.evals.analysis.aspects import AspectView
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import EvalResult
+    from threetears.evals.schema.claim_read import ClaimRead
 
 __all__ = [
     "EVIDENCE_FINGERPRINT_PREFIX",
@@ -831,6 +835,12 @@ class EvidenceManifest(EvalDocumentModel):
     n_judge_profiles: int = Field(ge=0, description="Stored judge profiles consulted.")
     insights: str = Field(description="Digest of each prior insight read as of the cutoff and each one retracted.")
     n_insights: int = Field(ge=0, description="Prior insights read.")
+    claim_reads: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Digest of each closed claim read a claim criterion's judge check stands on; None (left out) "
+        "where none does.",
+    )
 
 
 def manifest_fingerprint(manifest: Mapping[str, Any]) -> str:
@@ -1048,6 +1058,26 @@ def _consulted_profiles(tiers: Any) -> list[dict[str, Any]]:
     return [found[profile_id] for profile_id in sorted(found)]
 
 
+def _claim_read_evidence(read: ClaimRead) -> dict[str, Any]:
+    """A closed claim read as the evidence takes it: what names it and its criterion's definition, when it closed, and
+    what its check decided on each question, with the arms its lean test read no rate on."""
+    questions = read.report.questions if read.report is not None else []
+    return {
+        "id": read.id,
+        "criterion": read.criterion,
+        "criterion_fingerprint": read.criterion_fingerprint,
+        "closed_at": read.closed_at,
+        "checks": [
+            {
+                "question": figures.question,
+                "result": figures.check.result if figures.check is not None else None,
+                "lean_untested": sorted(figures.lean_untested),
+            }
+            for figures in questions
+        ],
+    }
+
+
 def evidence_manifest(
     view: AspectView,
     *,
@@ -1063,6 +1093,7 @@ def evidence_manifest(
     tiers: Sequence[BaseModel],
     insights: Sequence[EvalInsight],
     retracted_insights: Mapping[str, str],
+    claim_reads: Sequence[ClaimRead] = (),
 ) -> EvidenceManifest:
     """The manifest of one assembly: what it read, each kind digested (see the module).
 
@@ -1079,6 +1110,7 @@ def evidence_manifest(
     :param tiers: The judges' tiers, which name each stored profile consulted.
     :param insights: Every prior insight read as of the cutoff, retracted ones included, before the carried cap.
     :param retracted_insights: Each retracted insight's id, to the archived analysis that minted it.
+    :param claim_reads: Each closed claim read a criterion's judge check stands on.
     :return: The manifest.
     """
     profiles = _consulted_profiles([tier.model_dump(mode="json") for tier in tiers])
@@ -1109,4 +1141,9 @@ def evidence_manifest(
             }
         ),
         n_insights=len(insights),
+        claim_reads=input_digest(
+            sorted((_claim_read_evidence(read) for read in claim_reads), key=lambda read: read["id"])
+        )
+        if claim_reads
+        else None,
     )

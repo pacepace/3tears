@@ -32,6 +32,7 @@ from packages.evals.tests.factories import (
     minimal_aspect_design,
 )
 from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, shape_of
+from threetears.evals.kernel.declaration import RateDrop
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
@@ -47,6 +48,18 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.quick import Claims, Document
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.schema import EvalResult, EvalRun, WebBudget, WebPage, WebSearchResult
+from threetears.evals.schema.claim_read import (
+    ClaimCheckRecord,
+    ClaimDraw,
+    ClaimFigure,
+    ClaimQuestionFigures,
+    ClaimRead,
+    ClaimReadArm,
+    ClaimReadReport,
+    ClaimStratumDraw,
+)
+from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.schema.models import ClaimCriterion, ClaimTally, PageBudget, RepairBudget
 
 MODEL = "scripted/claims"
@@ -650,3 +663,178 @@ def test_across_aspects_one_with_a_check_the_rate_is_named_as_both_and_each_row_
     (tone,) = _lines(page, r"^\| v2 \| .* \| tone \| no worse than the 10-point margin \|")
     (facts,) = _lines(page, r"^\| v2 \| .* \| facts \| no worse than the 10-point margin \|")
     assert "| Answered |" in tone and "| Pass rate |" in facts
+
+
+# =============================================================================
+# A claims judge in the state its closed claim read's check left it in
+# =============================================================================
+
+_CLOSED_AT = "2026-11-22T00:00:00+00:00"
+
+
+def _closed_read(result: str, *, lean_untested: tuple[str, ...] = (), campaign_id: str, scope_id: str) -> ClaimRead:
+    """A closed claim read of the derived fixture's criterion, its check on truth decided ``result``, its lean test
+    reading no rate on ``lean_untested``: what a read keeps at its close, built as a host's close stores it."""
+    empty = ClaimFigure()
+    return ClaimRead(
+        id="claim-read-1",
+        scope_id=scope_id,
+        name="truth check",
+        created_by="owner",
+        campaign_id=campaign_id,
+        criterion=_CRITERION,
+        criterion_fingerprint="c" * 64,
+        questions=["true"],
+        arms=[ClaimReadArm(key=fixture_variant_key("lookup-model"), run_ids=["run-lookup"])],
+        draw=ClaimDraw(
+            seed=1,
+            stratify_by="truth",
+            per_cell=2,
+            population_digest="d" * 64,
+            strata=[
+                ClaimStratumDraw(stratum=stratum, population=0, cells=0, planned=0, drawn=0, by_arm={})
+                for stratum in ("contradicted", "true_ungrounded", "unverifiable", "supported")
+            ],
+        ),
+        closed_at=_CLOSED_AT,
+        closed_by="owner",
+        report=ClaimReadReport(
+            read_at=_CLOSED_AT,
+            model_answers=0,
+            borrowed=0,
+            questions=[
+                ClaimQuestionFigures(
+                    question="true",
+                    items=0,
+                    cells=0,
+                    cases=0,
+                    skipped=0,
+                    kappa=empty,
+                    recall=empty,
+                    false_fail=empty,
+                    precision=empty,
+                    bias=empty,
+                    failed=empty,
+                    lean_untested=list(lean_untested),
+                    check=ClaimCheckRecord(result=result, sample="random", skipped=0),  # type: ignore[arg-type]
+                )
+            ],
+        ),
+    )
+
+
+def _checked_pages(result: str | None, *, lean_untested: tuple[str, ...] = ()) -> tuple[str, str]:
+    """The derived fixture's two arms on one aspect, its criterion's judge checked by a closed read deciding ``result``
+    (None: no read): the aspect's page and the campaign's, as Markdown."""
+    runs, results = _stored({"memory-model": [0.0] * 12, "lookup-model": [0.0] * 12})
+    asked = min(run.created_at for run in runs)
+    control = CampaignArm(
+        label="memory", role="control", variant_key=fixture_variant_key("memory-model"), named_at=asked
+    )
+    campaign = make_aspect_campaign(
+        label="show",
+        template_id="tpl-show",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=["quality"]),
+        question="does the new writer hold to the record?",
+        asked_at=asked,
+        control=control,
+        scope_id=runs[0].scope_id,
+        name="held to the record",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+    )
+    reads = (
+        []
+        if result is None
+        else [_closed_read(result, lean_untested=lean_untested, campaign_id=campaign.id, scope_id=campaign.scope_id)]
+    )
+    template = make_template(id="tpl-show", rubric=[], claim_criteria=[_criterion()])
+    storage = ToyhostStorage(runs, results, templates=[template], claim_reads=reads)
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=_profile())
+    report = build_code_only_report(bundle, assembled_at=_CLOSED_AT, campaign_name="held to the record")
+    arms = [control, CampaignArm(label="lookup", role="candidate", variant_key=fixture_variant_key("lookup-model"))]
+    readings = campaign_readings(campaign, {"show": bundle}, arms=arms)
+    page = build_campaign_report(campaign, readings, {"show": report})
+    return report_markdown(report), campaign_report_markdown(page)
+
+
+@pytest.mark.parametrize(
+    ("result", "said", "directional"),
+    [
+        pytest.param(
+            "met",
+            f"is calibrated on {_CRITERION} truth: people's checks of its claim verdicts met the calibration bar "
+            "(claim read claim-read-1).",
+            False,
+            id="met",
+        ),
+        pytest.param(
+            "not_met",
+            f"is not calibrated on {_CRITERION} truth: people's checks of its claim verdicts fell short of the "
+            "calibration bar, so its readings are directional (claim read claim-read-1).",
+            True,
+            id="not-met",
+        ),
+        pytest.param(
+            "undecided",
+            f"is not yet calibrated on {_CRITERION} truth: too few of its claim verdicts checked by people so far to "
+            "decide, so its readings are directional (claim read claim-read-1).",
+            True,
+            id="undecided",
+        ),
+        pytest.param(
+            None,
+            f"is uncalibrated on {_CRITERION}: no person has checked its claim verdicts yet, so its readings are "
+            "directional.",
+            True,
+            id="no-read",
+        ),
+    ],
+)
+def test_a_claims_judge_is_said_in_the_state_its_closed_claim_read_left_it(
+    result: str | None, said: str, directional: bool
+) -> None:
+    aspect, page = _checked_pages(result)
+
+    assert said in aspect
+    first_screen = "Judged scores on show are directional until people's labels calibrate the judge."
+    assert (first_screen in page) is directional, "a met check leaves no reading directional"
+    if directional:
+        assert said in page
+
+
+def test_a_lean_test_that_read_no_rate_on_an_arm_names_its_question_and_the_arm() -> None:
+    aspect, page = _checked_pages("met", lean_untested=(fixture_variant_key("lookup-model"),))
+
+    # The arm by the name the page's scoreboard gives it: every surface names an arm alike.
+    rows = aspect.splitlines()
+    board = rows.index(next(row for row in rows if row.startswith("| Arm | Ran |")))
+    (candidate,) = [row for row in rows[board + 2 : board + 4] if not row.startswith("| ▸ ")]
+    named = candidate.split(" | ")[0].removeprefix("| ")
+    (line,) = _lines(aspect, rf"Its lean across arms on {re.escape(_CRITERION)} truth was not tested on ")
+    assert (
+        f"Its lean across arms on {_CRITERION} truth was not tested on {named}: too few answered claims there." in line
+    )
+    assert "| Judge checked against people |" in page, "a met check and its lean are stated on the campaign's page"
+
+
+def test_a_floor_on_an_aspect_with_no_rate_still_has_a_row_to_settle() -> None:
+    """No row reads an aspect nothing graded can fail a trial on, where every arm answered; a floor declared on it is
+    still read, and one left unclear is still sized."""
+    aspects = [
+        AspectTrials(
+            label="tone",
+            arms=[ArmTrials(label="v1"), ArmTrials(label="v2")],
+            checks=False,
+            floors=[RateDrop(max_points=5.0)],
+        )
+    ]
+    shape = shape_of("floored", aspects, control=True)
+
+    assert shape.readings.readings == [], "no row: the aspect has no rate"
+    ((aspect, label, status),) = [(held.aspect, held.arm_label, held.status) for held in shape.readings.floors]
+    assert (aspect, label, status) == ("tone", "v2", "unclear")
+    page = campaign_report_markdown(shape.page())
+    assert "**To settle**" in page
+    assert _lines(page, r"^\| v2 \| .* \| tone \| the 5-point floor holds \|")

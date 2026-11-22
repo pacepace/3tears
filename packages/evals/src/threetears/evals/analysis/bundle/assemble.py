@@ -106,6 +106,8 @@ from threetears.evals.analysis.bundle.caps import (
 )
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
+    ClaimCheckReading,
+    ClaimQuestionCheck,
     host_declarations_digest,
 )
 from threetears.evals.analysis.bundle.evidence import ResultsDigest, evidence_manifest
@@ -184,6 +186,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.declaration import AspectDesign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.schema.claim_read import ClaimRead
     from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
@@ -192,7 +195,7 @@ log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
-    """The ten reads assembling a campaign's context bundle needs, each a batch.
+    """The eleven reads assembling a campaign's context bundle needs, each a batch.
 
     **Every read but the results is one store call however large the campaign.** A host's store may open a connection
     per call, so a read per template, per insight or per trial grows with the campaign until it outruns the host's
@@ -300,6 +303,11 @@ class CampaignReadStore(Protocol):
 
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
+        ...
+
+    def query_claim_reads(self, scope_id: str, /, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        """The claim reads in a scope drawn over one campaign, oldest first: what a claim criterion's judge was checked
+        against people by (``ClaimRead.report``), one read per campaign."""
         ...
 
     def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
@@ -682,6 +690,9 @@ def assemble_context_bundle(
     # decides one (#628); the entry names the profile, so the tier is never presented as the campaign's own, and the
     # profile's identity is in the fingerprint's pre-image with it.
     tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
+    # Each claim criterion's judge check: the latest closed read over the campaign of the criterion its grades were
+    # made under, read once; the reads it stands on are in the fingerprint's pre-image, as a consulted profile is.
+    claim_reads = _checked_claim_reads(storage.query_claim_reads(scope_id, campaign_id=campaign.id), results)
     person_scores = person_scores_by_result(ratings, results)
     paused = taken_up(campaign.created_by, runs, results)
     bundle = AnalysisContextBundle(
@@ -1052,6 +1063,7 @@ def assemble_context_bundle(
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = confound_catalog(bundle, profile=profile)
+    bundle.claim_checks = [_claim_check(read) for read in claim_reads]
     # What all of the above was read from, and nothing it computed: the pre-image of the bundle's fingerprint.
     bundle.evidence = evidence_manifest(
         view,
@@ -1069,8 +1081,56 @@ def assemble_context_bundle(
         # Every insight read as of the cutoff, before the cap on how many the bundle carries.
         insights=ledger,
         retracted_insights=retracted,
+        claim_reads=claim_reads,
     )
     return bundle
+
+
+def _checked_claim_reads(reads: Sequence[ClaimRead], results: Sequence[ResultView]) -> list[ClaimRead]:
+    """Each claim criterion's latest closed read, by criterion, among ``reads``, of the definition the campaign's grades
+    of it were made under (a tally's ``criterion_fingerprint``): a read of another definition checked another judge.
+
+    :param reads: The claim reads drawn over the campaign.
+    :param results: The campaign's results.
+    :return: One read per criterion with a closed read of its definition, by criterion.
+    """
+    graded = {
+        (criterion, tally.criterion_fingerprint)
+        for result in results
+        for criterion, tally in result.claim_tallies.items()
+    }
+    latest: dict[str, ClaimRead] = {}
+    for read in reads:
+        if read.report is None or read.closed_at is None or (read.criterion, read.criterion_fingerprint) not in graded:
+            continue
+        held = latest.get(read.criterion)
+        if held is None or (held.closed_at or "") < read.closed_at:
+            latest[read.criterion] = read
+    return [latest[criterion] for criterion in sorted(latest)]
+
+
+def _claim_check(read: ClaimRead) -> ClaimCheckReading:
+    """A closed claim read's check as a bundle carries it: what its check against people decided on each question it
+    checked, and the arms its lean test read no rate on.
+
+    :param read: A closed read.
+    :return: Its check.
+    :raises ValueError: The read is not closed.
+    """
+    if read.report is None or read.closed_at is None:
+        raise ValueError(f"claim read {read.id!r} is not closed, so it has no check to read")
+    return ClaimCheckReading(
+        criterion=read.criterion,
+        read_id=read.id,
+        closed_at=read.closed_at,
+        questions=[
+            ClaimQuestionCheck(
+                question=figures.question, result=figures.check.result, lean_untested=list(figures.lean_untested)
+            )
+            for figures in read.report.questions
+            if figures.check is not None
+        ],
+    )
 
 
 def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:

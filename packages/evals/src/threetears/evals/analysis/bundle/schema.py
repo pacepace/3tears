@@ -1056,6 +1056,35 @@ class JudgedArm(EvalDocumentModel):
     )
 
 
+class ClaimQuestionCheck(EvalDocumentModel):
+    """What a closed claim read's check against people decided of a claim criterion's judge on one question."""
+
+    question: str = Field(min_length=1, description="The question the read asked people (`true`, `grounded`).")
+    result: Literal["met", "not_met", "undecided", "insufficient"] = Field(
+        description="As the calibration criteria decided it at the read's close: met, not met, undecided, or too "
+        "little to decide."
+    )
+    lean_untested: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The arms, by variant key, the read's test of a lean across arms read no rate on: too few "
+        "answered claims. Left out while empty.",
+    )
+
+
+class ClaimCheckReading(EvalDocumentModel):
+    """The check a claim criterion's judge stands on: the latest closed claim read of it over the campaign, its
+    criterion's definition the one the campaign's grades were made under (``ClaimRead.report``)."""
+
+    criterion: str = Field(min_length=1, description="The claim criterion.")
+    read_id: str = Field(min_length=1, description="The claim read whose check this is.")
+    closed_at: str = Field(min_length=1, description="When the read was closed, and its check read.")
+    questions: list[ClaimQuestionCheck] = Field(
+        description="Each question the read checked against people, in its order; a question only people answer "
+        "(`is_claim`) has no check and is left out."
+    )
+
+
 class JudgedMeasure(EvalDocumentModel):
     """A judged dimension, measured — carried so its exclusion from ranking is not read as its absence.
 
@@ -3603,6 +3632,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             'exact agreement, kappa, weighted kappa, a "can\'t tell" repeat counted as a disagreement) — over every '
             "resolved member run's results. Empty when nothing was repeated: the judge's "
             "consistency is then unmeasured. Repeats that could not be paired are listed with why."
+        ),
+    )
+    claim_checks: list[ClaimCheckReading] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each claim criterion's judge check: the latest closed claim read over this campaign of a criterion whose "
+            "definition its grades were made under, as the read kept it at its close. A criterion with no such read "
+            "is absent, its judge uncalibrated. Left out while empty."
         ),
     )
     judge_evidence_tiers: list[JudgeEvidenceTier] = Field(
