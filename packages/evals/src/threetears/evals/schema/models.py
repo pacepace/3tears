@@ -7913,7 +7913,7 @@ class EvalResult(CoreDocumentModel):
     # does not fall back to ``runner_error``: the runner writes all three from one ledger,
     # so a categorized field is never missing beside a set ``runner_error``.
     candidate_error: str | None = Field(default=None)
-    candidate_code_raised: Literal[True] | None = Field(
+    candidate_code_raised: bool | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
         description="True where `candidate_error` is the candidate's own code raising a programming error (a "

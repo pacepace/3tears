@@ -1155,13 +1155,14 @@ def _unread_lines(
     undecided (asked one, its drop is read against zero): the one line where what the aspect lacks changes how its row
     reads."""
     lines: list[str] = []
+    unchecked = set()
+    for line, label in zip(
+        _no_pass_rate_lines(campaign, reports, names), _unchecked_aspects(campaign, reports), strict=True
+    ):
+        lines.append(line)
+        unchecked.add(label)
     for aspect in campaign.aspects:
-        if aspect.label in reports and not holds_a_check(reports[aspect.label].bundle):
-            # No row was read: a pass rate there would count every answered trial as passed.
-            lines.append(
-                f"{names(aspect.label)} has no pass rate: no grader there says pass or fail, so its readings are "
-                "read on their own."
-            )
+        if aspect.label in unchecked:
             continue
         rows = readings.on_aspect(aspect.label)
         held_here = [held for held in readings.answer_splits if held.aspect == aspect.label]
@@ -1187,6 +1188,25 @@ def _unread_lines(
                 "read against a margin, and the aspect declares none."
             )
     return lines
+
+
+def _unchecked_aspects(campaign: EvalCampaign, reports: Mapping[str, Report]) -> list[str]:
+    """The aspects nothing graded can fail a trial on
+    (:func:`~threetears.evals.analysis.bundle.trials.holds_a_check`), by label, in the campaign's order."""
+    return [
+        aspect.label
+        for aspect in campaign.aspects
+        if aspect.label in reports and not holds_a_check(reports[aspect.label].bundle)
+    ]
+
+
+def _no_pass_rate_lines(campaign: EvalCampaign, reports: Mapping[str, Report], names: AspectNames) -> list[str]:
+    """A line for each aspect with no pass rate to read, since nothing graded can fail a trial there: a pass rate would
+    count every answered trial as passed, so no row or pair reads one."""
+    return [
+        f"{names(label)} has no pass rate: no grader there says pass or fail, so its readings are read on their own."
+        for label in _unchecked_aspects(campaign, reports)
+    ]
 
 
 @dataclass(frozen=True)
@@ -1424,8 +1444,13 @@ def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisCon
     :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
     if bundle is not None and not holds_a_check(bundle):
-        # Nothing it grades can fail a trial, so it has no pass rate to show, as its own verdict line says.
-        return "no grader here says pass or fail"
+        # Nothing it grades can fail a trial, so it has no pass rate to show, as its own verdict line says; an arm that
+        # answered no case says that, as its line does, since no grader read an answer of it.
+        labels = readings.arm_labels()
+        counts = [(board.variant_key, pass_count(bundle, board)) for board in bundle.scoreboard]
+        failed = [passed_clause(labels.get(key, key), count) for key, count in counts if count.none_answered]
+        graded = ["no grader here says pass or fail"] if len(failed) < len(counts) or not counts else []
+        return "; ".join([*failed, *graded])
     if readings.kind == "choice":
         return pairs_words(readings, aspect) or "not compared"
     if readings.kind == "measurement":
@@ -1606,6 +1631,10 @@ def pair_blocks(
         blocks.append(_choice_matrix(campaign, readings, reports, names, forms))
     else:
         _no_equal_weight_row(campaign, readings, reports, "no pair of arms was read on any aspect")
+    unchecked = _no_pass_rate_lines(campaign, reports, names)
+    if len(unchecked) == len(campaign.aspects):
+        # No aspect has a pass rate to pair the arms on: each says so, and no table of pairs stands empty.
+        return [*blocks, *(DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in unchecked)]
     blocks.append(
         TableBlock(
             section="scorecard",
@@ -1635,6 +1664,8 @@ def pair_blocks(
     ]
     notes += _unread_without_control_lines(campaign, reports)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
+    # Each aspect with no pass rate to pair the arms on says so, after what holds of the pairs read.
+    blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in unchecked]
     return blocks
 
 

@@ -411,7 +411,7 @@ class ResultView(Protocol):
     @property
     def candidate_error(self) -> str | None: ...
     @property
-    def candidate_code_raised(self) -> Literal[True] | None: ...
+    def candidate_code_raised(self) -> bool | None: ...
     @property
     def infra_error(self) -> str | None: ...
     @property
@@ -840,7 +840,7 @@ class ResultReading:
     claim_tallies: Mapping[str, ClaimTally]
     claim_failures: Mapping[str, str]
     candidate_error: str | None
-    candidate_code_raised: Literal[True] | None
+    candidate_code_raised: bool | None
     infra_error: str | None
     scored_at: str
 

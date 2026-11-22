@@ -392,6 +392,7 @@ def _lead_blocks(
                 arm_labels=readings.arm_labels(),
                 forms=aspect_forms.get(aspect.label),
             )
+            undecided = undecided or line.undecided
             said = line.lead or line.text
             # The undecided reading's own words open with a capital, as a sentence does; an arm's name is as given.
             said = said[:1].upper() + said[1:] if said.startswith("the evidence ") else said

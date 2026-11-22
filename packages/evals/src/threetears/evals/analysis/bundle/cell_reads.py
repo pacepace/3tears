@@ -319,12 +319,12 @@ def _claim_reader_name(descriptor: MetricDescriptor, criterion: str | None) -> s
     """What a page calls a claim reading: the engine's own reading by its descriptor, which names its criterion
     (``False claims per answer (rules.claims)``); a reading the host derives from the criterion by the host's name and
     the criterion's, as the engine's own are named (``Contradictions per draft (scout.claims)``), so a row of it is
-    read as that criterion's; a host reading named by its key alone, which holds the criterion's, by none. None for a
-    rubric dimension."""
+    read as that criterion's, unless the host's name already names the criterion; a host reading with no name of its
+    own by none, since its key holds the criterion's. None for a rubric dimension."""
     if criterion is None:
         return None
     named = descriptor.reader_name
-    if descriptor.derived_from is None or named is None or named.endswith(f"({criterion})"):
+    if descriptor.derived_from is None or named is None or criterion in named:
         return named
     return f"{named} ({criterion})"
 

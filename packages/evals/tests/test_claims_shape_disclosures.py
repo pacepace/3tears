@@ -255,7 +255,7 @@ async def test_two_arms_graded_by_claims_alone_are_compared_on_their_claim_readi
     )
 
     page = campaign_report_markdown(result.page)
-    assert "Pass rate" not in page and "pass rate: " not in page.lower()
+    assert not _lines(page, r"^\*\*Pass rate|^\| bridges \| .*\| Pass rate|· pass rate"), "no pass-rate lead or row"
     assert "bridges has no pass rate: no grader there says pass or fail, so its readings are read on their own." in page
     assert _lines(page, r"^\| False claims per answer \(answer\.claims, judged\) \|"), "the claim readings compared"
     assert UNCALIBRATED in result.render()
@@ -293,7 +293,9 @@ async def test_an_eval_graded_by_numbers_alone_states_no_pass_rate_either() -> N
 # =============================================================================
 
 _PAGE = WebPage(url="https://example.org/town0", title="Town0", text="The Town0 bridge opened in 1900.")
-_BUDGET = WebBudget(max_queries_per_claim=1, max_checked_per_cell=1, results_per_query=1, page_chars=400, window_chars=200)
+_BUDGET = WebBudget(
+    max_queries_per_claim=1, max_checked_per_cell=1, results_per_query=1, page_chars=400, window_chars=200
+)
 
 
 @pytest.mark.parametrize(
@@ -487,9 +489,7 @@ async def buggy(case: dict[str, Any]) -> str:
 
 
 async def test_a_runner_s_own_programming_error_is_named_as_the_host_s_code() -> None:
-    result = await Eval(CASES, {"recalls": recalls, "buggy": buggy}, [_claims()], k=1, name="bridges").run(
-        store=MEMORY
-    )
+    result = await Eval(CASES, {"recalls": recalls, "buggy": buggy}, [_claims()], k=1, name="bridges").run(store=MEMORY)
 
     stored = off_loop(list_results, result.host.storage, result.arms["buggy"].run_id, result.scope_id)
     raised = [cell for cell in stored if cell.candidate_error is not None]

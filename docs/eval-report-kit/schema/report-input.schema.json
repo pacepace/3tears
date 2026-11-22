@@ -962,6 +962,11 @@
      "type": "object",
      "additionalProperties": {"type": "integer"},
      "description": "On a claim reading: the cells whose web step failed, by arm, a cause apart from the budget; its undecided claims read unverifiable, never false."
+    },
+    "web_replayed": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "On a claim reading: the cells whose web checks read a recording, never a live search, by arm."
     }
    },
    "additionalProperties": false,
