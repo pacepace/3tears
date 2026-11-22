@@ -106,7 +106,7 @@ A miss at any tier falls through to the next -- **the stack degrades gracefully*
 | Tier | Implementation | Nature | Source of truth? | Required? |
 |---|---|---|---|---|
 | **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **Per-process** SQLite: one WAL file of the process on `/dev/shm` (`threetears.core.cache.l1_file`), gone with the process. Fast local cache, **not durable** -- rebuilt from L3 on restart. Every table declares its eviction policy (`EVICTABLE` or `KEEP`, `threetears.core.eviction`); the process holds it under `THREETEARS_L1_BUDGET_BYTES` (`threetears.core.cache.l1_lru`), so a deployment mounts a sized memory-backed `emptyDir` at `/dev/shm`. | No | Practically yes (collections cache through it) |
-| **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, on the storage its declarer chooses; declare it on **file** storage so it survives a broker restart (§12, Step 3). | No | **No** -- only matters with >1 pod |
+| **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, on **memory** storage like every 3tears KV bucket (`ensure_kv_bucket`'s default, enforced by `threetears.enforcement.memory_only_kv`); declare it with `replicas=3` on a clustered broker. A broker restart that loses it leaves it empty; the declarer recreates it and reads refill it from L3 (§12, Step 3). | No | **No** -- only matters with >1 pod |
 | **L3** | an asyncpg-style pool, `NatsProxyL3Backend`, or a git working tree | **Durable storage. The source of truth.** | **Yes** | **Yes, always** |
 
 Consequences:
@@ -675,14 +675,14 @@ id.
   together are safe; they are serialised, not parallel.
 
 **Step 3 -- Provision NATS (L2). Only for more than one pod, the L3 proxy, or a git L3.**
-- Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**; **persistent (file)
-  storage** so the KV bucket survives restarts.
+- Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**. The KV bucket is on
+  **memory** storage (the default; file storage is refused by the memory-only KV gate).
+  On a clustered broker declare it with `replicas=3` so it survives one server restarting.
 - **One process must DECLARE `{namespace}-collections`; every other process BINDS it.**
   Pick the declaring identity deliberately -- it is whichever process starts first and
-  owns the bucket's canonical configuration (a central service, in its own startup). It declares with `ensure_kv_bucket(...)`. A NATS restart DELETES a bucket on
-  memory storage, and on Kubernetes a restart that loses the JetStream volume deletes one
-  on file storage too; the declaring `NatsClient` creates it again, empty, with the config
-  it was declared with, after every reconnect, whatever its storage (it does the same for
+  owns the bucket's canonical configuration (a central service, in its own startup). It declares with `ensure_kv_bucket(...)`. A NATS restart that loses every
+  replica DELETES the bucket; the declaring `NatsClient` creates it again, empty, with the config
+  it was declared with, after every reconnect (it does the same for
   every stream declared through `ensure_jetstream_stream` and every durable consumer it
   bound on one), so the declarer needs no reconnect hook of its own for this. A stream or
   bucket created any other way -- a raw `jetstream_context()` call -- is not remembered,
