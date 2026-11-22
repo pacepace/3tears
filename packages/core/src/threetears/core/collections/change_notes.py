@@ -225,9 +225,12 @@ _SLOT_READ: Final = (
 )
 
 
-def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
+def _noted_rows_step(
+    schema: str, table: str, since: datetime, *, whole_from: datetime, until: datetime | None = None
+) -> Step:
     """the notes :func:`noted_rows_since` reads beside the ring row (``r``): each note table's notes of ``table`` from
-    the reach on, the distinct (key, columns, tenant) of them.
+    the reach on (to ``until``, when given), the distinct (key, columns, tenant) of them; a whole-table note only from
+    ``whole_from`` on.
 
     Each note table's leg is read only when it is the current or the previous table (:data:`_SLOT_READ`, a one-time
     filter on the ring row); the previous one only while the reach is before the last switch's fence has passed (a
@@ -242,6 +245,10 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
     :ptype table: str
     :param since: the oldest write's time, by the database's clock
     :ptype since: datetime
+    :param whole_from: the earliest whole-table note read (:data:`_WHOLE_NOTE_SKEW` before ``since``)
+    :ptype whole_from: datetime
+    :param until: the latest note read; ``None`` for every note since
+    :ptype until: datetime | None
     :return: the step
     :rtype: Step
     """
@@ -249,9 +256,15 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
         "r.switch_no = 0 OR $1::timestamptz - make_interval(secs => r.wait_seconds / 2) >= r.previous_switched_at",
         (since,),
     )
+    # a whole-table note (no key_text) is the window's own only from whole_from on, filtered in the statement: the
+    # (table_name, noted_at) index carries key_text, so nothing is read beyond the range. Before (2026-11-22, the
+    # write marks' last change) the filter compared the answered row's ``noted`` column, which is TRUE, never a time:
+    # every whole note on the named-rows path was dropped. No end is 'infinity', one statement either way
     from_reach = Fragment(
-        "t.table_name = $1 AND t.noted_at >= $2::timestamptz - make_interval(secs => r.wait_seconds / 2)",
-        (table, since),
+        "t.table_name = $1 AND t.noted_at >= $2::timestamptz - make_interval(secs => r.wait_seconds / 2) "
+        "AND t.noted_at <= COALESCE($3::timestamptz, 'infinity'::timestamptz) "
+        "AND (t.key_text IS NOT NULL OR t.noted_at >= $4::timestamptz)",
+        (table, since, until, whole_from),
     )
     # one leg a slot of the ring (NOTE_RING_SIZE, 3), each its own index read
     first = scan(
@@ -272,22 +285,27 @@ def _noted_rows_step(schema: str, table: str, since: datetime) -> Step:
     return distinct(union(first, second, third, keep_all=True), _NOTE_COLUMNS)
 
 
-#: how far before the oldest marked write a whole-table note is still its own: the mark is stamped at its
-#: transaction's start (``now()``) and the transaction's notes after it on the same node's clock, so only the
-#: nodes' skew separates them (YugabyteDB bounds it at max_clock_skew_usec, 500 ms by default). A whole-table note
-#: older than this belongs to an earlier write, whose advance was heard: re-recorded, it told every follower to drop
-#: the table and read it whole again (2026-11-22 replay: one operator reset re-announced three times by the
-#: reconciler, each a whole read on every follower, one of which left five states out of the copy)
+#: how far before a window's start a whole-table note is still the window's own: the window starts at its writes'
+#: start, already widened by the clocks' skew, and only the nodes' skew separates a note from it (YugabyteDB bounds it
+#: at max_clock_skew_usec, 500 ms by default). A whole-table note older than this belongs to an earlier write, whose
+#: advance was heard: re-recorded, it told every follower to drop the table and read it whole again (2026-11-22
+#: replay: one operator reset re-announced three times by the write-mark reconciler, each a whole read on every
+#: follower, one of which left five states out of the copy). Rows keep the ring's half-wait reach; a whole note never
+#: does
 _WHOLE_NOTE_SKEW: Final = timedelta(seconds=5)
 
 
-async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int) -> NotedRows | str:
-    """the rows the change notes say ``table``'s writes changed since ``since``, or why they cannot say.
+async def noted_rows_since(
+    pool: Any, *, notes_schema: str, table: str, since: datetime, cap: int, until: datetime | None = None
+) -> NotedRows | str:
+    """the rows the change notes say ``table``'s writes changed since ``since`` (to ``until``), or why they cannot say.
 
-    For a writer-side process that knows a table was written and not which rows (the write-mark reconciler):
-    every committed write to a noted table left a note with its keys in its own transaction. The notes are
-    read from the ring's current and previous tables, from ``since`` less half the ring's wait (a transaction
-    writes its notes up to that long before its commit), and only when the coverage reaches back that far.
+    For a writer-side process that knows a table may have been written in a window and not which rows (a lost
+    advance's recovery, :mod:`threetears.core.collections.lost_writes`): every committed write to a noted table left a
+    note with its keys in its own transaction. The notes are read from the ring's current and previous tables, from
+    ``since`` less half the ring's wait (a transaction writes its notes up to that long before its commit), and only
+    when the coverage reaches back that far. A whole-table note is read only from :data:`_WHOLE_NOTE_SKEW` before
+    ``since``: it is re-recorded whole, so it must be the window's own.
 
     :param pool: the L3 pool
     :ptype pool: Any
@@ -300,6 +318,8 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     :param cap: the most distinct rows to name; more is answered :attr:`NotedRows.too_many_rows`, naming no row
         and every whole-table change
     :ptype cap: int
+    :param until: the window's end, by the database's clock; ``None`` for every note since
+    :ptype until: datetime | None
     :return: the rows; or ``"notes_unavailable"`` (no ring), ``"not_covered"`` (the coverage starts after
         ``since``), ``"no_notes"`` (no note of the table since)
     :rtype: NotedRows | str
@@ -317,7 +337,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
             f"{notes_schema}.{RING_TABLE}",  # the helper quotes it a segment at a time
             by={"id": 1},
             columns=_ROWS_RING_COLUMNS,
-            beside=_noted_rows_step(notes_schema, table, since),
+            beside=_noted_rows_step(notes_schema, table, since, whole_from=since - _WHOLE_NOTE_SKEW, until=until),
             limit=cap + 1,
             present="noted",
             # the ring row's columns on one answered row, not repeated on each of hundreds of notes (2026-11-16,
@@ -334,9 +354,8 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # the reach as the statement's legs compute it (since less half the wait, wait_seconds a DOUBLE PRECISION), as
     # _noted_keys_read computes it from the same ring row
     reach = since - timedelta(seconds=float(ring["wait_seconds"]) / 2)
-    # the whole-table notes of the marked writes themselves: none stamped before the oldest one began (less the skew)
+    # the whole-table notes of the window's writes themselves: none stamped before the window (less the skew)
     whole_from = since - _WHOLE_NOTE_SKEW
-    whole_from_micros = (whole_from - _EPOCH) // _CLOCK_GRAIN
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
     if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
         return "not_covered"
@@ -352,7 +371,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
         # rest, and the caller's bracket of keys does not carry one: read them alone, from the whole-table notes'
         # own partial index, so a truncate in the window still reaches every follower whole (2026-11-16: before,
         # this answered "too_many_rows" and the truncate's removed rows stayed in followers).
-        whole = await _noted_whole_since(pool, notes_schema, table, whole_from, ring)
+        whole = await _noted_whole_since(pool, notes_schema, table, whole_from, ring, until=until)
         return NotedRows(
             whole_table=bool(whole),
             whole_tenants=tuple(change.tenant for change in whole),
@@ -363,7 +382,7 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # reach they name (a whole-table note keeps it as its columns), as a restore folds them
     reaches: dict[str | None, list[Any]] = {}
     for note in notes:
-        if note[7] is None and note[5] >= whole_from_micros:
+        if note[7] is None:
             reaches.setdefault(None if note[10] is None else str(note[10]), []).append(note[9])
     whole = tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
     # a plain or reset change covers its own tenant's rows (or every tenant's, when it is _all's), never another
@@ -389,7 +408,9 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(reaches), whole=whole)
 
 
-async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime, ring: Any) -> tuple[NotedChange, ...]:
+async def _noted_whole_since(
+    pool: Any, schema: str, table: str, reach: datetime, ring: Any, *, until: datetime | None = None
+) -> tuple[NotedChange, ...]:
     """``table``'s whole-table notes from ``reach`` on, each tenant's folded into one change: :func:`noted_rows_since`'s
     answer past its cap.
 
@@ -417,6 +438,8 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     :ptype reach: datetime
     :param ring: the ring row :func:`noted_rows_since` read (its ``_ROWS_RING_COLUMNS``)
     :ptype ring: Any
+    :param until: the latest note time read; ``None`` for every note from ``reach`` on
+    :ptype until: datetime | None
     :return: each tenant's change
     :rtype: tuple[NotedChange, ...]
     :raises GenerationUnavailableError: when a whole-table note names a reach this module never writes
@@ -432,7 +455,11 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
             pool,
             scan(notes, ("id", "noted_at"), where=[Fragment("t.key_text IS NULL AND t.table_name = $1", (table,))]),
         )
-        held = [(str(note["id"]),) for note in looked if note["noted_at"] >= reach]
+        held = [
+            (str(note["id"]),)
+            for note in looked
+            if note["noted_at"] >= reach and (until is None or note["noted_at"] <= until)
+        ]
         if not held:
             continue
         for note in await read_keyed(

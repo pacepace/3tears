@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a lost epoch advance is announced by its writer's backstop; the write marks are gone
+
+**Removed:** the write-mark queue's trigger, function, reader and reconciler (`threetears.core.collections.write_marks`,
+`WriteMarkReconciler`, `install_write_mark_triggers`, `own_write_marks_sql`, `CollectionRegistry.set_write_marks_schema`,
+`give_switched_tables_their_trigger`). Every write to a switched table paid a per-row trigger (on YugabyteDB about three
+times an upsert, its batched existence check defeated), a mark inserted and later deleted, and a read and clear after
+each commit; and the reconciler raced writers, re-advanced their commits and re-recorded an old operator reset, so every
+follower read the table whole (2026-11-22). Coordination migration v006 drops every mark trigger and the function;
+`collection_write_marks` stays, empty, for older replicas mid-roll, until 0.96.0.
+
+**Added:** `threetears.core.utils.write_ledger` (`WriteLedger`, `process_write_ledger`,
+`write_ledger_connection_class`): each process keeps, in memory, the start of every open L3 write and of each one
+ended in the last 60 s; its watermark bounds the notes of any write that may lack its advance. `advance_recording`
+hands an advance that fails after its commit to the ledger. `threetears.core.collections.lost_writes.WriteBackstop`
+retries those until they land, publishes the watermark to the `leases` bucket every 5 s, and, under a lease,
+announces a writer stale for 30 s from the change notes of its window (named rows, or keys unknown with the window as
+the bracket; a whole-table note re-recorded only when inside the window), then deletes its key. `MigrationRunner(announcer=)`
+announces each run's window the same way. `tables_switched_by_trigger` now reads the change-note trigger, and the
+runner refuses a declared switched table left without one. Zero L3 writes a commit for the backstop.
+
+**Fixed:** `noted_rows_since` dropped every whole-table note on its named-rows path since 6a31e38aa (it compared the
+answered row's `noted` column, which is TRUE, with a time); the window's bound is now in the statement, and it takes
+`until=`.
+
 ### core: a bulk writer's change notes reach the ring in one insert at its commit
 
 **Added:** `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
@@ -16,7 +40,7 @@ one insert just before its COMMIT. A flagged COMMIT without the flush fails on t
 the ring row by row, as before. WHY: on YugabyteDB a note inserted into the ring a row is a distributed write a row:
 a 1000-row copy of a pod's 34-column table 471 ms against 29 ms bare, 103 ms buffered; an upsert moving an
 invalidation column 1402 / 203 / 684 ms (YugabyteDB 2026.1, median of 5). The notes are the trigger's own, note for
-note, so followers' keyed catch-up, the write-mark reconciler and a restore after a NATS loss read what they read
+note, so followers' keyed catch-up, a lost write's recovery and a restore after a NATS loss read what they read
 before. Rollout: the trigger body gains the buffer's branch under the same names; an older body notes a flagged write
 straight into the ring and the flush moves nothing, so each row is noted once whichever body a table has.
 `docs/writing-to-l3-on-yugabytedb.md` holds the measurements and the rules.

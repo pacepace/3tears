@@ -1,9 +1,9 @@
-"""A whole-table note keeps its reach through the write-mark reconciler: a load's key prefixes, an operator's reset.
+"""A whole-table note keeps its reach through a lost write's recovery: a load's key prefixes, an operator's reset.
 
 A file load (or a clear) marks its table whole and names the key prefixes it reached; a reset names its reason. The
-note stores that reach (``NOTE_REACH_SETTING``), and the reconciler that advances a marked table from its notes must
-record the same reach, as a restore does: dropped, the load's leftover mark becomes a legacy whole-table change and
-every follower reads the table whole."""
+note stores that reach (``NOTE_REACH_SETTING``), and a recovery that advances a table from its window's notes must
+record the same reach, as a restore does: dropped, the load would become a legacy whole-table change and every
+follower would read the table whole."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ from typing import Any
 
 from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
 from threetears.core.collections.generation import tables_written_l2_first
-from threetears.core.collections.write_marks import WriteMarkReconciler
+from threetears.core.collections.lost_writes import announce_window
 
 _EPOCH = datetime(2026, 11, 11, tzinfo=UTC)
 
-#: the noted table: a name no collection class in the process claims. The reconciler passes over a table some class
+#: the noted table: a name no collection class in the process claims. A recovery passes over a table some class
 #: defined in the process writes L2-first (``tables_written_l2_first``, a process-wide registry), and the epoch
-#: package's L2-first tests define such a class on "results": run in one batch after them, a "results" mark here was
-#: deleted unadvanced and the reconciler test failed on the batch's order alone
+#: package's L2-first tests define such a class on "results": run in one batch after them, the recovery test here would
+#: fail on the batch's order alone
 _TABLE = "noted_reach_results"
 
 #: a load of two states' rows, as ``note_reach_text(prefixes=...)`` writes it
@@ -62,36 +62,20 @@ def _note(
 
 
 class _Notes:
-    """a pool answering the notes statement with the rows given, and the reconciler's marks page once."""
+    """a pool answering the notes statement with the rows given, recording what it was asked."""
 
-    def __init__(self, notes: list[_Record], table: str = _TABLE) -> None:
+    def __init__(self, notes: list[_Record]) -> None:
         self.notes = notes
-        self.marks = {1: table}
+        self.asked: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetch(self, query: str, *args: Any) -> list[Any]:
+        self.asked.append((query, args))
         if "current_ring" in query:
             return list(self.notes)
-        if "count(*)" in query:
-            # the gauges' bounded count (keyed.count_at_most): the marks, at most the bound it asks past
-            return [{"held": min(len(self.marks), int(args[-1]))}]
-        if "extract(epoch" in query:
-            # the gauges' oldest mark, the lowest id (keyed.keyset_page, one row)
-            return [{"id": min(self.marks), "age": 3.0 if self.marks else None}] if self.marks else []
-        if "WHERE id > $2 ORDER BY id LIMIT $1" in query:
-            return [
-                {"id": key, "table_name": value, "date_created": _EPOCH + timedelta(seconds=1)}
-                for key, value in sorted(self.marks.items())
-                if key > int(args[1])
-            ][: int(args[0])]
-        if "information_schema.tables" in query:
-            return []
         return []
 
     async def execute(self, query: str, *args: Any) -> str:
-        assert query.startswith("DELETE"), query
-        for key in args[0]:
-            self.marks.pop(key, None)
-        return f"DELETE {len(args[0])}"
+        raise AssertionError(f"a recovery writes nothing to L3: {query}")
 
 
 class _Recorder:
@@ -161,34 +145,40 @@ async def test_a_whole_note_naming_no_reach_is_the_plain_whole_table() -> None:
     assert [(row.ids, row.tenant) for row in noted.rows] == [(["y"], "s2")]
 
 
-async def test_a_whole_note_older_than_the_marked_writes_is_not_theirs() -> None:
-    """Flips if a whole-table note stamped before the oldest marked write began (an earlier write's, whose advance
-    was heard) comes back as one of the marked writes' changes: the reconciler then re-recorded it, and every
-    follower dropped the table and read it whole again (2026-11-22 replay: one reset, re-announced three times)."""
-    old_reset = _note(None, None, _RESET, None, noted=_EPOCH - timedelta(minutes=3))
-    noted = await _noted([old_reset, _note("x", ["x"], None, "s1")])
-    assert noted.whole == ()
-    assert [row.ids for row in noted.rows] == [["x"]]
+async def test_a_whole_note_is_read_only_from_the_window_s_own_start() -> None:
+    """Flips if the statement reads a whole-table note from before the window (less the clocks' skew) or after its end:
+    an earlier write's whole note, whose advance was heard, was re-recorded and every follower dropped the table and
+    read it whole again (2026-11-22 replay: one reset, re-announced three times). The bound is the statement's: the
+    answered row's ``noted`` column is TRUE, never a time (6a31e38aa compared it with a time and dropped every whole
+    note). Live: ``test_lost_writes_live.py``."""
+    until = _EPOCH + timedelta(minutes=1)
+    pool = _Notes([_note("x", ["x"], None, "s1")])
+    await noted_rows_since(pool, notes_schema="platform", table=_TABLE, since=_EPOCH, until=until, cap=100)
+    ((query, args),) = pool.asked
+    assert "t.key_text IS NOT NULL OR t.noted_at >=" in query
+    assert _EPOCH - timedelta(seconds=5) in args
+    assert until in args
 
 
-async def test_the_reconciler_records_a_load_s_mark_with_its_prefixes_and_a_reset_with_its_reason() -> None:
-    """Flips if the write-mark reconciler records a load's leftover mark as the legacy whole table (followers would
-    read it whole) or a reset without its reason."""
+async def test_a_recovery_records_a_load_s_whole_note_with_its_prefixes_and_a_reset_with_its_reason() -> None:
+    """Flips if a recovery records a load's whole note as the legacy whole table (followers would read it whole) or a
+    reset without its reason."""
     for notes, prefixes, reason in (
         ([_note(None, None, _LOAD, "s1")], [{"state": "OH"}, {"state": "PA"}], None),
         ([_note(None, None, _RESET, None)], None, "reset"),
     ):
         pool, source = _Notes(notes), _Recorder()
-        reconciler = WriteMarkReconciler(
-            pool,  # type: ignore[arg-type]
-            generation_source=source,
-            marks_schema="platform",
-            tables=lambda: (_TABLE,),
-            settle_seconds=0.0,
-        )
         assert _TABLE not in tables_written_l2_first(), "a class in this process claims the test's table L2-first"
-        done = await reconciler.run_pass()
-        assert done.applied == 1, done
+        done = await announce_window(
+            pool,
+            generation_source=source,
+            notes_schema="platform",
+            since=_EPOCH,
+            until=_EPOCH + timedelta(minutes=1),
+            why="recovery",
+            tables={_TABLE: ("platform",)},
+        )
+        assert done.advanced == (_TABLE,), done
         (change,) = source.changes
         assert change["rows"] is None and not change["keys_unknown"], change
         assert (change["prefixes"], change["reason"]) == (prefixes, reason), change

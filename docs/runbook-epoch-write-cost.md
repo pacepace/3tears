@@ -9,7 +9,7 @@ writes slower.
 
 - Before deciding to switch a busy table on, or to make `WRITE_GENERATION` the default.
 - After any change to `EpochGenerationSource.advance_with_change`, the epoch change log, the
-  write-mark trigger, or the collection write path (`BaseCollection._bump_generation` and its callers).
+  writer ledger (`threetears.core.utils.write_ledger`), or the collection write path (`BaseCollection._bump_generation` and its callers).
 - Before a release that changes any of those, on the release candidate's commit. Name the commit with
   the numbers: a result counts only for the commit it ran on.
 
@@ -68,7 +68,6 @@ the same table, so they contend only where the platform makes them.
 |---|---|
 | `undeclared` | nothing (today's default) |
 | `declared` | one append of the epoch's change record to the change log (its stream sequence is the epoch; there is no counter to contend for) |
-| `declared+marks` | the same, plus the write-mark trigger's insert in the write's transaction and the read and delete of the marks the advance covered: the hub's production shape |
 | `declared+notes` | `declared`, plus the change-note trigger's note row in the write's transaction. A keeper process runs the note ring beside the writers with a 1 s fence (`--fence-seconds`) and a switch size of a fifth of the run's records, so the ring switches and empties its idle table (batched deletes) mid-run. Each writer's pool carries the cached ring slot, as the hub's does |
 
 Pick variants with `--variants` (e.g. `--variants declared declared+notes`).

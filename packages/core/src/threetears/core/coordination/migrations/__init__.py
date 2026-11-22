@@ -17,12 +17,15 @@ version history:
 - v001 -- create the four coordination tables, rendered from their collections' declared schemas.
 - v002 -- add the compare-and-swap order columns (``l2_epoch``, ``l2_revision``) to the counters,
   claims and redemptions tables, and backfill existing rows to the order floor.
-- v003 -- create ``collection_write_marks`` and the trigger function that fills it, so a committed
-  write's generation advance cannot be lost (:mod:`threetears.core.collections.write_marks`).
+- v003 -- create ``collection_write_marks`` (and, until 0.95, the trigger function that filled it).
 - v004 -- index ``collection_write_marks`` by ``(table_name, id)``, so the broker's read of a commit's
   marks reads that table's, not the whole queue.
 - v005 -- each coordination table's expiry index range-sharded (``expires_at ASC``), built beside the hashed one
   before it is dropped, so a YugabyteDB sweep seeks it rather than reading every tablet.
+- v006 -- every write-mark trigger and the mark function taken down: a lost advance is announced by its writer's
+  backstop from the change notes (:mod:`threetears.core.collections.lost_writes`), with no L3 write a commit. The
+  queue's table stays, empty, until the contract release (:data:`~threetears.core.ddl.write_marks
+  .WRITE_MARKS_CONTRACT_RELEASE`).
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
 )
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
 from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
+from threetears.core.coordination.migrations.v006_drop_write_mark_triggers import drop_write_mark_triggers
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -63,7 +67,8 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(3)(create_collection_write_marks)
     pkg.version(4)(index_write_marks_by_table)
     pkg.version(5)(range_expiry_indexes)
-    # the revocation list caches absences: its writes are marked from the run that creates it
+    pkg.version(6)(drop_write_mark_triggers)
+    # the revocation list caches absences: it carries its change-note triggers from the run that creates it
     pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)
     return pkg

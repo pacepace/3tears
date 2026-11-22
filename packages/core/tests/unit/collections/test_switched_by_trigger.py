@@ -1,13 +1,14 @@
-"""a table switched on by its write-mark trigger alone: no class here declares it, and its records go under its schema.
+"""a table switched on by its change-note trigger alone: no class here declares it, and its records go under its schema.
 
-A tool pod's own tables are declared by the pod's classes, which the hub never imports. The hub's broker and its
-write-mark reconciler read the switch off the database instead (the trigger, installed under the DDL lock), and
-key such a table's records by the schema it lives in, where its pods read them. What these hold:
+A tool pod's own tables are declared by the pod's classes, which the hub never imports. The hub's broker and a lost
+write's recovery read the switch off the database instead (the change-note row trigger, installed under the DDL lock;
+the write-mark trigger until 0.95), and key such a table's records by the schema it lives in, where its pods read them.
+What these hold:
 
 - the catalogue read names the trigger, the schema and the tables, and answers the tables that carry it;
 - ``advance_for_write`` given ``TENANT_BY_SCHEMA`` puts an undeclared table's records, rowless ones too, under the
   write's schema; without it they go on ``_all`` as before;
-- the reconciler's rowless record of an undeclared table goes under each pod schema holding it, and one in the
+- a recovery's rowless record of an undeclared table goes under each pod schema holding it, and one in the
   platform schema stays on ``_all``.
 """
 
@@ -19,7 +20,8 @@ from typing import Any
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
-from threetears.core.collections.write_marks import WRITE_MARK_TRIGGER, WriteMarkReconciler, tables_switched_by_trigger
+from threetears.core.collections.lost_writes import announce_window, tables_switched_by_trigger
+from threetears.core.ddl.change_notes import NOTE_TRIGGER
 from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant
 
 _TABLE = "switched_by_trigger_only_rows"
@@ -34,10 +36,11 @@ class _Catalogue:
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         self.asked.append((query, args))
-        if "information_schema.tables" in query:
-            return [{"table_schema": schema} for schema, table in sorted(self.triggered) if table == args[0]]
+        if "current_ring" in query:
+            # no change-note ring here
+            return []
         trigger, schema, names = args
-        assert trigger == WRITE_MARK_TRIGGER
+        assert trigger == NOTE_TRIGGER
         return [{"table_name": table} for s, table in sorted(self.triggered) if s == schema and table in names]
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -74,7 +77,7 @@ async def test_the_catalogue_read_answers_the_tables_of_the_schema_that_carry_th
     assert switched == frozenset({_TABLE})
     (query, args), *_ = catalogue.asked
     assert "pg_trigger" in query
-    assert args == (WRITE_MARK_TRIGGER, "agent_reports", ["other_rows", "plain_rows", _TABLE])
+    assert args == (NOTE_TRIGGER, "agent_reports", ["other_rows", "plain_rows", _TABLE])
 
 
 async def test_no_tables_reads_nothing() -> None:
@@ -97,53 +100,30 @@ async def test_without_its_tenancy_an_undeclared_tables_records_stay_on_all() ->
     assert [tenant for *_, tenant in source.records] == [None]
 
 
-class _Queue(_Catalogue):
-    """the marks queue beside the catalogue: one mark of the table, and no change-note ring."""
-
-    def __init__(self, triggered: set[tuple[str, str]]) -> None:
-        super().__init__(triggered)
-        self.marks = {1: _TABLE}
-
-    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
-        if "information_schema.tables" in query:
-            return await super().fetch(query, *args)
-        if "current_ring" in query:
-            return []
-        if "count(*)" in query:
-            # the gauges' bounded count (keyed.count_at_most): the marks, at most the bound it asks past
-            return [{"held": min(len(self.marks), int(args[-1]))}]
-        if "extract(epoch" in query:
-            # the gauges' oldest mark, the lowest id (keyed.keyset_page, one row)
-            return [{"id": min(self.marks), "age": 1.0}] if self.marks else []
-        return [
-            {"id": key, "table_name": table, "date_created": datetime.now(UTC)} for key, table in self.marks.items()
-        ][: int(args[0])]
-
-    async def execute(self, query: str, *args: Any) -> str:
-        for key in args[0]:
-            self.marks.pop(key, None)
-        return "DELETE"
-
-
-async def _reconciled(triggered: set[tuple[str, str]]) -> list[str | None]:
+async def _announced(triggered: set[tuple[str, str]]) -> list[str | None]:
+    """a lost write's window of the table announced with no change-note ring: a rowless record a tenant."""
     source = _Recorder()
-    reconciler = WriteMarkReconciler(
-        _Queue(triggered),  # type: ignore[arg-type]
+    catalogue = _Catalogue(triggered)
+    schemas = tuple(sorted(schema for schema, table in triggered if table == _TABLE))
+    now = datetime.now(UTC)
+    await announce_window(
+        catalogue,
         generation_source=source,
-        marks_schema="platform",
-        tables=lambda: (),
-        settle_seconds=0.0,
+        notes_schema="platform",
+        since=now,
+        until=now,
+        why="recovery",
+        tables={_TABLE: schemas},
     )
-    await reconciler.run_pass()
     return [tenant for *_, tenant in source.records]
 
 
-async def test_the_reconciler_keys_an_undeclared_pod_table_by_each_schema_holding_it() -> None:
-    assert await _reconciled({("agent_a", _TABLE), ("agent_b", _TABLE)}) == [
+async def test_a_recovery_keys_an_undeclared_pod_table_by_each_schema_holding_it() -> None:
+    assert await _announced({("agent_a", _TABLE), ("agent_b", _TABLE)}) == [
         schema_tenant("agent_a"),
         schema_tenant("agent_b"),
     ]
 
 
-async def test_the_reconciler_keeps_an_undeclared_platform_table_on_all() -> None:
-    assert await _reconciled({("platform", _TABLE)}) == [None]
+async def test_a_recovery_keeps_an_undeclared_platform_table_on_all() -> None:
+    assert await _announced({("platform", _TABLE)}) == [None]

@@ -6,7 +6,7 @@ statement before its COMMIT (``note_flush_sql``). This checks, on the database t
 ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run it there):
 
 - a copy, an upsert moving an invalidation column and a delete leave the very notes an unflagged write leaves, note
-  for note, and the same one write mark;
+  for note;
 - a write that sets no flag is noted row by row, as always;
 - a flagged transaction that commits without its flush is refused (the guard's deferred key), and nothing it wrote
   commits;
@@ -47,7 +47,6 @@ from threetears.core.ddl.change_notes import (
     trigger_function_body,
     note_function_name,
 )
-from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE, write_mark_trigger_sql, write_marks_ddl
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.core.testing.calibrate import budget_problem
 from threetears.core.testing.note_ring import install_note_ring
@@ -75,7 +74,7 @@ async def _give_triggers(
     columns: tuple[str, ...],
     body: str | None = None,
 ) -> None:
-    """the table's note function, its note triggers and its write-mark trigger, as the installers give them."""
+    """the table's note function and its note triggers, as the installers give them."""
     kinds = {
         str(row["c"]): str(row["t"])
         for row in await conn.fetch(
@@ -101,20 +100,16 @@ async def _give_triggers(
     for name, statement in note_trigger_sql(notes_schema=schema, table_schema=schema, table=table).items():
         if name not in present:
             await conn.execute(statement)
-    if "threetears_collection_write_mark" not in present:
-        await conn.execute(write_mark_trigger_sql(marks_schema=schema, table_schema=schema, table=table))
 
 
 @pytest.fixture
 async def db(db_container: str) -> AsyncIterator[_Db]:
-    """a noted table with one invalidation column, its ring and its write-mark queue in its schema."""
+    """a noted table with one invalidation column and its ring in its schema."""
     schema = f"buffer_{uuid.uuid4().hex[:8]}"
     conn = await asyncpg.connect(db_container, command_timeout=600)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
         await install_note_ring(conn, schema)
-        for statement in write_marks_ddl(schema):
-            await conn.execute(statement)
         await conn.execute(
             f"CREATE TABLE {schema}.{_TABLE} (race TEXT, geo BIGINT, state TEXT, votes BIGINT, PRIMARY KEY (race, geo))"
         )
@@ -126,15 +121,14 @@ async def db(db_container: str) -> AsyncIterator[_Db]:
 
 
 async def _clear(db: _Db) -> None:
-    """an empty table, ring and queue (DELETE, so the truncate trigger leaves no note)."""
+    """an empty table and ring (DELETE, so the truncate trigger leaves no note)."""
     await db.conn.execute(f"DELETE FROM {db.schema}.{_TABLE}")
     for index in range(NOTE_RING_SIZE):
         await db.conn.execute(f'DELETE FROM {db.schema}."{note_table(index)}"')
-    await db.conn.execute(f'DELETE FROM {db.schema}."{WRITE_MARKS_TABLE}"')
 
 
-async def _ring(db: _Db) -> tuple[list[tuple[Any, ...]], int]:
-    """every note the ring holds, as what it says (table, keys, key text, columns, tenant), and the marks queued."""
+async def _ring(db: _Db) -> list[tuple[Any, ...]]:
+    """every note the ring holds, as what it says (table, keys, key text, columns, tenant)."""
     notes: list[tuple[Any, ...]] = []
     for index in range(NOTE_RING_SIZE):
         notes += [
@@ -143,8 +137,7 @@ async def _ring(db: _Db) -> tuple[list[tuple[Any, ...]], int]:
                 f'SELECT table_name, keys, key_text, columns::text AS columns, tenant FROM {db.schema}."{note_table(index)}"'
             )
         ]
-    marks = await db.conn.fetchval(f'SELECT count(*) FROM {db.schema}."{WRITE_MARKS_TABLE}"')
-    return sorted(notes, key=repr), int(marks)
+    return sorted(notes, key=repr)
 
 
 def _rows(state: str) -> list[tuple[Any, ...]]:
@@ -152,12 +145,11 @@ def _rows(state: str) -> list[tuple[Any, ...]]:
 
 
 async def _seed(db: _Db) -> None:
-    """the table holding the rows the upsert and the delete change; then an empty ring and queue."""
+    """the table holding the rows the upsert and the delete change; then an empty ring."""
     await _clear(db)
     await db.conn.copy_records_to_table(_TABLE, schema_name=db.schema, records=_rows("A"))
     for index in range(NOTE_RING_SIZE):
         await db.conn.execute(f'DELETE FROM {db.schema}."{note_table(index)}"')
-    await db.conn.execute(f'DELETE FROM {db.schema}."{WRITE_MARKS_TABLE}"')
 
 
 async def _copy(db: _Db) -> None:
@@ -189,8 +181,8 @@ _WRITES: dict[str, tuple[bool, Callable[[_Db], Awaitable[None]]]] = {
 
 async def _written(
     db: _Db, write: Callable[[_Db], Awaitable[None]], *, seeded: bool, flagged: bool
-) -> tuple[list[tuple[Any, ...]], int]:
-    """the notes and marks one transaction of ``write`` leaves, flagged and flushed or as a plain write."""
+) -> list[tuple[Any, ...]]:
+    """the notes one transaction of ``write`` leaves, flagged and flushed or as a plain write."""
     if seeded:
         await _seed(db)
     else:
@@ -205,17 +197,16 @@ async def _written(
 
 
 @pytest.mark.parametrize("kind", sorted(_WRITES))
-async def test_a_buffered_write_leaves_exactly_the_notes_and_mark_of_a_plain_one(db: _Db, kind: str) -> None:
+async def test_a_buffered_write_leaves_exactly_the_notes_of_a_plain_one(db: _Db, kind: str) -> None:
     """Flips if a flagged write's notes differ from the trigger's own in any note (a key, its text, a column, the
-    tenant), in number (one missing or written twice), or if its write marks differ."""
+    tenant), or in number (one missing or written twice)."""
     seeded, write = _WRITES[kind]
     plain = await _written(db, write, seeded=seeded, flagged=False)
     buffered = await _written(db, write, seeded=seeded, flagged=True)
-    notes, marks = plain
+    notes = plain
     # the plain write is today's: a note a changed row (and the old row's too where the upsert moved ``state``)
     assert len(notes) == {"copy": _ROWS, "upsert": 2 * _ROWS, "delete": _ROWS // 2}[kind]
     assert all(note[2] is not None for note in notes), "a keyed write leaves only keyed notes"
-    assert marks == 1
     assert buffered == plain
 
 
@@ -229,9 +220,8 @@ async def test_a_write_with_no_flag_is_noted_row_by_row(db: _Db) -> None:
         await db.conn.fetchval(note_flush_sql(db.schema))
     async with db.conn.transaction():
         await _copy(db)
-    notes, marks = await _ring(db)
+    notes = await _ring(db)
     assert len(notes) == _ROWS
-    assert marks == 1
     assert await db.conn.fetchval("SELECT count(*) FROM pg_temp.threetears_note_buffer") == 0
 
 
@@ -244,9 +234,9 @@ async def test_a_flagged_transaction_cannot_commit_without_its_flush(db: _Db) ->
             await db.conn.execute(note_buffer_open_sql(db.schema))
             await _copy(db)
     assert await db.conn.fetchval(f"SELECT count(*) FROM {db.schema}.{_TABLE}") == 0
-    assert (await _ring(db))[0] == []
+    assert await _ring(db) == []
     # the connection is usable after, and its next flagged transaction notes and commits
-    assert (await _written(db, _copy, seeded=False, flagged=True))[0] != []
+    assert await _written(db, _copy, seeded=False, flagged=True) != []
 
 
 async def test_a_flagged_write_under_an_older_trigger_body_is_noted_once(db: _Db) -> None:
@@ -406,7 +396,7 @@ _POD_COLUMNS = (
 _POD_KEY = ("office_key", "candidate", "metric_desc", "join_geo_level", "join_district", "join_geo_id", "candidate_id")
 _POD_ROWS = 1000
 
-#: the most times the bare write a 1000-row copy or upsert with its notes and mark may take. WHY 5 (2026-11-21,
+#: the most times the bare write a 1000-row copy or upsert with its notes may take. WHY 5 (2026-11-21,
 #: YugabyteDB 2026.1, this table, median of 5): a copy 29 ms bare, 471 ms with a ring insert a note (16x), 103 ms
 #: buffered (3.5x); an upsert moving an invalidation column 203 ms bare, 1402 ms (6.9x), 684 ms (3.4x). The note a row
 #: into the ring is over it at either; buffered is under it with room for a run's noise

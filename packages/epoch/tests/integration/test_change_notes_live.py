@@ -49,7 +49,7 @@ from threetears.core.collections.change_notes import (
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
-from threetears.core.collections.write_marks import WriteMarkReconciler, install_write_mark_triggers, write_marks_ddl
+from threetears.core.collections.lost_writes import announce_window
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
@@ -78,6 +78,7 @@ from threetears.epoch import (
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.errors import KvError
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.utils.write_ledger import CLOCK_SKEW
 
 pytestmark = pytest.mark.integration
 
@@ -102,6 +103,42 @@ async def ring(db_container: str) -> AsyncIterator[tuple[asyncpg.Pool, str, str]
     finally:
         await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await pool.close()
+
+
+class _Recovery:
+    """announces each lost write's window as a dead writer's recovery does (:func:`announce_window`): from the
+    database's clock where the last pass ended (or the recovery started) to now, widened by the clocks' skew, over the
+    test's own table alone (other tests' switched tables share the database)."""
+
+    def __init__(self, pool: asyncpg.Pool, source: Any, schema: str, tables: dict[str, tuple[str, ...]]) -> None:
+        self._pool, self._source, self._schema, self._tables = pool, source, schema, tables
+        self._since: datetime | None = None
+
+    @classmethod
+    async def start(cls, pool: asyncpg.Pool, source: Any, schema: str, tables: dict[str, tuple[str, ...]]) -> _Recovery:
+        recovery = cls(pool, source, schema, tables)
+        recovery._since = await pool.fetchval("SELECT clock_timestamp()")
+        return recovery
+
+    def back(self, interval: timedelta) -> None:
+        """the next window starts ``interval`` earlier: a dead writer whose oldest write began that long ago."""
+        assert self._since is not None
+        self._since -= interval
+
+    async def run_pass(self) -> Any:
+        assert self._since is not None
+        until = await self._pool.fetchval("SELECT clock_timestamp()")
+        done = await announce_window(
+            self._pool,
+            generation_source=self._source,
+            notes_schema=self._schema,
+            since=self._since - CLOCK_SKEW,
+            until=until + CLOCK_SKEW,
+            why="recovery",
+            tables=self._tables,
+        )
+        self._since = until
+        return done
 
 
 async def _keeper(pool: asyncpg.Pool, schema: str, table: str, log: Any) -> ChangeNoteKeeper:
@@ -868,7 +905,7 @@ class TestTheRingSwitchesOnNotesToo:
         assert (await keeper.run_pass()).switched_to == 1
 
 
-class TestTheReconcilerNamesTheRowsTheNotesName:
+class TestARecoveryNamesTheRowsTheNotesName:
     async def test_a_missed_write_s_epoch_names_its_rows_and_a_truncate_s_the_whole_table(
         self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -877,12 +914,7 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
         source = EpochGenerationSource(bus)
         await source.start_log()
         await _keeper(pool, schema, table, source)
-        for statement in write_marks_ddl(schema):
-            await pool.execute(statement)
-        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(
-            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-        )
+        reconciler = await _Recovery.start(pool, source, schema, {table: (schema,)})
         reader = EpochGenerationReader(bus)
 
         async def last() -> Any:
@@ -890,7 +922,7 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
             assert token is not None
             return await reader.change(table, token)
 
-        # raw SQL: a mark and a note, and no advance
+        # raw SQL: a note, and no advance
         await pool.execute(f"INSERT INTO {table} VALUES ('raw-1', 'ada', '1'), ('raw-2', 'bea', '1')")
         assert (await reconciler.run_pass()).advanced == (table,)
         record = await last()
@@ -900,30 +932,30 @@ class TestTheReconcilerNamesTheRowsTheNotesName:
             ("raw-2", "bea"),
         ], "the rows the notes name, with their invalidation columns: no follower drops the table"
 
-        # a truncate leaves no mark of its own, but a whole-table note: the next marked write's notes carry it
+        # a truncate leaves a whole-table note: a window holding it records the whole table
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(f"TRUNCATE {table}")
             await conn.execute(f"INSERT INTO {table} VALUES ('reloaded', 'o', '1')")
         await reconciler.run_pass()
         assert (await last()).whole_table, "a truncate's note names the whole table, and so does its epoch"
 
-        # a mark older than the coverage (the ring has switched since): the notes cannot vouch for it, so keys
-        # unknown (every follower behind on the table, none told to drop it), said and counted
+        # a window older than the coverage (the ring has switched since; a writer dead a day): the notes cannot vouch
+        # for it, so keys unknown (every follower behind on the table, none told to drop it), said and counted
         await pool.execute(
             f"UPDATE {schema}.threetears_change_note_ring SET switch_no = switch_no + 1, previous_switched_at = now()"
         )
         await pool.execute(f"INSERT INTO {table} VALUES ('old', 'cy', '1')")
-        await pool.execute(f"UPDATE {schema}.collection_write_marks SET date_created = now() - interval '1 day'")
+        reconciler.back(timedelta(days=1))
         with caplog.at_level(logging.WARNING):
             await reconciler.run_pass()
         unnamed = await last()
         assert unnamed.keys_unknown and not unnamed.whole_table
-        said = [r.__dict__["extra_data"] for r in caplog.records if "advanced as keys unknown" in r.getMessage()]
-        assert said == [{"table": table, "reason": "not_covered"}]
+        said = [r.__dict__["extra_data"] for r in caplog.records if "advanced keys unknown" in r.getMessage()]
+        assert said == [{"table": table, "reason": "not_covered", "whole_changes": 0}]
 
 
-class TestTheReconcilerKeysEachSchemasChange:
-    """under TENANT_BY_SCHEMA every agent schema's notes of a table share the ring, and a mark names no schema."""
+class TestARecoveryKeysEachSchemasChange:
+    """under TENANT_BY_SCHEMA every agent schema's notes of a table share the ring, and a window names no schema."""
 
     async def test_one_schemas_truncate_never_hides_anothers_missed_rows(
         self, ring: tuple[asyncpg.Pool, str, str]
@@ -932,7 +964,7 @@ class TestTheReconcilerKeysEachSchemasChange:
         other = f"{schema}_b"
 
         class _PerSchema(BaseCollection[Any]):
-            """the table, declared per schema, so the reconciler and a pod's reader key it by schema."""
+            """the table, declared per schema, so a recovery and a pod's reader key it by schema."""
 
             tenancy = TENANT_BY_SCHEMA
 
@@ -953,12 +985,7 @@ class TestTheReconcilerKeysEachSchemasChange:
             await keeper.install_triggers([noted])
             # the other schema's table is given its triggers by its own schema's migration run, never the keeper
             await _give_as_its_schemas_run_does(pool, schema, other, noted)
-            for statement in write_marks_ddl(schema):
-                await pool.execute(statement)
-            await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-            reconciler = WriteMarkReconciler(
-                pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-            )
+            reconciler = await _Recovery.start(pool, source, schema, {table: (schema, other)})
             await pool.execute(f"INSERT INTO {other}.{table} VALUES ('seed', 'o', '1')")
             await reconciler.run_pass()
             mine = EpochGenerationReader(bus, tenants=PodTenants(schema=schema))
@@ -1007,12 +1034,7 @@ class TestTheReconcilerKeysEachSchemasChange:
             source = EpochGenerationSource(bus)
             await source.start_log()
             # no change-note ring at all: the notes cannot name anything (notes_unavailable)
-            for statement in write_marks_ddl(schema):
-                await pool.execute(statement)
-            await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-            reconciler = WriteMarkReconciler(
-                pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-            )
+            reconciler = await _Recovery.start(pool, source, schema, {table: (schema, other)})
             await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('a1', 'o', '1')")
             await reconciler.run_pass()
             log = bus.change_log(EPOCH_CHANGES_BUCKET)
@@ -1029,23 +1051,18 @@ class TestTheReconcilerKeysEachSchemasChange:
             await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
 
 
-class TestAReconciledWriteTooLargeToRecordReachesAFollower:
+class TestARecoveredWriteTooLargeToRecordReachesAFollower:
     async def test_the_follower_applies_every_noted_key_and_is_current_without_a_restart(
         self, ring: tuple[asyncpg.Pool, str, str]
     ) -> None:
-        """Flips if the reconciler records a lost write of more rows than one record names as keys unknown with no notes
+        """Flips if a recovery records a lost write of more rows than one record names as keys unknown with no notes
         bracket: every follower is then behind on the table until it restarts, and the rows stay stale in it."""
         pool, schema, table = ring
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus)
         await source.start_log()
         await _keeper(pool, schema, table, source)
-        for statement in write_marks_ddl(schema):
-            await pool.execute(statement)
-        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(
-            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-        )
+        reconciler = await _Recovery.start(pool, source, schema, {table: (schema,)})
         reader = EpochGenerationReader(bus)
 
         # a follower whose reader names a commit's keys from its notes, as a pod's broker transport does
@@ -1087,12 +1104,7 @@ class TestAReconciledWriteTooLargeToRecordReachesAFollower:
         source = EpochGenerationSource(bus)
         await source.start_log()
         await _keeper(pool, schema, table, source)
-        for statement in write_marks_ddl(schema):
-            await pool.execute(statement)
-        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(
-            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-        )
+        reconciler = await _Recovery.start(pool, source, schema, {table: (schema,)})
         reader = EpochGenerationReader(bus)
         registry = CollectionRegistry()
         registry.follow_generation(table)
@@ -1139,12 +1151,7 @@ class TestAFollowerOnADirectPoolReadsTheNotesItself:
         source = EpochGenerationSource(bus)
         await source.start_log()
         await _keeper(pool, schema, table, source)
-        for statement in write_marks_ddl(schema):
-            await pool.execute(statement)
-        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
-        reconciler = WriteMarkReconciler(
-            pool, generation_source=source, marks_schema=schema, tables=lambda: [table], settle_seconds=0.0
-        )
+        reconciler = await _Recovery.start(pool, source, schema, {table: (schema,)})
         reader = EpochGenerationReader(bus)
 
         # wired as the hub wires its own registries: on the direct pool, with a reader of the notes over it

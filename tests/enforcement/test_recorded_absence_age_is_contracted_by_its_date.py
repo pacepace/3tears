@@ -1,9 +1,9 @@
 """enforcement: the recorded-absence age goes by its date (receiver-trust Chunk 12, Pace 2026-10-15).
 
 ``negative_cache_max_age`` is the one timer on a cache the write generations invalidate. It stays
-only as the stated cover for writers that predate the write marks
-(:mod:`threetears.core.collections.write_marks`): a commit such a writer made, then died before
-advancing, is caught by nothing else. Once every writer marks its writes, the timer and "The One
+only as the stated cover for writers that predate the lost-write backstop
+(:mod:`threetears.core.collections.lost_writes`, the write marks before 0.95): a commit such a writer made, then died
+before advancing, is caught by nothing else. Once every writer runs the backstop, the timer and "The One
 Timer That Stays" (``docs/epoch-task-06-collection-generations-by-default.md``) go together, in the
 contract commit. This gate dates that commit: from :data:`CONTRACT_DATE` the build fails while any
 collection still sets the age.

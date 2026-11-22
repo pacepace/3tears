@@ -10,6 +10,7 @@ PostgreSQL session holding the lock alone would.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -142,6 +143,10 @@ class FakeDataStore:
             return result
         if "TO_REGCLASS(" in normalized:
             result = [{"present": self.migrations_table_created}]
+            return result
+        if "CLOCK_TIMESTAMP()" in normalized:
+            # the run's window, on the database's clock (a run announces its writes from it)
+            result = [{"now": datetime.now(UTC), "schema_name": self._schema}]
             return result
         if "CURRENT_SCHEMA()" in normalized:
             result = [{"schema_name": self._schema}]
@@ -396,6 +401,9 @@ class FakeLockingConnection:
         result: list[dict[str, Any]] = []
         if "CURRENT_DATABASE()" in normalized:
             result = [{"database_name": "appdb"}]
+        elif "CLOCK_TIMESTAMP()" in normalized:
+            # the run's window, on the database's clock (a run announces its writes from it)
+            result = [{"now": datetime.now(UTC), "schema_name": "public"}]
         elif "PG_TRY_ADVISORY_LOCK" in normalized:
             granted = pool.lock_holder in (None, self)
             if granted:

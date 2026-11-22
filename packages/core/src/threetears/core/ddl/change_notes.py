@@ -190,7 +190,7 @@ NOTE_REACH_SETTING: Final = "threetears.note_reach"
 _NOTED_WHOLE_GUARD: Final = "threetears.noted_whole_"
 
 #: the rows a transaction copies from which it is marked whole (:data:`NOTE_WHOLE_SETTING`): one note for the
-#: table rather than one a row. The notes name at most this many rows a table to the write-mark reconciler
+#: table rather than one a row. The notes name at most this many rows a table to a lost write's recovery
 #: (more are advanced with their keys unknown), so a note a row past it costs a write each and names nothing.
 #: The hub's ``l3.tx.copy`` counts a session's copied rows against it; a direct connection's
 #: :meth:`~threetears.core.backends.sql.SqlL3Backend.copy_many` its own call's
@@ -483,7 +483,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         f"ON {owner}.{quote_identifier(note_table(index))} (key_text, table_name)"
         for index in range(NOTE_RING_SIZE)
     )
-    # a table's notes since a time (the write-mark reconciler's read, every few seconds a marked table): led by the
+    # a table's notes in a window (a lost write's recovery reads it a table): led by the
     # table, then in time, so the read touches that table's recent notes and no other's (without it each read
     # scanned the whole note table). It carries the columns the read answers, so the read never visits the table:
     # on YugabyteDB a visit is a second lookup a note, several times the read's cost. On YugabyteDB the first

@@ -115,10 +115,10 @@ STORAGE_FAILURES: Final[tuple[type[Exception], ...]] = (
 #: absence correct, and it is event-driven: every check reads the table's current generation and drops an
 #: absence stamped under an older one, so a revocation on any replica ends it at the next check whatever this
 #: age. The age bounds only a revocation that committed and then never advanced the generation, which the
-#: write-mark reconciler (:mod:`threetears.core.collections.write_marks`) advances from the write's own mark
-#: within its pass interval. So it is sized to the checks it saves, not to that window: fifteen minutes, a
+#: writer's backstop (:mod:`threetears.core.collections.lost_writes`) announces again from the change notes: a
+#: failed advance within its retry, a dead writer's within its heartbeat's stale time. So it is sized to the checks it saves, not to that window: fifteen minutes, a
 #: session's refresh cadence, where the 60 s it was let nearly every refresh's check find its absence gone and
-#: ask L3. A consumer that runs no reconciler shortens it on a subclass (``negative_cache_max_age``).
+#: ask L3. A consumer that runs no backstop shortens it on a subclass (``negative_cache_max_age``).
 _REVOCATION_NEGATIVE_CACHE_SECONDS: Final = 15 * 60.0
 
 #: how often one process sweeps a table's expired rows, and how many it removes per statement.

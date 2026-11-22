@@ -40,6 +40,7 @@ its database, a contract release may treat a record naming none as another datab
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 
@@ -52,7 +53,8 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from threetears.core.cache.base import stored_instant
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.exceptions import GenerationNotCommittedError, GenerationUnavailableError
+from threetears.core.utils.write_ledger import process_write_ledger
 
 if TYPE_CHECKING:
     from threetears.core.collections.generation import GenerationSource
@@ -482,12 +484,21 @@ async def advance_recording(
     noted_between: tuple[datetime, datetime] | None = None,
     prefixes: Sequence[Mapping[str, str]] | None = None,
     reason: str | None = None,
+    repair: bool = True,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
     Every advance goes through here, so a source that keeps the epoch change log is never handed an
     advance without its change. A source that keeps none (a pod's, whose broker advances for it)
     advances as it always has.
+
+    **An advance that does not land is never dropped.** One that fails (or is cancelled) after its write committed is
+    handed, as it is, to the process's writer ledger (:meth:`~threetears.core.utils.write_ledger.WriteLedger
+    .lost_advance`) before the failure is raised: the process's backstop makes it again until it lands, and the ledger's
+    watermark, which the backstop publishes, is held at its start meanwhile, so a writer that dies first is announced
+    by recovery (:class:`~threetears.core.collections.lost_writes.WriteBackstop`). Not handed over: a commit that did
+    not land (:class:`~threetears.core.exceptions.GenerationNotCommittedError`), and a change refused before anything
+    was advanced (``ValueError``).
 
     :param source: the registry's generation source
     :ptype source: GenerationSource
@@ -511,12 +522,87 @@ async def advance_recording(
     :ptype prefixes: Sequence[Mapping[str, str]] | None
     :param reason: a whole-table change's reason (:data:`RESET_REASON`), for a source that records it
     :ptype reason: str | None
+    :param repair: hand a failed advance to the process's ledger for retry; ``False`` for the retry itself
+    :ptype repair: bool
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
     :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
     check_change_form(rows, keys_unknown=keys_unknown)
+    if not repair:
+        return await _advance_recording_once(
+            source,
+            table_name,
+            rows,
+            keys_unknown=keys_unknown,
+            tenant=tenant,
+            partition=partition,
+            noted_between=noted_between,
+            prefixes=prefixes,
+            reason=reason,
+        )
+    kept_rows = None if rows is None else list(rows)
+
+    async def again() -> str | None:
+        return await _advance_recording_once(
+            source,
+            table_name,
+            kept_rows,
+            keys_unknown=keys_unknown,
+            tenant=tenant,
+            partition=partition,
+            noted_between=noted_between,
+            prefixes=prefixes,
+            reason=reason,
+        )
+
+    try:
+        return await again()
+    except GenerationNotCommittedError, ValueError:
+        # nothing committed, or a change refused before anything was advanced: nothing to make again
+        raise
+    except (Exception, asyncio.CancelledError) as exc:
+        process_write_ledger().lost_advance(table_name, again, error=f"{type(exc).__name__}: {exc}")
+        raise
+
+
+async def _advance_recording_once(
+    source: GenerationSource,
+    table_name: str,
+    rows: Sequence[ChangedRow] | None,
+    *,
+    keys_unknown: bool,
+    tenant: str | None,
+    partition: Mapping[str, str] | None,
+    noted_between: tuple[datetime, datetime] | None,
+    prefixes: Sequence[Mapping[str, str]] | None,
+    reason: str | None,
+) -> str | None:
+    """one try of :func:`advance_recording`, its change already checked.
+
+    :param source: the registry's generation source
+    :ptype source: GenerationSource
+    :param table_name: the table
+    :ptype table_name: str
+    :param rows: the rows, ``None`` for a rowless change
+    :ptype rows: Sequence[ChangedRow] | None
+    :param keys_unknown: the change names no keys
+    :ptype keys_unknown: bool
+    :param tenant: a rowless record's tenant
+    :ptype tenant: str | None
+    :param partition: a whole-table change's partition
+    :ptype partition: Mapping[str, str] | None
+    :param noted_between: a keys-unknown change's notes bracket
+    :ptype noted_between: tuple[datetime, datetime] | None
+    :param prefixes: a whole-table change's key prefixes
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :param reason: a whole-table change's reason
+    :ptype reason: str | None
+    :return: the token the advance wrote
+    :rtype: str | None
+    :raises GenerationUnavailableError: when the advance, or the record of its change, failed
+    """
     if isinstance(source, _EpochChangeWriter):
         extra: dict[str, Any] = {}
         if tenant is not None:

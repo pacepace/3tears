@@ -61,7 +61,7 @@ the row's schema (the hub's broker, for an agent-schema table, through `advance_
 row: an agent-schema table's goes under the schema the writer names (it belongs to that schema alone), a
 platform table's on `_all`. The change notes carry the same tenant, from the trigger (the row's schema, or its
 tenant column, by the same token rule; a truncate or file load of a schema table notes its schema), so a restore
-puts each tenant's records back under its own key. The write-mark reconciler advances a whole-table change of a
+puts each tenant's records back under its own key. A lost write's recovery advances a whole-table change of a
 schema table under each schema holding it when the notes cannot name one. A record of a schema table that names
 no schema still goes on `_all`, where no pod reads that table, and is said once per table and counted
 (`threetears_epoch_change_schema_record_untenanted_total{table}`).

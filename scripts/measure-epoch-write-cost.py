@@ -4,20 +4,17 @@
 The question this answers: can every collection declare ``write_generation = WRITE_GENERATION``,
 or is the per-write cost too high? A declared table pays, on every committed write, one append of
 the epoch's change record to the change log (``EpochGenerationSource.advance_with_change``: the
-stream's sequence is the epoch, so concurrent writers never contend for a counter), and -- where
-the registry names a write-marks schema, as the hub's does -- a trigger insert in the write's own
-transaction plus a read and a delete of the marks the advance covered. A noted table pays one more
-row in the write's transaction: its change note (``threetears.core.collections.change_notes``).
+stream's sequence is the epoch, so concurrent writers never contend for a counter). A noted table pays one more
+row in the write's transaction: its change note (``threetears.core.collections.change_notes``). Every pool keeps the
+process's writer ledger (``write_ledger_connection_class``), as the hub's does: an in-memory entry a statement. (The
+``declared+marks`` variant measured the write-mark trigger until 0.95, when the marks were removed.)
 
-Four variants, each over its own table, all on the SAME broker, database and machine:
+Three variants, each over its own table, all on the SAME broker, database and machine:
 
 ``undeclared``
     the default today (``WRITE_GENERATION_UNDECLARED``): no advance on a save.
 ``declared``
     ``WRITE_GENERATION``: an advance with its change record on every save, no write marks.
-``declared+marks``
-    ``WRITE_GENERATION`` with the write-mark trigger installed and the registry naming the
-    marks schema: the hub's production shape before the change notes.
 ``declared+notes``
     ``WRITE_GENERATION`` with the change-note trigger installed: one note row per changed row, in the
     write's transaction. While the writers write, a keeper process runs the note ring with a short fence
@@ -56,9 +53,9 @@ import multiprocessing
 import statistics
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from multiprocessing.synchronize import Barrier, Event
 from typing import Any
 
@@ -73,16 +70,16 @@ from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
-from threetears.core.collections.write_marks import install_write_mark_triggers, write_marks_ddl
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.utils.change_note_slot import ChangeNoteSlot
 from threetears.core.utils.session_settings import session_settings_connection_class
+from threetears.core.utils.write_ledger import write_ledger_connection_class
 from threetears.epoch import EpochGenerationSource
 from threetears.nats import NatsClient, set_default_namespace
 
-_VARIANTS = ("undeclared", "declared", "declared+marks", "declared+notes")
+_VARIANTS = ("undeclared", "declared", "declared+notes")
 _WARMUP = 5
 _PAYLOAD = "x" * 200
 
@@ -150,11 +147,29 @@ class _CountingSource(EpochGenerationSource):
         self._tally = tally
 
     async def advance_with_change(
-        self, table_name: str, rows: Sequence[ChangedRow] | None, *, keys_unknown: bool = False
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
+        partition: Mapping[str, str] | None = None,
+        noted_between: tuple[datetime, datetime] | None = None,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        reason: str | None = None,
     ) -> str:
         began = time.perf_counter()
         try:
-            return await super().advance_with_change(table_name, rows, keys_unknown=keys_unknown)
+            return await super().advance_with_change(
+                table_name,
+                rows,
+                keys_unknown=keys_unknown,
+                tenant=tenant,
+                partition=partition,
+                noted_between=noted_between,
+                prefixes=prefixes,
+                reason=reason,
+            )
         except GenerationUnavailableError:
             self._tally.failures += 1
             raise
@@ -208,7 +223,9 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
         max_size=2,
         server_settings={"search_path": job.db_schema},
         # the hub's pool shape: no asyncpg RESET ALL / pg_advisory_unlock_all on release, and the slot carried
-        connection_class=session_settings_connection_class(search_path=job.db_schema, note_slot=slot),
+        connection_class=write_ledger_connection_class(
+            session_settings_connection_class(search_path=job.db_schema, note_slot=slot)
+        ),
     )
     assert pool is not None
     tally = _Tally()
@@ -223,8 +240,6 @@ async def _write(job: _Job, barrier: Barrier) -> _Result:
             registry = CollectionRegistry()
             registry.configure(l1_backend=l1, l2_client=nats, l3_pool=SqlL3Backend(pool), kv_key_scope="bench")
             registry.set_generation_source(_CountingSource(nats, tally))
-            if job.variant == "declared+marks":
-                registry.set_write_marks_schema(job.db_schema)
             rows = _collection_class(job.variant)(registry, DefaultCoreConfig())
 
             for n in range(_WARMUP):
@@ -333,7 +348,7 @@ def _keeper_main(job: _Job, switch_bytes: int, stop: Event, results: Any) -> Non
 
 
 async def _prepare(db_url: str, nats_url: str, fence: timedelta) -> str:
-    """create a throwaway schema with every variant's table, the marks queue, the note ring and their triggers.
+    """create a throwaway schema with every variant's table, the note ring and its triggers.
 
     :param db_url: the database
     :ptype db_url: str
@@ -350,9 +365,6 @@ async def _prepare(db_url: str, nats_url: str, fence: timedelta) -> str:
         for variant in _VARIANTS:
             name = _schema_for(variant).name
             await pool.execute(f"CREATE TABLE {db_schema}.{name} (id TEXT PRIMARY KEY, n BIGINT, payload TEXT)")
-        for statement in write_marks_ddl(db_schema):
-            await pool.execute(statement)
-        await install_write_mark_triggers(pool, marks_schema=db_schema, tables=[_schema_for("declared+marks").name])
         set_default_namespace("benchprep")
         async with await NatsClient.connect(
             nats_url=nats_url, nats_subject_namespace="benchprep", client_name="bench-prepare"

@@ -1107,7 +1107,7 @@ class TableSchema:
         like ``audit_events``, where a redelivered envelope repeats its
         ``id``)
     :cvar write_generation: ``WRITE_GENERATION`` switches the table on: every committed write
-        advances its write generation, the creating migration gives it the write-mark trigger, and
+        advances its write generation, the creating migration gives it its change-note triggers, and
         the collection class reads its ``write_generation`` from here
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
@@ -1182,7 +1182,7 @@ class TableSchema:
     # SQL it emits. see the :cvar: entry above for the full contract.
     cas_null_safe: bool = False
     # every committed write to the table advances its write generation, and the table carries the
-    # write-mark trigger from the migration that creates it (threetears.core.collections.write_marks).
+    # change-note triggers from the migration that creates it (threetears.core.collections.lost_writes).
     # the one declaration: the migration package that creates the table renders the trigger from it,
     # and the collection class reads its switch from it.
     write_generation: WriteGenerationDeclaration = WRITE_GENERATION_UNDECLARED
@@ -2980,7 +2980,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         cached scans and derived caches are dropped, and its L2 entries are read past until each is
         read through from L3 again (:meth:`drop_cached_table`), since a pod cannot list L2 to delete
         them. Other processes learn of it from the table's write generation: ``TRUNCATE`` fires no
-        statement trigger and leaves no write mark (:mod:`~threetears.core.collections.write_marks`),
+        row trigger (:mod:`~threetears.core.collections.lost_writes`),
         so this advances the generation itself, as a commit does, with no row broadcast to cover
         the advance; a follower's catch-up pass finds an advance it heard no row of and drops the
         table too. Safe to call again: an empty table truncates, and the caches drop, alike. A

@@ -3,7 +3,7 @@
 **A bulk write's change notes go into a per-connection buffer and reach the ring in one insert at the commit.** On
 YugabyteDB, inserting a note into the ring for each row is a distributed write per row. That insert, not the row
 itself, was most of the cost of a 1000-row write. The notes are unchanged: the same trigger writes the same note for
-each row, so followers, the write-mark reconciler and a restore read exactly what they read before.
+each row, so followers, a lost write's recovery and a restore read exactly what they read before.
 
 ## What a written row costs
 
@@ -50,9 +50,9 @@ What the numbers say:
    YugabyteDB 2026.1 refuses `CREATE CONSTRAINT TRIGGER`.
 4. **No flag means today's behaviour.** A write that does not come through a buffering writer (raw SQL, an older hub)
    is noted row by row into the ring, as always.
-5. **The write mark stays as it is.** It already writes one row per table per transaction, and only when a row
-   changed, so no advance is ever recorded for a write that changed nothing. Moving it out of the trigger would save
-   nothing while any per-row trigger remains.
+5. **The write mark is gone (0.95).** Its per-row trigger cost a write as much as the notes did, and its only job,
+   announcing an advance lost after a commit, is the writer's own now, with no L3 write: the writer ledger and its
+   backstop (`threetears.core.collections.lost_writes`) announce the lost write from these notes.
 
 The hub's broker opens the buffer at a session's first write and flushes it in the commit (`_TxSession.commit`).
 `tests/enforcement/test_change_notes_buffer_bulk_writes.py` fails if a keyed note can reach the ring outside the
@@ -91,6 +91,7 @@ and a bounded cleanup removes older versions later. This is the planned next ste
 ## See also
 
 - `threetears.core.ddl.change_notes`: the ring, the trigger body, the buffer and the flush.
-- `threetears.core.ddl.write_marks`: the write-mark queue and its trigger.
+- `threetears.core.collections.lost_writes`: the backstop that announces a lost advance from the notes (the write-mark
+  queue's place, until 0.95).
 - [Runbook: measure what a declared write generation costs](runbook-epoch-write-cost.md).
 - [L2-first operations](l2-first-operations.md): the change notes' restore and scrub alerts.

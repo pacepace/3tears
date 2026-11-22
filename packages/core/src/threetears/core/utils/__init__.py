@@ -31,6 +31,11 @@ if TYPE_CHECKING:
     )
     from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
     from threetears.core.utils.session_settings import session_settings_connection_class
+    from threetears.core.utils.write_ledger import (
+        WriteLedger,
+        process_write_ledger,
+        write_ledger_connection_class,
+    )
     from threetears.core.utils.yugabyte_pool_recycler import (
         DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
         YUGABYTE_POOL_TRIGGERS,
@@ -44,6 +49,9 @@ if TYPE_CHECKING:
     )
 
 _LAZY: dict[str, tuple[str, str]] = {
+    "WriteLedger": ("threetears.core.utils.write_ledger", "WriteLedger"),
+    "process_write_ledger": ("threetears.core.utils.write_ledger", "process_write_ledger"),
+    "write_ledger_connection_class": ("threetears.core.utils.write_ledger", "write_ledger_connection_class"),
     "atomic_write": ("threetears.core.utils.atomic_write", "atomic_write"),
     "atomic_write_sync": ("threetears.core.utils.atomic_write", "atomic_write_sync"),
     "parse_date_bound": ("threetears.core.utils.local_time", "parse_date_bound"),
@@ -122,6 +130,9 @@ __all__ = [
     "resolve_pool_connect_timeout",
     "resolve_zone",
     "session_settings_connection_class",
+    "WriteLedger",
+    "process_write_ledger",
+    "write_ledger_connection_class",
 ]
 
 
