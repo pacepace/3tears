@@ -6195,11 +6195,79 @@ class EvidenceDocument(CoreShapeModel):
     title: str = Field(min_length=1, description="Its title; a kind that truncated it says so here.")
     url: str | None = Field(default=None, min_length=1, description="Where it was read, when it has an address.")
     text: str = Field(min_length=1, description="Its text, as read; every quote of it is checked against this.")
+    overrides: tuple[str, ...] = Field(
+        default=(),
+        exclude_if=lambda ids: not ids,
+        description="The case documents this case document overrides, by id: where it and one of them bear on a claim "
+        "with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a "
+        "policy update over the old policy). Where it is silent, the other's stands. Precedence follows the chain: a "
+        "document overrides what the documents it overrides override. Empty (left out) for a document that overrides "
+        "none, and always for a `run` document.",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
     def _text_not_blank(cls, text: str) -> str:
         return _not_blank(text, "an evidence document's text")
+
+    @model_validator(mode="after")
+    def _overrides_other_case_documents(self) -> Self:
+        """Refuse an override on a `run` document, of itself, of a blank id, or of one id twice.
+
+        :raises ValueError: One of those.
+        """
+        if not self.overrides:
+            return self
+        if self.provenance != "case":
+            raise ValueError(
+                f"evidence document {self.id!r} is a {self.provenance} document and overrides "
+                f"{', '.join(map(repr, self.overrides))}: only case evidence, the same for every arm, overrides"
+            )
+        if self.id in self.overrides:
+            raise ValueError(f"evidence document {self.id!r} overrides itself")
+        if any(not other.strip() for other in self.overrides):
+            raise ValueError(f"evidence document {self.id!r} overrides a blank id")
+        if twice := sorted({other for other in self.overrides if self.overrides.count(other) > 1}):
+            raise ValueError(f"evidence document {self.id!r} overrides {', '.join(map(repr, twice))} more than once")
+        return self
+
+
+def document_precedence(documents: Sequence[EvidenceDocument]) -> Mapping[str, frozenset[str]]:
+    """Which of ``documents`` each one overrides, by id, following the chain: a document overrides the ones it names
+    and every one they override in turn. A document that overrides none is not listed.
+
+    :param documents: A cell's evidence documents.
+    :return: Each overriding document's id, and the ids of every document it overrides.
+    :raises ValueError: An override names a document ``documents`` do not hold or a `run` document, or overrides run
+        in a cycle, which would leave no document's stance standing; each named.
+    """
+    by_id = {document.id: document for document in documents}
+    for document in documents:
+        if unknown := [other for other in document.overrides if other not in by_id]:
+            raise ValueError(
+                f"evidence document {document.id!r} overrides {', '.join(map(repr, unknown))}, which the cell's "
+                "evidence does not hold"
+            )
+        if fetched := [other for other in document.overrides if by_id[other].provenance != "case"]:
+            raise ValueError(
+                f"evidence document {document.id!r} overrides {', '.join(map(repr, fetched))}, a run document: only "
+                "case evidence, the same for every arm, is overridden"
+            )
+    below: dict[str, frozenset[str]] = {}
+
+    def overridden(at: str, path: tuple[str, ...]) -> frozenset[str]:
+        """Every document ``at`` overrides; ``path`` is the chain of documents walked down to it."""
+        if at in path:
+            cycle = [*path[path.index(at) :], at]
+            raise ValueError(f"evidence documents override in a cycle: {' -> '.join(map(repr, cycle))}")
+        if at not in below:
+            reached: set[str] = set()
+            for other in by_id[at].overrides:
+                reached |= {other, *overridden(other, (*path, at))}
+            below[at] = frozenset(reached)
+        return below[at]
+
+    return MappingProxyType({document.id: overridden(document.id, ()) for document in documents if document.overrides})
 
 
 class ClaimEvidence(CoreShapeModel):
@@ -6231,7 +6299,8 @@ class ClaimEvidence(CoreShapeModel):
     @model_validator(mode="after")
     def _units_numbered_and_documents_capped(self) -> Self:
         """Refuse units not numbered 0..n-1 with no gap (the extractor's own rule; a unit may span several segments),
-        two documents of one id, or documents over their share of the trace.
+        two documents of one id, an override of a document it does not hold or of a `run` document, overrides that
+        run in a cycle, or documents over their share of the trace.
 
         :raises ValueError: One of those.
         """
@@ -6245,6 +6314,7 @@ class ClaimEvidence(CoreShapeModel):
         ids = [document.id for document in documents]
         if twice := sorted({doc_id for doc_id in ids if ids.count(doc_id) > 1}):
             raise ValueError(f"evidence documents {', '.join(map(repr, twice))} each appear more than once")
+        document_precedence(documents)
         held = _serialized_bytes([document.model_dump(mode="json") for document in documents])
         if held > CLAIM_DOCUMENT_BYTES:
             raise ValueError(
@@ -6364,7 +6434,10 @@ class GradedClaim(CoreShapeModel):
         default=None,
         description="Whether a document the candidate itself was given supports it; None where no criterion asked.",
     )
-    evidence_conflict: bool = Field(default=False, description="Case evidence both supports and contradicts it.")
+    evidence_conflict: bool = Field(
+        default=False,
+        description="Case evidence both supports and contradicts it, and no document's override settles which stands.",
+    )
     web: Literal["checked", "skipped_cap", "lost", "none"] = Field(
         default="none",
         description="`checked` on the web; `skipped_cap`, nominated and not checked (past the cell's web budget, "

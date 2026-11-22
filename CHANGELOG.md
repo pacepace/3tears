@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a case document may override another, and a semicolon no longer parts a citation
+
+**Added (#1287):** `EvidenceDocument.overrides` (new, optional, a tuple of document ids, empty by default): the case
+documents a case document overrides, such as house rules over a rulebook, an erratum over its text, or a policy update
+over the old policy. Precedence follows the chain, so an erratum to an update overrides what the update overrides.
+Where an overriding document and one it overrides cite a claim with opposite stances, the overriding document's stance
+decides: a claim supported only from the overridden document, which the overriding one contradicts, reads
+`contradicted` against `case` (before, `supported` with `evidence_conflict`), and support from the overriding document
+stands over the overridden one's contradiction with no conflict. Where the overriding document is silent on a claim,
+the overridden document's citation stands. A key fact is no document and sits outside precedence. Case evidence stays
+the same for every arm, so nothing here depends on what an arm fetched. An override is refused on a `run` document, of
+itself, of a document the cell's evidence lacks, of a `run` document, or in a cycle. The truth call is shown, beneath
+its passages, which shown document overrides which, by title and passage ref, and is told to cite both sides, since
+code applies the precedence. A cell whose documents override none is shown, stored and digested exactly as before.
+
+**Changed (#1287):** a semicolon is no longer a break between a citation's subject and its value. It joins clauses of
+one sentence, so a quote such as "members may renew a loan once; doing so costs two dollars" binds its subject and
+value with no repair call. A full stop, `!`, `?` or a line break between them is still refused and asked again. A
+subject and a value either side of a semicolon are now the model's to bind, as within any one sentence, and calibration
+measures what remains. This holds for a web window's quote too. The verifier's identity, and with it every claim
+criterion's fingerprint, moves: a grade stored before this build reads as graded under an earlier definition.
+
+For hosts: `overrides` amends core 15.24, which is unreleased. A build before this change refuses a stored trace whose
+claim evidence carries an override (`extra_forbidden`, naming `claim_evidence.documents.<n>.overrides`), and reads one
+whose documents override none. Roll this build out before any kind renders an override, and roll back only after
+removing them. The quick path's `case_documents` cannot yet declare an override.
+
 ### evals: `Claims` on the quick path, and `Answer.documents`
 
 **Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,
