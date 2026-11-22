@@ -5,15 +5,18 @@ spent and each reply is chosen. The truth step sees the case key's facts (``K1..
 documents (``S1..``) and never a document the candidate fetched; the ground step, asked only under ``grounded_in``,
 sees only those documents. Code derives every verdict: case support always reads supported, case contradiction
 contradicted, and only a claim no case evidence bears on that the model doubts is nominated for the web. Each
-citation's quote is a stretch of the passage shown, with its subject and value found inside it and no sentence end,
-semicolon or line break between them: that narrows a neighbouring value to one sentence or row, and what one sentence
-leaves to the model calibration measures. Restatements ride with their original and take its answer; session claims
+citation's quote is a stretch of the passage shown, with its subject and value found inside it and no sentence end or
+line break between them: that narrows a neighbouring value to one sentence or row (a semicolon joins clauses of one
+sentence), and what one sentence leaves to the model calibration measures. A case document may override others: a
+citation an overriding document's opposite stance meets is overruled, the call is shown which document overrides
+which, and a key fact sits outside precedence. Restatements ride with their original and take its answer; session claims
 are never verified. A failing answer is asked again alone within its step's repair budget; an unreadable batch is
 asked again in full; a cut-short reply fails at once. Truth and groundedness fail apart: a lost ground step leaves
 every truth finding as it was. Passages are chosen by code under the page budget, the same way every time, with
 truncation recorded. The identity moves with the budgets, ``grounded_in``, the guidance and the model, and is pinned
 for the shipped prompts, schemas and selection rule. The text is invented: a small press's history of one book, a
-table's house rule, and a source a summary must stay faithful to.
+table's house rule, a source a summary must stay faithful to, and a library's lending policy with the update that
+amends it.
 """
 
 from __future__ import annotations
@@ -349,9 +352,8 @@ async def test_a_quote_spanning_two_sentences_cannot_bind_the_neighbours_value_a
     assert (grade.claims[0].verdict, grade.claims[0].decided_by) == ("contradicted", 2)
 
 
-@pytest.mark.parametrize("joint", ["; the bound volume of Harrow Tales", "\nthe bound volume of Harrow Tales"])
-async def test_a_semicolon_or_a_line_break_between_subject_and_value_is_asked_again(joint: str) -> None:
-    text = f"The pamphlet edition of Harrow Tales appeared in 1931{joint} followed in 1932."
+async def test_a_line_break_between_subject_and_value_is_asked_again() -> None:
+    text = "The pamphlet edition of Harrow Tales appeared in 1931\nthe bound volume of Harrow Tales followed in 1932."
     rows = EvidenceDocument(id="rows", provenance="case", title="Rows", text=text)
     client = _FakeScriptedClient(
         [
@@ -361,7 +363,7 @@ async def test_a_semicolon_or_a_line_break_between_subject_and_value_is_asked_ag
                 _cite(
                     "S1",
                     "contradicts",
-                    quote=f"{joint.strip('; ').strip()} followed in 1932.",
+                    quote="the bound volume of Harrow Tales followed in 1932.",
                     subject="the bound volume of Harrow Tales",
                     value="1932",
                 )
@@ -373,6 +375,58 @@ async def test_a_semicolon_or_a_line_break_between_subject_and_value_is_asked_ag
 
     assert "stand in different sentences or rows" in client.calls[2]["user"]
     assert grade.claims[0].verdict == "contradicted"
+
+
+_RENEWAL = (Segment(text="Renewing a loan costs two dollars.", unit=0),)
+_RENEWAL_COST = _claim(_RENEWAL, 0, "Renewing a loan costs two dollars.", "Renewing a loan costs two dollars")
+
+
+@pytest.mark.parametrize(
+    ("text", "repaired"),
+    [
+        ("Members may renew a loan once; doing so costs two dollars.", False),
+        ("Members may renew a loan once. Doing so costs two dollars.", True),
+    ],
+    ids=["semicolon-one-sentence", "full-stop-two-sentences"],
+)
+async def test_a_semicolon_joins_clauses_of_one_sentence_and_a_full_stop_still_parts_two(
+    text: str, repaired: bool
+) -> None:
+    """The subject in one clause and its value in the next, joined by a semicolon, bind in one sentence and need no
+    repair; the same two clauses as two sentences are still asked again."""
+    rules = EvidenceDocument(id="lending", provenance="case", title="Lending rules", text=text)
+    cited = _cite("S1", quote=text, subject="renew a loan", value="two dollars")
+    client = _FakeScriptedClient([_batch(_answer(0, cited)), _repair()])
+
+    grade = _grade((_RENEWAL_COST,), await _verify(client, (_RENEWAL_COST,), key=None, documents=(rules,)))
+
+    if repaired:
+        assert len(client.calls) == 2
+        assert "its subject and value for S1 stand in different sentences or rows" in client.calls[1]["user"]
+        assert grade.claims[0].verdict == "unverifiable"
+    else:
+        assert len(client.calls) == 1, "no repair call"
+        (citation,) = grade.claims[0].truth_citations
+        assert (citation.quote, grade.claims[0].verdict) == (text, "supported")
+
+
+async def test_a_misbinding_across_a_semicolon_passes_every_code_check_and_is_left_to_the_model() -> None:
+    """A semicolon joins clauses of one sentence, so the pamphlet's year cited for the bound volume across one is no
+    code failure: the binding is the model's reading, as within any one sentence, and calibration measures it. The
+    accepted trade-off: fewer forced repairs on rule-style sentences, for a weaker code check."""
+    text = "The pamphlet edition of Harrow Tales appeared in 1931; the bound volume of Harrow Tales followed in 1932."
+    joined = EvidenceDocument(id="joined", provenance="case", title="Joined", text=text)
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, _cite("S1", quote=text, subject="the bound volume of Harrow Tales", value="1931"))),
+            _batch(_answer(1), _answer(2)),
+        ]
+    )
+
+    grade = _grade(_CLAIMS, await _verify(client, documents=(joined,)))
+
+    assert len(client.calls) == 2, "no repair call"
+    assert grade.claims[0].verdict == "supported", "a misbinding across a semicolon passes every code check"
 
 
 async def test_one_sentence_naming_two_subjects_is_left_to_the_model_to_bind() -> None:
@@ -483,6 +537,213 @@ def test_the_verdict_table(
 def test_the_web_never_decides_a_claim_nobody_nominated(citations: tuple[ClaimCitation, ...]) -> None:
     with pytest.raises(ValueError, match="never overrules case evidence"):
         truth_verdict(citations, suspect=False, web="false")
+
+
+# --- precedence among case documents ------------------------------------------------------------------------------
+
+_LOANS = (
+    Segment(text="A loan runs two weeks, and members may renew it once.", unit=0),
+    Segment(text="A loan now runs three weeks.", unit=1),
+)
+_TWO_WEEKS = _claim(_LOANS, 0, "A loan runs two weeks.", "A loan runs two weeks")
+_RENEW_ONCE = _claim(_LOANS, 0, "Members may renew a loan once.", "members may renew it once")
+_THREE_WEEKS = _claim(_LOANS, 1, "A loan runs three weeks.", "A loan now runs three weeks")
+_LOAN_CLAIMS = (_TWO_WEEKS, _RENEW_ONCE, _THREE_WEEKS)
+
+_POLICY = EvidenceDocument(
+    id="policy",
+    provenance="case",
+    title="Lending policy",
+    text="A loan runs two weeks. Members may renew a loan once.",
+)
+_UPDATE = EvidenceDocument(
+    id="update",
+    provenance="case",
+    title="Policy update",
+    text="From March, a loan runs three weeks.",
+    overrides=("policy",),
+)
+_ERRATUM = EvidenceDocument(
+    id="erratum",
+    provenance="case",
+    title="Erratum",
+    text="The update is corrected: a loan runs ten days.",
+    overrides=("update",),
+)
+
+_TWO_WEEKS_IN_THE_POLICY = _cite("S1", quote="A loan runs two weeks.", subject="A loan", value="two weeks")
+_RENEW_ONCE_IN_THE_POLICY = _cite(
+    "S1", quote="Members may renew a loan once.", subject="Members may renew a loan", value="once"
+)
+_THREE_WEEKS_IN_THE_UPDATE = _cite(
+    "S2", quote="From March, a loan runs three weeks.", subject="a loan", value="three weeks"
+)
+
+
+def _stance(cited: dict[str, Any], stance: str) -> dict[str, Any]:
+    return {**cited, "stance": stance}
+
+
+def _loan_replies(*first_unit: dict[str, Any], second_unit: tuple[dict[str, Any], ...] = ()) -> list[_Reply]:
+    return [_batch(*first_unit), _batch(_answer(2, *second_unit))]
+
+
+@pytest.mark.parametrize("overridden", [True, False], ids=["update-overrides", "no-override"])
+async def test_support_from_an_overridden_document_its_override_contradicts_reads_contradicted(
+    overridden: bool,
+) -> None:
+    update = _UPDATE if overridden else _UPDATE.model_copy(update={"overrides": ()})
+    client = _FakeScriptedClient(
+        _loan_replies(
+            _answer(0, _TWO_WEEKS_IN_THE_POLICY, _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts")),
+            _answer(1, _RENEW_ONCE_IN_THE_POLICY),
+        )
+    )
+
+    grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=None, documents=(_POLICY, update)))
+
+    two_weeks, renew_once, _ = grade.claims
+    expected = ("contradicted", "case", False) if overridden else ("supported", "case", True)
+    assert (two_weeks.verdict, two_weeks.graded_against, two_weeks.evidence_conflict) == expected
+    assert [c.stance for c in two_weeks.truth_citations] == ["supports", "contradicts"], "both stay on the record"
+    assert (renew_once.verdict, renew_once.evidence_conflict) == ("supported", False), (
+        "where the overriding document is silent, the overridden one's support stands"
+    )
+    user = client.calls[0]["user"]
+    if overridden:
+        assert '- "Policy update" (S2) overrides "Lending policy" (S1).' in user
+        assert "never leave a passage out because another overrides it" in user
+    else:
+        assert "overrides" not in user, "a cell whose documents override none is shown what it was shown before"
+
+
+async def test_support_from_the_overriding_document_stands_over_the_overridden_ones_contradiction() -> None:
+    client = _FakeScriptedClient(
+        _loan_replies(
+            _answer(0),
+            _answer(1),
+            second_unit=(_THREE_WEEKS_IN_THE_UPDATE, _stance(_TWO_WEEKS_IN_THE_POLICY, "contradicts")),
+        )
+    )
+
+    grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=None, documents=(_POLICY, _UPDATE)))
+
+    three_weeks = grade.claims[2]
+    assert (three_weeks.verdict, three_weeks.graded_against, three_weeks.evidence_conflict) == (
+        "supported",
+        "case",
+        False,
+    )
+
+
+async def test_precedence_follows_the_chain_past_a_silent_document_between() -> None:
+    erratum = _cite(
+        "S3", "contradicts", quote="The update is corrected: a loan runs ten days.", subject="a loan", value="ten days"
+    )
+    client = _FakeScriptedClient(_loan_replies(_answer(0, _TWO_WEEKS_IN_THE_POLICY, erratum), _answer(1)))
+
+    verification = await _verify(client, _LOAN_CLAIMS, key=None, documents=(_POLICY, _UPDATE, _ERRATUM))
+    grade = _grade(_LOAN_CLAIMS, verification)
+
+    assert (grade.claims[0].verdict, grade.claims[0].evidence_conflict) == ("contradicted", False)
+    assert dict(verification.outranks) == {"S2": frozenset({"S1"}), "S3": frozenset({"S1", "S2"})}
+    user = client.calls[0]["user"]
+    assert '- "Policy update" (S2) overrides "Lending policy" (S1).' in user
+    assert '- "Erratum" (S3) overrides "Lending policy" (S1), "Policy update" (S2).' in user
+
+
+async def test_a_key_fact_sits_outside_precedence() -> None:
+    """A key fact is no document: an overriding document's contradiction does not overrule it, and it reads as the
+    conflict it is."""
+    key = ReferenceKey(
+        core=(
+            ReferenceEntity(
+                name="A loan",
+                facts=(ReferenceFact(claim="A loan runs two weeks.", source_url="https://example.org/loans"),),
+            ),
+        )
+    )
+    client = _FakeScriptedClient(
+        _loan_replies(_answer(0, _cite("K1"), _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts")), _answer(1))
+    )
+
+    grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=key, documents=(_POLICY, _UPDATE)))
+
+    assert (grade.claims[0].verdict, grade.claims[0].evidence_conflict) == ("supported", True)
+
+
+async def test_an_override_of_a_document_the_call_was_not_shown_is_not_stated() -> None:
+    """The precedence lines name only documents the call reads: an overridden document the page budget left unread
+    leaves its override unstated, and nothing it could cite to overrule."""
+    unread = PageBudget(per_document_chars=60, total_chars=60, window_chars=60)
+    client = _FakeScriptedClient(_loan_replies(_answer(0), _answer(1)))
+
+    verification = await _verify(client, _LOAN_CLAIMS, key=None, documents=(_UPDATE, _POLICY), pages=unread)
+
+    assert [entry.document for entry in verification.evidence] == ["update"]
+    assert "overrides" not in client.calls[0]["user"] and dict(verification.outranks) == {}
+
+
+# parity-with: threetears.evals.schema.completion.BoundCompletionClient
+@dataclass
+class _FakeBytePricedClient(_FakeScriptedClient):
+    """Prices a call by the bytes it sends, so evidence a priced prompt leaves out shows as a ceiling too low."""
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float:
+        del response_format
+        return (len(system.encode()) + len(user.encode())) * 1e-6
+
+
+async def test_the_price_ceiling_bounds_the_precedence_block_every_truth_call_may_carry() -> None:
+    client = _FakeBytePricedClient([])
+    verifier = _verifier(client)
+    plain = (_POLICY, _UPDATE.model_copy(update={"overrides": ()}))
+
+    added = verifier.price_ceiling(_LOANS, key=None, documents=(_POLICY, _UPDATE))
+    before = verifier.price_ceiling(_LOANS, key=None, documents=plain)
+    scripted = _FakeScriptedClient(_loan_replies(_answer(0), _answer(1)))
+    await _verify(scripted, _LOAN_CLAIMS, key=None, documents=(_POLICY, _UPDATE))
+    shown = scripted.calls[0]["user"]
+    block = shown[shown.index("Where passages") : shown.index("# Claims")]
+
+    assert added is not None and before is not None
+    # Each of the two batches may be asked three times, each time carrying the block.
+    assert added - before >= 2 * 3 * len(block.encode()) * 1e-6
+
+
+_S_SUPPORT = ClaimCitation(ref="S1", stance="supports")
+_S_CONTRADICTION = ClaimCitation(ref="S2", stance="contradicts")
+_S_OVERRIDES = {"S2": frozenset({"S1"})}
+
+
+@pytest.mark.parametrize(
+    ("citations", "outranks", "expected"),
+    [
+        ((_S_SUPPORT, _S_CONTRADICTION), _S_OVERRIDES, ("contradicted", False)),
+        ((_S_SUPPORT, _S_CONTRADICTION), {}, ("supported", True)),
+        ((_S_SUPPORT, _S_CONTRADICTION), {"S1": frozenset({"S2"})}, ("supported", False)),
+        ((_S_SUPPORT,), _S_OVERRIDES, ("supported", False)),
+        ((_S_CONTRADICTION,), _S_OVERRIDES, ("contradicted", False)),
+        ((_SUPPORT, _S_CONTRADICTION), _S_OVERRIDES, ("supported", True)),
+        ((_S_SUPPORT, ClaimCitation(ref="S2", stance="supports")), _S_OVERRIDES, ("supported", False)),
+    ],
+    ids=[
+        "overridden-support-overruled",
+        "no-override-conflict",
+        "overriding-support-stands",
+        "overriding-silent",
+        "overriding-alone",
+        "key-fact-outside-precedence",
+        "agreeing-documents",
+    ],
+)
+def test_precedence_in_the_verdict_table(
+    citations: tuple[ClaimCitation, ...], outranks: dict[str, frozenset[str]], expected: tuple[str, bool]
+) -> None:
+    verdict = truth_verdict(citations, suspect=False, outranks=outranks)
+
+    assert (verdict.verdict, verdict.evidence_conflict) == expected
+    assert verdict.graded_against == "case"
 
 
 # --- house rules, summaries and the candidate's own documents ---------------------------------------------------------
@@ -1180,7 +1441,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 #: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:7d2e9c2c37e1"
+_PINNED_IDENTITY = "scripted/verify|claimverify:8e2e0364c7f3"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

@@ -24,11 +24,26 @@ take the case's share: truth reads the same case passages whatever an arm fetche
 :func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the passage the call was shown and cited (never
 elsewhere in its document), and names, inside that quote, the words that name the claim's subject and the words that
 state the value. Both are found inside the stored quote, and no sentence end (``.``, ``!`` or ``?`` before a space or
-the end), semicolon or line break may lie between them. That narrows the neighbouring-value error, a value taken from
-the sentence or row next to the one about this subject, to one sentence or row. It does not prove the value belongs to
-that subject: a sentence stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932")
-stays the model's to bind, and calibration measures what remains. What is stored is the passage's own slice, never the
+the end) or line break may lie between them. That narrows the neighbouring-value error, a value taken from the sentence
+or row next to the one about this subject, to one sentence or row. Clauses joined by a semicolon count as one
+sentence, so a subject and a value either side of one ("members may renew a loan once; doing so costs two dollars")
+pass with no repair; binding across the semicolon is not proved by code. That is the accepted trade-off: fewer forced
+repairs on rule-style sentences, for a weaker code check. Nor does the check prove the value belongs to that subject
+within any sentence: one stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932", or
+"the pamphlet appeared in 1931; the bound volume followed in 1932") stays the model's to bind, and calibration
+measures what remains. What is stored is the passage's own slice, never the
 model's strings. A key fact is cited whole, with no quote.
+
+**Precedence among case documents.** A case document may override others (``EvidenceDocument.overrides``: house
+rules over a rulebook, an erratum over its text, a policy update over the old policy), following the chain. The truth
+call is shown which passage's document overrides which, beneath the passages, and told to cite both sides, since code
+applies the precedence and the model never decides a verdict. A citation is overruled when a passage of a document
+that overrides its own cites the claim with the opposite stance. So a claim supported only from an overridden document
+that an overriding one contradicts reads ``contradicted``; support from the overriding document stands over a
+contradiction from the one it overrides; and where the overriding document is silent, the overridden one's citation
+stands. A key fact is no document: it overrides nothing and is never overruled, so a key fact an overriding document
+contradicts still reads ``supported`` with ``evidence_conflict``, which code cannot detect as stale. A host keeps its
+key facts to the values in force. The ground step reads no precedence, since it cites support alone.
 
 **Batches.** One call per unit, holding every world claim of that unit, and one more for the claims outside any unit.
 A restatement is not asked again: it rides in its original's batch, shown beside it, and takes the original's
@@ -98,6 +113,7 @@ from threetears.evals.schema.models import (
     EvidenceRef,
     GradedClaim,
     KnownClaimLoss,
+    document_precedence,
     PageBudget,
     RepairBudget,
     TextSpan,
@@ -213,6 +229,18 @@ _UNDECLARED: Final = (
     "and no claim can be grounded"
 )
 
+#: Beneath the passages, when a shown passage's document overrides another's that is shown too: the precedence code
+#: applies to the citations, stated so the call cites both sides.
+_PRECEDENCE_HEADING: Final = (
+    "Where passages of these documents disagree, the first named in a line below overrides the others in it. Cite "
+    "every passage that bears on a claim, from either side: the precedence is applied to your citations, so never "
+    "leave a passage out because another overrides it."
+)
+
+_PRECEDENCE_LINE: Final = "- {overriding} overrides {overridden}."
+
+_PRECEDENCE_DOCUMENT: Final = "{title} ({refs})"
+
 _CLAIM_TEMPLATE: Final = 'Claim {position}, {place}: {claim}\nIt is said as: "{excerpt}"'
 
 _RESTATED_TEMPLATE: Final = 'It is said again, as claim {position}: "{excerpt}"'
@@ -224,8 +252,9 @@ _REPAIR_TEMPLATE: Final = (
 )
 
 #: What breaks one sentence or table row from the next, between a citation's subject and its value: a sentence end
-#: (``.``, ``!`` or ``?`` before a space or the end), a semicolon or a line break.
-_SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[;\n\r]")
+#: (``.``, ``!`` or ``?`` before a space or the end) or a line break. A semicolon joins clauses of one sentence, and
+#: is no break.
+_SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
 #: shown, so part of the identity.
@@ -380,6 +409,8 @@ class Verification:
         own loss and never the criterion's: the truth findings stand, and every finding's ``grounded`` reads None.
         None when the step was not lost, or not asked.
     :ivar ground_failure: What failed in the ground step, named, beside :attr:`ground_loss`; None with it.
+    :ivar outranks: Each truth passage's ref whose document overrides another shown document, and the refs of that
+        document's passages: the precedence :func:`truth_verdict` applies. Empty when no shown document overrides one.
     """
 
     evidence: tuple[EvidenceRef, ...]
@@ -388,6 +419,7 @@ class Verification:
     findings: tuple[ClaimFinding | None, ...]
     ground_loss: KnownClaimLoss | None = None
     ground_failure: str | None = None
+    outranks: Mapping[str, frozenset[str]] = MappingProxyType({})
 
 
 def _undeclared(undeclared: bool) -> tuple[KnownClaimLoss | None, str | None]:
@@ -402,7 +434,8 @@ class TruthVerdict:
 
     :ivar verdict: ``supported``, ``contradicted``, ``unverifiable`` or ``true_ungrounded``.
     :ivar graded_against: ``case`` or ``web``, what decided it; None for ``unverifiable``.
-    :ivar evidence_conflict: Case evidence both supports and contradicts it; the support stands.
+    :ivar evidence_conflict: Case evidence both supports and contradicts it, and no override settles which stands; the
+        support stands.
     :ivar nominated_by: ``judge`` when no case evidence bears on it and the model doubts it; else None.
     """
 
@@ -412,19 +445,41 @@ class TruthVerdict:
     nominated_by: Literal["judge"] | None
 
 
-def truth_verdict(citations: Sequence[ClaimCitation], *, suspect: bool, web: WebOutcome | None = None) -> TruthVerdict:
+def truth_verdict(
+    citations: Sequence[ClaimCitation],
+    *,
+    suspect: bool,
+    web: WebOutcome | None = None,
+    outranks: Mapping[str, frozenset[str]] | None = None,
+) -> TruthVerdict:
     """The verdict table: case support always reads supported, case contradiction contradicted, and the web decides
     only a claim no case evidence bears on that the model doubts.
+
+    Precedence comes first. A citation is overruled when another, of the opposite stance, cites a passage whose
+    document overrides the first one's (``outranks``); the table reads the citations that stand. So support from an
+    overridden document that an overriding one contradicts reads contradicted, the overriding document's support
+    stands over the overridden one's contradiction, and where no overriding document cites the claim, every citation
+    stands. Overrides run in no cycle, so some citation always stands.
 
     :param citations: The claim's checked case citations.
     :param suspect: Whether the model doubts it, with no case evidence bearing on it.
     :param web: What the web check found for it; None when it was not checked (web off, or not yet run).
+    :param outranks: Each passage ref, and the refs of the passages whose documents its document overrides
+        (:attr:`Verification.outranks`); None or empty where no document overrides another.
     :return: The verdict, what decided it, whether case evidence conflicts, and who nominated it.
     :raises ValueError: A web outcome is given for a claim nobody nominated: the web never overrules case evidence and
         never checks a claim the model did not doubt.
     """
-    supports = any(citation.stance == "supports" for citation in citations)
-    contradicts = any(citation.stance == "contradicts" for citation in citations)
+    above = outranks or {}
+    standing = [
+        citation
+        for citation in citations
+        if not any(
+            other.stance != citation.stance and citation.ref in above.get(other.ref, frozenset()) for other in citations
+        )
+    ]
+    supports = any(citation.stance == "supports" for citation in standing)
+    contradicts = any(citation.stance == "contradicts" for citation in standing)
     nominated = not citations and suspect
     if web is not None and not nominated:
         raise ValueError(
@@ -505,7 +560,10 @@ def graded_claims(
             continue
         checked = outcomes.get(position if claim.restates is None else claim.restates)
         verdict = truth_verdict(
-            finding.truth_citations, suspect=finding.suspect, web=None if checked is None else checked.outcome
+            finding.truth_citations,
+            suspect=finding.suspect,
+            web=None if checked is None else checked.outcome,
+            outranks=verification.outranks,
         )
         decided = calls_before + finding.truth_call if checked is None or checked.call is None else checked.call
         graded.append(
@@ -587,10 +645,12 @@ class _Passage:
 
 @dataclass(frozen=True)
 class _Shown:
-    """What one step's calls are shown: its numbered facts and passages, rendered once."""
+    """What one step's calls are shown: its numbered facts and passages, rendered once, and which case documents
+    override which (``precedence``, by document id, following the chain), shown beneath the passages."""
 
     facts: tuple[tuple[str, str, ReferenceFact], ...]
     passages: tuple[tuple[str, _Passage], ...]
+    precedence: Mapping[str, frozenset[str]] = MappingProxyType({})
 
     @property
     def refs(self) -> frozenset[str]:
@@ -612,7 +672,41 @@ class _Shown:
             )
             for ref, passage in self.passages
         ]
+        if precedence := self._precedence_lines():
+            lines.append("\n".join([_PRECEDENCE_HEADING, *precedence]))
         return "\n\n".join(lines) or _NO_EVIDENCE
+
+    def _precedence_lines(self) -> list[str]:
+        """One line per shown document that overrides a shown other, in the order their passages were numbered."""
+        refs: dict[str, list[str]] = {}
+        titles: dict[str, str] = {}
+        for ref, passage in self.passages:
+            refs.setdefault(passage.document.id, []).append(ref)
+            titles[passage.document.id] = passage.document.title
+
+        def named(document: str) -> str:
+            title = json.dumps(titles[document], ensure_ascii=False)
+            return _PRECEDENCE_DOCUMENT.format(title=title, refs=", ".join(refs[document]))
+
+        lines: list[str] = []
+        for document in refs:
+            overridden = [other for other in refs if other in self.precedence.get(document, frozenset())]
+            if overridden:
+                lines.append(
+                    _PRECEDENCE_LINE.format(
+                        overriding=named(document), overridden=", ".join(named(other) for other in overridden)
+                    )
+                )
+        return lines
+
+    def outranks(self) -> Mapping[str, frozenset[str]]:
+        """Each shown passage's ref, and the refs of the shown passages whose documents its document overrides."""
+        outranked: dict[str, frozenset[str]] = {}
+        for ref, passage in self.passages:
+            overridden = self.precedence.get(passage.document.id, frozenset())
+            if below := frozenset(other for other, shown in self.passages if shown.document.id in overridden):
+                outranked[ref] = below
+        return MappingProxyType(outranked)
 
 
 def anchors_of(texts: Iterable[str]) -> frozenset[str]:
@@ -837,6 +931,9 @@ class ClaimVerifier:
                     _FACT_TEMPLATE,
                     _PASSAGE_TEMPLATE,
                     _NO_EVIDENCE,
+                    _PRECEDENCE_HEADING,
+                    _PRECEDENCE_LINE,
+                    _PRECEDENCE_DOCUMENT,
                     _CLAIM_TEMPLATE,
                     _RESTATED_TEMPLATE,
                     _AGAIN_TEMPLATE,
@@ -893,6 +990,7 @@ class ClaimVerifier:
                     for at, (entity, fact) in enumerate(facts, start=1)
                 ],
                 [document for document in given if document.provenance == "case"],
+                document_precedence(given),
             )
         }
         grounding = [document for document in given if self.grounded_in and document.provenance in self.grounded_in]
@@ -934,13 +1032,20 @@ class ClaimVerifier:
             total += repair * self.repairs.max_items_per_cell
         return total
 
-    def _evidence_bound(self, facts: Sequence[str], documents: Sequence[EvidenceDocument]) -> str:
-        """Text at least as long, in UTF-8 bytes, as any evidence one step can be shown: ``facts`` as rendered, and
-        for each document every character the page budget lets the step read, with the heading of each passage those
-        characters could be cut into."""
+    def _evidence_bound(
+        self,
+        facts: Sequence[str],
+        documents: Sequence[EvidenceDocument],
+        precedence: Mapping[str, frozenset[str]] | None = None,
+    ) -> str:
+        """Text at least as long, in UTF-8 bytes, as any evidence one step can be shown: ``facts`` as rendered, for
+        each document every character the page budget lets the step read, with the heading of each passage those
+        characters could be cut into, and, where a document overrides another (``precedence``), the precedence block
+        naming every passage of each."""
         budget = self.pages
         passages = 0
         heading = 0
+        named: dict[str, int] = {}
         for document in documents:
             readable = min(len(document.text), budget.per_document_chars)
             # Tiles are window_chars long but for a document's last; a step takes whole tiles within its share.
@@ -951,8 +1056,17 @@ class ClaimVerifier:
             )
             passages += min(len(document.text.encode("utf-8")), 4 * readable)
             heading += count * (len(one.encode("utf-8")) + 2)
+            refs = ", ".join([f"S{_WIDEST_REF}"] * count)
+            named[document.id] = len(_PRECEDENCE_DOCUMENT.format(title=title, refs=refs).encode("utf-8")) + 2
         passages = min(passages, 4 * budget.total_chars)
-        return "\n\n".join([*facts, "x" * (passages + heading)])
+        block = 0
+        for overriding, overridden in (precedence or {}).items():
+            if overriding in named:
+                block += len(_PRECEDENCE_LINE.encode("utf-8")) + named[overriding] + 1
+                block += sum(named.get(other, 0) for other in overridden)
+        if block:
+            block += len(_PRECEDENCE_HEADING.encode("utf-8")) + 2
+        return "\n\n".join([*facts, "x" * (passages + heading + block)])
 
     def _with_guidance(self, prompt: str) -> str:
         return prompt + _GUIDANCE_HEADING + self.guidance.strip() if self.guidance.strip() else prompt
@@ -989,8 +1103,8 @@ class ClaimVerifier:
             with what the arm fetched, keeps truth. Not told when no ground step is asked.
         :return: The evidence shown, the documents truncated, the calls made, one finding per claim, and the ground
             step's loss when it was lost.
-        :raises ValueError: ``ledger`` is not the ``judge`` role's, or a ``restates`` names no earlier original of its
-            scope.
+        :raises ValueError: ``ledger`` is not the ``judge`` role's; a ``restates`` names no earlier original of its
+            scope; or a document's override names no case document given, or overrides run in a cycle.
         :raises ClaimGradingFailed: A truth reply was cut short, a truth batch's reply did not parse in its attempts, or
             a claim still failed its truth checks within the repair budget. The same in the ground step never raises:
             it is :attr:`Verification.ground_loss`, as is a ground call the provider failed or whose completion breaks
@@ -1043,6 +1157,7 @@ class ClaimVerifier:
             "truth": _Shown(
                 tuple((f"K{at}", entity, fact) for at, (entity, fact) in enumerate(facts, start=1)),
                 number(truth_passages),
+                document_precedence(given),
             )
         }
         if ground_passages:
@@ -1059,6 +1174,7 @@ class ClaimVerifier:
                         documents_truncated=tuple(document.id for document in given if document.id in truth_cut),
                         calls=tuple(calls),
                         findings=_findings(cell, checked, grounded=False),
+                        outranks=shown["truth"].outranks(),
                     )
                 )
             try:
@@ -1091,6 +1207,7 @@ class ClaimVerifier:
                 findings=_findings(cell, checked, grounded=False),
                 ground_loss="documents_undeclared",
                 ground_failure=_UNDECLARED,
+                outranks=shown["truth"].outranks(),
             )
         return Verification(
             evidence=_index(shown),
@@ -1099,6 +1216,7 @@ class ClaimVerifier:
             findings=_findings(cell, checked, grounded=self.grounded_in is not None and lost is None),
             ground_loss=None if lost is None else lost.loss,
             ground_failure=None if lost is None else str(lost),
+            outranks=shown["truth"].outranks(),
         )
 
     async def _run_step(
