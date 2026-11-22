@@ -39,6 +39,7 @@ from threetears.evals.kernel.declaration import (
     AspectDesign,
 )
 from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
@@ -71,6 +72,7 @@ from threetears.evals.kernel.surface import (
 )
 from threetears.evals.analysis.bundle.schema import (
     ArmExclusions,
+    ClaimCheckReading,
     DifferentialExclusion,
     JudgedArm,
     JudgedMeasure,
@@ -190,6 +192,7 @@ def judged_measures(
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
     claim_units: Mapping[str, str] | None = None,
     registry: MeasureRegistry | None = None,
+    claim_checks: Mapping[str, ClaimCheckReading] | None = None,
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension, and every ranked claim reading, per cell, from the score projection assembly
     already holds.
@@ -220,6 +223,10 @@ def judged_measures(
         (``EvalTemplate.claim_unit_names``), for a claim reading's reader name; ``unit`` where none is named.
     :param registry: The host's measure registry, which describes the readings it derives from a claim criterion
         (``MetricDescriptor.derived_from``); a derived reading ranks, and is withheld, as the criterion's own do.
+    :param claim_checks: Each claim criterion's judge check against people, by criterion (its latest closed claim
+        read's, ``AnalysisContextBundle.claim_checks``): a claim reading whose question the check met stands on a
+        calibrated judge, on every arm, as a rubric dimension's does on a met calibration; with none, or any other
+        result, it stands where its judges' tiers put it.
     :return: One entry per dimension and ranked claim reading scored anywhere, sorted by name.
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
@@ -289,10 +296,15 @@ def judged_measures(
                     n_claim_silent=len(silent),
                     n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
                     n_web_lost=0 if criterion is None else _web_lost_cells(results_by_cell[key], criterion),
+                    n_web_replayed=(0 if criterion is None else _web_replayed_cells(results_by_cell[key], criterion)),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
                     case_means=small_sample_case_means(values, value_cases),
-                    evidence_tier=tier_for_judges(tiers, served),
+                    evidence_tier=(
+                        "calibrated"
+                        if criterion is not None and _check_met(dimension, criterion, claim_checks or {})
+                        else tier_for_judges(tiers, served)
+                    ),
                     prediction_powered=_prediction_powered(
                         dimension,
                         valued,
@@ -309,11 +321,12 @@ def judged_measures(
                 value_range=descriptor.value_range,
                 scale=descriptor.scale,
                 higher_is_better=bool(descriptor.higher_is_better),
+                nonnegative=criterion is not None and descriptor.value_range is None and descriptor.nonnegative,
                 axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
                 instrument=criterion,
-                reader_name=descriptor.reader_name if criterion is not None else None,
+                reader_name=_claim_reader_name(descriptor, criterion),
                 withheld=(
                     StateOf(state="withheld", reason="trials_lost")
                     if criterion is not None and _differential_claim_loss(scored[dimension])
@@ -322,6 +335,30 @@ def judged_measures(
             )
         )
     return measures
+
+
+def _check_met(dimension: str, criterion: str, checks: Mapping[str, ClaimCheckReading]) -> bool:
+    """Whether a claim reading's judge was checked against people and met the bar on the question the reading rests
+    on: its groundedness reading on ``grounded``, every other reading (truth, and a host's derived ones) on ``true``."""
+    check = checks.get(criterion)
+    if check is None:
+        return False
+    question = "grounded" if dimension == f"{criterion}_grounded_share" else "true"
+    return any(held.question == question and held.result == "met" for held in check.questions)
+
+
+def _claim_reader_name(descriptor: MetricDescriptor, criterion: str | None) -> str | None:
+    """What a page calls a claim reading: the engine's own reading by its descriptor, which names its criterion
+    (``False claims per answer (rules.claims)``); a reading the host derives from the criterion by the host's name and
+    the criterion's, as the engine's own are named (``Contradictions per draft (scout.claims)``), so a row of it is
+    read as that criterion's, unless the host's name already names the criterion; a host reading with no name of its
+    own by none, since its key holds the criterion's. None for a rubric dimension."""
+    if criterion is None:
+        return None
+    named = descriptor.reader_name
+    if descriptor.derived_from is None or named is None or criterion in named:
+        return named
+    return f"{named} ({criterion})"
 
 
 def _judges_of(result: ResultView, dimension: str, criterion: str | None) -> list[JudgeKey]:
@@ -365,6 +402,13 @@ def _web_lost_cells(members: Sequence[ResultView], criterion: str) -> int:
         1
         for result in members
         if (tally := result.claim_tallies.get(criterion)) is not None and tally.web_loss is not None
+    )
+
+
+def _web_replayed_cells(members: Sequence[ResultView], criterion: str) -> int:
+    """How many of a cell's results read the criterion's web checks from a recording, never a live search."""
+    return sum(
+        1 for result in members if (tally := result.claim_tallies.get(criterion)) is not None and tally.web_replayed
     )
 
 

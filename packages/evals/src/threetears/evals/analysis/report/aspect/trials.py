@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TypedDict
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.report.aspect.common import (
     case_namer,
     case_numbers,
@@ -47,6 +48,10 @@ from threetears.evals.analysis.style import trial_dimension
 #: A trial's state as a mark in the cases table, always beside words for a lost one.
 _MARKS = {"passed": "✓", "failed": "✗", "lost": "–"}
 
+#: The marks where nothing the aspect grades can fail a trial: a trial it kept is answered or failed to answer, never
+#: passed, so no mark says it passed (the glossary's ``answer marks``).
+_ANSWER_MARKS = {"passed": "●", "failed": "✗", "lost": "–"}
+
 
 #: The order the trials section lists what went wrong in: a failure (a record a reader reads) before a loss (the
 #: test setup's), and a passed trial last, wherever trials are listed by state.
@@ -71,6 +76,9 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
         by_case.setdefault(trial.case_id, []).append(trial)
     strata = any(trial.stratum for trial in bundle.trials)
     printed = _printed_strata(bundle) if strata else {}
+    # Where nothing graded can fail a trial, a kept trial was answered or not: the marks and the flag say that.
+    graded = holds_a_check(bundle)
+    marks = _MARKS if graded else _ANSWER_MARKS
 
     def counts(case: str, key: str) -> tuple[int, int]:
         """How many of ``key``'s usable trials on ``case`` passed, of how many."""
@@ -100,7 +108,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
         if strata:
             row["stratum"] = _stratum_word(trials[0].stratum, printed) if trials[0].stratum else None
         for index, key in enumerate(arms):
-            row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
+            row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key], marks)
         # The ids are navigation, not information: in their own order, so a row reads T1 T2 T3 on every replay; which
         # failed is the marks' to say.
         row["trials"] = " ".join(trial.trial_id for trial in sorted(trials, key=_trial_order))
@@ -112,11 +120,15 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
             title="Cases",
             columns=[
                 TableColumn(key="case", header="Case", term="case"),
-                TableColumn(key="flag", header="Flag", term="flag"),
+                TableColumn(
+                    key="flag", header="Flag" if graded else "Answer flag", term="flag" if graded else "answer flag"
+                ),
                 *([TableColumn(key="stratum", header="Stratum", term="stratum")] if strata else []),
                 *(
                     TableColumn(
-                        key=f"arm_{index}", header=f"▸ {arm(key)}" if key == control else arm(key), term="marks"
+                        key=f"arm_{index}",
+                        header=f"▸ {arm(key)}" if key == control else arm(key),
+                        term="marks" if graded else "answer marks",
                     )
                     for index, key in enumerate(arms)
                 ),
@@ -136,19 +148,19 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
                 source="runs",
                 text=(
                     f"{forms.count(bundle.trials_omitted).text} more trials count on the scoreboard and are not listed "
-                    "here, the passed "
-                    "ones first."
+                    f"here, the {'passed' if graded else 'answered'} ones first."
                 ),
             )
         )
     return blocks
 
 
-def _marks(trials: Sequence[TrialRow]) -> str:
-    """One arm's trials of one case as marks, repeat by repeat, its losses and failures named by cause."""
+def _marks(trials: Sequence[TrialRow], marks_of: Mapping[str, str] = _MARKS) -> str:
+    """One arm's trials of one case as marks, repeat by repeat (``marks_of``, by state), its losses and failures named
+    by cause."""
     # Repeat by repeat, two trials of one repeat in their ids' order, so a replay of one recording marks alike.
     ordered = sorted(trials, key=lambda trial: (trial.repeat, _trial_order(trial)))
-    marks = " ".join(_MARKS[trial.state] for trial in ordered) or "not run"
+    marks = " ".join(marks_of[trial.state] for trial in ordered) or "not run"
     named = Counter(
         f"{'lost' if trial.state == 'lost' else 'failed'}: {cause_short(trial.cause or 'unknown')}"
         for trial in ordered
@@ -245,11 +257,13 @@ def _census_line(bundle: AnalysisContextBundle, forms: PageForms) -> str:
     failed = sum(sum(board.failed.values()) for board in boards)
     lost = sum(sum(board.lost.values()) for board in boards)
     opened = f"{forms.count(ran).text} trial{'' if ran == 1 else 's'} ran."
+    # Where nothing graded can fail a trial, a kept trial was answered or failed to answer, never passed.
+    graded = holds_a_check(bundle)
     if passed == ran:
-        return f"{opened} {'It' if ran == 1 else 'Every one'} passed."
+        return f"{opened} {'It' if ran == 1 else 'Every one'} {'passed' if graded else 'was answered'}."
     counts = [
-        f"{forms.count(passed).text} passed",
-        f"{forms.count(failed).text} failed",
+        f"{forms.count(passed).text} {'passed' if graded else 'were answered'}",
+        f"{forms.count(failed).text} {'failed' if graded else 'failed to answer'}",
         *([f"{forms.count(lost).text} were lost"] if lost else []),
     ]
     return f"{opened} Of them {', '.join(counts[:-1])} and {counts[-1]}."
@@ -363,8 +377,19 @@ def _trial_blocks(
             TableColumn(key="trial", header="Trial", term="trial"),
             TableColumn(key="case", header="Case", term="case"),
             TableColumn(key="arm", header="Arm"),
-            TableColumn(key="outcome", header="Outcome", term="outcome"),
-            TableColumn(key="why", header="Why", term="why"),
+            # Where nothing graded can fail a trial, a trial listed failed to answer or was lost: the headers carry the
+            # terms that say so, never the ones that speak of checks and passes.
+            *(
+                [
+                    TableColumn(key="outcome", header="Outcome", term="outcome"),
+                    TableColumn(key="why", header="Why", term="why"),
+                ]
+                if holds_a_check(bundle)
+                else [
+                    TableColumn(key="outcome", header="Ended", term="answer outcome"),
+                    TableColumn(key="why", header="Cause", term="answer cause"),
+                ]
+            ),
         ]
         if not records:
             columns.append(TableColumn(key="result", header="Stored result"))
@@ -395,7 +420,7 @@ def _trial_blocks(
             TableBlock(
                 section="trials",
                 name="passed_trials",
-                title="Passed trials",
+                title="Passed trials" if holds_a_check(bundle) else "Answered trials",
                 columns=[
                     TableColumn(key="trial", header="Trial", term="trial"),
                     TableColumn(key="case", header="Case", term="case"),

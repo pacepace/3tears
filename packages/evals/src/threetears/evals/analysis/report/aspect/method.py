@@ -130,7 +130,7 @@ def _not_tested_blocks(
             said.append(_unproven_check_sentence(proof, bundle.named_checks().get(proof.check)))
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
     blocks += _no_margin_blocks(bundle)
-    blocks += calibration_blocks(bundle)
+    blocks += calibration_blocks(bundle, arm)
     blocks += also
     quoted = [bundle.held_fixed_reading.disclosure] if bundle.held_fixed_reading.disclosure else []
     if bundle.cost_unmeasured:

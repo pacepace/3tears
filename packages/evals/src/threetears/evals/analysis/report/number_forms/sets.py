@@ -439,7 +439,9 @@ def _bundle_stated(bundle: AnalysisContextBundle) -> list[_Width]:
             facts = surface.dimensions.get(judged.dimension)
             if judged.mean is None or judged.sem is None or facts is None:
                 continue
-            interval = mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
+            interval = mean_interval(
+                judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range, floor=facts.interval_floor
+            )
             found.append(((judged.dimension, "judged"), _half_width(interval), "judged_level"))
     if bundle.guardrails is not None:
         found += [

@@ -711,6 +711,8 @@ def claim_tally(
     - A **failed web step** costs only the web's decisions: the claims it left undecided read ``lost`` and count
       unverifiable, and the tally carries the grade's ``web_loss``, read off the stored grade so a tally recomputed
       from it keeps the loss.
+    - **Replayed web checks**: the tally carries the grade's ``web_replayed``, so a page can say its web verdicts read
+      a recording, never a live search.
 
     :param grade: The criterion's grade of the cell.
     :param evidence: The claim evidence it graded.
@@ -804,6 +806,7 @@ def claim_tally(
         grounded=grounded_in is not None,
         ground_loss=ground_loss,
         web_loss=grade.web_loss,
+        web_replayed=grade.web_replayed,
     )
 
 

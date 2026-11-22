@@ -83,7 +83,7 @@ ChartStatus = Literal["good", "warn", "bad", "neutral"]
 
 #: A fill's texture, drawn in its colour over a wash of it, so marks that share a colour (one status, several causes)
 #: read apart by more than colour.
-ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols"]
+ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols", "grid"]
 
 #: How a change chart's ``better`` field is described: ``"right"`` prints "← worse · better →" under the axis, ``"left"``
 #: its mirror, and two words print each under its own end, the left's first ("prefers shipped", "prefers lead-first").

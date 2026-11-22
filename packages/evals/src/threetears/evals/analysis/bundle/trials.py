@@ -32,8 +32,9 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.bundle.caps import (
     MAX_ERROR_CHARS,
     MAX_EXCERPT_CHARS,
@@ -51,6 +52,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmPricing,
     ArmScoreboard,
     FailCause,
+    JudgedMeasure,
     RoleUnanswered,
     TrialCheck,
     TrialJudgement,
@@ -59,7 +61,13 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.errors import ConflictError
-from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.kernel.metrics import (
+    MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
+    RUBRIC_FAMILY,
+    MetricDescriptor,
+    reads_as_rate,
+)
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
     delivered_a_turn,
@@ -130,8 +138,74 @@ def first_recorded_error(error_words: str) -> tuple[str | None, str]:
     return None, first
 
 
-#: The cause of a trial the candidate failed without answering: the runner raised, or its model call failed.
-_UNANSWERED: FailCause = "model_failed"
+#: The causes of a trial the candidate failed without answering: its model call failed, or its own code raised.
+_UNANSWERED: frozenset[FailCause] = frozenset({"model_failed", "code_raised"})
+
+
+def holds_a_check(bundle: AnalysisContextBundle) -> bool:
+    """Whether anything the aspect grades can fail a trial, each reading by its declared kind
+    (:func:`declared_kind`): a fact about what was declared, never about the values a reading took.
+
+    The readings are those its design lists (``AspectDesign.measure_order``, its graders' measures) and those the
+    catalog describes, with every judged dimension. A reading whose kind this evidence does not state is no check, and
+    the aspect's verdict line says so: it is never guessed to be one. Never by the eval's kind: a measure no trial can
+    fail on (a number) decides no pass, nor does a claim reading, which never enters a trial's pass. Where this is
+    False no surface states a pass rate: every trial the setup kept and the candidate answered reads as passed, so the
+    rate would count nothing."""
+    readings = [*declared_readings(bundle), *bundle.measure_catalog]
+    return any(declared_kind(bundle, name) == "check" for name in readings) or any(
+        _counts(measure) for measure in bundle.judged_measures
+    )
+
+
+def reads_answered(bundle: AnalysisContextBundle) -> bool:
+    """Whether the aspect's pass rate is read as the share of trials answered: nothing it grades can fail a trial
+    (:func:`holds_a_check`), and some arm failed some trial anyway, by failing to answer (its runner raised, its model
+    call failed, its turn was cut). There a trial passes exactly when its candidate answered it, so the rate compares
+    the arms' answering and is named for that, never a pass rate. Where every arm answered every trial it would count
+    nothing, and no surface reads it.
+
+    :param bundle: The aspect's evidence.
+    :return: Whether the aspect reads an answered share in place of a pass rate.
+    """
+    # An arm the cells keep apart has no one failure count, and no row reads it: only the arms read as arms decide.
+    return not holds_a_check(bundle) and any(
+        sum(board.failed.values()) for board in bundle.scoreboard if not unread_arms(bundle.cells, board.variant_key)
+    )
+
+
+def reads_a_rate(bundle: AnalysisContextBundle) -> bool:
+    """Whether the aspect has a rate of trials to read at all: a pass rate where something it grades can fail a trial,
+    or the share answered where an arm failed to answer one (:func:`reads_answered`)."""
+    return holds_a_check(bundle) or reads_answered(bundle)
+
+
+def declared_readings(bundle: AnalysisContextBundle) -> list[str]:
+    """The readings the aspect's design lists, in order (``AspectDesign.measure_order``); none where it lists none."""
+    design = bundle.declared.design if bundle.declared is not None else None
+    return list(design.measure_order) if design is not None else []
+
+
+def _counts(measure: JudgedMeasure) -> bool:
+    """Whether a judged dimension can fail a trial: a rubric dimension on the capability axis."""
+    return measure.family == RUBRIC_FAMILY and measure.axis == "capability"
+
+
+def declared_kind(bundle: AnalysisContextBundle, name: str) -> Literal["check", "number", "unstated"]:
+    """A reading's kind, as its declaration states it: a check where it can fail a trial, a number where it cannot.
+
+    A judged dimension by its axis; a goal check, the classifier's accuracy and its label match by what they are; any
+    other measure by its declared description (the host's descriptor the catalog carries, else the engine's core one),
+    whether it reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). ``unstated`` where this
+    evidence holds no description of it: a host measure no trial scored, whose descriptor the catalog does not carry.
+    """
+    judged = next((measure for measure in bundle.judged_measures if measure.name == name), None)
+    if judged is not None:
+        return "check" if _counts(judged) else "number"
+    descriptor = bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
+    if name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor):
+        return "check"
+    return "number" if descriptor is not None else "unstated"
 
 
 @dataclass(frozen=True)
@@ -199,7 +273,7 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
             for trial in bundle.trials
             if trial.arm == board.variant_key
             and trial.state == "failed"
-            and trial.cause == _UNANSWERED
+            and trial.cause in _UNANSWERED
             and trial.error_words
         ),
         None,
@@ -214,7 +288,7 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
         ungraded_role=role,
         ungraded_error=words,
         ungraded_causes=tuple(sorted(board.lost, key=lambda cause: (-board.lost[cause], cause))),
-        candidate_failed=board.failed.get(_UNANSWERED, 0),
+        candidate_failed=sum(board.failed.get(cause, 0) for cause in _UNANSWERED),
         candidate_error=first_recorded_error(unanswered)[1] if unanswered is not None else None,
     )
 

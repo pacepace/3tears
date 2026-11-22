@@ -61,6 +61,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.claim_read import ClaimRead
 from threetears.evals.schema.store_port import GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
@@ -159,6 +160,9 @@ class FakeCountingStore:
 
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         return self._inner.query_judge_profiles(scope_id)
+
+    def query_claim_reads(self, scope_id: str, /, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        return self._inner.query_claim_reads(scope_id, campaign_id=campaign_id)
 
     def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
         return self._inner.load_templates(template_ids, scope_id)

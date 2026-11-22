@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
@@ -103,7 +104,11 @@ def depth_blocks(
         blocks: list[ReportBlock] = [DisclosureBlock(section="scorecard", source="comparisons", text=once)]
     else:
         blocks = [*_depth_table(rows), *_differ_lines(depths)]
-    blocks += _pass_k_depth_blocks(depths, labels, names, forms)
+    # pass^k reads how reliably an arm passes; where nothing graded can fail a trial there is no pass to repeat, so no
+    # aspect of that kind is said to compare one.
+    blocks += _pass_k_depth_blocks(
+        [(bundle, depth) for bundle, depth in depths if holds_a_check(bundle)], labels, names, forms
+    )
     # What limits each interval is a method, read one step from the answer only by someone who asks, so it is folded under
     # the page's methods, never on the scorecard.
     blocks += _precision_blocks(readings, names, forms)

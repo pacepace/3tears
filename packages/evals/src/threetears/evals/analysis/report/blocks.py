@@ -803,13 +803,13 @@ ChartKind = Literal[
 _OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
 
 #: The textures a failure cause or a loss cause takes, in order.
-_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols", "grid")
 
 #: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
 #: state's order. Never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is ink (the kit's
 #: secondary text), solid, so the status green means a status pill alone; every failure cause is the kit's bad, each
-#: under a texture of its own, so a failure never reads as a pass even without colour, and the five failure causes
-#: (``FailCause``) are five looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: under a texture of its own, so a failure never reads as a pass even without colour, and the six failure causes
+#: (``FailCause``) are six looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the fourteenth repeat a look; the
 #: legend and the tooltip name every cause in words.
 _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
     "passed": (("--ink-2", None),),
@@ -992,6 +992,15 @@ class ChartBlock(_Block):
         description=(
             "What a cost/quality chart's head prints of its level, where its page decides it (#1128): empty for "
             "nothing, or the head marking a level other than the page's main one; None for the level's own head."
+        ),
+    )
+    rate_heading: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What a cost/quality chart names its rate axis and column: `Answered` where nothing graded can fail a "
+            "trial on its aspects, so no axis calls a share answered a pass rate; None for `Pass rate`."
         ),
     )
     data: KitChart | None = Field(
@@ -1198,7 +1207,7 @@ class ChartBlock(_Block):
             x_fmt=f"usd:{decimals}" if decimals is not None else cost_axis_format(x_domain[1], money=False),
             y_fmt="pct",
             x_title=f"Cost {per}{unit}",
-            y_title="Pass rate",
+            y_title=self.rate_heading or "Pass rate",
             level=self.level,
             level_head=self.level_head,
             legend=legend,
@@ -1238,7 +1247,13 @@ class ChartBlock(_Block):
             def said(amount: float) -> str:
                 return spelled(amount) if money else number_in(amount * scale, self.unit)
 
-            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
+            headers = [
+                "Arm",
+                f"Cost {per}{cost}",
+                f"Interval{cost}",
+                f"{self.rate_heading or 'Pass rate'} (%)",
+                "Interval (%)",
+            ]
             # The pass rate is one measure, so its column reads at one precision: its narrowest interval's.
             rates = policy_interval_set(
                 [(point.pass_rate, point.pass_rate_low, point.pass_rate_high) for point in self.points], rate=True

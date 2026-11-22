@@ -506,6 +506,7 @@ def test_every_candidate_failure_cause_has_its_own_disclosure():
 
     causes: dict[str, dict[str, object]] = {
         "model_failed": {"candidate_error": "provider returned 500"},
+        "code_raised": {"candidate_error": "the candidate raised KeyError: 'id'", "candidate_code_raised": True},
         "turn_budget": {"covariates": {"turns_ended_by_budget": 1.0}},
         "output_cap": {"covariates": {"truncated_rounds": 1.0}},
     }

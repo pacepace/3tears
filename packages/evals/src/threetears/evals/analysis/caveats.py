@@ -20,9 +20,9 @@ something to qualify adds a raiser and one row of :data:`CLASS_OF_KIND`, and ren
   caveat per question and rater), every claim criterion whose readings lost cells, hold cells still pending, hold
   cells the host's claim reader could not read, hold cells whose candidate said nothing, or had claims skipped past
   the web budget (``claims_lost:<criterion>``, ``claims_pending:<criterion>``, ``claims_unread:<criterion>``,
-  ``claims_silent:<criterion>``,
-  ``claims_web_skipped:<criterion>``, and ``claims_web_lost:<criterion>`` for a web step that failed, naming the
-  arms), and looks past their plan.
+  ``claims_silent:<criterion>``, ``claims_web_skipped:<criterion>``, ``claims_web_lost:<criterion>`` for a web step
+  that failed, and ``claims_web_replayed:<criterion>`` for web checks that read a recording, naming the arms), and
+  looks past their plan.
 - *The bundle's* (:func:`from_bundle`): results with no ordered time, and request settings not confirmed as sent.
 
 **Ids are unique by construction**, and :func:`raise_caveats` refuses two different entries under one id rather than
@@ -179,6 +179,7 @@ CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
         # and an arm silent on a different share of cells is withheld as a lopsided loss is
         "claims_web_skipped": "B",  # some cells' web checks skipped claims past their budget: read unverifiable
         "claims_web_lost": "B",  # some cells' web steps failed, a cause apart from the budget: read unverifiable
+        "claims_web_replayed": "B",  # some cells' web checks read a recording, never a live search
         "request_settings": "B",  # default: the code page's "request settings not confirmed"
         # C: an instrument on an asked reading is unchecked, or checked against a model only.
         "judge_uncalibrated": "C",
@@ -248,6 +249,7 @@ _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
         "claims_silent": "inspect_arm",
         "claims_web_skipped": "resume_or_rerun",
         "claims_web_lost": "repair_rig",
+        "claims_web_replayed": "run_live",
         "request_settings": "record_and_rerun",
         "judge_uncalibrated": "check_against_people",
         "judge_partly_uncalibrated": "check_against_people",
@@ -1094,16 +1096,18 @@ _CLAIM_KINDS: Final[tuple[tuple[str, str], ...]] = (
     ("claims_silent", "silent"),
     ("claims_web_skipped", "web_skipped"),
     ("claims_web_lost", "web_lost"),
+    ("claims_web_replayed", "web_replayed"),
 )
 
 
 def _claims(report_input: ReportInput) -> Iterator[CaveatEntry]:
     """A caveat per claim criterion whose readings lost cells, have cells still pending, had claims skipped past the
-    web budget, or lost their web step to a failure: one per criterion and kind, whichever of its readings hold it, naming each arm that does.
+    web budget, lost their web step to a failure, or read their web checks from a recording: one per criterion and
+    kind, whichever of its readings hold it, naming each arm that does.
 
     Each is the evidence not being what it appears: a reading over fewer cells than ran, a population not yet whole,
-    or claims a suspicious judge could not check, which read unverifiable and never false. The arms are named, so a
-    reader sees which side of a comparison it touches.
+    claims a suspicious judge could not check, which read unverifiable and never false, or web verdicts a recording
+    decided rather than a live search. The arms are named, so a reader sees which side of a comparison it touches.
     """
     lead = report_input.aspects[0].id if report_input.aspects else ""
     by_criterion: dict[tuple[str, str], tuple[set[str], list[str]]] = {}

@@ -14,7 +14,9 @@ Six disclosures are report-wide:
 - **latency read under concurrency**, which every comparison leaves out;
 - **request settings not confirmed**, for the judge or the simulated user;
 - **a judge not yet calibrated** against people's labels, whose scores are then directional
-  (``AnalysisContextBundle.judge_evidence_tiers``): a state with its next step, never a failure.
+  (``AnalysisContextBundle.judge_evidence_tiers``): a state with its next step, never a failure; and a claims judge
+  whose verdicts no person has checked, whose claim readings are then directional (each claim reading's arms'
+  ``evidence_tier``).
 
 Each of these has its line on the first screen (:func:`caveat_blocks`) and its detail one step down
 (:func:`provenance_blocks`, :func:`aspect_provenance_blocks`, :func:`setup_disclosure`, :func:`calibration_blocks`).
@@ -29,9 +31,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Literal
+from typing import Final, Literal
 
-from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.contention import reader_latency_sentence
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.report.campaign.common import named_arms
@@ -59,6 +61,7 @@ __all__ = [
     "aspect_provenance_blocks",
     "calibration_blocks",
     "caveat_blocks",
+    "calibration_sentences",
     "for_the_campaign",
     "provenance_blocks",
     "question_blocks",
@@ -94,13 +97,14 @@ _CAVEAT_SOURCES: dict[_Kind, DisclosureSource] = {
 
 #: A disclosure whose detail is stated in full one step down: on an aspect's own page in its methods (the judge's in
 #: what was not tested), on a campaign's page as a row of Design & provenance.
-_SetupKind = Literal["latency", "settings", "judge", "cost"]
+_SetupKind = Literal["latency", "settings", "judge", "judge_checked", "cost"]
 
 #: The id an aspect's own line stating a disclosure in full carries, by its kind.
 _SETUP_ANCHORS: dict[_SetupKind, str] = {
     "latency": "setup-latency",
     "settings": "setup-settings",
     "judge": "setup-judge",
+    "judge_checked": "setup-judge-checked",
     "cost": "setup-cost",
 }
 
@@ -116,6 +120,7 @@ _SETUP_NAMES: tuple[tuple[_SetupKind, str], ...] = (
     ("latency", "latency read under concurrency"),
     ("settings", "request settings not confirmed"),
     ("judge", "judge scores directional"),
+    ("judge_checked", "judge checked against people"),
     ("cost", "cost as routed"),
 )
 
@@ -169,7 +174,7 @@ def _lines(bundles: Sequence[AnalysisContextBundle], names: AspectNames | None =
         lines.append(("latency", _LATENCY_LINE.format(where=where(contended, total))))
     if unconfirmed := [named(bundle.aspect) for bundle in bundles if bundle.request_settings_disclosure]:
         lines.append(("settings", _SETTINGS_LINE.format(where=where(unconfirmed, total))))
-    if directional := [named(bundle.aspect) for bundle in bundles if _calibration_sentences(bundle)]:
+    if directional := [named(bundle.aspect) for bundle in bundles if _directional_sentences(bundle)]:
         lines.append(("judge", _JUDGE_LINE.format(where=where(directional, total))))
     return lines
 
@@ -310,15 +315,17 @@ def setup_disclosure(
     )
 
 
-def calibration_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """An aspect's own line on each judge not yet calibrated against people's labels, in what was not tested: where
-    each judge stands and what to do next, the detail its first screen's caveat line points at; nothing where every
-    judge is calibrated or has met or missed its criterion.
+def calibration_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str] | None = None) -> list[ReportBlock]:
+    """An aspect's own line on where each judge stands against people, in what was not tested: each judge not yet
+    calibrated and what to do next, the detail its first screen's caveat line points at, and each claims judge as its
+    claim read's check left it; nothing where every rubric judge is calibrated or has met or missed its criterion and
+    no claim criterion was read.
 
     :param bundle: The aspect's evidence.
+    :param arm: Names an arm by its variant key, as the page does; None names it by its variant.
     :return: The line, or nothing.
     """
-    said = _calibration_sentences(bundle)
+    said = calibration_sentences(bundle, arm)
     if not said:
         return []
     return [
@@ -332,12 +339,31 @@ def calibration_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     ]
 
 
-def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
-    """Each judge not yet calibrated against people, as a state and its next step, never as a failure.
+def calibration_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str] | None = None) -> list[str]:
+    """Where each judge stands against people, as a state and its next step, never as a failure: each rubric judge not
+    yet calibrated, then each claim criterion's judge in the state its claim read's check left it in (calibrated, not
+    met, not yet decided, or with no read at all), with the arms a lean test could not read.
 
     A new judge has no labels, so on a first campaign this is said on every report: where the judge stands and what
     to do next, one sentence per judge and state, every dimension it holds for named once.
+
+    :param bundle: The aspect's evidence.
+    :param arm: Names an arm by its variant key, as the surface does; None names it by its variant.
+    :return: The sentences.
     """
+    return _rubric_sentences(bundle) + [said for said, _ in _claim_calibration_sentences(bundle, arm)]
+
+
+def _directional_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str] | None = None) -> list[str]:
+    """The calibration sentences that leave a judge's readings directional: every one but a claims judge's met check,
+    and the arms its lean test could not read, which say what holds rather than what is still to do."""
+    return _rubric_sentences(bundle) + [
+        said for said, directional in _claim_calibration_sentences(bundle, arm) if directional
+    ]
+
+
+def _rubric_sentences(bundle: AnalysisContextBundle) -> list[str]:
+    """Each rubric judge not yet calibrated against people's labels, by judge and state."""
     by_judge: dict[tuple[str, bool, int], list[str]] = {}
     for tier in bundle.judge_evidence_tiers:
         criterion = tier.calibration
@@ -362,6 +388,90 @@ def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
     return said
 
 
+#: What a claim read's check against people names each question it asked by.
+_QUESTION_WORDS: Final[dict[str, str]] = {"true": "truth", "grounded": "groundedness", "is_claim": "what is a claim"}
+
+#: Each state a claim read's check can leave a question in, worded as a rubric judge's calibration is: the state, why,
+#: and whether the readings stay directional.
+_CHECK_WORDS: Final[dict[str, tuple[str, str, bool]]] = {
+    "met": ("is calibrated", "people's checks of its claim verdicts met the calibration bar", False),
+    "not_met": (
+        "is not calibrated",
+        "people's checks of its claim verdicts fell short of the calibration bar, so its readings are directional",
+        True,
+    ),
+    "undecided": (
+        "is not yet calibrated",
+        "too few of its claim verdicts checked by people so far to decide, so its readings are directional",
+        True,
+    ),
+    "insufficient": (
+        "is not yet calibrated",
+        "too few of its claim verdicts checked by people so far to decide, so its readings are directional",
+        True,
+    ),
+}
+
+
+def _claim_calibration_sentences(
+    bundle: AnalysisContextBundle, arm: Callable[[str], str] | None = None
+) -> list[tuple[str, bool]]:
+    """Each claim criterion's judge as its check against people left it, in a rubric dimension's words, each sentence
+    with whether it leaves the readings directional. A criterion its campaign has a closed claim read of
+    (``AnalysisContextBundle.claim_checks``) is said in that read's state, question by question: calibrated (met), not
+    calibrated (not met), or not yet calibrated (undecided, or too little to decide), and each question whose lean test
+    could not read some arm names those arms. One with no closed read is uncalibrated: no person has checked its
+    verdicts. People check a claims judge's verdicts, never its scores, so no count of labels to rate is named.
+
+    :param bundle: The aspect's evidence.
+    :param arm: Names an arm by its variant key, as the surface does; None names it by its variant.
+    :return: The sentences, criterion by criterion in name order; none where no claim criterion was read.
+    """
+    criteria = sorted({measure.instrument for measure in bundle.judged_measures if measure.instrument is not None})
+    if not criteria:
+        return []
+    judges = list(dict.fromkeys(level.judge_model for level in bundle.judge_change.levels)) or ["an unnamed judge"]
+    judge = " and ".join(judges)
+    checks = {check.criterion: check for check in bundle.claim_checks}
+    variants = arm_names(bundle.variant_index)
+    name = arm if arm is not None else (lambda key: variants.get(key) or key)
+    said: list[tuple[str, bool]] = []
+    for criterion in criteria:
+        check = checks.get(criterion)
+        if check is None or not check.questions:
+            said.append(
+                (
+                    f"Judge {judge} is uncalibrated on {criterion}: no person has checked its claim verdicts yet, so "
+                    "its readings are directional.",
+                    True,
+                )
+            )
+            continue
+        by_result: dict[str, list[str]] = {}
+        for question in check.questions:
+            by_result.setdefault(question.result, []).append(_QUESTION_WORDS.get(question.question, question.question))
+        for result in ("met", "not_met", "undecided", "insufficient"):
+            if result not in by_result:
+                continue
+            state, why, directional = _CHECK_WORDS[result]
+            on = " and ".join(by_result[result])
+            said.append(
+                (f"Judge {judge} {state} on {criterion} {on}: {why} (claim read {check.read_id}).", directional)
+            )
+        for question in check.questions:
+            if question.lean_untested:
+                arms = ", ".join(name(key) for key in question.lean_untested)
+                words = _QUESTION_WORDS.get(question.question, question.question)
+                said.append(
+                    (
+                        f"Its lean across arms on {criterion} {words} was not tested on {arms}: too few answered "
+                        "claims there.",
+                        False,
+                    )
+                )
+    return said
+
+
 def _setup_detail(
     kind: _SetupKind, bundle: AnalysisContextBundle, arm: Callable[[str], str], forms: PageForms
 ) -> str | None:
@@ -371,7 +481,12 @@ def _setup_detail(
     if kind == "settings":
         return _settings_in_words(forms.stored_counts((bundle.request_settings_disclosure or "").strip())) or None
     if kind == "judge":
-        return " ".join(_calibration_sentences(bundle)) or None
+        return " ".join(_directional_sentences(bundle, arm)) or None
+    if kind == "judge_checked":
+        # A claims judge's met check, and the arms a lean test could not read: what holds, said beside what is still
+        # to do, so the page names every judge's state.
+        checked = [said for said, directional in _claim_calibration_sentences(bundle, arm) if not directional]
+        return " ".join(checked) or None
     if kind == "cost":
         return COST_ROUTING_CAVEAT if priced_aspects([bundle]) else None
     sentence = reader_latency_sentence((bundle.latency_contended or "").strip())

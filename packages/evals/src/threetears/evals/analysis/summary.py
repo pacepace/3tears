@@ -1646,7 +1646,8 @@ class _MeasureTally:
         self.values = _Values()
 
     def add(self, result: EvalResult, outcome: ResultOutcome, delivered: bool) -> None:
-        if self.name not in result.host_measures:
+        value = self._value(result)
+        if value is None:
             return
         self.carrying += 1
         if self.turns_only and not delivered:
@@ -1656,10 +1657,19 @@ class _MeasureTally:
                 self.faulted += 1
             return
         self.n += 1
-        value = result.host_measures[self.name]
         # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
         if not isinstance(value, str):
             self.values.add(float(value))
+
+    def _value(self, result: EvalResult) -> bool | float | str | None:
+        """The result's value of the measure, or None where it carries none: a host measure on its host measures, a
+        reading the host derives from a claim criterion (``derived_from``) on that criterion's tally, where the claim
+        reader answered it (a lost criterion, or a cell its reader could not read, carries none)."""
+        criterion = self.descriptor.derived_from
+        if criterion is None:
+            return result.host_measures.get(self.name)
+        tally = result.claim_tallies.get(criterion)
+        return None if tally is None else tally.derived.get(self.name)
 
     def summary(self) -> RunMeasureSummary:
         return RunMeasureSummary(

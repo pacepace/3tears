@@ -65,6 +65,7 @@ from typing import Final, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
+from threetears.evals.analysis.bundle.trials import reads_a_rate
 from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION, split_arms, unread_arms
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
@@ -1286,6 +1287,10 @@ def campaign_readings(
 ) -> CampaignReadings:
     """What code reads off a campaign, by its kind (:func:`campaign_kind`, over ``arms``).
 
+    **No rate where nothing can fail a trial.** An aspect nothing graded can fail a trial on reads no pass rate in any
+    kind, since every answered trial passes; where an arm failed to answer some trial, its rate is read as the share
+    answered, and pages name it so (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`).
+
     **A change.** Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
@@ -1361,17 +1366,26 @@ def campaign_readings(
         )
     candidates = _candidates(campaign, every)
     rows: list[_Row] = []
+    # The candidates read on an aspect with no rate, which no row holds: their floors are read off these.
+    unrated: list[tuple[str, CampaignArm, FloorReadings]] = []
     for aspect in campaign.aspects:
         bundle = checked[aspect.label]
         control_key = _bundle_control(bundle)
         if control_key is None:
             continue
+        # Where nothing the aspect grades can fail a trial, its pass rate counts every answered trial as passed: no row
+        # reads it, and it spends none of the family's error, unless an arm failed to answer some trial, where the rate
+        # is the share answered and its row compares that (``reads_answered``). Its floors are read all the same.
+        rated = reads_a_rate(bundle)
         per_case = case_cost_usd(bundle)
         for arm in candidates:
             if arm.variant_key == control_key:
                 continue
             rate = memo.pass_rate(bundle, control_key, arm.variant_key)
             if rate is None:
+                continue
+            if not rated:
+                unrated.append((aspect.label, arm, memo.readings(bundle, control_key, arm.variant_key)))
                 continue
             rows.append(
                 _Row(
@@ -1468,10 +1482,13 @@ def campaign_readings(
             )
         )
     floors = [
-        evaluate_floor(floor, row.base, arm=row.arm_key, arm_label=row.arm_label, control_label=control.label)
+        evaluate_floor(floor, base, arm=arm_key, arm_label=arm_label, control_label=control.label)
         for floor in campaign.floors
-        for row in rows
-        if row.aspect == floor.aspect
+        for aspect_label, arm_key, arm_label, base in [
+            *((row.aspect, row.arm_key, row.arm_label, row.base) for row in rows),
+            *((label, arm.variant_key, arm.label, base) for label, arm, base in unrated),
+        ]
+        if aspect_label == floor.aspect
     ]
     return _aggregated(
         CampaignReadings(
@@ -1556,6 +1573,9 @@ def _pair_readings(
     pairs: list[_Pair] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
+        if not reads_a_rate(bundle):
+            # Nothing it grades can fail a trial and every arm answered, so a pass rate there tells no arm ahead.
+            continue
         ran = {board.variant_key for board in bundle.scoreboard}
         present = [arm for arm in arms if arm.variant_key in ran]
         for index, first in enumerate(present):
@@ -1741,7 +1761,8 @@ def reading_name(bundle: AnalysisContextBundle, measure: str) -> str:
 def _measure_readings(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[MeasureReading]:
-    """A measurement's measures on every aspect: each arm's pass rate, its count over every rig with the Wilson
+    """A measurement's measures on every aspect: each arm's pass rate where anything there can fail a trial, or its
+    share answered where nothing can and it failed to answer some (:func:`~threetears.evals.analysis.bundle.trials.reads_a_rate`), its count over every rig with the Wilson
     interval on it, the cases the independent draws (:func:`~threetears.evals.analysis.stats.pooled_rate_interval`);
     then each measure each of its cells (one per rig) summarises with an interval, the summary's own. An arm whose
     results on an aspect were answered by more than one candidate model has no reading there (``answer_splits`` names
@@ -1750,24 +1771,27 @@ def _measure_readings(
     found: list[MeasureReading] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
+        # Where nothing the aspect grades can fail a trial and every arm answered, no pass rate is read there.
+        graded = reads_a_rate(bundle)
         for board in bundle.scoreboard:
             if unread_arms(bundle.cells, board.variant_key):
                 continue
             label = labels.get(board.variant_key, f"arm {board.variant_key[:12]}")
-            found.append(
-                MeasureReading(
-                    aspect=aspect.label,
-                    arm=board.variant_key,
-                    arm_label=label,
-                    measure=PASSED_READING,
-                    value=board.passed / board.usable if board.usable else None,
-                    interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
-                    passed=board.passed,
-                    trials=board.usable,
-                    cases=board.usable_cases,
-                    higher_is_better=True,
+            if graded:
+                found.append(
+                    MeasureReading(
+                        aspect=aspect.label,
+                        arm=board.variant_key,
+                        arm_label=label,
+                        measure=PASSED_READING,
+                        value=board.passed / board.usable if board.usable else None,
+                        interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
+                        passed=board.passed,
+                        trials=board.usable,
+                        cases=board.usable_cases,
+                        higher_is_better=True,
+                    )
                 )
-            )
             for cell in bundle.cell_measures:
                 if cell.variant_key != board.variant_key:
                     continue

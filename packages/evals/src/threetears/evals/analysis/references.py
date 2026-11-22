@@ -320,7 +320,9 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
     interval = (
         None
         if judged.sem is None
-        else stats.mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
+        else stats.mean_interval(
+            judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range, floor=facts.interval_floor
+        )
     )
     ci_low, ci_high = (None, None) if interval is None else interval
     return ResolvedReading(

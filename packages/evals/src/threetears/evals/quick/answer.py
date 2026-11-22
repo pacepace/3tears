@@ -165,15 +165,25 @@ def _as_document(given: object) -> Document:
     raise ValueError(f"Answer.documents holds Document values or their text, not {type(given).__name__}")
 
 
+#: The fields an ``Answer`` reports a model call by: with every one ``None`` it reports none.
+_SPEND_FIELDS = ("model", "served_model", "input_tokens", "output_tokens", "cost_usd")
+
+
 def unwrap_answer(returned: Any) -> tuple[Any, CandidateTelemetry]:
     """What a candidate returned, as the answer to grade and the telemetry its spend lands on.
 
     :param returned: The candidate's return value: an :class:`Answer`, or a plain answer.
     :return: The answer's value and a telemetry carrying its ``candidate`` usage row; a plain answer as given,
-        with telemetry that reports no usage.
+        with telemetry that reports no usage. An ``Answer`` that reports no model, no served model, no token count
+        and no cost (one returned only to carry its ``documents`` or its ``session``) reports no usage either: it says no call was made,
+        so no unpriced call is counted and no model's identity is asked after. A runner that does call a model must
+        name it (``model=``) for the call to count: left with every spend field unset, it reads as no call, as a
+        plain return does, and its unpriced spend goes unsaid.
     """
     if not isinstance(returned, Answer):
         return returned, CandidateTelemetry()
+    if all(getattr(returned, name) is None for name in _SPEND_FIELDS):
+        return returned.value, CandidateTelemetry()
     ledger = RoleUsageLedger(role="candidate")
     ledger.add_llm_result(returned)
     return returned.value, CandidateTelemetry(usage=ledger.rows())

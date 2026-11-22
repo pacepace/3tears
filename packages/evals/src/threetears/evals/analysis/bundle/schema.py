@@ -1012,6 +1012,15 @@ class JudgedArm(EvalDocumentModel):
             "Read off the tally's `web_loss`."
         ),
     )
+    n_web_replayed: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose web checks read a recording, never a live search, so what the web decided "
+            "there is what the recorded pages said. Read off the tally's `web_replayed`."
+        ),
+    )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
         default=None,
@@ -1044,6 +1053,35 @@ class JudgedArm(EvalDocumentModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="The judge checked against itself on this arm: how much a second scoring of one reply moves.",
+    )
+
+
+class ClaimQuestionCheck(EvalDocumentModel):
+    """What a closed claim read's check against people decided of a claim criterion's judge on one question."""
+
+    question: str = Field(min_length=1, description="The question the read asked people (`true`, `grounded`).")
+    result: Literal["met", "not_met", "undecided", "insufficient"] = Field(
+        description="As the calibration criteria decided it at the read's close: met, not met, undecided, or too "
+        "little to decide."
+    )
+    lean_untested: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The arms, by variant key, the read's test of a lean across arms read no rate on: too few "
+        "answered claims. Left out while empty.",
+    )
+
+
+class ClaimCheckReading(EvalDocumentModel):
+    """The check a claim criterion's judge stands on: the latest closed claim read of it over the campaign, its
+    criterion's definition the one the campaign's grades were made under (``ClaimRead.report``)."""
+
+    criterion: str = Field(min_length=1, description="The claim criterion.")
+    read_id: str = Field(min_length=1, description="The claim read whose check this is.")
+    closed_at: str = Field(min_length=1, description="When the read was closed, and its check read.")
+    questions: list[ClaimQuestionCheck] = Field(
+        description="Each question the read checked against people, in its order; a question only people answer "
+        "(`is_claim`) has no check and is left out."
     )
 
 
@@ -1088,8 +1126,16 @@ class JudgedMeasure(EvalDocumentModel):
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
     )
-    # The three below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
+    # The four below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
     # before they existed serializes, and is fingerprinted, as it did.
+    nonnegative: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "True where the reading's descriptor declares it never below zero (a claim count per unit), so an "
+            "interval on an arm's mean of it is drawn no lower than zero; False (left out) otherwise."
+        ),
+    )
     instrument: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -2817,9 +2863,9 @@ class DifferentialExclusion(EvalDocumentModel):
 LossCause = str
 
 #: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.result_condition.CandidateFailureCause`:
-#: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
-#: scorer), or a judged dimension scored under the bar (``judged``).
-FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]
+#: ``model_failed``, ``code_raised``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a
+#: pass/fail scorer), or a judged dimension scored under the bar (``judged``).
+FailCause = Literal["model_failed", "code_raised", "turn_budget", "output_cap", "check", "judged"]
 
 #: How a trial ended: passed, failed (the candidate's failure, counted against it) or lost (the test setup failed,
 #: and it counts for nothing).
@@ -3586,6 +3632,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             'exact agreement, kappa, weighted kappa, a "can\'t tell" repeat counted as a disagreement) — over every '
             "resolved member run's results. Empty when nothing was repeated: the judge's "
             "consistency is then unmeasured. Repeats that could not be paired are listed with why."
+        ),
+    )
+    claim_checks: list[ClaimCheckReading] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each claim criterion's judge check: the latest closed claim read over this campaign of a criterion whose "
+            "definition its grades were made under, as the read kept it at its close. A criterion with no such read "
+            "is absent, its judge uncalibrated. Left out while empty."
         ),
     )
     judge_evidence_tiers: list[JudgeEvidenceTier] = Field(

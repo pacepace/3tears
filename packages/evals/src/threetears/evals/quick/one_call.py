@@ -53,6 +53,7 @@ from pydantic import BaseModel
 from threetears.evals.kernel.offload import drain_then_cut, run_blocking, wait_through_cancellation
 from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
+from threetears.evals.kernel.result_condition import PROGRAMMING_ERRORS
 from threetears.evals.kernel.metrics import declaration_of
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
@@ -1011,6 +1012,9 @@ class CallableKind:
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
                 candidate_errors=[said],
+                # A programming error is the runner's own code failing while it handles the reply, which no model call
+                # raises: still the candidate's failure, named as its code's, with its handling of the reply to check.
+                code_raised=isinstance(raised, PROGRAMMING_ERRORS),
                 host_measures=missed,
                 # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
                 telemetry=CandidateTelemetry(turns_delivered=0),

@@ -6,6 +6,66 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: what a claims-graded eval's print and pages say, and a runner's own bug named as its code's
+
+**Fixed (#1287):**
+
+- **No pass rate where nothing can fail a trial.** A claim reading never enters a trial's pass, and neither does a
+  number, so an eval graded by `Claims` alone, or by numbers alone, passes every trial it answered. Its pages state no
+  pass rate and imply none: the campaign page leads on the aspect's own verdict line (`v1 ran 12 of 12 cases; no
+  grader here says pass or fail.`), the scorecard says the aspect has no pass rate and why, the scoreboard drops
+  `Passed`, `Failed by check` and `Failed by judge`, the cases table marks each trial answered (`●`), failed to answer
+  (`✗`) or lost (`–`), the census counts trials answered, and no pass^k note, pass mark or pass-worded glossary term is
+  printed. An eval with a check or a judged dimension is unchanged.
+- **Where an arm failed to answer some cases, how often each arm answered is compared.** On such an aspect the rate
+  the campaign reads is the share of trials each arm answered, named `Answered`, never a pass rate: a row against the
+  control, a pair in a choice, a measurement's figure, and the scoreboard's `Answered` column. The verdict line and
+  the campaign lead say it (`v2 answered 8 of 12 cases.`), so a runner that crashes on some cases is never read on its
+  survivors alone.
+- **Every uncalibrated judge is said on the quiet print**, a rubric dimension's and a claims criterion's, in the
+  words the pages use (`Judge <model> is uncalibrated on answer.claims: no person has checked its claim verdicts yet,
+  so its readings are directional.`). The pages now say it for a claims judge too.
+- **A claims judge is said in the state its claim read left it.** Where the campaign has a closed claim read of a
+  criterion, of the definition its grades were made under, the print and both pages say what that read's check
+  against people decided, question by question: calibrated (met), not calibrated (not met), or not yet calibrated
+  (undecided, or too little to decide), and name each arm its lean test read no rate on. With no closed read the
+  judge is uncalibrated, as before. A met check leaves no reading directional, so it raises no first-screen line, and
+  the campaign page states it in its own `Judge checked against people` row.
+- **The quiet print says what qualifies a claim reading**, as the aspect page does: cells lost, pending or unread,
+  claims skipped past the web budget, a web check that failed, and web checks that read a recording. That last line is
+  new on the page too, with a class-B caveat, `claims_web_replayed:<criterion>`.
+- **An `Answer` that only carries documents makes no model call.** One with no model, served model, token count or
+  cost reports no candidate usage, so its run no longer reads unpriced calls, an unconfirmed model identity, or that
+  it pools with no other run. A runner that does call a model names it (`model=`) for the call to count.
+- **A reading derived from a claim criterion** is carried by the run's summary (it read `not shown, carried by no
+  result`), its page row names its criterion as the engine's own readings do (`Contradictions per entry
+  (answer.claims, judged)`), unless the host's name already does, and an interval on a non-negative claim count, the
+  engine's or a host's, is drawn no lower than zero.
+- **A runner's own programming error is named as its code's.** A quick-path runner that raises a `KeyError`,
+  `IndexError`, `TypeError`, `AttributeError`, `NameError` or `AssertionError` still fails its trial, and every
+  surface names the cause `code raised`: the candidate's own code raised while handling the reply, usually a bug in
+  that code, though an empty or malformed reply from its model can set one off. The remedy is to check the runner's
+  handling of the reply and fix or guard the code the errors name. The stored "every result failed" sentence names
+  that cause too. Any other raise reads as before.
+
+**For hosts:** a host kind that runs the host's own code as its candidate may set `CandidateOutput.code_raised` beside
+its `candidate_errors` for a raise from `kernel.result_condition.PROGRAMMING_ERRORS`. A host store that assembles a
+campaign's bundle itself (`CampaignReadStore`) must answer `query_claim_reads(scope_id, /, *, campaign_id=None)`, as
+`EvalStorage` does; the bundle carries each criterion's check (`AnalysisContextBundle.claim_checks`) and its evidence
+the reads it stands on (`EvidenceManifest.claim_reads`), each left out while none, so a campaign with no closed claim
+read fingerprints as it did, and one closing a read moves its fingerprint. A floor on an aspect with no rate to row is
+read and sized as before. A campaign with an aspect nothing
+graded can fail a trial on, where every arm answered every trial, reads no pass-rate row or pair there, so its
+comparison family is smaller: re-reading such a stored campaign under this build can move another reading's verdict,
+since the family is corrected together. New stored fields, each left out of the document while unset, so a document
+without them is stored and fingerprinted as before: `EvalResult.candidate_code_raised` and `ClaimTally.web_replayed`
+(core 15.24, still unreleased), and in an analysis bundle `JudgedMeasure.nonnegative`, `JudgedArm.n_web_replayed`,
+the trial cause `code_raised`, the decision surface's `JudgedDimensionFacts.nonnegative`, the report input's
+`web_replayed` counts, a report's cost/quality `ChartBlock.rate_heading` (`Answered`, or `Pass or answered rate`), and a bundle's
+`claim_checks` with its evidence's `claim_reads`. Reach-back: the build before this one, at the same minor, refuses a result, a bundle or an
+analysis carrying any of them (`extra_forbidden`, or the trial cause as no `FailCause`), so the integration line is
+deployed and rolled back as one, as the rest of 15.24 is.
+
 ### evals: the claim-loss test reads a large campaign in hundredths of a second
 
 **Changed (#1301):** the test that withholds a claim reading whose arms lost cells unevenly is the same conditional

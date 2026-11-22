@@ -597,6 +597,7 @@ PINNED: dict[str, frozenset[str]] = {
             "async_deliveries[].summary",
             "async_deliveries[].tool",
             "candidate_error",
+            "candidate_code_raised",
             "candidate_instance_id",
             "candidate_kind",
             "cost_roles",
@@ -787,6 +788,7 @@ PINNED: dict[str, frozenset[str]] = {
             "async_deliveries[].model_copy()",
             "async_deliveries[].substituted",
             "candidate_error",
+            "candidate_code_raised",
             "candidate_kind",
             "cost_roles",
             "cost_usd",
@@ -914,6 +916,7 @@ PINNED: dict[str, frozenset[str]] = {
             "async_deliveries[].summary",
             "async_deliveries[].tool",
             "candidate_error",
+            "candidate_code_raised",
             "candidate_instance_id",
             "candidate_kind",
             "cost_roles",
@@ -1194,6 +1197,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "toyhost": frozenset(
             {
+                "candidate_code_raised",
                 "async_deliveries[].acknowledged_turn",
                 "async_deliveries[].cost_usd",
                 "async_deliveries[].delivered_items",
@@ -1305,6 +1309,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "courierhost": frozenset(
             {
+                "candidate_code_raised",
                 "async_deliveries[].acknowledged_turn",
                 "async_deliveries[].cost_usd",
                 "async_deliveries[].delivered_items",
@@ -1514,6 +1519,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "toyhost": frozenset(
             {
+                "candidate_code_raised",
                 "async_deliveries[].model_copy()",
                 "async_deliveries[].substituted",
                 "judge_cut_short",
@@ -1572,6 +1578,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "courierhost": frozenset(
             {
+                "candidate_code_raised",
                 "async_deliveries[].model_copy()",
                 "async_deliveries[].substituted",
                 "goal_state_outcomes[].expression",
@@ -1743,6 +1750,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "toyhost": frozenset(
             {
+                "candidate_code_raised",
                 "claim_failures",
                 "claim_tallies",
                 "written_over",
@@ -1880,6 +1888,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "courierhost": frozenset(
             {
+                "candidate_code_raised",
                 "async_deliveries[].acknowledged_turn",
                 "async_deliveries[].cost_usd",
                 "async_deliveries[].delivered_items",

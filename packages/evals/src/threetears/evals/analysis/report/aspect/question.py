@@ -44,7 +44,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.verdict import guardrail_lines
-from threetears.evals.analysis.report.words import PASS_RATE, judged_heading, one_figure_each
+from threetears.evals.analysis.report.words import PASS_RATE, judged_heading, label_case, one_figure_each
 from threetears.evals.analysis.reporting import self_judging_text
 from threetears.evals.analysis.style import ArmName, measure_name
 from threetears.evals.kernel.declaration import CostLower
@@ -125,7 +125,14 @@ def _decision_blocks(
                 # Each rate its own status, so a row's status is about the reading on that row and no other.
                 shown = [
                     (
-                        PASS_RATE if rate.rate.measure is None else rate.rate.name,
+                        # The trials' own rate by its name: the share answered where nothing graded can fail one.
+                        (
+                            PASS_RATE
+                            if rate.rate.name == "the pass rate"
+                            else label_case(rate.rate.name.removeprefix("the "))
+                        )
+                        if rate.rate.measure is None
+                        else rate.rate.name,
                         f"{rate.rate.control_passed} of {rate.rate.control_n}",
                         f"{rate.rate.candidate_passed} of {rate.rate.candidate_n}",
                         f"{rate.outcome}: {forms.said(rate.reason)}",

@@ -965,6 +965,8 @@
 "threetears.evals.analysis.ChartShape": "provisional",
 "threetears.evals.analysis.ChartStatus": "provisional",
 "threetears.evals.analysis.Check": "provisional",
+"threetears.evals.analysis.ClaimCheckReading": "provisional",
+"threetears.evals.analysis.ClaimQuestionCheck": "provisional",
 "threetears.evals.analysis.compare_two_runs": "provisional",
 "threetears.evals.analysis.ComparedCell": "provisional",
 "threetears.evals.analysis.comparison_sets": "provisional",

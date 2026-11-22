@@ -58,6 +58,7 @@ from typing import Literal, cast
 
 from pydantic import Field
 
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION, unread_arms
 from threetears.evals.analysis.bundle.schema import (
     FLOOR_COST_MEASURE,
@@ -494,8 +495,16 @@ def floor_statement(
     """
     if isinstance(clause, CostLower):
         return Said.of(f"{candidate} costs less per reply")
-    which = "pass" if clause.reading is None else reading_words(clause.reading, readings, check_names)
-    return Said.of(f"no {which} rate drops by more than ", _margin(clause.max_points), " points")
+    if clause.reading is None:
+        # The trials' own rate as the readings name it: the share answered where nothing graded can fail a trial.
+        overall = next((rate for rate in readings.rates if rate.measure is None), None) if readings else None
+        which = "pass rate" if overall is None else overall.name.removeprefix("the ")
+        return Said.of(f"no {which} drops by more than ", _margin(clause.max_points), " points")
+    return Said.of(
+        f"no {reading_words(clause.reading, readings, check_names)} rate drops by more than ",
+        _margin(clause.max_points),
+        " points",
+    )
 
 
 def read_floor(floor: Floor, readings: FloorReadings, *, control: str, candidate: str) -> FloorVerdict:
@@ -1157,7 +1166,8 @@ def _rate_name(
     :return: The name.
     """
     if measure is None:
-        return "the pass rate"
+        # Where nothing graded can fail a trial, a trial passes exactly when it was answered: the rate is that share.
+        return "the pass rate" if holds_a_check(bundle) else "the share answered"
     if judged:
         return judged_name(measure)
     check = goal_check_of(measure)

@@ -139,7 +139,9 @@ def contended_latency_cells(
     return cells, contended_latency_sentence(withheld, total, where=where, declared=declared)
 
 
-def all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
+def all_failed(
+    cells: list[CellFacts], *, code_raised: Collection[tuple[str, str]] = ()
+) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no counted result took a turn, with the one sentence that says so.
 
     Read off the cells' own counts (:attr:`~threetears.evals.kernel.surface.CellFacts.all_failed`), so the
@@ -147,6 +149,8 @@ def all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None
     reading, and without this the absence reads as "not measured" beside the arms that were.
 
     :param cells: The decision surface's cells, from :func:`cell_measures`.
+    :param code_raised: The cells, by variant key and rig, whose every candidate failure was the candidate's own code
+        raising (``EvalResult.candidate_code_raised``): where every failed cell is one, the sentence names that cause.
     :return: The cells in coordinate order, and the sentence
         (:func:`~threetears.evals.kernel.surface.all_failed_sentence`) — None when there are none.
     """
@@ -157,7 +161,8 @@ def all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None
     ]
     if not failed:
         return [], None
-    return failed, all_failed_sentence(len(failed), len(cells))
+    raised = {(cell.variant_key, cell.apparatus_class_id) for cell in failed} <= set(code_raised)
+    return failed, all_failed_sentence(len(failed), len(cells), code_raised=raised)
 
 
 def held_fixed_reading(runs: list[EvalRun], design: AspectDesign | None) -> HeldFixedReading:

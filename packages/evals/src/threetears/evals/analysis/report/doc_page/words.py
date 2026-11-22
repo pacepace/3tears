@@ -88,6 +88,7 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "claims_silent": "The candidate said nothing on some cells for {name}",
     "claims_web_skipped": "Some {name} claims went unchecked past the web budget",
     "claims_web_lost": "Some {name} web checks failed",
+    "claims_web_replayed": "Some {name} web checks read a recording",
 }
 
 #: A late criterion's ``{name}`` where its page holds more than one aspect, or another late criterion of its kind:

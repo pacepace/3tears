@@ -18,7 +18,7 @@
 | `--t-xs --t-sm --t-base --t-lg --t-hero` | The type scale's five steps: 12 px (ticks, captions, chart labels), 14 (tables, notes), 16 (body), 20 (h2, a code page's title, a headline over 90 characters) and 28 (the headline). Nothing is set between them. |
 | `--f-display --f-body --f-mono` | Plex Sans Condensed, Plex Sans, Plex Mono, each then the system's faces and a generic family. |
 
-**Outcomes** (how each trial ended, as a stacked bar draws them) never take a series color, since series colors name arms: passed is ink (`--ink-2`), solid, so green means a status pill alone; every failure cause is `--bad` under a texture of its own (`pattern`: `hatch`, `cross`, `dots`, `rows`, `cols`, in that order), so five causes read as five looks and no failure reads as a pass even without color; a loss cause is a neutral, `--base` then `--muted` solid, then each textured. A texture is sparse (12 px apart) over a light wash, so a bar of failures never reads as a block of ink. The legend names every cause in its look.
+**Outcomes** (how each trial ended, as a stacked bar draws them) never take a series color, since series colors name arms: passed is ink (`--ink-2`), solid, so green means a status pill alone; every failure cause is `--bad` under a texture of its own (`pattern`: `hatch`, `cross`, `dots`, `rows`, `cols`, `grid`, in that order), so six causes read as six looks and no failure reads as a pass even without color; a loss cause is a neutral, `--base` then `--muted` solid, then each textured. A texture is sparse (12 px apart) over a light wash, so a bar of failures never reads as a block of ink. The legend names every cause in its look.
 
 **Arms** take one color for the whole page, by their letter tag (GENERATOR.md §6.1): the control (`P`) `--ink-2`, the candidates (`A`, `B`, …) `--s1 … --s5` in order, plus a shape (scatter) or the tag in a square (bars), so color is never the only cue.
 
@@ -68,7 +68,7 @@ Each kind uses the subset its table lists. The same idea has the same name in ev
 | `better` | `"right"`, `"left"` or two strings | On a change chart: which way is better, printed under the axis at the plot's two ends. `right` prints "← worse" and "better →", `left` the mirror; two strings print each under its own end, the left end's first (`["prefers shipped", "prefers lead-first"]`). Where both do not fit on one line, the left one sits a line higher. |
 | `short_label` | string | Used when `label` does not fit the label column. |
 | `tag` | string | On a bar row: an arm's letter tag, drawn in a square of the row's `color` between the label and the bar, beside the label in the form the `bars` kind row gives it; never in its place. |
-| `pattern` | string | On a bar segment or a legend entry: a texture drawn in the `color` over a wash of it, `hatch`, `cross`, `dots`, `rows` or `cols`; solid when absent. |
+| `pattern` | string | On a bar segment or a legend entry: a texture drawn in the `color` over a wash of it, `hatch`, `cross`, `dots`, `rows`, `cols` or `grid` (rows and columns together); solid when absent. |
 | `label_width`, `label_width_narrow` | number | Label column in px, above and below 480 px chart width. Default: fitted to the labels. |
 | `row_height` | number | Row pitch in px. |
 | `height` | number | Plot height in px (scatter, lines). |
