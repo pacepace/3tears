@@ -15,6 +15,13 @@ reader or the whole run is refused, before anything is written: no value read un
 the digest of another, and none is guessed. A measure whose definition moved and of which no result holds a value
 needs no reading: there is nothing to read again, and the run takes the current digest.
 
+**A reading the host derives from a claim criterion is read again by the engine**
+(:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.derived_from`): from the criterion's grade and the cell's
+claim evidence its trace stores, through the host's claim reader
+(:attr:`~threetears.evals.kernel.host.profile.HostProfile.claim_readers`), onto the criterion's tally, never through
+``measure_rereader``. A result whose tally for such a criterion has no stored grade beside it refuses the run, as a
+value nothing can read again does.
+
 **A run its measure shaped is refused.** A measure that declares
 :attr:`~threetears.evals.kernel.metrics.MetricDescriptor.shapes_run` decided what the run did (a stop rule, a floor the
 world topped up to), so under another definition the run would have done something else, and reading its artifacts
@@ -49,6 +56,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
+from threetears.evals.kernel.claims.derived import claim_derivations, derive_claim_readings
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.measures import MeasureRereadRequest
 from threetears.evals.kernel.offload import run_blocking
@@ -70,7 +78,7 @@ from threetears.evals.schema.models import (
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
-    from threetears.evals.schema.models import EvalResult, EvalRun
+    from threetears.evals.schema.models import ClaimTally, EvalResult, EvalRun, EvalTrace
 
 log = get_logger(__name__)
 
@@ -104,11 +112,20 @@ class Remeasure(EvalBaseModel):
 
 @dataclass(frozen=True, slots=True)
 class _Reread:
-    """One result's new values, with the etag its rewrite presents."""
+    """One result's new values, with the etag its rewrite presents.
+
+    :ivar values: Its host measures read again, by name.
+    :ivar tallies: Its claim tallies whose derived readings were read again, by criterion, as they now stand.
+    :ivar derived: The derived readings read again, by name, each now held or (absent) not carried.
+    :ivar derived_was: What the derived readings read again held before, for each one held.
+    """
 
     result: EvalResult
     etag: str | None
     values: dict[str, bool | float | str]
+    tallies: dict[str, ClaimTally]
+    derived: dict[str, float | None]
+    derived_was: dict[str, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +151,12 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
     :raises NotFoundError: No such run in the scope.
     :raises ValidationFailedError: The run is still pending or running; a measure whose definition moved shaped the
         run (``MetricDescriptor.shapes_run``); a result holds a value of a moved measure and the host wires no
-        reader; or the reader left such a value unanswered. Raised before anything is written.
+        reader; the reader left such a value unanswered; or a result's tally of a criterion a moved measure derives
+        from has no stored grade to read it again from. Raised before anything is written.
     :raises ValueError: The host's reader answered a measure it was not asked, or a value whose type contradicts its
         measure's declared data type: the host's defect, raised before anything is written.
+    :raises ClaimReaderDefect: The host's claim reader raised, or answered what its measures cannot hold: the host's
+        defect, raised before anything is written.
     :raises ConflictError: Something else wrote a result, or the run, since it was read. Results written before the
         conflict stay written, the run is marked as being re-measured (it pools with nothing), and a second pass
         finishes it.
@@ -150,13 +170,19 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
         was=run.measure_definitions,
         now=plan.now,
         moved=plan.moved,
-        reread=sorted({name for reread in plan.rereads for name in reread.values}),
+        reread=sorted({name for reread in plan.rereads for name in (*reread.values, *reread.derived)}),
         results_reread=len(plan.rereads),
         values_changed=sum(
             1
             for reread in plan.rereads
             for name, value in reread.values.items()
             if name in reread.result.host_measures and reread.result.host_measures[name] != value
+        )
+        + sum(
+            1
+            for reread in plan.rereads
+            for name, value in reread.derived.items()
+            if name in reread.derived_was and reread.derived_was[name] != value
         ),
     )
     if report.already_current:
@@ -205,8 +231,11 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             + ", so the run would have gone otherwise under the current one and its stored cells cannot say how",
             remedy="run it again under the current definition; the stored run stays in the cell it was measured in",
         )
+    derived_of = {descriptor.name: descriptor.derived_from for descriptor in measures.derived}
+    derivations = claim_derivations(host.profile)
     rereads: list[_Reread] = []
     unanswered: list[str] = []
+    ungraded: list[str] = []
     for listed in storage.query_eval_results_by_run(run.id, scope_id):
         result, etag = storage.load_eval_result_with_etag(listed.id, scope_id)
         if result is None:
@@ -215,8 +244,20 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
                 "whether it holds a value read under another definition cannot be told",
                 remedy="re-measure it again once the result reads; nothing was written",
             )
-        asked = tuple(name for name in declared if not _read_under(result, name, now[name]))
+        moved_here = [name for name in declared if not _read_under(result, name, now[name])]
+        # A reading derived from a claim criterion is the engine's to read again, from the stored grade; every other
+        # moved measure is the host's reader's.
+        asked = tuple(name for name in moved_here if name not in derived_of)
+        derived_asked = [name for name in moved_here if derived_of.get(name) in result.claim_tallies]
         held = [name for name in asked if name in result.host_measures]
+        loaded: list[EvalTrace | None] = []
+
+        def trace_of(result: EvalResult = result) -> EvalTrace | None:
+            if not loaded:
+                loaded.append(storage.load_eval_trace(result.id, scope_id) if result.has_trace else None)
+            return loaded[0]
+
+        values: dict[str, bool | float | str] = {}
         if reader is None:
             if held:
                 raise ValidationFailedError(
@@ -225,20 +266,48 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
                     "result (HostProfile.measure_rereader)",
                     remedy="wire a measure_rereader on the host's profile, or run it again under the current definition",
                 )
-            continue
-        if not asked:
-            continue
-        trace = storage.load_eval_trace(result.id, scope_id) if result.has_trace else None
-        values = dict(reader(MeasureRereadRequest(run=run, result=result, trace=trace, measures=asked)))
-        if unasked := sorted(set(values) - set(asked)):
-            raise ValueError(
-                f"the host's measure_rereader answered {', '.join(unasked)} for result '{result.id}', which the "
-                f"re-measure did not ask (it asked {', '.join(asked)})"
+        elif asked:
+            values = dict(reader(MeasureRereadRequest(run=run, result=result, trace=trace_of(), measures=asked)))
+            if unasked := sorted(set(values) - set(asked)):
+                raise ValueError(
+                    f"the host's measure_rereader answered {', '.join(unasked)} for result '{result.id}', which the "
+                    f"re-measure did not ask (it asked {', '.join(asked)})"
+                )
+            refuse_misfit_host_measures(values, measures)
+            unanswered.extend(f"{result.id} ({name})" for name in held if name not in values)
+        tallies: dict[str, ClaimTally] = {}
+        derived: dict[str, float | None] = {}
+        derived_was: dict[str, float] = {}
+        for criterion in sorted({derived_of[name] for name in derived_asked if derived_of[name] is not None}):
+            stored = trace_of()
+            grade = None if stored is None else stored.claim_grades.get(criterion)
+            evidence = None if stored is None else stored.claim_evidence
+            if grade is None or evidence is None:
+                ungraded.append(f"{result.id} ({criterion})")
+                continue
+            read = derive_claim_readings(derivations[criterion], grade, evidence)
+            tally = result.claim_tallies[criterion]
+            names = [name for name in derived_asked if derived_of[name] == criterion]
+            derived.update({name: read.get(name) for name in names})
+            derived_was.update({name: tally.derived[name] for name in names if name in tally.derived})
+            kept = {name: value for name, value in tally.derived.items() if name not in names}
+            tallies[criterion] = tally.model_copy(
+                update={"derived": dict(sorted({**kept, **{n: read[n] for n in names if n in read}}.items()))}
             )
-        refuse_misfit_host_measures(values, measures)
-        unanswered.extend(f"{result.id} ({name})" for name in held if name not in values)
-        if values:
-            rereads.append(_Reread(result=result, etag=etag, values=values))
+        if values or tallies:
+            rereads.append(
+                _Reread(
+                    result=result, etag=etag, values=values, tallies=tallies, derived=derived, derived_was=derived_was
+                )
+            )
+    if ungraded:
+        named = ", ".join(ungraded[:_NAMED_IN_A_REFUSAL])
+        more = len(ungraded) - _NAMED_IN_A_REFUSAL
+        raise ValidationFailedError(
+            f"run '{run.id}' cannot be re-measured: {len(ungraded)} claim tally(ies) hold readings derived from their "
+            f"criterion and have no stored grade to read them again from ({named}{f', and {more} more' if more > 0 else ''})",
+            remedy="run it again under the current definition; nothing was written",
+        )
     if unanswered:
         named = ", ".join(unanswered[:_NAMED_IN_A_REFUSAL])
         more = len(unanswered) - _NAMED_IN_A_REFUSAL
@@ -295,14 +364,18 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
         updated = result.model_copy(
             update={
                 "host_measures": {**result.host_measures, **reread.values},
+                "claim_tallies": {**result.claim_tallies, **reread.tallies},
                 "measure_rereads": [
                     *result.measure_rereads,
                     MeasureReread(
-                        definitions={name: plan.now[name] for name in sorted(reread.values)},
+                        definitions={name: plan.now[name] for name in sorted({*reread.values, *reread.derived})},
                         was={
-                            name: result.host_measures[name]
-                            for name in sorted(reread.values)
-                            if name in result.host_measures
+                            **{
+                                name: result.host_measures[name]
+                                for name in sorted(reread.values)
+                                if name in result.host_measures
+                            },
+                            **reread.derived_was,
                         },
                     ),
                 ],

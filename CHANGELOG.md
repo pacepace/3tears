@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a host's own readings of a claim criterion's grade
+
+**Added (#1287), provisional:** a host may read a claim criterion's grade into readings of its own. It declares each as
+a measure with `derived_from: <criterion>` (`MetricDescriptor.derived_from`), named `<criterion>_<what it reads>` in a
+judge-graded family (`claims`, or a host family `graded_by="judge"`), and registers one `ClaimReader` per criterion on
+`HostProfile.claim_readers`: a pure, synchronous `(ClaimGrade, ClaimEvidence) -> Mapping[str, float | bool]` that reads
+the grade's claims (the session ones above all), the segments' `tags` and the cell's `ClaimEvidence.session` record. A
+back-announce order read against the play order, or a narrator's "you rolled a 14" against the roll log, is one. The
+engine runs the reader wherever a criterion's tally is made: after the grade lands (a run's cell, a witnessed cell), on
+a re-judge, and on settling a row pending its trace. A re-measure of a moved definition reads it again from the stored
+grade. Its answer is stored on the tally (`ClaimTally.derived`), so each reading is a judged reading under the
+criterion's key (`ScoreRecord.instrument`). It ranks beside the criterion's own readings where it declares a better
+end, is lost with the criterion, and is withheld by the same one test across every arm. A bar naming one is refused
+(`ranks_only`). A reading the reader leaves out is one the cell does not carry, never a zero.
+
+**Refused:** a registry refuses a derived measure in a code-graded family, in no family or in another engine family,
+one not named under its criterion's key, one that is not a number, and one declaring a guardrail, a merit axis or
+`shapes_run`. A profile refuses a derived measure whose criterion has no reader, and a reader no measure derives from.
+A template is refused where a derived measure takes one of its criterion's own reading names. A kind landing a derived
+measure on `host_measures` is refused. A reader that raises, answers a name no measure derived from its criterion
+holds, or answers a value its measure cannot hold (a bool for a numeric measure, a non-finite value, one outside its
+range) is the host's defect, `ClaimReaderDefect`. It fails the run (its cell recorded with what it spent), the re-judge
+or the re-measure that met it, and is never read as a value or as the criterion's loss.
+
+**Changed:** `measure_definition_digests` leaves `derived_from` out of a descriptor that does not declare it, so every
+stored run's measure definitions read as before. The `claim-loss.*` certified claims gain `claim-loss.above-switch.2-arms`:
+under an equal 20% loss over forty cases of four repeats at two arms (about 64 lost cells a draw, past the 40 where the
+chi-square law gives the p), one test across every arm withholds a claim reading at most 5% of the time.
+
+**For hosts:** `ClaimTally` gains `derived` (left out while empty). It amends core 15.24, which is unreleased. A build
+before this change refuses a stored result whose tally carries it (`claim_tallies.<criterion>.derived`, extra
+forbidden); a tally without it reads as before, checked by loading both through the previous build's model. Roll this
+build out to every process that reads results before any host registers a claim reader, and roll back only after
+removing the readers and re-judging or discarding the cells they read. `derived_from`, `HostProfile.claim_readers` and
+`ClaimReader` are provisional: their shape may change before they are promised.
+
 ### evals: claim readings rank arms, and a criterion's losses withhold only what they cost
 
 **Added (#1287):** a claim criterion's readings are read on the ranking path as judged readings. The score projection

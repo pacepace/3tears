@@ -66,6 +66,7 @@ from threetears.evals.kernel.host.kinds import (
     freeze,
 )
 from threetears.evals.kernel.host.measures import (
+    ClaimReader,
     MeasureRegistrationError,
     MeasureRegistry,
     MeasureRereader,
@@ -138,6 +139,7 @@ __all__ = [
     "BarRegistry",
     "CellTimeoutFactory",
     "CheckName",
+    "ClaimReader",
     "Comparability",
     "CompletionClients",
     "CompletionRole",

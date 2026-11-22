@@ -20,7 +20,7 @@ interprets. The host chooses what a scope is and passes it through.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
@@ -33,6 +33,7 @@ from threetears.evals.schema.models import CLAIM_PENDING, NON_TERMINAL_RUN_STATU
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
+from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, claim_derivations
 from threetears.evals.kernel.claims.grading import GradedCriterion, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -306,13 +307,15 @@ async def rejudge_result(
     :raises CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
         Nothing is stored; the spend is on the log line.
     :raises ApparatusError: The rig could not serve a claims call (a replay's miss). Nothing is stored.
+    :raises ClaimReaderDefect: The host's reader of a claim criterion raised, or answered what its measures cannot
+        hold — the host's defect. Nothing of the re-judge is stored.
     :raises StorageError: The result was re-scored and stored but its run's excluded-cell count
         could not be updated, or a claims re-judge's trace did not land (then nothing was stored).
     """
     storage = host.storage
     # Every read and write below is a store call, so each runs on the host's blocking executor, off the loop.
     settled, were_pending = await run_blocking(
-        host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id
+        host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id, claim_derivations(host.profile)
     )
     # Settled, and nothing else failed: a criterion settled lost here had no stored trace, which nothing can grade.
     if settled is not None and settled.judge_error is None and set(settled.claim_failures) <= were_pending:
@@ -367,8 +370,10 @@ async def rejudge_result(
         if claim_inputs is not None:
             billing = _BilledClaimsClient(judge_service.default_client(), web=web_search, rates=external_rates)
             try:
-                regraded = await _regrade_claims(claim_inputs, billing, result_id=result_id)
-            except CompletionProtocolDefect, ApparatusError:
+                regraded = await _regrade_claims(
+                    claim_inputs, billing, result_id=result_id, derivations=claim_derivations(host.profile)
+                )
+            except CompletionProtocolDefect, ApparatusError, ClaimReaderDefect:
                 log.error(
                     "eval.rejudge_result result=%s run=%s — a claims call could not be read or served, so nothing was "
                     "stored; the claims calls cost %s",
@@ -517,13 +522,18 @@ class _BilledClaimsClient:
 
 
 async def _regrade_claims(
-    inputs: ReproducibleClaimInputs, client: _BilledClaimsClient, *, result_id: str
+    inputs: ReproducibleClaimInputs,
+    client: _BilledClaimsClient,
+    *,
+    result_id: str,
+    derivations: Mapping[str, ClaimDerivation],
 ) -> dict[str, GradedCriterion | str]:
     """Grade each criterion a claims re-judge grades again, whole, in order, beside the grades the trace keeps.
 
     :return: criterion -> its grade, or its loss.
     :raises CompletionProtocolDefect: A completion in an extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
+    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     evidence = inputs.claim_evidence
     criteria = {criterion.name: criterion for criterion in inputs.template.claim_criteria}
@@ -537,6 +547,7 @@ async def _regrade_claims(
             client=client,
             graded=graded,
             what=f"Re-judge of result {result_id}: claim criterion {name}",
+            derivation=derivations.get(name),
             search=client.search if criteria[name].web is not None else None,
         )
         regraded[name] = outcome
@@ -580,7 +591,7 @@ def _rejudge_spend(updated: EvalResult, *, before: EvalResult) -> float | None:
 
 
 def _settle_before_rejudge(
-    storage: EvalStorage, result_id: str, scope_id: str
+    storage: EvalStorage, result_id: str, scope_id: str, derivations: Mapping[str, ClaimDerivation]
 ) -> tuple[EvalResult | None, frozenset[str]]:
     """Settle a result's pending claim criteria before anything of a re-judge is checked or asked.
 
@@ -611,7 +622,9 @@ def _settle_before_rejudge(
     if template is None:
         raise NotFoundError("template", run.template_id, remedy=FIND_TEMPLATE)
     try:
-        settled = settled_pending_claims(result, storage.load_eval_trace(result_id, scope_id), template)
+        settled = settled_pending_claims(
+            result, storage.load_eval_trace(result_id, scope_id), template, derivations=derivations
+        )
     except ValueError as unreadable:
         raise ValidationFailedError(
             f"result '{result_id}''s stored claim grade gives no tally: {unreadable}",

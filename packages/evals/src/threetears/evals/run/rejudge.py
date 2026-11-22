@@ -28,9 +28,10 @@ replay keys each by its prompt: a document changed since the recording is anothe
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
+from threetears.evals.kernel.claims.derived import ClaimDerivation
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,
     criterion_fingerprints,
@@ -389,7 +390,12 @@ def apply_claim_rejudge(
 
 
 def settled_pending_claims(
-    result: EvalResult, trace: EvalTrace | None, template: EvalTemplate, *, lose_untraced: bool = True
+    result: EvalResult,
+    trace: EvalTrace | None,
+    template: EvalTemplate,
+    *,
+    derivations: Mapping[str, ClaimDerivation],
+    lose_untraced: bool = True,
 ) -> EvalResult | None:
     """``result`` with each criterion pending its trace (``trace_pending``) settled from what is stored, with no call.
 
@@ -407,10 +413,12 @@ def settled_pending_claims(
     :param result: The stored result.
     :param trace: Its trace as stored, or ``None`` when none is.
     :param template: Its run's template.
+    :param derivations: The host's readings of each criterion (``claim_derivations(profile)``), made with each tally.
     :param lose_untraced: Whether a criterion whose trace is absent is lost (``trace_lost``); False leaves it pending,
         for when the trace's write may still land (a take-up's start: an earlier holder's trace write is not fenced).
     :return: The result as it then stands, or ``None`` when no pending criterion was settled.
     :raises ValueError: A stored grade does not give a tally under its criterion.
+    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     pending = [name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING]
     if not pending:
@@ -427,7 +435,9 @@ def settled_pending_claims(
         assert trace is not None
         if name not in trace.claim_grades or name not in criteria:
             continue
-        tallies[name] = grade_tally(trace.claim_grades[name], evidence, criteria[name])
+        tallies[name] = grade_tally(
+            trace.claim_grades[name], evidence, criteria[name], derivation=derivations.get(name)
+        )
         failures.pop(name)
     if failures == result.claim_failures:
         return None
@@ -441,6 +451,7 @@ def settle_pending_claims(
     template: EvalTemplate,
     *,
     through_epoch: int,
+    derivations: Mapping[str, ClaimDerivation],
     lose_untraced: bool = True,
 ) -> list[str]:
     """Settle every row of a run whose claim criteria are pending their trace, written at or before a holding.
@@ -453,16 +464,19 @@ def settle_pending_claims(
     fenced by its lease, so it may still land, and only the holding's end loses a row whose trace is absent.
 
     **It never raises a row's failure**: a grade that gives no tally, a lost race or a store that fails leaves that
-    row pending, logged, and the rest are settled; a re-judge settles it later. Blocking: called off the event loop.
+    row pending, logged, and the rest are settled; a re-judge settles it later. The host's claim reader failing is no
+    row's failure but the host's code (``ClaimReaderDefect``), and is raised. Blocking: called off the event loop.
 
     :param storage: The run's store.
     :param run_id: The run.
     :param scope_id: Its scope.
     :param template: The run's template, whose criteria name what each grade is held to.
     :param through_epoch: The latest holding whose rows are settled.
+    :param derivations: The host's readings of each criterion, made with each tally; a reader's defect is raised.
     :param lose_untraced: Whether a row whose trace is absent is lost (``trace_lost``), or left pending.
     :return: The ids of the rows settled.
     :raises StorageError: The run's rows could not be listed.
+    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     if not template.claim_criteria:
         return []
@@ -475,7 +489,11 @@ def settle_pending_claims(
             if result is None or result.lease_epoch > through_epoch:
                 continue
             updated = settled_pending_claims(
-                result, storage.load_eval_trace(row.id, scope_id), template, lose_untraced=lose_untraced
+                result,
+                storage.load_eval_trace(row.id, scope_id),
+                template,
+                derivations=derivations,
+                lose_untraced=lose_untraced,
             )
             if updated is None:
                 continue

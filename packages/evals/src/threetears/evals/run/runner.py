@@ -67,6 +67,7 @@ from contextlib import (
 )
 from dataclasses import dataclass, field, replace
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
 from threetears.evals.kernel.candidate_kind import (
@@ -80,6 +81,7 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, claim_derivations
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,
@@ -2087,6 +2089,7 @@ async def _run_one_result(
             gate=sink.judging_gate,
             awaiting_room=sink.wait_for_room,
             judge_billed=sink.judge_billed,
+            derivations=claim_derivations(host.profile),
             set_aside=judged.set_aside,
             web=options.web_search,
             rates=options.external_rates,
@@ -2490,6 +2493,7 @@ async def _settle_pending_claims(
                 template,
                 through_epoch=through_epoch,
                 lose_untraced=lose_untraced,
+                derivations=claim_derivations(host.profile),
             ),
         )
     except StorageError as unlisted:
@@ -2505,6 +2509,7 @@ async def _run_claims_phase(
     judge_service: JudgeService,
     eval_run_id: str,
     sink: CellSink | None,
+    derivations: Mapping[str, ClaimDerivation],
     gate: _JudgingGate | None = None,
     awaiting_room: Callable[[bool], None] | None = None,
     judge_billed: Callable[[], float] | None = None,
@@ -2548,9 +2553,11 @@ async def _run_claims_phase(
     :param web: The run's web search; ``None`` when it has none, which launch refuses for a criterion with a web
         budget.
     :param rates: The run's rate table, which may price the port's queries.
+    :param derivations: The host's readings of each criterion (``claim_derivations(profile)``), made with its tally.
     :return: The phase's wall clock in milliseconds.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
+    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     started = time.monotonic()
     try:
@@ -2624,6 +2631,7 @@ async def _run_claims_phase(
                     client=claims_client,
                     graded=phase.grades,
                     what=f"Eval run {eval_run_id}: claim criterion {name} for case={test_case.id}",
+                    derivation=derivations.get(name),
                     truth_kept=partial(phase.provisional.__setitem__, name),
                     search=claims_client.search if web is not None and criterion.web is not None else None,
                 )
@@ -2783,6 +2791,7 @@ async def judge_witnessed_output(
     settled: list[tuple[str, JudgeOutcome]] | None = None,
     kind_name: str = "the witnessed cell's kind",
     claims_billed: list[object] | None = None,
+    derivations: Mapping[str, ClaimDerivation] = MappingProxyType({}),
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, and its claims through the runner's
     own claims phase, as the runner gates them.
@@ -2807,6 +2816,8 @@ async def judge_witnessed_output(
     :param claims_billed: A caller-owned list each claims call's completion is appended to as it is billed, the
         defect's included, so a caller the phase raised to still counts what its claims calls were paid; ``None`` when
         it keeps none.
+    :param derivations: The host's readings of each claim criterion (``claim_derivations(profile)``), made with each
+        criterion's tally; empty for a host that derives none. A witnessed cell's recording passes its host's.
     :return: What the phases left and their wall clock; ``(None, None)`` when the output gave them nothing to judge.
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
@@ -2854,6 +2865,7 @@ async def judge_witnessed_output(
             judge_service=judge_service,
             eval_run_id=eval_run_id,
             sink=None,
+            derivations=derivations,
         )
         judged = _with_claims(judged, claiming, outcomes=outcomes)
         judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
@@ -3052,15 +3064,23 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
 
     :param host_measures: What the kind measured, by name.
     :param measures: The host's measure registry.
-    :raises ValueError: A value's type contradicts its measure's declared data type; the message names each such
-        measure, its declared type and the type recorded.
+    :raises ValueError: A value's type contradicts its measure's declared data type, or it lands a measure derived from
+        a claim criterion, which only the claims phase reads; the message names each such measure and why.
     """
     misfits = [
         f"{name!r} ({misfit})"
         for name, value in sorted(host_measures.items())
         if name.strip()
         and _described(descriptor := describe_measure(name, measures))
-        and (misfit := measure_value_misfit(descriptor, value)) is not None
+        and (
+            misfit := (
+                f"derived from claim criterion {descriptor.derived_from!r}: the engine reads it from the criterion's "
+                "grade, through the host's claim reader, and stores it with the criterion's tally"
+                if descriptor.derived_from is not None
+                else measure_value_misfit(descriptor, value)
+            )
+        )
+        is not None
     ]
     if misfits:
         raise ValueError(
@@ -5062,7 +5082,7 @@ async def execute_run(
         # A ``KeyboardInterrupt`` raised in this cell's own step (a Ctrl+C landing while candidate code or the cell's
         # scoring runs on the loop thread): the cell is recorded cut as a cancelled one is, then it is raised.
         interrupted: KeyboardInterrupt | None = None
-        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | None = None
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | ClaimReaderDefect | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
                 result, cell_trace = await run_one_result(
@@ -5166,10 +5186,16 @@ async def execute_run(
                     failed, log=log, what=f"an interrupted cell of run {run.id} could not be recorded", level="error"
                 )
                 raise stopped from failed
-        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
+        except (
+            CandidateKindDefect,
+            CompletionProtocolDefect,
+            ApparatusError,
+            ClaimReaderDefect,
+            JudgeCallUnserved,
+        ) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
-            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
-            # which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
+            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol, a claim
+            # reader that raised or answered what its measures cannot hold — which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
             # it is met (a ReplayMiss: a recording that cannot serve the run), and any judge call the rig could not
             # serve, the run's scoring
             # judge's or, carried out of ``invoke`` as a JudgeCallUnserved, the judge kind's judge under test (a

@@ -724,15 +724,17 @@ async def test_a_grade_records_its_lost_ground_step_so_its_tally_is_recomputed_f
 
     grade = lost_trace.claim_grades[_CRITERION]
     assert grade.ground_loss == "unreadable"
-    assert grade_tally(grade, lost_trace.claim_evidence, criterion) == lost.claim_tallies[_CRITERION]
+    assert grade_tally(grade, lost_trace.claim_evidence, criterion, derivation=None) == lost.claim_tallies[_CRITERION]
     assert whole_trace.claim_grades[_CRITERION].ground_loss is None
     assert (
-        grade_tally(whole_trace.claim_grades[_CRITERION], whole_trace.claim_evidence, criterion)
+        grade_tally(whole_trace.claim_grades[_CRITERION], whole_trace.claim_evidence, criterion, derivation=None)
         == (whole.claim_tallies[_CRITERION])
     )
     with pytest.raises(ValueError, match="grounded"):
         # The control: a grade that forgot its ground step's loss could not be read back at all.
-        grade_tally(grade.model_copy(update={"ground_loss": None}), lost_trace.claim_evidence, criterion)
+        grade_tally(
+            grade.model_copy(update={"ground_loss": None}), lost_trace.claim_evidence, criterion, derivation=None
+        )
 
 
 async def test_a_cell_records_each_due_criterions_fingerprint_whether_it_was_graded_or_lost() -> None:

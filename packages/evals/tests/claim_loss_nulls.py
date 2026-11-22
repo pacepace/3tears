@@ -1,6 +1,7 @@
 """Claim losses under the null, and one lopsided loss: seeded campaigns read by the bundle's claim-loss test.
 
-Each draw is one campaign of twelve cases: one arm per entry of a row's losses, each arm losing each of its cells to a
+Each draw is one campaign of a row's cases (twelve, but for the row above the permutation switch): one arm per entry of a
+row's losses, each arm losing each of its cells to a
 claim criterion (``rules.claims``, grounded in the arm's own documents) at its own share, or at a share its case sets,
 independently. The draw reads the bundle's judged measures over the projection's rows, as assembly does, and reports
 whether the false claims per unit is withheld (``trials_lost``). Under equal loss a withhold is a false one, which the
@@ -38,12 +39,13 @@ def _clustered(case: int) -> float:
 
 @dataclass(frozen=True)
 class Row:
-    """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, and how many draws
-    the certificate reads of it."""
+    """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, how many draws
+    the certificate reads of it, and the cases each draw runs."""
 
     losses: tuple[float | Callable[[int], float], ...]
     repeats: int
     draws: int
+    cases: int = CASES
 
 
 #: The rows the certificate counts, by name: equal loss at two, three and four arms, at 10% over two repeats, at 3%, at
@@ -63,6 +65,10 @@ ROWS: Final[Mapping[str, Row]] = MappingProxyType(
             for arms in (2, 3, 4)
         },
         "lopsided-0-30": Row((0.0, 0.30), 2, 1000),
+        # Above the switch to the chi-square law (more than 40 lost cells in the cases that tell arms apart): 40 cases
+        # of four repeats at two arms, each losing 20%, about 64 lost cells a draw and fewer than 41 in under one draw in
+        # a thousand, so the law, not the permutation, gives every p the row reads.
+        "above-switch.2-arms": Row((0.20, 0.20), 4, 1000, cases=40),
     }
 )
 
@@ -117,7 +123,7 @@ def withheld(row: str, seed: int) -> bool:
     kept = _tally()
     results: list[EvalResult] = []
     for index, (run, loss) in enumerate(zip(runs, held.losses, strict=True)):
-        for case in range(CASES):
+        for case in range(held.cases):
             for k in range(1, held.repeats + 1):
                 lost = draw.random() < (loss(case) if callable(loss) else loss)
                 results.append(

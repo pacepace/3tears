@@ -1208,10 +1208,10 @@ def _claims() -> list[Claim]:
             Claim(
                 f"claim-loss.{row}",
                 (
-                    f"A claim reading whose arms lose cells unevenly (none against 30%, {claim_loss.CASES} cases of "
+                    f"A claim reading whose arms lose cells unevenly (none against 30%, {held.cases} cases of "
                     f"{held.repeats} repeats) is withheld at least {CLAIM_LOSS_POWER_FLOOR:.0%} of the time."
                     if lopsided
-                    else f"Under equal claim loss ({row.split('.')[0]}) at {arms} arms, {claim_loss.CASES} cases of "
+                    else f"Under equal claim loss ({_claim_loss_words(row)}) at {arms} arms, {held.cases} cases of "
                     f"{held.repeats} repeat{'s' if held.repeats > 1 else ''}, one test across every arm withholds a "
                     "claim reading at most α."
                 ),
@@ -1223,6 +1223,14 @@ def _claims() -> list[Claim]:
             )
         )
     return claims
+
+
+def _claim_loss_words(row: str) -> str:
+    """How a claim-loss row's equal loss reads in its claim: its name, or, above the permutation switch, the share and
+    the law that reads its p."""
+    if row.startswith("above-switch"):
+        return "20% of cells, about 64 lost a draw, past the 40 where the chi-square law gives the p"
+    return row.split(".")[0]
 
 
 #: Every certified claim.

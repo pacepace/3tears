@@ -6701,6 +6701,22 @@ class ClaimTally(CoreShapeModel):
         "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
         "stands. None (left out) when the step did not fail, or was not asked.",
     )
+    derived: dict[str, float] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="The host's readings of the cell's grade under this criterion (each measure declaring "
+        "`derived_from` this criterion), by name, as its claim reader answered them when the tally was made: a "
+        "boolean reading as 1 or 0. A reading the reader left out is one the cell does not carry. Empty (left out) "
+        "for a criterion no measure derives from.",
+    )
+
+    @field_validator("derived", mode="after")
+    @classmethod
+    def _derived_readings_are_finite(cls, derived: dict[str, float]) -> dict[str, float]:
+        """:raises ValueError: A derived reading is not a finite number, or is named by a blank name."""
+        if bad := sorted(name for name, value in derived.items() if not name.strip() or not math.isfinite(value)):
+            raise ValueError(f"a tally's derived readings are finite numbers under a name, and {bad} are not")
+        return derived
 
     @model_validator(mode="after")
     def _one_entry_per_judge(self) -> Self:

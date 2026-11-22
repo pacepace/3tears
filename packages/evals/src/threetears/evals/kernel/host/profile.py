@@ -88,7 +88,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
-from threetears.evals.kernel.host.measures import MeasureRegistry, MeasureRereader
+from threetears.evals.kernel.host.measures import ClaimReader, MeasureRegistry, MeasureRereader
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
@@ -286,6 +286,18 @@ class HostProfile:
     definitions it was read under. A run none of whose results holds such a value needs no reader.
     """
 
+    claim_readers: Mapping[str, ClaimReader] = field(default_factory=dict)
+    """PROVISIONAL. How this host reads each claim criterion's grade into its own readings of it, by criterion name.
+    See :data:`~threetears.evals.kernel.host.measures.ClaimReader`.
+
+    One reader per criterion some measure derives from (``MetricDescriptor.derived_from``), answering every such
+    measure of it: a back-announce order against the play order a cell's ``ClaimEvidence.session`` holds, a game state
+    a narrator's session claims state against the roll log. The engine runs it after the criterion's grade lands, and
+    again on a re-judge, on settling a row pending its trace, and on a re-measure of a moved definition; its readings
+    are stored with the criterion's tally and ranked, withheld and lost with the criterion's own. Empty is the normal
+    case. A reader no measure derives from, or a derived measure whose criterion has no reader, is refused here.
+    """
+
     kinds: tuple[KindContract, ...] = ()
     """What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec.
 
@@ -377,7 +389,8 @@ class HostProfile:
             blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind
             contract's lever is registered in
             :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
-            for every run, or ``release_label`` names no registered ``label``.
+            for every run, ``release_label`` names no registered ``label``, or a claim reader and the measures
+            derived from claim criteria name different criteria.
         """
         self._refuse_overlapping_kind_contracts()
         self._refuse_a_kind_lever_registered_by_hand()
@@ -398,6 +411,7 @@ class HostProfile:
         self._refuse_an_unsound_seat()
         self._refuse_a_malformed_listing_elision()
         self._refuse_a_release_label_that_is_not_a_label()
+        self._refuse_an_unmatched_claim_reader()
 
     def kind_contract(self, kind: str) -> KindContract:
         """The contract this host declares for ``kind`` — a contract declaring nothing when it declares none.
@@ -543,6 +557,35 @@ class HostProfile:
                 f"host {self.host_id!r} names release_label {self.release_label!r}, which {what} — a release "
                 "label is a registered `label` sweepable naming the build that ran"
             )
+
+    def _refuse_an_unmatched_claim_reader(self) -> None:
+        """Refuse a claim reader no derived measure reads through, or a derived measure whose criterion has no reader.
+
+        Either way a reading would silently never be computed: a measure with no reader carries no value on any cell,
+        and a reader with no measure answers names the engine refuses. Checked where both are in hand.
+
+        :raises ProfileRegistrationError: A reader names a criterion no measure derives from, a derived measure names
+            a criterion with no reader, or a reader is not callable.
+        """
+        derived = {descriptor.derived_from for descriptor in self.measures.derived}
+        readers = set(self.claim_readers)
+        defects = [
+            f"measures {', '.join(sorted(d.name for d in self.measures.derived if d.derived_from == criterion))} "
+            f"derive from claim criterion {criterion!r}, and no claim reader is registered for it"
+            for criterion in sorted(c for c in derived - readers if c is not None)
+        ]
+        defects += [
+            f"a claim reader is registered for criterion {criterion!r}, and no measure derives from it "
+            "(MetricDescriptor.derived_from)"
+            for criterion in sorted(readers - derived)
+        ]
+        defects += [
+            f"the claim reader for criterion {criterion!r} is a {type(reader).__name__}, not a callable"
+            for criterion, reader in sorted(self.claim_readers.items())
+            if not callable(reader)
+        ]
+        if defects:
+            raise ProfileRegistrationError(f"host {self.host_id!r}: " + "; ".join(defects))
 
     def _refuse_an_engine_reserved_lever(self) -> None:
         """Refuse a host recovery rule for a lever name the engine already owns.

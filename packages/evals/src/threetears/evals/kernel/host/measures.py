@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.host.attribution import HostAttributed
 from threetears.evals.kernel.metrics import (
+    CLAIMS_FAMILY,
     ENGINE_FAMILIES,
     METRIC_DESCRIPTORS,
     containment_defects,
@@ -39,7 +40,7 @@ from threetears.evals.kernel.metrics import (
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
-    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTrace
+    from threetears.evals.schema.models import ClaimEvidence, ClaimGrade, EvalResult, EvalRun, EvalTrace
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,16 @@ class MeasureRereadRequest:
 #: answered: the re-measure refuses the run otherwise, since the stored value was read under another definition and
 #: nothing may guess the new one. Raise to refuse a result outright.
 MeasureRereader = Callable[[MeasureRereadRequest], "Mapping[str, bool | float | str]"]
+
+#: PROVISIONAL. Read one cell's grade under a claim criterion into the host's own readings of it: the measures it
+#: declares with ``derived_from`` naming that criterion (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.derived_from`),
+#: by name. Pure and synchronous, and handed only what the engine stores: the criterion's grade of the cell (each claim,
+#: its ``scope`` and its excerpt) and the cell's claim evidence (each segment's ``tags``, and the run's own
+#: ``session`` record, a play order or a game state). Host code the engine calls from the claims phase, a re-judge, the
+#: settling of a pending row and a re-measure, and never inspects. A reading it leaves out is one the cell does not
+#: carry (none of its claims is about what the reading counts), never a zero. It raises only on its own defect, which
+#: fails what asked (``ClaimReaderDefect``): it is never read as a value, and never as the criterion's loss.
+ClaimReader = Callable[["ClaimGrade", "ClaimEvidence"], "Mapping[str, float | bool]"]
 
 
 class MeasureRegistrationError(ValueError):
@@ -165,6 +176,8 @@ class MeasureRegistry(HostAttributed):
                     "may not decide a pass: declare the family graded_by='code' if code made the number, or drop "
                     "the measure's better end (higher_is_better=None)"
                 )
+            if descriptor.derived_from is not None:
+                defects.extend(self._derived_defects(descriptor, graded_by))
             if descriptor.name in seen:
                 defects.append(
                     f"{descriptor.name} is declared twice — lookups key by name, so one would shadow the other"
@@ -196,6 +209,70 @@ class MeasureRegistry(HostAttributed):
             # describing nothing, whichever catalogue declared the part.
             defects.extend(f"{descriptor.name} {defect}" for defect in containment_defects(descriptor, by_name))
         return defects
+
+    @staticmethod
+    def _derived_defects(descriptor: MetricDescriptor, graded_by: Mapping[str, str]) -> list[str]:
+        """Name every way a reading derived from a claim criterion contradicts what such a reading is.
+
+        It is a judged reading of the criterion's grade, ranked, withheld and lost with the criterion's own readings, so
+        it sits in a family a judge grades (code made none of its claims), under the criterion's key, and is a number;
+        and it is none of the things a measure a kind lands is (a guardrail held per arm, a merit axis an optimizing
+        surface reads, a definition that shaped the run). Which criterion it names is checked where a template is in
+        hand, since one registry serves every template.
+
+        :param descriptor: A descriptor declaring ``derived_from``.
+        :param graded_by: Who grades each family the engine and this host declare, by name.
+        :return: The defects, each naming the measure.
+        """
+        criterion = descriptor.derived_from
+        name = descriptor.name
+        defects: list[str] = []
+        family = descriptor.family
+        if family is None or graded_by.get(family) != "judge":
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} in "
+                + ("no family" if family is None else f"family {family}, which is graded by code")
+                + " — a reading of a judge's claims is judge-graded: declare family 'claims', or a host family "
+                "graded_by='judge'"
+            )
+        elif family in ENGINE_FAMILIES and family != CLAIMS_FAMILY:
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} in the engine's {family} family, which holds "
+                "the engine's own judged numbers — declare family 'claims', or a host family graded_by='judge'"
+            )
+        if not name.startswith(f"{criterion}_") or name == f"{criterion}_":
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} and is not named under its key — name it "
+                f"{criterion}_<what it reads>, as the criterion's own readings are"
+            )
+        if descriptor.data_type not in ("numeric", "boolean"):
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} with data_type {descriptor.data_type!r} — a "
+                "reading of claims is a number, numeric or boolean"
+            )
+        defects.extend(
+            f"{name} is derived from claim criterion {criterion!r} and declares {what} — {why}"
+            for what, held, why in (
+                (
+                    "itself a guardrail",
+                    descriptor.guardrail,
+                    "a claim reading ranks arms and is never held to a margin",
+                ),
+                (
+                    f"merit axis {descriptor.merit_axis}",
+                    descriptor.merit_axis is not None,
+                    "a claim reading ranks on its own, never on an axis an optimizing surface trades",
+                ),
+                ("shapes_run", descriptor.shapes_run, "it is read after the cell is graded, so it shaped nothing"),
+            )
+            if held
+        )
+        return defects
+
+    @property
+    def derived(self) -> tuple[MetricDescriptor, ...]:
+        """The measures this host derives from claim criteria (``derived_from``), in declaration order."""
+        return tuple(d for d in self._descriptors if d.derived_from is not None)
 
     @classmethod
     def from_catalog(
@@ -263,4 +340,4 @@ class MeasureRegistry(HostAttributed):
         return descriptor
 
 
-__all__ = ["MeasureRegistrationError", "MeasureRegistry", "MeasureRereadRequest", "MeasureRereader"]
+__all__ = ["ClaimReader", "MeasureRegistrationError", "MeasureRegistry", "MeasureRereadRequest", "MeasureRereader"]

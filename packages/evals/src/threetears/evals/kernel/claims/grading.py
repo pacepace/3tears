@@ -33,6 +33,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
+from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, derive_claim_readings
 from threetears.evals.kernel.claims.extraction import ClaimExtractor
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally
@@ -165,25 +166,38 @@ def criterion_fingerprints(template: EvalTemplate, client: CompletionClient) -> 
     }
 
 
-def grade_tally(grade: ClaimGrade, evidence: ClaimEvidence, criterion: ClaimCriterion) -> ClaimTally:
+def grade_tally(
+    grade: ClaimGrade, evidence: ClaimEvidence, criterion: ClaimCriterion, *, derivation: ClaimDerivation | None
+) -> ClaimTally:
     """The tally a stored grade gives, recomputed from it alone: what the cell's result stores for the criterion.
 
     The grade records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a recomputed tally loses
-    groundedness exactly where the grading did, and never truth.
+    groundedness exactly where the grading did, and never truth. The host's readings of the grade
+    (:mod:`~threetears.evals.kernel.claims.derived`) are made here too, so no tally is ever built without them.
 
     :param grade: The criterion's grade of the cell, as the trace stores it.
     :param evidence: The claim evidence it graded, as the trace stores it.
     :param criterion: The criterion, whose ``grounded_in`` the counts read.
+    :param derivation: The host's readings of the criterion (its reader and measures), or None for a criterion no
+        measure derives from. Required, so every caller says which.
     :return: The tally.
-    :raises ValueError: The grade does not grade ``evidence`` (another digest), or its claims do not give a tally
-        (:func:`~threetears.evals.kernel.claims.readings.claim_tally`).
+    :raises ValueError: The grade does not grade ``evidence`` (another digest), its claims do not give a tally
+        (:func:`~threetears.evals.kernel.claims.readings.claim_tally`), or ``derivation`` is another criterion's.
+    :raises ClaimReaderDefect: The host's reader raised, or answered what its measures cannot hold.
     """
+    if derivation is not None and derivation.criterion != criterion.name:
+        raise ValueError(
+            f"claim criterion {criterion.name!r} is tallied with the readings derived from {derivation.criterion!r}"
+        )
     if grade.claim_evidence_digest != claim_evidence_digest(evidence):
         raise ValueError(
             f"claim criterion {criterion.name!r}'s grade names claim evidence {grade.claim_evidence_digest[:12]}, "
             f"and the trace stores {claim_evidence_digest(evidence)[:12]}"
         )
-    return claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
+    tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
+    if derivation is None:
+        return tally
+    return tally.model_copy(update={"derived": derive_claim_readings(derivation, grade, evidence)})
 
 
 def claim_evidence_digest(evidence: ClaimEvidence) -> str:
@@ -305,6 +319,7 @@ async def grade_criterion(
     key: ReferenceKey | None,
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
+    derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
 ) -> GradedCriterion:
@@ -322,6 +337,7 @@ async def grade_criterion(
     :param client: The judge's client.
     :param graded: The grades the cell's trace already holds from the criteria graded before this one, which the
         trace's cap counts beside this one.
+    :param derivation: The host's readings of the criterion, made with every tally (:func:`grade_tally`), or None.
     :param truth_kept: Told what the cell keeps if its deadline strikes in a later step: before a ground step starts,
         the grade and tally its truth step leaves, its ground step lost to the deadline (``ground_loss``
         ``deadline``), since the ground step's length grows with what the arm fetched; and before a web step starts,
@@ -337,6 +353,7 @@ async def grade_criterion(
         take the trace past
         :data:`~threetears.evals.schema.models.CLAIM_TRACE_BYTES` (``evidence_over_cap``).
     :raises ValueError: A criterion with a web budget nominated a claim, and no search was given.
+    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
     extractor, verifier = criterion_steps(criterion, client)
     checker = web_checker(criterion, client)
@@ -382,7 +399,7 @@ async def grade_criterion(
                 f"and CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
                 loss="evidence_over_cap",
             )
-        tally = grade_tally(grade, evidence, criterion)
+        tally = grade_tally(grade, evidence, criterion, derivation=derivation)
         return GradedCriterion(
             grade=grade, tally=tally, ground_failure=verification.ground_failure, web_failure=web.failure
         )
@@ -434,15 +451,16 @@ async def grade_or_loss(
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
     what: str,
+    derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
 ) -> GradedCriterion | KnownClaimLoss:
     """Grade one cell under one criterion (:func:`grade_criterion`), or name the loss the cell records instead.
 
     Every way the criterion fails is its own loss, logged: a step's (:class:`ClaimGradingFailed`), and the provider
-    failing a call (``provider_error``). Raised instead, failing what asked, since neither is an outcome of the cell:
-    a completion that breaks the protocol in the extraction or a truth call, and a call the rig could not serve (a
-    replay's miss).
+    failing a call (``provider_error``). Raised instead, failing what asked, since none is an outcome of the cell:
+    a completion that breaks the protocol in the extraction or a truth call, a call the rig could not serve (a
+    replay's miss), and the host's claim reader failing (:class:`ClaimReaderDefect`).
 
     :param criterion: The criterion.
     :param evidence: The cell's claim evidence.
@@ -450,6 +468,7 @@ async def grade_or_loss(
     :param client: The judge's client.
     :param graded: The grades the cell's trace already holds from criteria graded before this one.
     :param what: What is graded, for the log line a loss writes ("Eval run r: claim criterion c for case=k").
+    :param derivation: See :func:`grade_criterion`.
     :param truth_kept: See :func:`grade_criterion`.
     :param search: The host's search, for a criterion with a web budget (:func:`grade_criterion`). A caller refuses
         such a criterion with no search before it asks anything (the run's launch refusal), so a missing one never
@@ -457,16 +476,24 @@ async def grade_or_loss(
     :return: The grade and its tally, or the loss.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
+    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
     try:
         return await grade_criterion(
-            criterion, evidence, key=key, client=client, graded=graded, truth_kept=truth_kept, search=search
+            criterion,
+            evidence,
+            key=key,
+            client=client,
+            graded=graded,
+            derivation=derivation,
+            truth_kept=truth_kept,
+            search=search,
         )
     except ClaimGradingFailed as failed:
         # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.
         log.warning("%s lost (%s): %s", what, failed.loss, failed)
         return failed.loss
-    except CompletionProtocolDefect, ApparatusError:
+    except CompletionProtocolDefect, ApparatusError, ClaimReaderDefect:
         raise
     except (
         Exception

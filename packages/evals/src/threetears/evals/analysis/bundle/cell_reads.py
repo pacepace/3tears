@@ -38,6 +38,7 @@ from threetears.evals.kernel.declaration import (
     BarName,
     AspectDesign,
 )
+from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
@@ -178,6 +179,7 @@ def judged_measures(
     tiers: list[JudgeEvidenceTier],
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
     claim_units: Mapping[str, str] | None = None,
+    registry: MeasureRegistry | None = None,
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension, and every ranked claim reading, per cell, from the score projection assembly
     already holds.
@@ -205,6 +207,8 @@ def judged_measures(
         reads as nobody rated anything.
     :param claim_units: What a page calls one unit of each claim criterion, from the member runs' templates
         (``EvalTemplate.claim_unit_names``), for a claim reading's reader name; ``unit`` where none is named.
+    :param registry: The host's measure registry, which describes the readings it derives from a claim criterion
+        (``MetricDescriptor.derived_from``); a derived reading ranks, and is withheld, as the criterion's own do.
     :return: One entry per dimension and ranked claim reading scored anywhere, sorted by name.
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
@@ -220,7 +224,7 @@ def judged_measures(
     measures = []
     for dimension in sorted(scored):
         criterion = instruments.get(dimension)
-        if criterion is not None and not claim_reading_ranks(dimension, criterion=criterion):
+        if criterion is not None and not claim_reading_ranks(dimension, criterion=criterion, measures=registry):
             continue
         scales = {
             row.rubric_scale for rows in scored[dimension].values() for row in rows if row.rubric_scale is not None
@@ -231,7 +235,9 @@ def judged_measures(
         # template dim's row carries the scale it was answered on, and one carrying none is refused, never read as 1-5.
         # A claim reading carries none either, and is described as its criterion's reading.
         recorded = {dimension: scale for scale in scales}
-        descriptor = describe_judged_reading(dimension, scales=recorded, instruments=instruments, units=claim_units)
+        descriptor = describe_judged_reading(
+            dimension, scales=recorded, instruments=instruments, units=claim_units, measures=registry
+        )
         arms = []
         for key in sorted(scored[dimension]):
             rows = scored[dimension][key]
@@ -341,7 +347,8 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     (:data:`_CLAIM_LOSS_EXACT_AT_MOST`). Its rates are certified (the ``claim-loss.*`` claims of
     ``tests/stats_certificate.py``) over twelve cases at two, three and four arms: equal losses of 10% and of 3%, at one
     repeat a case, and a loss a few cases carry, each withholding at most 5% of the time, and a 0% against 30% loss caught
-    at least 75% of the time.
+    at least 75% of the time; and, past the permutation switch, where the chi-square law gives the p, an equal loss of
+    20% over forty cases of four repeats at two arms (about 64 lost cells), withholding at most 5% of the time too.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.
@@ -760,6 +767,7 @@ def cell_strata(
                 design,
                 tiers=tiers,
                 person_scores=person_scores,
+                registry=profile.measures,
             )
         )
         for key, members in slice_by_cell.items():
