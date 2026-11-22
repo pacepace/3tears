@@ -6092,6 +6092,8 @@ class JudgeEvidence(CoreShapeModel):
 #: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
 #: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
 #: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
+#: ``protocol_defect`` (a ground call's completion broke the protocol: the host's client is at fault, and only the
+#: ground step is lost, as :attr:`ClaimTally.ground_loss`, since a defect in any other step fails the run),
 #: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or had too little
 #: left for its next call), ``hold_exceeded`` (a call would have spent past the ceiling the criterion was priced and
 #: held at: a reply outgrew what its price assumed, which is the pricing's miss, never the cap's), ``deadline`` (the
@@ -6100,8 +6102,10 @@ class JudgeEvidence(CoreShapeModel):
 #: vocabulary: a reader counts every loss, a reason it does not know by name. One value is no loss:
 #: ``trace_pending`` (:data:`CLAIM_PENDING`), a row written before its trace whose trace write is not yet known to
 #: have landed; it reads as not yet known, never lost. Its grade is on the trace whenever the trace landed, so it is
-#: recoverable without a call: a re-judge recomputes its tally from the stored grade, which records its ground step's
-#: loss (:attr:`ClaimGrade.ground_loss`), so a lost groundedness is never read as lost truth.
+#: recovered without a call, when its run's holding ends, when the run is taken up and on a re-judge: its tally is
+#: recomputed from the stored grade, which records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a lost
+#: groundedness is never read as lost truth; and once the run's writes are done a pending criterion whose trace was
+#: never stored is lost (``trace_lost``).
 ClaimLoss = str
 
 #: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
@@ -6110,6 +6114,7 @@ KnownClaimLoss = Literal[
     "unreadable",
     "repair_budget_spent",
     "provider_error",
+    "protocol_defect",
     "port_error",
     "cost_cap",
     "hold_exceeded",
@@ -6884,9 +6889,9 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
 
     A criterion lost after its cell's trial finished (a reply cut short, the provider failing a call, the cap, a
     deadline) is graded again whole from the claim evidence the cell's trace stores, by the same judge under the same
-    criterion fingerprint; a criterion whose tally waited on its trace (``trace_pending``) is recomputed from the grade
-    the trace stores, with no call. This entry keeps both visible: without it a re-graded criterion is
-    indistinguishable from one graded in a single pass.
+    criterion fingerprint. This entry keeps that visible: without it a re-graded criterion is indistinguishable from
+    one graded in a single pass. A pending criterion settled from its stored grade with no call completes the cell's
+    own write and records none.
 
     **Its spend is recorded here and nowhere else**, as a :class:`JudgeRescore`'s is: ``EvalResult.cost_usd`` and
     ``usage`` measure the cell as it ran.
@@ -6894,19 +6899,14 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
 
     rejudged_at: str = Field(default_factory=utc_now_iso)
     criteria: list[DimName] = Field(
-        default_factory=list, description="The lost criteria graded again, whole, in the template's order."
-    )
-    recovered: list[DimName] = Field(
-        default_factory=list,
-        description="The criteria whose tally waited on the trace (trace_pending), settled with no call: recomputed "
-        "from the stored grade, or lost (trace_lost) where the trace was never stored.",
+        min_length=1, description="The lost criteria graded again, whole, in the template's order."
     )
     prior: dict[DimName, StoredClaimLoss] = Field(
         description="criterion -> what the result's claim_failures held for it before this re-judge, verbatim."
     )
     lost: dict[DimName, StoredClaimLoss] = Field(
         default_factory=dict,
-        description="criterion -> why a criterion graded again or recovered reads lost after it (CLAIM_LOSSES).",
+        description="criterion -> why a criterion graded again was lost again (CLAIM_LOSSES).",
     )
     judge_model: str = Field(min_length=1, description="The run's judge pin, which every claims call was sent on.")
     usage: list[RoleUsage] = Field(default_factory=list, description="The re-judge's own judge-role usage rows.")
@@ -6920,21 +6920,15 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
 
     @model_validator(mode="after")
     def _one_account_per_criterion(self) -> Self:
-        """Refuse a re-judge that did nothing, or whose criteria do not add up.
+        """Refuse a re-judge whose criteria do not add up.
 
-        :raises ValueError: It names no criterion; one criterion is both graded again and recovered; ``prior`` names
-            other criteria than those two lists; or a criterion is lost that was neither graded again nor recovered.
+        :raises ValueError: ``prior`` names other criteria than it graded again, or a criterion is lost again that was
+            not graded again.
         """
-        if not self.criteria and not self.recovered:
-            raise ValueError("a claim re-judge grades or recovers at least one criterion")
-        if both := sorted(set(self.criteria) & set(self.recovered)):
-            raise ValueError(f"claim criteria {', '.join(map(repr, both))} are both graded again and recovered")
-        if set(self.prior) != {*self.criteria, *self.recovered}:
-            raise ValueError("a claim re-judge's prior losses name exactly the criteria it graded again or recovered")
-        if stray := sorted(set(self.lost) - {*self.criteria, *self.recovered}):
-            raise ValueError(
-                f"claim criteria {', '.join(map(repr, stray))} are lost, and were neither graded again nor recovered"
-            )
+        if set(self.prior) != set(self.criteria):
+            raise ValueError("a claim re-judge's prior losses name exactly the criteria it graded again")
+        if stray := sorted(set(self.lost) - set(self.criteria)):
+            raise ValueError(f"claim criteria {', '.join(map(repr, stray))} are lost again, and were not graded again")
         return self
 
 

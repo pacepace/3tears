@@ -705,16 +705,17 @@ _SPEND_MEASURES: dict[str, GroupMeasure] = {
     "cost_usd": ("values", "cost_usd"),
     "judge_rescores": ("values", "judge_rescores"),
     "cost_roles": ("values", "cost_roles"),
+    "claim_rescores": ("values", "claim_rescores"),
     "schema_version": ("values", "schema_version"),
     "schema_minor": ("values", "schema_minor"),
 }
 
 
 #: What a spend read leaves out of each re-judge it reads (``exclude_in_items``): the judge's prose, the reasons each
-#: dimension failed again or could not be scored, which the spend lenses never read. Each has a default, so a re-judge
+#: dimension failed again or could not be scored, and a claims re-judge's usage rows, which the spend lenses never read. Each has a default, so a re-judge
 #: read without it validates as the stored one does; the fields a re-judge requires all ship.
 _SPEND_LEFT_OUT_OF_REJUDGES: Mapping[str, Sequence[str]] = MappingProxyType(
-    {"judge_rescores": ("cannot_tell", "errors")}
+    {"judge_rescores": ("cannot_tell", "errors"), "claim_rescores": ("usage",)}
 )
 
 
@@ -736,9 +737,17 @@ class _SpendRows:
                         f"a grouped read of the spend figures answered its columns out of step at result {row_id!r}: "
                         "every column comes in the order its group's rows were read, so a row's figures share a place"
                     )
-                (_, cost), (_, rescores), (_, roles), (_, version), (_, minor) = figures
+                (_, cost), (_, rescores), (_, roles), (_, claim_rescores), (_, version), (_, minor) = figures
                 # The row's version is read with its figures, so a row a result's read refuses is refused here alike.
-                yield ResultSpend.of_stored(run_id, cost, rescores, roles, schema_version=version, schema_minor=minor)
+                yield ResultSpend.of_stored(
+                    run_id,
+                    cost,
+                    rescores,
+                    roles,
+                    claim_rescores=claim_rescores,
+                    schema_version=version,
+                    schema_minor=minor,
+                )
 
 
 def _spend_of(storage: LensStore, scope_id: str) -> Callable[[Sequence[str] | None], _Walk[ResultSpend]]:

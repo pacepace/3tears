@@ -18,6 +18,7 @@ The text is invented: a reading room's almanac and its shelf notes.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,7 +38,7 @@ from threetears.evals.kernel.claims.grading import (
     criterion_steps,
     grade_tally,
 )
-from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host.apparatus import ReplayMiss
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
@@ -46,7 +47,14 @@ from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedErro
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.lifecycle import rejudge_result
-from threetears.evals.run.runner import RunnerOptions, execute_run, judge_witnessed_output, run_one_result
+from threetears.evals.run.runner import (
+    RunnerOptions,
+    StoredCell,
+    StoredCells,
+    execute_run,
+    judge_witnessed_output,
+    run_one_result,
+)
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.schema import Segment
 from threetears.evals.schema.call_inputs import current_call_inputs
@@ -64,6 +72,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     WebBudget,
 )
+from threetears.evals.schema.job_lease import JobLease
 from threetears.evals.schema.reference import ReferenceEntity, ReferenceFact, ReferenceKey
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore
@@ -342,7 +351,8 @@ async def test_a_ground_call_failing_costs_groundedness_alone_and_truth_stands(f
 
     tally = result.claim_tallies[_CRITERION]
     (counts,) = tally.by_judge
-    assert tally.ground_loss == ("unreadable" if failure == "not json" else "provider_error")
+    expected = {"not json": "unreadable", _DEFECTIVE: "protocol_defect"}.get(failure, "provider_error")
+    assert tally.ground_loss == expected, "a host's broken client is named as its defect, never a provider's failure"
     assert (counts.asserted, counts.grounded_specific) == (1, 0), "the truth counts stand; nothing is grounded"
     assert trace.claim_grades[_CRITERION].claims[0].verdict == "supported"
     if failure == _DEFECTIVE:
@@ -907,11 +917,17 @@ class _NoCallJudge(_FakeClaimsJudge):
 
 
 async def _stored_cell(
-    first: _FakeClaimsJudge, template: EvalTemplate, again: _FakeClaimsJudge, *, trace_stored: bool = True
+    first: _FakeClaimsJudge,
+    template: EvalTemplate,
+    again: _FakeClaimsJudge,
+    *,
+    trace_stored: bool = True,
+    storage: EvalStorage | None = None,
+    **run_fields: Any,
 ) -> tuple[EvalHost, Any, Any]:
     """One claims-only cell graded by ``first`` and stored under a finished run, on a host whose judge is ``again``;
     its trace stored too unless ``trace_stored`` is False, as a cell whose trace write never landed."""
-    host = toyhost_host(clients=lambda role, model, *, temperature=None: again)
+    host = toyhost_host(clients=lambda role, model, *, temperature=None: again, storage=storage)
     case = _case(template)
     off_loop(host.storage.save_template, template)
     off_loop(host.storage.save_test_case, case)
@@ -923,7 +939,7 @@ async def _stored_cell(
         status="completed",
         judge_model=_JUDGE,
         effective_judges={},
-        judge_asked_settings=JUDGE_REQUEST_SETTINGS,
+        **{"judge_asked_settings": JUDGE_REQUEST_SETTINGS, **run_fields},
     )
     off_loop(host.storage.save_eval_run, run)
     outcome = await run_one_result(
@@ -945,13 +961,19 @@ async def _stored_cell(
     return host, outcome.result, outcome.trace
 
 
+def _pending(result: Any) -> Any:
+    """``result`` as a row written before its trace and never rewritten: each tallied criterion pending its trace."""
+    return result.model_copy(
+        update={"claim_tallies": {}, "claim_failures": dict.fromkeys(result.claim_tallies, "trace_pending")}
+    )
+
+
 @pytest.mark.parametrize("ground", ["kept", "lost"])
-async def test_a_pending_criterion_is_recovered_from_its_stored_grade_with_no_call(ground: str) -> None:
+async def test_a_pending_criterion_is_settled_from_its_stored_grade_with_no_call(ground: str) -> None:
     first = _FakeClaimsJudge(script={"claim_ground": ["not json"]} if ground == "lost" else {})
     again = _NoCallJudge()
     host, result, trace = await _stored_cell(first, _template(), again)
-    pending = result.model_copy(update={"claim_tallies": {}, "claim_failures": {_CRITERION: "trace_pending"}})
-    off_loop(host.storage.save_eval_result, pending, trace)
+    off_loop(host.storage.save_eval_result, _pending(result), trace)
 
     rejudged = await rejudge_result(host, result.id, "u")
 
@@ -959,22 +981,38 @@ async def test_a_pending_criterion_is_recovered_from_its_stored_grade_with_no_ca
     expected_loss = "unreadable" if ground == "lost" else None
     assert rejudged.claim_tallies[_CRITERION].ground_loss == expected_loss, "a lost groundedness stays exactly that"
     assert rejudged.claim_tallies[_CRITERION].by_judge[0].asserted == 1, "and truth stands"
-    (rescore,) = rejudged.claim_rescores
-    assert (rescore.criteria, rescore.recovered, rescore.prior) == ([], [_CRITERION], {_CRITERION: "trace_pending"})
-    assert rescore.usage == [] and again.asked == []
+    assert rejudged.claim_rescores == [], "settling completes the cell's own write; nothing was re-judged"
+    assert again.asked == []
     assert off_loop(host.storage.load_eval_result, result.id, "u") == rejudged
+
+
+@pytest.mark.parametrize("moved", ["template_edited", "request_settings"])
+async def test_settling_a_pending_criterion_passes_no_apparatus_check_since_it_asks_nothing(moved: str) -> None:
+    template = _template()
+    host, result, trace = await _stored_cell(
+        _FakeClaimsJudge(),
+        template,
+        _NoCallJudge(),
+        **({"judge_asked_settings": None} if moved == "request_settings" else {}),
+    )
+    if moved == "template_edited":
+        off_loop(host.storage.save_template, template.model_copy(update={"updated_at": "2099-01-01T00:00:00+00:00"}))
+    off_loop(host.storage.save_eval_result, _pending(result), trace)
+
+    rejudged = await rejudge_result(host, result.id, "u")
+
+    assert rejudged.claim_tallies == result.claim_tallies and rejudged.claim_failures == {}
 
 
 async def test_a_pending_criterion_whose_trace_was_never_stored_is_lost_once_its_run_has_ended() -> None:
     host, result, _ = await _stored_cell(_FakeClaimsJudge(), _template(), _NoCallJudge(), trace_stored=False)
-    pending = result.model_copy(update={"claim_tallies": {}, "claim_failures": {_CRITERION: "trace_pending"}})
-    off_loop(host.storage.save_eval_result, pending, None)
+    off_loop(host.storage.save_eval_result, _pending(result), None)
     assert off_loop(host.storage.load_eval_trace, result.id, "u") is None
 
     rejudged = await rejudge_result(host, result.id, "u")
 
     assert rejudged.claim_failures == {_CRITERION: "trace_lost"} and rejudged.claim_tallies == {}
-    assert rejudged.claim_rescores[0].lost == {_CRITERION: "trace_lost"}
+    assert rejudged.claim_rescores == []
 
 
 async def test_a_lost_criterion_is_graded_again_whole_and_a_completed_grade_is_never_asked_again() -> None:
@@ -1068,3 +1106,176 @@ async def test_a_replayed_claims_call_is_keyed_by_its_prompt_so_a_changed_docume
     moved = _output(evidence=_EVIDENCE.model_copy(update={"documents": (reprinted,)}))
     with pytest.raises(ReplayMiss):
         await _cell(RecordedCompletions.replay(path, settings=None), template, _FakeClaimsKind(moved))
+
+
+# =============================================================================
+# A run settles its own pending rows: when a holding ends, and when one takes it up
+# =============================================================================
+
+
+class _RewriteReadFailsOnceStore(InMemoryDocumentStore):
+    """Fails the first read made once a trace has landed (or been refused), as a store whose reads blinked: the
+    cell's row is left pending its trace, and every later read succeeds."""
+
+    def __init__(self, *, refuse_traces: bool = False) -> None:
+        super().__init__()
+        self.refuse_traces = refuse_traces
+        self.armed = False
+        self.blinked = 0
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if document.get("doc_type") == "eval_trace":
+            self.armed = not self.blinked
+            if self.refuse_traces:
+                raise RuntimeError("the row is over the store's size limit")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        if self.armed:
+            self.armed, self.blinked = False, self.blinked + 1
+            raise RuntimeError("the store's reads blinked")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+@pytest.mark.parametrize("trace", ["landed", "refused"])
+async def test_a_row_left_pending_is_settled_when_its_holding_ends(trace: str) -> None:
+    store = _RewriteReadFailsOnceStore(refuse_traces=trace == "refused")
+    host = dataclasses.replace(toyhost_host(), storage=EvalStorage(store))
+    template = _template()
+    case = _case(template)
+    run = make_eval_run(
+        scope_id="u", template_id=template.id, candidate_kind=_KIND, test_case_ids=[case.id], judge_model=_JUDGE
+    )
+    off_loop(host.storage.save_eval_run, run)
+    kind = _FakeClaimsKind(_output())
+
+    await execute_run(
+        host,
+        run=run,
+        template=template,
+        test_cases=[case],
+        judge_service=_service(_FakeClaimsJudge()),
+        options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: kind}),
+    )
+
+    assert store.blinked == 1, "the control: the cell's own rewrite met the blink and left its row pending"
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    if trace == "landed":
+        assert result.claim_failures == {} and set(result.claim_tallies) == {_CRITERION}
+    else:
+        assert result.claim_failures == {_CRITERION: "trace_lost"} and result.claim_tallies == {}
+
+
+class _ReadsAtInvokeKind(_FakeClaimsKind):
+    """Reads one stored row as the cell it runs starts: what a holding has settled before it runs a cell."""
+
+    def __init__(self, output: CandidateOutput, storage: EvalStorage, row_id: str) -> None:
+        super().__init__(output)
+        self.storage = storage
+        self.row_id = row_id
+        self.seen: list[dict[str, str]] = []
+
+    async def invoke(self, instance: object, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        row = await asyncio.to_thread(self.storage.load_eval_result, self.row_id, "u")
+        assert row is not None
+        self.seen.append(dict(row.claim_failures))
+        return self.output
+
+
+@pytest.mark.parametrize("trace_stored", [True, False])
+async def test_a_take_up_settles_an_earlier_holdings_pending_rows_before_it_runs_a_cell(trace_stored: bool) -> None:
+    template = _template()
+    host, earlier, _ = await _stored_cell(_FakeClaimsJudge(), template, _FakeClaimsJudge(), trace_stored=trace_stored)
+    off_loop(
+        host.storage.save_eval_result,
+        _pending(earlier),
+        off_loop(host.storage.load_eval_trace, earlier.id, "u") if trace_stored else None,
+    )
+    second = EvalTestCase(template_id=template.id, scope_id="u", reference=_KEY)
+    off_loop(host.storage.save_test_case, second)
+    stored_run = off_loop(host.storage.load_eval_run, earlier.eval_run_id, "u")
+    assert stored_run is not None
+    taken_up = stored_run.model_copy(
+        update={
+            "status": "running",
+            "test_case_ids": [earlier.test_case_id, second.id],
+            "lease": JobLease(holder="this-process", expires_at="2099-01-01T00:00:00+00:00", epoch=1),
+        }
+    )
+    off_loop(host.storage.save_eval_run, taken_up)
+    kind = _ReadsAtInvokeKind(_output(), host.storage, earlier.id)
+    (first_case,) = [c for c in off_loop(host.storage.query_test_cases, "u") if c.id == earlier.test_case_id]
+    row = off_loop(host.storage.load_eval_result, earlier.id, "u")
+    assert row is not None
+
+    await execute_run(
+        host,
+        run=taken_up,
+        template=template,
+        test_cases=[first_case, second],
+        judge_service=_service(_FakeClaimsJudge()),
+        options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: kind}),
+        stored=StoredCells(done=(StoredCell.from_result(row),)),
+    )
+
+    expected = {} if trace_stored else {_CRITERION: "trace_lost"}
+    assert kind.seen == [expected], "settled before the take-up ran its first cell"
+    settled = off_loop(host.storage.load_eval_result, earlier.id, "u")
+    assert settled is not None and settled.claim_failures == expected
+    if trace_stored:
+        assert settled.claim_tallies == earlier.claim_tallies
+
+
+# =============================================================================
+# A claims re-judge's writes are conditional, and say what they stored
+# =============================================================================
+
+
+class _TraceRacedStorage(EvalStorage):
+    """The real store, except another re-judge rewrites the trace between this re-judge's read and its write."""
+
+    def replace_eval_trace(self, trace: Any, *, if_match: str | None) -> None:
+        super().replace_eval_trace(trace.model_copy(update={"claim_grades": {}}), if_match=None)
+        super().replace_eval_trace(trace, if_match=if_match)
+
+
+class _ResultRacedStorage(EvalStorage):
+    """The real store, except another writer changes the result after this re-judge's trace has landed."""
+
+    def replace_eval_result(self, result: Any, *, if_match: str | None) -> None:
+        raise ConflictError(f"eval_result {result.id} was written since it was read", remedy="try again")
+
+
+async def _lost_on_a_raced_store(raced: type[EvalStorage]) -> tuple[EvalHost, Any]:
+    """A stored cell whose one criterion was lost, on a store that races the re-judge's write."""
+    host, result, _ = await _stored_cell(
+        _FakeClaimsJudge(script={"claim_listing": [ConnectionError("unavailable")]}),
+        _template(),
+        _FakeClaimsJudge(),
+        storage=raced(InMemoryDocumentStore()),
+    )
+    return host, result
+
+
+async def test_a_rejudge_whose_trace_another_rewrote_meanwhile_is_refused_and_stores_nothing() -> None:
+    host, result = await _lost_on_a_raced_store(_TraceRacedStorage)
+    before = off_loop(host.storage.load_eval_result, result.id, "u")
+
+    with pytest.raises(ConflictError, match="trace changed while it was being re-judged; nothing was stored"):
+        await rejudge_result(host, result.id, "u")
+
+    stored_trace = off_loop(host.storage.load_eval_trace, result.id, "u")
+    assert stored_trace is not None and stored_trace.claim_grades == {}, "the other writer's trace stands"
+    assert off_loop(host.storage.load_eval_result, result.id, "u") == before
+
+
+async def test_a_rejudge_whose_result_write_loses_after_its_trace_landed_says_so() -> None:
+    host, result = await _lost_on_a_raced_store(_ResultRacedStorage)
+    before = off_loop(host.storage.load_eval_result, result.id, "u")
+
+    with pytest.raises(ConflictError, match="its trace holds the new grades and its result was not rewritten"):
+        await rejudge_result(host, result.id, "u")
+
+    stored_trace = off_loop(host.storage.load_eval_trace, result.id, "u")
+    assert stored_trace is not None and _CRITERION in stored_trace.claim_grades
+    assert off_loop(host.storage.load_eval_result, result.id, "u") == before

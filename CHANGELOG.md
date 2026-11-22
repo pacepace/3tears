@@ -10,16 +10,23 @@ packages (bumped in lock-step).
 
 **Added (#1287):** `rejudge_result` re-judges a finished cell's lost claim criteria beside its failed dims, from the
 claim evidence its trace stores, by the run's judge pin. A lost criterion is graded again whole; a completed grade is
-never asked again, a lost ground step on it included. A criterion whose tally waited on its trace (`trace_pending`) is
-recovered with no call: its tally is recomputed from the grade the trace stores, and once the run has ended a pending
-criterion whose trace was never stored reads `trace_lost`. The new grades are written to the trace before the result,
-and each re-judge is recorded on `EvalResult.claim_rescores` (`ClaimRescore`), whose spend stays out of the cell's.
+never asked again, a lost ground step on it included. The new grades are written to the trace before the result,
+each write conditional on the document as read (`EvalStorage.load_eval_trace_with_etag`, `replace_eval_trace`), so
+two re-judges of one cell never leave one's grades under the other's tallies; a refusal says what was stored. Each
+re-judge is recorded on `EvalResult.claim_rescores` (`ClaimRescore`), whose spend stays out of the cell's and is
+billed in the program budget beside a dims re-judge's.
+
+**Added:** a criterion whose tally waited on its trace (`trace_pending`) is settled with no call, and under no
+apparatus check (an edited template or moved request settings change nothing it reads): its tally is recomputed from
+the grade the trace stores, and a pending criterion whose trace was never stored reads `trace_lost`. A run settles its
+own pending rows when a holding of it ends and when a take-up starts, before it runs a cell
+(`settle_pending_claims`, `settled_pending_claims`), and a re-judge settles any left before anything else.
 A grade now records its ground step's loss (`ClaimGrade.ground_loss`), so a recomputed tally loses groundedness alone,
 never truth. Each cell records the fingerprint of every criterion it was due (`EvalResult.claim_fingerprints`), graded
 or lost, and a re-judge refuses a criterion by name when today's fingerprint differs, or none was recorded. New
 public names: `reproducible_claim_inputs`, `ReproducibleClaimInputs`, `apply_claim_rejudge`
 (`threetears.evals.run.rejudge`), `ClaimRescore` (`threetears.evals.schema`), `EvalStorage.replace_eval_trace` and
-`JudgeService.failure_describer`.
+`JudgeService.failure_describer`, `ResultReading.claim_rescores`.
 
 **Added:** a subject arm's call floor (`price_subject_call_floor`) prices each claim criterion's hold before launch,
 over the smallest claim evidence a cell can render, so an arm whose cap cannot hold even that is refused before any
@@ -31,12 +38,15 @@ breaks the protocol still counts what it cost against the run's judge ceiling.
 (`AccountExhaustedError`), as a dimension's does, whichever step it was; the criterion is lost (`provider_error`, or a
 ground loss) and the cell keeps its trial. A call that would spend past the ceiling its criterion was priced and held
 at is lost as `hold_exceeded`, a new value of `CLAIM_LOSSES`, no longer as `cost_cap`: its reply outgrew what the price
-assumed, which is the pricing's miss, not the cap's.
+assumed, which is the pricing's miss, not the cap's. A ground call whose completion breaks the protocol is lost as
+`protocol_defect`, a new value of `CLAIM_LOSSES`, logged at error, no longer as `provider_error`: it stays a ground loss,
+so truth stands, and names the host's client, not a provider.
 
 **For hosts:** a claims re-judge needs the host's completion clients, as a dims re-judge does; a recovery of pending
-criteria sends no call. `ClaimGrade.ground_loss`, `EvalResult.claim_fingerprints` and `EvalResult.claim_rescores` join
-core minor 15.24, which has not shipped: a released 15.23 build reads them under its newer-minor tolerance and keeps
-them, and the unreleased build before them refuses them by name, so deploy and roll back the integration line as one.
+criteria sends no call and needs none. `ClaimGrade.ground_loss`, `EvalResult.claim_fingerprints` and
+`EvalResult.claim_rescores` join core minor 15.24, which has not shipped: every released build of core 15 reads them
+under its newer-minor tolerance and keeps them, and the unreleased build before them refuses them by name, so deploy
+and roll back the integration line as one.
 
 ### evals: claim criteria graded in the judge phase
 

@@ -367,7 +367,7 @@ class Verification:
     :ivar findings: One per claim, in the claims' order: a :class:`ClaimFinding` for a world claim, None for a session
         claim.
     :ivar ground_loss: Why the ground step was lost (``cut_short``, ``unreadable``, ``repair_budget_spent``,
-        ``cost_cap`` or ``provider_error``), its
+        ``cost_cap``, ``hold_exceeded``, ``provider_error`` or ``protocol_defect``), its
         own loss and never the criterion's: the truth findings stand, and every finding's ``grounded`` reads None.
         None when the step was not lost, or not asked.
     :ivar ground_failure: What failed in the ground step, named, beside :attr:`ground_loss`; None with it.
@@ -952,9 +952,11 @@ class ClaimVerifier:
                 raise
             except CompletionProtocolDefect as defect:
                 # Recorded, never swallowed: a ground call reads the candidate's own documents, which differ by arm,
-                # so how it fails must never cost the cell its truth reading. The loss names the defect.
+                # so how it fails must never cost the cell its truth reading. Named as the host's defect, never as a
+                # provider's failure, and logged at error: every arm's ground step meets the same broken client.
+                log.error("a claim verifier's ground call's completion breaks the protocol: %s", defect)
                 lost = ClaimGradingFailed(
-                    f"a ground call's completion breaks the protocol: {defect}", loss="provider_error"
+                    f"a ground call's completion breaks the protocol: {defect}", loss="protocol_defect"
                 )
             except Exception as failure:  # prawduct:ok-broad-except — provider boundary; a ground call's failure is groundedness's alone
                 # NOSILENT: the loss rides on the verification, naming the failure, for the groundedness reading alone.

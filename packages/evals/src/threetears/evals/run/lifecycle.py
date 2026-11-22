@@ -29,7 +29,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun
+from threetears.evals.schema.models import CLAIM_PENDING, NON_TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
@@ -42,6 +42,7 @@ from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, settle_job_re
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.rejudge import (
     ReproducibleClaimInputs,
+    settled_pending_claims,
     apply_claim_rejudge,
     apply_rejudge,
     failed_judge_dims,
@@ -52,7 +53,7 @@ from threetears.evals.run.rejudge import (
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
 from threetears.evals.schema.logs import contain, get_logger
-from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
+from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult, RunCompleteness
@@ -251,12 +252,16 @@ async def rejudge_result(
     recording the re-judge on the result (:func:`~threetears.evals.run.rejudge.apply_rejudge`).
 
     **Claim criteria are re-judged beside them.** Each criterion the result lost (``EvalResult.claim_failures``) is
-    graded again whole from the claim evidence its trace stores, in the template's order, and each pending one
-    (``trace_pending``) has its tally recomputed from the grade its trace stores, with no call
+    graded again whole from the claim evidence its trace stores, in the template's order
     (:func:`~threetears.evals.run.rejudge.reproducible_claim_inputs`). A completed grade is never asked again. The new
-    grades are written to the trace before the result, and a
-    :class:`~threetears.evals.schema.models.ClaimRescore` records it all on the result
+    grades are written to the trace before the result, each write conditional on the document as read, and a
+    :class:`~threetears.evals.schema.models.ClaimRescore` records it on the result
     (:func:`~threetears.evals.run.rejudge.apply_claim_rejudge`). A criterion lost again is recorded with its new loss.
+
+    **A pending criterion is settled first, with no call and under no apparatus check**
+    (:func:`~threetears.evals.run.rejudge.settled_pending_claims`): its tally recomputed from the grade its trace
+    stores, or ``trace_lost`` where its trace was never stored. That write lands even when the rest of the re-judge
+    is then refused, since it asks nothing an edited template or moved request settings could change.
 
     **It re-asks the same judge the same question, or refuses.** What the judge reads about the
     candidate is the evidence the cell's kind rendered for the first judge, read back off the
@@ -282,9 +287,9 @@ async def rejudge_result(
     :raises ValidationFailedError: The result has neither a failed judge dimension nor a lost claim criterion, or an
         apparatus input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` and
         :func:`~threetears.evals.run.rejudge.reproducible_claim_inputs` name which input and why).
-    :raises ConflictError: The rewrite did not land — something else wrote the result
-        between the read and the write, or the write failed (storage reports both
-        as one ``False``). Nothing was stored, and the judge spend is on the log line.
+    :raises ConflictError: A rewrite did not land — something else wrote the result, or its trace, between the read
+        and the write. Its message says what was stored: nothing, when the trace's write lost; the new grades on the
+        trace and not the result, when the result's lost after the trace's landed. The judge spend is on the log line.
     :raises ValueError: The host supplies no completion clients, so nothing could re-judge.
     :raises CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
         Nothing is stored; the spend is on the log line.
@@ -293,8 +298,14 @@ async def rejudge_result(
         could not be updated, or a claims re-judge's trace did not land (then nothing was stored).
     """
     storage = host.storage
-    clients = host.completion_clients("a re-judge")
     # Every read and write below is a store call, so each runs on the host's blocking executor, off the loop.
+    settled, were_pending = await run_blocking(
+        host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id
+    )
+    # Settled, and nothing else failed: a criterion settled lost here had no stored trace, which nothing can grade.
+    if settled is not None and settled.judge_error is None and set(settled.claim_failures) <= were_pending:
+        return settled
+    clients = host.completion_clients("a re-judge")
     read = await run_blocking(host.blocking_executor, _rejudge_inputs, storage, result_id, scope_id)
     result, etag, run, inputs, failed = read.result, read.etag, read.run, read.inputs, read.failed
     judge_model = (
@@ -308,7 +319,13 @@ async def rejudge_result(
         failure_describer=host.failure_describer,
     )
     updated = result
+    trace_etag: str | None = None
     async with judge_service:
+        if result.claim_failures:
+            # Read before the inputs read the trace, so a trace another writer moved since is refused at its rewrite.
+            _, trace_etag = await run_blocking(
+                host.blocking_executor, storage.load_eval_trace_with_etag, result.id, scope_id
+            )
         # Inside the service, so a refusal still releases the client its fingerprints were read through.
         claim_inputs = (
             await run_blocking(
@@ -353,21 +370,42 @@ async def rejudge_result(
                 updated, claim_inputs, regraded, usage=fold.usage, cost_usd=fold.cost_usd
             )
     spent = _rejudge_spend(updated, before=result)
+    if trace is not None:
+        try:
+            # The grades first, conditionally on the trace as read: no tally the rewrite lands stands before the grade
+            # it is read from, and a trace another re-judge rewrote meanwhile is never written over.
+            await run_blocking(host.blocking_executor, partial(storage.replace_eval_trace, trace, if_match=trace_etag))
+        except (ConflictError, StorageError) as e:
+            log.error(
+                "eval.rejudge_result lost its trace write result=%s run=%s — the re-judge cost %s and nothing was stored",
+                result_id,
+                run.id,
+                _dollars(spent),
+            )
+            if isinstance(e, ConflictError):
+                raise ConflictError(
+                    f"result '{result_id}''s trace changed while it was being re-judged; nothing was stored",
+                    remedy="re-read it and re-judge again if a claim criterion is still lost",
+                ) from e
+            raise
     try:
-        if trace is not None:
-            # The grades first: no tally the rewrite lands stands before the grade it is read from.
-            await run_blocking(host.blocking_executor, storage.replace_eval_trace, trace)
         await run_blocking(host.blocking_executor, storage.replace_eval_result, updated, if_match=etag)
     except (ConflictError, StorageError) as e:
+        stored = (
+            "its trace holds the new grades and its result was not rewritten"
+            if trace is not None
+            else "nothing was stored"
+        )
         log.error(
-            "eval.rejudge_result lost its write result=%s run=%s — the re-judge cost %s and nothing was stored",
+            "eval.rejudge_result lost its result write result=%s run=%s — the re-judge cost %s, and %s",
             result_id,
             run.id,
             _dollars(spent),
+            stored,
         )
         if isinstance(e, ConflictError):
             raise ConflictError(
-                f"result '{result_id}' changed while it was being re-judged; nothing was stored",
+                f"result '{result_id}' changed while it was being re-judged; {stored}",
                 remedy="re-read it and re-judge again if a dim is still missing or a claim criterion still lost",
             ) from e
         raise
@@ -388,11 +426,10 @@ async def rejudge_result(
     if claim_inputs is not None:
         claims = updated.claim_rescores[-1]
         log.info(
-            "eval.rejudge_result result=%s run=%s criteria=%s recovered=%s lost_again=%s cost=%s",
+            "eval.rejudge_result result=%s run=%s criteria=%s lost_again=%s cost=%s",
             result_id,
             run.id,
-            ",".join(claims.criteria) or "-",
-            ",".join(claims.recovered) or "-",
+            ",".join(claims.criteria),
             ",".join(f"{name}={loss}" for name, loss in claims.lost.items()) or "-",
             _dollars(claims.cost_usd),
         )
@@ -454,13 +491,10 @@ async def _regrade_claims(
     :raises ApparatusError: The rig could not serve a call.
     """
     evidence = inputs.claim_evidence
-    assert evidence is not None or not inputs.regrade  # reproducible_claim_inputs refuses a regrade without evidence
     criteria = {criterion.name: criterion for criterion in inputs.template.claim_criteria}
-    kept = {} if inputs.trace is None else dict(inputs.trace.claim_grades)
-    graded = {name: grade for name, grade in kept.items() if name not in inputs.regrade}
+    graded = {name: grade for name, grade in inputs.trace.claim_grades.items() if name not in inputs.regrade}
     regraded: dict[str, GradedCriterion | str] = {}
     for name in inputs.regrade:
-        assert evidence is not None
         outcome = await grade_or_loss(
             criteria[name],
             evidence,
@@ -472,6 +506,15 @@ async def _regrade_claims(
         regraded[name] = outcome
         if not isinstance(outcome, str):
             graded[name] = outcome.grade
+            if outcome.ground_failure is not None:
+                # Recorded on the grade and its tally; logged so an operator sees which step was lost and why.
+                log.warning(
+                    "Re-judge of result %s: claim criterion %s lost its ground step (%s): %s",
+                    result_id,
+                    name,
+                    outcome.tally.ground_loss,
+                    outcome.ground_failure,
+                )
     return regraded
 
 
@@ -490,6 +533,57 @@ def _rejudge_spend(updated: EvalResult, *, before: EvalResult) -> float | None:
     if any(cost is None for cost in added):
         return None
     return math.fsum(cost for cost in added if cost is not None)
+
+
+def _settle_before_rejudge(
+    storage: EvalStorage, result_id: str, scope_id: str
+) -> tuple[EvalResult | None, frozenset[str]]:
+    """Settle a result's pending claim criteria before anything of a re-judge is checked or asked.
+
+    Asks no call, so it passes none of the re-judge's apparatus checks: the run need only have ended, so the cell's
+    writes are done. Its template is read for each criterion's ``grounded_in`` alone, which the stored grade is held to.
+
+    :return: The result as stored after settling (``None`` when nothing was pending, or nothing could be settled), and
+        the criteria that were pending.
+    :raises NotFoundError: The result, or its run or template, does not load.
+    :raises ValidationFailedError: The run is still running, or a stored grade gives no tally.
+    :raises ConflictError: Something else wrote the result since it was read; nothing was stored.
+    """
+    result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
+    if result is None:
+        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
+    pending = frozenset(name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING)
+    if not pending:
+        return None, pending
+    run = get_run(storage, result.eval_run_id, scope_id)
+    if run.status in NON_TERMINAL_RUN_STATUSES:
+        raise ValidationFailedError(
+            f"run '{run.id}' is {run.status} — its results are still being written",
+            remedy=f"wait for it to end (job_poll run:{run.id}), then ask again",
+        )
+    if run.template_id is None:
+        return None, pending
+    template = storage.load_template(run.template_id, scope_id)
+    if template is None:
+        raise NotFoundError("template", run.template_id, remedy=FIND_TEMPLATE)
+    try:
+        settled = settled_pending_claims(result, storage.load_eval_trace(result_id, scope_id), template)
+    except ValueError as unreadable:
+        raise ValidationFailedError(
+            f"result '{result_id}''s stored claim grade gives no tally: {unreadable}",
+            remedy="re-judge it once its template declares the criteria it was graded under",
+        ) from unreadable
+    if settled is None:
+        return None, pending
+    try:
+        storage.replace_eval_result(settled, if_match=etag)
+    except ConflictError as e:
+        raise ConflictError(
+            f"result '{result_id}' changed while its pending claim criteria were being settled; nothing was stored",
+            remedy="re-read it and re-judge again",
+        ) from e
+    log.info("eval.rejudge_result result=%s settled its claim criteria pending their trace", result_id)
+    return settled, pending
 
 
 class _RejudgeRead(NamedTuple):

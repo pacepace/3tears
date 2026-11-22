@@ -173,6 +173,7 @@ from threetears.evals.run.judge_service import (
 )
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.run.run_document import fault_entry, record_run_faults
+from threetears.evals.run.rejudge import settle_pending_claims
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, ModelUnservedError
@@ -2396,6 +2397,22 @@ class _ClaimsClient:
                 f"the run's cost cap had too little left for claim criterion {self._criterion!r}'s next call",
                 loss="cost_cap",
             )
+
+
+async def _settle_pending_claims(host: EvalHost, run: EvalRun, template: EvalTemplate, *, through_epoch: int) -> None:
+    """Settle the run's rows pending their trace, written at or before ``through_epoch``, off the loop
+    (:func:`~threetears.evals.run.rejudge.settle_pending_claims`); a store that cannot list them is logged, never
+    raised, since the cells it would settle are already written and each row records its own pending state."""
+    if not template.claim_criteria:
+        return
+    try:
+        await run_blocking(
+            host.blocking_executor,
+            partial(settle_pending_claims, host.storage, run.id, run.scope_id, template, through_epoch=through_epoch),
+        )
+    except StorageError as unlisted:
+        # NOSILENT: every row it would settle records itself pending; a later holding or a re-judge settles it.
+        log.error("Eval run %s: its rows pending their trace could not be settled: %s", run.id, unlisted)
 
 
 async def _run_claims_phase(
@@ -4645,6 +4662,10 @@ async def execute_run(
     # writes the cell only while this holding is the run's (``save_eval_result``'s cell rule). 0 for a run held under
     # no lease.
     lease_epoch = run.lease.epoch if run.lease is not None else 0
+    if stored.done or stored.replaced:
+        # Taken up: every earlier holding's writes are done, so a row of theirs left pending its trace is settled
+        # now, from what is stored and with no call, before this holding runs a cell.
+        await _settle_pending_claims(host, run, template, through_epoch=lease_epoch - 1)
 
     # Shuffled rather than nested k -> model -> test case: within-run drift
     # (a box that slows, a neighbouring job, a leak) would otherwise land on the
@@ -5212,6 +5233,9 @@ async def execute_run(
         faults = [*(cassettes.holes if cassettes is not None else []), *_probe_fault_entries(probe_failures)]
         if faults:
             await _record_contained_faults(host, run, faults)
+        # Every cell of this holding has been written: a row left pending its trace (a rewrite a store outage
+        # refused) is settled from what is stored, with no call.
+        await _settle_pending_claims(host, run, template, through_epoch=lease_epoch)
 
     def stop_records(reached_ceilings: list[_CeilingReached]) -> tuple[list[BudgetStop], CapBreach | None]:
         """The typed record of each ceiling reached, read now that every cell has ended and is recorded, and the cost
