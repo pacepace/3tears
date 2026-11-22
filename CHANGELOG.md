@@ -28,6 +28,10 @@ packages (bumped in lock-step).
   `Claims(session="field")`, the case's field; or `Claims(session=callable)`, handed the case and the `Answer` the
   runner returned (a plain return as `Answer(value)`). It is stored as given. A case missing the field, a record that
   is no JSON object, or a case field beside an `Answer.session`, leaves the cell out by name.
+- **Case documents that override others**, on the quick path: a `Document`, or a `case_documents` mapping, takes `id`
+  (kept as its stored id) and `overrides` (the ids it outranks, `EvidenceDocument.overrides`), so support quoted only
+  from an overridden document the overriding one contradicts reads contradicted. `Answer.documents` refuses a document
+  with `overrides`: what a candidate read never outranks the case's evidence.
 - **`Result.claim_cells(arm=None, *, criterion=None)`** reads every graded cell back as a `ClaimCell` (served by
   `threetears.evals.quick`): its arm, case, repeat, readings (the criterion's own and yours), its claims as a
   `ClaimView` (`None` where no grade is stored), why it was lost, and why your readings of it are unread.

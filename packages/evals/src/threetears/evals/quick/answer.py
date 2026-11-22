@@ -40,16 +40,25 @@ class Document:
     :ivar text: Its text, as read: every quote a grader cites from it is checked against this, verbatim.
     :ivar title: What it is called; ``None`` names it by its address, else by its place in the list.
     :ivar url: Where it was read, when it has an address.
+    :ivar id: Provisional. What the case calls it, kept as its stored id, so another case document can override it by
+        name; ``None`` numbers it by its place (``case-1``). Ids are the case's to keep unique among its documents.
+    :ivar overrides: Provisional. The case documents this one overrides, by id: where it and one of them bear on a
+        claim with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a
+        policy update over the old policy), so support quoted only from an overridden document that this one
+        contradicts reads contradicted. Only a case's documents override; a candidate's own never do.
     """
 
     text: str
     title: str | None = None
     url: str | None = None
+    id: str | None = None
+    overrides: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         """Refuse a document no claim could be checked against.
 
-        :raises ValueError: Text that is not a string or is blank, or a title or address that is blank.
+        :raises ValueError: Text that is not a string or is blank; a title, address or id that is blank; or
+            overrides that are not a list of non-blank ids, name one id twice, or name the document's own.
         """
         if not isinstance(self.text, str) or not self.text.strip():
             raise ValueError(
@@ -59,6 +68,21 @@ class Document:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"Document.{name} is a non-blank string or None, not {value!r}")
+        if self.id is not None and (not isinstance(self.id, str) or not self.id.strip()):
+            raise ValueError(f"Document.id is a non-blank string or None, not {self.id!r}")
+        overrides = self.overrides
+        if isinstance(overrides, str | bytes) or not isinstance(overrides, Sequence):
+            raise ValueError(f"Document.overrides is a list of the ids it overrides, not {overrides!r}")
+        if not all(isinstance(other, str) and other.strip() for other in overrides):
+            raise ValueError(
+                f"Document.overrides names each document it overrides by a non-blank id, not {overrides!r}"
+            )
+        if len(set(overrides)) != len(overrides):
+            raise ValueError(f"Document.overrides names an id more than once: {list(overrides)!r}")
+        if self.id is not None and self.id in overrides:
+            raise ValueError(f"Document {self.id!r} overrides itself")
+        # Held as a tuple, so what the run stores is what was given.
+        object.__setattr__(self, "overrides", tuple(overrides))
 
 
 @dataclass(frozen=True)
@@ -119,7 +143,14 @@ class Answer:
                     f"Answer.documents is a list of what the candidate read, not {type(self.documents).__name__}"
                 )
             # Held as a tuple of Documents, so what the run stores is what was returned, and nothing can change it.
-            object.__setattr__(self, "documents", tuple(_as_document(given) for given in self.documents))
+            read = tuple(_as_document(given) for given in self.documents)
+            object.__setattr__(self, "documents", read)
+            # Truth reads the case's evidence alike for every arm, so what one arm read never outranks it.
+            if overriding := [document for document in read if document.overrides]:
+                raise ValueError(
+                    f"Answer.documents holds {len(overriding)} document(s) that override others; only a case's "
+                    "documents override, since what a candidate read never decides truth: drop overrides="
+                )
 
 
 def _as_document(given: object) -> Document:

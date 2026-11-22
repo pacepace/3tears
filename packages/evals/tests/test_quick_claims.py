@@ -83,6 +83,17 @@ def _cited(claim: str, passages: list[tuple[str, str]], *, contradicts: bool) ->
     return None
 
 
+def _every_cited(claim: str, passages: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Every shown passage's first sentence on the claim's subject, each as :func:`_cited` cites one: what a call told
+    that one document overrides another cites, both sides at once."""
+    cited = [_cited(claim, [passage], contradicts=True) for passage in passages]
+    return [citation for citation in cited if citation is not None]
+
+
+#: What a truth call's prompt says when a shown document overrides another, asking it to cite both sides.
+_OVERRIDES_SHOWN = "overrides the others in it"
+
+
 # parity-with: threetears.evals.schema.CompletionClient
 @dataclass
 class _FakeClaimsGrader:
@@ -118,6 +129,10 @@ class _FakeClaimsGrader:
         if name == "claim_truth":
             truth = []
             for index, claim in _CLAIM.findall(user):
+                if _OVERRIDES_SHOWN in user:
+                    every = _every_cited(claim, passages)
+                    truth.append({"claim": int(index), "citations": every, "suspect": not every})
+                    continue
                 cited = _cited(claim, passages, contradicts=True)
                 truth.append({"claim": int(index), "citations": [cited] if cited else [], "suspect": cited is None})
             return _Reply(json.dumps({"claims": truth}))
@@ -486,6 +501,65 @@ def test_a_case_s_documents_read_from_a_field_or_a_callable() -> None:
 def test_a_claims_grader_that_could_not_grade_as_declared_is_refused_where_it_is_written(build: Any, said: str) -> None:
     with pytest.raises(ValueError, match=re.escape(said)):
         build()
+
+
+async def test_a_case_document_overriding_another_decides_what_it_contradicts() -> None:
+    """A case's documents keep the ids the case gives them, and one naming another in ``overrides`` outranks it: an
+    answer the overridden document alone supports, and the overriding one contradicts, reads contradicted."""
+    cases = [
+        {
+            "id": "bridge",
+            "source": [
+                {"id": "charter", "text": "The Wexley bridge opens at dawn.", "title": "town charter"},
+                {
+                    "id": "notice",
+                    "text": "The Wexley bridge opens at noon.",
+                    "title": "notice",
+                    "overrides": ["charter"],
+                },
+            ],
+        }
+    ]
+
+    async def by_charter(case: dict[str, Any]) -> str:
+        return "The Wexley bridge opens at dawn."
+
+    async def by_notice(case: dict[str, Any]) -> str:
+        return "The Wexley bridge opens at noon."
+
+    claims = Claims(_FakeClaimsGrader(), case_documents="source")
+    result = await Eval(cases, {"charter": by_charter, "notice": by_notice}, [claims], k=1, name="opens").run(
+        store=MEMORY
+    )
+
+    by_arm = {cell.arm: cell for cell in off_loop(result.claim_cells)}
+    charter, notice = by_arm["charter"], by_arm["notice"]
+    assert charter.view is not None and notice.view is not None
+    assert [claim.verdict for claim in charter.view.claims] == ["contradicted"], "the notice outranks the charter"
+    assert [claim.verdict for claim in notice.view.claims] == ["supported"]
+    assert charter.readings["answer.claims_false_per_unit"] == 1
+    evidence = off_loop(get_result_trace, result.host.storage, _results(result, "charter")[0]).claim_evidence
+    assert evidence is not None
+    assert [(document.id, document.overrides) for document in evidence.documents or ()] == [
+        ("charter", ()),
+        ("notice", ("charter",)),
+    ], "the case's ids, kept"
+
+
+def test_a_document_s_id_and_overrides_are_held_and_a_candidate_s_never_override() -> None:
+    held = Document("An erratum.", id="erratum", overrides=["rules"])
+    assert (held.id, held.overrides) == ("erratum", ("rules",))
+    with pytest.raises(ValueError, match="overrides itself"):
+        Document("An erratum.", id="erratum", overrides=["erratum"])
+    with pytest.raises(ValueError, match="names an id more than once"):
+        Document("An erratum.", overrides=["rules", "rules"])
+    with pytest.raises(ValueError, match="a list of the ids it overrides"):
+        Document("An erratum.", overrides="rules")
+    with pytest.raises(ValueError, match="only a case's documents override"):
+        Answer("An answer.", documents=[held])
+    claims = Claims(_FakeClaimsGrader(), case_documents="source")
+    with pytest.raises(ValueError, match="which the cell's evidence does not hold"):
+        claims.evidence({"source": [{"text": "An erratum.", "overrides": ["absent"]}]}, "An answer.", None)
 
 
 def test_what_a_candidate_read_is_held_as_documents() -> None:

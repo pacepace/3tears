@@ -245,8 +245,9 @@ class Claims:
         :param segmentation: The cut's name, recorded on every cell; change it whenever the cut changes, since it
             sets every per-unit denominator. ``None`` names the default cut, or ``segments`` by its qualified name.
         :param case_documents: The case's evidence: a field of the case holding a document's text, a list of texts,
-            or mappings with ``text`` (and ``title``, ``url``), or a callable rendering a case's documents. It decides
-            truth for every arm alike. ``None``: the case holds none, so only the web (with ``search``) can find a
+            or mappings with ``text`` (and ``title``, ``url``, ``id``, ``overrides``), or a callable rendering a case's
+            documents. It decides truth for every arm alike. A document naming the ids of others in ``overrides``
+            outranks them where the two disagree (:attr:`~threetears.evals.quick.answer.Document.overrides`). ``None``: the case holds none, so only the web (with ``search``) can find a
             claim false.
         :param session: PROVISIONAL. Where each cell's record of the run (an order log, a play order) is read from, for
             the readings of your own; it is stored with the cell's evidence as given. ``None``: what the runner
@@ -680,11 +681,19 @@ def _documents_in(value: object, where: str) -> list[Document]:
         elif isinstance(given, str):
             documents.append(Document(given))
         elif isinstance(given, Mapping) and isinstance(given.get("text"), str):
-            documents.append(Document(given["text"], title=given.get("title"), url=given.get("url")))
+            documents.append(
+                Document(
+                    given["text"],
+                    title=given.get("title"),
+                    url=given.get("url"),
+                    id=given.get("id"),
+                    overrides=given.get("overrides", ()),
+                )
+            )
         else:
             raise ValueError(
                 f"the case's evidence in {where!r} holds {given!r}; a document is its text, or a mapping with 'text' "
-                "(and 'title', 'url')"
+                "(and 'title', 'url', 'id', 'overrides')"
             )
     if not documents:
         raise ValueError(f"the case's evidence in {where!r} holds no document")
@@ -725,17 +734,32 @@ def _fitted(documents: list[Document], provenance: EvidenceProvenance) -> tuple[
 def _stored(
     documents: Sequence[Document], texts: Sequence[str], provenance: EvidenceProvenance
 ) -> tuple[EvidenceDocument, ...]:
-    """``documents`` as stored evidence with ``texts``, each one cut saying so in its title."""
+    """``documents`` as stored evidence with ``texts``, each one cut saying so in its title, under the id it was given or
+    numbered by its place, with the documents it overrides.
+
+    :raises ValueError: A document the stored shape refuses (an override on a ``run`` document).
+    """
     stored: list[EvidenceDocument] = []
     for index, (document, text) in enumerate(zip(documents, texts, strict=True)):
         title = document.title or document.url or f"{provenance} document {index + 1}"
         if text != document.text:
             title = f"{title} (cut to its first {len(text)} of {len(document.text)} characters)"
-        stored.append(
-            EvidenceDocument(
-                id=f"{provenance}-{index + 1}", provenance=provenance, title=title, url=document.url, text=text
+        try:
+            stored.append(
+                EvidenceDocument(
+                    id=document.id or f"{provenance}-{index + 1}",
+                    provenance=provenance,
+                    title=title,
+                    url=document.url,
+                    text=text,
+                    overrides=tuple(document.overrides),
+                )
             )
-        )
+        except ValidationError as refused:
+            reasons = "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors())
+            raise ValueError(
+                f"the claims grader's {provenance} document {index + 1} was refused: {reasons}"
+            ) from refused
     return tuple(stored)
 
 
