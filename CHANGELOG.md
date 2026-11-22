@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: claim readings rank arms, and a criterion's losses withhold only what they cost
+
+**Added (#1287):** a claim criterion's readings are read on the ranking path as judged readings. The score projection
+emits one row per reading per cell: the reading's name on `rubric_dim`, no `rubric_scale`, and the criterion on a new
+`ScoreRecord.instrument`. The bundle summarises the three readings that rank (false claims per unit, the share of units
+with a false claim, and, under `grounded_in`, the grounded share) as judged measures. Each one carries its criterion
+(`JudgedMeasure.instrument`) and a reader name in the template's unit noun ("False claims per answer"). The comparison
+family tests each one beside the rubric dimensions: a share takes the bounded test and the per-unit rate the t-path. The
+diagnostics stay in the projection (export and pivot), and a claim about the session itself counts only in
+`<criterion>_session_claims`. A bar may name a ranked claim reading; a diagnostic is refused as having no better end.
+A claim reading's judge key is its question (`<criterion>.true`, `<criterion>.grounded`) on a pass/fail scale under
+`claims:<criterion>@<sha12>`, one key per judge that decided its claims.
+
+**Losses are per criterion and per reading.** A lost criterion leaves every reading of the cell, a lost ground step
+only the grounded share, and a tally still waiting on its stored grade (`trace_pending`) is counted apart and is never a
+loss. Each arm counts them (`JudgedArm.n_claim_lost`, `n_claim_pending`). A reading whose arms lost cells at shares that
+differ beyond the interval on their difference (per-case shares, paired by case) is withheld (`trials_lost`) and tested
+in no family. In simulation, equal 10% losses withhold it 4.2% of the time and a 0%-against-30% loss 90%. Any loss,
+pending cell, claim skipped past the web budget, or failed web step raises a class-B caveat
+(`claims_lost:<criterion>`, `claims_pending:`, `claims_web_skipped:`, `claims_web_lost:`) naming the arms it touches.
+A skipped or unchecked claim reads unverifiable, never false.
+
+**Changed:** a claim reading is a rate or a share on every page, never a score: a share reads as a share and a per-unit
+rate as a bare number its name qualifies. A cell that only claim criteria judged no longer reads "No judge produced
+output". Its judging state is `scored`, or `failed` where every criterion lost it, and its disclosure names each lost
+criterion and each one still pending. A claim reading's unit noun is pluralised by the regular English rules
+("entries", not "entrys"). Claim criterion names that collide with a host measure were already refused at admission
+and launch, and still are.
+
+**For hosts:** `ClaimTally` gains `grounded` (whether the criterion asks groundedness; left out while false), so every
+reading is read off the tally with no template in hand. It amends core 15.24, which is unreleased. A build before this
+change refuses a stored tally that carries `grounded: true`, naming the field, since the claim records forbid unknown
+fields within their minor. Roll this build out before any run writes a grounded criterion's tally, and roll back only
+over stores holding none. `ResultView` now carries `claim_tallies` and `claim_failures`. A hand-built `ClaimTally` of
+a grounded criterion must set `grounded=True`; one that counts grounded claims without it is refused.
+
 ### evals: claim criteria graded in the judge phase
 
 **Added (#1287):** the judge phase grades every claim criterion a template declares, after the rubric dimensions and on

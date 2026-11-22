@@ -951,6 +951,45 @@ class JudgedArm(EvalDocumentModel):
             "left out of `n` and the mean. Not a fault: the judge worked and declined to guess."
         ),
     )
+    # The three below are claim readings' alone, and left out of the document while 0, so a bundle assembled before
+    # they existed serializes, and is fingerprinted, as it did.
+    n_claim_lost: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose claim criterion lost the reading (a reply cut short, a budget spent, the "
+            "cost cap, the deadline; on the grounded share, its ground step alone), left out of `n` and the mean."
+        ),
+    )
+    n_claim_pending: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose tally still waits on its stored grade, left out of `n` and the mean "
+            "and counted as no loss: not yet known."
+        ),
+    )
+    n_web_skipped: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells where the web check skipped a claim past its budget. Each claim skipped reads "
+            "unverifiable, never false, so a cell's truth readings count fewer claims checked than its suspicion asked."
+        ),
+    )
+    n_web_lost: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose web step failed (the port, a malformed reply, a verdict with no quote), a "
+            "cause apart from the budget. Its undecided claims read unverifiable, never false, and truth stands. "
+            "Counted from the tally's record of a lost web step; 0 where the tally records none."
+        ),
+    )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
         default=None,
@@ -1026,6 +1065,30 @@ class JudgedMeasure(EvalDocumentModel):
     arms: list[JudgedArm] = Field(
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
+    )
+    # The three below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
+    # before they existed serializes, and is fingerprinted, as it did.
+    instrument: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The claim criterion this reading is one of, where it is a claim reading (a rate or a share of a cell's "
+            "claims, never a score); None for a rubric dimension or a dual-score axis."
+        ),
+    )
+    reader_name: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="What a reader calls a claim reading, naming its criterion's unit (`False claims per answer`).",
+    )
+    withheld: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why the reading ranks nothing, where it does not: `withheld`, `trials_lost` when its arms lost cells to "
+            "the claim criterion at shares that differ beyond the interval on their difference, so what is left is not read as each "
+            "arm's. None reads counted."
+        ),
     )
     second_judges: list[InterJudgeDimension] = Field(
         default_factory=list,

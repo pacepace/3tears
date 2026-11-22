@@ -112,6 +112,8 @@ from threetears.evals.schema.models import (
     BudgetStop,
     CalibrationRating,
     CaseSetRef,
+    ClaimJudgeCounts,
+    ClaimTally,
     ClientRequestSettings,
     ContextComponents,
     EvalCaseStratum,
@@ -303,6 +305,19 @@ _CUT_SHORT: Final[Mapping[str, Any]] = {
     "reasoning_tokens": _AS_STORED,
 }
 
+#: One judge key's counts of a cell's world claims under a claim criterion: every count is evidence, since each moves a
+#: reading, read off the stored shape so a count it gains is evidence the day it lands.
+_CLAIM_COUNTS: Final[Mapping[str, Any]] = {
+    **dict.fromkeys((name for name in ClaimJudgeCounts.model_fields if name != "judge_sent_settings"), _AS_STORED),
+    "judge_sent_settings": _SETTINGS,
+}
+
+#: A cell's tally under one claim criterion, which every claim reading is computed from.
+_CLAIM_TALLY: Final[Mapping[str, Any]] = {
+    **dict.fromkeys((name for name in ClaimTally.model_fields if name != "by_judge"), _AS_STORED),
+    "by_judge": _Each(_CLAIM_COUNTS),
+}
+
 #: A result's evidence: what its trial recorded, as the readers read it. Each is a stored value, copied from the
 #: result and never recomputed (:meth:`~threetears.evals.kernel.result_reading.ResultReading.of`).
 _RESULT: Final[Mapping[str, Any]] = {
@@ -353,6 +368,8 @@ _RESULT: Final[Mapping[str, Any]] = {
     "judge_repeats": _Each(_REPEAT),
     "judge_seconds": _Each(_SECOND_JUDGING),
     "judge_cut_short": _Keyed(_CUT_SHORT),
+    "claim_tallies": _Keyed(_CLAIM_TALLY),
+    "claim_failures": _AS_STORED,
     "usage": _Each(_USAGE),
     "latency": _LATENCY,
     "async_deliveries": _Each(_DELIVERY),

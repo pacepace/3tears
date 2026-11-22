@@ -610,6 +610,35 @@ class Judged(_Part):
         description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
         "else the first).",
     )
+    # The four below are a claim reading's alone, and left out of the document while unset, so an input built before
+    # they existed digests as it did.
+    instrument: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The claim criterion this reading is one of: a rate or a share of claims, never a score.",
+    )
+    lost: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells its criterion lost, by arm, where any did.",
+    )
+    pending: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose tally waits on its stored grade, by arm: no loss, not yet known.",
+    )
+    web_skipped: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose web check skipped a claim past its budget, by arm; each "
+        "skipped claim reads unverifiable, never false.",
+    )
+    web_lost: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose web step failed, by arm, a cause apart from the budget; its "
+        "undecided claims read unverifiable, never false.",
+    )
 
 
 class Contrast(_Part):

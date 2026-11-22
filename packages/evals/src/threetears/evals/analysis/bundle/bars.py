@@ -10,7 +10,10 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Literal
 
+from threetears.evals.kernel.claims.readings import claim_instruments, describe_judged_reading
 from threetears.evals.analysis.agreement import (
+    JudgeKey,
+    claim_judge_keys,
     judge_key,
     tier_for_judges,
 )
@@ -223,10 +226,19 @@ def _judged_bar_tier(
     served = [
         judge
         for result in non_faulted(members)
-        for dimension, _ in judged_values(judged_rows.get(result.id, []))
-        if dimension == bar.name and (judge := judge_key(result, dimension)) is not None
+        for dimension, record in judged_values(judged_rows.get(result.id, []))
+        if dimension == bar.name
+        for judge in _judges_of(result, dimension, record.instrument)
     ]
     return tier_for_judges(tiers, served)
+
+
+def _judges_of(result: ResultView, dimension: str, instrument: str | None) -> list[JudgeKey]:
+    """The judges behind one counted value on a judged bar: a claim reading's every deciding key, a dimension's one."""
+    if instrument is not None:
+        return claim_judge_keys(result, dimension, criterion=instrument)
+    key = judge_key(result, dimension)
+    return [] if key is None else [key]
 
 
 def bar_adjudications(
@@ -271,6 +283,9 @@ def bar_adjudications(
         for dimension, row in judged_rows_with_nulls(records)
         if row.rubric_scale is not None
     }
+    # A claim reading is a judged name keyed to its criterion, never to a rubric scale: described as its reading.
+    instruments = claim_instruments((record.rubric_dim, record.instrument) for record in records)
+    claimed = {name: describe_judged_reading(name, scales={}, instruments=instruments) for name in instruments}
     goal_state_checks = {outcome.expression for result in all_results for outcome in result.goal_state_outcomes}
     counted_by_cell = {key: non_faulted(members) for key, members in results_by_cell.items()}
 
@@ -281,6 +296,7 @@ def bar_adjudications(
             rubric_dimensions=rubric_dimensions,
             goal_state_checks=goal_state_checks,
             measures=profile.measures,
+            claim_readings=claimed,
         )
         state: _BarState
         reason: str | None = None

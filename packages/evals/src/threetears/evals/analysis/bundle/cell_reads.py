@@ -7,10 +7,12 @@ The populations the bars, comparisons and decision surface share — results the
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.agreement import (
+    JudgeKey,
+    claim_judge_keys,
     judge_key,
     tier_for_judges,
 )
@@ -26,6 +28,7 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import (
     PPI_MIN_LABELLED_RESULTS,
     clustered_standard_error,
+    difference_interval,
     prediction_powered_mean,
     small_sample_case_means,
 )
@@ -35,8 +38,15 @@ from threetears.evals.kernel.declaration import (
     AspectDesign,
 )
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.metrics import describe_rubric_dim
-from threetears.evals.schema.models import SCALES, rubric_dim_scale
+from threetears.evals.kernel.claims.readings import (
+    CLAIM_LOST_OUTCOME,
+    CLAIM_PENDING_OUTCOME,
+    claim_instruments,
+    claim_reading_ranks,
+    describe_judged_reading,
+)
+from threetears.evals.schema.models import SCALES
+from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
@@ -132,8 +142,19 @@ def judged_values(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord
             yield record.metric, record
 
 
+#: The outcomes of a judged row with no value that an arm counts: the judge could not tell, the harness faulted the
+#: result, and, on a claim reading, its criterion lost the cell or its tally waits on its stored grade.
+_NULL_JUDGED_OUTCOMES: frozenset[str] = frozenset(
+    {JUDGE_CANNOT_TELL_OUTCOME, ResultOutcome.INFRA_EXCLUDE.value, CLAIM_LOST_OUTCOME, CLAIM_PENDING_OUTCOME}
+)
+
+#: The outcomes of a judged row that leave it out of a mean.
+_UNCOUNTED_JUDGED_OUTCOMES: frozenset[str] = _NULL_JUDGED_OUTCOMES
+
+
 def judged_rows_with_nulls(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]]:
-    """:func:`judged_values`, plus the null rows the judge answered it could not tell on or the harness faulted.
+    """:func:`judged_values`, plus the null rows the judge answered it could not tell on or the harness faulted, and
+    a claim reading's rows its criterion lost or has not yet tallied.
 
     What a judged measure COUNTS rather than means: those rows carry no value, so they never reach a
     mean, and are yielded here only so the arm can say how many left it and why — a faulted
@@ -141,7 +162,7 @@ def judged_rows_with_nulls(records: list[ScoreRecord]) -> Iterator[tuple[str, Sc
     """
     yield from judged_values(records)
     for record in records:
-        if record.value is None and record.outcome in (JUDGE_CANNOT_TELL_OUTCOME, ResultOutcome.INFRA_EXCLUDE.value):
+        if record.value is None and record.outcome in _NULL_JUDGED_OUTCOMES:
             if record.metric == METRIC_SCORE and record.rubric_dim:
                 yield record.rubric_dim, record
             elif record.metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME):
@@ -155,13 +176,22 @@ def judged_measures(
     *,
     tiers: list[JudgeEvidenceTier],
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
+    claim_units: Mapping[str, str] | None = None,
 ) -> list[JudgedMeasure]:
-    """Summarise every judged dimension per cell, from the score projection assembly already holds.
+    """Summarise every judged dimension, and every ranked claim reading, per cell, from the score projection assembly
+    already holds.
 
     The projection is the source because it is where the dimension's NAME survives: the measure
     walk meets a judged score as a bare ``score`` leaf on a ``RubricScore`` and cannot tell one
     dimension from another. A score on an observation the harness faulted is counted beside the mean
     and left out of it, because a judge reading a broken transcript is not measuring the candidate.
+
+    **A claim reading** (a row carrying an ``instrument``) is described as its criterion's reading
+    (:func:`~threetears.evals.kernel.claims.readings.describe_judged_reading`), a rate or a share and never a level on
+    a rubric scale. Only the three that rank are summarised here; the diagnostics stay in the projection. Each arm
+    counts the cells its criterion lost and the cells still pending apart from its mean, a pending cell as no loss,
+    and the cells whose web check skipped a claim past its budget. The reading is withheld (``trials_lost``) where two
+    arms' shares of cells lost differ beyond the interval on their difference (:func:`_differential_claim_loss`).
 
     :param records: The assembly's score projection rows.
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
@@ -172,11 +202,14 @@ def judged_measures(
         (:func:`~threetears.evals.analysis.agreement.person_scores_by_result`), from which each arm with a
         rated counted observation carries a prediction-powered estimate (:func:`_prediction_powered`); None
         reads as nobody rated anything.
-    :return: One entry per dimension scored anywhere, sorted by name.
+    :param claim_units: What a page calls one unit of each claim criterion, from the member runs' templates
+        (``EvalTemplate.claim_unit_names``), for a claim reading's reader name; ``unit`` where none is named.
+    :return: One entry per dimension and ranked claim reading scored anywhere, sorted by name.
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
     cell_of_result = {result.id: key for key, members in results_by_cell.items() for result in members}
     boundary = boundary_dimensions(result_by_id.values())
+    instruments = claim_instruments((record.rubric_dim, record.instrument) for record in records)
     scored: dict[str, dict[CellKey, list[ScoreRecord]]] = {}
     for dimension, record in judged_rows_with_nulls(records):
         key = cell_of_result.get(record.result_id)
@@ -185,6 +218,9 @@ def judged_measures(
     bars = {bar.measure_id: bar.threshold for bar in (design.bars if design else [])}
     measures = []
     for dimension in sorted(scored):
+        criterion = instruments.get(dimension)
+        if criterion is not None and not claim_reading_ranks(dimension, criterion=criterion):
+            continue
         scales = {
             row.rubric_scale for rows in scored[dimension].values() for row in rows if row.rubric_scale is not None
         }
@@ -192,24 +228,23 @@ def judged_measures(
             raise ValueError(f"rubric dimension {dimension!r} was judged on more than one scale: {sorted(scales)}")
         # The dual-score axes carry no `rubric_scale` (they are not template dims) and are 1-5 by construction; every
         # template dim's row carries the scale it was answered on, and one carrying none is refused, never read as 1-5.
+        # A claim reading carries none either, and is described as its criterion's reading.
         recorded = {dimension: scale for scale in scales}
-        descriptor = describe_rubric_dim(dimension, scale=rubric_dim_scale(dimension, recorded))
+        descriptor = describe_judged_reading(dimension, scales=recorded, instruments=instruments, units=claim_units)
         arms = []
         for key in sorted(scored[dimension]):
             rows = scored[dimension][key]
             cannot_tell = [row for row in rows if row.outcome == JUDGE_CANNOT_TELL_OUTCOME]
-            counted = [
-                row for row in rows if row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
-            ]
+            lost = [row for row in rows if row.outcome == CLAIM_LOST_OUTCOME]
+            pending = [row for row in rows if row.outcome == CLAIM_PENDING_OUTCOME]
+            counted = [row for row in rows if row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES]
             valued = [row for row in counted if row.value is not None]
             values = [float(row.value) for row in valued if row.value is not None]
             value_cases = [row.test_case_id for row in valued]
             # The whole judge behind each counted score — dimension, scale, served model and config — so an arm
             # can only carry a tier measured for the very judges that scored it.
             served = [
-                judge
-                for row in counted
-                if row.value is not None and (judge := judge_key(result_by_id[row.result_id], dimension)) is not None
+                judge for row in valued for judge in _judges_of(result_by_id[row.result_id], dimension, criterion)
             ]
             arms.append(
                 JudgedArm(
@@ -218,8 +253,11 @@ def judged_measures(
                     run_ids=member_run_ids(results_by_cell[key]),
                     n=len(values),
                     n_independent=len(set(value_cases)),
-                    n_infra_excluded=len(rows) - len(counted) - len(cannot_tell),
+                    n_infra_excluded=len(rows) - len(counted) - len(cannot_tell) - len(lost) - len(pending),
                     n_cannot_tell=len(cannot_tell),
+                    n_claim_lost=len(lost),
+                    n_claim_pending=len(pending),
+                    n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
                     case_means=small_sample_case_means(values, value_cases),
@@ -243,9 +281,76 @@ def judged_measures(
                 axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
+                instrument=criterion,
+                reader_name=descriptor.reader_name if criterion is not None else None,
+                withheld=(
+                    StateOf(state="withheld", reason="trials_lost")
+                    if criterion is not None and _differential_claim_loss(scored[dimension])
+                    else None
+                ),
             )
         )
     return measures
+
+
+def _judges_of(result: ResultView, dimension: str, criterion: str | None) -> list[JudgeKey]:
+    """The judges behind one counted value: a claim reading's every deciding judge key, a dimension's one score's."""
+    if criterion is not None:
+        return claim_judge_keys(result, dimension, criterion=criterion)
+    judge = judge_key(result, dimension)
+    return [] if judge is None else [judge]
+
+
+def _web_skipped_cells(members: Sequence[ResultView], criterion: str) -> int:
+    """How many of a cell's results hold a claim the criterion's web check skipped past its budget.
+
+    A web step that failed is a cause apart (``JudgedArm.n_web_lost``, its own caveat), counted beside this one from the
+    tally's record of the loss; a tally that records none leaves it 0.
+    """
+    return sum(
+        1
+        for result in members
+        if (tally := result.claim_tallies.get(criterion)) is not None
+        and any(entry.web_skipped for entry in tally.by_judge)
+    )
+
+
+def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bool:
+    """Whether two arms lost a claim reading's cells at shares that differ beyond their interval.
+
+    Each arm's share is read per case, as a rate is: the share of the case's cells its criterion lost, of the cells the
+    reading could have been read on (read, or lost; a pending or harness-faulted cell is in neither). Two arms differ
+    where the interval on the difference of those per-case shares (:func:`~threetears.evals.analysis.stats.
+    difference_interval`, paired over the cases both ran, on 0 to 1) excludes zero: the test a comparison of two rates
+    reads, so equal shares of loss withhold a reading about as often as its level allows and a lopsided loss is caught
+    (both rates ``tests/test_claim_ranking.py`` simulates). Where the per-case differences hold no spread, the shares
+    differ exactly where they are not equal: one arm lost every case's cells and the other none.
+    """
+    shares: list[dict[str, float]] = []
+    for rows in by_cell.values():
+        by_case: dict[str, list[bool]] = defaultdict(list)
+        for row in rows:
+            if row.outcome == CLAIM_LOST_OUTCOME or (
+                row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES and row.value is not None
+            ):
+                by_case[row.test_case_id].append(row.outcome == CLAIM_LOST_OUTCOME)
+        shares.append({case: sum(lost) / len(lost) for case, lost in by_case.items()})
+    for index, first in enumerate(shares):
+        for second in shares[index + 1 :]:
+            common = sorted(set(first) & set(second))
+            paired = len(common) >= 2
+            a = [first[case] for case in common] if paired else list(first.values())
+            b = [second[case] for case in common] if paired else list(second.values())
+            if not a or not b:
+                continue
+            interval = difference_interval(a, b, paired=paired, value_range=(0.0, 1.0))
+            if interval is None:
+                # No spread to test over two cases or more: the shares are what they are, and differ where unequal.
+                if min(len(a), len(b)) >= 2 and sum(a) / len(a) != sum(b) / len(b):
+                    return True
+            elif interval[0] > 0 or interval[1] < 0:
+                return True
+    return False
 
 
 def _prediction_powered(

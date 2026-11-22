@@ -20,12 +20,12 @@ Engine-internal: the judge phase tallies, the ranking path reads, and nothing he
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, fields
 from types import MappingProxyType
 from typing import Final
 
-from threetears.evals.kernel.metrics import CLAIMS_FAMILY, MetricDescriptor, list_metrics
+from threetears.evals.kernel.metrics import CLAIMS_FAMILY, MetricDescriptor, describe_rubric_dim, list_metrics
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.schema import (
     ClaimEvidence,
@@ -36,14 +36,23 @@ from threetears.evals.schema import (
     EvidenceProvenance,
     EvalTemplate,
 )
-from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
+from threetears.evals.schema.models import (
+    CLAIM_PENDING,
+    ClaimCall,
+    GradedClaim,
+    KnownClaimLoss,
+    RubricScale,
+    request_settings_order,
+    rubric_dim_scale,
+)
 
 
 @dataclass(frozen=True)
 class _Reading:
     """One reading a criterion's tally gives, as its descriptor and its reader state it.
 
-    :ivar words: What a reader calls it, before the criterion it reads (``False claims per {unit}``).
+    :ivar words: What a reader calls it, before the criterion it reads (``False claims per {unit}``; ``{units}`` and
+        ``{Units}`` its plural).
     :ivar lower_is_better: ``True`` or ``False`` for a ranked reading; ``None`` for a diagnostic.
     :ivar share: Whether it is a share on 0 to 1, rather than a count or an unbounded rate.
     :ivar formula: How it is computed from the tally.
@@ -85,7 +94,7 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             "the t-path over per-case means",
         ),
         "false_unit_share": _Reading(
-            "Share of {unit}s with a false claim",
+            "Share of {units} with a false claim",
             lower_is_better=True,
             share=True,
             formula="units holding an asserted world claim contradicted / units",
@@ -148,7 +157,7 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             "output or session itself is no world claim",
         ),
         "units": _Reading(
-            "{Unit}s",
+            "{Units}",
             None,
             share=False,
             formula="units",
@@ -262,7 +271,9 @@ def claim_reading_names(criterion: str, *, grounded: bool) -> tuple[str, ...]:
     return tuple(f"{criterion}_{suffix}" for suffix in _READINGS if grounded or suffix not in _GROUNDED)
 
 
-def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool) -> dict[str, float]:
+def claim_readings(
+    criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool | None = None
+) -> dict[str, float]:
     """One cell's readings under one criterion, computed from its tally, or its one reading when the criterion lost it.
 
     A reading whose population leaves the cell out is absent, never zero: a cell with no unit has no per-unit reading,
@@ -274,15 +285,23 @@ def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded:
     :param criterion: The criterion's name, which every reading name starts with.
     :param outcome: The cell's tally under it (:attr:`EvalResult.claim_tallies`), or why the cell lost it
         (:attr:`EvalResult.claim_failures`).
-    :param grounded: Whether the criterion declares ``grounded_in``.
+    :param grounded: Whether the criterion declares ``grounded_in``; None reads it off the tally
+        (:attr:`ClaimTally.grounded`), which a lost cell's single reading does not need.
     :return: Each reading the cell carries, by name; none while its tally waits on its trace
         (:data:`~threetears.evals.schema.models.CLAIM_PENDING`), which is not yet known and never a loss.
+    :raises ValueError: ``grounded`` disagrees with the tally's own record of whether its criterion asks groundedness.
     """
     if outcome == CLAIM_PENDING:
         return {}
     if isinstance(outcome, str):
         return {f"{criterion}_lost": 1.0}
     tally = outcome
+    if grounded is None:
+        grounded = tally.grounded
+    elif grounded != tally.grounded:
+        raise ValueError(
+            f"claim criterion {criterion!r} is read as grounded={grounded}, and its tally records grounded={tally.grounded}"
+        )
     count = _summed(tally.by_judge)
     values: dict[str, float | None] = {
         "false_per_unit": _ratio(count.asserted_contradicted, tally.units),
@@ -333,7 +352,8 @@ def describe_claim_reading(name: str, *, criterion: str, unit: str = "unit") -> 
             f"{name!r} is no reading of claim criterion {criterion!r}; its readings are "
             + ", ".join(f"{criterion}_{suffix}" for suffix in _READINGS)
         )
-    words = reading.words.format(unit=unit, Unit=unit[:1].upper() + unit[1:])
+    units = _plural(unit)
+    words = reading.words.format(unit=unit, units=units, Units=units[:1].upper() + units[1:])
     ranked = reading.lower_is_better is not None
     return MetricDescriptor(
         name=name,
@@ -360,6 +380,16 @@ def describe_claim_reading(name: str, *, criterion: str, unit: str = "unit") -> 
     )
 
 
+def _plural(noun: str) -> str:
+    """A unit noun's plural by the regular English rules (``answer`` → ``answers``, ``entry`` → ``entries``, ``match``
+    → ``matches``): the host names one unit, and a page names many."""
+    if noun.endswith("y") and len(noun) > 1 and noun[-2] not in "aeiou":
+        return noun[:-1] + "ies"
+    if noun.endswith(("s", "x", "z", "ch", "sh")):
+        return noun + "es"
+    return noun + "s"
+
+
 def claim_reading_ranks(name: str, *, criterion: str) -> bool:
     """Whether a criterion's reading is one of the three that rank, rather than a diagnostic.
 
@@ -368,6 +398,163 @@ def claim_reading_ranks(name: str, *, criterion: str) -> bool:
     :return: True for the false claims per unit, the share of units with a false claim and the grounded share.
     """
     return name.startswith(f"{criterion}_") and name[len(criterion) + 1 :] in _RANKED
+
+
+#: The ``outcome`` a projected claim row carries where its criterion lost the cell, or, on the grounded share, where
+#: the cell lost its ground step alone: the row holds no value, stays out of the reading's mean, and counts as a loss.
+CLAIM_LOST_OUTCOME: Final = "claim_lost"
+#: The ``outcome`` a projected claim row carries while its criterion's tally waits on its trace
+#: (:data:`~threetears.evals.schema.models.CLAIM_PENDING`): no value and no loss, counted apart so the population
+#: never shrinks without a word.
+CLAIM_PENDING_OUTCOME: Final = "claim_pending"
+
+#: What each reading's claims rest on, as a calibration question names it (``<criterion>.<question>``): the
+#: groundedness readings on whether the documents shown support a claim, the counts of claims on whether the judge's
+#: claim is one, every other on whether a claim is true.
+_QUESTION_OF: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "grounded_share": "grounded",
+        "ground_lost": "grounded",
+        "claims": "is_claim",
+        "units": "is_claim",
+        "hedged_share": "is_claim",
+        "session_claims": "is_claim",
+    }
+)
+
+
+def ranked_claim_reading_names(criterion: str, *, grounded: bool) -> tuple[str, ...]:
+    """The readings of a criterion that rank, in one order: the two truth readings, then the grounded share.
+
+    :param criterion: The criterion's name.
+    :param grounded: Whether it declares ``grounded_in``.
+    :return: Their names.
+    """
+    return tuple(
+        name
+        for name in claim_reading_names(criterion, grounded=grounded)
+        if claim_reading_ranks(name, criterion=criterion)
+    )
+
+
+def projected_claim_readings(
+    criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool
+) -> list[tuple[str, float | None, str | None]]:
+    """One cell's rows under one criterion, as the score projection emits them: ``(reading, value, outcome)``, the
+    outcome None where the row takes the cell's own.
+
+    Every reading the cell carries (:func:`claim_readings`) is a valued row. A ranked reading the cell would carry but
+    lost is a null row whose outcome says so, so each arm counts what it lost: every ranked reading where the criterion
+    lost the cell (:data:`CLAIM_LOST_OUTCOME`), the grounded share alone where only its ground step was, and every ranked
+    reading, under :data:`CLAIM_PENDING_OUTCOME`, while the tally waits on its trace, which is no loss.
+
+    :param criterion: The criterion's name.
+    :param outcome: The cell's tally under it, or why it lost it.
+    :param grounded: Whether the criterion asks groundedness, for a cell with no tally to say so (a lost or pending
+        one); a tally's own record wins.
+    :return: The rows, valued ones first.
+    """
+    rows: list[tuple[str, float | None, str | None]] = [
+        (name, value, None) for name, value in claim_readings(criterion, outcome).items()
+    ]
+    if isinstance(outcome, str):
+        missing = CLAIM_PENDING_OUTCOME if outcome == CLAIM_PENDING else CLAIM_LOST_OUTCOME
+        rows += [(name, None, missing) for name in ranked_claim_reading_names(criterion, grounded=grounded)]
+    elif outcome.grounded and outcome.ground_loss is not None:
+        rows.append((f"{criterion}_grounded_share", None, CLAIM_LOST_OUTCOME))
+    return rows
+
+
+def claim_reading_is_share(name: str, criterion: str) -> bool:
+    """Whether a criterion's reading is a share on 0 to 1, rather than a count or a rate per unit.
+
+    :param name: The reading's name.
+    :param criterion: The criterion it reads.
+    :return: Whether it is a share.
+    """
+    return describe_claim_reading(name, criterion=criterion).value_range == (0.0, 1.0)
+
+
+def claim_reading_question(name: str, *, criterion: str) -> str:
+    """The question a reading's claims rest on, as a judge key and a calibration read name it: ``<criterion>.true``
+    for a truth reading, ``<criterion>.grounded`` for a groundedness one, ``<criterion>.is_claim`` for a count of
+    claims.
+
+    :param name: The reading's name.
+    :param criterion: The criterion it reads.
+    :return: The question.
+    """
+    return f"{criterion}.{_QUESTION_OF.get(name.removeprefix(f'{criterion}_'), 'true')}"
+
+
+def claim_judge_config_id(criterion: str, fingerprint: str) -> str:
+    """The judge config a claim reading's judge key names: ``claims:<criterion>@<the fingerprint's first 12>``.
+
+    :param criterion: The criterion's name.
+    :param fingerprint: The criterion fingerprint its tally counts under.
+    :return: The id.
+    """
+    return f"claims:{criterion}@{fingerprint[:12]}"
+
+
+def describe_judged_reading(
+    name: str,
+    *,
+    scales: Mapping[str, RubricScale],
+    instruments: Mapping[str, str],
+    units: Mapping[str, str] | None = None,
+) -> MetricDescriptor:
+    """Describe a reading of the judged namespace: a claim criterion's reading, or a rubric dimension.
+
+    The one dispatch every reader of a judged name goes through, so a claim reading is never described on a rubric
+    scale it was not answered on, and a rubric dimension never as a rate.
+
+    :param name: The reading's name.
+    :param scales: The scale each rubric dimension was answered on.
+    :param instruments: The criterion each claim reading belongs to, by reading name (:func:`claim_instruments`).
+    :param units: What a page calls one unit of each criterion (``EvalTemplate.claim_unit_names``); ``unit`` where
+        none is named.
+    :return: The descriptor.
+    :raises ValueError: ``name`` is no claim reading and no scale was recorded for it.
+    """
+    criterion = instruments.get(name)
+    if criterion is not None:
+        return describe_claim_reading(name, criterion=criterion, unit=(units or {}).get(criterion, "unit"))
+    return describe_rubric_dim(name, scale=rubric_dim_scale(name, scales))
+
+
+def claim_instruments(rows: Iterable[tuple[str | None, str | None]]) -> dict[str, str]:
+    """The criterion each claim reading belongs to, from ``(reading, instrument)`` pairs the projection's rows carry.
+
+    :param rows: Each row's reading name and instrument; a row with no instrument is no claim row and is passed over.
+    :return: ``{reading: criterion}``.
+    :raises ValueError: One reading name belongs to two criteria (``a`` and ``a_session`` both give
+        ``a_session_claims``), which no reader could tell apart.
+    """
+    found: dict[str, str] = {}
+    for name, instrument in rows:
+        if name is None or instrument is None:
+            continue
+        if found.setdefault(name, instrument) != instrument:
+            raise ValueError(
+                f"claim reading {name!r} belongs to criteria {found[name]!r} and {instrument!r}; name one of them apart"
+            )
+    return found
+
+
+def template_claim_readings(template: EvalTemplate) -> dict[str, MetricDescriptor]:
+    """Every reading a template's claim criteria give, described, by name: what a bar may name before any result.
+
+    :param template: The template.
+    :return: ``{reading: descriptor}``.
+    """
+    return {
+        name: describe_claim_reading(
+            name, criterion=criterion.name, unit=template.claim_unit_names.get(criterion.name, "unit")
+        )
+        for criterion in template.claim_criteria
+        for name in claim_reading_names(criterion.name, grounded=criterion.grounded_in is not None)
+    }
 
 
 def claim_names_a_measure_holds(template: EvalTemplate, measures: MeasureRegistry) -> str | None:
@@ -505,6 +692,7 @@ def claim_tally(
         units_with_false=len(units_with_false),
         session_claims=session,
         by_judge=tuple(_counted(calls[key], claims) for key, claims in groups.items()),
+        grounded=grounded_in is not None,
         ground_loss=ground_loss,
     )
 

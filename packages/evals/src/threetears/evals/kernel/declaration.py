@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, computed_field, field_validator, model_validator
 
+from threetears.evals.kernel.claims.readings import template_claim_readings
 from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
@@ -1420,6 +1421,7 @@ def resolve_bar_name(
     rubric_dimensions: Mapping[str, RubricScale],
     goal_state_checks: Collection[str],
     measures: MeasureRegistry,
+    claim_readings: Mapping[str, MetricDescriptor] | None = None,
 ) -> BarName | UnreadableBarName:
     """Say what a bar names and where a result carries it, or why no result can.
 
@@ -1435,8 +1437,10 @@ def resolve_bar_name(
        is code-graded (:func:`~threetears.evals.kernel.metrics.is_code_graded`), numeric and declares
        a better end. A non-numeric one (categorical, boolean) is refused as ``not_numeric`` and a
        directionless one as ``no_better_end``.
-    2. A judged dimension — one of ``rubric_dimensions``, or a reserved dual-score axis, which every
-       run scores whatever its template says.
+    2. A judged reading — one of ``rubric_dimensions``, a reserved dual-score axis, which every
+       run scores whatever its template says, or one of ``claim_readings``, described as its claim criterion's
+       reading (a rate or a share, never a level on a rubric scale). A claim reading that is a diagnostic is
+       refused as ``no_better_end``.
     3. One of ``goal_state_checks``, by its verbatim text or by the measure name the bundle publishes
        for it (:func:`~threetears.evals.kernel.metrics.goal_check_measure`), which reads as the check.
 
@@ -1450,6 +1454,9 @@ def resolve_bar_name(
         adjudication.
     :param goal_state_checks: The goal-state check texts in play, on the same two readings.
     :param measures: The host's measure registry, whose declarations join the engine's core.
+    :param claim_readings: The claim readings in play, described: the template's claim criteria's at authoring time
+        (:func:`~threetears.evals.kernel.claims.readings.template_claim_readings`), the readings the results carry at
+        adjudication. None for none.
     :return: A :class:`BarName` when a result can carry the name with a direction, else an
         :class:`UnreadableBarName`.
     """
@@ -1472,6 +1479,14 @@ def resolve_bar_name(
                 f"{name} declares no better end — {what} — so clearing a threshold on it means nothing",
             )
         return BarName(name, "measure", descriptor)
+    if (claimed := (claim_readings or {}).get(name)) is not None:
+        if (what := no_better_end(claimed)) is not None:
+            return UnreadableBarName(
+                name,
+                "no_better_end",
+                f"{name} declares no better end — {what} — so clearing a threshold on it means nothing",
+            )
+        return BarName(name, "judged", claimed)
     if name in RESERVED_DIM_IDS or name in rubric_dimensions:
         return BarName(
             name,
@@ -1830,11 +1845,16 @@ def refuse_an_undeclarable_design(
     # goal-state names; with no template only the two reserved axes every run scores are known.
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
+    claimed = template_claim_readings(template) if template is not None else {}
     _refuse_unreadable_guardrail_margins(design, template)
     _refuse_unread_measure_order(design, template, profile)
     resolved = {
         override.measure_id: resolve_bar_name(
-            override.measure_id, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures
+            override.measure_id,
+            rubric_dimensions=rubric,
+            goal_state_checks=checks,
+            measures=profile.measures,
+            claim_readings=claimed,
         )
         for override in design.bars
     }
@@ -1888,6 +1908,8 @@ def refuse_an_undeclarable_design(
             dims = ", ".join(sorted(rubric)) or "none — the campaign's template declares no rubric"
             goals = "; ".join(repr(check) for check in sorted(checks)) or "none — the campaign's template declares none"
             minted = f"Rubric dimensions of the template: {dims}. Goal-state checks of the template: {goals}"
+            if ranked := sorted(name for name, descriptor in claimed.items() if not descriptor.diagnostic):
+                minted += f". Ranked claim readings of the template: {', '.join(ranked)}"
         readable = sorted(
             descriptor.name
             for descriptor in list_metrics(profile.measures)

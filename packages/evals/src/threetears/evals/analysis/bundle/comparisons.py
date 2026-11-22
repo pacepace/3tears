@@ -13,6 +13,7 @@ from datetime import datetime
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from threetears.evals.kernel.claims.readings import claim_instruments, describe_judged_reading
 from threetears.evals.analysis.contention import withhold_contended_latency
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE
@@ -77,7 +78,6 @@ from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     classifier_label_of,
     describe_reported_measure,
-    describe_rubric_dim,
     goal_check_measure,
     is_latency_measure,
     materiality,
@@ -86,10 +86,7 @@ from threetears.evals.kernel.metrics import (
 )
 from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.scoring import capability_scores
-from threetears.evals.schema.models import (
-    RubricScale,
-    rubric_dim_scale,
-)
+from threetears.evals.schema.models import RubricScale
 from threetears.evals.kernel.surface import (
     GuardrailCell,
     GuardrailCheck,
@@ -264,6 +261,8 @@ def planning_readings(
     # The scale each template dim was answered on, as each run's scores carried it: laid, in ``runs`` order, over what
     # each run recorded at launch once every run is read.
     answered_scales: dict[str, dict[str, RubricScale]] = {}
+    # Each claim reading's criterion, as its rows carry it: a claim reading is described as one, never on a scale.
+    claim_rows: list[tuple[str, str]] = []
     classified_cases: set[str] = set()
     boundary: set[str] = set()
     kept: dict[str, _RunRepeats] = {}
@@ -294,6 +293,8 @@ def planning_readings(
                 judged_rows.setdefault(record.result_id, []).append(record)
                 if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
                     run_scales[record.rubric_dim] = record.rubric_scale
+                if record.instrument is not None and record.rubric_dim:
+                    claim_rows.append((record.rubric_dim, record.instrument))
             # One memo per page, not per read: it holds each walked result, so a read-long memo would hold the history
             # the page-at-a-time walk exists not to hold. Within the page, each name is described once.
             with measures_walked_once():
@@ -325,6 +326,7 @@ def planning_readings(
             for reading, by_case in values.items():
                 for case_id, value in by_case.items():
                     repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
+    instruments = claim_instruments(claim_rows)
     readings = []
     for (kind, name), by_run in sorted(repeats.items()):
         if kind == "measure":
@@ -339,7 +341,7 @@ def planning_readings(
         else:
             if name in boundary:
                 continue
-            judged = describe_rubric_dim(name, scale=rubric_dim_scale(name, scales))
+            judged = describe_judged_reading(name, scales=scales, instruments=instruments)
             if judged.higher_is_better is None:
                 continue
             higher, value_range = judged.higher_is_better, judged.value_range
@@ -384,7 +386,8 @@ def _family_readings(
             readings[("measure", name)] = descriptor.higher_is_better
     if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
         for measure in measures_judged:
-            if measure.axis == "capability":
+            # A withheld claim reading (its arms lost cells at shares that differ) ranks nothing, so it is in no family.
+            if measure.axis == "capability" and measure.withheld is None:
                 readings[("judged", measure.name)] = measure.higher_is_better
     return readings
 

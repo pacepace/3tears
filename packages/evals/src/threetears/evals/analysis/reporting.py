@@ -51,14 +51,17 @@ from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
     TRANSCRIPT_DIM_ID,
+    ClaimTally,
     ClientRequestSettings,
     RubricScale,
     request_settings_order,
     request_settings_words,
 )
 from threetears.evals.kernel.surface import FrontierDominance
+from threetears.evals.kernel.claims.readings import projected_claim_readings
 from threetears.evals.kernel.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
+    ResultOutcome,
     classify_result,
     counted_goal_verdicts,
     counted_rubric_scores,
@@ -1097,6 +1100,11 @@ class ScoreRecord(EvalBaseModel):
     # rate, and a pooling across the two is neither.
     rubric_scale: RubricScale | None = None
 
+    # The claim criterion a claim reading's row reads, set on those `score` rows and on no other: a claim reading
+    # lives in the judged namespace beside the rubric dims (its name on `rubric_dim`), carries no rubric scale, and is
+    # a rate or a share, never a 1-5 level, so a reader tells it from a dimension by this coordinate alone.
+    instrument: str | None = None
+
     # The goal-state check a `goal_state` row reports, as its expression — set on those rows and on no other.
     # A coordinate of its own rather than `rubric_dim`, which is pinned to template rubric dimensions: a check
     # is code-graded and a dimension is judged, and a `rubric_dim` pivot that pooled the two would mean
@@ -1652,6 +1660,11 @@ def project_score_records(
 
     records: list[ScoreRecord] = []
     factors_by_run = _run_factors(placed, profile=profile)
+    # The claim criteria each run's tallies record as asking groundedness: what a lost or pending cell, which holds no
+    # tally of its own, is read by when its arm's losses on the grounded share are counted.
+    grounded_by_run: dict[str, set[str]] = {run.id: set() for run, _, _ in placed}
+    for run, result, _ in placed:
+        grounded_by_run[run.id] |= {criterion for criterion, tally in result.claim_tallies.items() if tally.grounded}
 
     for run, result, subject_id in placed:
         coordinates: dict[str, Any] = {
@@ -1802,6 +1815,30 @@ def project_score_records(
             )
         if not result.rubric_scores and not cannot_tell_dims:
             records.append(ScoreRecord(metric=METRIC_SCORE, value=None, **coordinates))
+
+        # One row per claim reading per criterion that graded the cell, in the judged namespace: its name on
+        # `rubric_dim`, no rubric scale, its criterion on `instrument`. Each value is a rate or a share computed off the
+        # cell's tally, never a level on a scale, and never part of the composite or any trial's pass, which read the
+        # rubric scores alone. A ranked reading the cell lost is a null row whose outcome says so, so an arm counts
+        # its losses; a pending tally's rows are null and no loss. A harness-faulted result's rows are null, as its
+        # rubric rows are. A candidate failure's are read as they stand: a rate over what the candidate delivered,
+        # since a rate has no floor to count it at.
+        faulted = coordinates["outcome"] == ResultOutcome.INFRA_EXCLUDE.value
+        claimed: dict[str, ClaimTally | str] = {**result.claim_tallies, **result.claim_failures}
+        for criterion in sorted(claimed):
+            for reading, value, missing in projected_claim_readings(
+                criterion, claimed[criterion], grounded=criterion in grounded_by_run[run.id]
+            ):
+                records.append(
+                    ScoreRecord(
+                        metric=METRIC_SCORE,
+                        rubric_dim=reading,
+                        instrument=criterion,
+                        value=None if faulted else value,
+                        # A harness fault outranks a loss or a pending tally: the cell's own evidence is in doubt.
+                        **({**coordinates, "outcome": missing} if missing is not None and not faulted else coordinates),
+                    )
+                )
 
         # One row per goal-state check the result carries, 1.0 passed and 0.0 not, keyed by the check —
         # including the template's checks a candidate-charged deadline stamps unevaluated, which count as
