@@ -259,6 +259,7 @@ def judged_measures(
                     n_claim_lost=len(lost),
                     n_claim_pending=len(pending),
                     n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
+                    n_web_lost=0 if criterion is None else _web_lost_cells(results_by_cell[key], criterion),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
                     case_means=small_sample_case_means(values, value_cases),
@@ -305,8 +306,7 @@ def _judges_of(result: ResultView, dimension: str, criterion: str | None) -> lis
 def _web_skipped_cells(members: Sequence[ResultView], criterion: str) -> int:
     """How many of a cell's results hold a claim the criterion's web check skipped past its budget.
 
-    A web step that failed is a cause apart (``JudgedArm.n_web_lost``, its own caveat), counted beside this one from the
-    tally's record of the loss; a tally that records none leaves it 0.
+    A web step that failed is a cause apart (:func:`_web_lost_cells`, its own caveat).
     """
     return sum(
         1
@@ -318,6 +318,16 @@ def _web_skipped_cells(members: Sequence[ResultView], criterion: str) -> int:
 
 #: The level the test of claim losses across arms rejects at: a reading whose losses it calls uneven is withheld.
 _CLAIM_LOSS_LEVEL = 0.05
+
+
+def _web_lost_cells(members: Sequence[ResultView], criterion: str) -> int:
+    """How many of a cell's results lost the criterion's web step to a failure (the port, a malformed reply, a verdict
+    with no quote): a cause apart from the budget, whose undecided claims read unverifiable and never false."""
+    return sum(
+        1
+        for result in members
+        if (tally := result.claim_tallies.get(criterion)) is not None and tally.web_loss is not None
+    )
 
 
 def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bool:

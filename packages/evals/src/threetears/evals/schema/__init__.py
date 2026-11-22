@@ -146,6 +146,7 @@ from threetears.evals.schema.models import (
     ClaimGrade,
     ClaimJudgeCounts,
     ClaimLoss,
+    ClaimRescore,
     ClaimTally,
     EvidenceDocument,
     EvidenceProvenance,
@@ -302,6 +303,7 @@ from threetears.evals.schema.values import (
     OrdinalScale,
     Scale,
 )
+from threetears.evals.schema.web_search import WebPage, WebSearch, WebSearchResult
 from threetears.evals.schema.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
@@ -522,6 +524,7 @@ __all__ = [
     "ClaimGrade",
     "ClaimJudgeCounts",
     "ClaimLoss",
+    "ClaimRescore",
     "ClaimTally",
     "EvidenceDocument",
     "EvidenceProvenance",
@@ -533,6 +536,9 @@ __all__ = [
     "TextSpan",
     "WebBudget",
     "WebCheckRecord",
+    "WebPage",
+    "WebSearch",
+    "WebSearchResult",
     "WebWindow",
     "JudgeRepeat",
     "JudgeRescore",

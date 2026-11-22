@@ -53,6 +53,10 @@ from threetears.evals.run.judge_service import JudgeContext
 from threetears.evals.run.simulator import SIMULATED_USER_RESPONSE_FORMAT, smallest_utterance_prompts
 from threetears.evals.schema import (
     ActorPolicy,
+    ClaimCriterion,
+    PageBudget,
+    RepairBudget,
+    WebBudget,
     ConversationSpec,
     EvalRun,
     EvalTemplate,
@@ -142,9 +146,10 @@ class _Subject:
         judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
         judge: JudgeDeclaration = "builtin",
         estimate: bool = False,
+        claim_criteria: tuple[ClaimCriterion, ...] = (),
     ) -> None:
         self.storage = EvalStorage(InMemoryDocumentStore())
-        self.template = _template(conversation, judge)
+        self.template = _template(conversation, judge).model_copy(update={"claim_criteria": list(claim_criteria)})
         self.storage.save_template(self.template)
         self.clients: list[_PricedClient] = []
         self.launched: list[LaunchRequest] = []
@@ -609,3 +614,68 @@ async def _request(subject: _Subject, plan: ArmPlan) -> LaunchRequest:
     )
     [request] = seen
     return replace(request, template=subject.template)
+
+
+# =============================================================================
+# A claim criterion's hold is priced before launch, per arm
+# =============================================================================
+
+
+def _claims(name: str = "toy.claims", items: int = 2) -> ClaimCriterion:
+    return ClaimCriterion(
+        name=name,
+        pages=PageBudget(per_document_chars=2000, total_chars=4000, window_chars=1000),
+        repairs=RepairBudget(rounds=2, max_items_per_cell=items),
+        judge="builtin",
+    )
+
+
+#: A criterion's hold floor over the smallest claim evidence, priced at one figure a request: the extraction's
+#: three attempts and its two repairs, then the truth step's one batch at three attempts and its two repairs.
+_CLAIMS_FLOOR_USD = (3 + 2 + 3 + 2) * _JUDGE_REQUEST_USD
+
+
+async def test_a_cap_below_a_claim_criterions_hold_floor_is_refused_naming_the_criterion() -> None:
+    # The dims' floor ($0.58) fits a $1 cap; the criterion's hold, asked of every judged case, does not.
+    subject = off_loop(_Subject, claim_criteria=(_claims(), _claims("toy.smaller", items=0)))
+
+    arm = await subject.estimate(1.0)
+
+    assert arm.outcome == "refused"
+    ceiling = arm.plan.call_ceiling
+    assert (ceiling.usd, ceiling.lower_bound) == (pytest.approx(_CLAIMS_FLOOR_USD), True)
+    assert "claim criterion 'toy.claims''s hold" in ceiling.call and repr(_JUDGE) in ceiling.call
+    assert "RepairBudget.max_items_per_cell" in arm.remedy
+    assert subject.launched == [] and subject.calls() == []
+
+
+async def test_a_cap_above_every_claim_criterions_hold_floor_is_admitted() -> None:
+    subject = off_loop(_Subject, claim_criteria=(_claims(),))
+
+    arm = await subject.estimate(_CLAIMS_FLOOR_USD + 0.5)
+
+    assert (arm.outcome, arm.refusal) == ("admitted", None)
+    assert arm.plan.call_ceiling.usd == pytest.approx(_CLAIMS_FLOOR_USD)
+
+
+async def test_a_criterion_with_a_web_budget_is_floored_without_its_web_step_and_never_refused_as_unpriced() -> None:
+    # The floor's one segment may state no claim the judge doubts, so the web step adds nothing to it: no search is
+    # priced before launch, and a cap that holds the rest admits the arm.
+    web = WebBudget(
+        max_queries_per_claim=2, max_checked_per_cell=2, results_per_query=2, page_chars=400, window_chars=200
+    )
+    subject = off_loop(_Subject, claim_criteria=(_claims().model_copy(update={"web": web}),))
+
+    arm = await subject.estimate(_CLAIMS_FLOOR_USD + 0.5)
+
+    assert (arm.outcome, arm.refusal) == ("admitted", None)
+    assert arm.plan.call_ceiling.usd == pytest.approx(_CLAIMS_FLOOR_USD)
+
+
+async def test_a_claim_criterion_the_judges_client_cannot_price_refuses_the_arm_under_a_cap() -> None:
+    subject = off_loop(_Subject, judge_usd=None, judged_artifact=JudgedArtifact.UNJUDGED, claim_criteria=(_claims(),))
+
+    arm = await subject.estimate(3.0)
+
+    assert arm.plan.call_ceiling is None and arm.outcome == "refused"
+    assert "claim criterion 'toy.claims''s hold" in arm.refusal

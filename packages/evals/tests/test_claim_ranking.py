@@ -114,6 +114,7 @@ def _tally(
     skipped: int = 0,
     units: int = 1,
     ground_loss: str | None = None,
+    web_loss: str | None = None,
     by_judge: tuple[ClaimJudgeCounts, ...] | None = None,
 ) -> ClaimTally:
     """A cell's tally: four asserted specific world claims over ``units`` units, ``false`` of them contradicted in one
@@ -129,6 +130,7 @@ def _tally(
         by_judge=by_judge
         or (_counts(4, false=false, specific=4, grounded=0 if ground_loss else grounded or 0, skipped=skipped),),
         ground_loss=ground_loss,
+        web_loss=web_loss,
     )
 
 
@@ -606,6 +608,8 @@ def test_losses_pending_cells_and_skipped_web_checks_each_raise_a_class_b_caveat
             held["claim_failures"] = {RULES: "trace_pending"}
         if case == 2 and k == 1:
             held["claim_tallies"][RULES] = _tally(grounded=3, skipped=1)
+        if case == 3 and k == 1:
+            held["claim_tallies"][RULES] = _tally(grounded=3, skipped=1, web_loss="port_error")
         return held
 
     built = report_input(campaign_bundle(_bundle(lookup=lookup)))
@@ -614,7 +618,7 @@ def test_losses_pending_cells_and_skipped_web_checks_each_raise_a_class_b_caveat
         iter(built.judged[f"{RULES}_false_per_unit"].lost)
     )
 
-    for kind in ("claims_lost", "claims_pending", "claims_web_skipped"):
+    for kind in ("claims_lost", "claims_pending", "claims_web_skipped", "claims_web_lost"):
         caveat = caveats[f"{kind}:{RULES}"]
         assert (caveat.kind, caveat.cls) == (kind, "B")
         assert caveat.arms == [lookup_label], "only the arm whose cells it touches"
@@ -622,8 +626,8 @@ def test_losses_pending_cells_and_skipped_web_checks_each_raise_a_class_b_caveat
 
 
 def test_a_claim_the_web_never_checked_is_never_a_false_claim() -> None:
-    """A claim skipped past the web budget reads unverifiable: the truth readings of a cell with one are those of the
-    same cell with it unflagged."""
+    """A claim skipped past the web budget, or left undecided by a web step that failed, reads unverifiable: the truth
+    readings of a cell with one are those of the same cell with it unflagged."""
     runs, results = _campaign()
     run, result = runs[1], results[runs[1].id][0]
     skipped = result.model_copy(update={"claim_tallies": {RULES: _tally(false=1, grounded=3, skipped=2)}})
@@ -634,6 +638,10 @@ def test_a_claim_the_web_never_checked_is_never_a_false_claim() -> None:
         return {r.rubric_dim: r.value for r in _rows(cell, run) if r.rubric_dim in truth}
 
     assert read(skipped) == read(checked)
+    lost = result.model_copy(
+        update={"claim_tallies": {RULES: _tally(false=1, grounded=3, skipped=2, web_loss="port_error")}}
+    )
+    assert read(lost) == read(checked), "a claim a failed web step left undecided reads unverifiable, never false"
     assert {r.rubric_dim: r.value for r in _rows(skipped, run)}[f"{RULES}_web_skipped"] == 2.0
 
 

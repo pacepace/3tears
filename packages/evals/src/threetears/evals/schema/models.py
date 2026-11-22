@@ -6092,15 +6092,20 @@ class JudgeEvidence(CoreShapeModel):
 #: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
 #: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
 #: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
-#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or a call would have
-#: spent past what the cap set aside for the criterion), ``deadline`` (the
+#: ``protocol_defect`` (a ground call's completion broke the protocol: the host's client is at fault, and only the
+#: ground step is lost, as :attr:`ClaimTally.ground_loss`, since a defect in any other step fails the run),
+#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or had too little
+#: left for its next call), ``hold_exceeded`` (a call would have spent past the ceiling the criterion was priced and
+#: held at: a reply outgrew what its price assumed, which is the pricing's miss, never the cap's), ``deadline`` (the
 #: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
 #: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
 #: vocabulary: a reader counts every loss, a reason it does not know by name. One value is no loss:
 #: ``trace_pending`` (:data:`CLAIM_PENDING`), a row written before its trace whose trace write is not yet known to
 #: have landed; it reads as not yet known, never lost. Its grade is on the trace whenever the trace landed, so it is
-#: recoverable: re-grading the criterion from the trace's stored evidence settles it, and so would recomputing its
-#: tally from the stored grade, which needs the grade to record its ground step's loss (not stored yet).
+#: recovered without a call, when its run's holding ends, when the run is taken up and on a re-judge: its tally is
+#: recomputed from the stored grade, which records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a lost
+#: groundedness is never read as lost truth; and once the run's writes are done a pending criterion whose trace was
+#: never stored is lost (``trace_lost``).
 ClaimLoss = str
 
 #: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
@@ -6109,8 +6114,10 @@ KnownClaimLoss = Literal[
     "unreadable",
     "repair_budget_spent",
     "provider_error",
+    "protocol_defect",
     "port_error",
     "cost_cap",
+    "hold_exceeded",
     "deadline",
     "evidence_over_cap",
     "trace_lost",
@@ -6354,8 +6361,11 @@ class GradedClaim(CoreShapeModel):
         description="Whether a document the candidate itself was given supports it; None where no criterion asked.",
     )
     evidence_conflict: bool = Field(default=False, description="Case evidence both supports and contradicts it.")
-    web: Literal["checked", "skipped_cap", "none"] = Field(
-        default="none", description="`checked` on the web, `skipped_cap` past the cell's budget, or `none`."
+    web: Literal["checked", "skipped_cap", "lost", "none"] = Field(
+        default="none",
+        description="`checked` on the web; `skipped_cap`, nominated and not checked (past the cell's web budget, "
+        "refused by the cost cap, or cut by the cell's deadline); `lost`, nominated and left undecided by a web step "
+        "that failed (the grade's `web_loss`); or `none`. A restatement reads its original's.",
     )
     decided_by: int | None = Field(
         default=None, ge=0, description="The call whose answer fixed the verdict, by its place in the grade's calls."
@@ -6485,16 +6495,48 @@ class ClaimGrade(CoreShapeModel):
         default=(), description="The documents its page budget did not read whole, by id."
     )
     claims: tuple[GradedClaim, ...] = Field(default=(), description="Every claim it listed, in the order said.")
-    web: tuple[WebCheckRecord, ...] = Field(default=(), description="Every web check, in claim order.")
+    web: tuple[WebCheckRecord, ...] = Field(
+        default=(),
+        description="Every web check, in claim order: one per claim checked that restates nothing, which every "
+        "restatement of it shares.",
+    )
+    ground_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why its ground step was lost alone (CLAIM_LOSSES), as its tally records it: no claim is grounded, "
+        "and every truth verdict stands. So the tally is recomputed from the grade alone, and a lost groundedness "
+        "never reads as lost truth. None (left out) when the step was not lost, or not asked.",
+    )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the web step failed (CLAIM_LOSSES), which costs the cell only the web's decisions: the claims "
+        "it had not decided read `lost` and unverifiable, never false, and every verdict case evidence or an earlier "
+        "web check decided stands. None (left out) when it did not fail, or was not asked.",
+    )
+    web_replayed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its web checks read results a recording served, never a live search: a check that needs a live "
+        "search over this grade is not available (replayed). Left out while False.",
+    )
 
     @model_validator(mode="after")
     def _references_resolve(self) -> Self:
         """Refuse a grade whose claims, citations and checks point at what it does not hold, or disagree with it.
 
+        A restatement takes its original's web check: it reads the web state its original reads, and a checked one
+        shares its original's record, so the grade holds one record per check made.
+
         :raises ValueError: Two refs alike; a citation of no ref; a deciding call it did not make; a restatement of no
-            earlier claim of its scope; a web check of no claim, of one twice, or for a claim not checked; or a claim's
-            verdict that is not the one its web check gives.
+            earlier claim of its scope, or one whose web state is not its original's; a web check of no claim, of one
+            twice, of a restatement, or for a claim not checked; a claim's verdict that is not the one its web check
+            gives; or a claim grounded where the ground step was lost.
         """
+        if self.ground_loss is not None and any(claim.grounded for claim in self.claims):
+            raise ValueError(
+                f"a claim grade grounds a claim, and its ground step was lost ({self.ground_loss!r}), which grounds none"
+            )
         refs = [entry.ref for entry in self.evidence]
         if twice := sorted({ref for ref in refs if refs.count(ref) > 1}):
             raise ValueError(f"a claim grade numbers {', '.join(map(repr, twice))} more than once")
@@ -6515,21 +6557,38 @@ class ClaimGrade(CoreShapeModel):
                 raise ValueError(
                     f"claim {place} restates claim {claim.restates}, which is no earlier claim of its scope"
                 )
+        lost = [place for place, claim in enumerate(self.claims) if claim.web == "lost"]
+        if bool(lost) != (self.web_loss is not None):
+            raise ValueError(
+                f"the grade's web step reads lost ({self.web_loss!r}) and claims {lost} read web 'lost': a failed web "
+                "step leaves at least one claim lost, and only a failed one does"
+            )
+        for place, claim in enumerate(self.claims):
+            if claim.restates is not None and claim.web != self.claims[claim.restates].web:
+                raise ValueError(
+                    f"claim {place} restates claim {claim.restates}, and reads web {claim.web!r} where its original "
+                    f"reads {self.claims[claim.restates].web!r}: a restatement takes its original's web check"
+                )
         checked = [record.claim for record in self.web]
         if misplaced := sorted({place for place in checked if place >= len(self.claims) or checked.count(place) > 1}):
             raise ValueError(f"the grade's web checks name claims {misplaced} more than once, or that it does not hold")
-        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked"}
+        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked" and claim.restates is None}
         if set(checked) != wanted:
             raise ValueError(
-                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}"
+                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}, "
+                "each restatement sharing its original's check"
             )
         for record in self.web:
-            claim = self.claims[record.claim]
-            if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
-                raise ValueError(
-                    f"claim {record.claim}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
-                    f"against {claim.graded_against!r}"
-                )
+            sharing = [record.claim] + [
+                place for place, claim in enumerate(self.claims) if claim.restates == record.claim
+            ]
+            for place in sharing:
+                claim = self.claims[place]
+                if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
+                    raise ValueError(
+                        f"claim {place}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
+                        f"against {claim.graded_against!r}"
+                    )
         return self
 
 
@@ -6556,7 +6615,11 @@ class ClaimJudgeCounts(CoreShapeModel):
     web_decided: int = Field(ge=0, description="Asserted claims whose verdict the web decided.")
     evidence_conflicts: int = Field(ge=0)
     web_checked: int = Field(ge=0)
-    web_skipped: int = Field(ge=0, description="Claims nominated past the cell's web budget.")
+    web_skipped: int = Field(
+        ge=0,
+        description="Claims nominated and not checked on the web: past the cell's budget, refused by the cost cap, or "
+        "cut by the cell's deadline.",
+    )
 
     @model_validator(mode="after")
     def _counts_nest(self) -> Self:
@@ -6630,6 +6693,13 @@ class ClaimTally(CoreShapeModel):
         description="Why the cell lost its ground step alone (CLAIM_LOSSES), which costs it the groundedness reading "
         "and no other: its truth counts stand, and it counts no grounded claim. None (left out) when the step was not "
         "lost, or not asked.",
+    )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell's web step failed (CLAIM_LOSSES), its grade's `web_loss`, which costs it only the "
+        "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
+        "stands. None (left out) when the step did not fail, or was not asked.",
     )
 
     @model_validator(mode="after")
@@ -6876,6 +6946,54 @@ class JudgeRescore(EvalDocumentModel, CoreShapeModel):
             "went unpriced: unknown, never zero."
         ),
     )
+
+
+class ClaimRescore(EvalDocumentModel, CoreShapeModel):
+    """One re-judge of a result's lost claim criteria, recorded on the result it changed.
+
+    A criterion lost after its cell's trial finished (a reply cut short, the provider failing a call, the cap, a
+    deadline) is graded again whole from the claim evidence the cell's trace stores, by the same judge under the same
+    criterion fingerprint. This entry keeps that visible: without it a re-graded criterion is indistinguishable from
+    one graded in a single pass. A pending criterion settled from its stored grade with no call completes the cell's
+    own write and records none.
+
+    **Its spend is recorded here and nowhere else**, as a :class:`JudgeRescore`'s is: ``EvalResult.cost_usd`` and
+    ``usage`` measure the cell as it ran.
+    """
+
+    rejudged_at: str = Field(default_factory=utc_now_iso)
+    criteria: list[DimName] = Field(
+        min_length=1, description="The lost criteria graded again, whole, in the template's order."
+    )
+    prior: dict[DimName, StoredClaimLoss] = Field(
+        description="criterion -> what the result's claim_failures held for it before this re-judge, verbatim."
+    )
+    lost: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        description="criterion -> why a criterion graded again was lost again (CLAIM_LOSSES).",
+    )
+    judge_model: str = Field(min_length=1, description="The run's judge pin, which every claims call was sent on.")
+    usage: list[RoleUsage] = Field(default_factory=list, description="The re-judge's own judge-role usage rows.")
+    cost_usd: float | None = Field(
+        ge=0.0,
+        description=(
+            "What the re-judge cost. Not part of ``EvalResult.cost_usd``. None when any of its calls went unpriced: "
+            "unknown, never zero."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_account_per_criterion(self) -> Self:
+        """Refuse a re-judge whose criteria do not add up.
+
+        :raises ValueError: ``prior`` names other criteria than it graded again, or a criterion is lost again that was
+            not graded again.
+        """
+        if set(self.prior) != set(self.criteria):
+            raise ValueError("a claim re-judge's prior losses name exactly the criteria it graded again")
+        if stray := sorted(set(self.lost) - set(self.criteria)):
+            raise ValueError(f"claim criteria {', '.join(map(repr, stray))} are lost again, and were not graded again")
+        return self
 
 
 class RepeatedScore(EvalDocumentModel, CoreShapeModel):
@@ -7693,6 +7811,21 @@ class EvalResult(CoreDocumentModel):
             "other reading keeps the cell. Never a judge_error. Empty when no criterion was lost."
         ),
     )
+    claim_fingerprints: dict[DimName, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda fingerprints: not fingerprints,
+        description=(
+            "criterion -> the fingerprint of the definition the cell was graded under, for every criterion its claims "
+            "phase was due, tallied or lost: what a re-judge of a lost criterion must still grade under, as a dim's "
+            "judge_config_ids names the prompt a re-judge must ask it with. A tallied criterion's equals its tally's. "
+            "Empty when no criterion was due."
+        ),
+    )
+    claim_rescores: list[ClaimRescore] = Field(
+        default_factory=list,
+        exclude_if=lambda rescores: not rescores,
+        description="Every re-judge of the cell's claim criteria, in order (ClaimRescore). Empty when none.",
+    )
 
     # Error taxonomy. A result's error is one of two kinds,
     # and scoring treats them oppositely (an infra failure
@@ -7731,11 +7864,26 @@ class EvalResult(CoreDocumentModel):
     def _a_criterion_tallied_or_lost(self) -> Self:
         """Refuse a criterion both tallied and lost: a lost criterion's counts rest on no stored grade.
 
-        :raises ValueError: A criterion is in both ``claim_tallies`` and ``claim_failures``.
+        :raises ValueError: A criterion is in both ``claim_tallies`` and ``claim_failures``; a fingerprint names a
+            criterion neither tallied nor lost; or a tallied criterion's fingerprint is not its tally's.
         """
         if both := sorted(set(self.claim_tallies) & set(self.claim_failures)):
             raise ValueError(
                 f"claim criteria {', '.join(map(repr, both))} are both tallied and lost; a loss has no tally"
+            )
+        if stray := sorted(set(self.claim_fingerprints) - {*self.claim_tallies, *self.claim_failures}):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, stray))} carry a fingerprint, and the cell neither tallied nor "
+                "lost them"
+            )
+        if moved := sorted(
+            name
+            for name, tally in self.claim_tallies.items()
+            if self.claim_fingerprints.get(name, tally.criterion_fingerprint) != tally.criterion_fingerprint
+        ):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, moved))} are tallied under another fingerprint than the cell "
+                "recorded for them"
             )
         return self
 

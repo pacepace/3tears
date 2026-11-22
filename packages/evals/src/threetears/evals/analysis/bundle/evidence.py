@@ -365,6 +365,9 @@ _RESULT: Final[Mapping[str, Any]] = {
     "transcript_score": _SCORE,
     "outcome_score": _SCORE,
     "judge_rescores": _Each(_RESCORE),
+    # A claims re-judge's spend is billed beside a dims re-judge's (the program budget), so its cost is evidence too;
+    # left out while empty, so naming it moves no stored fingerprint.
+    "claim_rescores": _Each(_RESCORE),
     "judge_repeats": _Each(_REPEAT),
     "judge_seconds": _Each(_SECOND_JUDGING),
     "judge_cut_short": _Keyed(_CUT_SHORT),

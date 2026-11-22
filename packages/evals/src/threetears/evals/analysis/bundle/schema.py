@@ -987,7 +987,7 @@ class JudgedArm(EvalDocumentModel):
         description=(
             "On a claim reading: cells whose web step failed (the port, a malformed reply, a verdict with no quote), a "
             "cause apart from the budget. Its undecided claims read unverifiable, never false, and truth stands. "
-            "Counted from the tally's record of a lost web step; 0 where the tally records none."
+            "Read off the tally's `web_loss`."
         ),
     )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")

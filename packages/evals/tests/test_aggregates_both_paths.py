@@ -42,7 +42,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.result_reading import GroupsRead
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.reads import list_runs
-from threetears.evals.schema.models import EvalResult, EvalRun
+from threetears.evals.schema.models import ClaimRescore, EvalResult, EvalRun
 from threetears.evals.schema.store_port import DocumentStore, GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run, memory_storage
@@ -215,10 +215,22 @@ class TestTheSpendLensesFoldTheFiguresAsTheResultsFoldThem:
         program_budget(storage, read.scope_id, list_runs=_lister(read))  # type: ignore[arg-type]
 
         assert storage.groupings == [
-            ((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))
+            (
+                (),
+                (
+                    "eval_run_id",
+                    "cost_usd",
+                    "judge_rescores",
+                    "cost_roles",
+                    "claim_rescores",
+                    "schema_version",
+                    "schema_minor",
+                ),
+            )
         ]
-        # A re-judge's prose is never shipped to a lens that reads its spend alone (#1058).
-        assert storage.narrowings == [{"judge_rescores": ["cannot_tell", "errors"]}]
+        # A re-judge's prose is never shipped to a lens that reads its spend alone (#1058), nor a claims re-judge's
+        # usage rows.
+        assert storage.narrowings == [{"judge_rescores": ["cannot_tell", "errors"], "claim_rescores": ["usage"]}]
 
 
 class TestComparisonSetsReadTheirWindowsAndBadgesOffReadings:
@@ -340,6 +352,31 @@ class TestTheSpendLensesRefuseARowAStoredReadRefuses:
                     storage.query_eval_runs(REFUSED_SCOPE), storage.query_eval_results(REFUSED_SCOPE)
                 ).model_dump(mode="json")
             )
+
+    def test_a_claims_rejudges_spend_is_billed_on_either_path(self) -> None:
+        """A re-judge of a result's claim criteria is spend paid after the run, recorded on the result alone: the
+        budget bills it, priced or counted unpriced, read off the stored row as off the hydrated result."""
+        storage, store, _ = _scope_with()
+        result = storage.load_eval_result("run-1-0", REFUSED_SCOPE)
+        assert result is not None
+        rescores = [
+            ClaimRescore(criteria=["c.claims"], prior={"c.claims": "cost_cap"}, judge_model="j", cost_usd=0.25),
+            ClaimRescore(criteria=["c.claims"], prior={"c.claims": "unreadable"}, judge_model="j", cost_usd=None),
+        ]
+        storage.replace_eval_result(result.model_copy(update={"claim_rescores": rescores}), if_match=None)
+        before = compute_program_budget(
+            storage.query_eval_runs(REFUSED_SCOPE), storage.query_eval_results(REFUSED_SCOPE)
+        )
+        without = compute_program_budget(
+            storage.query_eval_runs(REFUSED_SCOPE),
+            [r.model_copy(update={"claim_rescores": []}) for r in storage.query_eval_results(REFUSED_SCOPE)],
+        )
+
+        assert before.rejudge_cost_usd == pytest.approx(without.rejudge_cost_usd + 0.25)
+        assert before.total_cost_usd == pytest.approx(without.total_cost_usd + 0.25)
+        assert before.n_unpriced == without.n_unpriced + 1, "an unpriced re-judge is counted, never $0"
+        for path in (storage, EvalStorage(EngineOnlyStore(store))):
+            assert json.dumps(_spend_lenses(path)["program_budget"]()) == json.dumps(before.model_dump(mode="json"))
 
     @pytest.mark.parametrize("version", (14, 16, None, "15"))
     def test_a_version_this_build_does_not_read(self, version: Any) -> None:

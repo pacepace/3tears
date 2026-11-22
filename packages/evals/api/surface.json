@@ -381,6 +381,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimRescore": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimTally": {
       "kind": "model",
       "signature": "",
@@ -603,7 +608,7 @@
     },
     "threetears.evals.schema.EvalResult": {
       "kind": "model",
-      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 24, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, model_unserved: bool = False, written_over: WrittenOver | None = None, judging_set_aside: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), measure_rereads: list[MeasureReread] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), claim_tallies: dict[DimName, ClaimTally] = dict(), claim_failures: dict[DimName, StoredClaimLoss] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
+      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 24, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, lease_epoch: int = 0, superseded_spend_usd: float | None = 0.0, metered_calls: int | None = None, account_refused: bool = False, model_unserved: bool = False, written_over: WrittenOver | None = None, judging_set_aside: bool = False, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), measure_rereads: list[MeasureReread] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), claim_tallies: dict[DimName, ClaimTally] = dict(), claim_failures: dict[DimName, StoredClaimLoss] = dict(), claim_fingerprints: dict[DimName, str] = dict(), claim_rescores: list[ClaimRescore] = list(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRun": {
@@ -1503,6 +1508,21 @@
     },
     "threetears.evals.schema.WebCheckRecord": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebPage": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebSearch": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.WebSearchResult": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -3898,7 +3918,7 @@
     },
     "threetears.evals.run.KindWiring": {
       "kind": "dataclass",
-      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None, max_concurrent_cells: int | None = 1, observed: StoredCells | None = None)",
+      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None, max_concurrent_cells: int | None = 1, observed: StoredCells | None = None, web_search: WebSearch | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.launch_as_group": {
@@ -4198,7 +4218,7 @@
     },
     "threetears.evals.run.RunnerOptions": {
       "kind": "dataclass",
-      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None, case_order: Sequence[str] | None = None, stop_starting: asyncio.Event | None = None)",
+      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, web_search: WebSearch | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None, case_order: Sequence[str] | None = None, stop_starting: asyncio.Event | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.RunResumption": {
@@ -6267,6 +6287,11 @@
       "tier": "host-contract"
     },
     "threetears.evals.testing.RecordedTurns": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.testing.RecordedWebSearch": {
       "kind": "class",
       "signature": "",
       "tier": "provisional"

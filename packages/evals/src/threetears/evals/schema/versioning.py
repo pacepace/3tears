@@ -517,12 +517,18 @@ CORE_SCHEMA_VERSION: int = 15
 #: - **v15.24** — claim grading's stored shapes (#1287): a trace may carry ``EvalTrace.claim_evidence``
 #:   (``ClaimEvidence``: the host's segmentation, its segments with their units, the documents claims are checked
 #:   against and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
-#:   numbered evidence, every ``GradedClaim`` and every ``WebCheckRecord``), beside its judge evidence and never in it,
+#:   numbered evidence, every ``GradedClaim``, every ``WebCheckRecord`` (one per check, which a restatement shares) and
+#:   ``web_loss`` and ``web_replayed``, each left out while unset), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
 #:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``grounded`` says the criterion asks
-#:   groundedness, so every reading is read off the tally with no template in hand, and whose ``ground_loss`` records
-#:   a ground step lost alone, costing only the groundedness reading) and ``EvalResult.claim_failures`` (criterion -> a
-#:   ``ClaimLoss``, an open vocabulary). Each is left out of the document while unset, so a trace or result carrying
+#:   groundedness, so every reading is read off the tally with no template in hand, whose ``ground_loss`` records a
+#:   ground step lost alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the
+#:   grade, and whose ``web_loss`` records a web step lost alone, costing only the web's decisions, as
+#:   ``ClaimGrade.web_loss`` records it) and
+#:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
+#:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
+#:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``). Each is left
+#:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims
 #:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An
