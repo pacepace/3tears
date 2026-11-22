@@ -264,7 +264,7 @@ async def test_a_host_closes_its_witnessed_run_through_public_doors_and_no_sweep
         update={"status": "completed", "completed_at": _AT, "completeness": summarize_completeness(run, cells)}
     )
     off_loop(host.storage.save_eval_run, closed)
-    swept = sweep_abandoned_runs(host.storage, ["toy"])
+    swept = off_loop(sweep_abandoned_runs, host.storage, ["toy"])
 
     assert swept.cancelled_run_ids == ["run-left-open"], "only the run its host never closed is written lost"
     stored = off_loop(host.storage.load_eval_run, run.id, "toy")
