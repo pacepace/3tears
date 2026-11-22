@@ -7,7 +7,6 @@ The populations the bars, comparisons and decision surface share — results the
 
 from __future__ import annotations
 
-import math
 import random
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -38,10 +37,12 @@ from threetears.evals.kernel.declaration import (
     BarName,
     AspectDesign,
 )
+from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
     CLAIM_PENDING_OUTCOME,
+    CLAIM_UNREAD_OUTCOME,
     claim_instruments,
     claim_reading_ranks,
     describe_judged_reading,
@@ -144,9 +145,16 @@ def judged_values(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord
 
 
 #: The outcomes of a judged row with no value that an arm counts: the judge could not tell, the harness faulted the
-#: result, and, on a claim reading, its criterion lost the cell or its tally waits on its stored grade.
+#: result, and, on a claim reading, its criterion lost the cell, its tally waits on its stored grade, or, on a reading
+#: the host derives, its claim reader could not read the cell.
 _NULL_JUDGED_OUTCOMES: frozenset[str] = frozenset(
-    {JUDGE_CANNOT_TELL_OUTCOME, ResultOutcome.INFRA_EXCLUDE.value, CLAIM_LOST_OUTCOME, CLAIM_PENDING_OUTCOME}
+    {
+        JUDGE_CANNOT_TELL_OUTCOME,
+        ResultOutcome.INFRA_EXCLUDE.value,
+        CLAIM_LOST_OUTCOME,
+        CLAIM_PENDING_OUTCOME,
+        CLAIM_UNREAD_OUTCOME,
+    }
 )
 
 #: The outcomes of a judged row that leave it out of a mean.
@@ -178,6 +186,7 @@ def judged_measures(
     tiers: list[JudgeEvidenceTier],
     person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
     claim_units: Mapping[str, str] | None = None,
+    registry: MeasureRegistry | None = None,
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension, and every ranked claim reading, per cell, from the score projection assembly
     already holds.
@@ -205,6 +214,8 @@ def judged_measures(
         reads as nobody rated anything.
     :param claim_units: What a page calls one unit of each claim criterion, from the member runs' templates
         (``EvalTemplate.claim_unit_names``), for a claim reading's reader name; ``unit`` where none is named.
+    :param registry: The host's measure registry, which describes the readings it derives from a claim criterion
+        (``MetricDescriptor.derived_from``); a derived reading ranks, and is withheld, as the criterion's own do.
     :return: One entry per dimension and ranked claim reading scored anywhere, sorted by name.
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
@@ -220,7 +231,7 @@ def judged_measures(
     measures = []
     for dimension in sorted(scored):
         criterion = instruments.get(dimension)
-        if criterion is not None and not claim_reading_ranks(dimension, criterion=criterion):
+        if criterion is not None and not claim_reading_ranks(dimension, criterion=criterion, measures=registry):
             continue
         scales = {
             row.rubric_scale for rows in scored[dimension].values() for row in rows if row.rubric_scale is not None
@@ -231,13 +242,16 @@ def judged_measures(
         # template dim's row carries the scale it was answered on, and one carrying none is refused, never read as 1-5.
         # A claim reading carries none either, and is described as its criterion's reading.
         recorded = {dimension: scale for scale in scales}
-        descriptor = describe_judged_reading(dimension, scales=recorded, instruments=instruments, units=claim_units)
+        descriptor = describe_judged_reading(
+            dimension, scales=recorded, instruments=instruments, units=claim_units, measures=registry
+        )
         arms = []
         for key in sorted(scored[dimension]):
             rows = scored[dimension][key]
             cannot_tell = [row for row in rows if row.outcome == JUDGE_CANNOT_TELL_OUTCOME]
             lost = [row for row in rows if row.outcome == CLAIM_LOST_OUTCOME]
             pending = [row for row in rows if row.outcome == CLAIM_PENDING_OUTCOME]
+            unread = [row for row in rows if row.outcome == CLAIM_UNREAD_OUTCOME]
             counted = [row for row in rows if row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES]
             valued = [row for row in counted if row.value is not None]
             values = [float(row.value) for row in valued if row.value is not None]
@@ -254,10 +268,13 @@ def judged_measures(
                     run_ids=member_run_ids(results_by_cell[key]),
                     n=len(values),
                     n_independent=len(set(value_cases)),
-                    n_infra_excluded=len(rows) - len(counted) - len(cannot_tell) - len(lost) - len(pending),
+                    n_infra_excluded=(
+                        len(rows) - len(counted) - len(cannot_tell) - len(lost) - len(pending) - len(unread)
+                    ),
                     n_cannot_tell=len(cannot_tell),
                     n_claim_lost=len(lost),
                     n_claim_pending=len(pending),
+                    n_claim_unread=len(unread),
                     n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
                     n_web_lost=0 if criterion is None else _web_lost_cells(results_by_cell[key], criterion),
                     mean=sum(values) / len(values) if values else None,
@@ -337,11 +354,15 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     one trial of a case: lost or kept. The test is the Cochran-Mantel-Haenszel test of general association between arm
     and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
     is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
-    of moves nothing on its own; with few losses its p is the conditional permutation p
-    (:data:`_CLAIM_LOSS_EXACT_AT_MOST`). Its rates are certified (the ``claim-loss.*`` claims of
-    ``tests/stats_certificate.py``) over twelve cases at two, three and four arms: equal losses of 10% and of 3%, at one
-    repeat a case, and a loss a few cases carry, each withholding at most 5% of the time, and a 0% against 30% loss caught
-    at least 75% of the time.
+    of moves nothing on its own. Its p is the statistic's conditional permutation p at every size, never the chi-square
+    law's: the permutation is valid and conservative however many cells were lost, and one law at every count means no
+    reading's p moves as a campaign's losses cross a threshold. Its 5% is held by that construction: the permutation's
+    size is its level. The ``claim-loss.*`` claims of ``tests/stats_certificate.py`` certify the implementation is not
+    anti-conservative, each null row's false-withhold rate not above 5% by more than one point on the 95% upper bound of
+    4,000 draws: over twelve cases at two, three and four arms, equal losses of 10% and of 3%, at one repeat a case, and a
+    loss a few cases carry; an equal 20% over forty cases of four repeats at two arms (about 64 lost cells); and a loss
+    two fifths of sixty cases carry at one repeat a case, at three and four arms (about 49 and 65 lost cells, in strata of
+    three or four cells). A 0% against 30% loss is caught at least 75% of the time.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.
@@ -349,12 +370,6 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     p = _claim_loss_homogeneity_p(by_cell)
     return p is not None and p < _CLAIM_LOSS_LEVEL
 
-
-#: At most this many lost cells in the cases that tell arms apart, the test's p is its conditional permutation p
-#: (:func:`_claim_loss_homogeneity_p`), never the chi-square law's: with few losses the law misstates the chance (four
-#: losses in four cases, all on one arm, read p 0.046 by the law, 1/8 by the draw), and a case where a few cases carry
-#: most of the loss read 5.4% false withholds by the law at two arms.
-_CLAIM_LOSS_EXACT_AT_MOST = 40
 
 #: The draws a permutation p is read over, and the fixed seed they are drawn from, so one bundle reads one p.
 _CLAIM_LOSS_DRAWS = 999
@@ -368,10 +383,12 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
 
     Per case, a table of each arm's cells and losses; under no difference between arms, each case's losses fall among
     its cells as a draw without replacement (hypergeometric), and the deviations of every arm but one, summed over
-    cases, are tested against their summed covariance. Where the cases that tell arms apart hold at most
-    :data:`_CLAIM_LOSS_EXACT_AT_MOST` losses, the p is the statistic's own conditional law instead: each case's losses
-    drawn again among its cells :data:`_CLAIM_LOSS_DRAWS` times from :data:`_CLAIM_LOSS_SEED`, ``p = (1 + draws at
-    least as extreme) / (1 + draws)``, which errs at most its level at any count.
+    cases, form the statistic. Its p is the statistic's own conditional law, never the chi-square law's (with few losses
+    the law misstates the chance: four losses in four cases, all on one arm, read p 0.046 by the law, 1/8 by the draw;
+    with many it runs near its nominal level, which no bound on its false withholds can sit under): each case's losses
+    drawn again among its cells :data:`_CLAIM_LOSS_DRAWS` times from :data:`_CLAIM_LOSS_SEED`, ``p = (1 + draws at least
+    as extreme) / (1 + draws)``, which errs at most its level at any count. At about forty thousand cells over four arms,
+    a tenth of them lost, the draws take about a second a reading.
     """
     tables: dict[str, list[tuple[int, bool]]] = defaultdict(list)
     for arm, rows in enumerate(by_cell.values()):
@@ -411,15 +428,15 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
         return sum(deviation[i] * columns[j][i] * deviation[j] for i in range(len(free)) for j in range(len(free)))
 
     observed = statistic(Counter(arm for cells in informative for arm, held in cells if held))
-    if sum(held for cells in informative for _, held in cells) > _CLAIM_LOSS_EXACT_AT_MOST:
-        return _chi_square_tail(observed, len(free))
+    # Each case's arms in its cells' order and its losses, read once: a draw takes as many of its arms as it lost,
+    # without replacement, the same draws as taking that many of its cells' places.
+    strata = [([arm for arm, _ in cells], sum(held for _, held in cells)) for cells in informative]
     draw = random.Random(_CLAIM_LOSS_SEED)
     at_least = 0
     for _ in range(_CLAIM_LOSS_DRAWS):
         drawn: Counter[int] = Counter()
-        for cells in informative:
-            for place in draw.sample(range(len(cells)), sum(held for _, held in cells)):
-                drawn[cells[place][0]] += 1
+        for arms_of_cells, lost_in_case in strata:
+            drawn.update(draw.sample(arms_of_cells, lost_in_case))
         at_least += statistic(drawn) >= observed - 1e-9
     return (1 + at_least) / (1 + _CLAIM_LOSS_DRAWS)
 
@@ -438,19 +455,6 @@ def _solve(matrix: list[list[float]], vector: list[float]) -> list[float] | None
                 factor = rows[row][column] / rows[column][column]
                 rows[row] = [held - factor * lead for held, lead in zip(rows[row], rows[column], strict=True)]
     return [rows[row][size] / rows[row][row] for row in range(size)]
-
-
-def _chi_square_tail(statistic: float, df: int) -> float:
-    """``P(χ²_df ≥ statistic)`` for a whole ``df``: the upper regularized gamma at ``df/2``, built up from its value at
-    1/2 (``erfc``) or at 1 (``e^-x``) by ``Q(a + 1, x) = Q(a, x) + x^a e^-x / Γ(a + 1)``."""
-    if statistic <= 0:
-        return 1.0
-    half = statistic / 2
-    a, tail = (0.5, math.erfc(math.sqrt(half))) if df % 2 else (1.0, math.exp(-half))
-    while a < df / 2:
-        tail += math.exp(a * math.log(half) - half - math.lgamma(a + 1))
-        a += 1
-    return min(1.0, tail)
 
 
 def _prediction_powered(
@@ -760,6 +764,7 @@ def cell_strata(
                 design,
                 tiers=tiers,
                 person_scores=person_scores,
+                registry=profile.measures,
             )
         )
         for key, members in slice_by_cell.items():

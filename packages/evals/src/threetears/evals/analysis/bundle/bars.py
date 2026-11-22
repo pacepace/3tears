@@ -285,7 +285,10 @@ def bar_adjudications(
     }
     # A claim reading is a judged name keyed to its criterion, never to a rubric scale: described as its reading.
     instruments = claim_instruments((record.rubric_dim, record.instrument) for record in records)
-    claimed = {name: describe_judged_reading(name, scales={}, instruments=instruments) for name in instruments}
+    claimed = {
+        name: describe_judged_reading(name, scales={}, instruments=instruments, measures=profile.measures)
+        for name in instruments
+    }
     goal_state_checks = {outcome.expression for result in all_results for outcome in result.goal_state_outcomes}
     counted_by_cell = {key: non_faulted(members) for key, members in results_by_cell.items()}
 

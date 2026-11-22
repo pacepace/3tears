@@ -627,6 +627,12 @@ class Judged(_Part):
         exclude_if=lambda value: not value,
         description="On a claim reading: the cells whose tally waits on its stored grade, by arm: no loss, not yet known.",
     )
+    unread: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a reading the host derives from a claim criterion: the cells its claim reader could not read, "
+        "by arm; no loss, read once the reader is fixed and the run re-measured.",
+    )
     web_skipped: dict[str, int] = Field(
         default_factory=dict,
         exclude_if=lambda value: not value,

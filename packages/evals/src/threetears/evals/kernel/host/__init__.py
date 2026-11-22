@@ -66,10 +66,15 @@ from threetears.evals.kernel.host.kinds import (
     freeze,
 )
 from threetears.evals.kernel.host.measures import (
+    ClaimReader,
+    ClaimReaderDefect,
+    ClaimView,
     MeasureRegistrationError,
     MeasureRegistry,
     MeasureRereader,
     MeasureRereadRequest,
+    ViewedClaim,
+    ViewedSegment,
 )
 from threetears.evals.kernel.host.profile import (
     Coverage,
@@ -138,6 +143,9 @@ __all__ = [
     "BarRegistry",
     "CellTimeoutFactory",
     "CheckName",
+    "ClaimReader",
+    "ClaimReaderDefect",
+    "ClaimView",
     "Comparability",
     "CompletionClients",
     "CompletionRole",
@@ -182,6 +190,8 @@ __all__ = [
     "Triggered",
     "UnsupportedSchemaError",
     "VariantLeverReader",
+    "ViewedClaim",
+    "ViewedSegment",
     "When",
     "WorldCapability",
     "WorldConformanceError",

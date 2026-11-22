@@ -341,7 +341,7 @@ def planning_readings(
         else:
             if name in boundary:
                 continue
-            judged = describe_judged_reading(name, scales=scales, instruments=instruments)
+            judged = describe_judged_reading(name, scales=scales, instruments=instruments, measures=profile.measures)
             if judged.higher_is_better is None:
                 continue
             higher, value_range = judged.higher_is_better, judged.value_range

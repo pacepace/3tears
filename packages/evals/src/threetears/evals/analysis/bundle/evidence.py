@@ -650,6 +650,7 @@ _MEASURE: Final[Mapping[str, Any]] = dict.fromkeys(
         "transferability_class",
         "definition_revision",
         "shapes_run",
+        "derived_from",
     ),
     _AS_STORED,
 )

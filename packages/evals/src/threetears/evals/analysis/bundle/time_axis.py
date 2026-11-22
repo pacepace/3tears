@@ -97,7 +97,11 @@ def time_axis(
         result_ids = {result.id for result in slice_results}
         by_cell = group_results_by_cell(slice_cells, slice_results)
         judged = judged_measures(
-            [record for record in records if record.result_id in result_ids], by_cell, design, tiers=tiers
+            [record for record in records if record.result_id in result_ids],
+            by_cell,
+            design,
+            tiers=tiers,
+            registry=profile.measures,
         )
         held = {cell_key[0] for cell_key in by_cell}
         reference, note = control, None

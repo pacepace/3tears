@@ -69,8 +69,10 @@ def _host_measure_names(measures: MeasureRegistry) -> frozenset[str]:
     names = measures.names
     # A host catalogue may re-declare the engine's core, and the core wins that tie wherever a name
     # is described. A re-declared core name is carried where the core carries it or nowhere, so it
-    # opens no door here.
-    return frozenset(names) - METRIC_DESCRIPTORS.keys()
+    # opens no door here. Nor does a reading the host derives from a claim criterion: it is stored with the
+    # criterion's tally and read in the judged namespace, never landed on ``host_measures``.
+    derived = {descriptor.name for descriptor in measures.derived}
+    return frozenset(names) - METRIC_DESCRIPTORS.keys() - derived
 
 
 def per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
