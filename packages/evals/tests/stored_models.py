@@ -63,6 +63,18 @@ from threetears.evals.schema.blind_read import (
     BlindVerdict,
     BlindVerdictTable,
 )
+from threetears.evals.schema.claim_read import (
+    ClaimAnswer,
+    ClaimDraw,
+    ClaimItem,
+    ClaimRead,
+    ClaimReadArm,
+    ClaimStratumDraw,
+    ClaimVerdict,
+    ClaimView,
+    ShownEvidence,
+    claim_view_digest,
+)
 from threetears.evals.schema.models import (
     builtin_judge_config_id,
     CaseSet,
@@ -174,6 +186,19 @@ _RATED_CRITERION = RubricDim(name="conversation.tone", description="Warm and on 
 #: The label key a sampled judge score and the rating of it carry (#628): the sample result's tone score, read
 #: off one rendered output on the tone dimension's definition.
 _LABEL_KEY = label_key_of(_RATED_EVIDENCE, _RATED_CRITERION)
+
+#: A claim as a claim read shows it: the claim, its excerpt in its segment, a case passage and a web window.
+_CLAIM_VIEW = ClaimView(
+    claim="The Lantern Almanac was first printed in 1921.",
+    excerpt="first printed in 1921",
+    start=24,
+    end=45,
+    segment="The Lantern Almanac was first printed in 1921.",
+    evidence=[
+        ShownEvidence(ref="S1", provenance="case", title="Catalogue", text="Lantern Almanac, first printing 1921."),
+        ShownEvidence(ref="W1", provenance="web", title="The Lantern Almanac", text="It was first printed in 1921."),
+    ],
+)
 
 
 #: The lease fault every job record's sample carries, so the frozen core corpus from v13 holds a record with one.
@@ -334,6 +359,58 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     # A pair read closed early: one person's answer, a declared reviewer's review, the judge's scores against the person
     # and against the reviewer as one served model (counts only), the reviewer against the person, and a preference
     # too few to read, stored as its shares and its stakes' planned pair items with no p, verdict or state (#1236).
+    # One claim drawn from the supported stratum of a draw by truth verdict, its view holding a case passage and a web
+    # window, and one person's answer to both questions asked.
+    "ClaimRead": lambda: ClaimRead(
+        id="claimread-0b5b9abb32a0",
+        scope_id="uni-1",
+        name="almanac claims",
+        created_by="agent:test",
+        campaign_id="c-1",
+        criterion="almanac.claims",
+        criterion_fingerprint="7" * 64,
+        questions=["true", "is_claim"],
+        arms=[ClaimReadArm(key="k-control", run_ids=["run-a"])],
+        draw=ClaimDraw(
+            seed=7,
+            stratify_by="truth",
+            per_cell=2,
+            population_digest="9" * 64,
+            strata=[
+                ClaimStratumDraw(stratum="contradicted", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(stratum="true_ungrounded", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(stratum="unverifiable", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(stratum="supported", population=3, cells=2, planned=1, drawn=1),
+            ],
+            excluded={"a restatement, which takes its original's verdict": 1},
+        ),
+        items=[
+            ClaimItem(
+                item="0b5b9abb32a0",
+                stratum="supported",
+                arm="k-control",
+                run_id="run-a",
+                result_id="res-a",
+                case_id="case-1",
+                claim=0,
+                verdict="supported",
+                grounded=None,
+                view_digest=claim_view_digest(_CLAIM_VIEW),
+                view=_CLAIM_VIEW,
+            )
+        ],
+        answers=[
+            ClaimAnswer(
+                item="0b5b9abb32a0",
+                rater="ana@example.com",
+                collected_by="agent:test",
+                verdicts=[
+                    ClaimVerdict(question="true", score=1, reason="The catalogue says 1921."),
+                    ClaimVerdict(question="is_claim", score=1),
+                ],
+            )
+        ],
+    ),
     "BlindRead": lambda: BlindRead(
         id="blind-0b5b9abb32a0",
         scope_id="uni-1",

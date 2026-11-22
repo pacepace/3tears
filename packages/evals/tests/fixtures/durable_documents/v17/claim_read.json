@@ -1,0 +1,121 @@
+{
+  "answers": [
+    {
+      "answered_at": "2026-07-20T00:00:00.000001+00:00",
+      "collected_by": "agent:test",
+      "item": "0b5b9abb32a0",
+      "made_by": "person",
+      "rater": "ana@example.com",
+      "skipped": false,
+      "verdicts": [
+        {
+          "question": "true",
+          "reason": "The catalogue says 1921.",
+          "score": 1
+        },
+        {
+          "question": "is_claim",
+          "reason": "",
+          "score": 1
+        }
+      ]
+    }
+  ],
+  "arms": [
+    {
+      "key": "k-control",
+      "run_ids": [
+        "run-a"
+      ]
+    }
+  ],
+  "campaign_id": "c-1",
+  "created_at": "2026-07-20T00:00:00.000001+00:00",
+  "created_by": "agent:test",
+  "criterion": "almanac.claims",
+  "criterion_fingerprint": "7777777777777777777777777777777777777777777777777777777777777777",
+  "doc_type": "claim_read",
+  "draw": {
+    "excluded": {
+      "a restatement, which takes its original's verdict": 1
+    },
+    "per_cell": 2,
+    "population_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+    "seed": 7,
+    "strata": [
+      {
+        "cells": 0,
+        "drawn": 0,
+        "planned": 0,
+        "population": 0,
+        "stratum": "contradicted"
+      },
+      {
+        "cells": 0,
+        "drawn": 0,
+        "planned": 0,
+        "population": 0,
+        "stratum": "true_ungrounded"
+      },
+      {
+        "cells": 0,
+        "drawn": 0,
+        "planned": 0,
+        "population": 0,
+        "stratum": "unverifiable"
+      },
+      {
+        "cells": 2,
+        "drawn": 1,
+        "planned": 1,
+        "population": 3,
+        "stratum": "supported"
+      }
+    ],
+    "stratify_by": "truth"
+  },
+  "id": "claimread-0b5b9abb32a0",
+  "items": [
+    {
+      "arm": "k-control",
+      "case_id": "case-1",
+      "claim": 0,
+      "grounded": null,
+      "item": "0b5b9abb32a0",
+      "result_id": "res-a",
+      "run_id": "run-a",
+      "stratum": "supported",
+      "verdict": "supported",
+      "view": {
+        "claim": "The Lantern Almanac was first printed in 1921.",
+        "end": 45,
+        "evidence": [
+          {
+            "provenance": "case",
+            "ref": "S1",
+            "text": "Lantern Almanac, first printing 1921.",
+            "title": "Catalogue"
+          },
+          {
+            "provenance": "web",
+            "ref": "W1",
+            "text": "It was first printed in 1921.",
+            "title": "The Lantern Almanac"
+          }
+        ],
+        "excerpt": "first printed in 1921",
+        "segment": "The Lantern Almanac was first printed in 1921.",
+        "start": 24
+      },
+      "view_digest": "3ec8eb905f180834086852e09ba0c940680f706d9330dbbb4760d9877b03fba1"
+    }
+  ],
+  "name": "almanac claims",
+  "questions": [
+    "true",
+    "is_claim"
+  ],
+  "schema_minor": 10,
+  "schema_version": 17,
+  "scope_id": "uni-1"
+}

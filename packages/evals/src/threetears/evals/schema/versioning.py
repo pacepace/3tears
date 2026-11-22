@@ -1033,7 +1033,18 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   reading a template at this minor keeps both opaquely and writes them back; its digests read the template without
 #:   them, and its launch runs it grading no claims, since the refusal of a kept field at launch ships with this minor.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 9
+#: - **v17.10** — a new durable type, the claim read (#1287): ``claim_read`` (``ClaimRead``), one claim criterion's
+#:   graded claims drawn by stratum of the instrument's own answer (its truth verdict, or whether it grounded the
+#:   claim; at most two claims a cell; a seed and each stratum's population, plan and draws on ``ClaimDraw``), each
+#:   item the claim as the instrument read it (``ClaimView``: the claim, its excerpt and segment, the numbered evidence
+#:   and web windows, no verdict, citation or arm; its digest the label key) beside the instrument's answer, and the
+#:   answers people (or a model, read apart) gave to the questions ``true``, ``grounded`` and ``is_claim``. Nothing
+#:   derived is stored: every figure is read off the answers when the read is read. Stored through
+#:   ``EvalStorage.save_claim_read``; no other durable shape moves, so every document v17.9 stored is stored byte for
+#:   byte as before. An older build never reads the type (every read selects by ``doc_type``); its operator wipe of
+#:   durable documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 10
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

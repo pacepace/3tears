@@ -41,6 +41,7 @@ from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, SIGNIFI
 
 from packages.evals.tests import advice_nulls as advice
 from packages.evals.tests import claim_loss_nulls as claim_loss
+from packages.evals.tests import claim_read_nulls as claim_read
 from packages.evals.tests import engine_take_up as engine
 from packages.evals.tests import null_newcomers as quick
 
@@ -63,6 +64,7 @@ RUN_KEY = Path(__file__).resolve().parent / "fixtures" / "stats_certification_ru
 ENTRY_POINTS = (
     "packages/evals/tests/advice_nulls.py",
     "packages/evals/tests/claim_loss_nulls.py",
+    "packages/evals/tests/claim_read_nulls.py",
     "packages/evals/tests/null_newcomers.py",
     "packages/evals/tests/engine_take_up.py",
     "packages/evals/tests/stats_certificate.py",
@@ -573,6 +575,19 @@ def _shards() -> list[Shard]:
                     {"row": row, "start": block.start, "count": len(block)},
                 )
             )
+    # A claim instrument's calibration read off a claim read under known truth: each row its draws, in shards of a
+    # hundred (draws claim-read-<row>-<index>).
+    for row, read in claim_read.ROWS.items():
+        for block in _blocks(read.draws, 100):
+            shards.append(
+                Shard(
+                    f"claim-read-{row}-{block.start}",
+                    f"claim-read-{row}",
+                    "product",
+                    "claim-read",
+                    {"row": row, "start": block.start, "count": len(block)},
+                )
+            )
     return shards
 
 
@@ -735,6 +750,14 @@ async def run_product(shard: Shard) -> dict[str, int]:
             claim_loss.withheld(args["row"], index) for index in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(withheld), sum(withheld))
+    if shard.job == "claim-read":
+        outcomes = [claim_read.one(args["row"], index) for index in range(args["start"], args["start"] + args["count"])]
+        return _counts(
+            len(outcomes),
+            sum(outcome.leaned for outcome in outcomes),
+            low=sum(outcome.low_missed for outcome in outcomes),
+            high=sum(outcome.high_missed for outcome in outcomes),
+        )
     if shard.job == "engine-counted":
         separated, _ = await engine.simulate(
             args["reading"], args["law"], args["grader"], args["stop"], args["count"], "engine", start=args["start"]

@@ -77,6 +77,7 @@ from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfil
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES, DURABLE_DOC_TYPES
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 from threetears.evals.schema.blind_read import BlindRead
+from threetears.evals.schema.claim_read import ClaimRead
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
@@ -2027,6 +2028,45 @@ class EvalStorage:
         field_eq: dict[str, Any] = {} if campaign_id is None else {"campaign_id": campaign_id}
         items = self._store.by_doc_type("blind_read", scope_id, order_by="created_at", descending=False, **field_eq)
         return self._hydrate_all(BlindRead, items)
+
+    # =========================================================================
+    # ClaimRead — a stratified draw of one claim criterion's graded claims and the answers given to it (durable v17.10)
+    # =========================================================================
+
+    def save_claim_read(self, read: ClaimRead, *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Persist a claim read in the scope it names.
+
+        :param read: The read.
+        :param if_match: The etag the read was loaded with: the write lands only if nothing wrote since. None for none.
+        :param create_only: Land only if nothing is stored under its id: a draw is written once.
+        :raises ConflictError: The read moved since it was loaded, or (``create_only``) one is already stored.
+        :raises StorageError: Any other write failure.
+        """
+        self._save(read.to_dict(), if_match=if_match, create_only=create_only)
+
+    def load_claim_read_with_etag(self, read_id: str, scope_id: str) -> tuple[ClaimRead | None, str | None]:
+        """Load a claim read plus the token a conditional write of it must present (:meth:`save_claim_read`).
+
+        :param read_id: The read's id.
+        :param scope_id: The scope it lives in.
+        :return: ``(read, etag)``, or ``(None, None)`` when no claim read resolves there.
+        """
+        data, etag = self._store.get_with_etag(read_id, scope_id)
+        data = self._of_type(ClaimRead, data)
+        if data is None:
+            return None, None
+        return self._hydrate(ClaimRead, data), etag
+
+    def query_claim_reads(self, scope_id: str, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        """The claim reads in a scope, oldest first, optionally those drawn over one campaign.
+
+        :param scope_id: The scope to read.
+        :param campaign_id: Optional equality filter on the campaign a read was drawn over.
+        :return: The reads, by when they were drawn.
+        """
+        field_eq: dict[str, Any] = {} if campaign_id is None else {"campaign_id": campaign_id}
+        items = self._store.by_doc_type("claim_read", scope_id, order_by="created_at", descending=False, **field_eq)
+        return self._hydrate_all(ClaimRead, items)
 
     # =========================================================================
     # CalibrationRating

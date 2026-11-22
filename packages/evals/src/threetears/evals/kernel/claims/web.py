@@ -405,6 +405,14 @@ class _Budget:
 
 
 @dataclass(frozen=True)
+class _Stopped:
+    """What stopped a web step: the claims it left, each ``skipped_cap`` or ``lost``, and the failure that lost them."""
+
+    outcomes: Mapping[int, WebGraded]
+    failed: ClaimGradingFailed | None = None
+
+
+@dataclass(frozen=True)
 class WebChecker:
     """The web step of one criterion: it checks the claims the judge nominated, on the web, within the cell's budget.
 
@@ -531,26 +539,115 @@ class WebChecker:
                 f"claims {stray} are nominated for the web check, and are no world claims that restate nothing"
             )
         calls: list[ClaimCall] = []
-        records: list[WebCheckRecord] = []
-        outcomes: dict[int, WebGraded] = {}
         if checked_before < 0 or repairs_spent < 0:
             raise ValueError(
                 f"a web step resumes after {checked_before} checks and {repairs_spent} repairs; neither is below 0"
             )
         repairs = _Budget(left=max(self.repairs.max_items_per_cell - repairs_spent, 0))
         order = list(nominated)
-        lost: ClaimGradingFailed | None = None
+        budgeted = [p for at, p in enumerate(order) if checked_before + at < self.budget.max_checked_per_cell]
+
+        async def one(position: int) -> tuple[WebCheckRecord, int | None]:
+            return await self._check_one(position, cell[position], search, calls, ledger, repairs)
+
+        records, decided, lost = await self._each(budgeted, one)
+        outcomes = {
+            position: WebGraded(record.outcome, None if call is None else calls_before + call)
+            for position, (record, call) in decided.items()
+        }
+        # Past the cell's budget a claim is unchecked; once the step is lost, every claim it had not decided is lost.
+        left = WebGraded("lost") if lost.failed is not None else WebGraded("skipped_cap")
+        outcomes.update({position: left for position in order if position not in decided})
+        return WebCheck(
+            calls=tuple(calls),
+            records=tuple(records),
+            outcomes=outcomes,
+            loss=None if lost.failed is None else lost.failed.loss,
+            failure=None if lost.failed is None else str(lost.failed),
+            replayed=repairs.replayed,
+        )
+
+    async def reread(
+        self,
+        claims: Sequence[ExtractedClaim],
+        records: Sequence[WebCheckRecord],
+        *,
+        ledger: RoleUsageLedger,
+        calls_before: int,
+    ) -> WebCheck:
+        """Ask each stored check's verdict again over the windows it stored, and search nothing.
+
+        What a repeat of a grade and a second judge read of the web step: the searches a check wrote and the pages
+        they found are the first grade's, kept as its record, so only the reading of them is measured again. Each
+        record is read again in claim order, under the step's own repair budget, held afresh as a new reading of
+        the cell: a record whose search read no window stands as it is, inconclusive, with no call. Every failure is
+        the step's own, as :meth:`check` reads it, and a budget's refusal leaves the claims it struck
+        ``skipped_cap``. No record counts against ``max_checked_per_cell``: each is a check already made.
+
+        :param claims: The cell's claims, as the grade stores them.
+        :param records: The stored checks to read again, each of a claim that restates nothing.
+        :param ledger: The repeat's ``judge`` ledger.
+        :param calls_before: How many of the repeat's calls precede this step's.
+        :return: The calls, one new record per stored one read (its searches, urls and windows the stored record's),
+            and each claim's outcome. ``replayed`` is False: nothing was searched.
+        :raises ValueError: ``ledger`` is not the ``judge`` role's, or a record is of no claim that restates nothing.
+        :raises ApparatusError: The rig could not serve a call (a replay's miss).
+        :raises CompletionProtocolDefect: A web call's completion breaks the protocol.
+        """
+        if ledger.role != _ROLE:
+            raise ValueError(
+                f"a web check's calls are billed to the {_ROLE!r} role, and the ledger is {ledger.role!r}'s"
+            )
+        cell = tuple(claims)
+        stored = {record.claim: record for record in records}
+        if stray := sorted(p for p in stored if p >= len(cell) or cell[p].restates is not None):
+            raise ValueError(f"stored web checks of claims {stray} are of no claim that restates nothing")
+        calls: list[ClaimCall] = []
+        repairs = _Budget(left=self.repairs.max_items_per_cell)
+
+        async def one(position: int) -> tuple[WebCheckRecord, int | None]:
+            record = stored[position]
+            if not record.windows:
+                return record, None
+            stated = _CLAIM_TEMPLATE.format(claim=cell[position].claim, excerpt=cell[position].excerpt)
+            return await self._decide(
+                position, stated, record.queries, record.urls, record.windows, calls, ledger, repairs
+            )
+
+        kept, decided, lost = await self._each(sorted(stored), one)
+        outcomes = {
+            position: WebGraded(record.outcome, None if call is None else calls_before + call)
+            for position, (record, call) in decided.items()
+        }
+        outcomes.update(lost.outcomes)
+        return WebCheck(
+            calls=tuple(calls),
+            records=tuple(kept),
+            outcomes=outcomes,
+            loss=None if lost.failed is None else lost.failed.loss,
+            failure=None if lost.failed is None else str(lost.failed),
+        )
+
+    async def _each(
+        self,
+        order: Sequence[int],
+        one: Callable[[int], Awaitable[tuple[WebCheckRecord, int | None]]],
+    ) -> tuple[list[WebCheckRecord], dict[int, tuple[WebCheckRecord, int | None]], _Stopped]:
+        """Check each claim of ``order`` in turn, stopping at the first failure or budget refusal.
+
+        :return: The records made, each decided claim's record and deciding call (its place among the step's calls),
+            and what stopped the step: the claims it left, each ``skipped_cap`` (a budget's refusal) or ``lost``,
+            with the failure where one was lost.
+        """
+        records: list[WebCheckRecord] = []
+        decided: dict[int, tuple[WebCheckRecord, int | None]] = {}
         for at, position in enumerate(order):
-            if checked_before + at >= self.budget.max_checked_per_cell:
-                outcomes[position] = WebGraded("skipped_cap")
-                continue
             try:
-                record, call = await self._check_one(position, cell[position], search, calls, ledger, repairs)
+                record, call = await one(position)
             except ClaimGradingFailed as failed:
                 # Recorded, never swallowed: the claim it struck and every later one read what stopped the step.
                 if failed.loss in _BUDGET_STOPS:
-                    outcomes.update((later, WebGraded("skipped_cap")) for later in order[at:])
-                    break
+                    return records, decided, _Stopped({later: WebGraded("skipped_cap") for later in order[at:]})
                 lost = failed
             except ApparatusError:
                 # A replay's miss is no grading outcome: it fails the run, naming the call or search.
@@ -565,18 +662,10 @@ class WebChecker:
                 )
             else:
                 records.append(record)
-                outcomes[position] = WebGraded(record.outcome, None if call is None else calls_before + call)
+                decided[position] = (record, call)
                 continue
-            outcomes.update((later, WebGraded("lost")) for later in order[at:])
-            break
-        return WebCheck(
-            calls=tuple(calls),
-            records=tuple(records),
-            outcomes=outcomes,
-            loss=None if lost is None else lost.loss,
-            failure=None if lost is None else str(lost),
-            replayed=repairs.replayed,
-        )
+            return records, decided, _Stopped({later: WebGraded("lost") for later in order[at:]}, lost)
+        return records, decided, _Stopped({})
 
     async def _check_one(
         self,
@@ -605,6 +694,23 @@ class WebChecker:
         windows = self._windows(pages, anchors_of([claim.claim, claim.excerpt]))
         if not windows:
             return WebCheckRecord(claim=position, queries=queries, urls=tuple(urls), outcome="inconclusive"), None
+        return await self._decide(position, stated, queries, tuple(urls), windows, calls, ledger, repairs)
+
+    async def _decide(
+        self,
+        position: int,
+        stated: str,
+        queries: tuple[str, ...],
+        urls: tuple[str, ...],
+        windows: tuple[WebWindow, ...],
+        calls: list[ClaimCall],
+        ledger: RoleUsageLedger,
+        repairs: _Budget,
+    ) -> tuple[WebCheckRecord, int]:
+        """One claim's reading of its windows: the answer, repaired within the budget, its record and its call.
+
+        :raises ClaimGradingFailed: A reply was cut short or unreadable, or the answer still failed past the budget.
+        """
         shown = {f"W{at}": window for at, window in enumerate(windows, start=1)}
         numbered = "\n\n".join(
             _WINDOW_TEMPLATE.format(
@@ -654,7 +760,7 @@ class WebChecker:
         record = WebCheckRecord(
             claim=position,
             queries=queries,
-            urls=tuple(urls),
+            urls=urls,
             windows=windows,
             outcome=answer.outcome,
             deciding_url=None if window is None else window.url,
