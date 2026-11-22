@@ -32,7 +32,7 @@ replay keys each by its prompt: a document changed since the recording is anothe
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, Protocol
 
 from threetears.evals.kernel.claims.derived import ClaimDerivation
@@ -248,13 +248,17 @@ _UNCHANGED_EVIDENCE_LOSS: Final = "evidence_over_cap"
 
 
 def claims_due_rejudge(result: EvalResult) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """What a re-judge of ``result`` grades again of its claim criteria: each lost one, whole, and each completed one
-    whose web step was lost alone (its tally's ``web_loss``), that step alone; neither one lost to the trace's cap.
+    """What a re-judge of ``result`` grades again of its claim criteria, paying for it: each lost one, whole, and each
+    completed one whose web step was lost alone (its tally's ``web_loss``), that step alone; neither one lost to the
+    trace's cap. A criterion still pending (``trace_pending``) is none of them: it is no loss, and is settled from its
+    stored grade with no call (:func:`settled_pending_claims`).
 
     :param result: The stored result.
     :return: The criteria to grade again whole, and those whose web step is finished, each in the result's order.
     """
-    whole = tuple(name for name, loss in result.claim_failures.items() if loss != _UNCHANGED_EVIDENCE_LOSS)
+    whole = tuple(
+        name for name, loss in result.claim_failures.items() if loss not in (_UNCHANGED_EVIDENCE_LOSS, CLAIM_PENDING)
+    )
     web = tuple(
         name
         for name, tally in result.claim_tallies.items()
@@ -352,14 +356,7 @@ def reproducible_claim_inputs(
         )
     regrade = tuple(name for name in criteria if name in whole)
     web_steps = tuple(name for name in criteria if name in webbed)
-    try:
-        # A lost criterion is graded again whole, its web step included, and a lost web step is finished: either
-        # searches live.
-        refuse_web_without_search([criteria[name] for name in (*regrade, *web_steps)], template=template.name, web=web)
-    except ValueError as unsearched:
-        raise ValidationFailedError(
-            str(unsearched), remedy="pass the run's web search to the re-judge (web_search)"
-        ) from unsearched
+    refuse_unsearched_claims(template, (*regrade, *web_steps), web=web)
     trace = storage.load_eval_trace(result.id, scope_id)
     if trace is None or trace.claim_evidence is None:
         raise ValidationFailedError(
@@ -719,6 +716,29 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             remedy=RELAUNCH_TO_REJUDGE,
         )
     return run.judge_model
+
+
+def refuse_unsearched_claims(template: EvalTemplate, names: Sequence[str], *, web: WebSearch | None) -> None:
+    """Refuse, by name and before any call, grading again claim criteria of ``template`` that would search the web
+    with no web search to search on: a lost criterion is graded again whole, its web step included, and a lost web
+    step is finished, so either searches live. Every door that grades a stored result's claims again holds to it
+    before it writes or spends anything.
+
+    :param template: The run's template.
+    :param names: The criteria to be graded again, whole or their web step; one the template does not declare is
+        passed over (refused by name where its inputs are read).
+    :param web: The web search, or ``None``.
+    :raises ValidationFailedError: A named criterion declares a web budget, and ``web`` is None or names no identity.
+    """
+    criteria = {criterion.name: criterion for criterion in template.claim_criteria}
+    try:
+        refuse_web_without_search(
+            [criteria[name] for name in names if name in criteria], template=template.name, web=web
+        )
+    except ValueError as unsearched:
+        raise ValidationFailedError(
+            str(unsearched), remedy="pass the run's web search to the re-judge (web_search)"
+        ) from unsearched
 
 
 def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> EvalTemplate:

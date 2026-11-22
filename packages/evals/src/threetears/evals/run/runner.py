@@ -88,6 +88,7 @@ from threetears.evals.kernel.claims.grading import (
     claim_payload_bytes,
     criterion_ceiling,
     criterion_fingerprints,
+    grade_criterion,
     grade_or_loss,
     refuse_web_without_search,
 )
@@ -2585,6 +2586,20 @@ async def _run_claims_phase(
             return 0.0
         for name in phase.criteria:
             criterion = criteria[name]
+            if not phase.evidence.segments:
+                # The candidate said nothing: the criterion asks nothing, so it is neither admitted against the cap nor
+                # lost to it, and its grade lists no claim (a silent tally, no loss).
+                silent = await grade_criterion(
+                    criterion,
+                    phase.evidence,
+                    key=test_case.reference,
+                    client=client,
+                    graded=phase.grades,
+                    derivation=derivations.get(name),
+                )
+                phase.grades[name] = silent.grade
+                phase.tallies[name] = silent.tally
+                continue
             if capped:
                 phase.failures[name] = "cost_cap"
                 continue
@@ -2748,15 +2763,17 @@ def _hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: Cand
     """Refuse output a template's claim criteria cannot grade.
 
     A template that declares claim criteria owes them the kind's claim evidence for every output it produced, whatever
-    the kind declares a judge reads: without it the criteria would grade nothing and say nothing. A criterion naming
-    ``grounded_in`` reads the documents the candidate was given, so the evidence declares them (empty when it was given
-    none). An empty output owes none: nothing was produced, and nothing is graded.
+    the kind declares a judge reads: without it the criteria would grade nothing and say nothing, and no reader could
+    tell a kind that forgot from a candidate that said nothing. A candidate that said nothing in an output holding
+    other parties' lines is evidence with no segment, which is graded with no call and read as silent. Evidence that
+    declares no documents under a criterion naming ``grounded_in`` is graded too: its ground step alone is lost
+    (``documents_undeclared``), and truth stands. An empty output owes none: nothing was produced, and nothing is
+    graded.
 
     :param kind_name: The kind, for the refusal's message.
     :param template: The template, whose claim criteria the output is held to.
     :param output: What the kind produced.
-    :raises ValueError: The output is not empty and carries no claim evidence, or a criterion with ``grounded_in``
-        meets evidence that declares no documents.
+    :raises ValueError: The output is not empty and carries no claim evidence.
     """
     if not template.claim_criteria or not output.output:
         return
@@ -2766,15 +2783,8 @@ def _hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: Cand
             f"candidate kind {kind_name!r} produced output and rendered no claim_evidence, and template "
             f"{template.name!r} declares claim criteria "
             + ", ".join(repr(criterion.name) for criterion in template.claim_criteria)
-            + "; the kind renders its output's segments and documents for them"
-        )
-    if evidence.documents is None and (
-        grounded := [criterion.name for criterion in template.claim_criteria if criterion.grounded_in is not None]
-    ):
-        raise ValueError(
-            f"candidate kind {kind_name!r} rendered claim evidence that declares no documents, and claim criteria "
-            f"{', '.join(map(repr, grounded))} read the documents the candidate was given; declare them, empty when "
-            "it was given none"
+            + "; the kind renders its output's segments and documents for them, with no segment where the candidate "
+            "said nothing"
         )
 
 

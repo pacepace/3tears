@@ -201,7 +201,8 @@ def grade_tally(
             f"and the trace stores {claim_evidence_digest(evidence)[:12]}"
         )
     tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
-    if derivation is None:
+    if derivation is None or tally.silent:
+        # A silent cell has nothing for a reader to read: it carries no reading of the criterion, derived ones included.
         return tally
     try:
         derived = derive_claim_readings(derivation, grade, evidence)
@@ -312,9 +313,11 @@ def criterion_ceiling(
     :param key: The case's reference key, or None.
     :param client: The judge's client, its prices brought up to date.
     :param query_usd: What one web search costs, at most; None when it cannot be said, or no search is asked.
-    :return: The ceiling in dollars, or None when the client cannot price a call, or a criterion with a web budget
-        cannot price a search.
+    :return: The ceiling in dollars (0 for a cell whose candidate said nothing, which asks nothing), or None when the
+        client cannot price a call, or a criterion with a web budget cannot price a search.
     """
+    if not evidence.segments:
+        return 0.0
     extractor, verifier = criterion_steps(criterion, client)
     extraction = extractor.price_ceiling(evidence.segments)
     verification = verifier.price_ceiling(evidence.segments, key=key, documents=evidence.documents)
@@ -392,7 +395,8 @@ async def grade_criterion(
     search: Search | None = None,
 ) -> GradedCriterion:
     """Grade one cell under one criterion: list its claims, verify them, check the nominated ones on the web where it
-    declares a budget, and keep the grade with its tally.
+    declares a budget, and keep the grade with its tally. A cell whose candidate said nothing (claim evidence with no
+    segment) asks nothing: its grade makes no call and its tally is silent.
 
     What the client raises in the extraction or a truth call (a provider failure, a replay's miss, a completion that
     breaks the protocol) is not caught: it is the judge phase's to classify. The web step's failures are its own
@@ -423,6 +427,15 @@ async def grade_criterion(
     :raises ValueError: A criterion with a web budget nominated a claim, and no search was given.
     """
     extractor, verifier = criterion_steps(criterion, client)
+    if not evidence.segments:
+        # The candidate said nothing: there is no text to list claims from, so nothing is asked and nothing is spent.
+        # The grade names the criterion and the evidence, lists no claim, and its tally is silent.
+        grade = ClaimGrade(
+            criterion_fingerprint=criterion_fingerprint(criterion, extractor, verifier),
+            claim_evidence_digest=claim_evidence_digest(evidence),
+            calls=(),
+        )
+        return GradedCriterion(grade=grade, tally=grade_tally(grade, evidence, criterion, derivation=derivation))
     checker = web_checker(criterion, client)
     # Each step folds its completions into a ledger it requires; the judge phase bills the calls from the client.
     ledger = RoleUsageLedger(role="judge")

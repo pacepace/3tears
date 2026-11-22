@@ -464,6 +464,37 @@ def test_a_criterion_with_grounded_in_refuses_a_cell_whose_documents_are_undecla
         _readings(documents=None)
 
 
+def test_undeclared_documents_lose_the_ground_step_alone_and_every_truth_reading_stands() -> None:
+    """Nothing says what the candidate was given: groundedness is lost as ``documents_undeclared`` (never 0, the
+    no-research reading), and truth, which reads case evidence alone, reads exactly as with the documents declared."""
+    undeclared = _readings(_ungrounded_by_none(), documents=None, ground_loss="documents_undeclared")
+    lie = _readings(_ungrounded_by_none(_swap(1, _false(1))), documents=None, ground_loss="documents_undeclared")
+
+    assert _moved(_BASE, undeclared) == {"grounded_share", "ground_lost"}
+    assert f"{_C}_grounded_share" not in undeclared and undeclared[f"{_C}_ground_lost"] == 1.0
+    assert _moved(_readings(_swap(1, _false(1))), lie) == {"grounded_share", "ground_lost"}
+    assert lie[f"{_C}_false_per_unit"] == 0.5, "the planted lie is counted as with the documents declared"
+
+
+def test_a_cell_whose_candidate_said_nothing_carries_no_reading_and_no_loss() -> None:
+    """No segment: no unit and no claim, so no reading has a denominator. The cell carries no reading at all, never a
+    count of 0 false claims, and no ``_lost``: it is no loss."""
+    silent = ClaimEvidence(segmentation="guide-v1", segments=(), documents=None)
+    grade = ClaimGrade(criterion_fingerprint=_SHA, claim_evidence_digest=_SHA, calls=())
+    tally = claim_tally(grade, silent, grounded_in=("run",))
+
+    assert (tally.silent, tally.units, tally.session_claims, tally.by_judge, tally.ground_loss) == (
+        True,
+        0,
+        0,
+        (),
+        None,
+    )
+    assert claim_readings(_C, tally) == {}
+    with pytest.raises(ValueError, match="said nothing lists no claim"):
+        claim_tally(grade, silent, grounded_in=("run",), ground_loss="documents_undeclared")
+
+
 def test_a_lost_ground_step_gives_no_grounded_share_and_every_truth_reading_stands() -> None:
     """The arm's own pages failed to read, so groundedness is lost alone: no R2 (never 0, the no-research reading),
     the loss counted, and the truth readings exactly where they were, a planted lie among them."""

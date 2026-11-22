@@ -953,6 +953,11 @@
      "additionalProperties": {"type": "integer"},
      "description": "On a reading the host derives from a claim criterion: the cells its claim reader could not read, by arm; no loss, read once the reader is fixed and the run re-measured."
     },
+    "silent": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "On a claim reading: the cells whose candidate said nothing, by arm; no loss, and in no mean, since a cell with nothing said has no denominator."
+    },
     "web_skipped": {
      "type": "object",
      "additionalProperties": {"type": "integer"},
@@ -3092,6 +3097,7 @@
       "run_live",
       "draw_at_random",
       "finish_read",
+      "inspect_arm",
       "declare_looks",
       "declare_criteria",
       "name_control",

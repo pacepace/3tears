@@ -692,8 +692,11 @@ def _tally(order: float) -> ClaimTally:
     )
 
 
-def _campaign(lost_by_arm: Mapping[str, int], order_by_arm: Mapping[str, float]) -> tuple[list[Any], list[EvalResult]]:
-    """Two arms of twelve cases, two repeats each: each arm's first ``lost_by_arm`` cells lost to the criterion."""
+def _campaign(
+    lost_by_arm: Mapping[str, int], order_by_arm: Mapping[str, float], *, unread: bool = False
+) -> tuple[list[Any], list[EvalResult]]:
+    """Two arms of twelve cases, two repeats each: each arm's first ``lost_by_arm`` cells lost to the criterion, or,
+    with ``unread``, graded and left unread by the host's reader."""
     runs = [make_eval_run(status="completed", candidate_model=arm, template_id="tpl-show") for arm in lost_by_arm]
     results = []
     for run, (arm, lost) in zip(runs, lost_by_arm.items(), strict=True):
@@ -710,16 +713,36 @@ def _campaign(lost_by_arm: Mapping[str, int], order_by_arm: Mapping[str, float])
                     goal_state_outcomes=[],
                     rubric_scores=[],
                     cost_usd=None,
-                    claim_tallies={} if place < lost else {_SHOW: _tally(order_by_arm[arm])},
-                    claim_failures={_SHOW: "cut_short"} if place < lost else {},
+                    claim_tallies=(
+                        {_SHOW: _tally(order_by_arm[arm])}
+                        if place >= lost
+                        else {_SHOW: _unread_tally()}
+                        if unread
+                        else {}
+                    ),
+                    claim_failures={_SHOW: "cut_short"} if place < lost and not unread else {},
                 )
             )
     return runs, results
 
 
-def _judged(lost_by_arm: Mapping[str, int], order_by_arm: Mapping[str, float]) -> tuple[list[Any], Any]:
+def _unread_tally() -> ClaimTally:
+    """A cell the host's reader could not read: its counts stand, and none of its derived readings."""
+    return ClaimTally(
+        criterion_fingerprint="c" * 64,
+        documents_declared=False,
+        units=2,
+        units_with_false=0,
+        session_claims=2,
+        derived_unread="the reader raised KeyError: 'roster'",
+    )
+
+
+def _judged(
+    lost_by_arm: Mapping[str, int], order_by_arm: Mapping[str, float], *, unread: bool = False
+) -> tuple[list[Any], Any]:
     profile = _profile()
-    runs, results = _campaign(lost_by_arm, order_by_arm)
+    runs, results = _campaign(lost_by_arm, order_by_arm, unread=unread)
     records = project_score_records(runs, results, archived_run_ids=None, profile=profile).records
     by_cell = {(arm, "rig"): [r for r in results if r.model == arm] for arm in lost_by_arm}
     return records, judged_measures(records, by_cell, None, tiers=[], registry=profile.measures)
@@ -754,6 +777,22 @@ def test_a_lost_criterion_withholds_its_derived_reading_and_counts_each_loss() -
     (_, control) = _judged({"arm-a": 1, "arm-b": 1}, {"arm-a": 1.0, "arm-b": 1.0})
     (held,) = [measure for measure in control if measure.name == _ORDER]
     assert held.withheld is None, "the control: one loss on each arm withholds nothing"
+
+
+def test_a_reader_that_could_not_read_one_arm_s_cells_withholds_its_derived_reading_as_a_loss_would() -> None:
+    """Cells the host's reader could not read are no loss, and in no mean, but missing alike: an arm left unread on a
+    sharply higher share of cells has the derived reading withheld, and one unread cell on each arm withholds none."""
+    records, measured = _judged({"arm-a": 0, "arm-b": 12}, {"arm-a": 1.0, "arm-b": 1.0}, unread=True)
+
+    (order,) = [measure for measure in measured if measure.name == _ORDER]
+    assert {arm.variant_key: (arm.n_claim_unread, arm.n_claim_lost) for arm in order.arms} == {
+        "arm-a": (0, 0),
+        "arm-b": (12, 0),
+    }
+    assert order.withheld is not None and order.withheld.reason == "trials_lost"
+    (_, control) = _judged({"arm-a": 1, "arm-b": 1}, {"arm-a": 1.0, "arm-b": 1.0}, unread=True)
+    (held,) = [measure for measure in control if measure.name == _ORDER]
+    assert held.withheld is None, "the control: one unread cell on each arm withholds nothing"
 
 
 # =============================================================================
