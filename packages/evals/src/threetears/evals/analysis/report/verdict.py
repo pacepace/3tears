@@ -814,6 +814,9 @@ def answered_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str])
         return ""
     said = ""
     for board in bundle.scoreboard:
+        if unread_arms(bundle.cells, board.variant_key):
+            # Split across cells, it has no one count; its own sentence says it is not compared, and why.
+            continue
         count = pass_count(bundle, board)
         if sum(board.failed.values()) and not count.none_answered:
             said += f" {passed_clause(arm(board.variant_key), count, verb='answered')}."

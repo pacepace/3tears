@@ -559,12 +559,12 @@ def _texture(name: str, x: float, y: float, w: float, h: float, color: str, opac
             while k < w:
                 diagonal(x + k, y, 1)
                 k += step
-        if name == "rows":
+        if name in ("rows", "grid"):
             v = y + step / 2
             while v < y + h:
                 path.append(f"M{_n(x)},{_n(v)}H{_n(x + w)}")
                 v += step
-        if name == "cols":
+        if name in ("cols", "grid"):
             v = x + step / 2
             while v < x + w:
                 path.append(f"M{_n(v)},{_n(y)}V{_n(y + h)}")

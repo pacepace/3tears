@@ -1524,6 +1524,9 @@ def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisCon
         labels = readings.arm_labels()
         said: list[str] = []
         for board in bundle.scoreboard:
+            if unread_arms(bundle.cells, board.variant_key):
+                # Split across cells, it has no one count to say, as its verdict line says.
+                continue
             count = pass_count(bundle, board)
             label = labels.get(board.variant_key, board.variant_key)
             if count.none_answered:

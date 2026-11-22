@@ -803,13 +803,13 @@ ChartKind = Literal[
 _OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
 
 #: The textures a failure cause or a loss cause takes, in order.
-_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols", "grid")
 
 #: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
 #: state's order. Never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is ink (the kit's
 #: secondary text), solid, so the status green means a status pill alone; every failure cause is the kit's bad, each
-#: under a texture of its own, so a failure never reads as a pass even without colour, and the five failure causes
-#: (``FailCause``) are five looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: under a texture of its own, so a failure never reads as a pass even without colour, and the six failure causes
+#: (``FailCause``) are six looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the fourteenth repeat a look; the
 #: legend and the tooltip name every cause in words.
 _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
     "passed": (("--ink-2", None),),

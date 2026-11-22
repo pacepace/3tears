@@ -11,7 +11,7 @@
   is ink alone, its verdict the word beside it.
 - **An outcome is never read off a colour alone.** Each outcome of an outcome bar is a look of its own, the same on
   every bar and named in the legend: passed the kit's good, solid; every failure cause the kit's bad under a texture
-  of its own, so the five causes are five looks and none reads as a pass without colour; a loss a neutral. No outcome
+  of its own, so the six causes are six looks and none reads as a pass without colour; a loss a neutral. No outcome
   takes a series colour, since those name arms.
 - **An arm is told apart on every chart.** Each arm carries its letter tag (P for the control, then A, B, C…), its
   colour by that tag (the control ink-gray, the others the series in order) and its short name, which the kit draws
@@ -237,11 +237,11 @@ def test_each_failure_cause_has_a_look_of_its_own_the_same_on_every_bar_and_the_
 _SERIES = {"--s1", "--s2", "--s3", "--s4", "--s5"}
 
 
-def test_five_failure_causes_are_five_looks() -> None:
-    """Five failure causes exist (``FailCause``), so the bar has a look for each, all five distinct: each the kit's
+def test_six_failure_causes_are_six_looks() -> None:
+    """Six failure causes exist (``FailCause``), so the bar has a look for each, all six distinct: each the kit's
     bad, never green and never a series colour, each under a texture, so no failure reads as a pass, solid, even
     without colour; none of them passed's or a loss's."""
-    causes = ("check", "judge", "model failed", "turn budget", "output cap")
+    causes = ("check", "judge", "model failed", "code raised", "turn budget", "output cap")
     assert len(causes) == len(get_args(FailCause))
     segments = [
         OutcomeSegment(state="passed", label="passed", count=3),
@@ -254,7 +254,7 @@ def test_five_failure_causes_are_five_looks() -> None:
     )
     _, data = _drawn(block)
     looks = [_look(segment) for segment in data["rows"][0]["segments"]]
-    passed, failed, lost = looks[0], looks[1:6], looks[6:]
+    passed, failed, lost = looks[0], looks[1:7], looks[7:]
     assert len(set(failed)) == len(causes), "each failure cause a look of its own"
     assert all(colour == "--bad" and pattern is not None for colour, pattern in failed)
     assert passed == ("--ink-2", None)

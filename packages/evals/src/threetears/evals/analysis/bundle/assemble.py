@@ -195,7 +195,8 @@ log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
-    """The eleven reads assembling a campaign's context bundle needs, each a batch.
+    """The reads assembling a campaign's context bundle needs, each a batch: ten, and an eleventh, the claim reads,
+    where a member run's template declares a claim criterion.
 
     **Every read but the results is one store call however large the campaign.** A host's store may open a connection
     per call, so a read per template, per insight or per trial grows with the campaign until it outruns the host's
@@ -307,7 +308,8 @@ class CampaignReadStore(Protocol):
 
     def query_claim_reads(self, scope_id: str, /, *, campaign_id: str | None = None) -> list[ClaimRead]:
         """The claim reads in a scope drawn over one campaign, oldest first: what a claim criterion's judge was checked
-        against people by (``ClaimRead.report``), one read per campaign."""
+        against people by (``ClaimRead.report``), one read per campaign, asked only where a member run's template
+        declares a claim criterion."""
         ...
 
     def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
@@ -692,7 +694,13 @@ def assemble_context_bundle(
     tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
     # Each claim criterion's judge check: the latest closed read over the campaign of the criterion its grades were
     # made under, read once; the reads it stands on are in the fingerprint's pre-image, as a consulted profile is.
-    claim_reads = _checked_claim_reads(storage.query_claim_reads(scope_id, campaign_id=campaign.id), results)
+    # Asked only where a member run's template declares a claim criterion: a bundle grading no claims has no judge of
+    # claims to check, and keeps its reads.
+    claim_reads = (
+        _checked_claim_reads(storage.query_claim_reads(scope_id, campaign_id=campaign.id), results)
+        if any(template.claim_criteria for template in templates.values())
+        else []
+    )
     person_scores = person_scores_by_result(ratings, results)
     paused = taken_up(campaign.created_by, runs, results)
     bundle = AnalysisContextBundle(

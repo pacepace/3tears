@@ -34,6 +34,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.bundle.caps import (
     MAX_ERROR_CHARS,
     MAX_EXCERPT_CHARS,
@@ -167,7 +168,10 @@ def reads_answered(bundle: AnalysisContextBundle) -> bool:
     :param bundle: The aspect's evidence.
     :return: Whether the aspect reads an answered share in place of a pass rate.
     """
-    return not holds_a_check(bundle) and any(sum(board.failed.values()) for board in bundle.scoreboard)
+    # An arm the cells keep apart has no one failure count, and no row reads it: only the arms read as arms decide.
+    return not holds_a_check(bundle) and any(
+        sum(board.failed.values()) for board in bundle.scoreboard if not unread_arms(bundle.cells, board.variant_key)
+    )
 
 
 def reads_a_rate(bundle: AnalysisContextBundle) -> bool:
