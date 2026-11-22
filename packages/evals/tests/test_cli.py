@@ -138,7 +138,9 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
         "call a difference.**",
     ]
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
-    assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
+    # The aspect's page in its fold, its methods headed as the aspect's: a campaign graded by numbers alone reads no
+    # pass-rate pair, so the campaign has no comparison of its own to give methods for.
+    assert "**Scoreboard**" in out and "## Cases" in out and "### Aspect methods" in out
 
 
 def test_report_is_the_report_read_actions_report(capsys: pytest.CaptureFixture[str]) -> None:
