@@ -250,6 +250,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/svg.py": {},
     "analysis/report/kit_colours.py": {},
     "analysis/per_input.py": {},
+    "analysis/permutation.py": {},
     "analysis/report/verdict.py": {},
     "analysis/quantities.py": {},
     "analysis/bundle/trials.py": {},

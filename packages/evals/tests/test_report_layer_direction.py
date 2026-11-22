@@ -238,6 +238,7 @@ _NUMBERS_MODULES = frozenset(
         "measurement_windows",
         "out_of_run_spend",
         "per_input",
+        "permutation",
         "quantities",
         "reads",
         "references",
