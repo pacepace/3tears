@@ -338,6 +338,16 @@ class CandidateOutput(EvalBaseModel):
     cell and what the run's stop reason quotes.
     """
 
+    code_raised: bool = False
+    """The candidate failed because its own code raised a programming error (a ``KeyError``, a ``TypeError``), not
+    because a model it runs failed.
+
+    Set by a kind that runs the host's code as the candidate, where the raise is one no model call makes
+    (:data:`~threetears.evals.kernel.result_condition.PROGRAMMING_ERRORS`). The trial still fails, counted against the
+    candidate as any failure to answer is, but a report names the host's code as the cause and fixing it as the remedy,
+    never a different model. Requires a ``candidate_errors`` entry: it says why that failure happened.
+    """
+
     host_measures: dict[str, bool | float | str] = {}
     """What the host's own grader measured about this cell, by registered measure name.
 
@@ -435,6 +445,10 @@ class CandidateOutput(EvalBaseModel):
             raise ValueError(
                 "model_unserved is set but infra_errors is empty; a model the provider does not serve is a fault of "
                 "the test setup, recorded there"
+            )
+        if self.code_raised and not self.candidate_errors:
+            raise ValueError(
+                "code_raised is set but candidate_errors is empty; it says why the candidate failed, recorded there"
             )
         return self
 

@@ -107,6 +107,7 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
         name: JudgedDimensionFacts(
             higher_is_better=described[name].higher_is_better,
             value_range=described[name].value_range,
+            nonnegative=described[name].nonnegative,
             scale=described[name].scale,
             axis=described[name].axis,
         )

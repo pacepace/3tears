@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.bundle.trials import pass_count
+from threetears.evals.analysis.bundle.trials import holds_a_check, pass_count
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
@@ -81,7 +81,7 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
-from threetears.evals.analysis.report.aspect.contrasts import contrast_advice, contrast_evidence
+from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_advice, contrast_evidence
 from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.verdict import (
     graded_contrast,
@@ -383,6 +383,22 @@ def _lead_blocks(
                 decision.removesuffix(".")
                 for decision in led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on)
             ]
+        elif not holds_a_check(report.bundle):
+            # Nothing the aspect grades can fail a trial, so it has no pass rate to lead on: its own verdict line, as
+            # its page and the quick print say it, nothing decided, so nothing set in bold.
+            line = aspect_verdict(
+                report.bundle,
+                measure_order=order,
+                arm_labels=readings.arm_labels(),
+                forms=aspect_forms.get(aspect.label),
+            )
+            said = line.lead or line.text
+            # The undecided reading's own words open with a capital, as a sentence does; an arm's name is as given.
+            said = said[:1].upper() + said[1:] if said.startswith("the evidence ") else said
+            sentences.append(f"On {names(aspect.label)}: {said}" if several else said)
+            if not line.lead:
+                # The whole line says the trials nothing graded already.
+                continue
         elif rows := readings.on_aspect(aspect.label):
             undecided = undecided or reads_undecided(readings, aspect.label)
             for row in rows:

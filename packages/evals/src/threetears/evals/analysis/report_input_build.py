@@ -1215,8 +1215,8 @@ def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
 
 
 def _claim_counts(measure: JudgedMeasure, arm: Callable[[str], str]) -> dict[str, Any]:
-    """A claim reading's criterion and its arms' cells lost, pending, unread by the host's reader and past the web
-    budget, by arm label, each where any arm has one."""
+    """A claim reading's criterion and its arms' cells lost, pending, unread by the host's reader, past the web
+    budget, lost to a failed web step and read from a recorded web, by arm label, each where any arm has one."""
 
     def by_arm(count: Callable[[JudgedArm], int]) -> dict[str, int]:
         found: dict[str, int] = {}
@@ -1232,6 +1232,7 @@ def _claim_counts(measure: JudgedMeasure, arm: Callable[[str], str]) -> dict[str
         "unread": by_arm(lambda held: held.n_claim_unread),
         "web_skipped": by_arm(lambda held: held.n_web_skipped),
         "web_lost": by_arm(lambda held: held.n_web_lost),
+        "web_replayed": by_arm(lambda held: held.n_web_replayed),
     }
 
 

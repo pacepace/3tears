@@ -94,7 +94,7 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     table_row,
 )
-from threetears.evals.analysis.bundle.trials import pass_count
+from threetears.evals.analysis.bundle.trials import holds_a_check, pass_count
 from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.report.verdict import interval_words, not_graded_words, passed_clause
 from threetears.evals.analysis.caveats import UnkeptPlan, unkept_plan
@@ -553,7 +553,7 @@ def table_blocks(
         if row.rig is not None
     ]
     notes += _reconciled_lines(readings, reports, rates, names, forms)
-    notes += _unread_lines(campaign, readings, names)
+    notes += _unread_lines(campaign, readings, names, reports)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
 
@@ -1147,12 +1147,22 @@ def _reconciled(
     return said
 
 
-def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
-    """An aspect where only one side ran, read arm by arm; and an aspect with no margin asked no question, where a drop
-    reads as the evidence leaving the arms undecided (asked one, its drop is read against zero): the one line where what the aspect lacks
-    changes how its row reads."""
+def _unread_lines(
+    campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames, reports: Mapping[str, Report]
+) -> list[str]:
+    """An aspect where only one side ran, read arm by arm; one where nothing graded can fail a trial, which has no pass
+    rate to read; and an aspect with no margin asked no question, where a drop reads as the evidence leaving the arms
+    undecided (asked one, its drop is read against zero): the one line where what the aspect lacks changes how its row
+    reads."""
     lines: list[str] = []
     for aspect in campaign.aspects:
+        if aspect.label in reports and not holds_a_check(reports[aspect.label].bundle):
+            # No row was read: a pass rate there would count every answered trial as passed.
+            lines.append(
+                f"{names(aspect.label)} has no pass rate: no grader there says pass or fail, so its readings are "
+                "read on their own."
+            )
+            continue
         rows = readings.on_aspect(aspect.label)
         held_here = [held for held in readings.answer_splits if held.aspect == aspect.label]
         split = [held.arm_label for held in held_here if held.coordinate == "served_model"]
@@ -1413,6 +1423,9 @@ def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisCon
     :return: The words.
     :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
+    if bundle is not None and not holds_a_check(bundle):
+        # Nothing it grades can fail a trial, so it has no pass rate to show, as its own verdict line says.
+        return "no grader here says pass or fail"
     if readings.kind == "choice":
         return pairs_words(readings, aspect) or "not compared"
     if readings.kind == "measurement":

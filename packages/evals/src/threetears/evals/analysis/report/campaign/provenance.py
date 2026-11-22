@@ -14,7 +14,9 @@ Six disclosures are report-wide:
 - **latency read under concurrency**, which every comparison leaves out;
 - **request settings not confirmed**, for the judge or the simulated user;
 - **a judge not yet calibrated** against people's labels, whose scores are then directional
-  (``AnalysisContextBundle.judge_evidence_tiers``): a state with its next step, never a failure.
+  (``AnalysisContextBundle.judge_evidence_tiers``): a state with its next step, never a failure; and a claims judge
+  whose verdicts no person has checked, whose claim readings are then directional (each claim reading's arms'
+  ``evidence_tier``).
 
 Each of these has its line on the first screen (:func:`caveat_blocks`) and its detail one step down
 (:func:`provenance_blocks`, :func:`aspect_provenance_blocks`, :func:`setup_disclosure`, :func:`calibration_blocks`).
@@ -59,6 +61,7 @@ __all__ = [
     "aspect_provenance_blocks",
     "calibration_blocks",
     "caveat_blocks",
+    "claim_calibration_sentences",
     "for_the_campaign",
     "provenance_blocks",
     "question_blocks",
@@ -359,7 +362,35 @@ def _calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
             f"Judge {judge} {state} on {', '.join(dims)}: {why}, so its scores are directional. "
             f"Rate about {more} of its outputs to calibrate it."
         )
-    return said
+    return said + claim_calibration_sentences(bundle)
+
+
+def claim_calibration_sentences(bundle: AnalysisContextBundle) -> list[str]:
+    """Each claim criterion whose readings stand on no calibrated judge, as a state, in a rubric dimension's words: its
+    judge is uncalibrated on the criterion, so its readings are directional. A claim reading's arm carries the weakest
+    evidence tier of the judges that decided its claims (``JudgedArm.evidence_tier``); one below ``calibrated`` on any
+    arm is said. People check a claims judge's verdicts, never its scores, so no count of labels to rate is named.
+
+    :param bundle: The aspect's evidence.
+    :return: One sentence per criterion, in name order; none where no claim criterion was read, or every one is
+        calibrated.
+    """
+    criteria = sorted(
+        {
+            measure.instrument
+            for measure in bundle.judged_measures
+            if measure.instrument is not None and any(arm.evidence_tier != "calibrated" for arm in measure.arms)
+        }
+    )
+    if not criteria:
+        return []
+    judges = list(dict.fromkeys(level.judge_model for level in bundle.judge_change.levels)) or ["an unnamed judge"]
+    judge = " and ".join(judges)
+    return [
+        f"Judge {judge} is uncalibrated on {criterion}: no person has checked its claim verdicts yet, so its readings "
+        "are directional."
+        for criterion in criteria
+    ]
 
 
 def _setup_detail(

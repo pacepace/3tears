@@ -38,6 +38,7 @@ from threetears.evals.kernel.declaration import (
     AspectDesign,
 )
 from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
@@ -277,6 +278,7 @@ def judged_measures(
                     n_claim_unread=len(unread),
                     n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
                     n_web_lost=0 if criterion is None else _web_lost_cells(results_by_cell[key], criterion),
+                    n_web_replayed=(0 if criterion is None else _web_replayed_cells(results_by_cell[key], criterion)),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
                     case_means=small_sample_case_means(values, value_cases),
@@ -297,11 +299,12 @@ def judged_measures(
                 value_range=descriptor.value_range,
                 scale=descriptor.scale,
                 higher_is_better=bool(descriptor.higher_is_better),
+                nonnegative=criterion is not None and descriptor.value_range is None and descriptor.nonnegative,
                 axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
                 instrument=criterion,
-                reader_name=descriptor.reader_name if criterion is not None else None,
+                reader_name=_claim_reader_name(descriptor, criterion),
                 withheld=(
                     StateOf(state="withheld", reason="trials_lost")
                     if criterion is not None and _differential_claim_loss(scored[dimension])
@@ -310,6 +313,20 @@ def judged_measures(
             )
         )
     return measures
+
+
+def _claim_reader_name(descriptor: MetricDescriptor, criterion: str | None) -> str | None:
+    """What a page calls a claim reading: the engine's own reading by its descriptor, which names its criterion
+    (``False claims per answer (rules.claims)``); a reading the host derives from the criterion by the host's name and
+    the criterion's, as the engine's own are named (``Contradictions per draft (scout.claims)``), so a row of it is
+    read as that criterion's; a host reading named by its key alone, which holds the criterion's, by none. None for a
+    rubric dimension."""
+    if criterion is None:
+        return None
+    named = descriptor.reader_name
+    if descriptor.derived_from is None or named is None or named.endswith(f"({criterion})"):
+        return named
+    return f"{named} ({criterion})"
 
 
 def _judges_of(result: ResultView, dimension: str, criterion: str | None) -> list[JudgeKey]:
@@ -344,6 +361,13 @@ def _web_lost_cells(members: Sequence[ResultView], criterion: str) -> int:
         1
         for result in members
         if (tally := result.claim_tallies.get(criterion)) is not None and tally.web_loss is not None
+    )
+
+
+def _web_replayed_cells(members: Sequence[ResultView], criterion: str) -> int:
+    """How many of a cell's results read the criterion's web checks from a recording, never a live search."""
+    return sum(
+        1 for result in members if (tally := result.claim_tallies.get(criterion)) is not None and tally.web_replayed
     )
 
 

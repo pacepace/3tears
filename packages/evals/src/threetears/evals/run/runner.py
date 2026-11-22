@@ -548,6 +548,9 @@ class _ErrorLedger:
     #: (``CandidateOutput.model_unserved``, read by :meth:`of`). The cell is never judged, and the
     #: run loop counts it toward the circuit that stops a run its model is not served for.
     model_unserved: bool = False
+    #: The candidate's failure was its own code raising, as the kind reported it (``CandidateOutput.code_raised``).
+    #: Cleared by any candidate error recorded after, which is then a cause beside it the flag does not name.
+    code_raised: bool = False
 
     @classmethod
     def of(cls, candidate: CandidateOutput | None) -> _ErrorLedger:
@@ -563,6 +566,7 @@ class _ErrorLedger:
             infra=list(candidate.infra_errors),
             account_refused=candidate.account_refused,
             model_unserved=candidate.model_unserved,
+            code_raised=candidate.code_raised,
         )
 
     def add_candidate(self, msg: str) -> None:
@@ -572,6 +576,7 @@ class _ErrorLedger:
         drives in the background.
         """
         self.candidate.append(msg)
+        self.code_raised = False
 
     def add_infra(self, msg: str) -> None:
         """Record a harness/infra error (factory, simulator, delivery, a timeout charged to the rig)."""
@@ -3312,6 +3317,7 @@ def assemble_completed_cell(
         world_events=world_events,
         runner_error=errors.combined,
         candidate_error=errors.candidate_error,
+        candidate_code_raised=True if errors.code_raised and errors.candidate_error is not None else None,
         infra_error=errors.infra_error,
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
@@ -3485,6 +3491,7 @@ def _cut_short_cell(
         candidate_kind=sink.kind_name,
         runner_error=errors.combined,
         candidate_error=errors.candidate_error,
+        candidate_code_raised=True if errors.code_raised and errors.candidate_error is not None else None,
         infra_error=errors.infra_error,
         metered_calls_refused=metered_calls_refused,
         **judge_fields,

@@ -106,7 +106,8 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.build import build_code_only_report_in_forms
-from threetears.evals.analysis.report.verdict import VerdictLine
+from threetears.evals.analysis.report.campaign.provenance import claim_calibration_sentences
+from threetears.evals.analysis.report.verdict import VerdictLine, claim_caveat_lines
 from threetears.evals.analysis.style import UNDO_LOWERING_IGNORED_SENTENCE, arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
@@ -547,7 +548,8 @@ class Result:
 
         Quiet is the verdict, each arm's scoreboard and readings, the top misses and where the runs are stored. Never
         quieted: errors, exclusions and their causes, a run stopped short, unpriced spend, the self-judging warning,
-        and how the judge stands against people's labels. A run that did not finish (one that failed, as a replay miss
+        how the judge stands against people's labels, and what qualifies a claim criterion's readings (its cells
+        lost or unchecked, its web checks failed or replayed, its judge uncalibrated). A run that did not finish (one that failed, as a replay miss
         fails one, was cancelled, was stopped by its budget or its provider, or is still running) leads with what
         stopped it and prints no verdict: its readings follow, said to cover only the results recorded before it
         stopped.
@@ -613,8 +615,22 @@ class Result:
                 who = "" if len(self.arms) == 1 else f"{_shown_arm_name(arm)}, "
                 lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
         lines += self.disclosures
+        lines += self._claim_lines()
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
+
+    def _claim_lines(self) -> list[str]:
+        """What qualifies the claim readings, as the aspect page says it, never quieted: each criterion's cells lost,
+        pending, unread by the host's reader, skipped past the web budget, lost to a failed web step or read from a
+        recorded web (:func:`~threetears.evals.analysis.report.verdict.claim_caveat_lines`), then that its judge is
+        uncalibrated (:func:`~threetears.evals.analysis.report.campaign.provenance.claim_calibration_sentences`);
+        none for an eval no ``Claims`` grades."""
+        bundle = self.report.bundle
+        arm_of = {variant: arm for arm, variant in self.arm_variants.items()}
+        return [
+            *claim_caveat_lines(bundle, lambda key: _shown_arm_name(arm_of.get(key, key))),
+            *claim_calibration_sentences(bundle),
+        ]
 
     def _why(self, miss: CaseResult) -> list[str]:
         """Why a miss missed, as the quiet print says it: a classifier's wrong label as the graded field's value, never

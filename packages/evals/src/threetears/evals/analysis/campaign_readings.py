@@ -65,6 +65,7 @@ from typing import Final, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION, split_arms, unread_arms
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
@@ -1364,7 +1365,9 @@ def campaign_readings(
     for aspect in campaign.aspects:
         bundle = checked[aspect.label]
         control_key = _bundle_control(bundle)
-        if control_key is None:
+        # Where nothing the aspect grades can fail a trial, its pass rate counts every answered trial as passed: no
+        # row reads it, and it spends none of the family's error.
+        if control_key is None or not holds_a_check(bundle):
             continue
         per_case = case_cost_usd(bundle)
         for arm in candidates:
@@ -1556,6 +1559,9 @@ def _pair_readings(
     pairs: list[_Pair] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
+        if not holds_a_check(bundle):
+            # Nothing it grades can fail a trial, so a pass rate there tells no arm ahead (as a change's row).
+            continue
         ran = {board.variant_key for board in bundle.scoreboard}
         present = [arm for arm in arms if arm.variant_key in ran]
         for index, first in enumerate(present):
@@ -1741,7 +1747,8 @@ def reading_name(bundle: AnalysisContextBundle, measure: str) -> str:
 def _measure_readings(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[MeasureReading]:
-    """A measurement's measures on every aspect: each arm's pass rate, its count over every rig with the Wilson
+    """A measurement's measures on every aspect: each arm's pass rate where anything there can fail a trial
+    (:func:`~threetears.evals.analysis.bundle.trials.holds_a_check`), its count over every rig with the Wilson
     interval on it, the cases the independent draws (:func:`~threetears.evals.analysis.stats.pooled_rate_interval`);
     then each measure each of its cells (one per rig) summarises with an interval, the summary's own. An arm whose
     results on an aspect were answered by more than one candidate model has no reading there (``answer_splits`` names
@@ -1750,24 +1757,27 @@ def _measure_readings(
     found: list[MeasureReading] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
+        # Where nothing the aspect grades can fail a trial, every answered trial passes: no pass rate is read there.
+        graded = holds_a_check(bundle)
         for board in bundle.scoreboard:
             if unread_arms(bundle.cells, board.variant_key):
                 continue
             label = labels.get(board.variant_key, f"arm {board.variant_key[:12]}")
-            found.append(
-                MeasureReading(
-                    aspect=aspect.label,
-                    arm=board.variant_key,
-                    arm_label=label,
-                    measure=PASSED_READING,
-                    value=board.passed / board.usable if board.usable else None,
-                    interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
-                    passed=board.passed,
-                    trials=board.usable,
-                    cases=board.usable_cases,
-                    higher_is_better=True,
+            if graded:
+                found.append(
+                    MeasureReading(
+                        aspect=aspect.label,
+                        arm=board.variant_key,
+                        arm_label=label,
+                        measure=PASSED_READING,
+                        value=board.passed / board.usable if board.usable else None,
+                        interval=pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases),
+                        passed=board.passed,
+                        trials=board.usable,
+                        cases=board.usable_cases,
+                        higher_is_better=True,
+                    )
                 )
-            )
             for cell in bundle.cell_measures:
                 if cell.variant_key != board.variant_key:
                     continue

@@ -227,6 +227,14 @@ class JudgedDimensionFacts(EvalDocumentModel):
     value_range: tuple[float, float] | None = Field(
         default=None, description="The scale the scores are on, when declared."
     )
+    nonnegative: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "True where the reading is declared never below zero with no range (a claim count per unit), so an "
+            "interval on a mean of it is drawn no lower than zero; False (left out) otherwise."
+        ),
+    )
     scale: MeasureScale | None = Field(
         default=None,
         description=(
@@ -241,6 +249,13 @@ class JudgedDimensionFacts(EvalDocumentModel):
             "averaged with capability — else `capability`."
         ),
     )
+
+    @property
+    def interval_floor(self) -> float | None:
+        """The lowest an interval on a mean of the reading may reach where it declares no range: zero where it is
+        never below zero (:attr:`nonnegative`), else None, as a measure's
+        (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.interval_floor`)."""
+        return 0.0 if self.nonnegative else None
 
 
 #: The fewest distinct cases a stratum holds before its figures are read on their own. Below it a

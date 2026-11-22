@@ -41,7 +41,7 @@ the table's header states. Each measure and guardrail is named as the page names
 (:func:`_is_cost`).
 
 **No pass count where nothing graded can fail a trial.** An arm whose aspect declares no check and no judged dimension
-that counts (:func:`_holds_a_check`, each reading by its declared kind, never the eval's kind nor the values a reading
+that counts (:func:`~threetears.evals.analysis.bundle.trials.holds_a_check`, each reading by its declared kind, never the eval's kind nor the values a reading
 took) states how many it ran and
 that no grader says pass or fail: ``classify ran 3 of 3 cases; no grader here says pass or fail.`` Its readings carry
 the means. Two arms under the case floor say the same, with no pass comparison: ``b and a ran 3 cases each; no grader
@@ -59,9 +59,14 @@ from threetears.evals.analysis.bundle.schema import (
     ArmExclusions,
     ArmScoreboard,
     FailCause,
-    JudgedMeasure,
 )
-from threetears.evals.analysis.bundle.trials import PassCount, pass_count
+from threetears.evals.analysis.bundle.trials import (
+    PassCount,
+    declared_kind,
+    declared_readings,
+    holds_a_check,
+    pass_count,
+)
 from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.cells import split_arms, unread_arms
 from threetears.evals.analysis.completeness import SETUP_GATE_SHARE, lost_share, setup_failed, unfinished_opening
@@ -71,10 +76,7 @@ from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
 from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
-    MATCH_MEASURE,
     METRIC_DESCRIPTORS,
-    RUBRIC_FAMILY,
-    reads_as_rate,
 )
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 from threetears.evals.schema.reading_states import Coordinate
@@ -159,6 +161,12 @@ FAIL_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         words="a model the candidate runs failed or refused",
         remedy="read the failed trials' errors below: a different model or provider is the lever",
         short="model failed",
+    ),
+    "code_raised": CauseWords(
+        words="the candidate's own code raised a programming error, a bug in the host's code rather than a failed model",
+        remedy="read the failed trials' errors below: fix the host's code they name, then rerun the arm; no other model"
+        " would change it",
+        short="code raised",
     ),
     "turn_budget": CauseWords(
         words="the host's turn budget ended a turn before it finished",
@@ -686,7 +694,7 @@ def verdict_line(
             # Its trials are two cells' (two answering models, or two definitions): no one pass rate is the arm's.
             result = f"{arm(board.variant_key)} has no one pass rate: {_split_why(bundle, board.variant_key)}."
             return VerdictLine(rule="one_arm", text=result, lead=result)
-        result = f"{_one_arm(bundle, board, arm, graded=_holds_a_check(bundle))}."
+        result = f"{_one_arm(bundle, board, arm, graded=holds_a_check(bundle))}."
         named = case_name or (lambda case: case)
         count = pass_count(bundle, board)
         # Where it failed every case without answering, the line has said so: naming each case again says nothing.
@@ -831,6 +839,11 @@ _CLAIM_LINES: Final[tuple[tuple[str, str], ...]] = (
         "n_web_lost",
         "The web check of {criterion} failed in {who}: its undecided claims read unverifiable, never false, so its "
         "false claims there may be undercounted.",
+    ),
+    (
+        "n_web_replayed",
+        "The web checks of {criterion} read a recording in {who}, never a live search: what the web decided there is "
+        "what the recorded pages said.",
     ),
 )
 
@@ -1001,53 +1014,11 @@ def _one_arm(bundle: AnalysisContextBundle, board: ArmScoreboard, arm: Callable[
     return passed_clause(arm(board.variant_key), count)
 
 
-def _holds_a_check(bundle: AnalysisContextBundle) -> bool:
-    """Whether anything the aspect grades can fail a trial, each reading by its declared kind
-    (:func:`_declared_kind`): a fact about what was declared, never about the values a reading took.
-
-    The readings are those its design lists (``AspectDesign.measure_order``, its graders' measures) and those the
-    catalog describes, with every judged dimension. A reading whose kind this evidence does not state is no check, and
-    the line says so (:func:`_no_check_words`): it is never guessed to be one. Never by the eval's kind: a measure no
-    trial can fail on (a number) decides no pass."""
-    readings = [*_declared_readings(bundle), *bundle.measure_catalog]
-    return any(_declared_kind(bundle, name) == "check" for name in readings) or any(
-        _counts(measure) for measure in bundle.judged_measures
-    )
-
-
-def _declared_readings(bundle: AnalysisContextBundle) -> list[str]:
-    """The readings the aspect's design lists, in order (``AspectDesign.measure_order``); none where it lists none."""
-    design = bundle.declared.design if bundle.declared is not None else None
-    return list(design.measure_order) if design is not None else []
-
-
-def _counts(measure: JudgedMeasure) -> bool:
-    """Whether a judged dimension can fail a trial: a rubric dimension on the capability axis."""
-    return measure.family == RUBRIC_FAMILY and measure.axis == "capability"
-
-
-def _declared_kind(bundle: AnalysisContextBundle, name: str) -> Literal["check", "number", "unstated"]:
-    """A reading's kind, as its declaration states it: a check where it can fail a trial, a number where it cannot.
-
-    A judged dimension by its axis; a goal check, the classifier's accuracy and its label match by what they are; any
-    other measure by its declared description (the host's descriptor the catalog carries, else the engine's core one),
-    whether it reads as a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). ``unstated`` where this
-    evidence holds no description of it: a host measure no trial scored, whose descriptor the catalog does not carry.
-    """
-    judged = next((measure for measure in bundle.judged_measures if measure.name == name), None)
-    if judged is not None:
-        return "check" if _counts(judged) else "number"
-    descriptor = bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
-    if name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor):
-        return "check"
-    return "number" if descriptor is not None else "unstated"
-
-
 def _no_check_words(bundle: AnalysisContextBundle) -> str:
-    """That no grader here says pass or fail, and, where a declared reading's kind is unstated (:func:`_declared_kind`:
+    """That no grader here says pass or fail, and, where a declared reading's kind is unstated (:func:`~threetears.evals.analysis.bundle.trials.declared_kind`:
     it scored on no trial), that it is read as no check: ``no grader here says pass or fail; slug scored on no trial,
     so it is read as no check``."""
-    unstated = [name for name in _declared_readings(bundle) if _declared_kind(bundle, name) == "unstated"]
+    unstated = [name for name in declared_readings(bundle) if declared_kind(bundle, name) == "unstated"]
     if not unstated:
         return "no grader here says pass or fail"
     read = "it is" if len(unstated) == 1 else "they are"
@@ -1123,14 +1094,14 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
 
 def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     """Which arm passed more of its usable trials than the control, in words, and that no difference is called; where
-    nothing graded can fail a trial (:func:`_holds_a_check`), how many cases each arm ran and that no grader says pass
+    nothing graded can fail a trial (:func:`~threetears.evals.analysis.bundle.trials.holds_a_check`), how many cases each arm ran and that no grader says pass
     or fail, with no pass comparison, which would compare trials nothing judged. An arm not read against the control
     (:func:`_not_read`) is left out: its own sentence says why."""
     control = _control_of(bundle)
     boards = {board.variant_key: board for board in bundle.scoreboard}
     reference = boards[control]
     apart = set(_not_read(bundle))
-    if not _holds_a_check(bundle):
+    if not holds_a_check(bundle):
         ordered = [board for board in bundle.scoreboard if board.variant_key not in apart | {control}] + [reference]
         names = [arm(board.variant_key) for board in ordered]
         apart_said = _not_compared_sentences(bundle, arm)

@@ -6,6 +6,46 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: what a claims-graded eval's print and pages say, and a runner's own bug named as the host's
+
+**Fixed (#1287):**
+
+- **No pass rate where nothing can fail a trial.** A claim reading never enters a trial's pass, and neither does a
+  number, so an eval graded by `Claims` alone, or by numbers alone, passes every trial it answered. Its campaign page
+  no longer leads on a pass rate or shows a `Pass rate` row in its scorecard: it leads on the aspect's own verdict
+  line (`v1 ran 12 of 12 cases; no grader here says pass or fail.`), and a comparison's scorecard says the aspect has
+  no pass rate and why. Its scoreboard drops the `Passed`, `Failed by check` and `Failed by judge` columns. The
+  campaign's readings hold no pass-rate row, pair or measurement there, so none spends the family's error. An eval
+  with a check or a judged dimension is unchanged.
+- **The claims judge is said to be uncalibrated.** No person has checked a claims judge's verdicts yet, so its readings
+  are directional, and the print, the aspect page and the campaign page now say so in a rubric dimension's words
+  (`Judge <model> is uncalibrated on answer.claims: no person has checked its claim verdicts yet, so its readings are
+  directional.`), with the first-screen line every uncalibrated judge gets.
+- **The quiet print says what qualifies a claim reading**, as the aspect page does: cells lost, pending or unread,
+  claims skipped past the web budget, a web check that failed, and web checks that read a recording. That last line is
+  new on the page too (`The web checks of answer.claims read a recording in 2 cells of v1, never a live search: ...`),
+  with a class-B caveat, `claims_web_replayed:<criterion>`.
+- **An `Answer` that only carries documents makes no model call.** One with no model, served model, token count or
+  cost reports no candidate usage, so its run no longer reads unpriced calls, an unconfirmed model identity, or that
+  it pools with no other run.
+- **A reading derived from a claim criterion** is carried by the run's summary (it read `not shown, carried by no
+  result`), its page row names its criterion as the engine's own readings do (`Contradictions per draft
+  (scout.claims, judged)`), and an interval on a non-negative claim count, the engine's or a host's, is drawn no lower
+  than zero.
+- **A runner's own programming error is the host's bug.** A quick-path runner that raises a `KeyError`, `TypeError`,
+  `AttributeError`, `NameError` or `AssertionError` still fails its trial, but every surface names the cause `code
+  raised` (the candidate's own code raised a programming error, a bug in the host's code rather than a failed model)
+  and the remedy is to fix that code, never another model. Any other raise reads as before.
+
+**For hosts:** a host kind that runs the host's own code as its candidate may set `CandidateOutput.code_raised` beside
+its `candidate_errors` for a raise from `kernel.result_condition.PROGRAMMING_ERRORS`. New stored fields, each left out
+of the document while unset, so a document without them is stored and fingerprinted as before:
+`EvalResult.candidate_code_raised` and `ClaimTally.web_replayed` (core 15.24, still unreleased), and in an analysis
+bundle `JudgedMeasure.nonnegative`, `JudgedArm.n_web_replayed`, the trial cause `code_raised`, the decision surface's
+`JudgedDimensionFacts.nonnegative` and the report input's `web_replayed` counts. Reach-back: the build before this one,
+at the same minor, refuses a result, a bundle or an analysis carrying any of them (`extra_forbidden`, or the trial
+cause as no `FailCause`), so the integration line is deployed and rolled back as one, as the rest of 15.24 is.
+
 ### evals: `Claims` on the quick path, and `Answer.documents`
 
 **Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,

@@ -15,6 +15,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.cells import split_arms
 from threetears.evals.analysis.report.aspect.common import _at, _control_key, _cost_ruler, _per_reply
 from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
@@ -165,6 +166,7 @@ def _scoreboard_blocks(
     )
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
+    graded = holds_a_check(bundle)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})
     cost = _cost_ruler(bundle)
     # The share of each arm's trials that passed, on the pass rate's ruler, as the scorecard states the rate.
@@ -203,9 +205,17 @@ def _scoreboard_blocks(
         TableColumn(key="ran", header="Ran", term="ran"),
         *([TableColumn(key="lost", header="Lost", term="lost")] if lost_any else []),
         TableColumn(key="usable", header="Usable", term="usable"),
-        TableColumn(key="passed", header="Passed", term="passed"),
-        TableColumn(key="check", header="Failed by check", term="failed by check"),
-        TableColumn(key="judged", header="Failed by judge", term="failed by judge"),
+        # Where nothing the aspect grades can fail a trial, every answered trial passes: no count of passes or of
+        # failures by a grader is printed, which would count nothing.
+        *(
+            [
+                TableColumn(key="passed", header="Passed", term="passed"),
+                TableColumn(key="check", header="Failed by check", term="failed by check"),
+                TableColumn(key="judged", header="Failed by judge", term="failed by judge"),
+            ]
+            if graded
+            else []
+        ),
         *([TableColumn(key="other", header=_other_failures_header(other_causes))] if other_causes else []),
         # The term the header says, so the glossary defines the words a reader sees.
         TableColumn(
@@ -232,8 +242,13 @@ def _scoreboard_blocks(
                 measure=FLOOR_COST_MEASURE,
                 kind="measure",
             ),
+            # An arm read apart says so on its pass count, else (where no pass is counted) on its usable count.
             **(
-                {"passed": forms.count_cell(None, flag=_read_apart(split[board.variant_key]))}
+                {
+                    "passed" if graded else "usable": forms.count_cell(
+                        None if graded else board.usable, flag=_read_apart(split[board.variant_key])
+                    )
+                }
                 if board.variant_key in split
                 else {}
             ),
@@ -277,17 +292,26 @@ def _scoreboard_blocks(
         DisclosureBlock(section="scoreboard", source="caveat", text=line) for line in claim_caveat_lines(bundle, arm)
     ]
     if bundle.all_failed_cells:
-        every_failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))
-        blocks.append(
-            DisclosureBlock(
-                section="scoreboard",
-                source="runs",
-                text=(
-                    f"Every trial of {', '.join(every_failed)} failed: the model refused or errored on every call. "
-                    "It took no turn, so it has no cost or latency to read, and every failure counts against it."
-                ),
+        failed_by = {board.variant_key: board.failed for board in boards}
+        every_failed = list(dict.fromkeys(cell.variant_key for cell in bundle.all_failed_cells))
+        # An arm whose every failure is its own code raising is named for that, never for a model it may never have
+        # called; any other mix reads as the model's refusal or error, which it always held.
+        by_cause: dict[bool, list[str]] = {}
+        for key in every_failed:
+            causes = {cause for cause, count in failed_by.get(key, {}).items() if count}
+            by_cause.setdefault(bool(causes) and causes <= {"code_raised"}, []).append(arm(key))
+        for code, named in sorted(by_cause.items()):
+            failed = "its own code raised on every case" if code else "the model refused or errored on every call"
+            blocks.append(
+                DisclosureBlock(
+                    section="scoreboard",
+                    source="runs",
+                    text=(
+                        f"Every trial of {', '.join(named)} failed: {failed}. It took no turn, so it has no cost or "
+                        "latency to read, and every failure counts against it."
+                    ),
+                )
             )
-        )
     return blocks
 
 

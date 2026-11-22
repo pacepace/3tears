@@ -645,6 +645,11 @@ class Judged(_Part):
         description="On a claim reading: the cells whose web step failed, by arm, a cause apart from the budget; its "
         "undecided claims read unverifiable, never false.",
     )
+    web_replayed: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose web checks read a recording, never a live search, by arm.",
+    )
 
 
 class Contrast(_Part):

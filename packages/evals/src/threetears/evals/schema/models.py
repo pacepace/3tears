@@ -6705,6 +6705,12 @@ class ClaimTally(CoreShapeModel):
         "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
         "stands. None (left out) when the step did not fail, or was not asked.",
     )
+    web_replayed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its grade's `web_replayed`: the cell's web checks read results a recording served, never a live "
+        "search, so a page says its web verdicts are a recording's. Left out while False.",
+    )
     derived: dict[str, float] = Field(
         default_factory=dict,
         exclude_if=lambda value: not value,
@@ -7907,6 +7913,14 @@ class EvalResult(CoreDocumentModel):
     # does not fall back to ``runner_error``: the runner writes all three from one ledger,
     # so a categorized field is never missing beside a set ``runner_error``.
     candidate_error: str | None = Field(default=None)
+    candidate_code_raised: Literal[True] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="True where `candidate_error` is the candidate's own code raising a programming error (a "
+        "KeyError, a TypeError), not a model it runs failing: the trial fails all the same, and a report names the "
+        "host's code as the cause and fixing it as the remedy. Null (left out) otherwise, so a result stored "
+        "before it existed reads as it did.",
+    )
     infra_error: str | None = Field(default=None)
 
     scored_at: str = Field(default_factory=utc_now_iso)

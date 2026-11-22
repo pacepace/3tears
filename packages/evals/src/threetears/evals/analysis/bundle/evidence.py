@@ -339,6 +339,7 @@ _RESULT: Final[Mapping[str, Any]] = {
             "runner_error",
             "judge_error",
             "candidate_error",
+            "candidate_code_raised",
             "infra_error",
             "model_unserved",
             "judging_set_aside",

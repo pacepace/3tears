@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CandidateFailureCause",
     "JudgingState",
+    "PROGRAMMING_ERRORS",
     "ResultCondition",
     "ResultOutcome",
     "candidate_failure_cause",
@@ -121,13 +122,26 @@ JudgingState = Literal["scored", "partial", "failed", "not_attempted", "not_aske
 _JUDGING_RENAMED: Final[dict[str, JudgingState]] = {"set_aside": "not_asked"}
 
 #: Why a result is a candidate failure. ``model_failed``: a model the configuration runs
-#: failed, recorded in ``candidate_error``. ``turn_budget``: the host's turn budget ended one of
+#: failed, recorded in ``candidate_error``. ``code_raised``: the candidate's own code raised a programming error
+#: (``EvalResult.candidate_code_raised``), recorded there too: a bug in the host's code, which no other model would
+#: fix. ``turn_budget``: the host's turn budget ended one of
 #: the candidate's turns before it finished. ``output_cap``: the provider cut one of the
 #: candidate's turns off at the output cap. Three arms because the reader's remedy differs —
 #: a different model or provider for the first, a faster configuration (fewer rounds, less
 #: reasoning per round, a quicker model) for the second, a different cap or reasoning setting for
-#: the third — and a disclosure naming the wrong one sends them to the wrong lever.
-CandidateFailureCause = Literal["model_failed", "turn_budget", "output_cap"]
+#: the third, the host's own code for ``code_raised`` — and a disclosure naming the wrong one sends them to the wrong
+#: lever.
+CandidateFailureCause = Literal["model_failed", "code_raised", "turn_budget", "output_cap"]
+
+#: The exceptions a candidate's own code raises and no model call does: a missing key or index, a value of the wrong
+#: type, a missing attribute or name, an assertion. The programming errors ``docs/exceptions.md`` names (its contain
+#: tripwire's), with ``LookupError`` beside them, since a ``KeyError`` on a case field is the commonest. A provider's
+#: or a client library's failure is none of these. A kind running the host's code as the candidate sets
+#: ``CandidateOutput.code_raised`` for one.
+PROGRAMMING_ERRORS: tuple[type[Exception], ...] = (LookupError, TypeError, AttributeError, NameError, AssertionError)
+
+#: The candidate failure causes that answered nothing: the call (or the code around it) failed before a reply.
+_UNANSWERED_CAUSES: frozenset[CandidateFailureCause] = frozenset({"model_failed", "code_raised"})
 
 
 class ResultCondition(EvalBaseModel):
@@ -180,7 +194,7 @@ def candidate_failure_cause(result: ResultView) -> CandidateFailureCause | None:
     :return: The cause, or ``None``.
     """
     if result.candidate_error:
-        return "model_failed"
+        return "code_raised" if result.candidate_code_raised else "model_failed"
     ended = result.covariates.get(TURN_BUDGET_ENDED_KEY)
     if ended is not None and float(ended) > 0:
         return "turn_budget"
@@ -225,7 +239,8 @@ def delivered_a_turn(result: ResultView) -> bool:
 
     - **the harness faulted it** (:func:`harness_faulted`) — its clock and its spend measured the rig; or
     - **the candidate's model failed before delivering a turn** — ``candidate_failure_cause`` is
-      ``model_failed`` (a refusal, a provider or model error, recorded in ``candidate_error``), the result
+      ``model_failed`` (a refusal, a provider or model error, recorded in ``candidate_error``) or ``code_raised``
+      (its own code raised before answering), the result
       counts no delivered turn (``EvalResult.turns_delivered``), and the cell was not cut off by its deadline
       or a cancel. The call came straight back: its round trip is not a turn's latency, and an arm whose
       every call was refused read as the fastest and cheapest on the surface when it was averaged in.
@@ -252,7 +267,7 @@ def delivered_a_turn(result: ResultView) -> bool:
     """
     if harness_faulted(result):
         return False
-    if candidate_failure_cause(result) != "model_failed" or result.termination in _CUT_OFF:
+    if candidate_failure_cause(result) not in _UNANSWERED_CAUSES or result.termination in _CUT_OFF:
         return True
     return bool(result.turns_delivered)
 
@@ -454,6 +469,13 @@ _MODEL_FAILED_DISCLOSURE = (
     "on it counts as failed."
 )
 
+#: The candidate-failure line when the candidate's own code raised: the model-failed line would send a reader to swap
+#: a model that may never have been called.
+_CODE_RAISED_DISCLOSURE = (
+    "The candidate's own code raised a programming error, a bug in the host's code rather than a failed model, so "
+    "this result is scored as a hard fail rather than on its content, and any goal-state check on it counts as failed."
+)
+
 _SCORING_DISCLOSURE: dict[ResultOutcome, str | None] = {
     ResultOutcome.OK: None,
     ResultOutcome.CANDIDATE_FAIL: _MODEL_FAILED_DISCLOSURE,
@@ -492,6 +514,7 @@ _TURN_BUDGET_DISCLOSURE = (
 #: loudly instead of borrowing another cause's remedy.
 _CANDIDATE_FAILURE_DISCLOSURE: dict[CandidateFailureCause, str] = {
     "model_failed": _MODEL_FAILED_DISCLOSURE,
+    "code_raised": _CODE_RAISED_DISCLOSURE,
     "turn_budget": _TURN_BUDGET_DISCLOSURE,
     "output_cap": _OUTPUT_CAP_DISCLOSURE,
 }

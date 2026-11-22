@@ -1000,6 +1000,15 @@ class JudgedArm(EvalDocumentModel):
             "Read off the tally's `web_loss`."
         ),
     )
+    n_web_replayed: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose web checks read a recording, never a live search, so what the web decided "
+            "there is what the recorded pages said. Read off the tally's `web_replayed`."
+        ),
+    )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
         default=None,
@@ -1076,8 +1085,16 @@ class JudgedMeasure(EvalDocumentModel):
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
     )
-    # The three below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
+    # The four below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
     # before they existed serializes, and is fingerprinted, as it did.
+    nonnegative: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "True where the reading's descriptor declares it never below zero (a claim count per unit), so an "
+            "interval on an arm's mean of it is drawn no lower than zero; False (left out) otherwise."
+        ),
+    )
     instrument: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -2805,9 +2822,9 @@ class DifferentialExclusion(EvalDocumentModel):
 LossCause = str
 
 #: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.result_condition.CandidateFailureCause`:
-#: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
-#: scorer), or a judged dimension scored under the bar (``judged``).
-FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]
+#: ``model_failed``, ``code_raised``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a
+#: pass/fail scorer), or a judged dimension scored under the bar (``judged``).
+FailCause = Literal["model_failed", "code_raised", "turn_budget", "output_cap", "check", "judged"]
 
 #: How a trial ended: passed, failed (the candidate's failure, counted against it) or lost (the test setup failed,
 #: and it counts for nothing).
