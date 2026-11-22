@@ -177,7 +177,9 @@ async def careless(case: dict[str, Any]) -> str:
 def _results(result: Any, arm: str | None = None) -> list[Any]:
     """The arm's stored results (the one arm's, with none named), in case order."""
     summary = result.summary if arm is None else result.arms[arm]
-    return sorted(off_loop(list_results, result.host.storage, summary.run_id, result.scope_id), key=lambda r: r.id)
+    stored = off_loop(list_results, result.host.storage, summary.run_id, result.scope_id)
+    # A case's stored id ends in its place in the case list.
+    return sorted(stored, key=lambda cell: int(cell.test_case_id.rsplit("-", 1)[1]))
 
 
 async def test_an_eval_graded_by_claims_alone_is_judged_on_the_claims_model() -> None:
