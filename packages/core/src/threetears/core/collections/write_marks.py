@@ -740,10 +740,12 @@ class WriteMarkReconciler:
                 done.add(table)
                 continue
             try:
-                since = min(row["date_created"] for row in page if str(row["table_name"]) == table)
+                marks = [row for row in page if str(row["table_name"]) == table]
+                since = min(row["date_created"] for row in marks)
+                recorded: list[dict[str, Any]] = []
                 for advance in await self._changes_of(table, since):
                     whole = advance.whole
-                    await advance_recording(
+                    token = await advance_recording(
                         self._source,
                         table,
                         advance.rows,
@@ -753,6 +755,35 @@ class WriteMarkReconciler:
                         prefixes=list(whole.prefixes) or None if whole is not None else None,
                         reason=whole.reason if whole is not None else None,
                     )
+                    recorded.append(
+                        {
+                            "epoch": token,
+                            "tenant": advance.tenant,
+                            "rows": None if advance.rows is None else len(advance.rows),
+                            "keys_unknown": advance.keys_unknown,
+                            "bracket": None
+                            if advance.noted_between is None
+                            else [t.isoformat() for t in advance.noted_between],
+                            "whole": None
+                            if whole is None
+                            else {"reason": whole.reason, "prefixes": len(whole.prefixes)},
+                        }
+                    )
+                # which marks a pass read and what it recorded for them: a follower told of a reset or a whole change
+                # by a reconcile is traced here to the marks and the notes window behind it
+                log.info(
+                    "a marked table was advanced from its write marks",
+                    extra={
+                        "extra_data": {
+                            "table": table,
+                            "marks": len(marks),
+                            "mark_ids": [min(int(r["id"]) for r in marks), max(int(r["id"]) for r in marks)],
+                            "since": since.isoformat(),
+                            "newest_mark": max(row["date_created"] for row in marks).isoformat(),
+                            "recorded": recorded,
+                        }
+                    },
+                )
             # prawduct:allow prawduct/broad-except -- a table that cannot be advanced keeps its marks for the next pass, is counted, and the pass drains around it
             except Exception as exc:
                 failed.add(table)

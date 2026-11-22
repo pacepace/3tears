@@ -676,6 +676,9 @@ class CopyFollower:
         self._staged_touched: dict[str, set[tuple[str, ...]]] = {}
         #: the tables staged whole, and why: put back to be read again only when their stage is forgotten
         self._staged_whole: dict[str, str] = {}
+        #: the scopes each staged whole read left out because a write held them, with the rows left out of each:
+        #: said when a later step drops or reads them, so a copy missing a scope can be traced to the step
+        self._whole_left_out: dict[str, dict[str, int]] = {}
         #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one)
         self._staged_scopes: dict[str, set[str | None]] = {}
         #: the mark of the last change applied, and the stamp of each recent one (a reader's snapshot names its mark)
@@ -1060,6 +1063,17 @@ class CopyFollower:
                 raise
             second = await self._settled()
             if not self._still(first, second):
+                log.info(
+                    "copy follower kept its stages for the next pass: the stamp moved while the change was read",
+                    extra={
+                        "extra_data": {
+                            "staged_whole": dict(sorted(self._staged_whole.items())),
+                            "staged_tables": sorted(self._staged),
+                            "partitions_waiting": {n: len(p) for n, p in sorted(self._partitions.items()) if p},
+                            "held": sorted(held),
+                        }
+                    },
+                )
                 self._say(FollowerPhase.WAITING, "the stamp moved while the change was read; the next pass tops it up")
                 return False
             self._mark += 1
@@ -1072,6 +1086,23 @@ class CopyFollower:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
             self._applied_mark = mark
+            if self._staged_whole or any(self._partitions_staged.values()):
+                log.info(
+                    "copy follower applied a change",
+                    extra={
+                        "extra_data": {
+                            "mark": mark,
+                            "rows": rows,
+                            "applied_whole": {
+                                n: {"why": w, "left_out": sorted(self._whole_left_out.get(n, {}))}
+                                for n, w in sorted(self._staged_whole.items())
+                            },
+                            "partitions_applied": {n: len(p) for n, p in sorted(self._partitions_staged.items()) if p},
+                            "partitions_waiting": {n: len(p) for n, p in sorted(self._partitions.items()) if p},
+                            "held": sorted(held),
+                        }
+                    },
+                )
             # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
             # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
             for name in self._tables:
@@ -1099,6 +1130,7 @@ class CopyFollower:
             self._staged_keys = {}
             self._staged_touched = {}
             self._staged_whole = {}
+            self._whole_left_out = {}
             self._staged_scopes = {}
             self._partitions_staged = {}
             self._rows_since_mark += rows
@@ -1350,6 +1382,7 @@ class CopyFollower:
             why = self._staged_whole.pop(name, None)
             if why is not None:
                 self._whole.setdefault(name, why)
+                self._whole_left_out.pop(name, None)
             self._dropping.update((f"{STAGE_PREFIX}{name}__rows", f"{STAGE_PREFIX}{name}__keys"))
 
     def _stages_lost(self) -> None:
@@ -1684,6 +1717,27 @@ class CopyFollower:
             held_stage = self._staged.get(name)
             if held_stage is not None and held_stage.whole and name in self._staged_whole:
                 # a whole read beside covers them
+                left_out = self._whole_left_out.get(name, {})
+                column = table.scope[0] if table.scope is not None else None
+                prefix = table.scope[1] if table.scope is not None else ""
+                dropped = sorted(
+                    f"{prefix}{p[column]}" if column is not None and column in p else repr(sorted(p.items()))
+                    for p in parts
+                )
+                not_covered = [scope for scope in dropped if scope in left_out]
+                (log.warning if not_covered else log.info)(
+                    "copy follower dropped partitions because a staged whole read covers them",
+                    extra={
+                        "extra_data": {
+                            "table": name,
+                            "dropped": dropped,
+                            "whole_why": self._staged_whole.get(name),
+                            "whole_left_out": sorted(left_out),
+                            "dropped_but_left_out_of_the_whole_read": not_covered,
+                            "held": sorted(held),
+                        }
+                    },
+                )
                 del partitions[name]
                 continue
             self._reading = name
@@ -1770,6 +1824,10 @@ class CopyFollower:
                     break
             if clashed:
                 # a row of a scope the write holds: everything this table staged waits for the write to commit
+                log.info(
+                    "copy follower put partitions back: a row of a held scope turned up",
+                    extra={"extra_data": {"table": name, "partitions": len(parts), "held": sorted(held)}},
+                )
                 self._partitions[name].extend(parts)
                 self._forget_tables_now([name])
                 del partitions[name]
@@ -1899,20 +1957,43 @@ class CopyFollower:
         if why != "cold_start":
             _warms().labels(why=why).inc()
         scopes: set[str | None] = set()
+        left_out: dict[str, int] = {}
+        staged_rows = 0
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)
         async for page in pages:
             of = self._scopes_of_rows(table, page)
             if held and table.scope is not None:
+                for scope in of:
+                    if scope is not None and scope in held:
+                        left_out[scope] = left_out.get(scope, 0) + 1
                 mask = [scope not in held for scope in of]
                 page = page.filter(pa.array(mask, pa.bool_()))
                 of = [scope for scope, keep in zip(of, mask, strict=True) if keep]
             scopes.update(of)
+            staged_rows += page.num_rows
             await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, page, table.key)
+        queued: list[str] = []
         if held and table.scope is not None:
             column, prefix = table.scope
             for scope in held:
                 if scope.startswith(prefix):
                     self._partitions[table.name].append({column: scope[len(prefix) :]})
+                    queued.append(scope)
+        self._whole_left_out[table.name] = left_out
+        log.info(
+            "copy follower staged a whole read",
+            extra={
+                "extra_data": {
+                    "table": table.name,
+                    "why": why,
+                    "rows_staged": staged_rows,
+                    "scopes_staged": len(scopes),
+                    "held": sorted(held),
+                    "left_out_rows": dict(sorted(left_out.items())),
+                    "queued_partitions": sorted(queued),
+                }
+            },
+        )
         return scopes or ({None} if table.scope is None else set())
 
     # --- running ---------------------------------------------------------------------------------
