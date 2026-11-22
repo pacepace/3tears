@@ -50,18 +50,19 @@ from pydantic import Field
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.claim_read import (
     CLAIM_READ_SEED,
-    ClaimCalibration,
-    Estimate,
     GradedCell,
+    claim_read_report,
     draw_claim_read,
     read_claim_calibration,
     read_claim_repeats,
+    report_checks,
 )
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import claim_evidence_digest, criterion_fingerprint, criterion_steps
 from threetears.evals.kernel.claims.repeat import refuse_repeat_past_cap, repeat_ceiling, repeat_grade
 from threetears.evals.kernel.errors import ConflictError, EvalServiceError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.offload import run_blocking
@@ -77,6 +78,7 @@ from threetears.evals.schema.claim_read import (
     ClaimItem,
     ClaimItemRepeat,
     ClaimQuestion,
+    ClaimQuestionFigures,
     ClaimRead,
     ClaimReadArm,
     ClaimRepeatAgainst,
@@ -86,7 +88,7 @@ from threetears.evals.schema.claim_read import (
     ClaimVerdict,
     ShownEvidence,
 )
-from threetears.evals.schema.completion import CompletionResult
+from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import ClaimCriterion, ClaimEvidence, ClaimGrade, EvalRun, utc_now_iso
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
@@ -141,14 +143,6 @@ _REFUSED_REMEDY: Final = "relay the answer as a caller the host attests for that
 # --- what the door hands back ----------------------------------------------------------------------------------
 
 
-class ClaimFigure(EvalBaseModel):
-    """A figure with its interval: the lower end one-sided 95%, the upper one-sided 97.5%; None where undefined."""
-
-    value: float | None
-    lower: float | None = None
-    upper: float | None = None
-
-
 class ClaimReadRater(EvalBaseModel):
     """One rater's progress through a read."""
 
@@ -156,61 +150,6 @@ class ClaimReadRater(EvalBaseModel):
     made_by: Maker = Field(description="A person, or a model. Only a person's answers are read in a figure.")
     answered: int = Field(ge=0, description="The items answered, skips included.")
     skipped: int = Field(ge=0, description="How many of them were skipped.")
-
-
-class ClaimStratumAgreement(EvalBaseModel):
-    """How people stood against the instrument in one stratum of the draw, unweighted."""
-
-    stratum: ClaimStratum
-    population: int = Field(ge=0, description="The stratum's claims.")
-    items: int = Field(ge=0, description="Its items people answered the question on.")
-    agreed: float | None = Field(description="The share answered as the instrument did; None with none answered.")
-
-
-class ClaimArmFigures(EvalBaseModel):
-    """One arm's figures on one question, read through the draw's weights."""
-
-    arm: str = Field(description="The arm, by its key (ClaimReadArm.key).")
-    items: int = Field(ge=0)
-    cells: int = Field(ge=0)
-    recall: ClaimFigure = Field(description="Of the arm's claims people fail, the share the instrument fails.")
-    false_fail: ClaimFigure = Field(description="Of the arm's claims people pass, the share the instrument fails.")
-    precision: ClaimFigure = Field(description="Of the arm's claims the instrument fails, the share people fail.")
-    bias: ClaimFigure = Field(description="The instrument's fail rate over people's, on the arm's claims.")
-    failed: ClaimFigure = Field(description="The share of the arm's claims people fail.")
-
-
-class ClaimQuestionFigures(EvalBaseModel):
-    """What a closed read says of the instrument on one question, weighted to the claims it was drawn from."""
-
-    question: ClaimQuestion
-    items: int = Field(ge=0, description="The items people answered it on.")
-    cells: int = Field(ge=0, description="The distinct cells they come from: what the calibration floor counts.")
-    cases: int = Field(ge=0)
-    skipped: int = Field(ge=0, description="Items skipped or left unanswered on this question.")
-    table: tuple[float, float, float, float] | None = Field(
-        description="The population's shares: both fail, only the instrument fails, only people fail, both pass. "
-        "None with no answered item."
-    )
-    kappa: ClaimFigure
-    recall: ClaimFigure = Field(description="Of the claims people fail, the share the instrument fails.")
-    false_fail: ClaimFigure = Field(description="Of the claims people pass, the share the instrument fails.")
-    precision: ClaimFigure = Field(description="Of the claims the instrument fails, the share people fail.")
-    bias: ClaimFigure = Field(description="The instrument's fail rate over people's.")
-    failed: ClaimFigure = Field(description="The share of claims people fail.")
-    strata: list[ClaimStratumAgreement]
-    unread_strata: list[ClaimStratum] = Field(description="Strata holding claims and no answered item.")
-    arms: list[ClaimArmFigures]
-    lean_p: float | None = Field(
-        description="The test across arms of a lean on recall and the false-fail rate; None where no lean was read."
-    )
-    lean_untested: list[str] = Field(
-        description="The arms, by key, the lean test read no rate on: too few of their answered claims on a side."
-    )
-    check: Check | None = Field(
-        description="The check of the instrument on this question against people; None on is_claim, which only "
-        "people answer."
-    )
 
 
 class ClaimRepeatStratum(EvalBaseModel):
@@ -285,11 +224,18 @@ class ClaimReadLine(EvalBaseModel):
     closed_by: str | None
     closed_early: bool = Field(description="Closed with items no person answered.")
     figures: list[ClaimQuestionFigures] = Field(
-        default_factory=list, description="Once closed: one per question it asks."
+        default_factory=list, description="Once closed: one per question it asks, as read at its close."
+    )
+    checks: list[Check] = Field(
+        default_factory=list, description="Once closed: the check against people of each question it checks."
     )
     model_answers: int = Field(default=0, ge=0, description="Once closed: answers a model gave, read in no figure.")
     borrowed: int = Field(
         default=0, ge=0, description="Once closed: people's answers taken from earlier reads of byte-identical views."
+    )
+    borrowed_from: list[str] = Field(
+        default_factory=list,
+        description="Once closed: the reads answers could be taken from, each closed before it, by id.",
     )
     repeat_job_id: str | None = Field(description="The latest repeat's job, to poll with job_poll; None until started.")
     repeats: list[ClaimRepeatFigures] = Field(
@@ -319,7 +265,9 @@ class ClaimSheetItem(EvalBaseModel):
     start: int = Field(ge=0, description="Where the excerpt starts in the segment.")
     end: int = Field(ge=1, description="Where it ends.")
     segment: str = Field(description="The passage it was said in, whole.")
-    evidence: list[ShownEvidence] = Field(description="The evidence the grader was shown, numbered, in order.")
+    evidence: list[ShownEvidence] = Field(
+        description="The evidence the grader was shown, numbered, in order; never a window of its web check."
+    )
 
 
 class ClaimSheet(EvalBaseModel):
@@ -373,53 +321,6 @@ def _earlier(reads: Sequence[ClaimRead], read: ClaimRead) -> int:
     )
 
 
-def _figure(estimate: Estimate) -> ClaimFigure:
-    return ClaimFigure(value=estimate.value, lower=estimate.lower, upper=estimate.upper)
-
-
-def _figures(calibration: ClaimCalibration) -> list[ClaimQuestionFigures]:
-    return [
-        ClaimQuestionFigures(
-            question=reading.question,
-            items=reading.items,
-            cells=reading.cells,
-            cases=reading.cases,
-            skipped=reading.skipped,
-            table=reading.table,
-            kappa=_figure(reading.kappa),
-            recall=_figure(reading.recall),
-            false_fail=_figure(reading.false_fail),
-            precision=_figure(reading.precision),
-            bias=_figure(reading.bias),
-            failed=_figure(reading.failed),
-            strata=[
-                ClaimStratumAgreement(
-                    stratum=stratum.stratum, population=stratum.population, items=stratum.items, agreed=stratum.agreed
-                )
-                for stratum in reading.strata
-            ],
-            unread_strata=list(reading.unread_strata),
-            arms=[
-                ClaimArmFigures(
-                    arm=arm.arm,
-                    items=arm.items,
-                    cells=arm.cells,
-                    recall=_figure(arm.recall),
-                    false_fail=_figure(arm.false_fail),
-                    precision=_figure(arm.precision),
-                    bias=_figure(arm.bias),
-                    failed=_figure(arm.failed),
-                )
-                for arm in reading.arms
-            ],
-            lean_p=reading.lean_p,
-            lean_untested=list(reading.lean_untested),
-            check=reading.check,
-        )
-        for reading in calibration.questions
-    ]
-
-
 def _repeat_figures(read: ClaimRead) -> list[ClaimRepeatFigures]:
     return [
         ClaimRepeatFigures(
@@ -457,8 +358,8 @@ def _person_answered(read: ClaimRead) -> set[str]:
 
 
 def _line(read: ClaimRead, every: Sequence[ClaimRead]) -> ClaimReadLine:
-    """The read as its door serves it: no figure while it is open; every figure and check once it is closed, its
-    answers read with those of the scope's other reads of the same definition (:func:`read_claim_calibration`)."""
+    """The read as its door serves it: no figure while it is open; once closed, what it read at its close, as kept
+    (``ClaimRead.report``), never read again."""
     keys = list(dict.fromkeys((answer.rater, answer.made_by) for answer in read.answers))
     raters = [
         ClaimReadRater(
@@ -470,7 +371,7 @@ def _line(read: ClaimRead, every: Sequence[ClaimRead]) -> ClaimReadLine:
         for rater, kind in keys
     ]
     closed = read.closed_at is not None
-    calibration = read_claim_calibration(read, earlier=[r for r in every if r.id != read.id]) if closed else None
+    report = read.report
     return ClaimReadLine(
         read_id=read.id,
         name=read.name,
@@ -489,9 +390,11 @@ def _line(read: ClaimRead, every: Sequence[ClaimRead]) -> ClaimReadLine:
         closed_at=read.closed_at,
         closed_by=read.closed_by,
         closed_early=closed and bool({item.item for item in read.items} - _person_answered(read)),
-        figures=_figures(calibration) if calibration is not None else [],
-        model_answers=calibration.model_answers if calibration is not None else 0,
-        borrowed=calibration.borrowed if calibration is not None else 0,
+        figures=list(report.questions) if report is not None else [],
+        checks=report_checks(read),
+        model_answers=report.model_answers if report is not None else 0,
+        borrowed=report.borrowed if report is not None else 0,
+        borrowed_from=list(report.borrowed_from) if report is not None else [],
         repeat_job_id=f"{ACTION_JOB_PREFIX}{read.repeat_job_id}" if read.repeat_job_id is not None else None,
         repeats=_repeat_figures(read),
     )
@@ -736,7 +639,8 @@ def claim_read_sheet(host: EvalHost, read_id: str, scope_id: str, *, rater: str 
                 start=item.view.start,
                 end=item.view.end,
                 segment=item.view.segment,
-                evidence=list(item.view.evidence),
+                # A read drawn before views left the grader's web windows out still holds them: they are never shown.
+                evidence=[shown for shown in item.view.evidence if shown.provenance != "web"],
             )
             for item in read.items
         ],
@@ -856,7 +760,11 @@ def claim_read_answer(
 
 
 def claim_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: str) -> ClaimReadLine:
-    """Close the read: its figures and checks are read from now on, and every later answer is refused.
+    """Close the read: read its figures and checks once, keep them on it, and refuse every later answer.
+
+    People's answers given on a byte-identical view in another read of the same definition stand for an item nobody
+    answered here, taken only from reads closed before this one, which take no answer after their close; which reads
+    could lend is kept (``borrowed_from``). Nothing read after the close moves what the read said.
 
     :param host: The host whose store holds the read.
     :param read_id: The read.
@@ -866,18 +774,32 @@ def claim_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     :raises NotFoundError: No such read.
     :raises ConflictError: It is already closed, or answers kept landing as it was closed (ask again).
     """
+    closed_at = utc_now_iso()
 
     def apply(read: ClaimRead) -> ClaimRead:
         _refuse_closed(read, "second close")
-        return read.model_copy(update={"closed_at": utc_now_iso(), "closed_by": closed_by})
+        views = {item.view_digest for item in read.items}
+        lenders = [
+            other
+            for other in host.storage.query_claim_reads(scope_id)
+            if other.id != read.id
+            and other.closed_at is not None
+            and other.closed_at <= closed_at
+            and other.criterion_fingerprint == read.criterion_fingerprint
+            and any(item.view_digest in views for item in other.items)
+        ]
+        calibration = read_claim_calibration(read, earlier=lenders)
+        report = claim_read_report(calibration, read_at=closed_at, borrowed_from=[other.id for other in lenders])
+        return read.model_copy(update={"closed_at": closed_at, "closed_by": closed_by, "report": report})
 
     closed = _rewrite(host, read_id, scope_id, apply)
     log.info(
-        "eval.claim_read_close read=%s scope=%s by=%s unanswered=%d",
+        "eval.claim_read_close read=%s scope=%s by=%s unanswered=%d borrowed_from=%d",
         read_id,
         scope_id,
         closed_by,
         len({item.item for item in closed.items} - _person_answered(closed)),
+        len(closed.report.borrowed_from) if closed.report is not None else 0,
     )
     return _line_of(host, closed)
 
@@ -1193,6 +1115,9 @@ async def claim_read_repeat(
                     regraded = repeat.grade
                 except ClaimGradingFailed as failed:
                     loss = failed.loss
+                except CompletionProtocolDefect, ApparatusError:
+                    # The host's client or the rig at fault, not the judge's answer: the repeat stops, as a grade does.
+                    raise
                 except Exception as failed:  # prawduct:ok-broad-except — a provider's failure costs this cell alone
                     contain(failed, log=log, what=f"eval.claim_read_repeat read={read_id} cell={cell.result_id}")
                     loss = "provider_error"

@@ -209,10 +209,10 @@ the document, so extending one is a major. Each, and why:
   as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
   test a preference was read by, and what it read.
 - On a claim read: ``ClaimQuestion``, ``ClaimStratifier``, ``ClaimStratum``, ``ClaimExclusion``,
-  ``ShownEvidence.provenance`` and ``ClaimRepeatAgainst`` — what an item asks, the instrument answer its draw is
-  stratified by, the stratum each item stands for (its weight in every figure), why a claim was left out, where a
-  piece of shown evidence came from, and whether a repeat was the instrument's own judge or another; a new value
-  changes what a figure weights or reads.
+  ``ShownEvidence.provenance``, ``ClaimRepeatAgainst`` and ``ClaimCheckResult`` — what an item asks, the instrument
+  answer its draw is stratified by, the stratum each item stands for (its weight in every figure), why a claim was
+  left out, where a piece of shown evidence came from, whether a repeat was the instrument's own judge or another, and
+  what a closed read's check decided; a new value changes what a figure weights or reads.
 - The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
   ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
   module, for every reader at once.

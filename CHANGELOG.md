@@ -22,10 +22,14 @@ Seven actions: `claim_read_create`, `claim_read_sheet`, `claim_read_answer`, `cl
   `redefined`.
 - **The sheet** shows each claim, its excerpt with offsets, the passage it was said in, and the evidence the grader
   was shown, numbered. It carries no verdict, stratum or arm, and no run, result or case id. A rater answers each
-  question pass or fail.
+  question pass or fail. It shows no window of the grader's web check: the grader checks on the web only a claim it
+  doubted, so a window would point at its verdict. The rater may search on their own.
 - **An answer** is recorded as a person's only when the host attests the caller relaying it (`attests_person`).
   Otherwise it is refused (403) and nothing is written.
-- **One look.** A read's line carries no figure while it is open. `claim_read_close` serves every figure once. Per
+- **One look.** A read's line carries no figure while it is open. `claim_read_close` reads every figure once and
+  keeps it on the read (`ClaimRead.report`). `claim_read_get` serves that copy, and nothing read later moves it.
+  People's answers on byte-identical views are borrowed only at the close, only from reads closed before it, and the
+  report names those reads (`borrowed_from`). Per
   question, that is the weighted 2x2, kappa with its interval, recall, the false-fail rate, precision, rate bias, each
   stratum's agreement, each arm's figures, the lean test's p, and the arms it could not read (`lean_untested`). It
   also serves the check against people (`Check`, the calibration bar, `instrument_leans`) and the claims the draw
@@ -41,17 +45,27 @@ Seven actions: `claim_read_create`, `claim_read_sheet`, `claim_read_answer`, `cl
   own repeat job. Each judge's figures are counts per question and per stratum of the draw, and the web outcomes of
   claims both readings decided on the web.
 
-**Stored, additive (durable 17.10):** `ClaimRead.closed_at`, `closed_by`, `repeat_job_id` and `repeats`
-(`ClaimItemRepeat`: `item`, `repeat_id`, `judge_model`, `against` (`itself` or `model`), `repeated_at`, `verdict`,
-`grounded`, `first_web`, `web` and `loss`). Each is left out while unset, so a read carrying none is stored byte for
-byte as before.
+**Stored, additive (durable 17.10):** `ClaimRead.closed_at`, `closed_by`, `report`, `repeat_job_id` and `repeats`.
+`report` is a `ClaimReadReport`: `read_at`, one `ClaimQuestionFigures` per question (the counts, the weighted 2x2,
+each `ClaimFigure` with its ends, `ClaimStratumAgreement`s, `ClaimArmFigures`, the lean test's p, `lean_untested`, and
+the check's decision as a `ClaimCheckRecord`: `result` (`ClaimCheckResult`), `reason`, `state`, `sample`, `skipped`),
+`model_answers`, `borrowed`, `borrowed_from` and `excluded`. `repeats` holds `ClaimItemRepeat`s: `item`,
+`repeat_id`, `judge_model`, `against` (`itself` or `model`), `repeated_at`, `verdict`, `grounded`, `first_web`, `web`
+and `loss`. Each is left out while unset, so a read carrying none is stored byte for byte as before. A close carries
+its closer and its report, all or none.
+
+**Changed: the item view leaves out web windows.** `ClaimItemView.evidence` no longer carries the windows the grade's
+web check read. So the view's digest, which is the label's key, moves for every claim the grade checked on the web. No
+claim read was ever released or read in production, so no stored label is orphaned. A read drawn before this change
+still holds its windows, and its sheet never shows them.
 
 **Not yet on the report page:** a closed read's check reaches the host through `claim_read_get`. It does not yet reach
 the campaign report's judged measures or caveats.
 
 **For hosts:** a claim read stored by this build after it was closed or repeated is refused by name
-(`extra_forbidden`) by the build before it. Claim reads were never released, so the integration line is deployed and
-rolled back as one. `claim_read_answer` needs `attests_person`, as `blind_read_answer` does. `claim_read_repeat` is
+(`extra_forbidden`) by the build before it. On a rollback, that build's listing of the scope's claim reads
+(`query_claim_reads`) refuses the whole listing once any read carries those fields, not just that read. Claim reads
+were never released, so the integration line is deployed and rolled back as one. `claim_read_answer` needs `attests_person`, as `blind_read_answer` does. `claim_read_repeat` is
 held to your out-of-run cap.
 
 ### evals: a claim read calibrates a claim criterion against people, and a stored grade can be read again

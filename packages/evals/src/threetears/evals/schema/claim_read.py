@@ -2,9 +2,9 @@
 people answered of each. The human side of a claim instrument's calibration.
 
 **One item is one claim, as the instrument saw it** (:class:`ClaimItemView`): the claim, its excerpt with offsets, the
-segment it was said in, and every piece of evidence the instrument numbered for the cell and every web window it read
-for the claim. No verdict, no citation and no arm is on the view, so a rater cannot read the instrument's answer off
-it. Its digest (:func:`item_view_digest`) is the label's key: two items whose views are byte-identical carry one
+segment it was said in, and every piece of evidence the instrument numbered for the cell. No verdict, no citation, no
+arm and no web window is on the view, so a rater cannot read the instrument's answer off it: the instrument checks on
+the web only a claim it doubted, so a window would say it doubted this one. Its digest (:func:`item_view_digest`) is the label's key: two items whose views are byte-identical carry one
 label, whichever read drew them.
 
 **The draw is stratified by the instrument's own answer** (:class:`ClaimDraw`): its truth verdict, or whether it
@@ -37,7 +37,7 @@ from pydantic import Field, model_validator
 from threetears.evals.schema.base import CoreShapeModel, DurableDocumentModel, EvalDocumentModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import DimName, DurableSchemaVersion, StoredClaimLoss, utc_now_iso
-from threetears.evals.schema.reading_states import Maker
+from threetears.evals.schema.reading_states import Maker, Reason, SampleKind, StateOf
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_VERSION
 
 #: What a claim read asks of an item, each pass/fail. ``true``: the claim is not false (the rater may search).
@@ -63,6 +63,9 @@ ClaimTruthVerdict = Literal["contradicted", "true_ungrounded", "unverifiable", "
 #: Who a repeat of the instrument asked: the judge that made the grade, asked again (``itself``, the instrument's
 #: agreement with itself), or another judge (``model``, a second judge's reading of the same claims and windows).
 ClaimRepeatAgainst = Literal["itself", "model"]
+
+#: A check's result, as the calibration criteria decide it: met, not met, undecided, or too little to decide.
+ClaimCheckResult = Literal["met", "not_met", "undecided", "insufficient"]
 
 #: The strata of each stratifier, in the order a draw lists them.
 STRATA_OF: Final[Mapping[str, tuple[ClaimStratum, ...]]] = MappingProxyType(
@@ -179,8 +182,8 @@ class ClaimItemView(EvalDocumentModel, CoreShapeModel):
     segment: str = Field(min_length=1, description="The segment it was said in, whole.")
     evidence: list[ShownEvidence] = Field(
         default_factory=list,
-        description="Every piece of evidence the instrument numbered for the cell, then the windows its web check of "
-        "this claim read, in the order read.",
+        description="Every piece of evidence the instrument numbered for the cell, in its order. Never a web window: "
+        "the instrument checks on the web only a claim it doubted.",
     )
 
     @model_validator(mode="after")
@@ -296,6 +299,96 @@ class ClaimItemRepeat(EvalDocumentModel, CoreShapeModel):
         return self
 
 
+class ClaimFigure(EvalDocumentModel, CoreShapeModel):
+    """A figure with its interval: the lower end one-sided 95%, the upper one-sided 97.5%; None where undefined."""
+
+    value: float | None = None
+    lower: float | None = None
+    upper: float | None = None
+
+
+class ClaimStratumAgreement(EvalDocumentModel, CoreShapeModel):
+    """How people stood against the instrument in one stratum of the draw, unweighted."""
+
+    stratum: ClaimStratum
+    population: int = Field(ge=0, description="The stratum's claims.")
+    items: int = Field(ge=0, description="Its items people answered the question on.")
+    agreed: float | None = Field(default=None, description="The share answered as the instrument did.")
+
+
+class ClaimArmFigures(EvalDocumentModel, CoreShapeModel):
+    """One arm's figures on one question, read through the draw's weights."""
+
+    arm: str = Field(min_length=1, description="The arm, by its key (ClaimReadArm.key).")
+    items: int = Field(ge=0)
+    cells: int = Field(ge=0)
+    recall: ClaimFigure = Field(description="Of the arm's claims people fail, the share the instrument fails.")
+    false_fail: ClaimFigure = Field(description="Of the arm's claims people pass, the share the instrument fails.")
+    precision: ClaimFigure = Field(description="Of the arm's claims the instrument fails, the share people fail.")
+    bias: ClaimFigure = Field(description="The instrument's fail rate over people's, on the arm's claims.")
+    failed: ClaimFigure = Field(description="The share of the arm's claims people fail.")
+
+
+class ClaimCheckRecord(EvalDocumentModel, CoreShapeModel):
+    """What the check of the instrument against people decided on one question, beside the figures it read."""
+
+    result: ClaimCheckResult
+    reason: Reason | None = Field(default=None, description="Why it is not met, where a shared reason says it.")
+    state: StateOf | None = Field(default=None, description="Where it could not be made at all: not available, why.")
+    sample: SampleKind = Field(description="random where people answered drawn items; none where nobody did.")
+    skipped: int = Field(ge=0, description="The skips people gave.")
+
+
+class ClaimQuestionFigures(EvalDocumentModel, CoreShapeModel):
+    """What a closed read said of the instrument on one question, weighted to the claims it was drawn from."""
+
+    question: ClaimQuestion
+    items: int = Field(ge=0, description="The items people answered it on.")
+    cells: int = Field(ge=0, description="The distinct cells they come from: what the calibration floor counts.")
+    cases: int = Field(ge=0)
+    skipped: int = Field(ge=0, description="Items skipped or left unanswered on this question.")
+    table: tuple[float, float, float, float] | None = Field(
+        default=None,
+        description="The population's shares: both fail, only the instrument fails, only people fail, both pass.",
+    )
+    kappa: ClaimFigure
+    recall: ClaimFigure = Field(description="Of the claims people fail, the share the instrument fails.")
+    false_fail: ClaimFigure = Field(description="Of the claims people pass, the share the instrument fails.")
+    precision: ClaimFigure = Field(description="Of the claims the instrument fails, the share people fail.")
+    bias: ClaimFigure = Field(description="The instrument's fail rate over people's.")
+    failed: ClaimFigure = Field(description="The share of claims people fail.")
+    strata: list[ClaimStratumAgreement] = Field(default_factory=list)
+    unread_strata: list[ClaimStratum] = Field(
+        default_factory=list, description="Strata holding claims and no answered item."
+    )
+    arms: list[ClaimArmFigures] = Field(default_factory=list)
+    lean_p: float | None = Field(
+        default=None, description="The test across arms of a lean on recall and the false-fail rate; None: not read."
+    )
+    lean_untested: list[str] = Field(
+        default_factory=list, description="The arms, by key, the lean test read no rate on: too few answered claims."
+    )
+    check: ClaimCheckRecord | None = Field(
+        default=None, description="The check against people; None on is_claim, which only people answer."
+    )
+
+
+class ClaimReadReport(EvalDocumentModel, CoreShapeModel):
+    """What a claim read said of its instrument, read once, when it was closed, and kept: nothing read later moves it."""
+
+    read_at: str = Field(min_length=1, description="When it was read: the read's close.")
+    questions: list[ClaimQuestionFigures] = Field(description="One per question the read asks, in its order.")
+    model_answers: int = Field(ge=0, description="Answers a model gave, read in no figure.")
+    borrowed: int = Field(ge=0, description="People's answers taken from earlier reads of byte-identical views.")
+    borrowed_from: list[str] = Field(
+        default_factory=list,
+        description="The reads answers could be taken from: of the same definition, sharing a view, closed before it.",
+    )
+    excluded: dict[ClaimExclusion, int] = Field(
+        default_factory=dict, description="The claims the draw left out, by why: every figure is read over the rest."
+    )
+
+
 class ClaimRead(DurableDocumentModel):
     """A stratified draw of one claim criterion's graded claims, and the answers given to it.
 
@@ -304,8 +397,9 @@ class ClaimRead(DurableDocumentModel):
     answered on and the instrument's answer, so every figure is read from the read alone
     (:func:`threetears.evals.analysis.claim_read.read_claim_calibration`), and none is stored.
 
-    **Closed once.** Its figures are read once it is closed, and a closed read takes no answer, so the check is read at
-    one look, never at whichever look first met it. Its repeats (``repeats``) are the instrument's own readings of
+    **Closed once.** Its figures and checks are read once, when it is closed, and kept (``report``); a closed read takes
+    no answer, and nothing read later moves what it said, so the check is read at one look, never at whichever look
+    first met it. Its repeats (``repeats``) are the instrument's own readings of
     the drawn claims, made by a repeat job open or closed, and read beside people's.
     """
 
@@ -339,6 +433,11 @@ class ClaimRead(DurableDocumentModel):
         description="The job its latest repeat runs in, by its record's id: a repeat is taken into the read only "
         "from inside that job. None: no repeat was started.",
     )
+    report: ClaimReadReport | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="What it said of its instrument, read once at its close and kept; None while it is open.",
+    )
     repeats: list[ClaimItemRepeat] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
@@ -352,7 +451,7 @@ class ClaimRead(DurableDocumentModel):
         :raises ValueError: A question asked twice; a run named by two arms; an item of no arm, twice, in a stratum
             its instrument answer does not give, or past the cap of its cell; a stratum whose drawn count is not its
             items; an item asked groundedness with no groundedness reading; an answer to no item or to a question
-            the read does not ask; a close with no closer, or a closer with no close; or a repeat of no item, or of
+            the read does not ask; a close without its closer or its report, or either without a close; or a repeat of no item, or of
             one item twice in one pass.
         """
         if len(set(self.questions)) != len(self.questions):
@@ -392,8 +491,10 @@ class ClaimRead(DurableDocumentModel):
                 raise ValueError(f"an answer names item {answer.item!r}, which is no item of claim read {self.id!r}")
             if unasked := sorted({v.question for v in answer.verdicts} - set(self.questions)):
                 raise ValueError(f"the answer to item {answer.item!r} answers {unasked}, which the read does not ask")
-        if (self.closed_at is None) != (self.closed_by is None):
-            raise ValueError(f"claim read {self.id!r} names when it was closed and who closed it, both or neither")
+        if not ((self.closed_at is None) == (self.closed_by is None) == (self.report is None)):
+            raise ValueError(
+                f"claim read {self.id!r} names when it was closed, who closed it and what it read then, all or none"
+            )
         passes = Counter((repeat.item, repeat.repeat_id) for repeat in self.repeats)
         if stray := sorted({repeat.item for repeat in self.repeats} - known):
             raise ValueError(f"repeats name items {stray}, which are no items of claim read {self.id!r}")
@@ -427,6 +528,13 @@ __all__ = [
     "ClaimItemView",
     "ClaimItemRepeat",
     "ClaimRepeatAgainst",
+    "ClaimArmFigures",
+    "ClaimCheckRecord",
+    "ClaimCheckResult",
+    "ClaimFigure",
+    "ClaimQuestionFigures",
+    "ClaimReadReport",
+    "ClaimStratumAgreement",
     "ShownEvidence",
     "item_view_digest",
 ]

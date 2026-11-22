@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
+from threetears.evals.analysis.claim_read import read_claim_calibration, report_checks
 from threetears.evals.kernel.claims.grading import criterion_fingerprint, criterion_steps, grade_tally
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops.claim_reads import keep_repeats
@@ -66,25 +67,51 @@ class _Reply:
     sent_settings: Any = None
 
 
+class _ProviderDown(Exception):
+    """What a provider raises for a call it fails."""
+
+
+@dataclass
+class _Trip:
+    """How the judge misbehaves on calls about one claim, named by its text once it is drawn: priced past any hold
+    (``price``), priced at nothing it can say (``unpriced``), or failed by the provider (``raise``)."""
+
+    mode: str
+    text: str = ""
+
+
 # parity-with: threetears.evals.schema.completion.BoundCompletionClient
 @dataclass
 class _FakeClaimsJudge:
     """Answers every truth call with no citation and every ground call with none: each claim reads unverifiable and
-    ungrounded. Records each call's reply schema."""
+    ungrounded. Records each call's reply schema. A call about the tripped claim misbehaves as the trip says; a call
+    priced before any is made (with stand-in text) never names it."""
 
     model_name: str = JUDGE
     usd_per_call: float | None = 0.002
+    trip: _Trip | None = None
     asked: list[str] = field(default_factory=list)
     closed: int = 0
 
+    def _tripped(self, user: str) -> str | None:
+        trip = self.trip
+        return trip.mode if trip is not None and trip.text and trip.text in user else None
+
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
-        del system, user, response_format
+        del system, response_format
+        tripped = self._tripped(user)
+        if tripped == "price":
+            return 1000.0
+        if tripped == "unpriced":
+            return None
         return self.usd_per_call
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
-        del system, user
+        del system
         name = (response_format or {}).get("json_schema", {}).get("name", "")
         self.asked.append(name)
+        if self._tripped(user) == "raise":
+            raise _ProviderDown("the provider failed the call")
         if name == "claim_truth":
             return _Reply(json.dumps({"claims": [{"claim": 0, "citations": [], "suspect": False}]}))
         return _Reply(json.dumps({"claims": [{"claim": 0, "citations": []}]}))
@@ -103,7 +130,9 @@ def _with(host: OpsHost, **changes: Any) -> OpsHost:
     return replace(host, launch=replace(launch, eval_host=replace(launch.eval_host, **changes)))
 
 
-def _world(*, usd_per_call: float | None = 0.002) -> tuple[OpsHost, OpsFixture, list[_FakeClaimsJudge]]:
+def _world(
+    *, usd_per_call: float | None = 0.002, trip: _Trip | None = None
+) -> tuple[OpsHost, OpsFixture, list[_FakeClaimsJudge]]:
     """The toy corpus campaign graded under a claim criterion: its template declares it, each run records the judge,
     and every result holds one claim, its verdict set by its case, its trace the grade and the evidence; two cells are
     graded under another definition. A host attesting :data:`CALLER` for anyone, its judges scripted."""
@@ -154,7 +183,7 @@ def _world(*, usd_per_call: float | None = 0.002) -> tuple[OpsHost, OpsFixture, 
     built: list[_FakeClaimsJudge] = []
 
     def clients(role: str, model: str | None, *, temperature: float | None = None) -> _FakeClaimsJudge:
-        client = _FakeClaimsJudge(model_name=model or JUDGE, usd_per_call=usd_per_call)
+        client = _FakeClaimsJudge(model_name=model or JUDGE, usd_per_call=usd_per_call, trip=trip)
         built.append(client)
         return client
 
@@ -272,6 +301,10 @@ async def test_the_sheet_and_the_open_line_hold_nothing_that_would_unblind_a_rat
         *(item.view_digest for item in read.items),
     }
     assert [value for value in forbidden if value in text] == []
+    assert any(item.verdict == "true_ungrounded" for item in read.items), "a claim the grader checked on the web"
+    assert [e for item in sheet.structured["items"] for e in item["evidence"] if e["provenance"] == "web"] == []
+    assert [e for item in read.items for e in item.view.evidence if e.provenance == "web"] == []
+    assert "example.org" not in text, "no window of the grader's web check, by its url or its title"
     keys = _keys(sheet.structured)
     assert not keys & {"verdict", "stratum", "arm", "arms", "grounded", "inclusion", "raters"}
     assert sorted(key for key in keys if key.endswith("_id")) == ["read_id"]
@@ -359,15 +392,18 @@ async def test_close_reads_every_figure_and_check_once_and_refuses_every_later_a
     truth = shown["figures"][0]
     assert truth["items"] == len(read.items) - 1
     assert truth["kappa"]["value"] == 1.0, "people agree with the instrument on every answered item"
-    assert (
-        truth["check"]["instrument"]
-        == shown["instrument"]
-        == f"claims:{CRITERION.name}@{read.criterion_fingerprint[:12]}"
-    )
-    assert truth["check"]["criterion"] == f"{CRITERION.name}.true" and truth["check"]["read_id"] == read.id
-    assert truth["lean_untested"] == truth["check"].get("lean_untested", []), "the check names the arms not tested"
+    check = shown["checks"][0]
+    assert check["instrument"] == shown["instrument"] == f"claims:{CRITERION.name}@{read.criterion_fingerprint[:12]}"
+    assert check["criterion"] == f"{CRITERION.name}.true" and check["read_id"] == read.id
+    assert truth["lean_untested"] == check.get("lean_untested", []), "the check names the arms not tested"
     assert {arm["arm"] for arm in truth["arms"]} == {arm.key for arm in read.arms}
     assert shown["figures"][2]["check"] is None, "is_claim is people's alone"
+    assert [c["criterion"] for c in shown["checks"]] == [f"{CRITERION.name}.true", f"{CRITERION.name}.grounded"]
+    # What the read kept at its close is what reading it then gives: the checks rebuilt from it are the computed ones.
+    stored = _stored(host, read.id)
+    computed = read_claim_calibration(stored)
+    assert report_checks(stored) == [q.check for q in computed.questions if q.check is not None]
+    assert stored.report is not None and stored.report.borrowed_from == [] and shown["borrowed_from"] == []
     assert shown["excluded"] == {"redefined": 2}
     assert again.is_error and "closed" in again.text, again.text
     assert late.is_error and "closed" in late.text, late.text
@@ -435,3 +471,90 @@ async def test_a_judges_repeat_enters_a_read_only_from_its_own_repeat_job() -> N
     else:
         raise AssertionError("a repeat from outside the read's repeat job was kept")
     assert _stored(host, read.id).repeats == []
+
+
+async def test_a_closed_reads_figures_are_kept_and_a_later_read_moves_nothing_on_it() -> None:
+    host, fixture, _ = _world()
+    first = _stored(host, (await _drawn(host, fixture))["read_id"])
+    for item in first.items[: len(first.items) // 2]:
+        await _call(
+            host,
+            "claim_read_answer",
+            claim_read_id=first.id,
+            item=item.item,
+            person=PERSON,
+            claim_answers={"true": "pass"},
+        )
+    closed = (await _call(host, "claim_read_close", claim_read_id=first.id)).structured
+    # A later read over the same claims, its views byte-identical, answered the other way on every item.
+    second = _stored(host, (await _drawn(host, fixture))["read_id"])
+    assert {item.view_digest for item in second.items} & {item.view_digest for item in first.items}
+    for item in second.items:
+        await _call(
+            host,
+            "claim_read_answer",
+            claim_read_id=second.id,
+            item=item.item,
+            person="bo",
+            claim_answers={"true": "fail"},
+        )
+    while_open = (await _call(host, "claim_read_get", claim_read_id=first.id)).structured
+    later = (await _call(host, "claim_read_close", claim_read_id=second.id)).structured
+    after = (await _call(host, "claim_read_get", claim_read_id=first.id)).structured
+
+    keep = ("figures", "checks", "borrowed", "borrowed_from", "model_answers", "closed_at")
+    assert {key: while_open[key] for key in keep} == {key: closed[key] for key in keep}, "an open read lends nothing"
+    assert {key: after[key] for key in keep} == {key: closed[key] for key in keep}, "a later read moves nothing"
+    assert later["borrowed_from"] == [first.id], "only a read closed before it may lend its answers"
+    assert later["borrowed"] > 0
+
+
+async def _repeated_with(mode: str) -> tuple[ClaimRead, str]:
+    """A read whose repeat meets a judge misbehaving, as ``mode`` says, on calls about one drawn claim; the read as
+    stored once the repeat ended, and the misbehaving cell."""
+    trip = _Trip(mode)
+    host, fixture, _ = _world(trip=trip)
+    read = _stored(host, (await _drawn(host, fixture, per_stratum={"contradicted": 3, "supported": 3}))["read_id"])
+    target = read.items[0]
+    trip.text = target.view.claim
+    started = await _call(host, "claim_read_repeat", claim_read_id=read.id)
+    assert not started.is_error, started.text
+    status = await settled(host, started.structured["jobs"][0]["job_id"])
+    assert status.done
+    return _stored(host, read.id), target.result_id
+
+
+def _outcomes(read: ClaimRead, cell: str) -> tuple[set[str | None], set[str | None]]:
+    """The losses the misbehaving cell's repeats carry, and the verdicts every other cell's repeats read."""
+    cells = {item.item: item.result_id for item in read.items}
+    tripped = {repeat.loss for repeat in read.repeats if cells[repeat.item] == cell}
+    others = {repeat.verdict for repeat in read.repeats if cells[repeat.item] != cell}
+    return tripped, others
+
+
+async def test_a_call_past_its_cells_worst_case_loses_that_cell_alone_as_hold_exceeded() -> None:
+    read, cell = await _repeated_with("price")
+
+    tripped, others = _outcomes(read, cell)
+
+    assert tripped == {"hold_exceeded"}, "the call priced past its cell's worst case is never sent"
+    assert others == {"unverifiable"}, "every other cell is repeated"
+    assert len(read.repeats) == len(read.items)
+
+
+async def test_a_call_the_enforced_cap_cannot_price_loses_that_cell_alone_as_cost_cap() -> None:
+    read, cell = await _repeated_with("unpriced")
+
+    tripped, others = _outcomes(read, cell)
+
+    assert tripped == {"cost_cap"}, "an unpriced call under an enforced cap is refused, never sent"
+    assert others == {"unverifiable"}
+
+
+async def test_a_provider_failing_a_call_loses_that_cell_alone_as_provider_error() -> None:
+    read, cell = await _repeated_with("raise")
+
+    tripped, others = _outcomes(read, cell)
+
+    assert tripped == {"provider_error"}
+    assert others == {"unverifiable"}

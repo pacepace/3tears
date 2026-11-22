@@ -60,15 +60,15 @@ PINNED_DURABLE_SCHEMA_MINOR = 10
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
     # Re-taken under durable 17.10: every durable type's ``schema_minor`` default moved, and the claim read
-    # (``claim_read``) is a new type; its shape gained ``closed_at``, ``closed_by``, ``repeat_job_id`` and ``repeats``
-    # (``ClaimItemRepeat``) under the same unreleased minor. (Under 17.9 the template's shape gained ``claim_criteria`` and
+    # (``claim_read``) is a new type; its shape gained ``closed_at``, ``closed_by``, ``report`` (``ClaimReadReport``),
+    # ``repeat_job_id`` and ``repeats`` (``ClaimItemRepeat``) under the same unreleased minor. (Under 17.9 the template's shape gained ``claim_criteria`` and
     # ``claim_unit_names``; under 17.8 the test case's reference key gained ``context``; under 17.7 the test case's shape
     # gained ``reference`` (``ReferenceKey``); under 17.6 the campaign's gained ``Aspect.undo`` and ``Aspect.undo_ignored``;
     # under 17.5 the blind read's gained ``BlindPreference.shares`` and ``stake_items``.)
     "blind_read": "a0499961129776ba1743a0aa960fb47f8164da0d2836bdc5387404b7beda7b62",
     "calibration_rating": "d94b117332f440e35c12532e7b5bd8dbfbe5726cf9ebc449f67f4eb621db44ac",
     "case_set": "6d861cec19358d1cf6134780974cf9d16afa6312b67cf501f9959eab18e110bd",
-    "claim_read": "2a4c5022ec529bdc9430f986d7627e51802dcd15504a55d94a42de765a75938c",
+    "claim_read": "ab3484fcb55944bed16bf497a46dfa53868f698a6d88c2119e2d158bf810c364",
     "eval_analyst_gap": "282cf01b6791ab624cbaf24175f2825f22fce3c5ef80c8fb635c97e8bcf589f8",
     "eval_campaign": "8d8ece91fbdf5a3cc9de2ed63c0a7744c917bbe0bcde09b234e25645d6ed0c49",
     "eval_template": "66ea02948b64c844362f08210569aafe01d8dfca37e5c34d4b3492377c010843",

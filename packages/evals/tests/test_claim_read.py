@@ -163,8 +163,9 @@ def test_an_item_shows_the_claim_as_the_instrument_read_it_and_nothing_it_conclu
     (item,) = _draw([cell]).items
 
     assert set(ClaimItemView.model_fields) == {"claim", "excerpt", "start", "end", "segment", "evidence"}
-    assert [(e.ref, e.provenance) for e in item.view.evidence] == [("S1", "case"), ("S2", "run"), ("W1", "web")]
-    assert item.view.evidence[-1].text == cell.grade.web[0].windows[0].text
+    assert cell.grade.web, "the grade checked the claim on the web"
+    # The grade's web windows are not shown: the grade checks on the web only a claim it doubted.
+    assert [(e.ref, e.provenance) for e in item.view.evidence] == [("S1", "case"), ("S2", "run")]
     assert item.view_digest == item_view_digest(item.view)
     assert item.verdict == "true_ungrounded"
 

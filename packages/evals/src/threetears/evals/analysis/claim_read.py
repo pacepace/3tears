@@ -35,6 +35,8 @@ suite keeps a fast seeded case of each (``tests/test_simulated_claim_read.py``).
 missing at random within its stratum.
 A model's answer is never a person's: it is counted and read in no figure.
 
+- :func:`claim_read_report` keeps a read's calibration as the read stores it at its close, and
+  :func:`report_checks` gives its checks back from what was kept.
 - :func:`read_claim_repeats` reads the read's repeats (``ClaimRead.repeats``) against the first grade, per judge
   asked: the instrument against itself, or a second judge against it. Counts only, per question and per stratum of
   the draw, and the web outcomes of claims both readings decided on the web: a repeat is a pair of readings of one
@@ -73,7 +75,13 @@ from threetears.evals.schema.claim_read import (
     ClaimStratum,
     ClaimAnswer,
     ClaimItemView,
+    ClaimArmFigures,
+    ClaimCheckRecord,
+    ClaimFigure,
+    ClaimQuestionFigures,
+    ClaimReadReport,
     ClaimRepeatAgainst,
+    ClaimStratumAgreement,
     ClaimStratumDraw,
     ClaimTruthVerdict,
     ClaimVerdict,
@@ -201,7 +209,11 @@ def allocate_draws(
 
 def item_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimItemView:
     """One graded claim as a rater reads it: the claim, its excerpt and segment, every piece of evidence the grade
-    numbered for the cell and every window its web check of the claim read, and nothing the grade concluded.
+    numbered for the cell, and nothing the grade concluded.
+
+    The windows its web check read are left out: the grade checks on the web only a claim its judge doubted, so a
+    window on a view would tell the rater the grader doubted the claim. The rater may search on their own; a repeat
+    reads the windows from the stored grade.
 
     :param grade: The cell's grade.
     :param evidence: The cell's claim evidence, which the grade graded.
@@ -232,9 +244,6 @@ def item_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimIt
                 text=document.text[entry.span.start : entry.span.end],
             )
         )
-    record = next((check for check in grade.web if check.claim == place), None)
-    for at, window in enumerate(record.windows if record is not None else (), start=1):
-        shown.append(ShownEvidence(ref=f"W{at}", provenance="web", title=window.title or window.url, text=window.text))
     return ClaimItemView(
         claim=claim.claim,
         excerpt=claim.excerpt,
@@ -1375,6 +1384,135 @@ def _check(
         lean_untested=list(lean_untested),
         lean_untested_reason="too_few" if lean_untested else None,
     )
+
+
+# --- what a closed read keeps ----------------------------------------------------------------------------------
+
+
+def _kept(estimate: Estimate) -> ClaimFigure:
+    return ClaimFigure(value=estimate.value, lower=estimate.lower, upper=estimate.upper)
+
+
+def claim_read_report(
+    calibration: ClaimCalibration, *, read_at: str, borrowed_from: Sequence[str] = ()
+) -> ClaimReadReport:
+    """A read's calibration as the read keeps it once closed: every figure, each check's decision, and what was left
+    out, so nothing read later moves what it said (:func:`report_checks` gives the checks back).
+
+    :param calibration: The calibration, read at the close (:func:`read_claim_calibration`).
+    :param read_at: When it was read: the close.
+    :param borrowed_from: The reads the calibration could take answers from.
+    :return: The report.
+    """
+    return ClaimReadReport(
+        read_at=read_at,
+        questions=[
+            ClaimQuestionFigures(
+                question=reading.question,
+                items=reading.items,
+                cells=reading.cells,
+                cases=reading.cases,
+                skipped=reading.skipped,
+                table=reading.table,
+                kappa=_kept(reading.kappa),
+                recall=_kept(reading.recall),
+                false_fail=_kept(reading.false_fail),
+                precision=_kept(reading.precision),
+                bias=_kept(reading.bias),
+                failed=_kept(reading.failed),
+                strata=[
+                    ClaimStratumAgreement(
+                        stratum=stratum.stratum,
+                        population=stratum.population,
+                        items=stratum.items,
+                        agreed=stratum.agreed,
+                    )
+                    for stratum in reading.strata
+                ],
+                unread_strata=list(reading.unread_strata),
+                arms=[
+                    ClaimArmFigures(
+                        arm=arm.arm,
+                        items=arm.items,
+                        cells=arm.cells,
+                        recall=_kept(arm.recall),
+                        false_fail=_kept(arm.false_fail),
+                        precision=_kept(arm.precision),
+                        bias=_kept(arm.bias),
+                        failed=_kept(arm.failed),
+                    )
+                    for arm in reading.arms
+                ],
+                lean_p=reading.lean_p,
+                lean_untested=list(reading.lean_untested),
+                check=None
+                if reading.check is None
+                else ClaimCheckRecord(
+                    result=reading.check.result,
+                    reason=reading.check.reason,
+                    state=reading.check.state,
+                    sample=reading.check.sample or "none",
+                    skipped=reading.check.skipped or 0,
+                ),
+            )
+            for reading in calibration.questions
+        ],
+        model_answers=calibration.model_answers,
+        borrowed=calibration.borrowed,
+        borrowed_from=sorted(borrowed_from),
+        excluded=dict(calibration.excluded),
+    )
+
+
+def report_checks(read: ClaimRead) -> list[Check]:
+    """The checks a closed read kept, each as :func:`read_claim_calibration` made it at the close.
+
+    :param read: The read.
+    :return: One per question its report checked, in its order; empty while the read is open.
+    """
+    if read.report is None:
+        return []
+    instrument = f"claims:{read.criterion}@{read.criterion_fingerprint[:12]}"
+    checks = []
+    for figures in read.report.questions:
+        kept = figures.check
+        if kept is None:
+            continue
+        criterion = f"{read.criterion}.{figures.question}"
+        if kept.state is not None:
+            checks.append(
+                Check(
+                    instrument=instrument,
+                    criterion=criterion,
+                    against="people",
+                    sample="none",
+                    read_id=read.id,
+                    result=kept.result,
+                    state=kept.state,
+                )
+            )
+            continue
+        kappa = figures.kappa
+        checks.append(
+            Check(
+                instrument=instrument,
+                criterion=criterion,
+                against="people",
+                sample=kept.sample,
+                sample_results=figures.cells,
+                sample_cases=figures.cases,
+                skipped=kept.skipped,
+                read_id=read.id,
+                result=kept.result,
+                reason=kept.reason,
+                kappa=kappa.value,
+                kappa_interval=None if kappa.lower is None or kappa.upper is None else (kappa.lower, kappa.upper),
+                reads=figures.items,
+                lean_untested=list(figures.lean_untested),
+                lean_untested_reason="too_few" if figures.lean_untested else None,
+            )
+        )
+    return checks
 
 
 # --- repeats ---------------------------------------------------------------------------------------------------
