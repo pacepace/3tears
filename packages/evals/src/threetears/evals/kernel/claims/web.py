@@ -33,7 +33,8 @@ doubts differs by arm, so a failure here must never cost a cell the verdicts cas
 cut short, unreadable after its attempts, or past its repairs, the port failing a search (``port_error``) and the
 provider failing a call (``provider_error``) stop the step: the claim it struck and every later one read ``lost`` and
 unverifiable, the checks already decided stand, and the loss is the grade's ``web_loss``. A cost-cap refusal of a call
-or a search stops it too, as no loss: those claims read ``skipped_cap``. A replay's miss and a completion breaking
+or a search stops it too, as no loss, and so does the criterion's own hold refusing one (``hold_exceeded``): those
+claims read ``skipped_cap``. A replay's miss and a completion breaking
 the protocol fail the run.
 
 Engine-internal: the claims grading of the judge phase builds and calls it, and nothing here is exported.
@@ -42,6 +43,7 @@ Engine-internal: the claims grading of the judge phase builds and calls it, and 
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -63,7 +65,8 @@ from threetears.evals.kernel.claims.verification import (
     select_spans,
 )
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
-from threetears.evals.kernel.usage_capture import RoleUsageLedger
+from threetears.evals.kernel.spend import reported_price_source
+from threetears.evals.kernel.usage_capture import ExternalRateTable, RoleUsageLedger
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.claims import Segment
 from threetears.evals.schema.completion import CompletionClient, CompletionProtocolDefect
@@ -79,9 +82,13 @@ from threetears.evals.schema.models import (
     WebCheckRecord,
     WebWindow,
 )
-from threetears.evals.schema.web_search import WebPage, WebSearchResult
+from threetears.evals.schema.web_search import WebPage, WebSearch, WebSearchResult
 
 log = get_logger(__name__)
+
+#: The refusals that stop the web step as a budget does, never as a loss: the run's cost cap, and the criterion's own
+#: hold (a call or search that would spend past the ceiling it was priced at). Each leaves its claims ``skipped_cap``.
+_BUDGET_STOPS: Final = frozenset({"cost_cap", "hold_exceeded"})
 
 #: How many times one call is asked in full: the first and two more when a finished reply will not parse.
 _ATTEMPTS: Final = 3
@@ -199,6 +206,89 @@ class SearchBill:
     provider: str
     cost_usd: float | None
     price_source: str | None
+
+
+def query_price(web: WebSearch, rates: ExternalRateTable | None) -> tuple[float | None, str | None]:
+    """What one search on ``web`` is admitted at, and billed at when its result reports no cost of its own.
+
+    A rate the run declares for ``(identity, "query")`` wins: it is the operator's, and the spend names it
+    configured. Else the port's own ``price_ceiling``, the most a query can cost, named as the port's ceiling, so a
+    reader can tell a bound from an observation. Else unpriced: counted, its dollars unknown. What a search's result
+    reports it cost wins over both when it is billed (:func:`search_bill`).
+
+    :param web: The web search.
+    :param rates: The run's rate table, or ``None``.
+    :return: The dollars, or None; and the price source, or None with it.
+    :raises ValueError: The port's ceiling is negative or not a finite number.
+    """
+    identity = web.identity
+    rate = None if rates is None else rates.rates.get((identity, QUERY_UNIT))
+    if rate is not None:
+        return float(rate), reported_price_source(identity, from_rate_table=True)
+    ceiling = web.price_ceiling()
+    if ceiling is None:
+        return None, None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int | float) or not math.isfinite(ceiling) or ceiling < 0:
+        raise ValueError(
+            f"web search {identity!r} priced a query at {ceiling!r}; a ceiling is a finite amount, 0 or more"
+        )
+    return float(ceiling), f"{identity}:price_ceiling"
+
+
+def search_bill(web: WebSearch, reported: float | None, price: tuple[float | None, str | None]) -> SearchBill:
+    """One search as the cell's spend bills it: at what its result reported it cost, else at ``price``.
+
+    :param web: The web search.
+    :param reported: What the result reported the search cost; None when it reported nothing, or none came back.
+    :param price: The search's admitted price and its source (:func:`query_price`).
+    :return: The bill.
+    """
+    if reported is not None:
+        return SearchBill(
+            provider=web.identity,
+            cost_usd=reported,
+            price_source=reported_price_source(web.identity, from_rate_table=False),
+        )
+    return SearchBill(provider=web.identity, cost_usd=price[0], price_source=price[1])
+
+
+async def send_search(
+    web: WebSearch, query: str, *, criterion: str, bill: Callable[[float | None], None]
+) -> WebSearchResult:
+    """Send one search to ``web`` once, and bill it, answered or not: a query is priced per query sent.
+
+    The port is never asked twice for one search: a port that retries does so inside its own ``search``.
+
+    :param web: The web search.
+    :param query: The search, as the judge wrote it.
+    :param criterion: The criterion searching, for a failure's message.
+    :param bill: Told what the search reported it cost (None when nothing came back, or it reported nothing), once.
+    :return: Its result.
+    :raises ClaimGradingFailed: The port failed it, or answered with something other than a
+        :class:`~threetears.evals.schema.WebSearchResult` (``port_error``): the web step's loss alone.
+    :raises ApparatusError: The port could not serve it from its recording (a replay's miss); nothing is billed.
+    """
+    try:
+        result = await web.search(query)
+    except ApparatusError:
+        raise
+    except (
+        Exception
+    ) as failure:  # prawduct:ok-broad-except — web port boundary; a failed search is the web step's loss alone
+        bill(None)
+        raise ClaimGradingFailed(
+            f"the web port {web.identity!r} failed a search for claim criterion {criterion!r}: "
+            f"{type(failure).__name__}: {failure}",
+            loss="port_error",
+        ) from failure
+    if not isinstance(result, WebSearchResult):
+        bill(None)
+        raise ClaimGradingFailed(
+            f"the web port {web.identity!r} answered a search with {type(result).__name__}, not a WebSearchResult",
+            loss="port_error",
+        )
+    bill(result.usd)
+    return result
 
 
 class _Queries(EvalBaseModel):
@@ -413,7 +503,8 @@ class WebChecker:
             and the provider failing a call (``provider_error``). The claim it struck and every later one read
             ``lost``; the checks already decided stand, and so does every verdict case evidence decided, since how
             many claims the judge doubts differs by arm and must not decide whether a cell keeps its truth reading. A
-            cost-cap refusal (``cost_cap``) is no loss: the claim it struck and every later one read ``skipped_cap``.
+            budget's refusal, the run's cost cap (``cost_cap``) or the criterion's own hold (``hold_exceeded``), is no
+            loss: the claim it struck and every later one read ``skipped_cap``, counted under ``web_skipped``.
         :raises ValueError: ``ledger`` is not the ``judge`` role's, or a nominated position is no world claim that
             restates nothing.
         :raises ApparatusError: The rig could not serve a call or a search (a replay's miss), which fails the run.
@@ -444,7 +535,7 @@ class WebChecker:
                 record, call = await self._check_one(position, cell[position], search, calls, ledger, repairs)
             except ClaimGradingFailed as failed:
                 # Recorded, never swallowed: the claim it struck and every later one read what stopped the step.
-                if failed.loss == "cost_cap":
+                if failed.loss in _BUDGET_STOPS:
                     outcomes.update((later, WebGraded("skipped_cap")) for later in order[at:])
                     break
                 lost = failed

@@ -13,7 +13,10 @@ its run writes, so its largest call cannot be priced before launch — but a FLO
 - a simulated-user utterance is the actor's policy and intent around the case's variation and the transcript.
 
 Leaving the filled part empty gives the smallest request the cell could send, and every real one is it with text
-inserted. Priced on the client the cell's call goes through — the judge's per dim, through the run's judge service
+inserted. A **claim criterion** is admitted against the cap as one hold, its every call priced before the first
+(:func:`~threetears.evals.kernel.claims.grading.criterion_ceiling`), so its floor is that hold over the smallest claim
+evidence a cell can render: one segment of one character, no unit, no document and no key fact. A cell's real
+evidence only adds segments, text, units, documents and facts, each of which only adds to the hold. Priced on the client the cell's call goes through — the judge's per dim, through the run's judge service
 built as the launcher builds it, every parse-retry attempt included, and the simulator role's for the planned
 simulator model — that is a reservation the real call cannot come in under.
 
@@ -24,6 +27,9 @@ to a fixed output cap, times the client's own re-sends
 
 - **the judge:** every judged result makes every dim's call, so each dim's floor is under a call every result
   makes, and the largest of them is under the arm's largest call;
+- **a claim criterion:** every judged result whose output states anything is graded under every criterion, each
+  under its own hold, so each criterion's floor is under a hold every such result asks for, and the largest of them
+  is under the arm's largest;
 - **the simulated user:** which actor speaks is the conversation's, so the floor is the smallest over the actors,
   and it is counted only when the conversation is bound to make an utterance call (:func:`_utterance_certain`);
   the ``llm_decided`` scheduler's calls are not priced, as none of them is.
@@ -49,6 +55,7 @@ from threetears.evals.kernel.capped_completion import (
     refresh_prices,
     unpriced_because,
 )
+from threetears.evals.kernel.claims.grading import criterion_ceiling
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS
@@ -58,7 +65,8 @@ from threetears.evals.run.simulator import (
     SIMULATOR_MAX_TOKENS,
     smallest_utterance_prompts,
 )
-from threetears.evals.schema.models import ConversationSpec, JudgedArtifact
+from threetears.evals.schema.claims import Segment
+from threetears.evals.schema.models import ClaimEvidence, ConversationSpec, JudgedArtifact
 
 __all__ = ["price_subject_call_floor"]
 
@@ -113,6 +121,11 @@ async def price_subject_call_floor(
             return judge
         if judge is not None:
             floors.append(judge)
+    if plan.judge is not None and request.template.claim_criteria:
+        claims = await _claims_floor(host, request, plan.judge.model, judged_artifact)
+        if isinstance(claims, UnpricedCall):
+            return claims
+        floors.append(claims)
     conversation = request.template.conversation
     if plan.simulator_model is not None and conversation is not None and _utterance_certain(conversation):
         simulator = await _simulator_floor(host, plan.simulator_model, conversation)
@@ -184,6 +197,69 @@ async def _judge_floor(
             "shorter judge instructions for it (its judge config's prompt); or, on the host, a judge-role client "
             "that re-sends a request fewer times (its retry policy multiplies every request's ceiling) or whose "
             f"price_ceiling prices the {JUDGE_MAX_TOKENS}-token output cap the judge asks for rather than a larger one"
+        ),
+    )
+
+
+#: The smallest claim evidence a cell can render: one segment of one character, outside any unit. A criterion
+#: naming ``grounded_in`` reads declared documents, so the floor declares none given, which asks no ground step.
+_FLOOR_EVIDENCE = ClaimEvidence(segmentation="the smallest a cell renders", segments=(Segment(text="x"),), documents=())
+
+
+async def _claims_floor(
+    host: EvalHost, request: LaunchRequest, judge_model: str, judged_artifact: JudgedArtifact
+) -> _Floor | UnpricedCall:
+    """The largest of the claim criteria's hold floors: each is under the hold every judged result stating anything
+    asks for that criterion. A criterion whose hold cannot be priced makes the arm's largest unknown, so it is the
+    answer, as an :class:`UnpricedCall`."""
+    template = request.template
+    run_judge = await run_blocking(
+        host.blocking_executor,
+        lambda: build_judge_service(
+            host, template, judge_model, request.judge_config_ids, judged_artifact=judged_artifact
+        ),
+    )
+    service = run_judge.service
+    try:
+        client = service.default_client()
+        # Its prices brought up to date before they are read: a fresh process has read no catalogue yet.
+        await refresh_prices(client)
+
+        def priced() -> list[tuple[float | None, str]]:
+            return [
+                # The floor's one segment may state no claim the judge doubts, so a web step adds nothing to it.
+                (
+                    criterion_ceiling(
+                        criterion.model_copy(update={"web": None}), _FLOOR_EVIDENCE, key=None, client=client
+                    ),
+                    criterion.name,
+                )
+                for criterion in template.claim_criteria
+            ]
+
+        ceilings = await run_blocking(host.blocking_executor, priced)
+        estimate = ceiling_is_estimate(client)
+    finally:
+        await service.aclose()
+    for usd, name in ceilings:
+        if usd is None:
+            return UnpricedCall(
+                call=f"claim criterion {name!r}'s hold, which every judged case asks before its first claims call, on "
+                f"{judge_model!r}",
+                why=unpriced_because(client),
+            )
+    usd, name = max((usd, name) for usd, name in ceilings if usd is not None)
+    return _Floor(
+        estimate=estimate,
+        usd=usd,
+        call=(
+            f"claim criterion {name!r}'s hold, which every judged case asks before its first claims call: its "
+            f"extraction, its truth step and every repair its budget allows, each with its retries, on {judge_model!r}"
+        ),
+        lowered_by=(
+            f"a cheaper judge model (the launch's judge_model); a smaller repair budget for {name!r} (its "
+            "RepairBudget.max_items_per_cell); shorter guidance for it; or, on the host, a judge-role client that "
+            "re-sends a request fewer times (its retry policy multiplies every request's ceiling)"
         ),
     )
 

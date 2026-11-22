@@ -34,7 +34,11 @@ from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.runner import RunnerOptions, execute_run, run_one_result
 from threetears.evals.kernel.claims.readings import claim_tally
-from threetears.evals.run.runner import judge_witnessed_output
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.lifecycle import rejudge_result
+from threetears.evals.run.runner import StoredCell, StoredCells, judge_witnessed_output
+from threetears.evals.schema.job_lease import JobLease
 from threetears.evals.schema import Segment, WebPage, WebSearchResult
 from threetears.evals.schema.models import (
     ClaimCall,
@@ -591,8 +595,10 @@ async def test_a_criterion_with_a_web_budget_and_no_port_is_refused_before_any_c
     assert judge.asked == []
 
 
-async def _run(port: Any, *, rates: ExternalRateTable | None, cap_usd: float | None) -> Any:
-    judge = _FakeWebJudge()
+async def _run(
+    port: Any, *, rates: ExternalRateTable | None, cap_usd: float | None, judge: _FakeWebJudge | None = None
+) -> Any:
+    judge = judge or _FakeWebJudge()
     template = _template()
     host = toyhost_host()
     case = EvalTestCase(template_id=template.id, scope_id="u")
@@ -824,3 +830,123 @@ async def test_a_witnessed_cell_refuses_a_web_budget_saying_it_is_not_supported_
 async def test_a_port_whose_ceiling_is_no_amount_is_refused_at_launch_with_no_cap() -> None:
     with pytest.raises(ValueError, match="a ceiling is a finite amount"):
         await _run(_FakeWebSearch(usd_per_query=-1.0), rates=None, cap_usd=None)
+
+
+async def test_a_hold_overflow_inside_the_web_step_reads_skipped_cap_and_truth_stands() -> None:
+    # The port says its search cost far more than its ceiling: the hold the criterion was priced at has no room left
+    # for the reading call, which is the criterion's own hold refusing it, never a loss of the web step.
+    judge = _FakeWebJudge(usd_per_call=0.001)
+
+    judge, (result,) = await _run(_FakeWebSearch(reported_usd=5.0), rates=None, cap_usd=1000.0, judge=judge)
+
+    assert "claim_web_queries" in judge.asked and "claim_web_verdict" not in judge.asked
+    assert result.claim_failures == {}
+    tally = result.claim_tallies[_CRITERION]
+    (counts,) = tally.by_judge
+    assert tally.web_loss is None and (counts.web_skipped, counts.unverifiable) == (1, 1), "a budget stop, no loss"
+
+
+async def _stored_web_cell(first: _FakeWebJudge, again: _FakeWebJudge, port: Any) -> tuple[Any, Any]:
+    """One cell graded by ``first`` on ``port`` and stored under a finished run, on a host whose judge is ``again``."""
+    host = toyhost_host(clients=lambda role, model, *, temperature=None: again)
+    template = _template()
+    case = EvalTestCase(template_id=template.id, scope_id="u")
+    off_loop(host.storage.save_template, template)
+    off_loop(host.storage.save_test_case, case)
+    run = make_eval_run(
+        scope_id="u",
+        template_id=template.id,
+        candidate_kind=_KIND,
+        test_case_ids=[case.id],
+        status="completed",
+        judge_model=_JUDGE,
+        effective_judges={},
+        judge_asked_settings=JUDGE_REQUEST_SETTINGS,
+    )
+    off_loop(host.storage.save_eval_run, run)
+    kind = _FakeWebKind()
+    outcome = await run_one_result(
+        host,
+        template=template,
+        test_case=case,
+        subject_id="subj-1",
+        model="test/model",
+        k_iteration=1,
+        eval_run_id=run.id,
+        scope_id="u",
+        judge_service=_service(first),
+        options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: kind}, web_search=port, external_rates=_RATES),
+        variant=DerivedVariantIdentity(
+            variant_key=compute_variant_key(_MODEL_ONLY), identity_version=IDENTITY_VERSION, levers=_MODEL_ONLY
+        ),
+    )
+    off_loop(host.storage.save_eval_result, outcome.result, outcome.trace)
+    return host, outcome.result
+
+
+_LOST_FIRST = {"claim_listing": [ConnectionError("the provider is unavailable")]}
+
+
+async def test_a_rejudge_grades_a_lost_web_criterion_again_whole_searching_through_the_port_it_is_handed() -> None:
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), _FakeWebJudge(), _FakeWebSearch())
+    assert result.claim_failures == {_CRITERION: "provider_error"}
+    port = _FakeWebSearch()
+
+    rejudged = await rejudge_result(host, result.id, "u", web_search=port)
+
+    assert port.queries == ["Lantern Almanac first printed"], "the web step searched live through the port"
+    assert rejudged.claim_failures == {} and rejudged.claim_tallies[_CRITERION].by_judge[0].true_ungrounded == 1
+    stored = off_loop(host.storage.load_eval_trace, result.id, "u")
+    assert stored is not None and stored.claim_grades[_CRITERION].web[0].urls == (_PAGE.url,)
+    (rescore,) = rejudged.claim_rescores
+    (searched,) = [row for row in rescore.usage if row.provider == _PORT]
+    assert (searched.provider_unit, searched.call_count) == ("query", 1), "the re-judge billed its search"
+
+
+async def test_a_rejudge_of_a_lost_web_criterion_with_no_port_is_refused_by_name_before_any_call() -> None:
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), again, _FakeWebSearch())
+
+    with pytest.raises(ValidationFailedError, match=f"claim criteria '{_CRITERION}'.*declare a web budget"):
+        await rejudge_result(host, result.id, "u")
+
+    assert again.asked == [], "refused before any call"
+    stored = off_loop(host.storage.load_eval_result, result.id, "u")
+    assert stored is not None and stored.claim_failures == {_CRITERION: "provider_error"}, "never read as a new loss"
+
+
+async def test_a_take_up_grades_the_cells_it_runs_on_the_runs_own_web_search() -> None:
+    host, earlier = await _stored_web_cell(_FakeWebJudge(), _FakeWebJudge(), _FakeWebSearch())
+    template = off_loop(host.storage.load_template, _template().id, "u") or _template()
+    second = EvalTestCase(template_id=template.id, scope_id="u")
+    off_loop(host.storage.save_test_case, second)
+    stored_run = off_loop(host.storage.load_eval_run, earlier.eval_run_id, "u")
+    assert stored_run is not None
+    taken_up = stored_run.model_copy(
+        update={
+            "status": "running",
+            "test_case_ids": [earlier.test_case_id, second.id],
+            "lease": JobLease(holder="this-process", expires_at="2099-01-01T00:00:00+00:00", epoch=1),
+        }
+    )
+    off_loop(host.storage.save_eval_run, taken_up)
+    (first_case,) = [c for c in off_loop(host.storage.query_test_cases, "u") if c.id == earlier.test_case_id]
+    row = off_loop(host.storage.load_eval_result, earlier.id, "u")
+    assert row is not None
+    port = _FakeWebSearch()
+    kind = _FakeWebKind()
+
+    await execute_run(
+        host,
+        run=taken_up,
+        template=template,
+        test_cases=[first_case, second],
+        judge_service=_service(_FakeWebJudge()),
+        options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: kind}, web_search=port, external_rates=_RATES),
+        stored=StoredCells(done=(StoredCell.from_result(row),)),
+    )
+
+    assert port.queries == ["Lantern Almanac first printed"], "only the cell the take-up ran searched, on its port"
+    rows = off_loop(host.storage.query_eval_results_by_run, taken_up.id, "u")
+    (ran,) = [r for r in rows if r.test_case_id == second.id]
+    assert ran.claim_failures == {} and ran.claim_tallies[_CRITERION].by_judge[0].web_checked == 1

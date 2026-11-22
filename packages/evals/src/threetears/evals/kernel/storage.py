@@ -2913,6 +2913,37 @@ class EvalStorage:
         """
         self._save(result.to_dict(), if_match=if_match)
 
+    def load_eval_trace_with_etag(self, result_id: str, scope_id: str) -> tuple[EvalTrace | None, str | None]:
+        """Load one result's trace plus the token a conditional rewrite of it must present.
+
+        The trace counterpart of :meth:`load_eval_result_with_etag`, for a claims re-judge, which rewrites a finished
+        cell's trace before its result.
+
+        :return: The trace and its token; ``(None, None)`` when none is stored.
+        """
+        data, etag = self._store.get_with_etag(eval_trace_doc_id(result_id), scope_id)
+        data = self._of_type(EvalTrace, data)
+        if data is None:
+            return None, None
+        return self._hydrate(EvalTrace, data), etag
+
+    def replace_eval_trace(self, trace: EvalTrace, *, if_match: str | None) -> None:
+        """Rewrite a stored result's trace in place, only if nothing else wrote it since it was read, raising when it
+        does not land.
+
+        For a rewrite of a finished result whose claim tallies rest on grades its trace does not hold yet (a claims
+        re-judge): the trace is written first, and the result only once it has landed, so a tally never stands before
+        the grade it is read from, and two re-judges of one cell cannot leave one's grades under the other's tallies.
+        Unlike a cell's own trace write (:meth:`save_eval_result`), a failure is raised, since the caller has not
+        written the result yet and must not.
+
+        :param trace: The trace as it should now stand.
+        :param if_match: The token :meth:`load_eval_trace_with_etag` returned with it; ``None`` writes unconditionally.
+        :raises ConflictError: Something else wrote the trace since it was read.
+        :raises StorageError: The write failed for any other reason.
+        """
+        self._save(trace.to_dict(), if_match=if_match)
+
     def load_eval_trace(self, result_id: str, scope_id: str) -> EvalTrace | None:
         """Load one result's trace payload; ``None`` when it has none.
 

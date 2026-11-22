@@ -758,6 +758,12 @@ class JudgeService:
         """
         return self._client_for(request.config)
 
+    @property
+    def failure_describer(self) -> ProviderFailureDescriber:
+        """The host's reading of what a judge client raises: what a claims call's failure is read by too, so a refusal
+        of the calling account stops the run whichever of the judge's questions met it."""
+        return self._failure_describer
+
     def default_client(self) -> Any:
         """The client a call no config supplies is sent on: the run's judge pin, at the default judge temperature.
 

@@ -31,8 +31,12 @@ differs by arm, so a web failure must never cost a cell the verdicts case eviden
 (`port_error`, never retried), the provider failing a web call (`provider_error`), and a web reply cut short,
 unreadable or still unquoted past its repairs stop the web step: the claims it had not decided read web `lost` and
 `unverifiable`, the checks already decided stand, and the cause is on the grade and the tally as `web_loss` (new,
-optional, beside `ground_loss`). A restatement takes its original's web check and shares its one record. Searches are billed to the cell's `judge` role, in rows of their
-own: `provider` the port's identity, `provider_unit` `query`, one unit and one call per search sent, and no tokens.
+optional, beside `ground_loss`). A criterion's own hold refusing a web call or search (`hold_exceeded`) stops the web
+step as the cost cap does: its claims read `skipped_cap`, never a loss. A restatement takes its original's web check
+and shares its one record. A re-judge grades a lost web criterion again whole, its searches included, live through
+the port it is handed (`rejudge_result(..., web_search=...)`), and refuses one by name before any call when it is
+handed none; a take-up searches through the run's own port. Searches are billed to the cell's `judge` role, in rows of
+their own: `provider` the port's identity, `provider_unit` `query`, one unit and one call per search sent, and no tokens.
 Each is billed at what its result reports it cost (price source `<identity>:reported`), else at the rate the run
 declares for `(identity, "query")`, else at the port's own ceiling (price source `<identity>:price_ceiling`), else
 left unpriced. `ClaimGrade.web_replayed` (new, optional, left out while False) marks a grade whose web checks a
@@ -49,6 +53,48 @@ a web budget is refused there. `ClaimGrade.web_loss`, `ClaimGrade.web_replayed`,
 15.23 build keeps them under its newer-minor tolerance. A build of this unreleased line from before the web check
 refuses a document carrying any of them, so upgrade every reader of the line before running a criterion with a web
 budget.
+
+### evals: re-judging claim criteria, and pricing them before launch
+
+**Added (#1287):** `rejudge_result` re-judges a finished cell's lost claim criteria beside its failed dims, from the
+claim evidence its trace stores, by the run's judge pin. A lost criterion is graded again whole; a completed grade is
+never asked again, a lost ground step on it included. The new grades are written to the trace before the result,
+each write conditional on the document as read (`EvalStorage.load_eval_trace_with_etag`, `replace_eval_trace`), so
+two re-judges of one cell never leave one's grades under the other's tallies; a refusal says what was stored. Each
+re-judge is recorded on `EvalResult.claim_rescores` (`ClaimRescore`), whose spend stays out of the cell's and is
+billed in the program budget beside a dims re-judge's.
+
+**Added:** a criterion whose tally waited on its trace (`trace_pending`) is settled with no call, and under no
+apparatus check (an edited template or moved request settings change nothing it reads): its tally is recomputed from
+the grade the trace stores, and a pending criterion whose trace was never stored reads `trace_lost`. A run settles its
+own pending rows when a holding of it ends and when a take-up starts, before it runs a cell
+(`settle_pending_claims`, `settled_pending_claims`), and a re-judge settles any left before anything else.
+A grade now records its ground step's loss (`ClaimGrade.ground_loss`), so a recomputed tally loses groundedness alone,
+never truth. Each cell records the fingerprint of every criterion it was due (`EvalResult.claim_fingerprints`), graded
+or lost, and a re-judge refuses a criterion by name when today's fingerprint differs, or none was recorded. New
+public names: `reproducible_claim_inputs`, `ReproducibleClaimInputs`, `apply_claim_rejudge`
+(`threetears.evals.run.rejudge`), `ClaimRescore` (`threetears.evals.schema`), `EvalStorage.replace_eval_trace` and
+`JudgeService.failure_describer`, `ResultReading.claim_rescores`.
+
+**Added:** a subject arm's call floor (`price_subject_call_floor`) prices each claim criterion's hold before launch,
+over the smallest claim evidence a cell can render, so an arm whose cap cannot hold even that is refused before any
+launcher runs, naming the criterion; a criterion the judge's client cannot price refuses the arm under a cap. A
+witnessed cell of a kind graded by code is graded on its template's claim criteria, and a witnessed claims call that
+breaks the protocol still counts what it cost against the run's judge ceiling.
+
+**Changed:** a claims call the provider refused for the calling account stops the run after its cell
+(`AccountExhaustedError`), as a dimension's does, whichever step it was; the criterion is lost (`provider_error`, or a
+ground loss) and the cell keeps its trial. A call that would spend past the ceiling its criterion was priced and held
+at is lost as `hold_exceeded`, a new value of `CLAIM_LOSSES`, no longer as `cost_cap`: its reply outgrew what the price
+assumed, which is the pricing's miss, not the cap's. A ground call whose completion breaks the protocol is lost as
+`protocol_defect`, a new value of `CLAIM_LOSSES`, logged at error, no longer as `provider_error`: it stays a ground loss,
+so truth stands, and names the host's client, not a provider.
+
+**For hosts:** a claims re-judge needs the host's completion clients, as a dims re-judge does; a recovery of pending
+criteria sends no call and needs none. `ClaimGrade.ground_loss`, `EvalResult.claim_fingerprints` and
+`EvalResult.claim_rescores` join core minor 15.24, which has not shipped: every released build of core 15 reads them
+under its newer-minor tolerance and keeps them, and the unreleased build before them refuses them by name, so deploy
+and roll back the integration line as one.
 
 ### evals: claim criteria graded in the judge phase
 
@@ -72,11 +118,11 @@ loses the criteria it backs: their tallies are written lost (`trace_lost`), so n
 stored. A run cell's row is written before its trace, so its tallied criteria are first written `trace_pending` (a new
 value of `CLAIM_LOSSES` that is no loss: not yet known), then restored once the trace lands, or written `trace_lost`
 once the trace write is known to have failed. A row left `trace_pending` (a store outage, or a process stopped between
-the writes) reads no claim reading and no loss; its grade is on the trace, so re-grading the criterion recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
+the writes) reads no claim reading and no loss; its grade is on the trace, so a re-judge recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
 The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.
 `RepairBudget` and `PageBudget` now say their budgets are per step and separate.
 
-**Not yet:** re-judging a cell's claims from stored evidence is not built, and nor is the quick path's door.
+**Not yet:** the quick path's door.
 
 **For hosts:** a template with claim criteria needs a judge at launch, whatever its kind declares a judge reads:
 `build_judge_service` now builds one for an unjudged kind whose template declares claim criteria, and a launch whose

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         GoalStateOutcome,
         JudgeCutShort,
         JudgeRepeat,
+        ClaimRescore,
         JudgeRescore,
         JudgeTemperature,
         LatencyMetrics,
@@ -361,6 +362,8 @@ class ResultView(Protocol):
     @property
     def judge_rescores(self) -> Sequence[RescoreView]: ...
     @property
+    def claim_rescores(self) -> Sequence[RescoreView]: ...
+    @property
     def judge_repeats(self) -> Sequence[RepeatView]: ...
     @property
     def judge_seconds(self) -> Sequence[SecondJudgingView]: ...
@@ -642,8 +645,8 @@ class RescoreReading:
     rejudged_at: str
 
     @classmethod
-    def of(cls, rescore: JudgeRescore) -> RescoreReading:
-        """The reading of a stored re-judge."""
+    def of(cls, rescore: JudgeRescore | ClaimRescore) -> RescoreReading:
+        """The reading of a stored re-judge, of the dims or of the claim criteria."""
         return cls(cost_usd=rescore.cost_usd, rejudged_at=rescore.rejudged_at)
 
 
@@ -803,6 +806,7 @@ class ResultReading:
     outcome_score: ScoreReading | None
     judge_config_ids: Mapping[str, str]
     judge_rescores: Sequence[RescoreReading]
+    claim_rescores: Sequence[RescoreReading]
     judge_repeats: Sequence[RepeatReading]
     judge_seconds: Sequence[SecondJudgingReading]
     cost_usd: float | None
@@ -872,6 +876,7 @@ class ResultReading:
             outcome_score=None if outcome is None else ScoreReading.of(outcome, held),
             judge_config_ids=held.names(result.judge_config_ids),
             judge_rescores=tuple(RescoreReading.of(rescore) for rescore in result.judge_rescores),
+            claim_rescores=tuple(RescoreReading.of(rescore) for rescore in result.claim_rescores),
             judge_repeats=tuple(RepeatReading.of(repeat, held) for repeat in result.judge_repeats),
             judge_seconds=tuple(SecondJudgingReading.of(judging, held) for judging in result.judge_seconds),
             cost_usd=result.cost_usd,

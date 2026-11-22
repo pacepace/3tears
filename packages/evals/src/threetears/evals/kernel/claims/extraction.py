@@ -138,8 +138,11 @@ _REPAIR_TEMPLATE: Final = (
 
 #: How much of a model's own earlier reply a later call may echo, priced before any call is made: a call's claims, a
 #: listed item, an answer or a failure it is shown again. The claims a text states are bounded by the text itself, so
-#: the allowance is this many characters of the text the claims come from, plus :data:`ECHO_FLOOR_CHARS`. A ceiling, not
-#: a guess at the bill; a call whose echo outgrows it is refused by the hold that priced it, never sent past it.
+#: the allowance is this many characters of the text the claims come from, plus :data:`ECHO_FLOOR_CHARS`. Bounded by the
+#: text rather than by the reply's output cap, because that cap is the judge client's own setting, which the completion
+#: port does not expose: a prompt carrying an earlier reply can be priced from its source text, never from the cap. A
+#: ceiling, not a guess at the bill; a call whose echo outgrows it is refused by the hold that priced it, never sent
+#: past it, and the criterion is lost as ``hold_exceeded``, the price's miss.
 ECHO_FACTOR: Final = 3
 
 #: The characters of echo every allowance holds however short its text: a claim's framing, a failure named, an answer.
