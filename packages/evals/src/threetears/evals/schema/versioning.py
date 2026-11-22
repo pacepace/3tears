@@ -208,6 +208,9 @@ the document, so extending one is a major. Each, and why:
   what an answer gave, which its ratings are read from (who made an answer is a ``Maker``, above: a person's is read
   as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
   test a preference was read by, and what it read.
+- On a claim read: ``ClaimQuestion``, ``ClaimStratifier``, ``ClaimStratum`` and ``ShownEvidence.provenance`` —
+  what an item asks, the instrument answer its draw is stratified by, the stratum each item stands for (its weight
+  in every figure), and where a piece of shown evidence came from; a new value changes what a figure weights or reads.
 - The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
   ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
   module, for every reader at once.
@@ -1036,7 +1039,7 @@ DURABLE_SCHEMA_VERSION: int = 17
 #: - **v17.10** — a new durable type, the claim read (#1287): ``claim_read`` (``ClaimRead``), one claim criterion's
 #:   graded claims drawn by stratum of the instrument's own answer (its truth verdict, or whether it grounded the
 #:   claim; at most two claims a cell; a seed and each stratum's population, plan and draws on ``ClaimDraw``), each
-#:   item the claim as the instrument read it (``ClaimView``: the claim, its excerpt and segment, the numbered evidence
+#:   item the claim as the instrument read it (``ClaimItemView``: the claim, its excerpt and segment, the numbered evidence
 #:   and web windows, no verdict, citation or arm; its digest the label key) beside the instrument's answer, and the
 #:   answers people (or a model, read apart) gave to the questions ``true``, ``grounded`` and ``is_claim``. Nothing
 #:   derived is stored: every figure is read off the answers when the read is read. Stored through

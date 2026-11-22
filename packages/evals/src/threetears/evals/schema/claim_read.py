@@ -1,10 +1,10 @@
 """A claim read: one claim criterion's graded claims drawn by stratum, each shown as the instrument read it, and what
 people answered of each. The human side of a claim instrument's calibration.
 
-**One item is one claim, as the instrument saw it** (:class:`ClaimView`): the claim, its excerpt with offsets, the
+**One item is one claim, as the instrument saw it** (:class:`ClaimItemView`): the claim, its excerpt with offsets, the
 segment it was said in, and every piece of evidence the instrument numbered for the cell and every web window it read
 for the claim. No verdict, no citation and no arm is on the view, so a rater cannot read the instrument's answer off
-it. Its digest (:func:`claim_view_digest`) is the label's key: two items whose views are byte-identical carry one
+it. Its digest (:func:`item_view_digest`) is the label's key: two items whose views are byte-identical carry one
 label, whichever read drew them.
 
 **The draw is stratified by the instrument's own answer** (:class:`ClaimDraw`): its truth verdict, or whether it
@@ -63,7 +63,7 @@ STRATA_OF: Final[Mapping[str, tuple[ClaimStratum, ...]]] = MappingProxyType(
 CLAIMS_PER_CELL: Final = 2
 
 
-def claim_view_digest(view: ClaimView) -> str:
+def item_view_digest(view: ClaimItemView) -> str:
     """The label key of a view: the sha256 of its canonical JSON.
 
     :param view: The view.
@@ -145,7 +145,7 @@ class ShownEvidence(EvalDocumentModel, CoreShapeModel):
     text: str = Field(min_length=1, description="The passage, key fact or window, verbatim.")
 
 
-class ClaimView(EvalDocumentModel, CoreShapeModel):
+class ClaimItemView(EvalDocumentModel, CoreShapeModel):
     """One claim as a rater reads it: what was said and what the instrument read, and nothing it concluded."""
 
     claim: str = Field(min_length=1, description="The proposition, stated on its own.")
@@ -163,7 +163,9 @@ class ClaimView(EvalDocumentModel, CoreShapeModel):
     def _excerpt_is_its_segments_slice(self) -> Self:
         """:raises ValueError: The excerpt is not the segment's text at its offsets."""
         if self.segment[self.start : self.end] != self.excerpt:
-            raise ValueError(f"the excerpt of claim {self.claim!r} is not its segment's text at {self.start}..{self.end}")
+            raise ValueError(
+                f"the excerpt of claim {self.claim!r} is not its segment's text at {self.start}..{self.end}"
+            )
         return self
 
 
@@ -181,13 +183,13 @@ class ClaimItem(EvalDocumentModel, CoreShapeModel):
     grounded: bool | None = Field(
         default=None, description="Whether the instrument grounded it; None where no ground step read it. Never shown."
     )
-    view_digest: str = Field(pattern=r"^[0-9a-f]{64}$", description="claim_view_digest of the view: the label key.")
-    view: ClaimView
+    view_digest: str = Field(pattern=r"^[0-9a-f]{64}$", description="item_view_digest of the view: the label key.")
+    view: ClaimItemView
 
     @model_validator(mode="after")
     def _digest_is_the_views(self) -> Self:
         """:raises ValueError: ``view_digest`` is not the view's."""
-        if claim_view_digest(self.view) != self.view_digest:
+        if item_view_digest(self.view) != self.view_digest:
             raise ValueError(f"item {self.item!r}'s view_digest is not its view's digest")
         return self
 
@@ -273,10 +275,10 @@ class ClaimRead(DurableDocumentModel):
         for item in self.items:
             if item.arm not in keys:
                 raise ValueError(f"item {item.item!r} comes from arm {item.arm!r}, which is no arm of the read")
-            stratum = item.verdict if self.draw.stratify_by == "truth" else _ground_stratum(item.grounded)
-            if stratum != item.stratum:
+            given = item.verdict if self.draw.stratify_by == "truth" else _ground_stratum(item.grounded)
+            if given != item.stratum:
                 raise ValueError(
-                    f"item {item.item!r} sits in stratum {item.stratum!r}, and its instrument answer gives {stratum!r}"
+                    f"item {item.item!r} sits in stratum {item.stratum!r}, and its instrument answer gives {given!r}"
                 )
             if "grounded" in self.questions and item.grounded is None:
                 raise ValueError(f"item {item.item!r} is asked groundedness, and no ground step read its claim")
@@ -318,7 +320,7 @@ __all__ = [
     "ClaimStratumDraw",
     "ClaimTruthVerdict",
     "ClaimVerdict",
-    "ClaimView",
+    "ClaimItemView",
     "ShownEvidence",
-    "claim_view_digest",
+    "item_view_digest",
 ]

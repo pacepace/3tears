@@ -35,8 +35,8 @@ from threetears.evals.schema.claim_read import (
     ClaimRead,
     ClaimReadArm,
     ClaimVerdict,
-    ClaimView,
-    claim_view_digest,
+    ClaimItemView,
+    item_view_digest,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -119,7 +119,8 @@ def test_a_draw_takes_at_most_two_claims_a_cell_and_counts_each_stratum() -> Non
         per_cell[item.result_id] = per_cell.get(item.result_id, 0) + 1
     assert max(per_cell.values()) <= 2
     assert {s.stratum: s.drawn for s in read.draw.strata} == {
-        s: sum(1 for item in read.items if item.stratum == s) for s in ("contradicted", "true_ungrounded", "unverifiable", "supported")
+        s: sum(1 for item in read.items if item.stratum == s)
+        for s in ("contradicted", "true_ungrounded", "unverifiable", "supported")
     }
     assert sum(s.population for s in read.draw.strata) == sum(len(c.grade.claims) for c in _campaign())
     assert all(s.drawn <= s.planned for s in read.draw.strata)
@@ -158,10 +159,10 @@ def test_an_item_shows_the_claim_as_the_instrument_read_it_and_nothing_it_conclu
 
     (item,) = _draw([cell]).items
 
-    assert set(ClaimView.model_fields) == {"claim", "excerpt", "start", "end", "segment", "evidence"}
+    assert set(ClaimItemView.model_fields) == {"claim", "excerpt", "start", "end", "segment", "evidence"}
     assert [(e.ref, e.provenance) for e in item.view.evidence] == [("S1", "case"), ("S2", "run"), ("W1", "web")]
     assert item.view.evidence[-1].text == cell.grade.web[0].windows[0].text
-    assert item.view_digest == claim_view_digest(item.view)
+    assert item.view_digest == item_view_digest(item.view)
     assert item.verdict == "true_ungrounded"
 
 
@@ -171,7 +172,9 @@ def test_an_item_shows_the_claim_as_the_instrument_read_it_and_nothing_it_conclu
 def test_a_read_refuses_items_that_do_not_add_up_to_its_draw() -> None:
     read = _draw(_campaign(), planned_items=20)
     document = read.model_dump()
-    document["items"][0]["stratum"] = "contradicted" if document["items"][0]["stratum"] != "contradicted" else "supported"
+    document["items"][0]["stratum"] = (
+        "contradicted" if document["items"][0]["stratum"] != "contradicted" else "supported"
+    )
     with pytest.raises(ValidationError, match="its instrument answer gives"):
         ClaimRead.model_validate(document)
     document = read.model_dump()
@@ -185,7 +188,10 @@ def test_a_read_refuses_an_answer_to_a_question_it_does_not_ask_and_a_bool_score
     item = read.items[0].item
     with pytest.raises(ValidationError, match="which the read does not ask"):
         ClaimRead.model_validate(
-            {**read.model_dump(), "answers": [{"item": item, "rater": "ana", "verdicts": [{"question": "grounded", "score": 1}]}]}
+            {
+                **read.model_dump(),
+                "answers": [{"item": item, "rater": "ana", "verdicts": [{"question": "grounded", "score": 1}]}],
+            }
         )
     with pytest.raises(ValidationError):
         ClaimVerdict(question="true", score=True)  # type: ignore[arg-type]
@@ -251,7 +257,11 @@ def test_a_lean_across_arms_reads_not_met_instrument_leans() -> None:
     cells = []
     for arm, run in (("a", "run-a"), ("b", "run-b")):
         for at in range(40):
-            cells.append(graded_cell(run, f"{arm}{at}", ["contradicted", "supported"] if arm == "a" else ["unverifiable", "supported"]))
+            cells.append(
+                graded_cell(
+                    run, f"{arm}{at}", ["contradicted", "supported"] if arm == "a" else ["unverifiable", "supported"]
+                )
+            )
     read = _draw(cells, planned_items=160)
     # People fail every claim the instrument contradicted (arm a) and every claim it could not settle (arm b): the
     # instrument catches arm a's false claims and none of arm b's.

@@ -45,11 +45,13 @@ class Row:
     draws: int
 
 
-#: The rows the certificate counts, by name: equal recall at two, three and four arms at the planned 200 labels, then
-#: one arm whose instrument catches 45% of its false claims against one at 80%, at 400 labels.
+#: The rows the certificate counts, by name: equal recall at two, three and four arms at the planned 200 labels, four
+#: thousand draws each (a false lean's rate sits at the test's 5% level, so the 95% upper bound a claim reads needs
+#: that many to show it under 6%), then one arm whose instrument catches 45% of its false claims against one at 80%, at
+#: 400 labels.
 ROWS: Final[Mapping[str, Row]] = MappingProxyType(
     {
-        **{f"equal.{arms}-arms": Row((0.75,) * arms, 200, 2000) for arms in (2, 3, 4)},
+        **{f"equal.{arms}-arms": Row((0.75,) * arms, 200, 4000) for arms in (2, 3, 4)},
         "lopsided-80-45": Row((0.8, 0.45), 400, 1000),
     }
 )

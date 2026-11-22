@@ -132,12 +132,16 @@ _CRITERION = ClaimCriterion(
     name="almanac.claims",
     pages=PageBudget(per_document_chars=2000, total_chars=4000, window_chars=1000),
     repairs=RepairBudget(rounds=2, max_items_per_cell=4),
-    web=WebBudget(max_queries_per_claim=2, max_checked_per_cell=2, results_per_query=2, page_chars=400, window_chars=200),
+    web=WebBudget(
+        max_queries_per_claim=2, max_checked_per_cell=2, results_per_query=2, page_chars=400, window_chars=200
+    ),
     judge="builtin",
 )
 
 
-def _judge(model: str = "scripted/judge-a", *, verdict: str = "true", doubted: tuple[bool, ...] = (True, False)) -> _FakeJudge:
+def _judge(
+    model: str = "scripted/judge-a", *, verdict: str = "true", doubted: tuple[bool, ...] = (True, False)
+) -> _FakeJudge:
     return _FakeJudge(
         answers={
             "claim_listing": [json.dumps({"claims": [_listed(0, _FIRST), _listed(1, _SECOND)]})],
@@ -152,7 +156,9 @@ def _judge(model: str = "scripted/judge-a", *, verdict: str = "true", doubted: t
 
 async def _first(*, replayed: bool = False) -> tuple[ClaimGrade, _Search]:
     search = _Search(replayed=replayed)
-    graded = await grade_criterion(_CRITERION, _EVIDENCE, key=None, client=_judge(), graded={}, search=search)
+    graded = await grade_criterion(
+        _CRITERION, _EVIDENCE, key=None, client=_judge(), graded={}, search=search, derivation=None
+    )
     assert graded.grade.claims[0].verdict == "true_ungrounded" and graded.grade.web[0].windows
     return graded.grade, search
 

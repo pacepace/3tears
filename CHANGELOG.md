@@ -6,6 +6,51 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a claim read calibrates a claim criterion against people, and a stored grade can be read again
+
+**Added (#1287), provisional:** a new durable type, the claim read (`ClaimRead`, durable 17.10), the human side of a
+claim criterion's calibration. It draws the criterion's graded claims by stratum of the instrument's own answer: its
+truth verdict (`contradicted`, `true_ungrounded`, `unverifiable`, `supported`), or whether it grounded the claim. Each
+stratum is planned by the misses it is expected to hold: a floor of a tenth of the plan each, then Neyman allocation
+over a planning prior of how often people fail a claim of the stratum, so `unverifiable` and `supported`, where the
+instrument's misses hide, are drawn well past an even split. At most two claims come from one cell, and the draw
+records its seed and each stratum's population, plan and draws (`ClaimDraw`, `ClaimStratumDraw`). Each item shows the
+claim as the instrument read it (`ClaimItemView`: the claim, its excerpt and segment, the numbered evidence and the
+web windows), with no verdict, citation or arm; its digest is the label's key. People answer `true` (the claim is not
+false), `grounded` (a document the candidate was given supports it) and `is_claim` (the extractor's precision)
+(`ClaimAnswer`, `ClaimVerdict`). A model's answer is counted and read in no figure. Stored through
+`EvalStorage.save_claim_read`, `load_claim_read_with_etag` and `query_claim_reads`. Nothing derived is stored.
+
+**Read, per question:** the population's 2x2 (the instrument fails a claim, people fail it), weighted by each stratum's
+population over its answered items; kappa on it with a smoothed stratified bootstrap interval (each stratum's answers
+Dirichlet-resampled with Jeffreys' half added, so a stratum people passed whole still carries its spread); each
+stratum's agreement; detection recall, precision and rate bias, overall and per arm. The check's floor counts cells,
+not claims. Whether the instrument leans by arm is one conditional permutation test across every arm, of the
+instrument's answer and the arm given people's answer, so it reads recall and the false-fail rate, the two rates a fair
+instrument holds equal whatever each arm's share of false claims. A lean reads `not_met`, reason `instrument_leans`.
+Precision and bias move with an arm's own share of false claims, so they are shown per arm and not tested. A grade
+whose web results a recording served is left out of the draw and counted, and a read with nothing else reads not
+available (`replayed`). On a host's 954 hand-labelled claims, with a second person's labels on 180 drawn by the first
+person's, people agree at kappa 0.78 (one-sided bounds 0.72 to 0.84), recall 0.78 and precision 0.81.
+
+**Certified** (`claim-read.*`, 4,000 seeded campaigns a row at two, three and four arms, 200 labels and two claims a
+cell): kappa's lower end sits above the campaign's own kappa at most 6% of the time, its upper end falls short at most
+3.5%, and under equal recall the lean test reads a lean at most 6% (α plus a point). An instrument catching 80% of one
+arm's false claims and 45% of the other's, on 400 labels, is read as leaning at least 60% of the time.
+
+**Also added:** a stored claim grade read again (the engine's own; no door yet). The claims are kept as listed, truth
+and groundedness are verified again, and each web verdict is asked again over the windows the grade stored, with no
+search, so the same judge's agreement with itself and a second judge's both reach the web step. A claim the repeat
+doubts that the first grade never checked reads unchecked, never searched. A replayed grade is not read again.
+
+**Left out:** the host door for claim reads and repeats (drawing, sheets, answers, a priced repeat job and where its
+answers are stored); a check of the extractor's recall (misses are listed, not checked); judge campaigns for claims;
+a corrected contrast. `CalibrationRating` does not gain a claim reference: a claim read keeps every answer beside the
+view it was given on.
+
+**For hosts:** nothing to do. A build before this one never reads a claim read, since every read selects by
+`doc_type`; its wipe of durable documents leaves them in place. Rolling back ignores stored claim reads.
+
 ### evals: a host's own readings of a claim criterion's grade
 
 **Added (#1287), provisional:** a host may read a claim criterion's grade into readings of its own. It declares each as

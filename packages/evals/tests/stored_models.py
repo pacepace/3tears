@@ -71,9 +71,9 @@ from threetears.evals.schema.claim_read import (
     ClaimReadArm,
     ClaimStratumDraw,
     ClaimVerdict,
-    ClaimView,
+    ClaimItemView,
     ShownEvidence,
-    claim_view_digest,
+    item_view_digest,
 )
 from threetears.evals.schema.models import (
     builtin_judge_config_id,
@@ -188,7 +188,7 @@ _RATED_CRITERION = RubricDim(name="conversation.tone", description="Warm and on 
 _LABEL_KEY = label_key_of(_RATED_EVIDENCE, _RATED_CRITERION)
 
 #: A claim as a claim read shows it: the claim, its excerpt in its segment, a case passage and a web window.
-_CLAIM_VIEW = ClaimView(
+_CLAIM_VIEW = ClaimItemView(
     claim="The Lantern Almanac was first printed in 1921.",
     excerpt="first printed in 1921",
     start=24,
@@ -395,7 +395,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 claim=0,
                 verdict="supported",
                 grounded=None,
-                view_digest=claim_view_digest(_CLAIM_VIEW),
+                view_digest=item_view_digest(_CLAIM_VIEW),
                 view=_CLAIM_VIEW,
             )
         ],

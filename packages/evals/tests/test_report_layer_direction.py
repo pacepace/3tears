@@ -206,6 +206,7 @@ _NUMBERS_MODULES = frozenset(
         "answer",
         "arms",
         "blind_read",
+        "claim_read",
         "aspects",
         "bar_proposals",
         "campaign_bundle",

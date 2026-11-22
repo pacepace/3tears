@@ -596,6 +596,10 @@ def _shards() -> list[Shard]:
 #: bound over a thousand).
 CLAIM_LOSS_POWER_FLOOR = 0.75
 
+#: The power the lopsided claim-read row floors: an instrument catching 80% of one arm's false claims and 45% of the
+#: other's, read on 400 labels, is read as leaning at least this often (about 68% over a thousand draws).
+CLAIM_READ_POWER_FLOOR = 0.6
+
 #: How far above α a claim-loss null row's 95% upper bound may sit. The permutation test's size is α by construction,
 #: and where ties are few it reaches it, so no draw count could put the bound under α itself. A row instead certifies
 #: the implementation is not anti-conservative: at its draws (``claim_loss_nulls.NULL_DRAWS``) a true rate of 5% clears
@@ -1252,6 +1256,61 @@ def _claims() -> list[Claim]:
                 CLAIM_LOSS_POWER_FLOOR if lopsided else alpha + CLAIM_LOSS_TOLERANCE,
                 f"claim-loss-{row}-<index>, 0-{held.draws - 1} in shards of 100, through the bundle's judged measures",
             )
+        )
+    for row, read in claim_read.ROWS.items():
+        group = f"claim-read-{row}"
+        seeds = (
+            f"claim-read-{row}-<index>, 0-{read.draws - 1} in shards of 100, through draw_claim_read and its reading"
+        )
+        if row.startswith("lopsided"):
+            claims.append(
+                Claim(
+                    f"claim-read.{row}.lean",
+                    f"A claim read of {read.planned} labels over two arms whose instrument catches 80% and 45% of their "
+                    f"false claims reads a lean at least {CLAIM_READ_POWER_FLOOR:.0%} of the time.",
+                    group,
+                    "hits",
+                    "above",
+                    CLAIM_READ_POWER_FLOOR,
+                    seeds,
+                )
+            )
+            continue
+        arms = len(read.recalls)
+        claims.extend(
+            [
+                Claim(
+                    f"claim-read.{row}.lower",
+                    f"At {arms} arms, {read.planned} labels and at most two claims a cell, the smoothed stratified "
+                    "bootstrap's one-sided 95% lower end of kappa sits above the campaign's own kappa at most 6% of "
+                    "the time.",
+                    group,
+                    "low",
+                    "at_most",
+                    0.06,
+                    seeds,
+                ),
+                Claim(
+                    f"claim-read.{row}.upper",
+                    f"At {arms} arms, {read.planned} labels and at most two claims a cell, its one-sided 97.5% upper "
+                    "end falls short of the campaign's own kappa at most 3.5% of the time.",
+                    group,
+                    "high",
+                    "at_most",
+                    0.035,
+                    seeds,
+                ),
+                Claim(
+                    f"claim-read.{row}.lean",
+                    f"Under equal recall at {arms} arms, the one permutation test across every arm reads a lean at "
+                    "most α plus one point.",
+                    group,
+                    "hits",
+                    "at_most",
+                    alpha + 0.01,
+                    seeds,
+                ),
+            ]
         )
     return claims
 

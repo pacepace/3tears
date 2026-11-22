@@ -57,14 +57,17 @@ from threetears.evals.schema.claim_read import (
     ClaimReadArm,
     ClaimStratifier,
     ClaimStratum,
+    ClaimAnswer,
+    ClaimItemView,
     ClaimStratumDraw,
-    ClaimView,
+    ClaimTruthVerdict,
+    ClaimVerdict,
     ShownEvidence,
-    claim_view_digest,
+    item_view_digest,
 )
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import ClaimEvidence, ClaimGrade, utc_now_iso
-from threetears.evals.schema.reading_states import StateOf
+from threetears.evals.schema.reading_states import Reason, StateOf
 
 #: The seed a claim read is drawn by when none is given.
 CLAIM_READ_SEED: Final = 20261122
@@ -78,7 +81,7 @@ PLANNED_ITEMS_DEFAULT: Final = 200
 FLOOR_SHARE: Final = 0.1
 
 #: How likely people are to fail a claim in each stratum, as a planning guess: what Neyman allocation spreads draws
-#: by, never a figure read. From a host's 954 hand-labelled broadcast claims with a second label on 180 drawn by the
+#: by, never a figure read. From a host's 954 hand-labelled claims with a second label on 180 drawn by the
 #: first label: of claims the first label called false the second called 81% false, of those it could not settle 37%,
 #: of those it supported none. ``true_ungrounded`` and the groundedness strata have no such source yet and are guesses.
 MISS_PRIOR: Final[Mapping[ClaimStratum, float]] = MappingProxyType(
@@ -180,7 +183,7 @@ def allocate_draws(
     return planned
 
 
-def claim_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimView:
+def item_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimItemView:
     """One graded claim as a rater reads it: the claim, its excerpt and segment, every piece of evidence the grade
     numbered for the cell and every window its web check of the claim read, and nothing the grade concluded.
 
@@ -202,7 +205,9 @@ def claim_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimV
         assert entry.document is not None and entry.span is not None  # an EvidenceRef is a passage or a key fact
         document = documents.get(entry.document)
         if document is None:
-            raise ValueError(f"the grade numbers {entry.ref!r} of document {entry.document!r}, which the evidence lacks")
+            raise ValueError(
+                f"the grade numbers {entry.ref!r} of document {entry.document!r}, which the evidence lacks"
+            )
         shown.append(
             ShownEvidence(
                 ref=entry.ref,
@@ -214,7 +219,7 @@ def claim_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimV
     record = next((check for check in grade.web if check.claim == place), None)
     for at, window in enumerate(record.windows if record is not None else (), start=1):
         shown.append(ShownEvidence(ref=f"W{at}", provenance="web", title=window.title or window.url, text=window.text))
-    return ClaimView(
+    return ClaimItemView(
         claim=claim.claim,
         excerpt=claim.excerpt,
         start=claim.start,
@@ -232,9 +237,9 @@ class _Candidate:
     stratum: ClaimStratum
 
 
-def _stratum(stratify_by: ClaimStratifier, verdict: str, grounded: bool | None) -> ClaimStratum | None:
+def _stratum(stratify_by: ClaimStratifier, verdict: ClaimTruthVerdict, grounded: bool | None) -> ClaimStratum | None:
     if stratify_by == "truth":
-        return verdict  # type: ignore[return-value]  # a world claim's verdict is one of the truth strata
+        return verdict
     if grounded is None:
         return None
     return "grounded" if grounded else "ungrounded"
@@ -302,6 +307,7 @@ def draw_claim_read(
         arm_key = arm_of_run.get(cell.run_id)
         if arm_key is None:
             continue
+        # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         world = [place for place, claim in enumerate(cell.grade.claims) if claim.scope == "world"]
         if cell.grade.criterion_fingerprint != criterion_fingerprint:
             excluded[EXCLUDED_REDEFINED] += len(world)
@@ -368,7 +374,7 @@ def draw_claim_read(
     for stratum in strata:
         for candidate in taken[stratum]:
             claim = candidate.cell.grade.claims[candidate.place]
-            view = claim_view(candidate.cell.grade, candidate.cell.evidence, candidate.place)
+            view = item_view(candidate.cell.grade, candidate.cell.evidence, candidate.place)
             assert claim.verdict is not None
             items.append(
                 ClaimItem(
@@ -381,7 +387,7 @@ def draw_claim_read(
                     claim=candidate.place,
                     verdict=claim.verdict,
                     grounded=claim.grounded,
-                    view_digest=claim_view_digest(view),
+                    view_digest=item_view_digest(view),
                     view=view,
                 )
             )
@@ -735,9 +741,7 @@ def lean_test(
         xs, arms = groups.setdefault(people, ([], []))
         xs.append(instrument)
         arms.append(arm)
-    informative = [
-        (xs, arms) for xs, arms in groups.values() if len(set(arms)) >= 2 and 0 < sum(xs) < len(xs)
-    ]
+    informative = [(xs, arms) for xs, arms in groups.values() if len(set(arms)) >= 2 and 0 < sum(xs) < len(xs)]
     if not informative:
         return None
 
@@ -749,9 +753,9 @@ def lean_test(
             counts: Counter[int] = Counter(arms)
             for x, arm in zip(xs, arms, strict=True):
                 fails[arm] += x
-            total += sum(
-                counts[arm] * (fails[arm] / counts[arm] - pooled) ** 2 for arm in counts
-            ) / (pooled * (1.0 - pooled))
+            total += sum(counts[arm] * (fails[arm] / counts[arm] - pooled) ** 2 for arm in counts) / (
+                pooled * (1.0 - pooled)
+            )
         return total
 
     observed = statistic([arms for _, arms in informative])
@@ -762,6 +766,13 @@ def lean_test(
             rng.shuffle(arms)
         larger += statistic(shuffled) >= observed - 1e-12
     return (1 + larger) / (1 + permutations)
+
+
+def _persons_verdicts(answer: ClaimAnswer) -> list[ClaimVerdict]:
+    """The verdicts an answer gives as a person's: none of a model's answer, or of a skip."""
+    if answer.made_by != "person" or answer.skipped:
+        return []
+    return answer.verdicts
 
 
 def _person_scores(
@@ -788,10 +799,8 @@ def _person_scores(
             continue
         views = {item.item: item.view_digest for item in other.items}
         for answer in other.answers:
-            if answer.made_by != "person" or answer.skipped:
-                continue
             for item_id in by_view.get(views.get(answer.item, ""), ()):
-                for verdict in answer.verdicts:
+                for verdict in _persons_verdicts(answer):
                     if verdict.question in read.questions:
                         held = scores[item_id].setdefault(verdict.question, {})
                         if answer.rater not in held:
@@ -845,7 +854,9 @@ def read_claim_calibration(
                 continue
             answered.append(item)
             fails = sum(1 - score for score in given) / len(given)
-            points.append(_Point(stratum_index[item.stratum], arm_index[item.arm], instrument_fails(item, question), fails))
+            points.append(
+                _Point(stratum_index[item.stratum], arm_index[item.arm], instrument_fails(item, question), fails)
+            )
         counts = Counter(point.stratum for point in points)
         weights = [population[s] / counts[at] if counts[at] else 0.0 for at, s in enumerate(strata)]
         unread = tuple(s for at, s in enumerate(strata) if population[s] > 0 and counts[at] == 0)
@@ -977,9 +988,11 @@ def _check(
             state=StateOf(state="not_available", reason="replayed"),
         )
     interval = None if kappa.lower is None or kappa.upper is None else (kappa.lower, kappa.upper)
-    tier = calibration_criterion(items, min(cells, items), None if unread else kappa.value, None if unread else interval)
+    tier = calibration_criterion(
+        items, min(cells, items), None if unread else kappa.value, None if unread else interval
+    )
     result = tier.state
-    reason = "instrument_below_bar" if result == "not_met" else None
+    reason: Reason | None = "instrument_below_bar" if result == "not_met" else None
     if lean_p is not None and lean_p <= SIGNIFICANCE_ALPHA:
         result, reason = "not_met", "instrument_leans"
     return Check(

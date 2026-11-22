@@ -116,6 +116,7 @@ async def repeat_grade(
             f"claim criterion {criterion.name!r}'s grade names claim evidence {grade.claim_evidence_digest[:12]}, and "
             f"the trace stores {claim_evidence_digest(evidence)[:12]}"
         )
+    # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
     if not any(claim.scope == "world" for claim in grade.claims):
         return ClaimRepeat(grade=None)
     fields = set(ExtractedClaim.model_fields)
@@ -195,6 +196,7 @@ def repeat_agreement(first: ClaimGrade, repeat: ClaimRepeat) -> RepeatAgreement:
     first_web = {record.claim: record.outcome for record in first.web}
     again_web = {record.claim: record.outcome for record in again.web}
     for place, (a, b) in enumerate(zip(first.claims, again.claims, strict=True)):
+        # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         if a.scope != "world" or a.restates is not None:
             continue
         truth[(_fails(a), _fails(b))] += 1
