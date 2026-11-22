@@ -11,7 +11,10 @@ each answer's claims are graded on the grader's model. The case's own documents 
 a callable; what the candidate read rides beside its answer on ``Answer.documents`` and grounds its claims, never
 decides their truth, and is never cut for room the case's documents need. An answer is one unit unless a cut says
 otherwise. A doubted claim is checked on the web through the search port given, and a page reads every claim reading
-and its caveats as the engine ranks them. The text is invented: a town's bridges and towers.
+and its caveats as the engine ranks them. Readings of your own (``readers``) read each cell's frozen claims and the
+run's own record (``session``), are declared on the host the eval builds and rank beside the criterion's own, and
+``Result.claim_cells()`` reads every cell's readings and verdicts back. The text is invented: a town's bridges and
+towers.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ from threetears.evals import Answer, Eval, Judge, grader
 from threetears.evals.quick import Claims, Document, as_host
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.host import ClaimView
 from threetears.evals.kernel.claims.readings import claim_readings
 from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results, list_runs
@@ -514,3 +519,168 @@ async def test_renaming_the_unit_keeps_the_case_set_and_its_stamp() -> None:
     again = off_loop(get_template, host, before, first.name)
     assert again.claim_unit_names == {"answer.claims": "reply"}
     assert again.updated_at == stored.updated_at, "no run's reading of the template moved"
+
+
+def returns(view: ClaimView) -> float:
+    """World claims naming a town the session record says the story has left."""
+    left = (view.session or {}).get("left", ())
+    return float(sum(1 for claim in view.claims if claim.scope == "world" and any(town in claim.text for town in left)))
+
+
+#: The cases, each with the run's own record: the story has left Harlow.
+PLAYED = [{**case, "played": {"left": ["Harlow"]}} for case in CASES]
+
+
+async def test_a_reading_of_your_own_reads_the_session_record_and_each_cell_reads_back() -> None:
+    """A reading declared on Claims is the host's derived measure, read off each cell's frozen view of its claims and
+    session record; the result reads every cell's readings and verdicts back, arm by arm."""
+    claims = Claims(
+        _FakeClaimsGrader(), case_documents="source", session="played", readers={"returns": (returns, "lower")}
+    )
+    result = await Eval(PLAYED, {"careful": careful, "careless": careless}, [claims], k=1, name="returns").run(
+        store=MEMORY
+    )
+
+    descriptor = result.host.profile.measures.get("answer.claims_returns")
+    assert descriptor is not None
+    assert (descriptor.derived_from, descriptor.family, descriptor.higher_is_better, descriptor.nonnegative) == (
+        "answer.claims",
+        "claims",
+        False,
+        True,
+    )
+    assert descriptor.description == "World claims naming a town the session record says the story has left."
+    cells = off_loop(result.claim_cells)
+    assert [(cell.arm, cell.case, cell.repeat) for cell in cells] == [
+        ("careful", "bridge", 1),
+        ("careful", "tower", 1),
+        ("careless", "bridge", 1),
+        ("careless", "tower", 1),
+    ]
+    assert [cell.readings["answer.claims_returns"] for cell in cells] == [0, 1, 0, 1], "only the tower names Harlow"
+    assert [cell.readings["answer.claims_false_per_unit"] for cell in cells] == [0, 0, 1, 0]
+    assert all(cell.view is not None and cell.lost is None and cell.unread is None for cell in cells)
+    verdicts = [[claim.verdict for claim in cell.view.claims] for cell in cells if cell.view is not None]
+    assert verdicts == [["supported"], ["supported"], ["contradicted"], ["supported"]]
+    first = cells[0].view
+    assert first is not None and first.session == {"left": ("Harlow",)}, "the record, deep-frozen"
+    assert [cell.case for cell in off_loop(result.claim_cells, "careless")] == ["bridge", "tower"]
+    stored = off_loop(get_result_trace, result.host.storage, _results(result, "careful")[1]).claim_evidence
+    assert stored is not None and stored.session == {"left": ["Harlow"]}, "stored as written"
+    assert any(row["measure_id"] == "answer.claims_returns" for row in result.contrasts()), "it ranks the arms"
+
+
+def test_the_session_record_reads_off_a_field_or_the_case_and_its_answer() -> None:
+    said = Claims(_FakeClaimsGrader(), case_documents="source", session=lambda case, answer: {"said": answer})
+    assert said.evidence({"source": "A text."}, "An answer.", None).session == {"said": "An answer."}
+    none = Claims(_FakeClaimsGrader(), case_documents="source", session=lambda case, answer: None)
+    assert none.evidence({"source": "A text."}, "An answer.", None).session is None, "a cell with no record"
+    unset = Claims(_FakeClaimsGrader(), case_documents="source")
+    assert unset.evidence({"source": "A text."}, "An answer.", None).session is None
+    field_read = Claims(_FakeClaimsGrader(), grounded_in="run", session="played")
+    assert field_read.evidence({"played": {"rolls": [14]}}, "An answer.", ()).session == {"rolls": [14]}
+
+    with pytest.raises(ValueError, match="reads the session record from 'played', which this case lacks"):
+        field_read.evidence({}, "An answer.", ())
+    listed = Claims(_FakeClaimsGrader(), grounded_in="run", session=lambda case, answer: ["not", "an", "object"])
+    with pytest.raises(ValueError, match="it is a JSON object"):
+        listed.evidence({}, "An answer.", ())
+    raising = Claims(_FakeClaimsGrader(), grounded_in="run", session=lambda case, answer: case["absent"])
+    with pytest.raises(ValueError, match="the claims grader's session raised KeyError"):
+        raising.evidence({}, "An answer.", ())
+
+
+async def test_a_case_whose_session_record_cannot_be_read_is_left_out_by_name() -> None:
+    cases = [PLAYED[0], CASES[1]]
+    claims = Claims(_FakeClaimsGrader(), case_documents="source", session="played")
+    result = await Eval(cases, careful, [claims], k=1).run(store=MEMORY)
+
+    assert (result.summary.n_scored, result.summary.n_excluded) == (1, 1)
+    assert "reads the session record from 'played', which this case lacks" in result.render()
+
+
+async def test_a_reading_that_fails_on_a_synthetic_cell_is_refused_before_anything_runs() -> None:
+    """Launch reads each reading on a cell with no claim and no session record first: one assuming a record is
+    refused, naming the reading, before any answer is graded."""
+    client = _FakeClaimsGrader()
+    assuming = Claims(
+        client, case_documents="source", readers={"left": (lambda view: len(view.session["left"]), "lower")}
+    )
+
+    with pytest.raises(ValidationFailedError, match="the reading 'answer.claims_left'"):
+        await Eval(PLAYED, careful, [assuming], k=1).run(store=MEMORY)
+    assert client.asked == [], "nothing was graded"
+
+
+async def test_a_host_must_read_the_readings_claims_declares() -> None:
+    bare = Eval(PLAYED, careful, [Claims(_FakeClaimsGrader(), case_documents="source")], k=1)
+    host = as_host([bare], store=MEMORY)
+    reading = Claims(_FakeClaimsGrader(), case_documents="source", readers={"returns": (returns, "lower")})
+
+    with pytest.raises(ValueError, match="does not read the readings Claims 'answer.claims' declares"):
+        await Eval(PLAYED, careful, [reading], k=1).run(host=host)
+    with pytest.raises(ValueError, match="two Claims named 'answer.claims' declare different readings of their own"):
+        as_host([bare, Eval(PLAYED, careful, [reading], k=1)], store=MEMORY)
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+@dataclass
+class _FakeUnreadableGrader:
+    """Answers every call with a reply no schema holds."""
+
+    model_name: str = MODEL
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
+        return _Reply("not json")
+
+    async def aclose(self) -> None:
+        """Nothing to release."""
+
+
+async def test_claim_cells_says_a_lost_cell_and_refuses_an_eval_no_claims_graded() -> None:
+    lost = await Eval(CASES[:1], careful, [Claims(_FakeUnreadableGrader(), case_documents="source")], k=1).run(
+        store=MEMORY
+    )
+    (cell,) = off_loop(lost.claim_cells)
+    assert cell.lost is not None and cell.view is None
+    assert dict(cell.readings) == {"answer.claims_lost": 1.0}
+
+    def exact(case: dict[str, Any], answer: str) -> bool:
+        """Whether the answer is the case's first sentence."""
+        return answer == TRUE[case["town"]]
+
+    unclaimed = await Eval(CASES, careful, [exact], k=1).run(store=MEMORY)
+    with pytest.raises(ValueError, match="graded under no claim criterion"):
+        off_loop(unclaimed.claim_cells)
+    with pytest.raises(ValueError, match="no arm"):
+        off_loop(unclaimed.claim_cells, "absent")
+
+
+@pytest.mark.parametrize(
+    ("readers", "said"),
+    [
+        pytest.param({"two words": (returns, "lower")}, "names each reading by an identifier", id="name"),
+        pytest.param({"false_per_unit": (returns, "lower")}, "one of the criterion's own readings", id="taken"),
+        pytest.param({"returns": returns}, "is (read, better) or (read, better, (low, high))", id="bare"),
+        pytest.param({"returns": ("returns", "lower")}, "reads with a function of a cell's view", id="not-callable"),
+        pytest.param({"returns": (returns, "down")}, "'lower' or 'higher', not 'down'", id="better-end"),
+        pytest.param({"returns": (returns, "lower", (1, 0))}, "by two numbers, low first", id="bounds"),
+        pytest.param([returns], "maps each reading's name to (read, better)", id="not-a-mapping"),
+    ],
+)
+def test_a_reading_of_your_own_that_could_not_be_read_is_refused_where_it_is_written(readers: Any, said: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(said)):
+        Claims(_FakeClaimsGrader(), case_documents="source", readers=readers)
+
+
+def test_a_bounded_reading_declares_its_range_and_a_session_is_a_field_or_a_callable() -> None:
+    share = Claims(_FakeClaimsGrader(), case_documents="source", readers={"share": (returns, "higher", (0, 1))})
+    (descriptor,) = share.derived
+    assert (descriptor.name, descriptor.value_range, descriptor.nonnegative, descriptor.higher_is_better) == (
+        "answer.claims_share",
+        (0.0, 1.0),
+        False,
+        True,
+    )
+    with pytest.raises(ValueError, match="names the case's field holding the run's own record"):
+        Claims(_FakeClaimsGrader(), case_documents="source", session=3)

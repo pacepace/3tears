@@ -6366,6 +6366,11 @@
       "signature": "as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost",
       "tier": "host-contract"
     },
+    "threetears.evals.quick.ClaimCell": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.quick.Claims": {
       "kind": "class",
       "signature": "",
