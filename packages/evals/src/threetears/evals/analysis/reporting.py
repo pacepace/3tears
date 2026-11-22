@@ -1667,6 +1667,12 @@ def project_score_records(
     grounded = {
         criterion for _, result, _ in placed for criterion, tally in result.claim_tallies.items() if tally.grounded
     }
+    # The readings the host derives from each criterion that rank: a lost or pending cell counts its loss on each, as on
+    # the criterion's own ranked readings, so the loss test withholds them alike.
+    derived_ranked: dict[str, list[str]] = {}
+    for descriptor in profile.measures.derived:
+        if descriptor.derived_from is not None and descriptor.higher_is_better is not None:
+            derived_ranked.setdefault(descriptor.derived_from, []).append(descriptor.name)
 
     for run, result, subject_id in placed:
         coordinates: dict[str, Any] = {
@@ -1820,7 +1826,7 @@ def project_score_records(
 
         # One row per claim reading per criterion that graded the cell, in the judged namespace: its name on
         # `rubric_dim`, no rubric scale, its criterion on `instrument`. Each value is a rate or a share computed off the
-        # cell's tally, never a level on a scale, and never part of the composite or any trial's pass, which read the
+        # cell's tally, or a reading the host derives from the criterion stored on it, never a level on a scale, and never part of the composite or any trial's pass, which read the
         # rubric scores alone. A ranked reading the cell lost is a null row whose outcome says so, so an arm counts
         # its losses; a pending tally's rows are null and no loss. A harness-faulted result's rows are null, as its
         # rubric rows are. A candidate failure's are read as they stand: a rate over what the candidate delivered,
@@ -1829,7 +1835,10 @@ def project_score_records(
         claimed: dict[str, ClaimTally | str] = {**result.claim_tallies, **result.claim_failures}
         for criterion in sorted(claimed):
             for reading, value, missing in projected_claim_readings(
-                criterion, claimed[criterion], grounded=criterion in grounded
+                criterion,
+                claimed[criterion],
+                grounded=criterion in grounded,
+                derived_ranked=derived_ranked.get(criterion, ()),
             ):
                 records.append(
                     ScoreRecord(

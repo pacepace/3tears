@@ -72,6 +72,7 @@ from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import (
     refuse_claim_names_a_measure_holds,
+    refuse_unsound_claim_readers,
     refuse_ignored_template_fields,
     refuse_undeclared_judges,
     validated_kind_spec,
@@ -1805,6 +1806,7 @@ def _launchable(
         )
     refuse_ignored_template_fields(template, launchable)
     refuse_claim_names_a_measure_holds(template, profile=host.eval_host.profile)
+    refuse_unsound_claim_readers(template, profile=host.eval_host.profile)
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
     )

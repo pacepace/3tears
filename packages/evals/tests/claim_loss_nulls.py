@@ -1,14 +1,17 @@
 """Claim losses under the null, and one lopsided loss: seeded campaigns read by the bundle's claim-loss test.
 
-Each draw is one campaign of twelve cases: one arm per entry of a row's losses, each arm losing each of its cells to a
+Each draw is one campaign of a row's cases (twelve, but for the rows that lose many cells): one arm per entry of a
+row's losses, each arm losing each of its cells to a
 claim criterion (``rules.claims``, grounded in the arm's own documents) at its own share, or at a share its case sets,
 independently. The draw reads the bundle's judged measures over the projection's rows, as assembly does, and reports
-whether the false claims per unit is withheld (``trials_lost``). Under equal loss a withhold is a false one, which the
-certified ``claim-loss.*`` claims bound at the test's 5% level at two, three and four arms; under a lopsided loss it is
-the test's power, which one claim floors.
+whether the false claims per unit is withheld (``trials_lost``). Under equal loss a withhold is a false one. The test's
+5% is held by its construction (a conditional permutation, whose size is the level, no more); the certified
+``claim-loss.*`` null claims show the implementation is not anti-conservative: its false-withhold rate is not above 5%
+by more than one point at two, three and four arms. Under a lopsided loss a withhold is the test's power, which one
+claim floors.
 
-Read by the statistics certificate (``stats_certificate.py``), never by the unit suite: a row of a thousand draws runs
-for minutes on the pool. ``tests/test_claim_ranking.py`` keeps one fast seeded case of the permutation branch.
+Read by the statistics certificate (``stats_certificate.py``), never by the unit suite: a row of four thousand draws
+runs for minutes on the pool. ``tests/test_claim_ranking.py`` keeps one fast seeded case of the permutation branch.
 """
 
 from __future__ import annotations
@@ -26,6 +29,10 @@ from threetears.evals.schema.models import ClaimJudgeCounts, ClaimTally
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
+#: The draws each null row reads: enough that a true false-withhold rate of 5% clears the certified 6% on the 95% upper
+#: bound (about 5.7% at 4,000 draws) and a true 7% would not.
+NULL_DRAWS: Final = 4000
+
 #: The criterion every draw grades, and the cases each draw runs.
 CRITERION: Final = "rules.claims"
 CASES: Final = 12
@@ -36,24 +43,29 @@ def _clustered(case: int) -> float:
     return 0.36 if case < 3 else 0.013
 
 
+def _sparse_clustered(case: int) -> float:
+    """A loss two fifths of sixty cases carry most of: 60% of their cells, 5% of the rest's, about 27% overall."""
+    return 0.60 if case < 24 else 0.05
+
+
 @dataclass(frozen=True)
 class Row:
-    """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, and how many draws
-    the certificate reads of it."""
+    """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, how many draws
+    the certificate reads of it, and the cases each draw runs."""
 
     losses: tuple[float | Callable[[int], float], ...]
     repeats: int
     draws: int
+    cases: int = CASES
 
 
 #: The rows the certificate counts, by name: equal loss at two, three and four arms, at 10% over two repeats, at 3%, at
-#: one repeat a case and where a few cases carry most of it; then one arm losing nothing against one losing 30%. A
-#: thousand draws a row, and four thousand at four arms, whose rates sit nearest the level (about 4%), so the 95% upper
-#: bound a claim reads can show them under it.
+#: one repeat a case and where a few cases carry most of it; then one arm losing nothing against one losing 30%; then
+#: the rows that lose many cells. :data:`NULL_DRAWS` a null row; a thousand for the power row.
 ROWS: Final[Mapping[str, Row]] = MappingProxyType(
     {
         **{
-            f"{row}.{arms}-arms": Row((loss,) * arms, repeats, 4000 if arms == 4 else 1000)
+            f"{row}.{arms}-arms": Row((loss,) * arms, repeats, NULL_DRAWS)
             for row, loss, repeats in (
                 ("equal-10", 0.10, 2),
                 ("equal-3", 0.03, 2),
@@ -63,6 +75,15 @@ ROWS: Final[Mapping[str, Row]] = MappingProxyType(
             for arms in (2, 3, 4)
         },
         "lopsided-0-30": Row((0.0, 0.30), 2, 1000),
+        # Many losses: forty cases of four repeats at two arms, each losing 20%, about 64 lost cells a draw in dense
+        # strata of eight cells.
+        "many-20.2-arms": Row((0.20, 0.20), 4, NULL_DRAWS, cases=40),
+        # Many losses in sparse strata: sixty cases of one repeat, two fifths of them carrying most of the loss, at
+        # three and four arms (about 49 and 65 lost cells a draw, in strata of three or four cells).
+        **{
+            f"sparse-clustered.{arms}-arms": Row((_sparse_clustered,) * arms, 1, NULL_DRAWS, cases=60)
+            for arms in (3, 4)
+        },
     }
 )
 
@@ -117,7 +138,7 @@ def withheld(row: str, seed: int) -> bool:
     kept = _tally()
     results: list[EvalResult] = []
     for index, (run, loss) in enumerate(zip(runs, held.losses, strict=True)):
-        for case in range(CASES):
+        for case in range(held.cases):
             for k in range(1, held.repeats + 1):
                 lost = draw.random() < (loss(case) if callable(loss) else loss)
                 results.append(

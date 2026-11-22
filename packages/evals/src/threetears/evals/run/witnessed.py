@@ -63,6 +63,7 @@ from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeOutcome, JudgeService, fold_judge_outcomes, judge_clients_for_run
+from threetears.evals.kernel.claims.derived import claim_derivations
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.rejudge import (
@@ -443,6 +444,7 @@ async def record_witnessed_cell(
                     external_rates=external_rates,
                     enforced=run.max_cost_usd is not None,
                     claims_searched=claims_searched,
+                    derivations=claim_derivations(host.profile),
                 )
         except CompletionProtocolDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was

@@ -36,6 +36,62 @@ budget with no `search`, and a `grounded_in` other than `run` and `case`.
 `Claims` and `Document` are provisional. `Answer.documents` is optional and defaults to `None`, so a runner returning an
 `Answer` without it is unchanged; nothing stored gains a field.
 
+### evals: a host's own readings of a claim criterion's grade
+
+**Added (#1287), provisional:** a host may read a claim criterion's grade into readings of its own. It declares each as
+a measure with `derived_from: <criterion>` (`MetricDescriptor.derived_from`), named `<criterion>_<what it reads>` in a
+judge-graded family (`claims`, or a host family `graded_by="judge"`), and registers one `ClaimReader` per criterion on
+`HostProfile.claim_readers`: a pure, synchronous `(ClaimView) -> Mapping[str, float | bool]`. The reader is handed a
+frozen `ClaimView`, never the stored grade or evidence. The view holds each claim (`ViewedClaim`: its text, excerpt,
+scope, verdict, `specific`, `hedged`, `attributed`, unit and segment), each segment (`ViewedSegment`: its text, unit
+and read-only tags), and a deep-frozen copy of the cell's `ClaimEvidence.session`. A back-announce order read against
+the play order, or a narrator's "you rolled a 14" against the roll log, is one such reader. The engine runs the reader
+wherever a criterion's tally is made: after the grade lands (a run's cell, a witnessed cell), on a re-judge, and on
+settling a row pending its trace. A re-measure of a moved definition reads it again from the stored grade. Its answer
+is stored on the tally (`ClaimTally.derived`), so each reading is a judged reading under the criterion's key
+(`ScoreRecord.instrument`). It ranks beside the criterion's own readings where it declares a better end, is lost with
+the criterion, and is withheld by the same one test across every arm. A bar naming one is refused (`ranks_only`). A
+reading the reader leaves out is one the cell does not carry, never a zero.
+
+**A reader's defect never costs a paid cell.** Launch runs each reader the template's criteria are read by on two
+synthetic cells (no claim and no session record; a world and a session claim under an empty one). It refuses one
+that raises there, or answers what its measures cannot hold, naming the criterion and the reader, before any spend.
+On a graded cell, such a reader (`ClaimReaderDefect`) leaves the cell its grade and tally. Its derived readings are
+marked unread (`ClaimTally.derived_unread`, the defect), and the defect is logged at error. The run goes on, and the
+defect is never recorded as a loss or a provider error. Each arm counts the unread cells apart (`JudgedArm.n_claim_unread`,
+`Judged.unread`), outside the mean and as no loss. A class-B caveat names the criterion's reader and the arms
+(`claims_unread:<criterion>`), and the cell's disclosure says so. A re-measure with a fixed reader reads every unread
+cell from its stored grade, whether or not a definition moved. A re-measure whose reader still fails is refused before
+anything is written.
+
+**Refused:** a registry refuses a derived measure in a code-graded family, in no family or in another engine family,
+one not named under its criterion's key, one that is not a number, and one declaring a guardrail, a merit axis or
+`shapes_run`. A profile refuses a derived measure whose criterion has no reader, and a reader no measure derives from.
+A template is refused where a derived measure takes one of its criterion's own reading names. A kind landing a derived
+measure on `host_measures` is refused. A launch logs the criteria the host derives readings from that its template
+does not declare.
+
+**Changed:** the claim-loss test's p is its conditional permutation p at every size. Before, the chi-square law gave it
+above 40 lost cells, where the law runs near its nominal level, so no bound on false withholds could hold there, and a
+reading's p could flip as a campaign crossed 40. At about 10,000 cells on each of four arms with a tenth lost, the 999
+draws take about a second a reading. `measure_definition_digests` leaves `derived_from` out of a descriptor that does
+not declare it, so every stored run's measure definitions read as before. The `claim-loss.*` certified claims gain
+`claim-loss.many-20.2-arms` (20% of 40 cases of four repeats at two arms, about 64 lost cells a draw) and
+`claim-loss.sparse-clustered.3-arms` and `.4-arms` (60 cases of one repeat, two fifths carrying most of the loss, about
+49 and 65 lost cells a draw). Every claim-loss null row now certifies that the implementation is not
+anti-conservative: on 4,000 seeded draws, its false-withhold rate's 95% upper bound is at most 6%, α plus one point.
+The 5% itself is held by the test's construction: a conditional permutation's size is its level, and where ties are few
+it reaches it, so no draw count could put a bound under 5%. The lopsided row's power floor is unchanged.
+
+**For hosts:** `ClaimTally` gains `derived` (left out while empty) and `derived_unread` (left out while None). They
+amend core 15.24, which is unreleased. A build before this change refuses a stored result whose tally carries either
+(`claim_tallies.<criterion>.derived`, extra forbidden); a tally with neither reads as before, checked by loading both
+through the previous build's model. Roll this build out to every process that reads results before any host registers
+a claim reader, and roll back only after removing the readers and re-judging or discarding the cells they read.
+`derived_from`, `HostProfile.claim_readers`, `ClaimReader`, `ClaimView`, `ViewedClaim`, `ViewedSegment` and
+`ClaimReaderDefect` are provisional: their shape may change before they are promised. A reader reads `ClaimView` alone.
+A host whose reader comes to read a field the view gains raises its measures' `definition_revision`.
+
 ### evals: web checks on witnessed cells, and a re-judge that finishes a lost web step
 
 **Added (#1287):** a witnessed cell checks its nominated claims on the web as a run's cell does.
@@ -94,8 +150,7 @@ only the grounded share, and a tally still waiting on its stored grade (`trace_p
 loss. Each arm counts them (`JudgedArm.n_claim_lost`, `n_claim_pending`), and an arm that lost every cell counts them
 on the grounded share too. A reading is withheld (`trials_lost`) and tested in no family when one test across every arm
 says its arms lost cells at shares that differ beyond chance: the Cochran-Mantel-Haenszel test of arm against loss,
-stratified by case, at 5%, whose p is its conditional permutation p (999 draws from a fixed seed) wherever the cases
-that tell arms apart hold at most 40 lost cells. Its rates are certified claims (`claim-loss.*` in the statistics
+stratified by case, at 5%, whose p is its conditional permutation p (999 draws from a fixed seed). Its rates are certified claims (`claim-loss.*` in the statistics
 certificate, a thousand seeded draws each, twelve cases): under equal loss at two, three and four arms (10% over two
 repeats, 3%, one repeat a case, and a loss three cases carry most of), it withholds at most 5% of the time, the 95%
 upper bound; a loss of 0% against 30% is withheld more than 75% of the time, the 95% lower bound. Any loss,

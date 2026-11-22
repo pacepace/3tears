@@ -971,6 +971,16 @@ class JudgedArm(EvalDocumentModel):
             "and counted as no loss: not yet known."
         ),
     )
+    n_claim_unread: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a reading the host derives from a claim criterion: cells its claim reader could not read, left out of "
+            "`n` and the mean and counted as no loss: the cell's grade stands, and a re-measure with a fixed reader "
+            "reads it."
+        ),
+    )
     n_web_skipped: int = Field(
         default=0,
         ge=0,

@@ -343,6 +343,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/claims/grading.py": {},
     "kernel/claims/verification.py": {},
     "kernel/claims/web.py": {},
+    "kernel/claims/derived.py": {},
     "schema/claims.py": {},
     "schema/web_search.py": {},
     "kernel/out_of_run.py": {},

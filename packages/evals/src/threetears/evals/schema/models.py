@@ -6139,6 +6139,10 @@ CLAIM_QUOTE_CHARS: Final[int] = 300
 
 _CLAIM_RECORD = ConfigDict(extra="forbid", frozen=True)
 
+#: The most of a claim reader's defect a tally records (:attr:`ClaimTally.derived_unread`): enough to name the reader,
+#: the exception and its message; the full traceback is the operator's log line.
+CLAIM_READER_DEFECT_CHARS: Final = 500
+
 
 def _serialized_bytes(value: object) -> int:
     """How many bytes ``value`` takes as UTF-8 JSON, as a store would hold it."""
@@ -6701,18 +6705,48 @@ class ClaimTally(CoreShapeModel):
         "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
         "stands. None (left out) when the step did not fail, or was not asked.",
     )
+    derived: dict[str, float] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="The host's readings of the cell's grade under this criterion (each measure declaring "
+        "`derived_from` this criterion), by name, as its claim reader answered them when the tally was made: a "
+        "boolean reading as 1 or 0. A reading the reader left out is one the cell does not carry. Empty (left out) "
+        "for a criterion no measure derives from.",
+    )
+
+    derived_unread: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CLAIM_READER_DEFECT_CHARS,
+        exclude_if=lambda value: value is None,
+        description="Why the host's claim reader could not read this cell (it raised, or answered what its measures "
+        "cannot hold), as recorded when the tally was made: the cell's counts stand, it carries none of the readings "
+        "derived from the criterion, and a re-measure with a fixed reader reads them from the stored grade. None (left "
+        f"out) when the reader read it, or none is registered. At most CLAIM_READER_DEFECT_CHARS "
+        f"({CLAIM_READER_DEFECT_CHARS}) characters.",
+    )
+
+    @field_validator("derived", mode="after")
+    @classmethod
+    def _derived_readings_are_finite(cls, derived: dict[str, float]) -> dict[str, float]:
+        """:raises ValueError: A derived reading is not a finite number, or is named by a blank name."""
+        if bad := sorted(name for name, value in derived.items() if not name.strip() or not math.isfinite(value)):
+            raise ValueError(f"a tally's derived readings are finite numbers under a name, and {bad} are not")
+        return derived
 
     @model_validator(mode="after")
     def _one_entry_per_judge(self) -> Self:
         """Refuse counts the cell's claims could not give.
 
         :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
-            holds a false claim only by holding one); a grounded claim where no documents were declared, where the
+            holds a false claim only by holding one); derived readings beside a reader's defect; a grounded claim where no documents were declared, where the
             ground step was lost, or where the criterion asks no groundedness; a lost ground step where it asks none;
             or two entries for one judge.
         """
         if self.units_with_false > self.units:
             raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
+        if self.derived_unread is not None and self.derived:
+            raise ValueError("a tally whose claim reader could not read the cell carries none of its readings")
         false = sum(entry.asserted_contradicted for entry in self.by_judge)
         if self.units_with_false > false:
             raise ValueError(

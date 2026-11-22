@@ -67,6 +67,7 @@ from contextlib import (
 )
 from dataclasses import dataclass, field, replace
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
 from threetears.evals.kernel.candidate_kind import (
@@ -80,6 +81,7 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,
@@ -2087,6 +2089,7 @@ async def _run_one_result(
             gate=sink.judging_gate,
             awaiting_room=sink.wait_for_room,
             judge_billed=sink.judge_billed,
+            derivations=claim_derivations(host.profile),
             set_aside=judged.set_aside,
             web=options.web_search,
             rates=options.external_rates,
@@ -2495,6 +2498,7 @@ async def _settle_pending_claims(
                 template,
                 through_epoch=through_epoch,
                 lose_untraced=lose_untraced,
+                derivations=claim_derivations(host.profile),
             ),
         )
     except StorageError as unlisted:
@@ -2510,6 +2514,7 @@ async def _run_claims_phase(
     judge_service: JudgeService,
     eval_run_id: str,
     sink: CellSink | None,
+    derivations: Mapping[str, ClaimDerivation],
     gate: _JudgingGate | None = None,
     awaiting_room: Callable[[bool], None] | None = None,
     judge_billed: Callable[[], float] | None = None,
@@ -2553,6 +2558,7 @@ async def _run_claims_phase(
     :param web: The run's web search; ``None`` when it has none, which launch refuses for a criterion with a web
         budget.
     :param rates: The run's rate table, which may price the port's queries.
+    :param derivations: The host's readings of each criterion (``claim_derivations(profile)``), made with its tally.
     :return: The phase's wall clock in milliseconds.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
@@ -2629,6 +2635,7 @@ async def _run_claims_phase(
                     client=claims_client,
                     graded=phase.grades,
                     what=f"Eval run {eval_run_id}: claim criterion {name} for case={test_case.id}",
+                    derivation=derivations.get(name),
                     truth_kept=partial(phase.provisional.__setitem__, name),
                     search=claims_client.search if web is not None and criterion.web is not None else None,
                 )
@@ -2788,6 +2795,7 @@ async def judge_witnessed_output(
     external_rates: ExternalRateTable | None = None,
     enforced: bool = False,
     claims_searched: list[SearchBill] | None = None,
+    derivations: Mapping[str, ClaimDerivation] = MappingProxyType({}),
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, and its claims through the runner's
     own claims phase, as the runner gates them.
@@ -2827,6 +2835,8 @@ async def judge_witnessed_output(
         priced.
     :param claims_searched: A caller-owned list each search is appended to as it is billed, so a caller the phase
         raised to still counts what its searches cost; ``None`` when it keeps none.
+    :param derivations: The host's readings of each claim criterion (``claim_derivations(profile)``), made with each
+        criterion's tally; empty for a host that derives none. A witnessed cell's recording passes its host's.
     :return: What the phases left and their wall clock; ``(None, None)`` when the output gave them nothing to judge.
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
@@ -2878,6 +2888,7 @@ async def judge_witnessed_output(
             sink=None,
             web=web_search,
             rates=external_rates,
+            derivations=derivations,
         )
         judged = _with_claims(judged, claiming, outcomes=outcomes)
         judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
@@ -3076,15 +3087,23 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
 
     :param host_measures: What the kind measured, by name.
     :param measures: The host's measure registry.
-    :raises ValueError: A value's type contradicts its measure's declared data type; the message names each such
-        measure, its declared type and the type recorded.
+    :raises ValueError: A value's type contradicts its measure's declared data type, or it lands a measure derived from
+        a claim criterion, which only the claims phase reads; the message names each such measure and why.
     """
     misfits = [
         f"{name!r} ({misfit})"
         for name, value in sorted(host_measures.items())
         if name.strip()
         and _described(descriptor := describe_measure(name, measures))
-        and (misfit := measure_value_misfit(descriptor, value)) is not None
+        and (
+            misfit := (
+                f"derived from claim criterion {descriptor.derived_from!r}: the engine reads it from the criterion's "
+                "grade, through the host's claim reader, and stores it with the criterion's tally"
+                if descriptor.derived_from is not None
+                else measure_value_misfit(descriptor, value)
+            )
+        )
+        is not None
     ]
     if misfits:
         raise ValueError(

@@ -35,6 +35,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
+from threetears.evals.kernel.claims.derived import ClaimDerivation, derive_claim_readings
+from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally
@@ -62,6 +64,7 @@ from threetears.evals.schema.completion import CompletionClient, CompletionProto
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import (
+    CLAIM_READER_DEFECT_CHARS,
     CLAIM_TRACE_BYTES,
     ClaimCall,
     ClaimCriterion,
@@ -169,25 +172,52 @@ def criterion_fingerprints(template: EvalTemplate, client: CompletionClient) -> 
     }
 
 
-def grade_tally(grade: ClaimGrade, evidence: ClaimEvidence, criterion: ClaimCriterion) -> ClaimTally:
+def grade_tally(
+    grade: ClaimGrade, evidence: ClaimEvidence, criterion: ClaimCriterion, *, derivation: ClaimDerivation | None
+) -> ClaimTally:
     """The tally a stored grade gives, recomputed from it alone: what the cell's result stores for the criterion.
 
     The grade records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a recomputed tally loses
-    groundedness exactly where the grading did, and never truth.
+    groundedness exactly where the grading did, and never truth. The host's readings of the grade
+    (:mod:`~threetears.evals.kernel.claims.derived`) are made here too, so no tally is ever built without them; where
+    the host's reader fails, the tally keeps its counts and records the defect (``ClaimTally.derived_unread``).
 
     :param grade: The criterion's grade of the cell, as the trace stores it.
     :param evidence: The claim evidence it graded, as the trace stores it.
     :param criterion: The criterion, whose ``grounded_in`` the counts read.
+    :param derivation: The host's readings of the criterion (its reader and measures), or None for a criterion no
+        measure derives from. Required, so every caller says which.
     :return: The tally.
-    :raises ValueError: The grade does not grade ``evidence`` (another digest), or its claims do not give a tally
-        (:func:`~threetears.evals.kernel.claims.readings.claim_tally`).
+    :raises ValueError: The grade does not grade ``evidence`` (another digest), its claims do not give a tally
+        (:func:`~threetears.evals.kernel.claims.readings.claim_tally`), or ``derivation`` is another criterion's.
     """
+    if derivation is not None and derivation.criterion != criterion.name:
+        raise ValueError(
+            f"claim criterion {criterion.name!r} is tallied with the readings derived from {derivation.criterion!r}"
+        )
     if grade.claim_evidence_digest != claim_evidence_digest(evidence):
         raise ValueError(
             f"claim criterion {criterion.name!r}'s grade names claim evidence {grade.claim_evidence_digest[:12]}, "
             f"and the trace stores {claim_evidence_digest(evidence)[:12]}"
         )
-    return claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
+    tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
+    if derivation is None:
+        return tally
+    try:
+        derived = derive_claim_readings(derivation, grade, evidence)
+    except ClaimReaderDefect as defect:
+        # The host's code failed on a cell whose grade is paid for: the cell keeps its grade and its counts, its derived
+        # readings are marked unread with the defect, and the operator sees it here; a re-measure with a fixed reader
+        # reads them from the stored grade.
+        contain(
+            defect,
+            log=log,
+            what=f"The host's claim reader for criterion {criterion.name!r} could not read a cell; its derived "
+            "readings are marked unread until a re-measure with a fixed reader reads them",
+            level="error",
+        )
+        return tally.model_copy(update={"derived_unread": str(defect)[:CLAIM_READER_DEFECT_CHARS]})
+    return tally.model_copy(update={"derived": derived})
 
 
 def claim_evidence_digest(evidence: ClaimEvidence) -> str:
@@ -357,6 +387,7 @@ async def grade_criterion(
     key: ReferenceKey | None,
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
+    derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
 ) -> GradedCriterion:
@@ -374,6 +405,7 @@ async def grade_criterion(
     :param client: The judge's client.
     :param graded: The grades the cell's trace already holds from the criteria graded before this one, which the
         trace's cap counts beside this one.
+    :param derivation: The host's readings of the criterion, made with every tally (:func:`grade_tally`), or None.
     :param truth_kept: Told what the cell keeps if its deadline strikes in a later step: before a ground step starts,
         the grade and tally its truth step leaves, its ground step lost to the deadline (``ground_loss``
         ``deadline``), since the ground step's length grows with what the arm fetched; and before a web step starts,
@@ -437,7 +469,7 @@ async def grade_criterion(
             web,
             size=lambda grade: claim_payload_bytes(evidence, {**graded, criterion.name: grade}),
         )
-        tally = grade_tally(grade, evidence, criterion)
+        tally = grade_tally(grade, evidence, criterion, derivation=derivation)
         return GradedCriterion(
             grade=grade, tally=tally, ground_failure=verification.ground_failure, web_failure=failure
         )
@@ -489,6 +521,7 @@ async def grade_or_loss(
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
     what: str,
+    derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
 ) -> GradedCriterion | KnownClaimLoss:
@@ -497,7 +530,8 @@ async def grade_or_loss(
     Every way the criterion fails is its own loss, logged: a step's (:class:`ClaimGradingFailed`), and the provider
     failing a call (``provider_error``). Raised instead, failing what asked, since neither is an outcome of the cell:
     a completion that breaks the protocol in the extraction or a truth call, and a call the rig could not serve (a
-    replay's miss).
+    replay's miss). The host's claim reader failing is neither a loss nor raised: the tally records it
+    (:func:`grade_tally`).
 
     :param criterion: The criterion.
     :param evidence: The cell's claim evidence.
@@ -505,6 +539,7 @@ async def grade_or_loss(
     :param client: The judge's client.
     :param graded: The grades the cell's trace already holds from criteria graded before this one.
     :param what: What is graded, for the log line a loss writes ("Eval run r: claim criterion c for case=k").
+    :param derivation: See :func:`grade_criterion`.
     :param truth_kept: See :func:`grade_criterion`.
     :param search: The host's search, for a criterion with a web budget (:func:`grade_criterion`). A caller refuses
         such a criterion with no search before it asks anything (the run's launch refusal), so a missing one never
@@ -515,7 +550,14 @@ async def grade_or_loss(
     """
     try:
         return await grade_criterion(
-            criterion, evidence, key=key, client=client, graded=graded, truth_kept=truth_kept, search=search
+            criterion,
+            evidence,
+            key=key,
+            client=client,
+            graded=graded,
+            derivation=derivation,
+            truth_kept=truth_kept,
+            search=search,
         )
     except ClaimGradingFailed as failed:
         # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.
@@ -546,6 +588,7 @@ async def finish_web_step(
     client: CompletionClient,
     graded: Mapping[str, ClaimGrade],
     search: Search,
+    derivation: ClaimDerivation | None,
 ) -> GradedCriterion:
     """Finish the web step a stored grade lost (its ``web_loss``), and only that step.
 
@@ -563,6 +606,7 @@ async def finish_web_step(
     :param client: The judge's client.
     :param graded: The trace's other criteria's grades, which its cap counts beside this one.
     :param search: The host's search, billed by the caller.
+    :param derivation: The host's readings of the criterion, made with the finished grade's tally, or None.
     :return: The grade with its web step finished, and its tally.
     :raises ValueError: The grade lost no web step, the criterion declares no web budget, it would grade under another
         fingerprint than the grade's, or the grade does not grade ``evidence``.
@@ -621,7 +665,9 @@ async def finish_web_step(
         size=lambda candidate: claim_payload_bytes(evidence, {**graded, criterion.name: candidate}),
         kept=grade.web,
     )
-    return GradedCriterion(grade=finished, tally=grade_tally(finished, evidence, criterion), web_failure=failure)
+    return GradedCriterion(
+        grade=finished, tally=grade_tally(finished, evidence, criterion, derivation=derivation), web_failure=failure
+    )
 
 
 __all__: list[str] = []
