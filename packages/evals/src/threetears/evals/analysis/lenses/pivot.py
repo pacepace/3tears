@@ -769,7 +769,7 @@ def compute_pivot(
             name, criterion = min(
                 (r.rubric_dim or "", r.instrument or "") for r in selected if r.instrument is not None
             )
-            claimed = describe_claim_reading(name, criterion=criterion)
+            claimed = describe_claim_reading(name, criterion=criterion, measures=profile.measures)
             measure = measure.model_copy(update={"value_range": claimed.value_range})
 
     # The no-pooling rule, enforced before any number is computed rather than as a badge after:

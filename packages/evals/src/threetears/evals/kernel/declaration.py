@@ -1845,7 +1845,7 @@ def refuse_an_undeclarable_design(
     # goal-state names; with no template only the two reserved axes every run scores are known.
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
-    claimed = template_claim_readings(template) if template is not None else {}
+    claimed = template_claim_readings(template, profile.measures) if template is not None else {}
     _refuse_unreadable_guardrail_margins(design, template)
     _refuse_unread_measure_order(design, template, profile)
     resolved = {

@@ -2518,7 +2518,7 @@
     },
     "threetears.evals.kernel.MetricDescriptor": {
       "kind": "model",
-      "signature": "MetricDescriptor(name: str, reader_name: str | None = None, data_type: MetricDataType | None = None, family: MetricFamily | None = None, transferability_class: TransferabilityClass, attribution_scope: AttributionScope, description: str, higher_is_better: bool | None = None, value_range: tuple[float, float] | None = None, nonnegative: bool = False, categories: tuple[str, ...] | None = None, unit: str | None = None, materiality_threshold: float | None = None, formula: str | None = None, reader_prose: str | None = None, merit_axis: MeritAxis | None = None, population: MeasurePopulation | None = None, scale: MeasureScale | None = None, contained_by: str | None = None, diagnostic: bool = False, subject_spend: bool = False, guardrail: bool = False, pass_fail: bool = False, definition_revision: int = 0, shapes_run: bool = False)",
+      "signature": "MetricDescriptor(name: str, reader_name: str | None = None, data_type: MetricDataType | None = None, family: MetricFamily | None = None, transferability_class: TransferabilityClass, attribution_scope: AttributionScope, description: str, higher_is_better: bool | None = None, value_range: tuple[float, float] | None = None, nonnegative: bool = False, categories: tuple[str, ...] | None = None, unit: str | None = None, materiality_threshold: float | None = None, formula: str | None = None, reader_prose: str | None = None, merit_axis: MeritAxis | None = None, population: MeasurePopulation | None = None, scale: MeasureScale | None = None, contained_by: str | None = None, diagnostic: bool = False, subject_spend: bool = False, guardrail: bool = False, pass_fail: bool = False, definition_revision: int = 0, shapes_run: bool = False, derived_from: str | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.MetricFamily": {
@@ -3186,6 +3186,21 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.ClaimReader": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ClaimReaderDefect": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ClaimView": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.Comparability": {
       "kind": "literal",
       "signature": "",
@@ -3253,7 +3268,7 @@
     },
     "threetears.evals.kernel.host.HostProfile": {
       "kind": "dataclass",
-      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), world: WorldRegistry | None = None, variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, measure_rereader: MeasureRereader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
+      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), world: WorldRegistry | None = None, variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, measure_rereader: MeasureRereader | None = None, claim_readers: Mapping[str, ClaimReader] = dict(), kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.IgnoresTemplateFields": {
@@ -3448,6 +3463,16 @@
     },
     "threetears.evals.kernel.host.VariantLeverReader": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ViewedClaim": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ViewedSegment": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

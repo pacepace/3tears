@@ -1009,6 +1009,7 @@ Everything the engine knows about one consuming product.
 | `action_parameters` | `ActionParameterReader \| None` | `None` | How a goal check learns which of a call's recorded parameters are closed values. |
 | `tool_actions` | `ToolActionReader \| None` | `None` | How a goal check learns which actions a tool has, so a misspelled one is refused at authoring. |
 | `measure_rereader` | `MeasureRereader \| None` | `None` | How this host reads a stored result's measures again under its current definitions. See `MeasureRereader`. |
+| `claim_readers` | `Mapping[str, ClaimReader]` | `dict()` | PROVISIONAL. How this host reads each claim criterion's grade into its own readings of it, by criterion name. See `ClaimReader`. |
 | `kinds` | `tuple[KindContract, ...]` | `()` | What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec. |
 | `listing_elisions` | `frozenset[str]` | `frozenset()` | Paths inside `EvalRun.host_payload` that a read LISTING many runs leaves out. |
 | `release_label` | `str \| None` | `None` | The `label` sweepable whose value names the BUILD of the product that ran — an app version. |

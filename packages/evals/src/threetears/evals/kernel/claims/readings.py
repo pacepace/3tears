@@ -10,7 +10,10 @@ composite:
 - **R2** ``<c>_grounded_share``: of asserted specific world claims, the share a document the candidate itself was given
   supports, for a criterion declaring ``grounded_in``. Higher is better.
 
-Every other reading is a diagnostic: it explains a movement and has no better end. What a claim's tags mean for each
+Every other reading is a diagnostic: it explains a movement and has no better end. A host may add readings of its own,
+computed from each cell's grade and claim evidence by its claim reader and stored on the tally
+(:mod:`~threetears.evals.kernel.claims.derived`): each is described by the host's descriptor, ranks where that declares
+a better end, and is lost, pending and withheld as the criterion's own are. What a claim's tags mean for each
 count (a session claim counts in none of the world readings; a hedged or attributed claim is graded for truth and kept
 out of the asserted counts; a statement the text backs with a source is asserted) is settled once, in
 :func:`claim_tally`.
@@ -25,6 +28,7 @@ from dataclasses import dataclass, fields
 from types import MappingProxyType
 from typing import Final
 
+from threetears.evals.kernel.claims.derived import derived_descriptors
 from threetears.evals.kernel.metrics import CLAIMS_FAMILY, MetricDescriptor, describe_rubric_dim, list_metrics
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.schema import (
@@ -39,6 +43,7 @@ from threetears.evals.schema import (
 from threetears.evals.schema.models import (
     CLAIM_PENDING,
     ClaimCall,
+    ClaimCriterion,
     GradedClaim,
     RubricScale,
     request_settings_order,
@@ -287,7 +292,8 @@ def claim_readings(
         (:attr:`EvalResult.claim_failures`).
     :param grounded: Whether the criterion declares ``grounded_in``; None reads it off the tally
         (:attr:`ClaimTally.grounded`), which a lost cell's single reading does not need.
-    :return: Each reading the cell carries, by name; none while its tally waits on its trace
+    :return: Each reading the cell carries, by name, the host's derived readings (:attr:`ClaimTally.derived`) after the
+        engine's; none while its tally waits on its trace
         (:data:`~threetears.evals.schema.models.CLAIM_PENDING`), which is not yet known and never a loss.
     :raises ValueError: ``grounded`` disagrees with the tally's own record of whether its criterion asks groundedness.
     """
@@ -328,11 +334,15 @@ def claim_readings(
         "ground_lost": (0.0 if tally.ground_loss is None else 1.0) if grounded else None,
         "lost": 0.0,
     }
-    return {f"{criterion}_{suffix}": float(value) for suffix, value in values.items() if value is not None}
+    readings = {f"{criterion}_{suffix}": float(value) for suffix, value in values.items() if value is not None}
+    return {**readings, **{name: value for name, value in tally.derived.items() if name not in readings}}
 
 
-def describe_claim_reading(name: str, *, criterion: str, unit: str = "unit") -> MetricDescriptor:
-    """Describe one of a criterion's readings by construction, as a rubric dimension is described.
+def describe_claim_reading(
+    name: str, *, criterion: str, unit: str = "unit", measures: MeasureRegistry | None = None
+) -> MetricDescriptor:
+    """Describe one of a criterion's readings by construction, as a rubric dimension is described, or a reading the
+    host derives from it by the host's own descriptor.
 
     Judge-mediated: a model listed and graded every claim it counts, so a reading is comparable only under the same
     judge. The description states the reading's population and the evidence its claims were graded on.
@@ -342,15 +352,23 @@ def describe_claim_reading(name: str, *, criterion: str, unit: str = "unit") -> 
         name may hold ``_``, so a reading's name alone does not say where the criterion's ends.
     :param unit: What a page calls one unit of the criterion (``EvalTemplate.claim_unit_names``), for its reader
         name only: presentation, never part of what the reading is.
+    :param measures: The host's measure registry, which describes the readings it derives from the criterion
+        (``MetricDescriptor.derived_from``); None where a surface holds none, which describes the engine's alone.
     :return: The descriptor.
-    :raises ValueError: ``name`` is not ``criterion`` and one of its reading suffixes.
+    :raises ValueError: ``name`` is neither ``criterion`` and one of its reading suffixes nor a measure ``measures``
+        derives from it.
     """
     prefix = f"{criterion}_"
     reading = _READINGS.get(name[len(prefix) :]) if name.startswith(prefix) else None
     if reading is None:
+        if (derived := derived_descriptors(measures, criterion).get(name)) is not None:
+            return derived
         raise ValueError(
-            f"{name!r} is no reading of claim criterion {criterion!r}; its readings are "
+            f"{name!r} is no reading of claim criterion {criterion!r}"
+            + (", and no host registry was given to describe one it derives" if measures is None else "")
+            + "; its readings are "
             + ", ".join(f"{criterion}_{suffix}" for suffix in _READINGS)
+            + "".join(f", {derived}" for derived in derived_descriptors(measures, criterion))
         )
     units = _plural(unit)
     words = reading.words.format(unit=unit, units=units, Units=units[:1].upper() + units[1:])
@@ -390,14 +408,20 @@ def _plural(noun: str) -> str:
     return noun + "s"
 
 
-def claim_reading_ranks(name: str, *, criterion: str) -> bool:
-    """Whether a criterion's reading is one of the three that rank, rather than a diagnostic.
+def claim_reading_ranks(name: str, *, criterion: str, measures: MeasureRegistry | None = None) -> bool:
+    """Whether a criterion's reading is one that ranks, rather than a diagnostic.
 
     :param name: The reading's name.
     :param criterion: The criterion it reads.
-    :return: True for the false claims per unit, the share of units with a false claim and the grounded share.
+    :param measures: The host's measure registry, whose readings derived from the criterion rank where they declare a
+        better end; None for the engine's readings alone.
+    :return: True for the false claims per unit, the share of units with a false claim and the grounded share, and a
+        derived reading with a better end.
     """
-    return name.startswith(f"{criterion}_") and name[len(criterion) + 1 :] in _RANKED
+    if name.startswith(f"{criterion}_") and name[len(criterion) + 1 :] in _READINGS:
+        return name[len(criterion) + 1 :] in _RANKED
+    derived = derived_descriptors(measures, criterion).get(name)
+    return derived is not None and derived.higher_is_better is not None
 
 
 #: The ``outcome`` a projected claim row carries where its criterion lost the cell, or, on the grounded share, where
@@ -407,6 +431,12 @@ CLAIM_LOST_OUTCOME: Final = "claim_lost"
 #: (:data:`~threetears.evals.schema.models.CLAIM_PENDING`): no value and no loss, counted apart so the population
 #: never shrinks without a word.
 CLAIM_PENDING_OUTCOME: Final = "claim_pending"
+
+#: The ``outcome`` a projected row of a reading the host derives from a criterion carries where its claim reader could
+#: not read the cell (:attr:`~threetears.evals.schema.models.ClaimTally.derived_unread`): no value and no loss, since the
+#: cell's grade stands and a re-measure with a fixed reader reads it, counted apart so the population never shrinks
+#: without a word.
+CLAIM_UNREAD_OUTCOME: Final = "claim_unread"
 
 #: What each reading's claims rest on, as a calibration question names it (``<criterion>.<question>``): the
 #: groundedness readings on whether the documents shown support a claim, the counts of claims on whether the judge's
@@ -438,7 +468,7 @@ def ranked_claim_reading_names(criterion: str, *, grounded: bool) -> tuple[str, 
 
 
 def projected_claim_readings(
-    criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool
+    criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded: bool, derived_ranked: Collection[str] = ()
 ) -> list[tuple[str, float | None, str | None]]:
     """One cell's rows under one criterion, as the score projection emits them: ``(reading, value, outcome)``, the
     outcome None where the row takes the cell's own.
@@ -452,6 +482,9 @@ def projected_claim_readings(
     :param outcome: The cell's tally under it, or why it lost it.
     :param grounded: Whether the criterion asks groundedness, for a cell with no tally to say so (a lost or pending
         one); a tally's own record wins.
+    :param derived_ranked: The readings the host derives from the criterion that rank, which a lost or pending cell
+        counts as the criterion's own ranked readings are counted, and a cell its reader could not read counts under
+        :data:`CLAIM_UNREAD_OUTCOME`; a ground or web step's loss never touches them.
     :return: The rows, valued ones first.
     """
     rows: list[tuple[str, float | None, str | None]] = [
@@ -459,20 +492,30 @@ def projected_claim_readings(
     ]
     if isinstance(outcome, str):
         missing = CLAIM_PENDING_OUTCOME if outcome == CLAIM_PENDING else CLAIM_LOST_OUTCOME
-        rows += [(name, None, missing) for name in ranked_claim_reading_names(criterion, grounded=grounded)]
-    elif outcome.grounded and outcome.ground_loss is not None:
-        rows.append((f"{criterion}_grounded_share", None, CLAIM_LOST_OUTCOME))
+        rows += [
+            (name, None, missing)
+            for name in (*ranked_claim_reading_names(criterion, grounded=grounded), *sorted(derived_ranked))
+        ]
+    else:
+        if outcome.grounded and outcome.ground_loss is not None:
+            rows.append((f"{criterion}_grounded_share", None, CLAIM_LOST_OUTCOME))
+        if outcome.derived_unread is not None:
+            rows += [(name, None, CLAIM_UNREAD_OUTCOME) for name in sorted(derived_ranked)]
     return rows
 
 
-def claim_reading_is_share(name: str, criterion: str) -> bool:
+def claim_reading_is_share(name: str, criterion: str, measures: MeasureRegistry | None = None) -> bool:
     """Whether a criterion's reading is a share on 0 to 1, rather than a count or a rate per unit.
 
     :param name: The reading's name.
     :param criterion: The criterion it reads.
+    :param measures: The host's measure registry, which describes the readings it derives from the criterion. Where
+        a surface holds none, a derived reading reads as no share, so a page prints its number as it stands.
     :return: Whether it is a share.
     """
-    return describe_claim_reading(name, criterion=criterion).value_range == (0.0, 1.0)
+    if measures is None and not (name.startswith(f"{criterion}_") and name[len(criterion) + 1 :] in _READINGS):
+        return False
+    return describe_claim_reading(name, criterion=criterion, measures=measures).value_range == (0.0, 1.0)
 
 
 def claim_reading_question(name: str, *, criterion: str) -> str:
@@ -480,11 +523,17 @@ def claim_reading_question(name: str, *, criterion: str) -> str:
     for a truth reading, ``<criterion>.grounded`` for a groundedness one, ``<criterion>.is_claim`` for a count of
     claims.
 
+    A reading the host derives from the criterion rests on ``is_claim``: code read the claims the judge listed (the
+    session ones above all, whose truth no step grades) against the cell's own record.
+
     :param name: The reading's name.
     :param criterion: The criterion it reads.
     :return: The question.
     """
-    return f"{criterion}.{_QUESTION_OF.get(name.removeprefix(f'{criterion}_'), 'true')}"
+    suffix = name.removeprefix(f"{criterion}_")
+    if suffix not in _READINGS:
+        return f"{criterion}.is_claim"
+    return f"{criterion}.{_QUESTION_OF.get(suffix, 'true')}"
 
 
 def claim_judge_config_id(criterion: str, fingerprint: str) -> str:
@@ -503,6 +552,7 @@ def describe_judged_reading(
     scales: Mapping[str, RubricScale],
     instruments: Mapping[str, str],
     units: Mapping[str, str] | None = None,
+    measures: MeasureRegistry | None = None,
 ) -> MetricDescriptor:
     """Describe a reading of the judged namespace: a claim criterion's reading, or a rubric dimension.
 
@@ -514,12 +564,16 @@ def describe_judged_reading(
     :param instruments: The criterion each claim reading belongs to, by reading name (:func:`claim_instruments`).
     :param units: What a page calls one unit of each criterion (``EvalTemplate.claim_unit_names``); ``unit`` where
         none is named.
+    :param measures: The host's measure registry, which describes the readings it derives from a criterion.
     :return: The descriptor.
-    :raises ValueError: ``name`` is no claim reading and no scale was recorded for it.
+    :raises ValueError: ``name`` is no claim reading and no scale was recorded for it, or a claim reading neither the
+        engine nor ``measures`` describes.
     """
     criterion = instruments.get(name)
     if criterion is not None:
-        return describe_claim_reading(name, criterion=criterion, unit=(units or {}).get(criterion, "unit"))
+        return describe_claim_reading(
+            name, criterion=criterion, unit=(units or {}).get(criterion, "unit"), measures=measures
+        )
     return describe_rubric_dim(name, scale=rubric_dim_scale(name, scales))
 
 
@@ -542,18 +596,29 @@ def claim_instruments(rows: Iterable[tuple[str | None, str | None]]) -> dict[str
     return found
 
 
-def template_claim_readings(template: EvalTemplate) -> dict[str, MetricDescriptor]:
+def template_claim_readings(
+    template: EvalTemplate, measures: MeasureRegistry | None = None
+) -> dict[str, MetricDescriptor]:
     """Every reading a template's claim criteria give, described, by name: what a bar may name before any result.
 
     :param template: The template.
+    :param measures: The host's measure registry, whose readings derived from one of the template's criteria join the
+        criterion's own; None for the engine's alone.
     :return: ``{reading: descriptor}``.
     """
     return {
-        name: describe_claim_reading(
-            name, criterion=criterion.name, unit=template.claim_unit_names.get(criterion.name, "unit")
-        )
-        for criterion in template.claim_criteria
-        for name in claim_reading_names(criterion.name, grounded=criterion.grounded_in is not None)
+        **{
+            name: describe_claim_reading(
+                name, criterion=criterion.name, unit=template.claim_unit_names.get(criterion.name, "unit")
+            )
+            for criterion in template.claim_criteria
+            for name in claim_reading_names(criterion.name, grounded=criterion.grounded_in is not None)
+        },
+        **{
+            name: descriptor
+            for criterion in template.claim_criteria
+            for name, descriptor in derived_descriptors(measures, criterion.name).items()
+        },
     }
 
 
@@ -565,15 +630,20 @@ def claim_names_a_measure_holds(template: EvalTemplate, measures: MeasureRegistr
     figure), so a template whose criterion takes one is refused where it is admitted and where it launches
     (:func:`~threetears.evals.run.authoring.refuse_claim_names_a_measure_holds`). Within the
     template the same rule holds against its rubric and its other criteria (``EvalTemplate``'s own validation).
+    A measure the host derives from the criterion (``MetricDescriptor.derived_from``) is one of its readings and takes
+    its name rightly, unless the name is one the criterion's own readings take.
 
     :param template: The template.
     :param measures: The host's measure registry, whose catalogue joins the engine's core.
     :return: The refusal, naming each criterion and the measures it takes; None when no criterion takes one.
     """
-    described = [descriptor.name for descriptor in list_metrics(measures)]
+    described = list_metrics(measures)
     taken = {
         criterion.name: sorted(
-            name for name in described if name == criterion.name or name.startswith(f"{criterion.name}_")
+            descriptor.name
+            for descriptor in described
+            if (descriptor.name == criterion.name or descriptor.name.startswith(f"{criterion.name}_"))
+            and not _derived_from(descriptor, criterion)
         )
         for criterion in template.claim_criteria
     }
@@ -583,6 +653,14 @@ def claim_names_a_measure_holds(template: EvalTemplate, measures: MeasureRegistr
         f"claim criterion {criterion!r} owns its name and every name {criterion + '_...'!r} for its readings, and the "
         f"host describes the measure{'s' if len(names) > 1 else ''} {', '.join(map(repr, names))}"
         for criterion, names in sorted(clashes.items())
+    )
+
+
+def _derived_from(descriptor: MetricDescriptor, criterion: ClaimCriterion) -> bool:
+    """Whether ``descriptor`` is a reading the host derives from ``criterion`` under a name of its own: one the
+    criterion's engine readings do not take, so it sits under the criterion's key as one of its readings."""
+    return descriptor.derived_from == criterion.name and descriptor.name not in claim_reading_names(
+        criterion.name, grounded=True
     )
 
 

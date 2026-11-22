@@ -851,6 +851,7 @@ def assemble_context_bundle(
             tiers=bundle.judge_evidence_tiers,
             person_scores=person_scores,
             claim_units=_claim_units(runs, templates),
+            registry=profile.measures,
         )
     ]
     bundle.bar_adjudications = bar_adjudications(

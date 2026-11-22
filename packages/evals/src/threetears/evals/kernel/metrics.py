@@ -602,6 +602,20 @@ class MetricDescriptor(EvalBaseModel):
             "and a re-measure refuses it (`remeasure_run`)."
         ),
     )
+    derived_from: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "PROVISIONAL. The claim criterion this measure is a host's reading of, computed from the criterion's grade "
+            "of each cell and the cell's claim evidence (`ClaimEvidence.session` above all) by the "
+            "`ClaimReader` the host registers for that criterion on `HostProfile.claim_readers`. Such a measure is a "
+            "judged reading under the criterion's key: named `<criterion>_<suffix>`, in a judge-graded family "
+            "(`claims`, or a host family graded_by='judge'), stored with the criterion's tally, and ranked, withheld "
+            "and lost with the criterion's own readings, never landed by a kind on `host_measures`. None (left out) "
+            "for every other measure."
+        ),
+    )
 
     @property
     def is_check(self) -> bool:
@@ -720,8 +734,13 @@ _MEASURE_DEFINITION_FIELDS: Final[frozenset[str]] = frozenset(
         "contained_by",
         "definition_revision",
         "shapes_run",
+        "derived_from",
     }
 )
+
+#: The definition fields digested only once set: a field added to the digest after runs recorded it, so a measure that
+#: does not declare it keeps the digest every stored run recorded for it.
+_DIGESTED_ONCE_SET: Final[frozenset[str]] = frozenset({"derived_from"})
 
 #: The descriptor fields that say how a stored value is READ, never what it counts: its names and prose
 #: (:data:`MEASURE_PRESENTATION_FIELDS`, its description), its better end, margin, merit axis and population, and how
@@ -773,7 +792,8 @@ _DEFINITION_FIELDS: Final[frozenset[str]] = _checked_definition_fields()
 def _measure_definition_digest(descriptor: MetricDescriptor) -> str:
     """Digest what a measure is, so two runs can be shown to have read it under one definition.
 
-    Over :data:`_MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value, through
+    Over :data:`_MEASURE_DEFINITION_FIELDS` alone, every one present whatever its value except those of
+    :data:`_DIGESTED_ONCE_SET`, which are present only once set, through
     :func:`~threetears.evals.schema.hashing.canonical_digest`: the order a store hands the keys back in cannot move
     it, and neither can a reader name, a description or a better end. A change in
     the host's reading code behind an unchanged descriptor reaches it only through ``definition_revision``, which
@@ -782,7 +802,13 @@ def _measure_definition_digest(descriptor: MetricDescriptor) -> str:
     :param descriptor: The measure's descriptor, as its host declares it now.
     :return: A 64-character hex digest.
     """
-    return canonical_digest({name: getattr(descriptor, name) for name in _DEFINITION_FIELDS})
+    return canonical_digest(
+        {
+            name: getattr(descriptor, name)
+            for name in _DEFINITION_FIELDS
+            if name not in _DIGESTED_ONCE_SET or getattr(descriptor, name) is not None
+        }
+    )
 
 
 def measure_definition_digests(descriptors: Iterable[MetricDescriptor]) -> dict[str, str]:

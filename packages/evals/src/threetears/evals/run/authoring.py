@@ -53,6 +53,7 @@ from threetears.evals.kernel.dsl import (
     undefined_fire_references,
     world_prose_matches,
 )
+from threetears.evals.kernel.claims.derived import claim_derivations, claim_reader_refusal
 from threetears.evals.kernel.claims.readings import claim_names_a_measure_holds
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost, IgnoresTemplateFields, TemplateCaseFields, TemplateChecks
@@ -138,6 +139,43 @@ def refuse_claim_names_a_measure_holds(template: EvalTemplate, *, profile: HostP
     if (clash := claim_names_a_measure_holds(template, profile.measures)) is not None:
         raise ValidationFailedError(
             f"template {template.name!r}: {clash}", remedy="rename the claim criterion, or the host's measure"
+        )
+
+
+def refuse_unsound_claim_readers(template: EvalTemplate, *, profile: HostProfile) -> None:
+    """Refuse a launch whose host's claim reader for one of the template's criteria fails on a synthetic cell.
+
+    Each reader the template's criteria are read by is run first on two synthetic views
+    (:func:`~threetears.evals.kernel.claims.derived.claim_reader_refusal`): a cell with no claim and no session record,
+    and one with a world claim and a session claim under an empty one. A reader that raises there, or answers what its
+    measures cannot hold, would mark paid cells unread, so it is refused by name before any spend. Readings the host
+    derives from criteria the template does not declare are named in the log, since a criterion misnamed alike in a
+    measure and its reader would otherwise be admitted and never read.
+
+    :param template: The template about to launch.
+    :param profile: The host, whose claim readers are checked.
+    :raises ValidationFailedError: A reader for one of the template's criteria fails on a synthetic cell.
+    """
+    derivations = claim_derivations(profile)
+    declared = {criterion.name for criterion in template.claim_criteria}
+    refusals = [
+        refusal
+        for name in sorted(declared & set(derivations))
+        if (refusal := claim_reader_refusal(derivations[name])) is not None
+    ]
+    if refusals:
+        raise ValidationFailedError(
+            f"template {template.name!r}: " + "; ".join(refusals),
+            remedy="fix the claim reader so it reads any cell (no claims, no session record) and answers only its "
+            "measures' names and values, then launch again",
+        )
+    if undeclared := sorted(set(derivations) - declared):
+        log.info(
+            "template %r launches without the claim criteria %s, which host %r derives readings from; those readings "
+            "are not read on its runs",
+            template.name,
+            ", ".join(map(repr, undeclared)),
+            profile.host_id,
         )
 
 
@@ -1133,6 +1171,7 @@ __all__ = [
     "list_rubric_dims",
     "list_templates",
     "refuse_claim_names_a_measure_holds",
+    "refuse_unsound_claim_readers",
     "refuse_undeclared_judges",
     "refuse_unsupplied_world",
     "update_judge_config",

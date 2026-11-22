@@ -20,7 +20,7 @@ interprets. The host chooses what a scope is and passes it through.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
@@ -33,6 +33,7 @@ from threetears.evals.schema.models import CLAIM_PENDING, NON_TERMINAL_RUN_STATU
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
+from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
 from threetears.evals.kernel.claims.grading import GradedCriterion, finish_web_step, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -322,7 +323,7 @@ async def rejudge_result(
     storage = host.storage
     # Every read and write below is a store call, so each runs on the host's blocking executor, off the loop.
     settled, were_pending = await run_blocking(
-        host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id
+        host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id, claim_derivations(host.profile)
     )
     # Settled, and nothing else failed: a criterion settled lost here had no stored trace, which nothing can grade.
     if (
@@ -383,7 +384,9 @@ async def rejudge_result(
         if claim_inputs is not None:
             billing = _BilledClaimsClient(judge_service.default_client(), web=web_search, rates=external_rates)
             try:
-                regraded = await _regrade_claims(claim_inputs, billing, result_id=result_id)
+                regraded = await _regrade_claims(
+                    claim_inputs, billing, result_id=result_id, derivations=claim_derivations(host.profile)
+                )
             except CompletionProtocolDefect, ApparatusError:
                 log.error(
                     "eval.rejudge_result result=%s run=%s — a claims call could not be read or served, so nothing was "
@@ -534,7 +537,11 @@ class _BilledClaimsClient:
 
 
 async def _regrade_claims(
-    inputs: ReproducibleClaimInputs, client: _BilledClaimsClient, *, result_id: str
+    inputs: ReproducibleClaimInputs,
+    client: _BilledClaimsClient,
+    *,
+    result_id: str,
+    derivations: Mapping[str, ClaimDerivation],
 ) -> dict[str, GradedCriterion | str]:
     """Grade each criterion a claims re-judge grades again, whole, and finish each lost web step, in the template's
     order, beside the grades the trace keeps.
@@ -558,6 +565,7 @@ async def _regrade_claims(
                 client=client,
                 graded={other: grade for other, grade in graded.items() if other != name},
                 search=client.search,
+                derivation=derivations.get(name),
             )
         else:
             outcome = await grade_or_loss(
@@ -567,6 +575,7 @@ async def _regrade_claims(
                 client=client,
                 graded=graded,
                 what=f"Re-judge of result {result_id}: claim criterion {name}",
+                derivation=derivations.get(name),
                 search=client.search if criteria[name].web is not None else None,
             )
         regraded[name] = outcome
@@ -610,7 +619,7 @@ def _rejudge_spend(updated: EvalResult, *, before: EvalResult) -> float | None:
 
 
 def _settle_before_rejudge(
-    storage: EvalStorage, result_id: str, scope_id: str
+    storage: EvalStorage, result_id: str, scope_id: str, derivations: Mapping[str, ClaimDerivation]
 ) -> tuple[EvalResult | None, frozenset[str]]:
     """Settle a result's pending claim criteria before anything of a re-judge is checked or asked.
 
@@ -641,7 +650,9 @@ def _settle_before_rejudge(
     if template is None:
         raise NotFoundError("template", run.template_id, remedy=FIND_TEMPLATE)
     try:
-        settled = settled_pending_claims(result, storage.load_eval_trace(result_id, scope_id), template)
+        settled = settled_pending_claims(
+            result, storage.load_eval_trace(result_id, scope_id), template, derivations=derivations
+        )
     except ValueError as unreadable:
         raise ValidationFailedError(
             f"result '{result_id}''s stored claim grade gives no tally: {unreadable}",
