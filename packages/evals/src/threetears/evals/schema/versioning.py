@@ -525,7 +525,8 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``web_loss`` a web step lost alone, costing only the web's decisions, as ``ClaimGrade.web_loss`` records it) and
 #:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
 #:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
-#:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``). Each is left
+#:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``, whose
+#:   ``web_steps`` names the completed criteria whose lost web step alone it finished). Each is left
 #:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims

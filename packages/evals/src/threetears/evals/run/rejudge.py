@@ -18,7 +18,11 @@ under an apparatus the run did not record would be a different measurement filed
 evidence the cell's trace stores, by the run's judge pin, and only under the definition the cell recorded for each
 criterion (``EvalResult.claim_fingerprints``), refused by name when today's fingerprints otherwise. A lost criterion
 is graded again whole; a completed grade is never asked again, a lost ground step on it included, since its truth
-stands. A criterion whose tally waited on its trace (``trace_pending``) costs no call and passes no apparatus check
+stands. The one exception is a completed grade whose web step was lost alone (its tally's ``web_loss``): that step,
+and only that step, is finished, over the claims it left lost, and the checks it made are never searched again. A
+criterion or web step lost to the trace's cap (``evidence_over_cap``) is never graded again: its evidence is the
+same, so the grade would outgrow the trace again, and a re-judge with nothing else to do refuses it by name. A
+criterion whose tally waited on its trace (``trace_pending``) costs no call and passes no apparatus check
 (:func:`settled_pending_claims`): its tally is recomputed from the grade the trace stores
 (:func:`~threetears.evals.kernel.claims.grading.grade_tally`), and once the cell's writes are done a pending criterion
 whose trace was never stored is lost (``trace_lost``). A run settles its own pending rows when a holding of it ends and
@@ -29,7 +33,7 @@ replay keys each by its prompt: a document changed since the recording is anothe
 from __future__ import annotations
 
 from collections.abc import Collection
-from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, Protocol
 
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,
@@ -226,6 +230,8 @@ class ReproducibleClaimInputs(NamedTuple):
     trace: EvalTrace
     #: The lost criteria to grade again whole, in the template's order.
     regrade: tuple[str, ...]
+    #: The completed criteria whose lost web step alone is finished, in the template's order.
+    web_steps: tuple[str, ...] = ()
 
     @property
     def claim_evidence(self) -> ClaimEvidence:
@@ -233,6 +239,55 @@ class ReproducibleClaimInputs(NamedTuple):
         evidence = self.trace.claim_evidence
         assert evidence is not None  # reproducible_claim_inputs refuses a trace without it
         return evidence
+
+
+#: The loss a criterion, or its web step, is never graded again from: the trace's cap. The evidence a re-judge reads is
+#: the evidence the cell graded, so the grade would outgrow the trace again, and the calls would be paid to fail.
+_UNCHANGED_EVIDENCE_LOSS: Final = "evidence_over_cap"
+
+
+def claims_due_rejudge(result: EvalResult) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What a re-judge of ``result`` grades again of its claim criteria: each lost one, whole, and each completed one
+    whose web step was lost alone (its tally's ``web_loss``), that step alone; neither one lost to the trace's cap.
+
+    :param result: The stored result.
+    :return: The criteria to grade again whole, and those whose web step is finished, each in the result's order.
+    """
+    whole = tuple(name for name, loss in result.claim_failures.items() if loss != _UNCHANGED_EVIDENCE_LOSS)
+    web = tuple(
+        name
+        for name, tally in result.claim_tallies.items()
+        if tally.web_loss is not None and tally.web_loss != _UNCHANGED_EVIDENCE_LOSS
+    )
+    return whole, web
+
+
+def _claims_over_the_trace(result: EvalResult) -> tuple[str, ...]:
+    """The claim criteria ``result`` lost, whole or their web step, to the trace's cap, which no re-judge grades again.
+
+    :param result: The stored result.
+    :return: Their names, in the result's order.
+    """
+    lost = [name for name, loss in result.claim_failures.items() if loss == _UNCHANGED_EVIDENCE_LOSS]
+    webbed = [name for name, tally in result.claim_tallies.items() if tally.web_loss == _UNCHANGED_EVIDENCE_LOSS]
+    return tuple([*lost, *webbed])
+
+
+def refuse_claims_over_the_trace(result: EvalResult) -> None:
+    """Refuse a claims re-judge whose only criteria to grade again were lost to the trace's cap, before any call.
+
+    :param result: The stored result.
+    :raises ValidationFailedError: It holds such a criterion and nothing else of its claims to grade again.
+    """
+    if any(claims_due_rejudge(result)) or not (over := _claims_over_the_trace(result)):
+        return
+    raise ValidationFailedError(
+        f"result '{result.id}' lost claim criteria {', '.join(map(repr, over))} to the trace's cap "
+        f"({_UNCHANGED_EVIDENCE_LOSS}), and a re-judge grades the same evidence: the grade would outgrow the trace "
+        "again, so it is never graded again",
+        remedy="have the kind truncate the documents it hands the claims grader so the evidence fits, and run the "
+        "cell again",
+    )
 
 
 def reproducible_claim_inputs(
@@ -251,9 +306,12 @@ def reproducible_claim_inputs(
     since it launched, and its case loads. Each lost criterion is graded again whole from the claim evidence the trace
     stores, only under the definition the cell recorded for it (``EvalResult.claim_fingerprints``): today's
     fingerprint otherwise, or none recorded, refuses it by name, as a dim asked by another prompt is refused. A
-    completed grade is never asked again. A pending criterion (``trace_pending``) is settled with no call and under
-    none of these checks (:func:`settle_pending_claims`) before this is asked; one still pending here holds no stored
-    grade, and is graded again.
+    completed grade is never asked again, except that a grade whose web step was lost alone has that step finished,
+    under the same rule, from the grade the trace stores (:func:`claims_due_rejudge`). One lost to the trace's cap is
+    left as it is, and refused by name when it is all there is (:func:`refuse_claims_over_the_trace`). A pending
+    criterion (``trace_pending``) is settled with no call and under none of these checks
+    (:func:`settle_pending_claims`) before this is asked; one still pending here holds no stored grade, and is graded
+    again.
 
     :param storage: The eval store the result lives in.
     :param result: The result whose claim criteria are re-judged.
@@ -261,17 +319,20 @@ def reproducible_claim_inputs(
     :param scope_id: The partition they live in.
     :param client: The judge's client every claims call would be sent on, which names its model; today's
         fingerprints are read through it.
-    :param web: The web search a lost criterion with a web budget is graded again on, live, as the run's launch
-        required; ``None`` refuses such a criterion by name, before any call.
+    :param web: The web search a lost criterion with a web budget, or a lost web step, is graded again on, live, as
+        the run's launch required; ``None`` refuses such a criterion by name, before any call.
     :return: The records, and the criteria to grade again.
-    :raises ValidationFailedError: The result lost no criterion; the run is still running or recorded no judge; a
-        criterion it lost is no longer the template's, declares a web budget and no web search is given, would grade
-        under another definition than the cell recorded, or has no stored claim evidence to be graded again from.
+    :raises ValidationFailedError: The result lost no criterion and no web step, or only to the trace's cap; the run
+        is still running or recorded no judge; a criterion it lost is no longer the template's, declares a web budget
+        and no web search is given, would grade under another definition than the cell recorded, or has no stored
+        claim evidence (or, for a web step, no stored grade) to be graded again from.
     :raises NotFoundError: The template or the case does not load.
     """
-    if not result.claim_failures:
+    refuse_claims_over_the_trace(result)
+    whole, webbed = claims_due_rejudge(result)
+    if not whole and not webbed:
         raise ValidationFailedError(
-            f"result '{result.id}' lost no claim criterion, so there is none to re-judge",
+            f"result '{result.id}' lost no claim criterion and no web step, so there is none to re-judge",
             remedy="read its claim readings as they are",
         )
     if run.status in NON_TERMINAL_RUN_STATUSES:
@@ -282,16 +343,18 @@ def reproducible_claim_inputs(
     judge_model = recorded_judge_pins(run, request_settings="today", claims_only=True)
     template = judged_template(storage, run, scope_id)
     criteria = {criterion.name: criterion for criterion in template.claim_criteria}
-    if strays := sorted(set(result.claim_failures) - set(criteria)):
+    if strays := sorted({*whole, *webbed} - set(criteria)):
         raise ValidationFailedError(
             f"result '{result.id}' lost claim criteria {', '.join(map(repr, strays))}, which template "
             f"'{template.id}' no longer declares",
             remedy=RELAUNCH_TO_REJUDGE,
         )
-    regrade = tuple(name for name in criteria if name in result.claim_failures)
+    regrade = tuple(name for name in criteria if name in whole)
+    web_steps = tuple(name for name in criteria if name in webbed)
     try:
-        # A lost criterion is graded again whole, its web step included, so one with a web budget searches live.
-        refuse_web_without_search([criteria[name] for name in regrade], template=template.name, web=web)
+        # A lost criterion is graded again whole, its web step included, and a lost web step is finished: either
+        # searches live.
+        refuse_web_without_search([criteria[name] for name in (*regrade, *web_steps)], template=template.name, web=web)
     except ValueError as unsearched:
         raise ValidationFailedError(
             str(unsearched), remedy="pass the run's web search to the re-judge (web_search)"
@@ -299,12 +362,22 @@ def reproducible_claim_inputs(
     trace = storage.load_eval_trace(result.id, scope_id)
     if trace is None or trace.claim_evidence is None:
         raise ValidationFailedError(
-            f"result '{result.id}' lost claim criteria {', '.join(map(repr, regrade))}, and its trace stores no claim "
-            "evidence to grade them again from",
+            f"result '{result.id}' lost claim criteria {', '.join(map(repr, (*regrade, *web_steps)))}, and its trace "
+            "stores no claim evidence to grade them again from",
+            remedy=RELAUNCH_TO_REJUDGE,
+        )
+    if unstored := [
+        name
+        for name in web_steps
+        if name not in trace.claim_grades or trace.claim_grades[name].web_loss != result.claim_tallies[name].web_loss
+    ]:
+        raise ValidationFailedError(
+            f"result '{result.id}' lost the web step of claim criteria {', '.join(map(repr, unstored))}, and its "
+            "trace stores no grade of theirs that lost it, to finish the step from",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     today = criterion_fingerprints(template, client)
-    for name in regrade:
+    for name in (*regrade, *web_steps):
         recorded = result.claim_fingerprints.get(name)
         if recorded is None:
             raise ValidationFailedError(
@@ -322,7 +395,12 @@ def reproducible_claim_inputs(
     if test_case is None:
         raise NotFoundError("test_case", result.test_case_id, remedy=FIND_TEST_CASE)
     return ReproducibleClaimInputs(
-        template=template, test_case=test_case, judge_model=judge_model, trace=trace, regrade=regrade
+        template=template,
+        test_case=test_case,
+        judge_model=judge_model,
+        trace=trace,
+        regrade=regrade,
+        web_steps=web_steps,
     )
 
 
@@ -336,23 +414,29 @@ def apply_claim_rejudge(
 ) -> tuple[EvalResult, EvalTrace | None]:
     """Land a claims re-judge on the result and its trace where the claims phase would have put it.
 
-    Each criterion graded again lands its tally on the result and its grade on the trace, or its loss again. Every
-    other criterion, tallied or lost, is left as it stands. A :class:`~threetears.evals.schema.models.ClaimRescore`
-    recording it is appended.
+    Each criterion graded again lands its tally on the result and its grade on the trace, or its loss again. A
+    criterion whose web step was finished lands its grade and tally the same way, its web step's loss again, if any,
+    on the tally and in the rescore's ``lost``: it is never lost whole. Every other criterion, tallied or lost, is left
+    as it stands. A :class:`~threetears.evals.schema.models.ClaimRescore` recording it is appended.
 
     :param result: The stored result. Not mutated.
     :param inputs: What the re-judge read (:func:`reproducible_claim_inputs`).
-    :param regraded: criterion -> its new grade, or its loss, for each of ``inputs.regrade``.
+    :param regraded: criterion -> its new grade, or its loss, for each of ``inputs.regrade``; and its grade with its
+        web step finished for each of ``inputs.web_steps``.
     :param usage: The re-judge's judge-role usage rows.
     :param cost_usd: What it cost; ``None`` when any call went unpriced.
     :return: The result as it now stands, and the trace to store first when a grade moved on it (``None`` when none
         did).
-    :raises ValueError: ``regraded`` does not name exactly the criteria ``inputs`` grades again.
+    :raises ValueError: ``regraded`` does not name exactly the criteria ``inputs`` grades again, or names a loss for
+        a criterion whose web step alone was finished.
     """
-    if set(regraded) != set(inputs.regrade):
+    if set(regraded) != {*inputs.regrade, *inputs.web_steps}:
         raise ValueError(
-            f"a claims re-judge grades again {sorted(inputs.regrade)}, and its outcomes name {sorted(regraded)}"
+            f"a claims re-judge grades again {sorted({*inputs.regrade, *inputs.web_steps})}, and its outcomes name "
+            f"{sorted(regraded)}"
         )
+    if whole := sorted(name for name in inputs.web_steps if isinstance(regraded[name], str)):
+        raise ValueError(f"claim criteria {whole} had their web step finished, which never loses a criterion whole")
     tallies = dict(result.claim_tallies)
     failures = dict(result.claim_failures)
     lost: dict[str, ClaimLoss] = {}
@@ -360,18 +444,27 @@ def apply_claim_rejudge(
     for name, outcome in regraded.items():
         if isinstance(outcome, str):
             failures[name] = lost[name] = outcome
-        else:
-            failures.pop(name)
-            tallies[name] = outcome.tally
-            grades[name] = outcome.grade
+            continue
+        failures.pop(name, None)
+        tallies[name] = outcome.tally
+        grades[name] = outcome.grade
+        if name in inputs.web_steps and outcome.tally.web_loss is not None:
+            lost[name] = outcome.tally.web_loss
     trace: EvalTrace | None = None
     if grades or set(regraded) & set(inputs.trace.claim_grades):
         kept = {name: grade for name, grade in inputs.trace.claim_grades.items() if name not in regraded}
         trace = inputs.trace.model_copy(update={"claim_grades": {**kept, **grades}})
+    order = [name for name in (criterion.name for criterion in inputs.template.claim_criteria) if name in regraded]
+    prior: dict[str, ClaimLoss] = {}
+    for name in order:
+        before = result.claim_tallies[name].web_loss if name in inputs.web_steps else result.claim_failures[name]
+        assert before is not None  # a web step is finished only where its tally carries the loss
+        prior[name] = before
     rescore = ClaimRescore(
-        criteria=list(inputs.regrade),
-        prior={name: result.claim_failures[name] for name in inputs.regrade},
+        criteria=order,
+        prior=prior,
         lost=lost,
+        web_steps=list(inputs.web_steps),
         judge_model=inputs.judge_model,
         usage=usage,
         cost_usd=cost_usd,
@@ -830,11 +923,13 @@ __all__ = [
     "RequestSettingsPolicy",
     "apply_claim_rejudge",
     "apply_rejudge",
+    "claims_due_rejudge",
     "failed_judge_dims",
     "judged_template",
     "recorded_judge_configs",
     "recorded_judge_pins",
     "recorded_judged_dims",
+    "refuse_claims_over_the_trace",
     "reproducible_claim_inputs",
     "reproducible_judge_inputs",
     "request_settings_drift",
