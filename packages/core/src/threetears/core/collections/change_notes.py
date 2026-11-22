@@ -259,15 +259,14 @@ def _noted_rows_step(
     # a whole-table note (no key_text) is the window's own only from whole_from on, filtered in the statement: the
     # (table_name, noted_at) index carries key_text, so nothing is read beyond the range. Before (2026-11-22, the
     # write marks' last change) the filter compared the answered row's ``noted`` column, which is TRUE, never a time:
-    # every whole note on the named-rows path was dropped. No end is 'infinity', one statement either way
-    # the window's end only when there is one (a lost advance's recovery): every other ask reads to the ring's end,
-    # and the clause's COALESCE cost the reconciler's ask on YugabyteDB 2.2x its calibrated read (2026-11-22,
-    # test_noted_rows_scale_live, 1M notes: 2.9 ms against 1.3 ms)
-    ends = "AND t.noted_at <= $4::timestamptz " if until is not None else ""
+    # every whole note on the named-rows path was dropped
+    # the window's end is a plain bound, a far-future time when the ask names none (every ask but a lost advance's
+    # recovery): COALESCE($until, 'infinity') in its place cost the reconciler's ask on YugabyteDB 2.2-2.5x its
+    # calibrated read (2026-11-22, test_noted_rows_scale_live, 1M notes: 2.9 ms against 1.3 ms)
     from_reach = Fragment(
         "t.table_name = $1 AND t.noted_at >= $2::timestamptz - make_interval(secs => r.wait_seconds / 2) "
-        f"{ends}AND (t.key_text IS NOT NULL OR t.noted_at >= $3::timestamptz)",
-        (table, since, whole_from) + ((until,) if until is not None else ()),
+        "AND t.noted_at <= $3::timestamptz AND (t.key_text IS NOT NULL OR t.noted_at >= $4::timestamptz)",
+        (table, since, _NO_END if until is None else until, whole_from),
     )
     # one leg a slot of the ring (NOTE_RING_SIZE, 3), each its own index read
     first = scan(
@@ -295,6 +294,9 @@ def _noted_rows_step(
 #: replay: one operator reset re-announced three times by the write-mark reconciler, each a whole read on every
 #: follower, one of which left five states out of the copy). Rows keep the ring's half-wait reach; a whole note never
 #: does
+#: the window's end when an ask names none: later than any note's time, so the bound holds every note
+_NO_END: Final = datetime(9999, 12, 31, tzinfo=UTC)
+
 _WHOLE_NOTE_SKEW: Final = timedelta(seconds=5)
 
 

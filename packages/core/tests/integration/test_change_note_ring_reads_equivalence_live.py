@@ -28,7 +28,6 @@ import asyncpg
 import pytest
 
 from threetears.core.collections.change_notes import (
-    _WHOLE_NOTE_SKEW,
     NotedRows,
     noted_keys_page,
     noted_rows_since,
@@ -39,6 +38,10 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.core.testing.note_ring import install_note_ring
 
 pytestmark = pytest.mark.integration
+
+#: how far before a window's start a whole-table note is still the window's own (noted_rows_since's contract, 5 s);
+#: stated here, not imported, so a change to the code's window fails this test
+_WHOLE_NOTE_WINDOW = timedelta(seconds=5)
 
 #: the table asked about, and another whose notes share the slots
 _ASKED = "results_asked"
@@ -54,9 +57,9 @@ _RING_ANSWERED = ("switch_no", "previous_switched_at")
 
 def _old_noted_rows_sql(owner: str, *, whole_window: bool = True) -> str:
     """``_noted_rows_sql`` as it was (change_notes.py at 4cddfe029), the reference, with the one rule added since: a
-    whole-table note is read only from :data:`_WHOLE_NOTE_SKEW` before the window's start (``whole_window``; without
+    whole-table note is read only from :data:`_WHOLE_NOTE_WINDOW` before the window's start (``whole_window``; without
     it, the old statement's every whole note from the reach on)."""
-    skew = _WHOLE_NOTE_SKEW.total_seconds()
+    skew = _WHOLE_NOTE_WINDOW.total_seconds()
     whole = f" AND (key_text IS NOT NULL OR noted_at >= $2::timestamptz - make_interval(secs => {skew}))"
     branches = " UNION ALL ".join(
         f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608
