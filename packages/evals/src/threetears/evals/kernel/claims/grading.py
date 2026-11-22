@@ -10,18 +10,20 @@ where it names ``grounded_in``, against the documents the candidate itself was g
 
 **Every way a criterion fails is its own loss**, raised as
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed` with the loss the cell records: a step's reply
-cut short, unreadable or past its repairs, and a grade whose payload would not fit the trace
-(``evidence_over_cap``). :func:`grade_or_loss` turns each, and a provider's failure, into the loss the cell records,
-for the judge phase and a re-judge alike. A lost ground step is not a failure here: it rides on the grade and its
-tally (``ground_loss``), and truth stands, so a tally recomputed from a stored grade (:func:`grade_tally`) reads a lost
-groundedness as exactly that.
+cut short, unreadable or past its repairs, and a grade whose payload would not fit the trace even with no web
+check in it (``evidence_over_cap``). :func:`grade_or_loss` turns each, and a provider's failure, into the loss the
+cell records, for the judge phase and a re-judge alike. A lost ground step is not a failure here: it rides on the
+grade and its tally (``ground_loss``), and truth stands, so a tally recomputed from a stored grade
+(:func:`grade_tally`) reads a lost groundedness as exactly that.
 
 **The web check** runs last, for a criterion with a web budget, over the claims the truth step nominated
 (:class:`~threetears.evals.kernel.claims.web.WebChecker`), on the caller's search. A claim it did not check (past the
 cell's budget, refused by the cost cap, or cut by the cell's deadline) reads ``skipped_cap`` and ``unverifiable``. A
 web step that fails is its own loss (``web_loss``), as a ground step's is: the claims it left undecided read ``lost``
-and ``unverifiable``, and truth stands. A criterion with no web budget checks nothing, and a nominated claim reads
-``unverifiable`` with no web state.
+and ``unverifiable``, and truth stands; so is a web step whose stored windows would outgrow the trace
+(:func:`within_the_trace`). A criterion with no web budget checks nothing, and a nominated claim reads
+``unverifiable`` with no web state. A re-judge finishes a web step a stored grade lost, and only that step
+(:func:`finish_web_step`).
 
 Engine-internal: the judge phase calls it, and nothing here is exported.
 """
@@ -34,7 +36,7 @@ from dataclasses import dataclass, replace
 from typing import Final
 
 from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, derive_claim_readings
-from threetears.evals.kernel.claims.extraction import ClaimExtractor
+from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally
 from threetears.evals.kernel.claims.verification import (
@@ -42,6 +44,7 @@ from threetears.evals.kernel.claims.verification import (
     Verification,
     WebGraded,
     graded_claims,
+    redecided_claims,
     truth_verdict,
 )
 from threetears.evals.kernel.claims.web import (
@@ -68,6 +71,7 @@ from threetears.evals.schema.models import (
     ClaimTally,
     EvalTemplate,
     KnownClaimLoss,
+    WebCheckRecord,
 )
 from threetears.evals.schema.reference import ReferenceKey
 
@@ -230,39 +234,32 @@ def refuse_web_without_search(
     web: WebSearch | None,
     rates: ExternalRateTable | None = None,
     enforced: bool = False,
-    witnessed: bool = False,
 ) -> None:
     """Refuse grading ``criteria`` where one with a web budget could not search as declared, before any call.
 
     Run without a web search, such a criterion would grade every nominated claim ``unverifiable`` under a fingerprint
     that says the web was asked. Under an enforcing cost cap its searches must be priced, by a rate the run declares
     for ``(identity, "query")`` or by the port's own ``price_ceiling``: an unpriced search could spend past what the
-    cap set aside. The run's launch, a re-judge and a take-up refuse by this one rule.
+    cap set aside. The run's launch, a witnessed cell's judging, a re-judge and a take-up refuse by this one rule.
 
     :param criteria: The criteria about to be graded.
     :param template: The template's name, for the refusal.
     :param web: The web search, or ``None``.
     :param rates: The run's rate table, or ``None``.
     :param enforced: Whether an enforcing cost cap bounds the grading.
-    :param witnessed: Whether the cells are witnessed, which are graded with no web search.
-    :raises ValueError: A criterion with a web budget meets a witnessed cell or no web search, or one with no
-        identity; the port's ceiling is no amount; or the search is unpriced under an enforcing cap.
+    :raises ValueError: A criterion with a web budget meets no web search, or one with no identity; the port's ceiling
+        is no amount; or the search is unpriced under an enforcing cap.
     """
     webbed = [criterion.name for criterion in criteria if criterion.web is not None]
     if not webbed:
         return
     named = ", ".join(map(repr, webbed))
-    if witnessed:
-        raise ValueError(
-            f"claim criteria {named} of template {template!r} declare a web budget, and a witnessed cell is graded "
-            "with no web search: web checks are not supported on witnessed cells yet, so declare web None for this "
-            "template"
-        )
     if web is None:
         raise ValueError(
             f"claim criteria {named} of template {template!r} declare a web budget, and this run has no web search; "
-            "hand one in (RunnerOptions.web_search, KindWiring.web_search at launch, or web_search to a re-judge), or "
-            "declare web None to grade against the case's evidence alone"
+            "hand one in (RunnerOptions.web_search, KindWiring.web_search at launch, web_search to "
+            "record_witnessed_cell, or web_search to a re-judge), or declare web None to grade against the case's "
+            "evidence alone"
         )
     identity = getattr(web, "identity", None)
     if not isinstance(identity, str) or not identity.strip():
@@ -312,6 +309,61 @@ def criterion_ceiling(
     return extraction + verification + web
 
 
+def within_the_trace(
+    criterion: str,
+    build: Callable[[Mapping[int, WebGraded], tuple[WebCheckRecord, ...], KnownClaimLoss | None], ClaimGrade],
+    web: WebCheck,
+    *,
+    size: Callable[[ClaimGrade], int],
+    kept: tuple[WebCheckRecord, ...] = (),
+) -> tuple[ClaimGrade, str | None]:
+    """The grade ``build`` gives from what a web step left, with only the web checks the trace has room for.
+
+    The windows a web check read are stored on the grade, so a cell whose checks read many pages can outgrow the
+    trace's cap. That is the web step's loss alone (``evidence_over_cap`` on the grade's ``web_loss``), never the
+    criterion's: the checks are kept in claim order while the grade fits, and each check past that is not kept and its
+    claim reads ``lost`` and unverifiable, so every verdict case evidence decided stands. A grade that outgrows the
+    trace with no web check of its own is the criterion's loss.
+
+    :param criterion: The criterion's name, for a loss's message.
+    :param build: The grade from the web outcomes by claim, the web checks kept and the web step's loss.
+    :param web: What the web step left.
+    :param size: How many bytes the trace's claims payload takes with a grade in it
+        (:func:`claim_payload_bytes`).
+    :param kept: Web checks stored before this step ran, which come first and are always kept: a web step finished
+        again keeps every check its grade already holds.
+    :return: The grade, and what failed in the web step, named (None when nothing did).
+    :raises ClaimGradingFailed: The grade outgrows the trace with no check of this step's in it
+        (``evidence_over_cap``).
+    """
+    outcomes = dict(web.outcomes)
+    records = [*kept, *web.records]
+    loss = web.loss
+    grade = build(outcomes, tuple(records), loss)
+    held = size(grade)
+    dropped: list[int] = []
+    while held > CLAIM_TRACE_BYTES and len(records) > len(kept):
+        record = records.pop()
+        outcomes[record.claim] = WebGraded("lost")
+        dropped.append(record.claim)
+        loss = "evidence_over_cap"
+        grade = build(outcomes, tuple(records), loss)
+        held = size(grade)
+    if held > CLAIM_TRACE_BYTES:
+        raise ClaimGradingFailed(
+            f"claim criterion {criterion!r}'s grade would take the trace's claims payload to {held} bytes, "
+            f"and CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
+            loss="evidence_over_cap",
+        )
+    if not dropped:
+        return grade, web.failure
+    over = (
+        f"the windows read by the web checks of claims {sorted(dropped)} would take the trace's claims payload past "
+        f"CLAIM_TRACE_BYTES ({CLAIM_TRACE_BYTES}), so those checks are not kept and their claims read lost"
+    )
+    return grade, over if web.failure is None else f"{over}; and {web.failure}"
+
+
 async def grade_criterion(
     criterion: ClaimCriterion,
     evidence: ClaimEvidence,
@@ -350,8 +402,8 @@ async def grade_criterion(
     :return: The grade and its tally.
     :raises ClaimGradingFailed: A step failed (``cut_short``, ``unreadable``, ``repair_budget_spent``, or
         ``cost_cap`` or ``hold_exceeded`` from a client its hold refuses outside the web step), or the grade would
-        take the trace past
-        :data:`~threetears.evals.schema.models.CLAIM_TRACE_BYTES` (``evidence_over_cap``).
+        take the trace past :data:`~threetears.evals.schema.models.CLAIM_TRACE_BYTES` with no web check in it
+        (``evidence_over_cap``); web checks past the cap are the web step's loss alone (:func:`within_the_trace`).
     :raises ValueError: A criterion with a web budget nominated a claim, and no search was given.
     :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
@@ -380,28 +432,31 @@ async def grade_criterion(
         return WebCheck(calls=(), records=(), outcomes=dict.fromkeys(nominated(verification), WebGraded("skipped_cap")))
 
     def kept(verification: Verification, web: WebCheck) -> GradedCriterion:
-        grade = ClaimGrade(
-            criterion_fingerprint=fingerprint,
-            claim_evidence_digest=claim_evidence_digest(evidence),
-            calls=(*calls, *verification.calls, *web.calls),
-            evidence=verification.evidence,
-            documents_truncated=verification.documents_truncated,
-            claims=graded_claims(claims, verification, calls_before=len(calls), web=web.outcomes),
-            web=web.records,
-            ground_loss=verification.ground_loss,
-            web_loss=web.loss,
-            web_replayed=web.replayed and bool(web.records),
-        )
-        held = claim_payload_bytes(evidence, {**graded, criterion.name: grade})
-        if held > CLAIM_TRACE_BYTES:
-            raise ClaimGradingFailed(
-                f"claim criterion {criterion.name!r}'s grade would take the trace's claims payload to {held} bytes, "
-                f"and CLAIM_TRACE_BYTES allows {CLAIM_TRACE_BYTES}",
-                loss="evidence_over_cap",
+        def built(
+            outcomes: Mapping[int, WebGraded], records: tuple[WebCheckRecord, ...], loss: KnownClaimLoss | None
+        ) -> ClaimGrade:
+            return ClaimGrade(
+                criterion_fingerprint=fingerprint,
+                claim_evidence_digest=claim_evidence_digest(evidence),
+                calls=(*calls, *verification.calls, *web.calls),
+                evidence=verification.evidence,
+                documents_truncated=verification.documents_truncated,
+                claims=graded_claims(claims, verification, calls_before=len(calls), web=outcomes),
+                web=records,
+                ground_loss=verification.ground_loss,
+                web_loss=loss,
+                web_replayed=web.replayed and bool(records),
             )
+
+        grade, failure = within_the_trace(
+            criterion.name,
+            built,
+            web,
+            size=lambda grade: claim_payload_bytes(evidence, {**graded, criterion.name: grade}),
+        )
         tally = grade_tally(grade, evidence, criterion, derivation=derivation)
         return GradedCriterion(
-            grade=grade, tally=tally, ground_failure=verification.ground_failure, web_failure=web.failure
+            grade=grade, tally=tally, ground_failure=verification.ground_failure, web_failure=failure
         )
 
     def fallback(verification: Verification) -> None:
@@ -501,6 +556,104 @@ async def grade_or_loss(
         # NOSILENT: returned as provider_error, which the cell records as the criterion's loss.
         contain(e, log=log, what=f"{what} failed", level="error")
         return "provider_error"
+
+
+def _web_repairs(calls: Sequence[ClaimCall]) -> int:
+    """How many answers a grade's web step asked again: the repairs among its calls from the web step's first on,
+    since the web step runs last and starts with a web call."""
+    first = next((at for at, call in enumerate(calls) if call.role == "web"), len(calls))
+    return sum(1 for call in calls[first:] if call.role == "repair")
+
+
+async def finish_web_step(
+    criterion: ClaimCriterion,
+    evidence: ClaimEvidence,
+    grade: ClaimGrade,
+    *,
+    client: CompletionClient,
+    graded: Mapping[str, ClaimGrade],
+    search: Search,
+    derivation: ClaimDerivation | None,
+) -> GradedCriterion:
+    """Finish the web step a stored grade lost (its ``web_loss``), and only that step.
+
+    The claims it left ``lost`` are checked again, in claim order, on ``search``, as the web step would have gone on
+    to check them: within what is left of the cell's budgets, the checks already made counting against
+    ``max_checked_per_cell`` and the answers already asked again against the step's repair budget. Every claim it
+    already checked stands and is never searched again, and the extraction, the truth step and the ground step stand
+    as stored, so truth and groundedness are exactly what they were. The new calls follow the grade's own. A web step
+    that fails again is its own loss again, and truth still stands (:meth:`WebChecker.check`); checks whose windows
+    would outgrow the trace are not kept (:func:`within_the_trace`).
+
+    :param criterion: The criterion, as the template declares it.
+    :param evidence: The cell's claim evidence, as the trace stores it.
+    :param grade: The criterion's stored grade, which carries a ``web_loss``.
+    :param client: The judge's client.
+    :param graded: The trace's other criteria's grades, which its cap counts beside this one.
+    :param search: The host's search, billed by the caller.
+    :param derivation: The host's readings of the criterion, made with the finished grade's tally, or None.
+    :return: The grade with its web step finished, and its tally.
+    :raises ValueError: The grade lost no web step, the criterion declares no web budget, it would grade under another
+        fingerprint than the grade's, or the grade does not grade ``evidence``.
+    :raises ApparatusError: The rig could not serve a call or a search (a replay's miss).
+    :raises CompletionProtocolDefect: A web call's completion breaks the protocol.
+    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
+    """
+    checker = web_checker(criterion, client)
+    if grade.web_loss is None or checker is None:
+        raise ValueError(
+            f"claim criterion {criterion.name!r}'s grade lost no web step, or the criterion declares no web budget: "
+            "there is no web step to finish"
+        )
+    fingerprint = criterion_fingerprint(criterion, *criterion_steps(criterion, client))
+    if fingerprint != grade.criterion_fingerprint:
+        raise ValueError(
+            f"claim criterion {criterion.name!r} grades under fingerprint {fingerprint[:12]}, and its grade was made "
+            f"under {grade.criterion_fingerprint[:12]}"
+        )
+    if grade.claim_evidence_digest != claim_evidence_digest(evidence):
+        raise ValueError(
+            f"claim criterion {criterion.name!r}'s grade names claim evidence {grade.claim_evidence_digest[:12]}, and "
+            f"the trace stores {claim_evidence_digest(evidence)[:12]}"
+        )
+    fields = set(ExtractedClaim.model_fields)
+    claims = tuple(ExtractedClaim.model_validate(claim.model_dump(include=fields)) for claim in grade.claims)
+    lost = [position for position, claim in enumerate(grade.claims) if claim.web == "lost" and claim.restates is None]
+    web = await checker.check(
+        claims,
+        lost,
+        search=search,
+        ledger=RoleUsageLedger(role="judge"),
+        calls_before=len(grade.calls),
+        checked_before=len(grade.web),
+        repairs_spent=_web_repairs(grade.calls),
+    )
+
+    def built(
+        outcomes: Mapping[int, WebGraded], records: tuple[WebCheckRecord, ...], loss: KnownClaimLoss | None
+    ) -> ClaimGrade:
+        stored = {name: getattr(grade, name) for name in ClaimGrade.model_fields}
+        return ClaimGrade(
+            **{
+                **stored,
+                "calls": (*grade.calls, *web.calls),
+                "claims": redecided_claims(grade.claims, outcomes),
+                "web": records,
+                "web_loss": loss,
+                "web_replayed": grade.web_replayed or (web.replayed and len(records) > len(grade.web)),
+            }
+        )
+
+    finished, failure = within_the_trace(
+        criterion.name,
+        built,
+        web,
+        size=lambda candidate: claim_payload_bytes(evidence, {**graded, criterion.name: candidate}),
+        kept=grade.web,
+    )
+    return GradedCriterion(
+        grade=finished, tally=grade_tally(finished, evidence, criterion, derivation=derivation), web_failure=failure
+    )
 
 
 __all__: list[str] = []

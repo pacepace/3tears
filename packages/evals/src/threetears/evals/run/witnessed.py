@@ -63,7 +63,7 @@ from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeOutcome, JudgeService, fold_judge_outcomes, judge_clients_for_run
-from threetears.evals.kernel.claims.derived import claim_derivations
+from threetears.evals.kernel.claims.derived import ClaimReaderDefect, claim_derivations
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.rejudge import (
@@ -75,6 +75,8 @@ from threetears.evals.run.rejudge import (
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.run_pages import iter_stored_results
 from threetears.evals.kernel.usage_capture import maybe_billed_usd
+from threetears.evals.kernel.claims.web import SearchBill
+from threetears.evals.schema.web_search import WebSearch
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
@@ -211,6 +213,7 @@ async def record_witnessed_cell(
     world_events: Sequence[WorldEvent] | None = None,
     end_state: Mapping[str, Any] | None = None,
     judging: WitnessedJudging | None = None,
+    web_search: WebSearch | None = None,
 ) -> tuple[EvalResult, EvalTrace]:
     """Record one cell a host observed — a session it witnessed, not one the engine ran — as a result and its trace.
 
@@ -302,6 +305,13 @@ async def record_witnessed_cell(
     :param judging: For a judged run, the run's :class:`WitnessedJudging` — one per run, handed to every cell's
         recording, which serialises the cells' ceiling checks with the judgements they admit; required for a
         judged run and ignored for an unjudged one.
+    :param web_search: For a judged run whose template declares a claim criterion with a web budget, the web search
+        its nominated claims are checked on, as a run's cells check theirs
+        (:func:`~threetears.evals.run.runner.judge_witnessed_output`): the host's live port, or a
+        :class:`~threetears.evals.testing.RecordedWebSearch` of it to replay. Its queries are priced by
+        ``external_rates`` where it declares ``(identity, "query")``, else by the port's own ceiling, and under an
+        enforced ceiling a search priced by neither is refused before the judge is called. ``None`` refuses such a
+        criterion; ignored otherwise.
     :return: The result and its trace, unsaved.
     :raises ValueError: The run is not ``witnessed``; it names a template and no judge, or a judge and no
         template; it is judged and ``judging`` is missing or judges another run; ``test_case`` is not one of its cases,
@@ -318,6 +328,8 @@ async def record_witnessed_cell(
     :raises CompletionProtocolDefect: A judged run's judge client returned a completion that does not meet the protocol
         — the host's defect, raised rather than recorded as the cell's judge error. The judge calls already
         paid for are counted against the run's judge ceiling through ``judging``.
+    :raises ClaimReaderDefect: The host's claim reader raised, or answered what its measures cannot hold — the host's
+        defect, raised as a protocol defect is, its paid calls counted the same way.
     :raises LeverCoordinateError: The host's profile cannot derive the run's variant identity.
     :raises BudgetStoppedError: A judged run's saved cells already carry judge spend past its ceiling, or
         unpriced judge spend under an enforced one — raised before the judge is called.
@@ -415,6 +427,7 @@ async def record_witnessed_cell(
         goal_outcomes = hold_to_goal_checks(candidate_kind, template.goal_state_checks, output)
         settled: list[tuple[str, JudgeOutcome]] = []
         claims_billed: list[object] = []
+        claims_searched: list[SearchBill] = []
         try:
             async with judge_service:
                 judged, judge_ms = await judge_witnessed_output(
@@ -429,14 +442,18 @@ async def record_witnessed_cell(
                     settled=settled,
                     kind_name=candidate_kind,
                     claims_billed=claims_billed,
+                    web_search=web_search,
+                    external_rates=external_rates,
+                    enforced=run.max_cost_usd is not None,
+                    claims_searched=claims_searched,
                     derivations=claim_derivations(host.profile),
                 )
-        except CompletionProtocolDefect:
+        except CompletionProtocolDefect, ClaimReaderDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
-            # found were paid for, its claim criteria's included, so they count against the run's judge ceiling as a
-            # judged cell's would.
-            if settled or claims_billed:
-                fold = fold_judge_outcomes(settled, also_billed=claims_billed)
+            # found were paid for, its claim criteria's calls and searches included, so they count against the run's
+            # judge ceiling as a judged cell's would.
+            if settled or claims_billed or claims_searched:
+                fold = fold_judge_outcomes(settled, also_billed=claims_billed, also_searched=claims_searched)
                 # Beside their cost, what their dropped sends may have billed, as a judged cell's judging counts it.
                 judging.count_unrecorded(
                     None if fold.cost_usd is None else fold.cost_usd + maybe_billed_usd(fold.usage, {"judge"})

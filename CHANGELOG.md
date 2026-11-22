@@ -42,6 +42,44 @@ build out to every process that reads results before any host registers a claim 
 removing the readers and re-judging or discarding the cells they read. `derived_from`, `HostProfile.claim_readers` and
 `ClaimReader` are provisional: their shape may change before they are promised.
 
+### evals: web checks on witnessed cells, and a re-judge that finishes a lost web step
+
+**Added (#1287):** a witnessed cell checks its nominated claims on the web as a run's cell does.
+`record_witnessed_cell(..., web_search=...)` takes the host's port, or a `RecordedWebSearch` of it to replay, and
+`judge_witnessed_output` takes `web_search`, `external_rates` and `enforced`. The refusals are the run's own, made
+before the judge is called: no port, a port with no identity, a ceiling that is no amount, and, under an enforced
+ceiling, a search that neither its `price_ceiling` nor an `external_rates` entry for `(identity, "query")` prices.
+Searches are billed in the cell's `judge` rows, at what each reports, else the declared rate, else the ceiling, and
+count against the run's ceiling, a protocol defect's included. The web budget, `web_loss` and `skipped_cap` read as
+on a run's cell. A witnessed cell is held to its run's ceiling between cells, so nothing inside its claims phase is
+refused by a cap.
+
+A re-judge finishes the web step of a completed grade whose tally carries `web_loss`, and only that step: the claims
+it left `lost` are checked again on the port handed to `rejudge_result(..., web_search=...)`, within what is left of
+the cell's web budget and repair budget. The truth and ground steps stand as stored, and no claim already checked is
+searched again. `ClaimRescore.web_steps` (new, optional, left out while empty) names each criterion finished this way,
+and its `prior` and `lost` name the web step's loss before and after. A criterion or web step lost to the trace's cap
+(`evidence_over_cap`) is never graded again, since its evidence is unchanged: a re-judge with nothing else to do
+refuses it by name before any call, and one that grades other criteria leaves it as stored and names it in
+`ClaimRescore.skipped` (new, optional, left out while empty) and on its log line.
+
+**Changed:** web windows that would take a trace past `CLAIM_TRACE_BYTES` are the web step's loss alone. The checks are
+kept in claim order while the grade fits, and each check past that is dropped: its claim reads `lost` and
+`unverifiable`, and the grade's and tally's `web_loss` is `evidence_over_cap`. Every verdict case evidence decided
+stands; before this the whole criterion was lost. Recording, a query a `RecordedWebSearch` searched live itself and is
+asked again is answered from that first answer at no cost and is no longer marked replayed, so a recording run never
+marks its own grades `web_replayed`. Only an answer from a recording made earlier reads replayed. A search is admitted
+at its query price and billed at what it reports: a port that reports more overshoots the criterion's hold by that
+one search's excess at most, since the next call or search is then refused (`hold_exceeded`).
+
+**For hosts:** a host grading witnessed cells under a template whose criterion declares a `web` budget passes
+`web_search` to `record_witnessed_cell`, or the cell is refused before the judge is called. Under an enforced
+ceiling it also declares the query's rate in `external_rates`, or gives the port a `price_ceiling`. Spend billed at
+a ceiling is a bound. `ClaimRescore.web_steps` and `ClaimRescore.skipped` join the unshipped core minor 15.24. The
+build before them refuses a result carrying either (`extra_forbidden`, naming it), and reads every other result as
+before. So upgrade every reader of the line before a re-judge finishes a web step or skips a criterion, and roll back
+only to a build that has them.
+
 ### evals: claim readings rank arms, and a criterion's losses withhold only what they cost
 
 **Added (#1287):** a claim criterion's readings are read on the ranking path as judged readings. The score projection
@@ -131,12 +169,11 @@ the claims judge repeats and the claim reads, are not built yet.
 at launch. Under an enforcing cost cap the search must be priced, by its `price_ceiling` or a declared rate, or the run
 is refused; a ceiling that is no amount is refused at launch whatever the cap. Spend billed at a ceiling is a bound,
 not an observation: report a search's real cost on its result (`usd`) where the port knows it. A port that wants
-retries makes them inside its own `search`. Web checks are not supported on witnessed cells yet, so a criterion with
-a web budget is refused there. `ClaimGrade.web_loss`, `ClaimGrade.web_replayed`, `ClaimTally.web_loss`, the web state
-`lost`, and a checked restatement that shares its original's record join core minor 15.24, which has not shipped: a
-15.23 build keeps them under its newer-minor tolerance. A build of this unreleased line from before the web check
-refuses a document carrying any of them, so upgrade every reader of the line before running a criterion with a web
-budget.
+retries makes them inside its own `search`. `ClaimGrade.web_loss`, `ClaimGrade.web_replayed`, `ClaimTally.web_loss`,
+the web state `lost`, and a checked restatement that shares its original's record join core minor 15.24, which has
+not shipped: a 15.23 build keeps them under its newer-minor tolerance. A build of this unreleased line from before
+the web check refuses a document carrying any of them, so upgrade every reader of the line before running a criterion
+with a web budget.
 
 ### evals: re-judging claim criteria, and pricing them before launch
 

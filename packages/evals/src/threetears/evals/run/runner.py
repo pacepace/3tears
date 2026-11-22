@@ -2406,6 +2406,11 @@ class _ClaimsClient:
         (:func:`~threetears.evals.kernel.claims.web.send_search`): at what its result reports it cost, else at the
         query price (:func:`~threetears.evals.kernel.claims.web.query_price`).
 
+        A search is admitted at its query price, before its cost is known, and billed at what its result reports. A
+        port that reports more than that price spends past the criterion's hold by that one search alone: its bill is
+        counted before anything else is admitted, so the next call or search is refused (``hold_exceeded``) and the
+        claims left read ``skipped_cap``. The overshoot is at most one search's excess over its price, per criterion.
+
         :param query: The search, as the judge wrote it.
         :return: Its result.
         :raises ClaimGradingFailed: The run's cap has too little left for it (``cost_cap``), it would spend past the
@@ -2703,7 +2708,6 @@ def _refuse_claim_criteria_unjudged(
     web: WebSearch | None = None,
     rates: ExternalRateTable | None = None,
     enforced: bool = False,
-    witnessed: bool = False,
 ) -> None:
     """Refuse a run whose template's claim criteria nothing would grade, or would grade otherwise than declared.
 
@@ -2719,11 +2723,9 @@ def _refuse_claim_criteria_unjudged(
     :param web: The run's web search, or ``None``.
     :param rates: The run's rate table, or ``None``.
     :param enforced: Whether an enforcing cost cap bounds the run.
-    :param witnessed: Whether the cells are witnessed (:func:`judge_witnessed_output`), which are graded with no web
-        search.
     :raises ValueError: The template declares claim criteria and the run has no judge; a criterion declares a web
-        budget and the run has no web search, or one with no identity, or the cells are witnessed; the port's ceiling
-        is no amount; or the search is unpriced under an enforcing cap.
+        budget and the run has no web search, or one with no identity; the port's ceiling is no amount; or the search
+        is unpriced under an enforcing cap.
     """
     if not template.claim_criteria:
         return
@@ -2740,7 +2742,6 @@ def _refuse_claim_criteria_unjudged(
         web=web,
         rates=rates,
         enforced=enforced,
-        witnessed=witnessed,
     )
 
 
@@ -2791,6 +2792,10 @@ async def judge_witnessed_output(
     settled: list[tuple[str, JudgeOutcome]] | None = None,
     kind_name: str = "the witnessed cell's kind",
     claims_billed: list[object] | None = None,
+    web_search: WebSearch | None = None,
+    external_rates: ExternalRateTable | None = None,
+    enforced: bool = False,
+    claims_searched: list[SearchBill] | None = None,
     derivations: Mapping[str, ClaimDerivation] = MappingProxyType({}),
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, and its claims through the runner's
@@ -2800,6 +2805,13 @@ async def judge_witnessed_output(
     provider does not serve, is not judged. Its dims are judged when it rendered judge evidence, and its template's
     claim criteria graded when it rendered claim evidence, after the dims, whatever the kind declares a judge reads.
     Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+
+    **A criterion with a web budget checks its nominated claims on ``web_search``**, as a run's cell does: refused
+    before any call by the run's own rule (no search, a search with no identity, a ceiling that is no amount, or an
+    unpriced search under an enforced ceiling), each search billed to the cell's judge role at what it reports, else
+    the declared rate, else its ceiling, and bounded by the criterion's web budget. A failed web step is its own loss
+    (``web_loss``) and a web check the budget left reads ``skipped_cap``; truth stands either way. A witnessed cell is
+    held to its run's ceiling between cells, not inside one, so nothing inside its claims phase is refused by a cap.
 
     :param template: The template whose intent and rubric the judge reads.
     :param test_case: The case the observation answers.
@@ -2816,15 +2828,24 @@ async def judge_witnessed_output(
     :param claims_billed: A caller-owned list each claims call's completion is appended to as it is billed, the
         defect's included, so a caller the phase raised to still counts what its claims calls were paid; ``None`` when
         it keeps none.
+    :param web_search: The web search a criterion with a web budget checks its nominated claims on; ``None`` when the
+        host hands none, which refuses such a criterion.
+    :param external_rates: The rate table that may price the search's queries, ``(identity, "query")``; ``None`` for
+        none.
+    :param enforced: Whether the run's judging is held to an enforced ceiling, under which every search must be
+        priced.
+    :param claims_searched: A caller-owned list each search is appended to as it is billed, so a caller the phase
+        raised to still counts what its searches cost; ``None`` when it keeps none.
     :param derivations: The host's readings of each claim criterion (``claim_derivations(profile)``), made with each
         criterion's tally; empty for a host that derives none. A witnessed cell's recording passes its host's.
     :return: What the phases left and their wall clock; ``(None, None)`` when the output gave them nothing to judge.
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
+    :raises ApparatusError: The rig could not serve a call or a search (a replay's miss).
     :raises ValueError: The template declares claim criteria the output cannot be graded on
-        (:func:`_hold_to_claim_criteria`), or one declares a web budget: a witnessed cell is graded with no web search.
+        (:func:`_hold_to_claim_criteria`), or one with a web budget that could not search as declared.
     """
-    _refuse_claim_criteria_unjudged(template, judged=True, witnessed=True)
+    _refuse_claim_criteria_unjudged(template, judged=True, web=web_search, rates=external_rates, enforced=enforced)
     _hold_to_claim_criteria(kind_name, template, output)
     claims_due = bool(template.claim_criteria) and output.claim_evidence is not None
     if not _judgeable(output) or (output.judge_evidence is None and not claims_due):
@@ -2857,6 +2878,7 @@ async def judge_witnessed_output(
             criteria=tuple(criterion.name for criterion in template.claim_criteria),
             fingerprints=criterion_fingerprints(template, judge_service.default_client()),
             billed=claims_billed if claims_billed is not None else [],
+            searched=claims_searched if claims_searched is not None else [],
         )
         claims_ms = await _run_claims_phase(
             claiming,
@@ -2865,6 +2887,8 @@ async def judge_witnessed_output(
             judge_service=judge_service,
             eval_run_id=eval_run_id,
             sink=None,
+            web=web_search,
+            rates=external_rates,
             derivations=derivations,
         )
         judged = _with_claims(judged, claiming, outcomes=outcomes)

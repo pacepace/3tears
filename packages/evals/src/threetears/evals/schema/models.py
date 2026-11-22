@@ -6969,7 +6969,9 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
 
     A criterion lost after its cell's trial finished (a reply cut short, the provider failing a call, the cap, a
     deadline) is graded again whole from the claim evidence the cell's trace stores, by the same judge under the same
-    criterion fingerprint. This entry keeps that visible: without it a re-graded criterion is indistinguishable from
+    criterion fingerprint. A completed grade whose web step was lost alone (its ``web_loss``) has that step finished
+    instead, and nothing else: its truth and ground steps stand as stored, and the checks it made are never searched
+    again (``web_steps``). This entry keeps either visible: without it a re-graded criterion is indistinguishable from
     one graded in a single pass. A pending criterion settled from its stored grade with no call completes the cell's
     own write and records none.
 
@@ -6979,14 +6981,31 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
 
     rejudged_at: str = Field(default_factory=utc_now_iso)
     criteria: list[DimName] = Field(
-        min_length=1, description="The lost criteria graded again, whole, in the template's order."
+        min_length=1,
+        description="The criteria graded again, in the template's order: each lost one whole, and each in `web_steps` "
+        "its web step alone.",
     )
     prior: dict[DimName, StoredClaimLoss] = Field(
-        description="criterion -> what the result's claim_failures held for it before this re-judge, verbatim."
+        description="criterion -> what the result held for it before this re-judge, verbatim: its claim_failures "
+        "entry, or for one in `web_steps` its tally's web_loss."
     )
     lost: dict[DimName, StoredClaimLoss] = Field(
         default_factory=dict,
-        description="criterion -> why a criterion graded again was lost again (CLAIM_LOSSES).",
+        description="criterion -> why a criterion graded again was lost again (CLAIM_LOSSES): the criterion, or for "
+        "one in `web_steps` its web step again, its truth standing.",
+    )
+    web_steps: list[DimName] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The criteria of `criteria` whose completed grade had its lost web step finished, and nothing "
+        "else: their truth and ground steps stand as stored. Left out while empty.",
+    )
+    skipped: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="criterion -> the loss it was left as stored with, not graded again: a criterion or web step lost "
+        "to the trace's cap (evidence_over_cap), whose evidence a re-judge reads unchanged, so the grade would outgrow "
+        "the trace again. Left out while empty.",
     )
     judge_model: str = Field(min_length=1, description="The run's judge pin, which every claims call was sent on.")
     usage: list[RoleUsage] = Field(default_factory=list, description="The re-judge's own judge-role usage rows.")
@@ -7002,13 +7021,19 @@ class ClaimRescore(EvalDocumentModel, CoreShapeModel):
     def _one_account_per_criterion(self) -> Self:
         """Refuse a re-judge whose criteria do not add up.
 
-        :raises ValueError: ``prior`` names other criteria than it graded again, or a criterion is lost again that was
-            not graded again.
+        :raises ValueError: ``prior`` names other criteria than it graded again, a criterion is lost again, or had
+            its web step finished, that was not graded again, or one is both graded again and skipped.
         """
         if set(self.prior) != set(self.criteria):
             raise ValueError("a claim re-judge's prior losses name exactly the criteria it graded again")
         if stray := sorted(set(self.lost) - set(self.criteria)):
             raise ValueError(f"claim criteria {', '.join(map(repr, stray))} are lost again, and were not graded again")
+        if stray := sorted(set(self.web_steps) - set(self.criteria)):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, stray))} had their web step finished, and were not graded again"
+            )
+        if both := sorted(set(self.skipped) & set(self.criteria)):
+            raise ValueError(f"claim criteria {', '.join(map(repr, both))} are both graded again and skipped")
         return self
 
 

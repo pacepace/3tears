@@ -34,7 +34,7 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, claim_derivations
-from threetears.evals.kernel.claims.grading import GradedCriterion, grade_or_loss
+from threetears.evals.kernel.claims.grading import GradedCriterion, finish_web_step, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable
 from threetears.evals.schema.web_search import WebSearch, WebSearchResult
@@ -49,8 +49,10 @@ from threetears.evals.run.rejudge import (
     settled_pending_claims,
     apply_claim_rejudge,
     apply_rejudge,
+    claims_due_rejudge,
     failed_judge_dims,
     recorded_judge_pins,
+    refuse_claims_over_the_trace,
     reproducible_claim_inputs,
     reproducible_judge_inputs,
 )
@@ -260,10 +262,17 @@ async def rejudge_result(
 
     **Claim criteria are re-judged beside them.** Each criterion the result lost (``EvalResult.claim_failures``) is
     graded again whole from the claim evidence its trace stores, in the template's order
-    (:func:`~threetears.evals.run.rejudge.reproducible_claim_inputs`). A completed grade is never asked again. The new
-    grades are written to the trace before the result, each write conditional on the document as read, and a
+    (:func:`~threetears.evals.run.rejudge.reproducible_claim_inputs`). A completed grade is never asked again, but for
+    one thing: a grade whose web step was lost alone (its tally's ``web_loss``) has that step finished, and only that
+    step (:func:`~threetears.evals.kernel.claims.grading.finish_web_step`), over the claims it left lost, live through
+    ``web_search``: its truth and ground steps stand as stored, and no claim it checked is searched again. A criterion
+    or web step lost to the trace's cap (``evidence_over_cap``) is never graded again, since its evidence is the same:
+    a re-judge with nothing else to do refuses it by name, before any call, and one that grades others names it in the
+    rescore's ``skipped`` and on its log line. The new grades are written to the trace
+    before the result, each write conditional on the document as read, and a
     :class:`~threetears.evals.schema.models.ClaimRescore` records it on the result
-    (:func:`~threetears.evals.run.rejudge.apply_claim_rejudge`). A criterion lost again is recorded with its new loss.
+    (:func:`~threetears.evals.run.rejudge.apply_claim_rejudge`). A criterion lost again is recorded with its new loss,
+    and a web step lost again with its new ``web_loss``.
 
     **A pending criterion is settled first, with no call and under no apparatus check**
     (:func:`~threetears.evals.run.rejudge.settled_pending_claims`): its tally recomputed from the grade its trace
@@ -289,16 +298,17 @@ async def rejudge_result(
     :param result_id: The result to re-judge.
     :param scope_id: The partition the result's run lives in.
     :param web_search: The web search a lost criterion with a web budget is graded again on, its web step included,
-        live: the run's own port, or a recording of it for a replay. ``None`` refuses such a criterion by name before
-        any call. A completed grade is never searched again.
+        and a lost web step is finished on, live: the run's own port, or a recording of it for a replay. ``None``
+        refuses either by name before any call. A completed check is never searched again.
     :param external_rates: The run's rate table, which prices a search its port reports no cost for, as the run did:
         a search is billed at what it reports, else at the rate declared for ``(identity, "query")``, else at the
         port's ``price_ceiling``. ``None`` declares none.
     :return: The result as stored after the re-judge. Dims that failed again stay missing
         and are named in its recomposed ``judge_error``; criteria lost again stay lost, with their new loss.
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
-    :raises ValidationFailedError: The result has neither a failed judge dimension nor a lost claim criterion, or an
-        apparatus input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` and
+    :raises ValidationFailedError: The result has neither a failed judge dimension nor a lost claim criterion or web
+        step, or only ones lost to the trace's cap, or an apparatus input cannot be reproduced
+        (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs` and
         :func:`~threetears.evals.run.rejudge.reproducible_claim_inputs` name which input and why).
     :raises ConflictError: A rewrite did not land — something else wrote the result, or its trace, between the read
         and the write. Its message says what was stored: nothing, when the trace's write lost; the new grades on the
@@ -318,7 +328,12 @@ async def rejudge_result(
         host.blocking_executor, _settle_before_rejudge, storage, result_id, scope_id, claim_derivations(host.profile)
     )
     # Settled, and nothing else failed: a criterion settled lost here had no stored trace, which nothing can grade.
-    if settled is not None and settled.judge_error is None and set(settled.claim_failures) <= were_pending:
+    if (
+        settled is not None
+        and settled.judge_error is None
+        and set(settled.claim_failures) <= were_pending
+        and not claims_due_rejudge(settled)[1]
+    ):
         return settled
     clients = host.completion_clients("a re-judge")
     read = await run_blocking(host.blocking_executor, _rejudge_inputs, storage, result_id, scope_id)
@@ -335,8 +350,9 @@ async def rejudge_result(
     )
     updated = result
     trace_etag: str | None = None
+    claims_due = any(claims_due_rejudge(result))
     async with judge_service:
-        if result.claim_failures:
+        if claims_due:
             # Read before the inputs read the trace, so a trace another writer moved since is refused at its rewrite.
             _, trace_etag = await run_blocking(
                 host.blocking_executor, storage.load_eval_trace_with_etag, result.id, scope_id
@@ -351,7 +367,7 @@ async def rejudge_result(
                 run,
                 scope_id,
             )
-            if result.claim_failures
+            if claims_due
             else None
         )
         if inputs is not None:
@@ -443,11 +459,12 @@ async def rejudge_result(
     if claim_inputs is not None:
         claims = updated.claim_rescores[-1]
         log.info(
-            "eval.rejudge_result result=%s run=%s criteria=%s lost_again=%s cost=%s",
+            "eval.rejudge_result result=%s run=%s criteria=%s lost_again=%s skipped=%s cost=%s",
             result_id,
             run.id,
             ",".join(claims.criteria),
             ",".join(f"{name}={loss}" for name, loss in claims.lost.items()) or "-",
+            ",".join(f"{name}={loss}" for name, loss in claims.skipped.items()) or "-",
             _dollars(claims.cost_usd),
         )
     return updated
@@ -528,28 +545,42 @@ async def _regrade_claims(
     result_id: str,
     derivations: Mapping[str, ClaimDerivation],
 ) -> dict[str, GradedCriterion | str]:
-    """Grade each criterion a claims re-judge grades again, whole, in order, beside the grades the trace keeps.
+    """Grade each criterion a claims re-judge grades again, whole, and finish each lost web step, in the template's
+    order, beside the grades the trace keeps.
 
     :return: criterion -> its grade, or its loss.
-    :raises CompletionProtocolDefect: A completion in an extraction or a truth call breaks the protocol.
-    :raises ApparatusError: The rig could not serve a call.
+    :raises CompletionProtocolDefect: A completion in an extraction, a truth call or a web call breaks the protocol.
+    :raises ApparatusError: The rig could not serve a call or a search.
     :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     evidence = inputs.claim_evidence
     criteria = {criterion.name: criterion for criterion in inputs.template.claim_criteria}
     graded = {name: grade for name, grade in inputs.trace.claim_grades.items() if name not in inputs.regrade}
     regraded: dict[str, GradedCriterion | str] = {}
-    for name in inputs.regrade:
-        outcome = await grade_or_loss(
-            criteria[name],
-            evidence,
-            key=inputs.test_case.reference,
-            client=client,
-            graded=graded,
-            what=f"Re-judge of result {result_id}: claim criterion {name}",
-            derivation=derivations.get(name),
-            search=client.search if criteria[name].web is not None else None,
-        )
+    for name in (name for name in criteria if name in {*inputs.regrade, *inputs.web_steps}):
+        outcome: GradedCriterion | str
+        if name in inputs.web_steps:
+            # A completed grade: its truth and ground steps stand, and only the web step it lost is finished.
+            outcome = await finish_web_step(
+                criteria[name],
+                evidence,
+                inputs.trace.claim_grades[name],
+                client=client,
+                graded={other: grade for other, grade in graded.items() if other != name},
+                search=client.search,
+                derivation=derivations.get(name),
+            )
+        else:
+            outcome = await grade_or_loss(
+                criteria[name],
+                evidence,
+                key=inputs.test_case.reference,
+                client=client,
+                graded=graded,
+                what=f"Re-judge of result {result_id}: claim criterion {name}",
+                derivation=derivations.get(name),
+                search=client.search if criteria[name].web is not None else None,
+            )
         regraded[name] = outcome
         if not isinstance(outcome, str):
             graded[name] = outcome.grade
@@ -669,9 +700,12 @@ def _rejudge_inputs(storage: EvalStorage, result_id: str, scope_id: str) -> _Rej
     result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
     if result is None:
         raise NotFoundError("result", result_id, remedy=FIND_RESULT)
-    if result.judge_error is None and not result.claim_failures:
+    claims_due = any(claims_due_rejudge(result))
+    if result.judge_error is None and not claims_due:
+        refuse_claims_over_the_trace(result)
         raise ValidationFailedError(
-            f"result '{result_id}' has no judge_error and lost no claim criterion — nothing failed to re-judge",
+            f"result '{result_id}' has no judge_error and lost no claim criterion or web step — nothing failed to "
+            "re-judge",
             remedy="re-judge only a result whose judging failed; to measure its judge again, use a judge repeat",
         )
     run = get_run(storage, result.eval_run_id, scope_id)
@@ -684,8 +718,8 @@ def _rejudge_inputs(storage: EvalStorage, result_id: str, scope_id: str) -> _Rej
     # Narrowed to the dims this result was judged on: a document's run attributes the two
     # conversation axes, which its cell was never asked and so holds no score for.
     failed = [dim for dim in failed if dim in inputs.dims]
-    if not failed and result.claim_failures:
-        # Every dim is answered; the lost claim criteria are what is left to re-judge.
+    if not failed and claims_due:
+        # Every dim is answered; the lost claim criteria, or lost web steps, are what is left to re-judge.
         return _RejudgeRead(result, etag, run, None, [])
     if not failed:
         raise ValidationFailedError(
