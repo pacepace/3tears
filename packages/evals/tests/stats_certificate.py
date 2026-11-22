@@ -560,10 +560,10 @@ def _shards() -> list[Shard]:
                     },
                 )
             )
-    # The claim-loss test across arms, read through the bundle's judged measures: each row a thousand draws, in shards
-    # of a hundred (draws claim-loss-<row>-<index>).
-    for row in claim_loss.ROWS:
-        for block in _blocks(CLAIM_LOSS_REPLICATES, 100):
+    # The claim-loss test across arms, read through the bundle's judged measures: each row its draws, in shards of a
+    # hundred (draws claim-loss-<row>-<index>).
+    for row, held in claim_loss.ROWS.items():
+        for block in _blocks(held.draws, 100):
             shards.append(
                 Shard(
                     f"claim-loss-{row}-{block.start}",
@@ -575,9 +575,6 @@ def _shards() -> list[Shard]:
             )
     return shards
 
-
-#: The draws each claim-loss row reads.
-CLAIM_LOSS_REPLICATES = 1000
 
 #: The power the lopsided claim-loss row floors: one arm losing nothing against one losing 30% of its cells, over
 #: twelve cases at two repeats, is withheld at least this often (about 80% at 200 draws; the claim reads the 95% lower
@@ -1222,8 +1219,7 @@ def _claims() -> list[Claim]:
                 "hits",
                 "above" if lopsided else "at_most",
                 CLAIM_LOSS_POWER_FLOOR if lopsided else alpha,
-                f"claim-loss-{row}-<index>, 0-{CLAIM_LOSS_REPLICATES - 1} in shards of 100, through the bundle's "
-                "judged measures",
+                f"claim-loss-{row}-<index>, 0-{held.draws - 1} in shards of 100, through the bundle's judged measures",
             )
         )
     return claims

@@ -38,18 +38,22 @@ def _clustered(case: int) -> float:
 
 @dataclass(frozen=True)
 class Row:
-    """One row of draws: each arm's loss (a share, or a share by case) and the repeats each case runs."""
+    """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, and how many draws
+    the certificate reads of it."""
 
     losses: tuple[float | Callable[[int], float], ...]
     repeats: int
+    draws: int
 
 
 #: The rows the certificate counts, by name: equal loss at two, three and four arms, at 10% over two repeats, at 3%, at
-#: one repeat a case and where a few cases carry most of it; then one arm losing nothing against one losing 30%.
+#: one repeat a case and where a few cases carry most of it; then one arm losing nothing against one losing 30%. A
+#: thousand draws a row, and four thousand at four arms, whose rates sit nearest the level (about 4%), so the 95% upper
+#: bound a claim reads can show them under it.
 ROWS: Final[Mapping[str, Row]] = MappingProxyType(
     {
         **{
-            f"{row}.{arms}-arms": Row((loss,) * arms, repeats)
+            f"{row}.{arms}-arms": Row((loss,) * arms, repeats, 4000 if arms == 4 else 1000)
             for row, loss, repeats in (
                 ("equal-10", 0.10, 2),
                 ("equal-3", 0.03, 2),
@@ -58,7 +62,7 @@ ROWS: Final[Mapping[str, Row]] = MappingProxyType(
             )
             for arms in (2, 3, 4)
         },
-        "lopsided-0-30": Row((0.0, 0.30), 2),
+        "lopsided-0-30": Row((0.0, 0.30), 2, 1000),
     }
 )
 
