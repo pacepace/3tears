@@ -465,13 +465,41 @@ def test_a_lost_ground_step_withholds_the_grounded_share_alone() -> None:
     assert measures[f"{RULES}_false_unit_share"].withheld is None
 
 
-def test_a_pending_tally_is_counted_apart_and_never_as_a_loss() -> None:
+def test_a_pending_tally_is_counted_apart_never_as_a_loss_and_an_arm_skewed_backlog_withholds() -> None:
+    """Pending cells are no loss and in no mean, but missing data that may track arm: an arm waiting on half its grades
+    against none has the reading withheld, and the page says it is withheld until the backlog settles."""
     bundle = _bundle(lookup=_lookup_losing("trace_pending", share=2))
     measure = next(m for m in bundle.judged_measures if m.name == f"{RULES}_false_per_unit")
     lookup = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(LOOKUP))
 
     assert (lookup.n_claim_pending, lookup.n_claim_lost) == (CASES * K // 2, 0)
-    assert measure.withheld is None, "a population not yet known is no loss, so nothing is withheld for it"
+    assert measure.withheld is not None and measure.withheld.reason == "trials_lost"
+    built = report_input(campaign_bundle(bundle))
+    assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "pending is never a loss"
+    page = report_markdown(
+        build_code_only_report(
+            _bundle(lookup=_lookup_losing("trace_pending", share=2)),
+            assembled_at="2026-11-22T00:00:00+00:00",
+            campaign_name="c",
+        )
+    )
+    (line,) = [held for held in page.splitlines() if held.startswith("The claims on rules.claims are not yet known")]
+    assert line.endswith("withheld until the backlog settles, which it does on its own."), line
+
+
+def test_an_even_pending_backlog_withholds_nothing() -> None:
+    def memory_pending(case: int, k: int) -> dict[str, Any]:
+        held = _memory_cell(case, k)
+        if (case * K + k) % 2:
+            return held
+        del held["claim_tallies"][RULES]
+        return {**held, "claim_failures": {RULES: "trace_pending"}}
+
+    bundle = _bundle(memory=memory_pending, lookup=_lookup_losing("trace_pending", share=2))
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        assert {arm.n_claim_pending for arm in measure.arms} == {CASES * K // 2}
+        assert measure.withheld is None, name
 
 
 #: A cell whose candidate said nothing: no unit, no claim, no loss.

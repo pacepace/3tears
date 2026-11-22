@@ -15,8 +15,9 @@ and no claim. A silent cell carries no claim reading at all: it is in no reading
 claims in its arm's mean, and is no loss. But silence is missing data that may track arm (an arm quiet on its hard
 cells would lower its false claims by selection), so the test that withholds a reading on uneven loss counts silent
 cells as unread beside lost ones: arms silent on shares of cells that differ beyond chance have the reading withheld
-(`trials_lost`). The same test now counts the cells a host's claim reader could not read beside lost ones, for the
-readings derived from the criterion. Each arm counts its silent cells beside its mean, and a class-B caveat
+(`trials_lost`). The same test now counts pending cells (a tally waiting on its stored grade) and the cells a host's
+claim reader could not read, for the readings derived from the criterion, beside lost ones: an arm-skewed backlog
+withholds a reading until it settles, and the page's pending line says so where the backlog is all that is missing. Each arm counts its silent cells beside its mean, and a class-B caveat
 (`claims_silent:<criterion>`) names each arm that has some, with a line on the page under the scoreboard saying the
 candidate said nothing on so many of that arm's cells. Its remedy is `inspect_arm` (new): a person reads those cells
 to tell whether the candidate declined or its session gave it no turn; no rig is presumed at fault. `claim_evidence=None` on an output that holds something is still refused: no reader could tell

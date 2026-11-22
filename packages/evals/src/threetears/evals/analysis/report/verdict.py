@@ -862,6 +862,14 @@ def claim_caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str])
                 held = counted.setdefault((measure.instrument, field), {})
                 held[judged.variant_key] = max(held.get(judged.variant_key, 0), getattr(judged, field))
     order = {board.variant_key: at for at, board in enumerate(bundle.scoreboard)}
+    # A criterion whose readings are withheld with nothing missing but pending cells: the backlog is the reason.
+    withheld = {measure.instrument for measure in bundle.judged_measures if measure.withheld is not None}
+    other_missing = {
+        measure.instrument
+        for measure in bundle.judged_measures
+        if any(arm.n_claim_lost or arm.n_claim_silent or arm.n_claim_unread for arm in measure.arms)
+    }
+    backlogged = withheld - other_missing
     lines: list[str] = []
     for criterion in sorted({instrument for instrument, _ in counted}):
         for field, line in _CLAIM_LINES:
@@ -870,8 +878,19 @@ def claim_caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str])
                 continue
             ranked = sorted(held, key=lambda key: order.get(key, len(order)))
             who = ", ".join(f"{held[key]} {'cell' if held[key] == 1 else 'cells'} of {arm(key)}" for key in ranked)
-            lines.append(line.format(criterion=criterion, who=who))
+            said = line.format(criterion=criterion, who=who)
+            if field == "n_claim_pending" and criterion in backlogged:
+                # Pending is missing data the withholding test counts: an uneven backlog withholds, and settles.
+                said += _PENDING_WITHHELD
+            lines.append(said)
     return lines
+
+
+#: Added to the pending line where the criterion's readings are withheld and its pending cells are all that is missing:
+#: the arms wait on their grades unevenly, which withholds the readings until the backlog settles.
+_PENDING_WITHHELD: Final = (
+    " The arms wait unevenly, so its readings are withheld until the backlog settles, which it does on its own."
+)
 
 
 def _control_key(bundle: AnalysisContextBundle) -> str | None:

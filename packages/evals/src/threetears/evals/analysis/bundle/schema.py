@@ -968,7 +968,8 @@ class JudgedArm(EvalDocumentModel):
         exclude_if=lambda value: not value,
         description=(
             "On a claim reading: cells whose tally still waits on its stored grade, left out of `n` and the mean "
-            "and counted as no loss: not yet known."
+            "and counted as no loss: not yet known. Counted as unread by the test that withholds a reading whose arms "
+            "left different shares of cells unread, so an uneven backlog withholds until it settles."
         ),
     )
     n_claim_unread: int = Field(
