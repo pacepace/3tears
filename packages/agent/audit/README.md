@@ -47,9 +47,11 @@ audit table, and `threetears.agent.audit.persist` is its persister:
 from threetears.agent.audit import AuditEvent, publish_audit
 ```
 
-- `AuditEvent` -- pydantic `BaseModel` with `extra='forbid'`, timezone-aware
-  `timestamp` validator, closed `event_type` string family (dotted verb,
-  e.g. `workspace.fs_write`, `rbac.assignment.create`). All common identity
+- `AuditEvent` -- a `TolerantWireModel` (`extra='ignore'`: a field it does
+  not declare is dropped, not rejected), with a timezone-aware `timestamp`
+  validator, `outcome` closed to `success` / `failure` / `error`, and an open
+  `event_type` that must be dotted (e.g. `workspace.fs_write`,
+  `rbac.assignment.create`). All common identity
   fields are typed columns on the envelope; event-type-specific extras live
   in `details: dict[str, Any]`.
 - `publish_audit(event, nats_client, namespace)` -- fire-and-forget async
@@ -125,8 +127,10 @@ obligation of the hub's responder, is the docstring of `threetears/agent/audit/e
 
 - **Fire-and-forget.** Audit publish failures must never break the producing
   call. The helper catches every exception, logs at WARN, and returns.
-- **Typed wire contract.** `extra='forbid'` + timezone-aware validator catch
-  publisher-side drift at construction time, not at the consumer's decode.
+- **Tolerant wire contract.** Unknown fields are ignored, so a consumer older
+  than its producer still records the event. Declared fields are validated
+  (timezone-aware `timestamp`, closed `outcome`, dotted `event_type`) at
+  construction time.
 - **No domain-specific envelope types.** Every domain publishes the same
   model; `event_type` conveys the domain.
 - **No dual-emit.** There is no legacy envelope the consumer still accepts in

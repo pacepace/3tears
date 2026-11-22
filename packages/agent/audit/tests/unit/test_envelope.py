@@ -1,6 +1,6 @@
 """unit tests for :class:`threetears.agent.audit.AuditEvent`.
 
-covers the envelope's anti-drift guarantees (``extra='forbid'``,
+covers the envelope's guarantees (unknown fields ignored,
 timezone-aware ``timestamp``, closed ``outcome``, dotted
 ``event_type``) and round-trip ``model_dump_json`` /
 ``model_validate_json`` semantics used by the NATS publisher +

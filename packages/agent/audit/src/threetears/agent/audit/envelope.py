@@ -23,9 +23,10 @@ ties a request's events together, and many events share one.
 
 anti-drift guarantees:
 
-- ``model_config`` uses ``extra='forbid'`` -- any stray field on the
-  wire fails parse loudly. a miswired publisher surfaces at construct
-  time rather than silently dropping the field.
+- the envelope is a :class:`~threetears.core.wire.TolerantWireModel`
+  (``extra='ignore'``): a field it does not declare is dropped, not
+  refused, so a consumer older than its producer still records the
+  event. what it declares is still validated.
 - ``timestamp`` must be timezone-aware UTC; a validator rejects naive
   datetimes with a clear message.
 - ``event_type`` uses the dotted ``{domain}.{verb}[.{sub_verb}]``
@@ -91,6 +92,12 @@ class AuditEvent(TolerantWireModel):
     side (workspace tool, rbac endpoint, memory subsystem, custom
     tool) and handed to :func:`publish_audit`. decoded on the hub
     side from ``{namespace}.audit.>`` by the unified consumer.
+
+    unknown fields are ignored, not rejected (``extra='ignore'``, from
+    :class:`~threetears.core.wire.TolerantWireModel`), so a consumer older
+    than its producer still records the event without the new field;
+    ``test_a_field_a_newer_producer_adds_is_ignored`` in
+    ``packages/agent/audit/tests/unit/test_envelope.py`` holds it.
 
     :param id: envelope identity (uuid7 time-ordered); doubles as the
         audit row primary key when the consumer persists it, and is the
