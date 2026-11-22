@@ -61,7 +61,8 @@ since the family is corrected together. New stored fields, each left out of the 
 without them is stored and fingerprinted as before: `EvalResult.candidate_code_raised` and `ClaimTally.web_replayed`
 (core 15.24, still unreleased), and in an analysis bundle `JudgedMeasure.nonnegative`, `JudgedArm.n_web_replayed`,
 the trial cause `code_raised`, the decision surface's `JudgedDimensionFacts.nonnegative`, the report input's
-`web_replayed` counts, and a report's cost/quality `ChartBlock.rate_heading` (`Answered`, or `Pass or answered rate`). Reach-back: the build before this one, at the same minor, refuses a result, a bundle or an
+`web_replayed` counts, a report's cost/quality `ChartBlock.rate_heading` (`Answered`, or `Pass or answered rate`), and a bundle's
+`claim_checks` with its evidence's `claim_reads`. Reach-back: the build before this one, at the same minor, refuses a result, a bundle or an
 analysis carrying any of them (`extra_forbidden`, or the trial cause as no `FailCause`), so the integration line is
 deployed and rolled back as one, as the rest of 15.24 is.
 
