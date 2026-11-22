@@ -183,19 +183,6 @@ class ClaimReading:
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
             raise ValueError(f"ClaimReading(revision=...) is a non-negative int, not {self.revision!r}")
 
-    @property
-    def declaration(self) -> tuple[object, ...]:
-        """What it declares, for telling two declarations of one reading apart: its better end, bounds, revision and
-        ``read`` by module, qualified name and code, so a function written twice alike reads as one."""
-        return (
-            self.better,
-            self.bounds,
-            self.revision,
-            getattr(self.read, "__module__", None),
-            _named(self.read),
-            getattr(self.read, "__code__", None) or self.read,
-        )
-
 
 class Claims:
     """The factual claims in each answer, listed and checked by the engine: a grader in an eval's ``grader`` list.
@@ -346,11 +333,30 @@ class Claims:
         )
         self.derived: tuple[MetricDescriptor, ...] = tuple(descriptor for descriptor, _reading in declared)
 
-    @property
-    def declared_readings(self) -> tuple[tuple[object, ...], ...]:
-        """PROVISIONAL. Every reading of your own as declared, by stored name: what tells two ``Claims`` of one name
-        reading alike from two reading apart, whichever objects they are."""
-        return tuple((name, reading.declaration) for name, reading in self.readings.items())
+    def unlike(self, other: Claims) -> str | None:
+        """PROVISIONAL. How ``other``'s readings of its own differ from these, or ``None`` where they are one
+        declaration: the same names in the same order, each with the same better end, bounds and revision, and read by
+        the very same function object (``is``). A host reads one reader per criterion, so two ``Claims`` of one name
+        share a host only when either one's reader reads the other's cells exactly as its own would: a reader
+        defined once and passed to both. Two functions that merely look alike (two closures of one factory, two
+        lambdas written alike) may count differently, so they are told apart.
+
+        :param other: Another claims grader, of the same criterion.
+        :return: Why the two are not one declaration, in a clause; ``None`` when they are.
+        """
+        mine, theirs = self.readings, other.readings
+        if list(mine) != list(theirs):
+            return f"declares the readings {', '.join(theirs) or 'none'}, and the other {', '.join(mine) or 'none'}"
+        for name, reading in mine.items():
+            given = theirs[name]
+            if (reading.better, reading.bounds, reading.revision) != (given.better, given.bounds, given.revision):
+                return f"declares {name!r} with another better end, bounds or revision"
+            if reading.read is not given.read:
+                return (
+                    f"reads {name!r} through another function object ({_named(given.read)} and {_named(reading.read)}), "
+                    "which may count otherwise: define the reader once and pass that one object to both"
+                )
+        return None
 
     def __repr__(self) -> str:
         """The grader, by model and criterion."""

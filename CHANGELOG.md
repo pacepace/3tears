@@ -20,7 +20,9 @@ packages (bumped in lock-step).
   reading's `revision`; an unbounded one is a count, nonnegative), read through one claim reader the host built by
   `as_host` (or by `Eval.run` with no host) registers. It ranks, is withheld and is lost as the criterion's own
   readings are; launch reads it on two synthetic cells first and refuses one that fails there. Two `Claims` of one
-  name declaring the same readings share one host, whichever objects they are. Refused: a name that is no identifier
+  name share one host when they declare the same readings through the same reader object (`is`); readers that
+  only look alike (two closures of one factory, two lambdas written alike) are refused, saying to define the reader
+  once and share it. Refused: a name that is no identifier
   or is one of the criterion's own readings, an unusable better end, bounds or revision, two `Claims` of one name in
   one `as_host` declaring different readings, and a host of your own that does not declare them as `Claims` does.
 - **The run's own record** (`ClaimEvidence.session`), for those readings: `Answer.session` (new, optional), what the

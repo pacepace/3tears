@@ -777,6 +777,55 @@ async def test_one_host_reads_two_claims_declaring_the_same_readings_and_refuses
         as_host([bare, first], store=MEMORY)
 
 
+def _counting(limit: int) -> ClaimReading:
+    """A reading built by a factory: each call's reader closes over its own limit, so two may count apart."""
+
+    def over(view: ClaimView) -> float:
+        """Claims past a limit."""
+        return float(max(0, len(view.claims) - limit))
+
+    return ClaimReading(over, better="lower")
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "said"),
+    [
+        pytest.param(
+            lambda: {"over": _counting(1)},
+            lambda: {"over": _counting(100)},
+            "reads 'answer.claims_over' through another function object",
+            id="factory-closures",
+        ),
+        pytest.param(
+            lambda: {"many": ClaimReading(lambda view: float(len(view.claims)), better="lower")},
+            lambda: {"many": ClaimReading(lambda view: float(len(view.claims)), better="lower")},
+            "define the reader once and pass that one object to both",
+            id="twin-lambdas",
+        ),
+    ],
+)
+def test_two_claims_reading_through_two_function_objects_are_refused_on_one_host(
+    first: Any, second: Any, said: str
+) -> None:
+    """A host reads one reader per criterion: two readers that only look alike may count apart, so they never share."""
+    evals = [
+        Eval(LOGGED, careful, [Claims(_FakeClaimsGrader(), case_documents="source", readers=readers())], k=1)
+        for readers in (first, second)
+    ]
+    with pytest.raises(ValueError, match=re.escape(said)):
+        as_host(evals, store=MEMORY)
+
+
+def test_two_claims_sharing_one_reader_object_share_one_host() -> None:
+    shared = _counting(1)
+    evals = [
+        Eval(LOGGED, careful, [Claims(_FakeClaimsGrader(), case_documents="source", readers={"over": shared})], k=1)
+        for _ in range(2)
+    ]
+    host = as_host(evals, store=MEMORY)
+    assert host.profile.measures.get("answer.claims_over") is not None
+
+
 # parity-with: threetears.evals.schema.CompletionClient
 @dataclass
 class _FakeUnreadableGrader:
