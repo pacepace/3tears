@@ -12,9 +12,11 @@ from the hypergeometric law. Every count is an integer. Each law is computed to 
 decision. Once enough draws are at least as extreme that ``(1 + at least) / (1 + draws)`` can no longer fall under
 the level, the decision is the full draws' decision, so it stops there: this costs nothing. At 99, 199, 399 and 799
 draws (:data:`_EARLY_LOOKS`) it also stops and rejects when so few draws were at least as extreme that a true p at the
-level would give so few at most 1% of the time. That rejects where the full draws would not with a chance of at most
-0.0003 at 999 draws and a level of 5%, whatever the data. The bound holds because a valid test's true p is never more
-likely than uniform to sit low; ``test_permutation.py`` computes it from the binomial law.
+level would give so few at most 1% of the time. At 999 draws and a level of 5% this costs two things, stated apart.
+Averaged over data drawn under the null, it adds at most 0.0003 to the false-reject rate: a valid test's true p is never
+more likely than uniform to sit low, and ``test_permutation.py`` computes the bound from the binomial law. On one
+dataset, the chance that an early look rejects where the full draws would not depends on that dataset's true p: it is
+largest, at about 0.4%, for a true p just over 5%, and falls fast away from it.
 """
 
 from __future__ import annotations
@@ -80,7 +82,12 @@ def sequential_permutation_p(at_least_as_extreme: Callable[[], bool], *, draws: 
     it under, so it returns that p, the least the full draws could read: the decision is theirs. At each of 99, 199,
     399 and 799 draws under ``draws``, a count a true p of ``level`` would give at most 1% of the time stops it with the
     p read so far, under ``level``. A p under ``level`` therefore rejects as the full draws would, but for a chance of
-    at most 0.0003 at 999 draws and a level of 5%.
+    at most 0.0003 averaged over data under the null, and at most about 0.4% on one dataset whose true p sits just over
+    5%, at 999 draws and a level of 5%.
+
+    After either early stop the value is meaningful only as a decision against ``level``: it is the least p the full
+    draws could read, or the p of the draws read so far, and neither is a p-value to report. Only a read of every draw
+    returns the Monte Carlo p itself.
 
     :param at_least_as_extreme: Makes one draw; True when its statistic is at least the observed one.
     :param draws: The most draws read.
