@@ -100,6 +100,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.host import (
     SHARED_CORE,
     ApparatusError,
+    ClaimReader,
     CompletionClients,
     EvalHost,
     HostProfile,
@@ -654,6 +655,8 @@ def callable_host(
     clients: CompletionClients | None = None,
     trace_sink: TraceSink | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
+    derived: Sequence[MetricDescriptor] = (),
+    claim_readers: Mapping[str, ClaimReader] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -691,6 +694,10 @@ def callable_host(
         (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
         every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
         :class:`~threetears.evals.quick.judged.Judge`'s, not a host's. ``None`` declares none.
+    :param derived: The readings of claims the host derives (``MetricDescriptor.derived_from``), as a
+        :class:`~threetears.evals.quick.claims.Claims` declares them (``Claims.derived``); none by default.
+    :param claim_readers: The claim reader for each criterion ``derived`` reads from, by criterion name
+        (``Claims.read``); ``None`` registers none.
     :return: The host.
     :raises ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
         any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
@@ -720,16 +727,21 @@ def callable_host(
             if arms
             else SHARED_CORE,
             measures=MeasureRegistry(
-                # A Measure declares itself; any other scorer is declared here, with what this call declares on it.
-                scorer.descriptor
-                if isinstance(scorer, Measure)
-                else scorer_measure(
-                    scorer,
-                    margin=margins.get(_scorer_name(scorer)),
-                    value_range=_as_range(ranges.get(_scorer_name(scorer))),
-                    guardrail=guardrails.get(_scorer_name(scorer)),
-                )
-                for scorer in scorers
+                [
+                    # A Measure declares itself; any other scorer is declared here, with what this call declares on it.
+                    *(
+                        scorer.descriptor
+                        if isinstance(scorer, Measure)
+                        else scorer_measure(
+                            scorer,
+                            margin=margins.get(_scorer_name(scorer)),
+                            value_range=_as_range(ranges.get(_scorer_name(scorer))),
+                            guardrail=guardrails.get(_scorer_name(scorer)),
+                        )
+                        for scorer in scorers
+                    ),
+                    *derived,
+                ]
             ),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
@@ -738,6 +750,7 @@ def callable_host(
             action_parameters=None if world is None or not world.stateful else world.action_parameters,
             tool_actions=None if world is None or not world.stateful else world.tool_actions,
             variant_levers=_arm_levels if arms else None,
+            claim_readers=dict(claim_readers or {}),
         ),
         storage=EvalStorage(InMemoryDocumentStore() if store is None else store),
         # A quick run's model calls go through the package's own client, whose errors this reads: a judge's call the
@@ -1032,7 +1045,10 @@ class CallableKind:
                 )
             try:
                 claim_evidence = self._claims.evidence(
-                    case, graded, cast(tuple[Document, ...], read) if read is not None else None
+                    case,
+                    graded,
+                    cast(tuple[Document, ...], read) if read is not None else None,
+                    returned=returned if isinstance(returned, Answer) else None,
                 )
             except ValueError as unrenderable:
                 # The cut and the case's documents are the rig: the cell is excluded, and stores no answer, since a

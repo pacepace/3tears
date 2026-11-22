@@ -17,12 +17,16 @@ the pages it fetched. They travel beside the answer, never in ``value``, so no g
 it; a :class:`~threetears.evals.quick.claims.Claims` grader declaring ``grounded_in="run"`` reads them to tell a
 claim the candidate's own sources support from one it made without. Missing is not zero here either: ``None`` says
 nothing, and ``()`` says it read none.
+
+An ``Answer`` may also carry the run's own record (``session``): what the candidate did beside its answer, such as
+an order log or a play order. It is stored with the cell's claim evidence for a ``Claims`` grader's readings of your
+own, and like ``documents`` it never joins ``value``, so no grader, judge or prompt reads it.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,16 +40,25 @@ class Document:
     :ivar text: Its text, as read: every quote a grader cites from it is checked against this, verbatim.
     :ivar title: What it is called; ``None`` names it by its address, else by its place in the list.
     :ivar url: Where it was read, when it has an address.
+    :ivar id: Provisional. What the case calls it, kept as its stored id, so another case document can override it by
+        name; ``None`` numbers it by its place (``case-1``). Ids are the case's to keep unique among its documents.
+    :ivar overrides: Provisional. The case documents this one overrides, by id: where it and one of them bear on a
+        claim with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a
+        policy update over the old policy), so support quoted only from an overridden document that this one
+        contradicts reads contradicted. Only a case's documents override; a candidate's own never do.
     """
 
     text: str
     title: str | None = None
     url: str | None = None
+    id: str | None = None
+    overrides: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         """Refuse a document no claim could be checked against.
 
-        :raises ValueError: Text that is not a string or is blank, or a title or address that is blank.
+        :raises ValueError: Text that is not a string or is blank; a title, address or id that is blank; or
+            overrides that are not a list of non-blank ids, name one id twice, or name the document's own.
         """
         if not isinstance(self.text, str) or not self.text.strip():
             raise ValueError(
@@ -55,6 +68,21 @@ class Document:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"Document.{name} is a non-blank string or None, not {value!r}")
+        if self.id is not None and (not isinstance(self.id, str) or not self.id.strip()):
+            raise ValueError(f"Document.id is a non-blank string or None, not {self.id!r}")
+        overrides = self.overrides
+        if isinstance(overrides, str | bytes) or not isinstance(overrides, Sequence):
+            raise ValueError(f"Document.overrides is a list of the ids it overrides, not {overrides!r}")
+        if not all(isinstance(other, str) and other.strip() for other in overrides):
+            raise ValueError(
+                f"Document.overrides names each document it overrides by a non-blank id, not {overrides!r}"
+            )
+        if len(set(overrides)) != len(overrides):
+            raise ValueError(f"Document.overrides names an id more than once: {list(overrides)!r}")
+        if self.id is not None and self.id in overrides:
+            raise ValueError(f"Document {self.id!r} overrides itself")
+        # Held as a tuple, so what the run stores is what was given.
+        object.__setattr__(self, "overrides", tuple(overrides))
 
 
 @dataclass(frozen=True)
@@ -75,6 +103,10 @@ class Answer:
         read while answering: each passage it was given or page it fetched, a :class:`Document` or its text. ``()`` says it read none; ``None`` (the default) says nothing, which a
         ``Claims`` grader reading the candidate's own documents (``grounded_in="run"``) refuses, since no read
         could tell it from none.
+    :ivar session: Provisional, as ``documents`` is. The run's own record beside the answer (an order log, a play
+        order), a JSON object: stored as given with the cell's claim evidence (``ClaimEvidence.session``) for the
+        readings of your own a ``Claims`` grader declares, and read by no grader, judge or prompt. ``None`` (the
+        default): no record.
     """
 
     value: Any
@@ -84,13 +116,18 @@ class Answer:
     cost_usd: float | None = None
     served_model: str | None = None
     documents: Sequence[Document | str] | None = None
+    session: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Refuse a spend no usage row can hold, so the candidate that built it fails rather than the run.
 
         :raises ValueError: A negative or non-integer token count, a negative or non-finite cost, or documents that are
-            not a list of :class:`Document` values or non-blank strings.
+            not a list of :class:`Document` values or non-blank strings, or a session record that is not a mapping.
         """
+        if self.session is not None and not isinstance(self.session, Mapping):
+            raise ValueError(
+                f"Answer.session is the run's own record, a JSON object (a mapping), not {type(self.session).__name__}"
+            )
         for name in ("input_tokens", "output_tokens"):
             count = getattr(self, name)
             if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
@@ -106,7 +143,14 @@ class Answer:
                     f"Answer.documents is a list of what the candidate read, not {type(self.documents).__name__}"
                 )
             # Held as a tuple of Documents, so what the run stores is what was returned, and nothing can change it.
-            object.__setattr__(self, "documents", tuple(_as_document(given) for given in self.documents))
+            read = tuple(_as_document(given) for given in self.documents)
+            object.__setattr__(self, "documents", read)
+            # Truth reads the case's evidence alike for every arm, so what one arm read never outranks it.
+            if overriding := [document for document in read if document.overrides]:
+                raise ValueError(
+                    f"Answer.documents holds {len(overriding)} document(s) that override others; only a case's "
+                    "documents override, since what a candidate read never decides truth: drop overrides="
+                )
 
 
 def _as_document(given: object) -> Document:
