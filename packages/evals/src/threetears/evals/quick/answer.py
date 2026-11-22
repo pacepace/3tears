@@ -17,12 +17,16 @@ the pages it fetched. They travel beside the answer, never in ``value``, so no g
 it; a :class:`~threetears.evals.quick.claims.Claims` grader declaring ``grounded_in="run"`` reads them to tell a
 claim the candidate's own sources support from one it made without. Missing is not zero here either: ``None`` says
 nothing, and ``()`` says it read none.
+
+An ``Answer`` may also carry the run's own record (``session``): what the candidate did beside its answer, such as
+an order log or a play order. It is stored with the cell's claim evidence for a ``Claims`` grader's readings of your
+own, and like ``documents`` it never joins ``value``, so no grader, judge or prompt reads it.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,6 +79,10 @@ class Answer:
         read while answering: each passage it was given or page it fetched, a :class:`Document` or its text. ``()`` says it read none; ``None`` (the default) says nothing, which a
         ``Claims`` grader reading the candidate's own documents (``grounded_in="run"``) refuses, since no read
         could tell it from none.
+    :ivar session: Provisional, as ``documents`` is. The run's own record beside the answer (an order log, a play
+        order), a JSON object: stored as given with the cell's claim evidence (``ClaimEvidence.session``) for the
+        readings of your own a ``Claims`` grader declares, and read by no grader, judge or prompt. ``None`` (the
+        default): no record.
     """
 
     value: Any
@@ -84,13 +92,18 @@ class Answer:
     cost_usd: float | None = None
     served_model: str | None = None
     documents: Sequence[Document | str] | None = None
+    session: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Refuse a spend no usage row can hold, so the candidate that built it fails rather than the run.
 
         :raises ValueError: A negative or non-integer token count, a negative or non-finite cost, or documents that are
-            not a list of :class:`Document` values or non-blank strings.
+            not a list of :class:`Document` values or non-blank strings, or a session record that is not a mapping.
         """
+        if self.session is not None and not isinstance(self.session, Mapping):
+            raise ValueError(
+                f"Answer.session is the run's own record, a JSON object (a mapping), not {type(self.session).__name__}"
+            )
         for name in ("input_tokens", "output_tokens"):
             count = getattr(self, name)
             if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):

@@ -23,18 +23,19 @@ What the grader reads, each the eval's to say:
   what it was given or fetched. ``grounded_in="run"`` reads them for the grounded share.
 - **The web**, with ``search``: a port the grader checks a doubted claim on, within a budget (``web``), whose
   searches are recorded as the run's spend.
-- **The run's own record**, with ``session``: what the answer's play or order was (a game's roll log, a playlist),
-  read off a case field or rendered from the case and the answer. No prompt sees it and nothing in the engine reads
-  it: only your own readings do.
+- **The run's own record**: what the run did beside its answer (an order log, a playlist), returned on
+  :attr:`~threetears.evals.quick.answer.Answer.session`, read off a case field (``session="field"``), or rendered by
+  a callable (``session=``) from the case and the :class:`~threetears.evals.quick.answer.Answer`. No grader, judge or
+  prompt sees it and nothing in the engine reads it: only your own readings do.
 
-**Readings of your own** (``readers``) count what the engine's readings cannot: a claim the session record
-contradicts, a claim about an entity your tags name. Each is a function handed a frozen
+**Readings of your own** (``readers``, each a :class:`ClaimReading`) count what the engine's readings cannot: a
+claim the session record contradicts, a claim about an entity your tags name. Each reads a frozen
 :class:`~threetears.evals.kernel.host.ClaimView` of one cell (its claims, each with its scope, verdict and segment,
-the segments with your tags, and the session record) that returns a number, or ``None`` where the cell holds nothing
+the segments with your tags, and the session record) and returns a number, or ``None`` where the cell holds nothing
 it counts. It ranks arms as the criterion's own readings do, under its name (``answer.claims_<reading>``).
 
 Four short examples, each importing from the quick path's root while these names are provisional
-(``from threetears.evals.quick import Claims, Document``). The first grades each answer's claims against its case's
+(``from threetears.evals.quick import Claims, ClaimReading, Document``). The first grades each answer's claims against its case's
 ``source``::
 
     claims = Claims(model, case_documents="source")
@@ -51,14 +52,18 @@ The second ranks an arm that looked its answer up above one that recalled it, by
     grounded = Claims(model, case_documents="source", grounded_in="run")
     result = await Eval(cases, {"recall": recall, "look-up": look_up}, [grounded], name="landmarks").run()
 
-The third counts a reading of its own: claims naming a guest the case's record says has left::
+The third counts a reading of its own: claims naming an item the run's own order log does not hold::
 
-    def returns(view):
-        \"\"\"Claims that put a guest back in the story after they left it.\"\"\"
-        gone = (view.session or {}).get("left", ())
-        return sum(1 for claim in view.claims if claim.scope == "world" and any(n in claim.text for n in gone))
+    async def assistant(case):
+        reply, log = await take_order(case)
+        return Answer(reply, session={"ordered": log})  # beside the answer, never graded as part of it
 
-    claims = Claims(model, case_documents="source", session="played", readers={"returns": (returns, "lower")})
+    def unordered(view):
+        \"\"\"World claims naming an item the order log does not hold.\"\"\"
+        held = (view.session or {}).get("ordered", ())
+        return sum(1 for claim in view.claims if claim.scope == "world" and not any(i in claim.text for i in held))
+
+    claims = Claims(model, case_documents="menu", readers={"unordered": ClaimReading(unordered, better="lower")})
 
 The fourth reads each cell's claims back after a run, with their verdicts and readings::
 
@@ -83,9 +88,9 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
@@ -106,7 +111,7 @@ from threetears.evals.schema import (
     WebSearch,
 )
 from threetears.evals.schema.models import CLAIM_DOCUMENT_BYTES
-from threetears.evals.quick.answer import Document
+from threetears.evals.quick.answer import Answer, Document
 from threetears.evals.quick.judged import DIMENSION_CONTEXT, BorrowedJudgeClient, answer_text, judge_client
 
 if TYPE_CHECKING:
@@ -135,6 +140,63 @@ _PROVENANCES: tuple[EvidenceProvenance, ...] = ("case", "run")
 _BETTER_ENDS: Mapping[str, bool] = MappingProxyType({"lower": False, "higher": True})
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimReading:
+    """PROVISIONAL. A reading of your own off each cell's claims, declared as ``Claims(readers={name: ...})`` takes it:
+    ``ClaimReading(unordered, better="lower")``.
+
+    Everything after ``read`` is keyword-only, so it grows by adding declarations, as ``grader(...)`` does.
+
+    :ivar read: Handed a frozen :class:`~threetears.evals.kernel.host.ClaimView` of one cell, it returns a number, or
+        ``None`` where the cell holds nothing it counts (no reading, never a zero). The first line of its docstring
+        describes the reading.
+    :ivar better: Which end of it is better: ``"lower"`` or ``"higher"``. It ranks arms on that end.
+    :ivar bounds: The lowest and highest value it can read, low first (a share is ``(0, 1)``); ``None`` for a count,
+        which never reads below zero.
+    :ivar revision: The revision of ``read``: raise it whenever what ``read`` counts changes while the rest stays as it
+        is (it reads a field the view gains, or counts a claim it did not), so runs read under the two never pool.
+    """
+
+    read: Callable[[ClaimView], float | None]
+    better: Literal["lower", "higher"] = field(kw_only=True)
+    bounds: tuple[float, float] | None = field(default=None, kw_only=True)
+    revision: int = field(default=0, kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Refuse a reading no measure could carry.
+
+        :raises ValueError: A ``read`` that is not callable; a better end other than ``lower`` and ``higher``; bounds
+            that are not two numbers, low first; or a revision that is not a non-negative int.
+        """
+        if not callable(self.read):
+            raise ValueError(f"ClaimReading(read) is a function of a cell's view, not {self.read!r}")
+        if self.better not in _BETTER_ENDS:
+            raise ValueError(f"ClaimReading(better=...) is 'lower' or 'higher', not {self.better!r}")
+        bounds = self.bounds
+        if bounds is not None and not (
+            isinstance(bounds, tuple)
+            and len(bounds) == 2
+            and all(isinstance(end, int | float) and not isinstance(end, bool) for end in bounds)
+            and bounds[0] < bounds[1]
+        ):
+            raise ValueError(f"ClaimReading(bounds=...) is two numbers, low first, not {bounds!r}")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
+            raise ValueError(f"ClaimReading(revision=...) is a non-negative int, not {self.revision!r}")
+
+    @property
+    def declaration(self) -> tuple[object, ...]:
+        """What it declares, for telling two declarations of one reading apart: its better end, bounds, revision and
+        ``read`` by module, qualified name and code, so a function written twice alike reads as one."""
+        return (
+            self.better,
+            self.bounds,
+            self.revision,
+            getattr(self.read, "__module__", None),
+            _named(self.read),
+            getattr(self.read, "__code__", None) or self.read,
+        )
+
+
 class Claims:
     """The factual claims in each answer, listed and checked by the engine: a grader in an eval's ``grader`` list.
 
@@ -144,8 +206,8 @@ class Claims:
     :ivar unit: What one unit is called on a page (``answer``, ``entry``).
     :ivar segmentation: How each answer is cut, by name, as each cell's evidence records it.
     :ivar search: The web search a doubted claim is checked on, or ``None`` for no web.
-    :ivar readers: PROVISIONAL. Each reading of your own, by its stored name (``answer.claims_returns``): the
-        function reading it off a cell's view. Empty when none is declared.
+    :ivar readings: PROVISIONAL. Each reading of your own, by its stored name (``answer.claims_unordered``), as
+        declared. Empty when none is declared.
     :ivar derived: PROVISIONAL. The measure each reading of your own is, as the host built over this eval declares it
         (derived from :attr:`criterion`, in the ``claims`` family), in the order given.
     """
@@ -159,13 +221,8 @@ class Claims:
         segments: Callable[[Mapping[str, Any], Any], Sequence[Segment | str]] | None = None,
         segmentation: str | None = None,
         case_documents: str | Callable[[Mapping[str, Any]], Sequence[Document | str]] | None = None,
-        session: str | Callable[[Mapping[str, Any], Any], Mapping[str, Any] | None] | None = None,
-        readers: Mapping[
-            str,
-            tuple[Callable[[ClaimView], float | None], str]
-            | tuple[Callable[[ClaimView], float | None], str, tuple[float, float]],
-        ]
-        | None = None,
+        session: str | Callable[[Mapping[str, Any], Answer], Mapping[str, Any] | None] | None = None,
+        readers: Mapping[str, ClaimReading] | None = None,
         grounded_in: str | Iterable[str] | None = None,
         guidance: str = "",
         search: WebSearch | None = None,
@@ -191,19 +248,16 @@ class Claims:
             or mappings with ``text`` (and ``title``, ``url``), or a callable rendering a case's documents. It decides
             truth for every arm alike. ``None``: the case holds none, so only the web (with ``search``) can find a
             claim false.
-        :param session: PROVISIONAL. The run's own record each cell's readings of your own read (a roll log, a play
-            order), stored with the cell's evidence: a field of the case holding a JSON object, or a callable
-            ``(case, answer) -> {...}`` rendering one, ``None`` where a cell has none. No prompt sees it and the
-            engine reads none of it: only ``readers`` do. ``None``: no record.
-        :param readers: PROVISIONAL. Readings of your own, by name: each ``(read, better)``, or
-            ``(read, better, (low, high))`` for a bounded one (a share is ``(0, 1)``). ``read`` is handed a frozen
-            :class:`~threetears.evals.kernel.host.ClaimView` of one cell and returns a number, or ``None`` where the
-            cell holds nothing it counts (no reading, never a zero); ``better`` is ``"lower"`` or ``"higher"``. An
-            unbounded one is a count and never reads below zero. Each is stored as ``<name>_<reading>``
-            (``answer.claims_returns``), described by the first line of ``read``'s docstring, and ranks arms as the
-            criterion's own readings do. Launch reads each on two synthetic cells first and refuses one that raises
-            there; one that raises on a graded cell leaves that cell's readings of your own unread, saying so.
-            ``None``: none.
+        :param session: PROVISIONAL. Where each cell's record of the run (an order log, a play order) is read from, for
+            the readings of your own; it is stored with the cell's evidence as given. ``None``: what the runner
+            returned on ``Answer.session``, or no record. A field name: the case's field holding a JSON object, the
+            same for every arm. A callable ``(case, answer) -> {...}``: handed the :class:`Answer` the runner returned
+            (a plain return as ``Answer(value)``), so it reads ``answer.value`` and ``answer.session``; ``None`` where
+            a cell has none. No grader, judge or prompt sees it and the engine reads none of it: only ``readers`` do.
+        :param readers: PROVISIONAL. Readings of your own, each a :class:`ClaimReading` by name. Each is stored as
+            ``<name>_<reading>`` (``answer.claims_unordered``) and ranks arms as the criterion's own readings do.
+            Launch reads each on two synthetic cells first and refuses one that raises there; one that raises on a
+            graded cell leaves that cell's readings of your own unread, saying so. ``None``: none.
         :param grounded_in: Which documents a claim's support by reads as grounded: ``"run"``, what the candidate
             returned on ``Answer.documents``; ``"case"``, the case's own, for a candidate shown them (a summarizer's
             source). ``None``: no grounded share.
@@ -221,8 +275,8 @@ class Claims:
             name nor a callable; nothing to check a claim against (no ``case_documents``, no ``search`` and no
             ``grounded_in``), whose every reading would read 0; ``grounded_in="case"`` with no ``case_documents``;
             a ``session`` that is neither a field name nor a callable; a reading of your own whose name is no
-            identifier or is one of the criterion's own readings, that is not a function, or whose better end or
-            bounds are unusable; or a criterion the engine refuses.
+            identifier or is one of the criterion's own readings, or that is not a :class:`ClaimReading`; or a
+            criterion the engine refuses.
         """
         self.client, self.model = judge_client(model, grader="Claims")
         if not isinstance(name, str) or not name.strip():
@@ -284,12 +338,18 @@ class Claims:
             reasons = "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors())
             raise ValueError(f"Claims refused: {reasons}") from refused
         if readers is not None and not isinstance(readers, Mapping):
-            raise ValueError(f"Claims(readers=...) maps each reading's name to (read, better), not {readers!r}")
+            raise ValueError(f"Claims(readers=...) maps each reading's name to a ClaimReading, not {readers!r}")
         declared = [_derived(self.criterion.name, key, given) for key, given in (readers or {}).items()]
-        self.readers: Mapping[str, Callable[[ClaimView], float | None]] = MappingProxyType(
-            {descriptor.name: read for descriptor, read in declared}
+        self.readings: Mapping[str, ClaimReading] = MappingProxyType(
+            {descriptor.name: reading for descriptor, reading in declared}
         )
-        self.derived: tuple[MetricDescriptor, ...] = tuple(descriptor for descriptor, _read in declared)
+        self.derived: tuple[MetricDescriptor, ...] = tuple(descriptor for descriptor, _reading in declared)
+
+    @property
+    def declared_readings(self) -> tuple[tuple[object, ...], ...]:
+        """PROVISIONAL. Every reading of your own as declared, by stored name: what tells two ``Claims`` of one name
+        reading alike from two reading apart, whichever objects they are."""
+        return tuple((name, reading.declaration) for name, reading in self.readings.items())
 
     def __repr__(self) -> str:
         """The grader, by model and criterion."""
@@ -320,21 +380,30 @@ class Claims:
 
         return lend
 
-    def evidence(self, case: Mapping[str, Any], answer: Any, documents: Sequence[Document] | None) -> ClaimEvidence:
+    def evidence(
+        self,
+        case: Mapping[str, Any],
+        answer: Any,
+        documents: Sequence[Document] | None,
+        *,
+        returned: Answer | None = None,
+    ) -> ClaimEvidence:
         """What a cell's claims are listed from and checked against: the answer cut, the case's documents and the
         candidate's own.
 
         :param case: The case, as the runner was handed it.
         :param answer: The answer, as the graders read it.
         :param documents: What the candidate returned on ``Answer.documents``; ``None`` where it said nothing.
+        :param returned: The :class:`Answer` the runner returned, for its ``session``; ``None`` for a plain return.
         :return: The evidence.
         :raises ValueError: The cut, the case's documents or the session record raised, or rendered nothing usable;
-            the case's field is missing or holds no document; the session record is no JSON object; or the documents
-            run past what one cell may hold even cut down.
+            the case's field is missing or holds no document; the session record is no JSON object, or is read off a
+            case field while the runner returned one too; or the documents run past what one cell may hold even cut
+            down.
         """
         segments = self._cut(case, answer)
         held = [*self._case_held(case)]
-        session = self._session_record(case, answer)
+        session = self._session_record(case, returned if returned is not None else Answer(answer))
         stored: tuple[EvidenceDocument, ...] | None = None
         if documents is not None or held:
             stored = (*_fitted(held, "case"), *_fitted([*(documents or ())], "run"))
@@ -354,33 +423,39 @@ class Claims:
         :raises ValueError: A reading's function raised, naming the reading and the function.
         """
         readings: dict[str, float | bool] = {}
-        for name, read in self.readers.items():
+        for name, reading in self.readings.items():
             try:
-                value = read(view)
+                value = reading.read(view)
             # prawduct:ok-broad-except — a reading's function is the caller's code: raised again, naming the reading
             except Exception as raised:
                 raise ValueError(
-                    f"the reading {name!r} ({_named(read)}) raised {type(raised).__name__}: {raised}"
+                    f"the reading {name!r} ({_named(reading.read)}) raised {type(raised).__name__}: {raised}"
                 ) from raised
             if value is not None:
                 readings[name] = value
         return readings
 
-    def _session_record(self, case: Mapping[str, Any], answer: Any) -> dict[str, Any] | None:
+    def _session_record(self, case: Mapping[str, Any], returned: Answer) -> dict[str, Any] | None:
         """The run's own record for this cell, as ``session`` reads it; ``None`` where it names none or holds none.
 
-        :raises ValueError: The case lacks the field, the callable raised, or what it gave is no mapping.
+        :raises ValueError: The case lacks the field, or the runner returned a record beside one read off the case;
+            the callable raised; or what it gave is no mapping.
         """
         source = self._session
         if source is None:
-            return None
-        if isinstance(source, str):
+            held = returned.session
+        elif isinstance(source, str):
             if source not in case:
                 raise ValueError(f"the claims grader reads the session record from {source!r}, which this case lacks")
+            if returned.session is not None:
+                raise ValueError(
+                    f"the claims grader reads the session record from the case's {source!r}, and the runner returned "
+                    "one on Answer.session too; read one: drop session=, or render both with a session= callable"
+                )
             held = case[source]
         else:
             try:
-                held = source(case, answer)
+                held = source(case, returned)
             # prawduct:ok-broad-except — session is the caller's code: what it raises is named, the case with it
             except Exception as raised:
                 raise ValueError(f"the claims grader's session raised {type(raised).__name__}: {raised}") from raised
@@ -511,18 +586,15 @@ def unchecked_truth(criterion: str) -> str:
     )
 
 
-def _derived(
-    criterion: str, key: object, given: object
-) -> tuple[MetricDescriptor, Callable[[ClaimView], float | None]]:
-    """One reading of your own as the measure the host declares and the function reading it.
+def _derived(criterion: str, key: object, given: object) -> tuple[MetricDescriptor, ClaimReading]:
+    """One reading of your own as the measure the host declares, beside its declaration.
 
     :raises ValueError: A name that is no identifier, or is one of the criterion's own readings; a declaration that is
-        not ``(read, better)`` or ``(read, better, (low, high))``; a ``read`` that is not callable; a better end other
-        than ``lower`` and ``higher``; bounds that are not two numbers, low first; or a measure the engine refuses.
+        not a :class:`ClaimReading`; or a measure the engine refuses.
     """
     if not isinstance(key, str) or not key.isidentifier():
         raise ValueError(
-            f"Claims(readers=...) names each reading by an identifier (returns, npc_contradictions), not {key!r}"
+            f"Claims(readers=...) names each reading by an identifier (unordered, session_contradictions), not {key!r}"
         )
     name = f"{criterion}_{key}"
     if name in claim_reading_names(criterion, grounded=True):
@@ -530,25 +602,11 @@ def _derived(
             f"Claims(readers=...) names a reading {key!r}, and {name!r} is one of the criterion's own readings: name it "
             "for what it counts"
         )
-    if not isinstance(given, tuple) or len(given) not in (2, 3):
+    if not isinstance(given, ClaimReading):
         raise ValueError(
-            f"Claims(readers={{{key!r}: ...}}) is (read, better) or (read, better, (low, high)), not {given!r}"
+            f"Claims(readers={{{key!r}: ...}}) is a ClaimReading(read, better='lower' or 'higher'), not {given!r}"
         )
-    read, better, *rest = given
-    if not callable(read):
-        raise ValueError(f"Claims(readers={{{key!r}: ...}}) reads with a function of a cell's view, not {read!r}")
-    if better not in _BETTER_ENDS:
-        raise ValueError(
-            f"Claims(readers={{{key!r}: ...}}) says which end is better, 'lower' or 'higher', not {better!r}"
-        )
-    bounds = rest[0] if rest else None
-    if bounds is not None and not (
-        isinstance(bounds, tuple)
-        and len(bounds) == 2
-        and all(isinstance(end, int | float) and not isinstance(end, bool) for end in bounds)
-        and bounds[0] < bounds[1]
-    ):
-        raise ValueError(f"Claims(readers={{{key!r}: ...}}) bounds a reading by two numbers, low first, not {bounds!r}")
+    read = given.read
     doc = inspect.getdoc(read) if inspect.isfunction(read) or inspect.ismethod(read) else None
     words = " ".join(key.replace("_", " ").split())
     try:
@@ -563,14 +621,15 @@ def _derived(
             if doc
             else f"The {words} {_named(read)} reads off each cell's claims under {criterion}.",
             derived_from=criterion,
-            higher_is_better=_BETTER_ENDS[better],
-            nonnegative=bounds is None,
-            value_range=None if bounds is None else (float(bounds[0]), float(bounds[1])),
+            higher_is_better=_BETTER_ENDS[given.better],
+            nonnegative=given.bounds is None,
+            value_range=None if given.bounds is None else (float(given.bounds[0]), float(given.bounds[1])),
+            definition_revision=given.revision,
         )
     except ValidationError as refused:
         reasons = "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in refused.errors())
         raise ValueError(f"Claims(readers={{{key!r}: ...}}) refused: {reasons}") from refused
-    return descriptor, read
+    return descriptor, given
 
 
 def _named(read: object) -> str:
@@ -694,4 +753,4 @@ def _cut_bytes(text: str, room: int) -> str:
     return kept if kept.strip() else text[:1]
 
 
-__all__ = ["ClaimCell", "Claims", "claim_cell", "unchecked_truth"]
+__all__ = ["ClaimCell", "ClaimReading", "Claims", "claim_cell", "unchecked_truth"]

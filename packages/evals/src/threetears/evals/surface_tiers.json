@@ -1275,6 +1275,7 @@
 "threetears.evals.testing.StoreConformanceFailure": "provisional",
 "threetears.evals.quick.as_host": "host-contract",
 "threetears.evals.quick.ClaimCell": "provisional",
+"threetears.evals.quick.ClaimReading": "provisional",
 "threetears.evals.quick.Claims": "provisional",
 "threetears.evals.quick.Document": "provisional",
 "threetears.evals.quick.ExampleGrade": "provisional",

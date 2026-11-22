@@ -8,7 +8,7 @@
     },
     "threetears.evals.Answer": {
       "kind": "dataclass",
-      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None, documents: Sequence[Document | str] | None = None)",
+      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None, documents: Sequence[Document | str] | None = None, session: Mapping[str, Any] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.declared_names": {
@@ -6367,6 +6367,11 @@
       "tier": "host-contract"
     },
     "threetears.evals.quick.ClaimCell": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.quick.ClaimReading": {
       "kind": "dataclass",
       "signature": "",
       "tier": "provisional"

@@ -997,10 +997,12 @@ def _refuse_undeclared_readings(host: EvalHost, plan: GraderPlan) -> None:
     if claims is not None and claims.derived:
         measures = host.profile.measures
         unread = [descriptor.name for descriptor in claims.derived if measures.get(descriptor.name) != descriptor]
-        if unread or host.profile.claim_readers.get(claims.name) != claims.read:
+        # The host reads through the Claims as_host was built over: this one, or one declaring the same readings.
+        reading = getattr(host.profile.claim_readers.get(claims.name), "__self__", None)
+        if unread or not isinstance(reading, Claims) or reading.declared_readings != claims.declared_readings:
             raise ValueError(
                 f"host {host.profile.host_id!r} does not read the readings Claims {claims.name!r} declares "
-                f"({', '.join(claims.readers)}) as it declares them; build the host with as_host over this eval, so "
+                f"({', '.join(claims.readings)}) as it declares them; build the host with as_host over this eval, so "
                 "the two are one declaration"
             )
     for scorer in plan.scorers:
@@ -1056,7 +1058,7 @@ def as_host(
     for ev in evals:
         if (graded := ev.plan.claims) is not None:
             known_claims = claims.setdefault(graded.name, graded)
-            if known_claims.derived != graded.derived or known_claims.readers != graded.readers:
+            if known_claims.derived != graded.derived or known_claims.declared_readings != graded.declared_readings:
                 raise ValueError(
                     f"two Claims named {graded.name!r} declare different readings of their own; one host reads one "
                     "set of readings of a criterion: name them apart, or declare the same readers on both"

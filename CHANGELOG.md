@@ -10,25 +10,31 @@ packages (bumped in lock-step).
 
 **Added (#1287), provisional:** three doors a quick-path eval graded by `Claims` used to need the host path for.
 
-- **`Claims(..., readers={name: (read, better)})`** declares readings of your own: `read` is handed a frozen
-  `ClaimView` of one cell (its claims, each with its scope, verdict, excerpt and segment; the segments with their tags;
-  the session record) and returns a number, or `None` where the cell holds nothing it counts; `better` is `"lower"` or
-  `"higher"`, and `(read, better, (low, high))` bounds one (a share). Each is the host's derived measure
-  `<criterion>_<name>` (`MetricDescriptor.derived_from`, family `claims`, described by `read`'s docstring; an unbounded
-  one is a count, nonnegative), read through one claim reader the host built by `as_host` (or by `Eval.run` with no
-  host) registers. It ranks, is withheld and is lost as the criterion's own readings are; launch reads it on two
-  synthetic cells first and refuses one that fails there. A name that is no identifier or is one of the criterion's own
-  readings, an unusable better end or bounds, two `Claims` of one name in one `as_host` declaring different readings,
-  and a host of your own that does not declare them as `Claims` does, are refused.
-- **`Claims(..., session="field")`**, or a callable `(case, answer) -> {...}`, stores the run's own record on each
-  cell's claim evidence (`ClaimEvidence.session`), for the readings of your own to read. No prompt sees it. A case
-  missing the field, or a record that is no JSON object, leaves the cell out by name.
+- **`Claims(..., readers={name: ClaimReading(read, better="lower")})`** declares readings of your own.
+  `ClaimReading` (new, served by `threetears.evals.quick`) takes `read` and, keyword-only, `better` (`"lower"` or
+  `"higher"`), `bounds=(low, high)` for a bounded reading (a share), and `revision`, raised whenever what `read` counts
+  changes, so runs read under two versions never pool. `read` is handed a frozen `ClaimView` of one cell (its claims,
+  each with its scope, verdict, excerpt and segment; the segments with their tags; the session record) and returns a
+  number, or `None` where the cell holds nothing it counts. Each is the host's derived measure `<criterion>_<name>`
+  (`MetricDescriptor.derived_from`, family `claims`, described by `read`'s docstring, its `definition_revision` the
+  reading's `revision`; an unbounded one is a count, nonnegative), read through one claim reader the host built by
+  `as_host` (or by `Eval.run` with no host) registers. It ranks, is withheld and is lost as the criterion's own
+  readings are; launch reads it on two synthetic cells first and refuses one that fails there. Two `Claims` of one
+  name declaring the same readings share one host, whichever objects they are. Refused: a name that is no identifier
+  or is one of the criterion's own readings, an unusable better end, bounds or revision, two `Claims` of one name in
+  one `as_host` declaring different readings, and a host of your own that does not declare them as `Claims` does.
+- **The run's own record** (`ClaimEvidence.session`), for those readings: `Answer.session` (new, optional), what the
+  runner returns beside its answer and never in `value`, so no grader, judge or prompt reads it; or
+  `Claims(session="field")`, the case's field; or `Claims(session=callable)`, handed the case and the `Answer` the
+  runner returned (a plain return as `Answer(value)`). It is stored as given. A case missing the field, a record that
+  is no JSON object, or a case field beside an `Answer.session`, leaves the cell out by name.
 - **`Result.claim_cells(arm=None, *, criterion=None)`** reads every graded cell back as a `ClaimCell` (served by
   `threetears.evals.quick`): its arm, case, repeat, readings (the criterion's own and yours), its claims as a
   `ClaimView` (`None` where no grade is stored), why it was lost, and why your readings of it are unread.
 
-For hosts: nothing to do. Nothing stored gains a field: `ClaimEvidence.session` and `ClaimTally.derived` exist
-already, so a build from before this change reads every document a run with these doors writes.
+For hosts: nothing to do. `Answer.session` defaults to `None`, so a runner returning an `Answer` without it is
+unchanged. Nothing stored gains a field: `ClaimEvidence.session` and `ClaimTally.derived` exist already, so a build
+from before this change reads every document a run with these doors writes.
 
 ### evals: `Claims` on the quick path, and `Answer.documents`
 

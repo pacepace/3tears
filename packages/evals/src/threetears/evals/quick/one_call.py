@@ -1045,7 +1045,10 @@ class CallableKind:
                 )
             try:
                 claim_evidence = self._claims.evidence(
-                    case, graded, cast(tuple[Document, ...], read) if read is not None else None
+                    case,
+                    graded,
+                    cast(tuple[Document, ...], read) if read is not None else None,
+                    returned=returned if isinstance(returned, Answer) else None,
                 )
             except ValueError as unrenderable:
                 # The cut and the case's documents are the rig: the cell is excluded, and stores no answer, since a
