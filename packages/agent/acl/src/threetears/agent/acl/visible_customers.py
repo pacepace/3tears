@@ -124,6 +124,50 @@ _NAMESPACE_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 _GROUP_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 
 
+#: what each reached group is joined to: its grants, each grant's role and group, and a namespace grant's namespace,
+#: each by its key. Built once: the walk's statement is written once a call shape (threetears.core.keyed.read_reached)
+_WALK_JOINS: Final[tuple[Joined, ...]] = (
+    Joined(
+        "role_assignments",
+        on={"group_id": "group_id"},
+        columns={
+            "scope_type": "scope_type",
+            "scope_customer_id": "scope_customer_id",
+            "scope_namespace_type": "scope_namespace_type",
+            "scope_namespace_id": "scope_namespace_id",
+            "role_id": "role_id",
+        },
+        left=True,
+    ),
+    # the role each grant binds, by its key: a grant counts only where its role acts, and a customer-authored
+    # role only on its own customer
+    Joined(
+        "roles",
+        on={"role_id": "role_id"},
+        columns={"role_permissions": "permissions", "role_customer_id": "customer_id"},
+        left=True,
+    ),
+    # the granting group, by its key: a customer's group counts only on its own customer, and a grant whose
+    # group has no row not at all (its id, beside the customer a platform group and an absent one both leave
+    # None). Left, not inner: the edge into a group with no row still carries the walk, as the evaluator's
+    # membership walk reads no group row
+    Joined(
+        "groups",
+        on={"group_id": "group_id"},
+        by={"row_scope": AnyOf(_GROUP_SCOPES, cast=None)},
+        columns={"group_customer_id": "customer_id", "group_row_id": "group_id"},
+        left=True,
+    ),
+    Joined(
+        "namespaces",
+        on={"namespace_id": "scope_namespace_id"},
+        by={"row_scope": AnyOf(_NAMESPACE_SCOPES, cast=None)},
+        columns={"namespace_customer_id": "customer_id", "namespace_type": "namespace_type"},
+        left=True,
+    ),
+)
+
+
 async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | None) -> VisibleCustomers:
     """the customers ``user_id``'s grants cover for ``namespace_type``: the caller's groups and their grants, by key, in
     one statement.
@@ -175,57 +219,30 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
         # each membership edge: who is in which group, and the customer the row names (the wall's input)
         columns=("member_id", "group_id", "customer_id"),
         depth=MAX_GROUP_MEMBERSHIP_DEPTH,
-        joins=[
-            Joined(
-                "role_assignments",
-                on={"group_id": "group_id"},
-                columns={
-                    "scope_type": "scope_type",
-                    "scope_customer_id": "scope_customer_id",
-                    "scope_namespace_type": "scope_namespace_type",
-                    "scope_namespace_id": "scope_namespace_id",
-                    "role_id": "role_id",
-                },
-                left=True,
-            ),
-            # the role each grant binds, by its key: a grant counts only where its role acts, and a customer-authored
-            # role only on its own customer
-            Joined(
-                "roles",
-                on={"role_id": "role_id"},
-                columns={"role_permissions": "permissions", "role_customer_id": "customer_id"},
-                left=True,
-            ),
-            # the granting group, by its key: a customer's group counts only on its own customer, and a grant whose
-            # group has no row not at all (its id, beside the customer a platform group and an absent one both leave
-            # None). Left, not inner: the edge into a group with no row still carries the walk, as the evaluator's
-            # membership walk reads no group row
-            Joined(
-                "groups",
-                on={"group_id": "group_id"},
-                by={"row_scope": AnyOf(_GROUP_SCOPES, cast=None)},
-                columns={"group_customer_id": "customer_id", "group_row_id": "group_id"},
-                left=True,
-            ),
-            Joined(
-                "namespaces",
-                on={"namespace_id": "scope_namespace_id"},
-                by={"row_scope": AnyOf(_NAMESPACE_SCOPES, cast=None)},
-                columns={"namespace_customer_id": "customer_id", "namespace_type": "namespace_type"},
-                left=True,
-            ),
-        ],
+        joins=_WALK_JOINS,
     )
     wall = _CustomerWall(user_id, rows)
+    # a role is decoded and asked once a call: the walk answers it beside every grant that binds it (one role on six
+    # grants in the speed test's world: decoding each row's cost ~5 us of the set's ~25 us of Python, 2026-11-21)
+    acting: dict[tuple[Any, str | None], bool] = {}
+
+    def acts(raw: Any, on_type: str | None) -> bool:
+        if not isinstance(raw, str):
+            return permissions_act_on(decode_role_permissions(raw), on_type)
+        answer = acting.get((raw, on_type))
+        if answer is None:
+            answer = acting[(raw, on_type)] = permissions_act_on(decode_role_permissions(raw), on_type)
+        return answer
+
     is_all = False
     customers: set[UUID] = set()
     for row in rows:
         scope = row["scope_type"]
         if scope is None:
             continue
-        permissions = decode_role_permissions(row["role_permissions"])
+        permissions = row["role_permissions"]
         if scope == "all":
-            if permissions_act_on(permissions, namespace_type):
+            if acts(permissions, namespace_type):
                 if wall.passes(row, None):
                     is_all = True
                 else:
@@ -236,14 +253,14 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
                 row["scope_customer_id"] is not None
                 and granted is not None
                 and (namespace_type is None or granted == namespace_type)
-                and permissions_act_on(permissions, granted)
+                and acts(permissions, granted)
                 and wall.passes(row, row["scope_customer_id"])
             ):
                 customers.add(row["scope_customer_id"])
         elif scope == "namespace":
             if (
                 row["namespace_customer_id"] is not None
-                and permissions_act_on(permissions, row["namespace_type"])
+                and acts(permissions, row["namespace_type"])
                 and wall.passes(row, row["namespace_customer_id"])
             ):
                 customers.add(row["namespace_customer_id"])
@@ -277,6 +294,11 @@ class _CustomerWall:
         self._edges: dict[UUID, set[tuple[UUID, UUID | None]]] = {}
         for row in rows:
             self._edges.setdefault(row["member_id"], set()).add((row["group_id"], row["customer_id"]))
+        #: the customers some edge names: an edge naming none admits every customer, so a customer no edge names is
+        #: reached as a platform namespace is (None), and its walk is shared rather than walked again a customer
+        self._named: frozenset[UUID] = frozenset(
+            named for links in self._edges.values() for _, named in links if named is not None
+        )
         self._reached: dict[UUID | None, frozenset[UUID]] = {}
 
     def _reached_for(self, customer: UUID | None) -> frozenset[UUID]:
@@ -287,6 +309,8 @@ class _CustomerWall:
         :return: the groups
         :rtype: frozenset[UUID]
         """
+        if customer not in self._named:
+            customer = None
         if customer not in self._reached:
             reached: set[UUID] = set()
             frontier: set[UUID] = {self._user_id}
@@ -328,9 +352,8 @@ class _CustomerWall:
         :return: the customers
         :rtype: set[UUID]
         """
-        edges = {named for links in self._edges.values() for _, named in links if named is not None}
         own = {row["group_customer_id"], row["role_customer_id"]} - {None}
-        return edges | own
+        return set(self._named) | own
 
 
 async def visible_rows(

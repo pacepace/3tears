@@ -17,6 +17,14 @@ absorbed and answers the winner, `created=False`. PostgreSQL never raises it the
 `threetears.core.utils.retry_serialization_conflicts`, the one retry of a re-runnable unit on SQLSTATE 40001
 (`threetears.core.testing.drop_schema` now uses it).
 
+### core, agent-acl: the visible-customer set within twice the statement it replaced again
+
+**Fixed:** `visible_customers` cost 2.0-2.4x the reached-CTE it replaced on the exclusive runner (bar 2x): of a 149 us
+call, writing the walk's statement took 16 us and the Python over its six rows 27 us, against the old statement's
+72 us. `read_reached` with `depth` now writes a walk's statement once a call shape (every argument as given, the first
+rows' bound pins by their shape), each call binding its own pins; `visible_customers` decodes a role once a call and
+walks the wall once for every customer no membership edge names. Now 1.60-1.67x; the set it answers is unchanged.
+
 ### core: a bulk writer's change notes reach the ring in one insert at its commit
 
 **Added:** `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
