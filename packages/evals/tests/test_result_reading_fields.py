@@ -60,6 +60,7 @@ from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
+    ClaimRescore,
     ClientRequestSettings,
     EvalResult,
     EvalRun,
@@ -274,6 +275,15 @@ def _enriched(result: EvalResult, index: int) -> dict[str, Any]:
             judge_model="judge-model",
             usage=[judge_row],
             cost_usd=0.004,
+        )
+    ]
+    fields["claim_rescores"] = [
+        ClaimRescore(
+            criteria=["enriched.claims"],
+            prior={"enriched.claims": "cost_cap"},
+            judge_model="judge-model",
+            usage=[judge_row],
+            cost_usd=0.003,
         )
     ]
     unanswered = RepeatedScore(
@@ -544,7 +554,7 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 200, aggregates 103, planning 131.
+#: docstring for the path syntax). Sizes: bundle 201, aggregates 103, planning 131.
 #:
 #: The measure walk reads each model type's declared fields, never the judge's prose
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
@@ -555,11 +565,8 @@ def _where(site: str) -> str:
 #: count, outside every digest and fingerprint, so a re-judge's time moves no verdict, interval or figure.
 #:
 #: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
-#: three exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
-#: them out), ``claim_rescores[]`` (a claims re-judge's record, read as a dims re-judge's is, its spend by the program
-#: budget; no campaign carries a claim criterion, so none carries its re-judge, and its items' fields are unmeasured;
-#: the items read are known by reading the code, ``.cost_usd`` at ``analysis/lenses/program_budget.py`` and in the
-#: evidence digest) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
+#: two exceptions: ``judge_rescores[].usage[]`` and ``claim_rescores[].usage[]`` (no family reads a re-judge's own
+#: usage rows, so the reading leaves them out) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
 #: carries a cut-short judge answer, so its items' fields are unmeasured; one item read is known by reading the code,
 #: ``.sent_settings`` at ``analysis/bundle/cell_reads.py``).
 PINNED: dict[str, frozenset[str]] = {
@@ -632,6 +639,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_repeats[].scores[].scale",
             "judge_rescores",
             "claim_rescores",
+            "claim_rescores[].cost_usd",
             "judge_rescores[].cost_usd",
             "judge_rescores[].rejudged_at",
             "judge_score()",
@@ -1059,6 +1067,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
+                "claim_rescores[].cost_usd",
                 "judge_rescores[].cost_usd",
                 "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
@@ -1137,6 +1146,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
+                "claim_rescores[].cost_usd",
                 "judge_rescores[].cost_usd",
                 "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
@@ -1216,6 +1226,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
+                "claim_rescores[].cost_usd",
                 "judge_rescores[].cost_usd",
                 "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
@@ -1329,6 +1340,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
+                "claim_rescores[].cost_usd",
                 "judge_rescores[].cost_usd",
                 "judge_rescores[].rejudged_at",
                 "judge_score()",

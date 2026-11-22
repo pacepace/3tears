@@ -1167,29 +1167,37 @@ async def test_a_row_left_pending_is_settled_when_its_holding_ends(trace: str) -
 
 
 class _ReadsAtInvokeKind(_FakeClaimsKind):
-    """Reads one stored row as the cell it runs starts: what a holding has settled before it runs a cell."""
+    """Reads one stored row as the cell it runs starts: what a holding has settled before it runs a cell. Given a
+    trace, it then writes it, as an earlier holder's trace write that lands late, after the take-up has started."""
 
-    def __init__(self, output: CandidateOutput, storage: EvalStorage, row_id: str) -> None:
+    def __init__(self, output: CandidateOutput, storage: EvalStorage, row_id: str, *, landing: Any = None) -> None:
         super().__init__(output)
         self.storage = storage
         self.row_id = row_id
+        self.landing = landing
         self.seen: list[dict[str, str]] = []
 
     async def invoke(self, instance: object, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         row = await asyncio.to_thread(self.storage.load_eval_result, self.row_id, "u")
         assert row is not None
         self.seen.append(dict(row.claim_failures))
+        if self.landing is not None:
+            await asyncio.to_thread(self.storage.replace_eval_trace, self.landing, if_match=None)
         return self.output
 
 
-@pytest.mark.parametrize("trace_stored", [True, False])
-async def test_a_take_up_settles_an_earlier_holdings_pending_rows_before_it_runs_a_cell(trace_stored: bool) -> None:
+@pytest.mark.parametrize("trace", ["stored", "lands_late"])
+async def test_a_take_up_recovers_an_earlier_holdings_pending_rows_and_never_loses_one_whose_trace_may_land(
+    trace: str,
+) -> None:
     template = _template()
-    host, earlier, _ = await _stored_cell(_FakeClaimsJudge(), template, _FakeClaimsJudge(), trace_stored=trace_stored)
+    host, earlier, earlier_trace = await _stored_cell(
+        _FakeClaimsJudge(), template, _FakeClaimsJudge(), trace_stored=trace == "stored"
+    )
     off_loop(
         host.storage.save_eval_result,
         _pending(earlier),
-        off_loop(host.storage.load_eval_trace, earlier.id, "u") if trace_stored else None,
+        off_loop(host.storage.load_eval_trace, earlier.id, "u") if trace == "stored" else None,
     )
     second = EvalTestCase(template_id=template.id, scope_id="u", reference=_KEY)
     off_loop(host.storage.save_test_case, second)
@@ -1203,7 +1211,9 @@ async def test_a_take_up_settles_an_earlier_holdings_pending_rows_before_it_runs
         }
     )
     off_loop(host.storage.save_eval_run, taken_up)
-    kind = _ReadsAtInvokeKind(_output(), host.storage, earlier.id)
+    kind = _ReadsAtInvokeKind(
+        _output(), host.storage, earlier.id, landing=earlier_trace if trace == "lands_late" else None
+    )
     (first_case,) = [c for c in off_loop(host.storage.query_test_cases, "u") if c.id == earlier.test_case_id]
     row = off_loop(host.storage.load_eval_result, earlier.id, "u")
     assert row is not None
@@ -1218,12 +1228,11 @@ async def test_a_take_up_settles_an_earlier_holdings_pending_rows_before_it_runs
         stored=StoredCells(done=(StoredCell.from_result(row),)),
     )
 
-    expected = {} if trace_stored else {_CRITERION: "trace_lost"}
-    assert kind.seen == [expected], "settled before the take-up ran its first cell"
+    expected_at_start = {} if trace == "stored" else {_CRITERION: "trace_pending"}
+    assert kind.seen == [expected_at_start], "recovered before the first cell, and never lost while its trace may land"
     settled = off_loop(host.storage.load_eval_result, earlier.id, "u")
-    assert settled is not None and settled.claim_failures == expected
-    if trace_stored:
-        assert settled.claim_tallies == earlier.claim_tallies
+    assert settled is not None and settled.claim_failures == {}, "scored once its trace landed, at the holding's end"
+    assert settled.claim_tallies == earlier.claim_tallies
 
 
 # =============================================================================

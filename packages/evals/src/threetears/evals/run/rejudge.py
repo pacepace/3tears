@@ -376,14 +376,16 @@ def apply_claim_rejudge(
     return updated, trace
 
 
-def settled_pending_claims(result: EvalResult, trace: EvalTrace | None, template: EvalTemplate) -> EvalResult | None:
+def settled_pending_claims(
+    result: EvalResult, trace: EvalTrace | None, template: EvalTemplate, *, lose_untraced: bool = True
+) -> EvalResult | None:
     """``result`` with each criterion pending its trace (``trace_pending``) settled from what is stored, with no call.
 
     A pending criterion's tally is recomputed from the grade its trace stores and nothing else
     (:func:`~threetears.evals.kernel.claims.grading.grade_tally`: the grade records its ground step's loss, so a lost
     groundedness stays exactly that, and truth stands). Where its trace was never stored, or holds no claim evidence,
-    it is lost (``trace_lost``): ask this only once every write of the cell is done (its holding ended, or a later one
-    took the run up), when a trace absent is a trace that never landed. A pending criterion whose trace holds its
+    it is lost (``trace_lost``) unless ``lose_untraced`` is False: lose one only once every write of the cell is done
+    (its holding has ended), when a trace absent is a trace that never landed. A pending criterion whose trace holds its
     evidence and no grade for it, or that its template no longer declares, is left pending, for a re-judge.
 
     Read under no apparatus check: nothing is asked, so an edited template or moved request settings change nothing.
@@ -393,6 +395,8 @@ def settled_pending_claims(result: EvalResult, trace: EvalTrace | None, template
     :param result: The stored result.
     :param trace: Its trace as stored, or ``None`` when none is.
     :param template: Its run's template.
+    :param lose_untraced: Whether a criterion whose trace is absent is lost (``trace_lost``); False leaves it pending,
+        for when the trace's write may still land (a take-up's start: an earlier holder's trace write is not fenced).
     :return: The result as it then stands, or ``None`` when no pending criterion was settled.
     :raises ValueError: A stored grade does not give a tally under its criterion.
     """
@@ -405,7 +409,8 @@ def settled_pending_claims(result: EvalResult, trace: EvalTrace | None, template
     failures = dict(result.claim_failures)
     for name in pending:
         if evidence is None:
-            failures[name] = "trace_lost"
+            if lose_untraced:
+                failures[name] = "trace_lost"
             continue
         assert trace is not None
         if name not in trace.claim_grades or name not in criteria:
@@ -418,15 +423,22 @@ def settled_pending_claims(result: EvalResult, trace: EvalTrace | None, template
 
 
 def settle_pending_claims(
-    storage: EvalStorage, run_id: str, scope_id: str, template: EvalTemplate, *, through_epoch: int
+    storage: EvalStorage,
+    run_id: str,
+    scope_id: str,
+    template: EvalTemplate,
+    *,
+    through_epoch: int,
+    lose_untraced: bool = True,
 ) -> list[str]:
     """Settle every row of a run whose claim criteria are pending their trace, written at or before a holding.
 
     Each row a holding at ``through_epoch`` or before wrote is settled as :func:`settled_pending_claims` settles it,
     conditionally on the row as read, so a row another writer moved meanwhile is left as it stands. A row a later
     holding wrote is never touched: its writes may still be in flight. Asked when a holding of the run ends, for its
-    own rows and every earlier holding's, and when a holding takes the run up, for the earlier holdings' rows; never
-    while a holding at or before ``through_epoch`` still writes.
+    own rows and every earlier holding's, and when a holding takes the run up, for the earlier holdings' rows. A
+    take-up recovers only rows whose grade is stored (``lose_untraced=False``): an earlier holder's trace write is not
+    fenced by its lease, so it may still land, and only the holding's end loses a row whose trace is absent.
 
     **It never raises a row's failure**: a grade that gives no tally, a lost race or a store that fails leaves that
     row pending, logged, and the rest are settled; a re-judge settles it later. Blocking: called off the event loop.
@@ -436,6 +448,7 @@ def settle_pending_claims(
     :param scope_id: Its scope.
     :param template: The run's template, whose criteria name what each grade is held to.
     :param through_epoch: The latest holding whose rows are settled.
+    :param lose_untraced: Whether a row whose trace is absent is lost (``trace_lost``), or left pending.
     :return: The ids of the rows settled.
     :raises StorageError: The run's rows could not be listed.
     """
@@ -449,7 +462,9 @@ def settle_pending_claims(
             result, etag = storage.load_eval_result_with_etag(row.id, scope_id)
             if result is None or result.lease_epoch > through_epoch:
                 continue
-            updated = settled_pending_claims(result, storage.load_eval_trace(row.id, scope_id), template)
+            updated = settled_pending_claims(
+                result, storage.load_eval_trace(row.id, scope_id), template, lose_untraced=lose_untraced
+            )
             if updated is None:
                 continue
             storage.replace_eval_result(updated, if_match=etag)

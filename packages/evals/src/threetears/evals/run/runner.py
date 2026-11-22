@@ -2399,7 +2399,9 @@ class _ClaimsClient:
             )
 
 
-async def _settle_pending_claims(host: EvalHost, run: EvalRun, template: EvalTemplate, *, through_epoch: int) -> None:
+async def _settle_pending_claims(
+    host: EvalHost, run: EvalRun, template: EvalTemplate, *, through_epoch: int, lose_untraced: bool = True
+) -> None:
     """Settle the run's rows pending their trace, written at or before ``through_epoch``, off the loop
     (:func:`~threetears.evals.run.rejudge.settle_pending_claims`); a store that cannot list them is logged, never
     raised, since the cells it would settle are already written and each row records its own pending state."""
@@ -2408,7 +2410,15 @@ async def _settle_pending_claims(host: EvalHost, run: EvalRun, template: EvalTem
     try:
         await run_blocking(
             host.blocking_executor,
-            partial(settle_pending_claims, host.storage, run.id, run.scope_id, template, through_epoch=through_epoch),
+            partial(
+                settle_pending_claims,
+                host.storage,
+                run.id,
+                run.scope_id,
+                template,
+                through_epoch=through_epoch,
+                lose_untraced=lose_untraced,
+            ),
         )
     except StorageError as unlisted:
         # NOSILENT: every row it would settle records itself pending; a later holding or a re-judge settles it.
@@ -4663,9 +4673,10 @@ async def execute_run(
     # no lease.
     lease_epoch = run.lease.epoch if run.lease is not None else 0
     if stored.done or stored.replaced:
-        # Taken up: every earlier holding's writes are done, so a row of theirs left pending its trace is settled
-        # now, from what is stored and with no call, before this holding runs a cell.
-        await _settle_pending_claims(host, run, template, through_epoch=lease_epoch - 1)
+        # Taken up: a row an earlier holding left pending its trace is recovered now from its stored grade, with no
+        # call, before this holding runs a cell. Never lost here: that holder's trace write is not fenced by its lease
+        # and may still land, so only this holding's end loses a row whose trace is absent.
+        await _settle_pending_claims(host, run, template, through_epoch=lease_epoch - 1, lose_untraced=False)
 
     # Shuffled rather than nested k -> model -> test case: within-run drift
     # (a box that slows, a neighbouring job, a leak) would otherwise land on the
