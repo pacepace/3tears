@@ -474,6 +474,57 @@ def test_documents_are_case_or_run_unique_by_id_and_capped_by_name() -> None:
         _evidence_of_claims(documents=(big,))
 
 
+#: A lending policy and the update that amends it: invented case evidence, the same for every arm.
+_POLICY = EvidenceDocument(id="policy", provenance="case", title="Lending policy", text="A loan runs two weeks.")
+_UPDATE = EvidenceDocument(
+    id="update", provenance="case", title="Policy update", text="A loan runs three weeks.", overrides=("policy",)
+)
+
+
+def test_a_case_document_may_override_others_and_one_that_overrides_none_is_stored_as_before() -> None:
+    evidence = _evidence_of_claims(documents=(_POLICY, _UPDATE))
+
+    assert [document.overrides for document in evidence.documents or ()] == [(), ("policy",)]
+    assert "overrides" not in _POLICY.model_dump(mode="json"), "left out of the document while empty"
+    assert _UPDATE.model_dump(mode="json")["overrides"] == ["policy"]
+    trace = make_eval_trace(claim_evidence=evidence)
+    assert EvalTrace.from_dict(trace.to_dict()) == trace
+
+
+@pytest.mark.parametrize(
+    ("document", "refusal"),
+    [
+        (
+            {"id": "page", "provenance": "run", "overrides": ("policy",)},
+            "a run document and overrides 'policy': only case evidence",
+        ),
+        ({"id": "update", "provenance": "case", "overrides": ("update",)}, "'update' overrides itself"),
+        ({"id": "update", "provenance": "case", "overrides": ("policy", "policy")}, "'policy' more than once"),
+        ({"id": "update", "provenance": "case", "overrides": (" ",)}, "overrides a blank id"),
+    ],
+)
+def test_a_document_refuses_an_override_on_a_run_document_of_itself_or_named_twice(
+    document: dict[str, Any], refusal: str
+) -> None:
+    with pytest.raises(ValidationError, match=re.escape(refusal)):
+        EvidenceDocument(title="t", text="t", **document)
+
+
+def test_a_cell_refuses_an_override_of_a_document_it_lacks_of_a_run_document_or_in_a_cycle() -> None:
+    fetched = EvidenceDocument(id="page", provenance="run", title="A fetched page", text="A loan runs a month.")
+    with pytest.raises(ValidationError, match=re.escape("'update' overrides 'policy', which the cell's evidence")):
+        _evidence_of_claims(documents=(_UPDATE,))
+    with pytest.raises(ValidationError, match=re.escape("'update' overrides 'policy', a run document")):
+        _evidence_of_claims(documents=(fetched.model_copy(update={"id": "policy"}), _UPDATE))
+    erratum = EvidenceDocument(
+        id="erratum", provenance="case", title="Erratum", text="A loan runs ten days.", overrides=("update",)
+    )
+    looped = _POLICY.model_copy(update={"overrides": ("erratum",)})
+    with pytest.raises(ValidationError, match=re.escape("override in a cycle: 'policy' -> 'erratum' -> 'update'")):
+        _evidence_of_claims(documents=(looped, _UPDATE, erratum))
+    assert _evidence_of_claims(documents=(_POLICY, _UPDATE, erratum)).documents is not None, "a chain is no cycle"
+
+
 def test_a_trace_of_claim_evidence_and_no_judge_evidence_is_a_claims_only_cell() -> None:
     trace = make_eval_trace(claim_evidence=_evidence_of_claims())
 
