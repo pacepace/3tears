@@ -42,11 +42,11 @@ What the numbers say:
 ## The rules
 
 1. **No per-row insert into the ring on a bulk write.** A writer that writes many rows sets the buffer's flag, and the
-   trigger writes each note into the buffer instead (`NOTE_BUFFER_SETTING`, `note_buffer_open_sql`).
+   trigger writes each note into the buffer instead (`note_buffer_open_sql`).
 2. **One flush, just before the commit.** `note_flush_sql` moves the buffered notes into the ring's current table in
    one insert, before a notes bracket is read. Each note keeps the time its row was noted.
 3. **A flagged transaction cannot commit without its flush.** The buffer's guard is a deferred foreign key that fails
-   the COMMIT until the flush deletes its row (`NOTE_BUFFER_GUARD`). It is a key, not a constraint trigger, because
+   the COMMIT until the flush deletes its row (`threetears_note_buffer_flushed`). It is a key, not a constraint trigger, because
    YugabyteDB 2026.1 refuses `CREATE CONSTRAINT TRIGGER`.
 4. **No flag means today's behaviour.** A write that does not come through a buffering writer (raw SQL, an older hub)
    is noted row by row into the ring, as always.

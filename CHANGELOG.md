@@ -8,11 +8,11 @@ packages (bumped in lock-step).
 
 ### core: a bulk writer's change notes reach the ring in one insert at its commit
 
-**Added:** `NOTE_BUFFER_SETTING`, `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
+**Added:** `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
 the ring's functions behind them. A writer that opens the buffer in its transaction has each row's note written by the
 table's own trigger into its connection's buffer (a temp table) instead of the ring, and moves them into the ring with
 one insert just before its COMMIT. A flagged COMMIT without the flush fails on the buffer's guard
-(`NOTE_BUFFER_GUARD`, a deferred foreign key), so no row commits without its note. With no flag the trigger writes into
+(a deferred foreign key), so no row commits without its note. With no flag the trigger writes into
 the ring row by row, as before. WHY: on YugabyteDB a note inserted into the ring a row is a distributed write a row:
 a 1000-row copy of a pod's 34-column table 471 ms against 29 ms bare, 103 ms buffered; an upsert moving an
 invalidation column 1402 / 203 / 684 ms (YugabyteDB 2026.1, median of 5). The notes are the trigger's own, note for

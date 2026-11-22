@@ -18,7 +18,7 @@ import ast
 import re
 from pathlib import Path
 
-from threetears.core.ddl.change_notes import NOTE_BUFFER_SETTING, NOTE_BUFFER_TABLE, trigger_function_body
+from threetears.core.ddl.change_notes import trigger_function_body
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -26,6 +26,10 @@ _BUDGET_TEST = _REPO / "packages/core/tests/integration/test_note_buffer_live.py
 _BUDGET_NAME = "test_a_pod_tables_buffered_copy_and_upsert_stay_within_the_budget"
 #: the most the budget may allow (the measured buffered write is 3.4-3.5x; the ring insert a note 6.9-16x)
 _BUDGET_MOST = 5.0
+
+#: the buffer's flag and table, as the trigger body names them
+_FLAG = "threetears.note_buffer"
+_BUFFER = "threetears_note_buffer"
 
 #: a keyed note into the ring, as the trigger writes it
 _KEYED_PUT = re.compile(r"PERFORM \S+\"threetears_change_note_put\"\(TG_TABLE_NAME, ARRAY\[")
@@ -44,8 +48,8 @@ def test_every_keyed_note_waits_in_the_buffer_while_the_writer_buffers() -> None
         for index in puts:
             # each sits in the ELSE of the buffer's IF, whose branch inserts the same note into the buffer
             assert lines[index - 1].strip() == "ELSE", body
-            assert NOTE_BUFFER_TABLE in lines[index - 2], body
-            assert f"current_setting('{NOTE_BUFFER_SETTING}', true) = '1'" in lines[index - 3], body
+            assert _BUFFER in lines[index - 2], body
+            assert f"current_setting('{_FLAG}', true) = '1'" in lines[index - 3], body
 
 
 def test_the_bulk_write_speed_budget_is_kept() -> None:

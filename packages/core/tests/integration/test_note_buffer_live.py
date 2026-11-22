@@ -1,6 +1,6 @@
 """Integration: a writer's buffered change notes are exactly the trigger's, written by one insert at its commit.
 
-A writer that sets :data:`~threetears.core.ddl.change_notes.NOTE_BUFFER_SETTING` (``note_buffer_open_sql``) has each
+A writer that sets its transaction's change-note buffer (``note_buffer_open_sql``) has each
 row's note written into its connection's buffer by the table's own trigger, and moves them into the ring with one
 statement before its COMMIT (``note_flush_sql``). This checks, on the database the run names (Postgres by default; set
 ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run it there):
@@ -37,7 +37,6 @@ from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.change_notes import NotedChange, noted_keys_page
 from threetears.core.collections.epoch_change import EpochChange, read_epoch_change_body
 from threetears.core.ddl.change_notes import (
-    NOTE_BUFFER_GUARD,
     NOTE_RING_SIZE,
     NOTE_WHOLE_SETTING,
     RING_TABLE,
@@ -56,6 +55,8 @@ from threetears.core.testing.note_ring import install_note_ring
 pytestmark = pytest.mark.integration
 
 _TABLE = "results"
+#: the buffer's guard, as a refused COMMIT's error names it
+_GUARD = "threetears_note_buffer_flushed"
 _KEY = ("race", "geo")
 _ROWS = 300
 
@@ -238,7 +239,7 @@ async def test_a_flagged_transaction_cannot_commit_without_its_flush(db: _Db) ->
     """Flips if a transaction that buffered notes and never flushed them commits: its rows would then be in the table
     with no note, and a restore would leave them out."""
     await _clear(db)
-    with pytest.raises(asyncpg.ForeignKeyViolationError, match=NOTE_BUFFER_GUARD):
+    with pytest.raises(asyncpg.ForeignKeyViolationError, match=_GUARD):
         async with db.conn.transaction():
             await db.conn.execute(note_buffer_open_sql(db.schema))
             await _copy(db)
