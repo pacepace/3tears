@@ -676,8 +676,9 @@ class CopyFollower:
         self._staged_touched: dict[str, set[tuple[str, ...]]] = {}
         #: the tables staged whole, and why: put back to be read again only when their stage is forgotten
         self._staged_whole: dict[str, str] = {}
-        #: the scopes each staged whole read left out because a write held them, with the rows left out of each:
-        #: said when a later step drops or reads them, so a copy missing a scope can be traced to the step
+        #: the scopes each staged whole read left out because a write held them (their partitions queued, read once
+        #: the write commits), with the rows left out of each: a partition of one is never dropped as covered by
+        #: that read (:meth:`_stage_partitions`), and each step that reads or keeps them says so
         self._whole_left_out: dict[str, dict[str, int]] = {}
         #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one)
         self._staged_scopes: dict[str, set[str | None]] = {}
@@ -1716,30 +1717,38 @@ class CopyFollower:
             table = self._tables[name]
             held_stage = self._staged.get(name)
             if held_stage is not None and held_stage.whole and name in self._staged_whole:
-                # a whole read beside covers them
+                # a whole read beside covers the partitions of the scopes it read; never those it left out for a write
+                # (queued by :meth:`_stage_whole`, read once the write commits), nor one whose scope its key does not
+                # name. Dropped as covered, a left-out scope's rows were missing from the copy for as long as it ran:
+                # the whole stage, kept across a pass whose stamp moved, empties the table on apply without them
+                # (2026-11-22 replay: IA, SC, SD, TN and TX held none of their L3 rows)
                 left_out = self._whole_left_out.get(name, {})
                 column = table.scope[0] if table.scope is not None else None
                 prefix = table.scope[1] if table.scope is not None else ""
-                dropped = sorted(
-                    f"{prefix}{p[column]}" if column is not None and column in p else repr(sorted(p.items()))
-                    for p in parts
-                )
-                not_covered = [scope for scope in dropped if scope in left_out]
-                (log.warning if not_covered else log.info)(
-                    "copy follower dropped partitions because a staged whole read covers them",
+                covered = [
+                    p for p in parts if column is not None and column in p and f"{prefix}{p[column]}" not in left_out
+                ]
+                kept = [p for p in parts if p not in covered]
+                log.info(
+                    "copy follower dropped the partitions a staged whole read covers",
                     extra={
                         "extra_data": {
                             "table": name,
-                            "dropped": dropped,
+                            "dropped": sorted(f"{prefix}{p[column]}" for p in covered if column is not None),
+                            "kept_to_read": len(kept),
                             "whole_why": self._staged_whole.get(name),
                             "whole_left_out": sorted(left_out),
-                            "dropped_but_left_out_of_the_whole_read": not_covered,
                             "held": sorted(held),
                         }
                     },
                 )
-                del partitions[name]
-                continue
+                if not kept:
+                    del partitions[name]
+                    continue
+                # the rest are read as any partition is, into the same stage: the whole read's apply empties the
+                # table and puts back its rows and theirs
+                parts = kept
+                partitions[name] = kept
             self._reading = name
             keys_stage = f"{STAGE_PREFIX}{name}__keys"
             rows_stage = f"{STAGE_PREFIX}{name}__rows"
@@ -1979,6 +1988,7 @@ class CopyFollower:
                 if scope.startswith(prefix):
                     self._partitions[table.name].append({column: scope[len(prefix) :]})
                     queued.append(scope)
+                    left_out.setdefault(scope, 0)
         self._whole_left_out[table.name] = left_out
         log.info(
             "copy follower staged a whole read",

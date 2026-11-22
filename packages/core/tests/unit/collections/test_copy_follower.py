@@ -1371,6 +1371,32 @@ async def test_a_reset_is_read_during_a_long_write_as_a_first_start_is() -> None
     assert l3.rows_read == 5
 
 
+async def test_a_whole_read_kept_across_a_moved_stamp_still_reads_the_scopes_it_left_for_the_write() -> None:
+    # 2026-11-22 replay: a reset's whole read beside a long write left the held states out for the write; the stamp
+    # moved, the whole stage was kept, and the next pass dropped those states' partitions as covered by it. The copy
+    # then held none of their rows (IA, SC, SD, TN, TX, each thousands of rows in L3) for as long as it ran.
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    lock.held = frozenset({"state:IL"})
+    l3.put([("VA", 2, 40), ("IL", 1, 40)])
+    _record_whole(log, reason="reset")
+    lock.commit("state:VA")
+    # a write moves VA while the whole read is staged: the pass keeps its stage for the next one
+    lock.on_read = (lock.reads + 2, lambda: lock.commit("state:VA"))
+    assert not await follower.catch_up()
+    lock.on_read = None
+    # the long write commits IL and ends
+    lock.commit("state:IL")
+    lock.held = None
+    assert await follower.catch_up()
+    assert _of(backend, "IL") == _l3_of(l3, "IL")
+    assert _copy(backend) == l3.held()
+
+
 def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
     """a table keyed by a column that leads without the scope (an office's key), its scope in the row only."""
     l3, log = _L3(), _Log()
