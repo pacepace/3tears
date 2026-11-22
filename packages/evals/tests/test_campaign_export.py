@@ -927,3 +927,56 @@ async def test_the_action_on_a_reading_host_holds_the_ceiling_it_was_given() -> 
     reading = OpsHost.reading(toy.host.eval_host, campaign_export_max_bytes=1_000_000)
     (refused,) = await _action_pages(reading, toy.campaign_id)
     assert refused.is_error and "export ceiling of 1,000,000 bytes" in refused.text
+
+
+def test_a_claim_read_over_the_campaign_travels_with_its_export_and_reads_the_same_figures() -> None:
+    """A claim read drawn over the campaign is its claim criteria's calibration evidence, as a blind read is its rubric
+    dims': the export carries it with people's answers, and a store the export is put into reads the same figures off
+    it, its items still naming the exported results they were drawn from."""
+    from packages.evals.tests.claim_read_support import CRITERION, FINGERPRINT, graded_cell
+    from threetears.evals.analysis.claim_read import draw_claim_read, read_claim_calibration
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.claim_read import ClaimAnswer, ClaimReadArm, ClaimVerdict
+
+    toy = Toy()
+    run_ids = [run_id for aspect in toy.campaign()["aspects"] for run_id in aspect["run_ids"]]
+    cells = [
+        graded_cell(run_id, result["id"], ["contradicted", "supported", "unverifiable"])
+        for run_id in run_ids
+        for result in toy.documents("eval_result", eval_run_id=run_id)
+    ]
+    drawn = draw_claim_read(
+        cells,
+        [ClaimReadArm(key=f"arm-{at}", run_ids=[run_id]) for at, run_id in enumerate(run_ids)],
+        criterion=CRITERION,
+        criterion_fingerprint=FINGERPRINT,
+        questions=["true"],
+        scope_id=SCOPE,
+        created_by="agent:test",
+        campaign_id=toy.campaign_id,
+        created_at="2026-11-22T00:00:00+00:00",
+    )
+    answers = [
+        ClaimAnswer(
+            item=item.item,
+            rater="ana@example.com",
+            collected_by="agent:test",
+            verdicts=[ClaimVerdict(question="true", score=int(item.stratum != "contradicted"))],
+        )
+        for item in drawn.items
+    ]
+    read = drawn.model_copy(update={"answers": answers})
+    EvalStorage(toy.store).save_claim_read(read, create_only=True)
+
+    exported = toy.export()
+
+    (carried,) = [document for document in exported.documents if document["doc_type"] == "claim_read"]
+    assert carried["answers"] and exported.manifest.doc_type_counts["claim_read"] == 1
+    imported = InMemoryDocumentStore()
+    for document in exported.documents:
+        imported.upsert(document)
+    loaded, _ = EvalStorage(imported).load_claim_read_with_etag(read.id, SCOPE)
+    assert loaded == read
+    exported_results = {document["id"] for document in exported.documents if document["doc_type"] == "eval_result"}
+    assert {item.result_id for item in loaded.items} <= exported_results
+    assert read_claim_calibration(loaded) == read_claim_calibration(read)

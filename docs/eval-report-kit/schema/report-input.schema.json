@@ -2462,6 +2462,57 @@
      ],
      "description": "The interval on it."
     },
+    "lean_untested": {
+     "description": "The arms, by key, a lean across arms was not tested on, each for lean_untested_reason: so a met check never reads as one that ruled a lean out on them.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Lean Untested",
+     "type": "array"
+    },
+    "lean_untested_reason": {
+     "anyOf": [
+      {
+       "enum": [
+        "instrument_unchecked",
+        "instrument_below_bar",
+        "instrument_leans",
+        "people_disagree",
+        "identical_arms_separated"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "unfinished",
+        "split",
+        "identity_unrecorded",
+        "measured_under_concurrency",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "enum": [
+        "too_few",
+        "no_variation",
+        "not_recorded",
+        "replayed",
+        "not_drawn_at_random",
+        "skipped_past_limit",
+        "identity_unrecorded",
+        "trials_lost"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why the lean was not tested on those arms: too_few, their answered claims too few to read a rate.",
+     "title": "Lean Untested Reason"
+    },
     "half_width": {
      "anyOf": [
       {

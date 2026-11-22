@@ -1,9 +1,10 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "5f588cca498ef2e075604d221291a5594edc8ca9acd5c0eedeba4e713e83a99a",
+ "digest": "2053b0ab1d50d6b59e273fad79aa6a632c9adb6412378bf1fd5c553725734d53",
  "entry_points": [
   "packages/evals/tests/advice_nulls.py",
   "packages/evals/tests/claim_loss_nulls.py",
+  "packages/evals/tests/claim_read_nulls.py",
   "packages/evals/tests/null_newcomers.py",
   "packages/evals/tests/engine_take_up.py",
   "packages/evals/tests/stats_certificate.py",
@@ -81,7 +82,8 @@
   "packages/evals/src/threetears/evals/analysis/caveats.py": "714189c882b66e96b2aec1661b0c02ba6f42b70fab1d2ae5d1bae787389f5f48",
   "packages/evals/src/threetears/evals/analysis/cell_mean.py": "9c4a1f5be07995c7a98236aff9eda025a5f7b5c7ff37936f847f0a9c7d0623ef",
   "packages/evals/src/threetears/evals/analysis/cells.py": "29217fdf28325f0c0b0db770eea418b60daa0437deba8765128ea5a99c4ec50f",
-  "packages/evals/src/threetears/evals/analysis/checks.py": "60eea1c75b2d65c31bb71242dc8aae8a965efd595020c9d26aa88f3122d5d515",
+  "packages/evals/src/threetears/evals/analysis/checks.py": "7d6767fb85534270a4ff8e8caee7e926fab24a8062ca0aa7231610f43f832d02",
+  "packages/evals/src/threetears/evals/analysis/claim_read.py": "6c2af261d53f984f26e07a998404efbdc86eea5b580261cc0e36cb6f77845654",
   "packages/evals/src/threetears/evals/analysis/completeness.py": "631a76fc867f35d46b5990724d22afab529a00ab0c02748cbf848e43083b76ae",
   "packages/evals/src/threetears/evals/analysis/confusion.py": "b0e0f3f748ced139582f6df84aae1479ea9f3118cb97c44dad16b66af44af463",
   "packages/evals/src/threetears/evals/analysis/contention.py": "edcb45e6eb71bab0e5792363fc3944e218b2c59795ba9a6ec2f011dd7e7e737e",
@@ -265,9 +267,10 @@
   "packages/evals/src/threetears/evals/kernel/claims/failures.py": "0c12ff91989022429b36f1009b1f9e386dd85994df98681ef697019c99caa296",
   "packages/evals/src/threetears/evals/kernel/claims/grading.py": "d0e5b16cdbd518ec3e802cac4408da96e7eb82b3e7b04d0e77d1ec0ffc73cd08",
   "packages/evals/src/threetears/evals/kernel/claims/readings.py": "5c8d5af897ce9ca1dfdcf7a1a75f7e2c73465084b8d143b228ce306e394f85b3",
+  "packages/evals/src/threetears/evals/kernel/claims/repeat.py": "cb7d044ee1642dd9b8cb03b07a240ff188e49be27fdd62a52570007abcdb4a43",
   "packages/evals/src/threetears/evals/kernel/claims/verbatim.py": "bfb199cdbb558e4119171d34db6fe09600faa43602c8970b6010c5bc50febe49",
   "packages/evals/src/threetears/evals/kernel/claims/verification.py": "a54c126c70655fe3cc729d02ebde01a045b6cc87c59198a808a0a0921727f2fb",
-  "packages/evals/src/threetears/evals/kernel/claims/web.py": "0b40c6eeb7ac5481a046496f325dbc5844d9ab0aa586cc5c217ae745f20b64d6",
+  "packages/evals/src/threetears/evals/kernel/claims/web.py": "e7e01d61f2b452299e51f904bb787f11d6b2715a0119683eb69afb8ef032707e",
   "packages/evals/src/threetears/evals/kernel/covariates.py": "5e9fa7134c1667f498f6fc71362f46f007c675ea2fb6456891f42447f4f67697",
   "packages/evals/src/threetears/evals/kernel/declaration.py": "9a76acb17c5dbc28e59fe8162ceb035824996cade60b06b6e18a85aedf9f9149",
   "packages/evals/src/threetears/evals/kernel/dsl.py": "3d24bb1d9756feb099411caf900ec7d47f6ebfbd73666083e75714a7c337d401",
@@ -324,7 +327,7 @@
   "packages/evals/src/threetears/evals/kernel/set_grade.py": "19f647b393f44466d6c8227882a734176dc721c79a72d0063601382b697aa17e",
   "packages/evals/src/threetears/evals/kernel/spend.py": "2b97d805058933c6f930b6332e883876f4a16caeefc92b6250871b195a4b2eee",
   "packages/evals/src/threetears/evals/kernel/status_filter.py": "c1bcb57abfd2b897c3f51425fbba2b2d84585e356cbb671a475a94c207c42866",
-  "packages/evals/src/threetears/evals/kernel/storage.py": "8fec90aac3f273afd5751f21a672edbfd3409b87c3a980cc91aeed357dae86fc",
+  "packages/evals/src/threetears/evals/kernel/storage.py": "30b541643e95a6bd4f080dd858994127c492751bf00c9f10366fcecf2cb898e2",
   "packages/evals/src/threetears/evals/kernel/surface.py": "2edbbefcd7262db1ee9fe86e86ea5f62428bf222af2f1f694854f6f47b687596",
   "packages/evals/src/threetears/evals/kernel/text_block.py": "0e5df2a4d7ecd47196a4b30e5bf0751a1cbf60a8c329aa7242887d53a508f90a",
   "packages/evals/src/threetears/evals/kernel/usage_capture.py": "e918f9424728e6a545ad6bb139275440d54bd0ac8d0604e9e9082140af7ae6f7",
@@ -345,7 +348,7 @@
   "packages/evals/src/threetears/evals/ops/analyst_levers.py": "82d0a9cbcea31c2968616d64899348e514e7353f01abc65244d23a0eb78ea20d",
   "packages/evals/src/threetears/evals/ops/analyst_price.py": "8e808236811502787639c843f42ea2ebc1fe1a43c28c4967d1d95f67c1d4ac50",
   "packages/evals/src/threetears/evals/ops/blind_reads.py": "4064c9babf5072cb82c5854bd1cb2fc1267410a8d7c91c07ad5e8b00e302b355",
-  "packages/evals/src/threetears/evals/ops/campaign_closure.py": "a9eb98fc979c73d45093496461b042edb1cc52417a08f916abf7bd4a66c584ee",
+  "packages/evals/src/threetears/evals/ops/campaign_closure.py": "45ef8a4d7db8ed63dbd70674686116c10717a4fc4f259abf9b51a97c5eb62cbb",
   "packages/evals/src/threetears/evals/ops/cases.py": "3aa6ef4e198a8493bf735700d21fb52be567ee7601c9c002800ae78cf4e46732",
   "packages/evals/src/threetears/evals/ops/host.py": "da37e50ec58944d02519a77a54ac4c1217b1df0d89942ef123aec640bbdaea1e",
   "packages/evals/src/threetears/evals/ops/jobs.py": "54bef61058ef9191f2bb7955a00b3c7364ceae3af53793ea71b634c3ecb323a6",
@@ -439,16 +442,17 @@
   "packages/evals/src/threetears/evals/run/runner.py": "840e559fa66449b870e25856a7c36c8133802cf094053c9893ad44647380cce2",
   "packages/evals/src/threetears/evals/run/simulator.py": "906fdb1170b1889b02dca971807cdfb71544f9864895988d80e40f2951030775",
   "packages/evals/src/threetears/evals/run/witnessed.py": "f80aea078719a98c9ac8fad2a1c56456318c9df53939a79e5c44faf0fd117180",
-  "packages/evals/src/threetears/evals/schema/__init__.py": "64e25cb622d0e5d3654caaf309975eca949b2aadfac0f61f3a2e12bae819906f",
+  "packages/evals/src/threetears/evals/schema/__init__.py": "e3e45626b0adc7da5f2606412b6849fb295735e349551dc248d8b6bf845ca31f",
   "packages/evals/src/threetears/evals/schema/aspect_label.py": "b8a2c23d53b6afdaaef2011f8df79710bf9dc362e1861a3f26b42a313bc312ee",
   "packages/evals/src/threetears/evals/schema/base.py": "7f64603725d9c69e55d32336b9e155f4112a972a0bbe6fe351fa762e58481773",
   "packages/evals/src/threetears/evals/schema/blind_read.py": "9f0d8ab122735350b3acdd4117aec4ed52c466a0c899af9e20934867e52b950c",
   "packages/evals/src/threetears/evals/schema/call_inputs.py": "995117cb1d04b8b7aa4fd0151802766ba7212d6b9da5f9af6ca4c0cddab87da9",
   "packages/evals/src/threetears/evals/schema/call_ledger.py": "84c6250ed46ad45552ad407b60369ec3fe597c79d30bc6773b815a7b017ce3ad",
   "packages/evals/src/threetears/evals/schema/campaign_upgrade.py": "705ef9fbda04fbe4d5d82cfb905451f1ab01360627aedd776b700f3618361541",
+  "packages/evals/src/threetears/evals/schema/claim_read.py": "0ebe228fd33e3d14a5b2b5f1aad7d4a4505a8556123b006f2feaa91de2f03f32",
   "packages/evals/src/threetears/evals/schema/claims.py": "3534528f7b31ecc70901f2e35f72a8c57706fa940a8a836034ba5aedc6301226",
   "packages/evals/src/threetears/evals/schema/completion.py": "1520fdbde4c3f666e5de4a6eaedf29d0f87a2a1e991914489f820d9da4115263",
-  "packages/evals/src/threetears/evals/schema/doc_types.py": "eb77285a6496217595f311dc1dfbbaaccc8161a9907343b2d44de0a5e3bf1e98",
+  "packages/evals/src/threetears/evals/schema/doc_types.py": "2b75f19a0e8ba672e5d49fed2adf84d879a46ba443c240ae48c4bd53206d9b1f",
   "packages/evals/src/threetears/evals/schema/external_spend.py": "57a2d88a3ff1390ef7d62315f342fb5ecca9d432acc9d3bac577d125dd8b38c1",
   "packages/evals/src/threetears/evals/schema/goal_grammar.py": "b94a726f00d0d1f91dd63ce8306c10ac151d28776863dc8218601d026156bc76",
   "packages/evals/src/threetears/evals/schema/hashing.py": "536ffbf619acc5e66bdeb4484f7a27bca40ad8ca948d7feb17c135aae2e6cb9c",
@@ -468,7 +472,7 @@
   "packages/evals/src/threetears/evals/schema/traces.py": "eb82b6a03e7b979217443da55203261607d161d310219fa641d6657ef69a4698",
   "packages/evals/src/threetears/evals/schema/turns.py": "5215ac91a4ffc4775c3e12d4f5dd8251ea090f39b1238fea75ee140f90bd2bb5",
   "packages/evals/src/threetears/evals/schema/values.py": "b759f85b532d5f4889d570710d1ff61454bcdeb7bf78fe542212f47f40f7ddc0",
-  "packages/evals/src/threetears/evals/schema/versioning.py": "9fe78a633ca80343912e00554806c727fef4d7cf3bda6f747c446cca73578a11",
+  "packages/evals/src/threetears/evals/schema/versioning.py": "a21daec17ecb9f308a9012d5896e8abe83a3dd18f10be8b8214a29bf6e694364",
   "packages/evals/src/threetears/evals/schema/web_search.py": "20b2f1955d9141c73568e749d60ff51dd3c9046236a966ce2fe586399f9990ec",
   "packages/evals/src/threetears/evals/schema/world_events.py": "2bab89c5732c3ee6da8568401ed7703fd7295a03512d3d2bcd912999ecbc47b9",
   "packages/evals/src/threetears/evals/storage/__init__.py": "5e2b189db62f9bdad00162aadaf91cbecb887cd3d187da1ad9ba94cc912d67b6",
@@ -490,6 +494,8 @@
   "packages/evals/src/threetears/evals/transports/fastmcp/__init__.py": "314be38cca6408903c49ecb78b76e61917d6c7a0017eb7385da386b43b297f53",
   "packages/evals/tests/advice_nulls.py": "ce6de1fa96f46d3524dcf5c1548cc0832de7ef03b1ec24281ac799b7aba0f121",
   "packages/evals/tests/claim_loss_nulls.py": "f81eaac1c0eb1e01ccc3d2e6aa32449321f79031405d1a619c1c45f4a349176a",
+  "packages/evals/tests/claim_read_nulls.py": "994907ff240a7d1179974877239c9bc2a9bc9a0fe98dad6bca38b5c138c4add7",
+  "packages/evals/tests/claim_read_support.py": "ba5e1b7c625470874594aa931ccb9da8d2c51cc983812c8a1c1150c4b18c5d82",
   "packages/evals/tests/engine_take_up.py": "dbe288800bc617527577e07c143a7de71d34c28cc00e7533bdd17417b1a0fdf3",
   "packages/evals/tests/factories.py": "1ef7e47b10811eea42d2ad85419eab3f2beafb2e5fafda1ed4139f687602e03e",
   "packages/evals/tests/fixtures/toyhost/__init__.py": "a3741131d46126219d446654834a302fd0af6d6dc558f2d69c8ece6cc694a86c",
@@ -505,12 +511,12 @@
   "packages/evals/tests/null_newcomers.py": "eaef15cfc961c8bbc514477712eaab9d62b9f394959c5e5ef6c6eccecd4d4950",
   "packages/evals/tests/off_loop.py": "f14aa1407cc8a8c4f1d0314b3c3ebe897ca2f78eaa50d463e3dfcc7999dfc20c",
   "packages/evals/tests/simulation_support.py": "5c0fd59556836300f75e044b2d33f54b7e81536f61cc0d2a6309e00c87449af4",
-  "packages/evals/tests/stats_certificate.py": "bd3f1b6173665584dad9d233d817c045a5d54ac07dc67a0b5232215fba8b8251",
+  "packages/evals/tests/stats_certificate.py": "4364e58cbc5993693c507cdd8be4155b19d8b26df7f2e48ffbaa261dc499f5f4",
   "packages/evals/tests/test_certified_simulations.py": "7a76b6b312d21a98abf4b1852bac8830bdfe69399dd51d4ce4a85f38a92e3cb4",
   "packages/evals/tests/v15_shapes.py": "571f6ed22383d3bc087aebe8bc9497fe8e386e04cb9cb29c945568bb0e947ee6"
  },
- "pool_request": "7ba5d5433d6c4bb381bd7365e426ad5f",
- "wall_s": 991,
+ "pool_request": "f096be63ae2344c3bcabf5364265edde",
+ "wall_s": 1670,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -2647,13 +2653,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 64,
+   "count": 78,
    "replicates": 2400,
    "bounds": [
-    0.020595772362233887,
-    0.0339264752285901
+    0.025772901579420797,
+    0.040397119751239774
    ],
-   "figure": 0.0339264752285901,
+   "figure": 0.040397119751239774,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-check-drain-<index>, through the engine"
   },
@@ -2677,13 +2683,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 84,
+   "count": 72,
    "replicates": 2400,
    "bounds": [
-    0.028011482603663686,
-    0.04315080516427
+    0.023545576458215055,
+    0.03763237677678405
    ],
-   "figure": 0.04315080516427,
+   "figure": 0.03763237677678405,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -2692,13 +2698,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 82,
+   "count": 88,
    "replicates": 2400,
    "bounds": [
-    0.027264113560390144,
-    0.042234065570045
+    0.02950954732915756,
+    0.04498101160346196
    ],
-   "figure": 0.042234065570045,
+   "figure": 0.04498101160346196,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine"
   },
@@ -2722,13 +2728,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 64,
+   "count": 68,
    "replicates": 2400,
    "bounds": [
-    0.020595772362233887,
-    0.0339264752285901
+    0.022067622326943842,
+    0.035782416492628866
    ],
-   "figure": 0.0339264752285901,
+   "figure": 0.035782416492628866,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -2752,13 +2758,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 78,
+   "count": 82,
    "replicates": 2400,
    "bounds": [
-    0.025772901579420797,
-    0.040397119751239774
+    0.027264113560390144,
+    0.042234065570045
    ],
-   "figure": 0.040397119751239774,
+   "figure": 0.042234065570045,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -2767,13 +2773,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 73,
+   "count": 77,
    "replicates": 2400,
    "bounds": [
-    0.023915960012635976,
-    0.03809398911625944
+    0.025400864806041513,
+    0.03993713037942309
    ],
-   "figure": 0.03809398911625944,
+   "figure": 0.03993713037942309,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -2797,13 +2803,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 71,
+   "count": 77,
    "replicates": 2400,
    "bounds": [
-    0.023175543563431766,
-    0.03717042045488267
+    0.025400864806041513,
+    0.03993713037942309
    ],
-   "figure": 0.03717042045488267,
+   "figure": 0.03993713037942309,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -2827,13 +2833,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 67,
+   "count": 74,
    "replicates": 2400,
    "bounds": [
-    0.021699066903240624,
-    0.03531901185759606
+    0.024286687253419523,
+    0.03855526422451144
    ],
-   "figure": 0.03531901185759606,
+   "figure": 0.03855526422451144,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -2842,13 +2848,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 84,
+   "count": 79,
    "replicates": 2400,
    "bounds": [
-    0.028011482603663686,
-    0.04315080516427
+    0.026145250474035375,
+    0.04085680248895224
    ],
-   "figure": 0.04315080516427,
+   "figure": 0.04085680248895224,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -2872,13 +2878,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 45,
+   "count": 36,
    "replicates": 1500,
    "bounds": [
-    0.021964578541778565,
-    0.03993800527966501
+    0.016864603823180127,
+    0.03307243190970549
    ],
-   "figure": 0.03993800527966501,
+   "figure": 0.03307243190970549,
    "holds": true,
    "seeds": "engine-looks-alike-20x-check-drain-<index>, through the engine"
   },
@@ -2902,13 +2908,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 37,
+   "count": 46,
    "replicates": 1500,
    "bounds": [
-    0.017425706563001242,
-    0.033840644173436074
+    0.022537489585146418,
+    0.04069479887306077
    ],
-   "figure": 0.033840644173436074,
+   "figure": 0.04069479887306077,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -2917,13 +2923,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 39,
+   "count": 52,
    "replicates": 1500,
    "bounds": [
-    0.01855239568494764,
-    0.03537274562808007
+    0.02599694956306122,
+    0.04521418846678743
    ],
-   "figure": 0.03537274562808007,
+   "figure": 0.04521418846678743,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine"
   },
@@ -2932,13 +2938,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 109,
+   "count": 104,
    "replicates": 1500,
    "bounds": [
-    0.060043531713429826,
-    0.08699195807170784
+    0.056998417402825935,
+    0.08338486829501163
    ],
-   "figure": 0.060043531713429826,
+   "figure": 0.056998417402825935,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine"
   },
@@ -2962,13 +2968,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 47,
+   "count": 41,
    "replicates": 1500,
    "bounds": [
-    0.023111501734855544,
-    0.04145052352390416
+    0.01968469398469551,
+    0.036899430541827705
    ],
-   "figure": 0.04145052352390416,
+   "figure": 0.036899430541827705,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -2977,13 +2983,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 124,
+   "count": 130,
    "replicates": 1500,
    "bounds": [
-    0.06922527786280974,
-    0.09776737126065099
+    0.07291556989180714,
+    0.1020601344856435
    ],
-   "figure": 0.06922527786280974,
+   "figure": 0.07291556989180714,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine"
   },
@@ -3007,13 +3013,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 37,
+   "count": 36,
    "replicates": 1500,
    "bounds": [
-    0.017425706563001242,
-    0.033840644173436074
+    0.016864603823180127,
+    0.03307243190970549
    ],
-   "figure": 0.033840644173436074,
+   "figure": 0.03307243190970549,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -3022,13 +3028,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 39,
+   "count": 47,
    "replicates": 1500,
    "bounds": [
-    0.01855239568494764,
-    0.03537274562808007
+    0.023111501734855544,
+    0.04145052352390416
    ],
-   "figure": 0.03537274562808007,
+   "figure": 0.04145052352390416,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -3052,13 +3058,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 50,
+   "count": 38,
    "replicates": 1500,
    "bounds": [
-    0.02483981393398313,
-    0.04371159884020365
+    0.01798832320808308,
+    0.03460739720024958
    ],
-   "figure": 0.04371159884020365,
+   "figure": 0.03460739720024958,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -3082,13 +3088,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 41,
+   "count": 42,
    "replicates": 1500,
    "bounds": [
-    0.01968469398469551,
-    0.036899430541827705
+    0.020252820876316843,
+    0.03766086044374811
    ],
-   "figure": 0.036899430541827705,
+   "figure": 0.03766086044374811,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -3097,13 +3103,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 32,
+   "count": 37,
    "replicates": 1500,
    "bounds": [
-    0.014636644287193499,
-    0.02998375942601822
+    0.017425706563001242,
+    0.033840644173436074
    ],
-   "figure": 0.02998375942601822,
+   "figure": 0.033840644173436074,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -3346,6 +3352,516 @@
    "figure": 0.04573879511512252,
    "holds": true,
    "seeds": "claim-loss-sparse-clustered.4-arms-<index>, 0-3999 in shards of 100, through the bundle's judged measures"
+  },
+  {
+   "id": "claim-read.equal.2-arms.lower",
+   "says": "At 2 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 135,
+   "replicates": 4000,
+   "bounds": [
+    0.02837156529515529,
+    0.039822654695397086
+   ],
+   "figure": 0.039822654695397086,
+   "holds": true,
+   "seeds": "claim-read-equal.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.2-arms.upper",
+   "says": "At 2 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 75,
+   "replicates": 4000,
+   "bounds": [
+    0.014775901193289743,
+    0.02344726256156754
+   ],
+   "figure": 0.02344726256156754,
+   "holds": true,
+   "seeds": "claim-read-equal.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.2-arms.lean",
+   "says": "At 2 arms alike, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 69,
+   "replicates": 4000,
+   "bounds": [
+    0.013445680578166218,
+    0.021780842684417767
+   ],
+   "figure": 0.021780842684417767,
+   "holds": true,
+   "seeds": "claim-read-equal.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.2-arms.arm-lower",
+   "says": "At 2 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 95% lower end sits above the instrument's recall on that arm at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "claim-read-equal.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.2-arms.arm-upper",
+   "says": "At 2 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 97.5% upper end falls short of the instrument's recall on that arm at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 80,
+   "replicates": 4000,
+   "bounds": [
+    0.015889812239631367,
+    0.024830652500191286
+   ],
+   "figure": 0.024830652500191286,
+   "holds": true,
+   "seeds": "claim-read-equal.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.3-arms.lower",
+   "says": "At 3 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 168,
+   "replicates": 4000,
+   "bounds": [
+    0.03599552671791861,
+    0.04868450267779795
+   ],
+   "figure": 0.04868450267779795,
+   "holds": true,
+   "seeds": "claim-read-equal.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.3-arms.upper",
+   "says": "At 3 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 69,
+   "replicates": 4000,
+   "bounds": [
+    0.013445680578166218,
+    0.021780842684417767
+   ],
+   "figure": 0.021780842684417767,
+   "holds": true,
+   "seeds": "claim-read-equal.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.3-arms.lean",
+   "says": "At 3 arms alike, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 16,
+   "replicates": 4000,
+   "bounds": [
+    0.0022880213922726643,
+    0.006487642689687323
+   ],
+   "figure": 0.006487642689687323,
+   "holds": true,
+   "seeds": "claim-read-equal.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.3-arms.arm-lower",
+   "says": "At 3 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 95% lower end sits above the instrument's recall on that arm at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "claim-read-equal.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.3-arms.arm-upper",
+   "says": "At 3 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 97.5% upper end falls short of the instrument's recall on that arm at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 35,
+   "replicates": 4000,
+   "bounds": [
+    0.006102048034038576,
+    0.012148308215233439
+   ],
+   "figure": 0.012148308215233439,
+   "holds": true,
+   "seeds": "claim-read-equal.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.4-arms.lower",
+   "says": "At 4 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 204,
+   "replicates": 4000,
+   "bounds": [
+    0.04438746215240229,
+    0.058277711212706806
+   ],
+   "figure": 0.058277711212706806,
+   "holds": true,
+   "seeds": "claim-read-equal.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.4-arms.upper",
+   "says": "At 4 arms alike, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 73,
+   "replicates": 4000,
+   "bounds": [
+    0.014331673076611179,
+    0.0228925947392708
+   ],
+   "figure": 0.0228925947392708,
+   "holds": true,
+   "seeds": "claim-read-equal.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.4-arms.lean",
+   "says": "At 4 arms alike, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 8,
+   "replicates": 4000,
+   "bounds": [
+    0.0008638411024431067,
+    0.003936973885952322
+   ],
+   "figure": 0.003936973885952322,
+   "holds": true,
+   "seeds": "claim-read-equal.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.4-arms.arm-lower",
+   "says": "At 4 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 95% lower end sits above the instrument's recall on that arm at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "claim-read-equal.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.equal.4-arms.arm-upper",
+   "says": "At 4 arms alike, 200 labels and at most two claims a cell, an arm's recall's one-sided 97.5% upper end falls short of the instrument's recall on that arm at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 23,
+   "replicates": 4000,
+   "bounds": [
+    0.003648394668788012,
+    0.008615403619482598
+   ],
+   "figure": 0.008615403619482598,
+   "holds": true,
+   "seeds": "claim-read-equal.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.2-arms.lower",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 169,
+   "replicates": 4000,
+   "bounds": [
+    0.03622768301069115,
+    0.04895192637351803
+   ],
+   "figure": 0.04895192637351803,
+   "holds": true,
+   "seeds": "claim-read-mixed.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.2-arms.upper",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 71,
+   "replicates": 4000,
+   "bounds": [
+    0.013888254906064823,
+    0.022337132382709457
+   ],
+   "figure": 0.022337132382709457,
+   "holds": true,
+   "seeds": "claim-read-mixed.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.2-arms.lean",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "claim-read-mixed.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.3-arms.lower",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 195,
+   "replicates": 4000,
+   "bounds": [
+    0.04228329544192276,
+    0.0558855465837797
+   ],
+   "figure": 0.0558855465837797,
+   "holds": true,
+   "seeds": "claim-read-mixed.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.3-arms.upper",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 63,
+   "replicates": 4000,
+   "bounds": [
+    0.012123398280004662,
+    0.020106644561601883
+   ],
+   "figure": 0.020106644561601883,
+   "holds": true,
+   "seeds": "claim-read-mixed.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.3-arms.lean",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "claim-read-mixed.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.4-arms.lower",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 205,
+   "replicates": 4000,
+   "bounds": [
+    0.04462149034631312,
+    0.058543276976446845
+   ],
+   "figure": 0.058543276976446845,
+   "holds": true,
+   "seeds": "claim-read-mixed.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.4-arms.upper",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 93,
+   "replicates": 4000,
+   "bounds": [
+    0.01880577714931618,
+    0.02840800496948165
+   ],
+   "figure": 0.02840800496948165,
+   "holds": true,
+   "seeds": "claim-read-mixed.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed.4-arms.lean",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on truth, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 83,
+   "replicates": 4000,
+   "bounds": [
+    0.01656030955973374,
+    0.02565857350663464
+   ],
+   "figure": 0.02565857350663464,
+   "holds": true,
+   "seeds": "claim-read-mixed.4-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.2-arms.lower",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 179,
+   "replicates": 4000,
+   "bounds": [
+    0.03855244040859218,
+    0.05162299458667691
+   ],
+   "figure": 0.05162299458667691,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.2-arms.upper",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 87,
+   "replicates": 4000,
+   "bounds": [
+    0.017456639327977155,
+    0.026760173827218015
+   ],
+   "figure": 0.026760173827218015,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.2-arms.lean",
+   "says": "At 2 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 24,
+   "replicates": 4000,
+   "bounds": [
+    0.0038479843203315846,
+    0.008914450862134327
+   ],
+   "figure": 0.008914450862134327,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.2-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.3-arms.lower",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 194,
+   "replicates": 4000,
+   "bounds": [
+    0.042049737177358285,
+    0.05561951413733984
+   ],
+   "figure": 0.05561951413733984,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.3-arms.upper",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 89,
+   "replicates": 4000,
+   "bounds": [
+    0.017905753405080167,
+    0.027310040105876066
+   ],
+   "figure": 0.027310040105876066,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.3-arms.lean",
+   "says": "At 3 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 2,
+   "replicates": 4000,
+   "bounds": [
+    6.0558056420473354e-05,
+    0.0018049927162647195
+   ],
+   "figure": 0.0018049927162647195,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.3-arms-<index>, 0-3999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.4-arms.lower",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.06,
+   "count": 384,
+   "replicates": 8000,
+   "bounds": [
+    0.043418632222619324,
+    0.05291411176413813
+   ],
+   "figure": 0.05291411176413813,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.4-arms-<index>, 0-7999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.4-arms.upper",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.035,
+   "count": 203,
+   "replicates": 8000,
+   "bounds": [
+    0.022040194627368496,
+    0.02906134813443212
+   ],
+   "figure": 0.02906134813443212,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.4-arms-<index>, 0-7999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.mixed-grounded.4-arms.lean",
+   "says": "At 4 arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on groundedness under the draw by truth verdict, 200 labels and at most two claims a cell, the one lean test across every arm reads a lean at most 6% of the time: its nominal \u03b1 of 5%, within a tolerance of one point.",
+   "test": "at_most",
+   "target": 0.060000000000000005,
+   "count": 416,
+   "replicates": 8000,
+   "bounds": [
+    0.04723615473739183,
+    0.05709343439692799
+   ],
+   "figure": 0.05709343439692799,
+   "holds": true,
+   "seeds": "claim-read-mixed-grounded.4-arms-<index>, 0-7999 in shards of 100, through draw_claim_read and its reading"
+  },
+  {
+   "id": "claim-read.lopsided-80-45.lean",
+   "says": "A claim read of 400 labels over two arms whose instrument catches 80% and 45% of their false claims reads a lean at least 60% of the time. Power is certified for two arms of one verdict mix only; on truth the test is conservative.",
+   "test": "above",
+   "target": 0.6,
+   "count": 664,
+   "replicates": 1000,
+   "bounds": [
+    0.6337746170627703,
+    0.6932561405313695
+   ],
+   "figure": 0.6337746170627703,
+   "holds": true,
+   "seeds": "claim-read-lopsided-80-45-<index>, 0-999 in shards of 100, through draw_claim_read and its reading"
   }
  ]
 }

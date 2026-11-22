@@ -208,6 +208,10 @@ the document, so extending one is a major. Each, and why:
   what an answer gave, which its ratings are read from (who made an answer is a ``Maker``, above: a person's is read
   as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
   test a preference was read by, and what it read.
+- On a claim read: ``ClaimQuestion``, ``ClaimStratifier``, ``ClaimStratum``, ``ClaimExclusion`` and
+  ``ShownEvidence.provenance`` — what an item asks, the instrument answer its draw is stratified by, the stratum each
+  item stands for (its weight in every figure), why a claim was left out, and where a piece of shown evidence came
+  from; a new value changes what a figure weights or reads.
 - The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
   ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
   module, for every reader at once.
@@ -1033,7 +1037,19 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   reading a template at this minor keeps both opaquely and writes them back; its digests read the template without
 #:   them, and its launch runs it grading no claims, since the refusal of a kept field at launch ships with this minor.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 9
+#: - **v17.10** — a new durable type, the claim read (#1287): ``claim_read`` (``ClaimRead``), one claim criterion's
+#:   graded claims drawn by stratum of the instrument's own answer (its truth verdict, or whether it grounded the
+#:   claim; at most two claims a cell; a seed, each stratum's population by arm, plan and draws, and what was left out
+#:   by why, on ``ClaimDraw``; each item's chance of being drawn on ``ClaimItem.inclusion``), each
+#:   item the claim as the instrument read it (``ClaimItemView``: the claim, its excerpt and segment, the numbered evidence
+#:   and web windows, no verdict, citation or arm; its digest the label key) beside the instrument's answer, and the
+#:   answers people (or a model, read apart) gave to the questions ``true``, ``grounded`` and ``is_claim``. Nothing
+#:   derived is stored: every figure is read off the answers when the read is read. Stored through
+#:   ``EvalStorage.save_claim_read``; no other durable shape moves, so every document v17.9 stored is stored byte for
+#:   byte as before. An older build never reads the type (every read selects by ``doc_type``); its operator wipe of
+#:   durable documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 10
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
