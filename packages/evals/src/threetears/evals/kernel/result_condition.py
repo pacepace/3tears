@@ -373,8 +373,8 @@ def _classify_judging(result: EvalResult) -> JudgingState:
 
 
 def _claims_disclosure(result: ResultView) -> str | None:
-    """Name the claim criteria that lost the result, those whose tally waits on its stored grade, and those whose
-    host claim reader could not read it.
+    """Name the claim criteria that lost the result, those whose tally waits on its stored grade, those whose
+    host claim reader could not read it, and those it said nothing for.
 
     Separate from the judging state for the reason the "cannot tell" line is: it says which criterion, and that the
     trial's pass, its rubric scores and every other reading keep the cell.
@@ -397,6 +397,11 @@ def _claims_disclosure(result: ResultView) -> str | None:
         parts.append(
             f"The host's claim reader for {', '.join(unread)} could not read this result, so it carries none of the "
             "readings derived from them; its grade stands, and a re-measure with a fixed reader reads them."
+        )
+    if silent := sorted(c for c, tally in result.claim_tallies.items() if tally.silent):
+        parts.append(
+            f"The candidate said nothing in this result for {', '.join(silent)} to grade, so it carries none of those "
+            "criteria's readings; that is no loss."
         )
     return " ".join(parts) or None
 

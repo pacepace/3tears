@@ -37,6 +37,7 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.analysis.agreement import claim_judge_keys
 from threetears.evals.analysis.bundle.cell_reads import judged_measures, judged_values
 from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.caveats import caveat_step
 from threetears.evals.analysis.bundle.bars import bar_adjudications
 from threetears.evals.analysis.first_screen import RANKS
 from threetears.evals.analysis.floors import floor_readings
@@ -47,6 +48,7 @@ from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.reporting import METRIC_SCORE, project_score_records
 from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel import claim_readings as public_claim_readings
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
     CLAIM_PENDING_OUTCOME,
@@ -307,6 +309,38 @@ def test_a_lost_criterion_a_lost_ground_step_and_a_pending_tally_each_leave_only
     assert not any(r.outcome == CLAIM_LOST_OUTCOME or r.rubric_dim == f"{RULES}_lost" for r in held)
 
 
+def test_the_public_claim_readings_are_what_the_ranking_path_reads_off_the_same_tally() -> None:
+    """A host reads a cell's readings with the engine's own function (``threetears.evals.kernel.claim_readings``),
+    never a formula of its own: every valued row the projection emits is that function's value for the cell's tally,
+    and each ranked reading's arm mean is the mean of those values."""
+    runs, results = _campaign(lookup=_lookup_silent)
+    projection = project_score_records(
+        runs, [r for rs in results.values() for r in rs], archived_run_ids=None, profile=toyhost_profile()
+    )
+    for run in runs:
+        for result in results[run.id]:
+            for criterion, tally in result.claim_tallies.items():
+                rows = {
+                    r.rubric_dim: r.value
+                    for r in projection.records
+                    if r.result_id == result.id and r.instrument == criterion and r.value is not None
+                }
+                assert rows == public_claim_readings(criterion, tally)
+    bundle = _bundle(lookup=_lookup_silent)
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        for arm, model in ((fixture_variant_key(MEMORY), MEMORY), (fixture_variant_key(LOOKUP), LOOKUP)):
+            read = [
+                public_claim_readings(RULES, r.claim_tallies[RULES]).get(name)
+                for rs in results.values()
+                for r in rs
+                if r.model == model
+            ]
+            values = [v for v in read if v is not None]
+            held = next(a for a in measure.arms if a.variant_key == arm)
+            assert held.mean == pytest.approx(sum(values) / len(values))
+
+
 def test_a_claim_reading_never_enters_a_trial_s_pass_or_its_composite() -> None:
     runs, results = _campaign()
     result = results[runs[0].id][0].model_copy(
@@ -431,13 +465,172 @@ def test_a_lost_ground_step_withholds_the_grounded_share_alone() -> None:
     assert measures[f"{RULES}_false_unit_share"].withheld is None
 
 
-def test_a_pending_tally_is_counted_apart_and_never_as_a_loss() -> None:
+def test_a_pending_tally_is_counted_apart_never_as_a_loss_and_an_arm_skewed_backlog_withholds() -> None:
+    """Pending cells are no loss and in no mean, but missing data that may track arm: an arm waiting on half its grades
+    against none has the reading withheld, and the page says it is withheld until the backlog settles."""
     bundle = _bundle(lookup=_lookup_losing("trace_pending", share=2))
     measure = next(m for m in bundle.judged_measures if m.name == f"{RULES}_false_per_unit")
     lookup = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(LOOKUP))
 
     assert (lookup.n_claim_pending, lookup.n_claim_lost) == (CASES * K // 2, 0)
-    assert measure.withheld is None, "a population not yet known is no loss, so nothing is withheld for it"
+    assert measure.withheld is not None and measure.withheld.reason == "trials_lost"
+    built = report_input(campaign_bundle(bundle))
+    assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "pending is never a loss"
+    page = report_markdown(
+        build_code_only_report(
+            _bundle(lookup=_lookup_losing("trace_pending", share=2)),
+            assembled_at="2026-11-22T00:00:00+00:00",
+            campaign_name="c",
+        )
+    )
+    (line,) = [held for held in page.splitlines() if held.startswith("The claims on rules.claims are not yet known")]
+    assert line.endswith("withheld until the backlog settles, which it does on its own."), line
+
+
+def test_an_even_pending_backlog_withholds_nothing() -> None:
+    def memory_pending(case: int, k: int) -> dict[str, Any]:
+        held = _memory_cell(case, k)
+        if (case * K + k) % 2:
+            return held
+        del held["claim_tallies"][RULES]
+        return {**held, "claim_failures": {RULES: "trace_pending"}}
+
+    bundle = _bundle(memory=memory_pending, lookup=_lookup_losing("trace_pending", share=2))
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        assert {arm.n_claim_pending for arm in measure.arms} == {CASES * K // 2}
+        assert measure.withheld is None, name
+
+
+#: A cell whose candidate said nothing: no unit, no claim, no loss.
+_SILENT_TALLY = ClaimTally(
+    criterion_fingerprint=_SHA,
+    documents_declared=True,
+    grounded=True,
+    units=0,
+    units_with_false=0,
+    session_claims=0,
+    silent=True,
+)
+
+
+def _lookup_silent(case: int, k: int) -> dict[str, Any]:
+    """The lookup arm silent on the rules criterion in two cells of every three, and speaking in the third."""
+    held = _lookup_cell(case, k)
+    if (case * K + k) % 3:
+        held["claim_tallies"][RULES] = _SILENT_TALLY
+    return held
+
+
+def test_an_arm_silent_in_most_cells_is_counted_apart_read_on_what_it_said_never_a_loss_and_withheld() -> None:
+    """Silent cells have no denominator: each ranked reading leaves them out of ``n`` and the mean (never a 0 false
+    claims in the arm's mean) and counts them on the arm, never as a loss. Silence is missing data that may track arm
+    (an arm quiet on its hard cells lowers its false claims by selection), so an arm silent on a sharply higher share
+    of cells than the control has each reading withheld, as a lopsided loss does."""
+    bundle = _bundle(lookup=_lookup_silent)
+    speaking = [(case, k) for case in range(CASES) for k in range(1, K + 1) if not (case * K + k) % 3]
+    silent = CASES * K - len(speaking)
+    assert silent > CASES * K // 2, "the arm is silent in most of its cells"
+
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        lookup = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+        memory = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(MEMORY))
+        assert (lookup.n, lookup.n_claim_silent, lookup.n_claim_lost, lookup.n_infra_excluded) == (
+            len(speaking),
+            silent,
+            0,
+            0,
+        )
+        assert (memory.n, memory.n_claim_silent) == (CASES * K, 0)
+        assert measure.withheld is not None and measure.withheld.reason == "trials_lost"
+    rate = next(m for m in bundle.judged_measures if m.name == f"{RULES}_false_per_unit")
+    lookup = next(arm for arm in rate.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+    said = [
+        float(_lookup_cell(case, k)["claim_tallies"][RULES].by_judge[0].asserted_contradicted) for case, k in speaking
+    ]
+    assert lookup.mean == pytest.approx(sum(said) / len(said)), "the mean is over the cells the arm spoke in"
+
+
+def test_equal_silence_on_both_arms_withholds_nothing() -> None:
+    """The control: both arms silent on the same share of cells, in the same cases, so silence tracks no arm and every
+    reading is read on the cells each spoke in."""
+
+    def memory_silent(case: int, k: int) -> dict[str, Any]:
+        held = _memory_cell(case, k)
+        if (case * K + k) % 3:
+            held["claim_tallies"][RULES] = _SILENT_TALLY
+        return held
+
+    bundle = _bundle(memory=memory_silent, lookup=_lookup_silent)
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        assert {arm.n_claim_silent for arm in measure.arms} == {16}
+        assert measure.withheld is None, name
+
+
+def test_a_silent_arm_raises_a_class_b_caveat_naming_it_and_the_page_says_so() -> None:
+    bundle = _bundle(lookup=_lookup_silent)
+    built = report_input(campaign_bundle(bundle))
+    caveat = next(c for c in built.caveat_list if c.id == f"claims_silent:{RULES}")
+    reading = built.judged[f"{RULES}_false_per_unit"]
+
+    assert (caveat.kind, caveat.cls) == ("claims_silent", "B")
+    step = caveat_step(caveat)
+    assert step.remedy == "inspect_arm" and step.action is None, "a person reads the silent cells; no rig is blamed"
+    assert step.arms == caveat.arms
+    assert caveat.arms == list(reading.silent), "only the arm that was silent"
+    assert sum(reading.silent.values()) == 16 and not reading.lost
+    assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "silence is never a loss"
+    page = report_markdown(
+        build_code_only_report(
+            _bundle(lookup=_lookup_silent), assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c"
+        )
+    )
+    (line,) = [held for held in page.splitlines() if held.startswith("The candidate said nothing in ")]
+    assert re.fullmatch(
+        r"The candidate said nothing in 16 cells of (?P<arm>.+) on rules\.claims, so its claim readings there rest "
+        r"on the cells it spoke in; a silent cell is no loss and never reads as 0 false claims\.",
+        line,
+    ), line
+
+
+def _undeclared(share: int) -> Any:
+    """The lookup arm with one cell in ``share`` declaring no documents: its ground step lost as documents_undeclared."""
+
+    def cell(case: int, k: int) -> dict[str, Any]:
+        held = _lookup_cell(case, k)
+        if not (case * K + k) % share:
+            held["claim_tallies"][RULES] = ClaimTally(
+                criterion_fingerprint=_SHA,
+                documents_declared=False,
+                grounded=True,
+                units=1,
+                units_with_false=0,
+                session_claims=0,
+                by_judge=(_counts(4, specific=4),),
+                ground_loss="documents_undeclared",
+            )
+        return held
+
+    return cell
+
+
+def test_undeclared_documents_on_one_arm_withhold_the_grounded_share_alone_as_a_ground_loss() -> None:
+    """Undeclared documents take the ground-loss path: the grounded share counts them as lost on the arm, a lopsided
+    share of them withholds it, and the truth readings keep every cell."""
+    bundle = _bundle(lookup=_undeclared(share=2))
+    measures = {measure.name: measure for measure in bundle.judged_measures}
+    grounded = measures[f"{RULES}_grounded_share"]
+    lookup = next(arm for arm in grounded.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+
+    assert lookup.n_claim_lost == CASES * K // 2 and lookup.n == CASES * K // 2
+    assert grounded.withheld is not None and grounded.withheld.reason == "trials_lost"
+    assert measures[f"{RULES}_false_per_unit"].withheld is None
+    assert measures[f"{RULES}_false_unit_share"].withheld is None
+    built = report_input(campaign_bundle(bundle))
+    lost = next(c for c in built.caveat_list if c.id == f"claims_lost:{RULES}")
+    assert lost.readings == [f"rules/{RULES}_grounded_share"] and len(lost.arms) == 1
 
 
 def _all_on_one_arm(cases: int) -> bool:

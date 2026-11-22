@@ -267,11 +267,13 @@ from threetears.evals.kernel.result_condition import (
     JudgingState,
     trial_exclusion,
 )
+from threetears.evals.kernel.claims.readings import claim_readings
 from threetears.evals.kernel.scoring import (
     CellSummary,
     CompositeBasis,
     PassHatPoint,
     percentile,
+    summarize_completeness,
 )
 from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.kernel.storage import (
@@ -665,6 +667,8 @@ __all__ = [
     "extract_json_array",
     "fold_phase_timings",
     "percentile",
+    "summarize_completeness",
+    "claim_readings",
     "plan_variation_calls",
     "program_cost",
     # The authoring gate itself, for an adopter whose designs are authored outside the engine's

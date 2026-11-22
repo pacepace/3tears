@@ -85,6 +85,7 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "claims_lost": "Some cells lost their {name} claim readings",
     "claims_pending": "Some {name} claim readings are not yet known",
     "claims_unread": "The host's {name} claim reader could not read some cells",
+    "claims_silent": "The candidate said nothing on some cells for {name}",
     "claims_web_skipped": "Some {name} claims went unchecked past the web budget",
     "claims_web_lost": "Some {name} web checks failed",
 }

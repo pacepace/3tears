@@ -471,7 +471,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str, source: str | None = None, collected_by: str | None = None, rated_at: str | None = None) -> CalibrationRating`
 - **`regrade`** · async function · Grade one stored result again from what its cell stored, and report every verdict that moved.
-  <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade`
+  <br>`regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False, web_search: WebSearch | None = None, external_rates: ExternalRateTable | None = None) -> Regrade`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`reset_definitions`** · *host contract* · function · Write the corpus's content for the named definitions, each as a new revision or record, never in place.
@@ -1550,7 +1550,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analysis_id` (on `campaign_record`, `writer_case_mint`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
 | `answer_reason` | `string` | The person's own words for the answer, where given. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
-| `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
+| `apply` | `boolean` | Store the re-graded check verdicts, and settle claim criteria still pending from their stored grade at no cost; false (the default) reports and writes nothing. A result with judged dims whose judging failed or claim criteria it lost is refused, since grading them again spends and this action makes no model call: apply with judges=false to store the checks alone. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a writer case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
@@ -1629,7 +1629,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judged_artifact` | `'document'` \| `'transcript'` | 'document' (judged against its material) or 'transcript' (a conversation's). |
 | `judged_result_ids` | array of `string` or `null` | Results, by id, as results_list names them; omitted takes every result of the runs. |
 | `judged_run_ids` | array of `string` | Judged runs, by id, as runs_list names them, whose stored results the cases come from; omitted with from_labels, and required without it. |
-| `judges` | `boolean` | Name its judged dims whose judging failed; this action never asks a judge. |
+| `judges` | `boolean` | Name its judged dims whose judging failed and the claim criteria it lost; this action never asks a judge. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |

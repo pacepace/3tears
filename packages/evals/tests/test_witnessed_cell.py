@@ -20,8 +20,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel import CandidateKindDefect, CandidateOutput, CandidateTelemetry, CellSummary
-from threetears.evals.kernel.scoring import summarize_completeness
+from threetears.evals.kernel import (
+    CandidateKindDefect,
+    CandidateOutput,
+    CandidateTelemetry,
+    CellSummary,
+    StorageError,
+    summarize_completeness,
+)
 from threetears.evals.schema import (
     ConversationStopCause,
     EvalResult,
@@ -35,7 +41,7 @@ from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema import CellTrace
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import eval_trace_doc_id
-from threetears.evals.run import RunnerOptions, execute_run, record_witnessed_cell
+from threetears.evals.run import RunnerOptions, execute_run, record_witnessed_cell, sweep_abandoned_runs
 from threetears.evals.run.runner import RunCallbacks
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -239,6 +245,39 @@ async def test_a_witnessed_runs_completeness_is_summarized_from_the_cells_its_ho
     completeness = summarize_completeness(run, cells)
     assert (completeness.expected_cells, completeness.produced_cells, completeness.persisted_cells) == (2, 2, 1)
     assert completeness.degraded
+
+
+async def test_a_host_closes_its_witnessed_run_through_public_doors_and_no_sweep_writes_it_lost() -> None:
+    """The terminal state the recording asks of the host, written with public names alone: the run completed with its
+    completeness summarized from the cells it recorded and saved. A sweep for runs left by a gone process then leaves
+    it as written, where a run the host never closed is written lost."""
+    host, run, case = _witnessed_run(k_runs=2, status="running")
+    _, open_run, _ = _witnessed_run(id="run-left-open", status="running")
+    off_loop(host.storage.save_test_case, case)
+    for held in (run, open_run):
+        off_loop(host.storage.save_eval_run, held)
+    cells = []
+    for k in (1, 2):
+        result, trace = await _record(host, run, case, _output(), k_iteration=k, result_id=f"r-{k}")
+        try:
+            off_loop(host.storage.save_eval_result, result, trace)
+            persisted = True
+        except StorageError:
+            persisted = False
+        cells.append(CellSummary.from_result(result, persisted=persisted))
+
+    closed = run.model_copy(
+        update={"status": "completed", "completed_at": _AT, "completeness": summarize_completeness(run, cells)}
+    )
+    off_loop(host.storage.save_eval_run, closed)
+    swept = off_loop(sweep_abandoned_runs, host.storage, ["toy"])
+
+    assert swept.cancelled_run_ids == ["run-left-open"], "only the run its host never closed is written lost"
+    stored = off_loop(host.storage.load_eval_run, run.id, "toy")
+    assert stored is not None and (stored.status, stored.lost) == ("completed", None)
+    assert stored.completeness is not None
+    assert (stored.completeness.expected_cells, stored.completeness.persisted_cells) == (2, 2)
+    assert not stored.completeness.degraded
 
 
 @pytest.mark.parametrize(
