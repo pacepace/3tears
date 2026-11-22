@@ -494,7 +494,8 @@ def _served(tool: MountedTool) -> list[str]:
 #: which writes the ones missing." Diffed against the text served before: nothing else moved.
 #: Taken again over runs_attest's text (#1187) when both met: diffed against the text served without the door, the
 #: only lines that moved are the door's and campaign_record's above.
-_EVALS_BYTES = "3d319028771cf338e1500fa725bd63c1d73e62a1df89a6341e87389fbe1db626"
+#: result_regrade reports and settles claim criteria (#1287 S4)
+_EVALS_BYTES = "bfc90d769d7648ca8628a9aa2703a4d1a8794967072f470f911fc8acf15efdbb"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
