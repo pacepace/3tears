@@ -343,3 +343,20 @@ def test_is_claim_reads_peoples_share_and_checks_no_instrument() -> None:
     assert is_claim.question == "is_claim" and is_claim.check is None and is_claim.lean_p is None
     assert is_claim.failed.value is not None and 0.0 < is_claim.failed.value < 1.0
     assert not math.isnan(is_claim.failed.value)
+
+
+def test_a_met_check_names_every_arm_its_lean_test_could_not_read_and_why() -> None:
+    cells = [graded_cell("run-a", f"a{at}", ["contradicted", "supported"]) for at in range(40)]
+    cells += [graded_cell("run-b", f"b{at}", ["supported", "supported"]) for at in range(40)]
+    read = _draw(cells, planned_items=160)
+    # People fail exactly what the instrument contradicted: the candidate arm says nothing false, so it has no recall
+    # to read, and no claim people pass was failed, so no false-fail rate either. Kappa is perfect, and nothing leans.
+    fails = {item.item for item in read.items if item.stratum == "contradicted"}
+
+    (reading,) = read_claim_calibration(_answered(read, fails)).questions
+
+    assert reading.lean_p is None
+    assert reading.lean_untested == ("control", "candidate")
+    assert reading.check is not None and reading.check.result == "met"
+    assert reading.check.criterion == f"{CRITERION}.true"
+    assert (reading.check.lean_untested, reading.check.lean_untested_reason) == (["control", "candidate"], "too_few")

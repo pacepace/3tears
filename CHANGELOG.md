@@ -55,7 +55,10 @@ groundedness. Kappa's one-sided 95% lower end sits above the campaign's own kapp
 most 3.5%, against its nominal 2.5% within the same tolerance. The lean test reads a lean at most 6%, against its
 nominal α of 5% within the same tolerance. On arms alike, an arm's recall's ends hold the same two levels. An
 instrument catching 80% of one arm's false claims and 45% of the other's, on 400 labels, reads as leaning at least 60%
-of the time.
+of the time (66% measured). That power is certified only for two arms of one verdict mix. The truth lean test is
+conservative: on arms whose mixes differ sharply it rarely has enough answered claims to read a rate at all, and a check
+names every arm its lean test could not read (`Check.lean_untested`, `lean_untested_reason` `too_few`), so a `met` never
+reads as a lean ruled out.
 
 **Also added:** a stored claim grade read again (engine-internal). The claims are kept as listed, truth and groundedness
 are verified again, and each web verdict is asked again over the windows the grade stored, with no search. So the same

@@ -551,6 +551,8 @@ class QuestionCalibration:
     :ivar lean_p: The homogeneity test's p across arms on recall and the false-fail rate; None where fewer than two
         arms carry either with enough answered claims to read (:data:`LEAN_MIN_EXPECTED`), or the question has no
         instrument answer to lean: no lean is read, never a lean ruled out.
+    :ivar lean_untested: The arms, by key, that entered no rate the lean test read, too few of their answered claims
+        expected on a side (:data:`LEAN_MIN_EXPECTED`); every arm where ``lean_p`` is None and there are arms to lean.
     :ivar check: The check of the instrument on this question; None on ``is_claim``, where the instrument passes
         every claim it listed and only people's share is read.
     """
@@ -571,6 +573,7 @@ class QuestionCalibration:
     unread_strata: tuple[ClaimStratum, ...]
     arms: tuple[ArmCalibration, ...]
     lean_p: float | None
+    lean_untested: tuple[str, ...]
     check: Check | None
 
 
@@ -853,12 +856,12 @@ def _lean_rates(cells: Sequence[_LeanCell], fails: Sequence[float], arms: int) -
     return _LeanRates(recall, false_fail, answered_lies, answered_passes, lies, passes)
 
 
-def _lean_statistic(cells: Sequence[_LeanCell], fails: Sequence[float], arms: int) -> float:
-    """How far the arms' recall and false-fail rates sit from the pooled ones: each arm's squared distance times its
-    answered lies (for recall) or passes (for false fails), over the pooled rate's binomial variance, for every arm
-    whose rate expects :data:`LEAN_MIN_EXPECTED` answered claims on each side."""
-    read = _lean_rates(cells, fails, arms)
-    total = 0.0
+def _entering(
+    read: _LeanRates, arms: int
+) -> list[tuple[list[float | None], list[float], list[float], dict[int, float]]]:
+    """Each rate the lean test reads, with the arms that enter it: those whose answered claims expect
+    :data:`LEAN_MIN_EXPECTED` on each side at the pooled rate, where two or more do."""
+    read_rates = []
     for rates, weights, stand in (
         (read.recall, read.answered_lies, read.lies),
         (read.false_fail, read.answered_passes, read.passes),
@@ -866,14 +869,41 @@ def _lean_statistic(cells: Sequence[_LeanCell], fails: Sequence[float], arms: in
         pooled = rates[arms]
         if pooled is None or not 0.0 < pooled < 1.0:
             continue
-        # Only arms that expect enough answered claims each side enter, and they are held to their own pooled rate.
         entering = {
             at: rate
             for at, rate in enumerate(rates[:arms])
             if rate is not None and min(pooled, 1.0 - pooled) * weights[at] >= LEAN_MIN_EXPECTED
         }
-        if len(entering) < 2:
-            continue
+        if len(entering) >= 2:
+            read_rates.append((rates, weights, stand, entering))
+    return read_rates
+
+
+def lean_tested_arms(points: Sequence[_Point], arms: int) -> set[int]:
+    """The arms, by index, that enter at least one of the rates the lean test reads on ``points``.
+
+    :param points: The answered items.
+    :param arms: How many arms.
+    :return: The arms' indices; empty where no rate is read.
+    """
+    held: dict[tuple[int, int, int], list[float]] = {}
+    for point in points:
+        sums = held.setdefault((point.arm, point.stratum, point.x), [0.0, 0.0, 0.0])
+        sums[0] += 1.0
+        sums[1] += point.y
+        sums[2] += point.weight
+    cells = [_LeanCell(arm, x, int(sums[0]), sums[1], sums[2]) for (arm, _, x), sums in sorted(held.items())]
+    read = _lean_rates(cells, [cell.fails for cell in cells], arms)
+    return {at for *_, entering in _entering(read, arms) for at in entering}
+
+
+def _lean_statistic(cells: Sequence[_LeanCell], fails: Sequence[float], arms: int) -> float:
+    """How far the arms' recall and false-fail rates sit from the pooled ones: each arm's squared distance times its
+    answered lies (for recall) or passes (for false fails), over the pooled rate's binomial variance, for every arm
+    whose rate expects :data:`LEAN_MIN_EXPECTED` answered claims on each side."""
+    read = _lean_rates(cells, fails, arms)
+    total = 0.0
+    for rates, weights, stand, entering in _entering(read, arms):
         mean = sum(rate * stand[at] for at, rate in entering.items()) / sum(stand[at] for at in entering)
         if not 0.0 < mean < 1.0:
             continue
@@ -903,6 +933,9 @@ def lean_test(points: Sequence[_Point], arms: int, *, draws: int = LEAN_DRAWS, r
     :param rng: The generator they are drawn by.
     :return: The p, or None where no two arms carry a rate the pooled rates can be imposed on.
     """
+    if not lean_tested_arms(points, arms):
+        # No rate holds two arms with enough answered claims to read: no lean is read, never one ruled out.
+        return None
     if _answer_varies_within_a_stratum(points):
         return _permuted_lean(points, arms, draws=draws, rng=rng)
     held: dict[tuple[int, int, int], list[float]] = {}
@@ -1214,6 +1247,8 @@ def read_claim_calibration(
         )
         leans = question != "is_claim" and len(arm_keys) > 1
         lean_p = lean_test(points, len(arm_keys), rng=random.Random(rng.random())) if leans else None
+        tested = lean_tested_arms(points, len(arm_keys)) if leans else set()
+        untested = tuple(key for at, key in enumerate(arm_keys) if leans and at not in tested)
         kappa = est(figures.kappa, 0, boot)
         cells = len({item.result_id for item in answered})
         check = None
@@ -1229,6 +1264,7 @@ def read_claim_calibration(
                 kappa=kappa,
                 unread=bool(unread),
                 lean_p=lean_p,
+                lean_untested=untested,
                 replayed=replayed,
             )
         readings.append(
@@ -1266,6 +1302,7 @@ def read_claim_calibration(
                 unread_strata=unread,
                 arms=arms,
                 lean_p=lean_p,
+                lean_untested=untested,
                 check=check,
             )
         )
@@ -1291,10 +1328,12 @@ def _check(
     kappa: Estimate,
     unread: bool,
     lean_p: float | None,
+    lean_untested: Sequence[str],
     replayed: bool,
 ) -> Check:
     """The check of the instrument on one question: kappa held to the calibration bar over cells, a lean across arms
-    reading ``not_met`` (``instrument_leans``), and a read whose every claim was replayed reading not available."""
+    reading ``not_met`` (``instrument_leans``), every arm the lean test could not read named with why (so a ``met``
+    never reads as a lean ruled out on it), and a read whose every claim was replayed reading not available."""
     if replayed:
         return Check(
             instrument=instrument,
@@ -1327,6 +1366,8 @@ def _check(
         kappa=kappa.value,
         kappa_interval=interval,
         reads=items,
+        lean_untested=list(lean_untested),
+        lean_untested_reason="too_few" if lean_untested else None,
     )
 
 

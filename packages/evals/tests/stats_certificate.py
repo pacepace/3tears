@@ -1270,7 +1270,8 @@ def _claims() -> list[Claim]:
                 Claim(
                     f"claim-read.{row}.lean",
                     f"A claim read of {read.planned} labels over two arms whose instrument catches 80% and 45% of their "
-                    f"false claims reads a lean at least {CLAIM_READ_POWER_FLOOR:.0%} of the time.",
+                    f"false claims reads a lean at least {CLAIM_READ_POWER_FLOOR:.0%} of the time. Power is certified "
+                    "for two arms of one verdict mix only; on truth the test is conservative.",
                     group,
                     "hits",
                     "above",
