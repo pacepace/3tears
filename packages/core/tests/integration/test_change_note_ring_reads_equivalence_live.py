@@ -27,7 +27,13 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import NotedRows, noted_keys_page, noted_rows_since, whole_noted_change
+from threetears.core.collections.change_notes import (
+    _WHOLE_NOTE_SKEW,
+    NotedRows,
+    noted_keys_page,
+    noted_rows_since,
+    whole_noted_change,
+)
 from threetears.core.ddl.change_notes import NOTE_RING_SIZE, RING_TABLE, note_table
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.testing.note_ring import install_note_ring
@@ -46,13 +52,17 @@ _RINGS = 120
 _RING_ANSWERED = ("switch_no", "previous_switched_at")
 
 
-def _old_noted_rows_sql(owner: str) -> str:
-    """``_noted_rows_sql`` as it was (change_notes.py at 4cddfe029), the reference."""
+def _old_noted_rows_sql(owner: str, *, whole_window: bool = True) -> str:
+    """``_noted_rows_sql`` as it was (change_notes.py at 4cddfe029), the reference, with the one rule added since: a
+    whole-table note is read only from :data:`_WHOLE_NOTE_SKEW` before the window's start (``whole_window``; without
+    it, the old statement's every whole note from the reach on)."""
+    skew = _WHOLE_NOTE_SKEW.total_seconds()
+    whole = f" AND (key_text IS NOT NULL OR noted_at >= $2::timestamptz - make_interval(secs => {skew}))"
     branches = " UNION ALL ".join(
         f"SELECT keys, columns, key_text, tenant FROM {owner}.{quote_identifier(note_table(index))} "  # noqa: S608
         f"WHERE (r.current_ring = {index} OR ((r.current_ring - 1 + {NOTE_RING_SIZE}) % {NOTE_RING_SIZE} = {index} "
         "AND r.reach < r.writes_previous_until)) "
-        "AND table_name = $1 AND noted_at >= r.reach"
+        "AND table_name = $1 AND noted_at >= r.reach" + (whole if whole_window else "")
         for index in range(NOTE_RING_SIZE)
     )
     return (
@@ -226,10 +236,22 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
             if cap == 1_000:
                 # the same notes, each once
                 assert _notes([row[:6] + row[7:] for row in new], 5) == _notes(old, 3), (case, cap)
+                # a whole note between the reach and the window's start (an earlier write's, already heard) is left
+                # out: re-recorded, it would tell every follower to read the table whole again
+                older = await ring.conn.fetch(_old_noted_rows_sql(owner, whole_window=False), _ASKED, since, cap + 1)
+                if covered and len(_notes(older, 3)) > len(_notes(old, 3)):
+                    reached.add("older_whole_left_out")
             else:
                 # past the cap which notes come is the database's, as it was: the same count
                 assert len([r for r in new if r["noted"]]) == len([r for r in old if r["noted"]]), (case, cap)
-    assert reached >= {"not_covered", "no_notes", "too_many_rows", "too_many_rows_with_whole", "notes"}, reached
+    assert reached >= {
+        "not_covered",
+        "no_notes",
+        "too_many_rows",
+        "too_many_rows_with_whole",
+        "notes",
+        "older_whole_left_out",
+    }, reached
 
 
 async def test_a_noted_keys_pages_ring_read_answers_what_the_hand_written_statement_answered(ring: _Ring) -> None:
