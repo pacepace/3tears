@@ -98,7 +98,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_run": "fcd46b5389e78e0a32c44586ef49418e50720b9e8ccf0ffe27ef9e125e1697ff",
     "eval_second_judge_pass": "f8d98681f6379a7e5cbd540af34e0881c872c6f31293384b53d6db45365a7293",
     "eval_sweep": "1e3b43af8cec4e082d59441517e958a6d7cf06daa37a121165188ef6c2726119",
-    "eval_trace": "bf1ef981e4a24a6acf0fae4aac22285cca6d9c3951ed1fdfdc2952d60a12495f",
+    "eval_trace": "68587cce757a798454d38db2a6c0cb46b1c63868f30212f3f5fc72269aca0816",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving

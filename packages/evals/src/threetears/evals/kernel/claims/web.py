@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationError
@@ -97,6 +98,7 @@ _QUERY_SYSTEM: Final = (
 )
 
 _VERDICT_RULES: Final = (
+    # one line: the only placeholder is CLAIM_QUOTE_CHARS, an int; every rule's line is written here in full
     "Read the claim against the numbered windows of web pages given, and nothing else: not what you remember.\n"
     "- outcome true: a window states this same fact about this same subject.\n"
     "- outcome false: a window states a different value for this same subject and relation.\n"
@@ -143,16 +145,18 @@ _REPAIR_TEMPLATE: Final = (
 
 #: Every failure a web call is told, as the templates it is written from: what the judge is shown, so part of the
 #: identity. A quote's own failures are :func:`~threetears.evals.kernel.claims.verification.check_quote`'s.
-_FAULTS: Final[Mapping[str, str]] = {
-    "shape": "it is not the shape the response format states ({problems})",
-    "no_queries": "it writes no search; write at least one",
-    "too_many": "it writes {count} searches; write at most {most}",
-    "blank": "search {place} is blank; each search names what it looks for",
-    "twice": "it writes {query!r} more than once; write each search once",
-    "no_ref": "its answer {outcome} names no window; a true or false answer quotes the window that states it",
-    "unknown_ref": "it cites {ref}, which is no window shown here; cite the refs listed under Windows",
-    "correction": "{failure}; and the last correction could not be used: {why}",
-}
+_FAULTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "shape": "it is not the shape the response format states ({problems})",
+        "no_queries": "it writes no search; write at least one",
+        "too_many": "it writes {count} searches; write at most {most}",
+        "blank": "search {place} is blank; each search names what it looks for",
+        "twice": "it writes {query!r} more than once; write each search once",
+        "no_ref": "its answer {outcome} names no window; a true or false answer quotes the window that states it",
+        "unknown_ref": "it cites {ref}, which is no window shown here; cite the refs listed under Windows",
+        "correction": "{failure}; and the last correction could not be used: {why}",
+    }
+)
 
 _NULLABLE_STRING: Final[dict[str, Any]] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
@@ -402,9 +406,8 @@ class WebChecker:
             )
         cell = tuple(claims)
         # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
-        if stray := [
-            p for p in nominated if p >= len(cell) or cell[p].scope != "world" or cell[p].restates is not None
-        ]:
+        stray = [p for p in nominated if p >= len(cell) or cell[p].scope != "world" or cell[p].restates is not None]
+        if stray:
             raise ValueError(
                 f"claims {stray} are nominated for the web check, and are no world claims that restate nothing"
             )
