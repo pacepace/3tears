@@ -35,8 +35,13 @@ suite keeps a fast seeded case of each (``tests/test_simulated_claim_read.py``).
 missing at random within its stratum.
 A model's answer is never a person's: it is counted and read in no figure.
 
-Engine-internal: nothing here is exported, and no host can draw or read a claim read yet; the host door is its own
-change.
+- :func:`read_claim_repeats` reads the read's repeats (``ClaimRead.repeats``) against the first grade, per judge
+  asked: the instrument against itself, or a second judge against it. Counts only, per question and per stratum of
+  the draw, and the web outcomes of claims both readings decided on the web: a repeat is a pair of readings of one
+  claim, and its counts are of the drawn items, not weighted to the campaign.
+
+Engine-internal: nothing here is exported. A host draws, answers, closes, repeats and reads a claim read through
+its door (:mod:`threetears.evals.ops.claim_reads`).
 """
 
 from __future__ import annotations
@@ -68,6 +73,7 @@ from threetears.evals.schema.claim_read import (
     ClaimStratum,
     ClaimAnswer,
     ClaimItemView,
+    ClaimRepeatAgainst,
     ClaimStratumDraw,
     ClaimTruthVerdict,
     ClaimVerdict,
@@ -1369,6 +1375,143 @@ def _check(
         lean_untested=list(lean_untested),
         lean_untested_reason="too_few" if lean_untested else None,
     )
+
+
+# --- repeats ---------------------------------------------------------------------------------------------------
+
+
+#: The questions a repeat answers: truth, and groundedness where both readings' ground steps read the claim. Whether a
+#: listed claim is a claim is the extraction's, which a repeat keeps as listed.
+REPEAT_QUESTIONS: Final[tuple[ClaimQuestion, ...]] = ("true", "grounded")
+
+
+@dataclass(frozen=True)
+class RepeatStratum:
+    """How a repeat stood to the first grade in one stratum of the draw.
+
+    :ivar stratum: The stratum.
+    :ivar items: The repeats both readings answered the question on.
+    :ivar agreed: How many of them read alike: both failed the claim, or both passed it.
+    """
+
+    stratum: ClaimStratum
+    items: int
+    agreed: int
+
+
+@dataclass(frozen=True)
+class RepeatQuestion:
+    """How a repeat stood to the first grade on one question, as counts over the repeated items.
+
+    :ivar question: ``true`` (a claim fails when it reads ``contradicted``) or ``grounded`` (it fails when not grounded).
+    :ivar items: The repeats both readings answered it on.
+    :ivar cells: The distinct cells they come from.
+    :ivar table: (both fail, only the first grade fails, only the repeat fails, both pass).
+    :ivar agreed: Both fail plus both pass.
+    :ivar strata: Each stratum of the draw, in its order.
+    """
+
+    question: ClaimQuestion
+    items: int
+    cells: int
+    table: tuple[int, int, int, int]
+    agreed: int
+    strata: tuple[RepeatStratum, ...]
+
+
+@dataclass(frozen=True)
+class ClaimRepeatReading:
+    """What one judge's repeats of a read's items say of the instrument.
+
+    :ivar against: ``itself`` (the run's judge asked again) or ``model`` (another judge).
+    :ivar judge_model: The judge asked.
+    :ivar passes: The repeat passes behind it.
+    :ivar repeats: Its repeats in all, lost ones included.
+    :ivar lost: The repeats that gave no verdict, by the loss that cost it.
+    :ivar questions: One reading per question a repeat answers (:data:`REPEAT_QUESTIONS`).
+    :ivar web: (first grade's outcome, repeat's outcome) -> claims, over claims both readings decided on the web.
+    """
+
+    against: ClaimRepeatAgainst
+    judge_model: str
+    passes: int
+    repeats: int
+    lost: Mapping[str, int]
+    questions: tuple[RepeatQuestion, ...]
+    web: Mapping[tuple[str, str], int]
+
+
+def _repeat_fails(question: ClaimQuestion, verdict: ClaimTruthVerdict | None, grounded: bool | None) -> int | None:
+    """1 where a reading fails the claim on ``question``, 0 where it passes it, None where it gave no answer."""
+    if question == "true":
+        return None if verdict is None else int(verdict == "contradicted")
+    return None if grounded is None else int(not grounded)
+
+
+def read_claim_repeats(read: ClaimRead) -> tuple[ClaimRepeatReading, ...]:
+    """Read a claim read's repeats against the first grade, one reading per judge asked, in the order first repeated.
+
+    :param read: The read.
+    :return: The readings; empty where nothing was repeated.
+    """
+    items = {item.item: item for item in read.items}
+    strata = [stratum.stratum for stratum in read.draw.strata]
+    grouped: dict[tuple[ClaimRepeatAgainst, str], list[int]] = {}
+    for at, repeat in enumerate(read.repeats):
+        grouped.setdefault((repeat.against, repeat.judge_model), []).append(at)
+    readings = []
+    for (against, judge_model), places in grouped.items():
+        repeats = [read.repeats[at] for at in places]
+        lost = Counter(repeat.loss for repeat in repeats if repeat.loss is not None)
+        questions = []
+        for question in REPEAT_QUESTIONS:
+            pairs: list[tuple[ClaimItem, int, int]] = []
+            for repeat in repeats:
+                item = items[repeat.item]
+                first = _repeat_fails(question, item.verdict, item.grounded)
+                again = _repeat_fails(question, repeat.verdict, repeat.grounded)
+                if first is not None and again is not None:
+                    pairs.append((item, first, again))
+            table = (
+                sum(1 for _, a, b in pairs if a and b),
+                sum(1 for _, a, b in pairs if a and not b),
+                sum(1 for _, a, b in pairs if b and not a),
+                sum(1 for _, a, b in pairs if not a and not b),
+            )
+            questions.append(
+                RepeatQuestion(
+                    question=question,
+                    items=len(pairs),
+                    cells=len({item.result_id for item, _, _ in pairs}),
+                    table=table,
+                    agreed=table[0] + table[3],
+                    strata=tuple(
+                        RepeatStratum(
+                            stratum=stratum,
+                            items=sum(1 for item, _, _ in pairs if item.stratum == stratum),
+                            agreed=sum(1 for item, a, b in pairs if item.stratum == stratum and a == b),
+                        )
+                        for stratum in strata
+                    ),
+                )
+            )
+        web = Counter(
+            (repeat.first_web, repeat.web)
+            for repeat in repeats
+            if repeat.first_web is not None and repeat.web is not None
+        )
+        readings.append(
+            ClaimRepeatReading(
+                against=against,
+                judge_model=judge_model,
+                passes=len({repeat.repeat_id for repeat in repeats}),
+                repeats=len(repeats),
+                lost=MappingProxyType(dict(sorted(lost.items()))),
+                questions=tuple(questions),
+                web=MappingProxyType(dict(sorted(web.items()))),
+            )
+        )
+    return tuple(readings)
 
 
 __all__: list[str] = []

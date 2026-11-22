@@ -391,6 +391,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimItemRepeat": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimItemView": {
       "kind": "model",
       "signature": "",
@@ -418,6 +423,11 @@
     },
     "threetears.evals.schema.ClaimReadArm": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimRepeatAgainst": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -453,6 +463,11 @@
     },
     "threetears.evals.schema.ClaimVerdict": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimWebOutcome": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },

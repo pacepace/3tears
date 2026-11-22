@@ -171,6 +171,13 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "blind_read_close": "write",
         "blind_read_get": "read",
         "blind_reads_list": "read",
+        "claim_read_create": "write",
+        "claim_read_sheet": "read",
+        "claim_read_answer": "write",
+        "claim_read_close": "write",
+        "claim_read_repeat": "spend",
+        "claim_read_get": "read",
+        "claim_reads_list": "read",
         "writer_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
@@ -186,6 +193,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_temperature",
         "writer_pairwise",
         "blind_read_review",
+        "claim_read_repeat",
     }
     assert {action.name for action in engine_actions_in_catalogue() if action.permission == "spend"} == {
         action.name for action in engine_actions_in_catalogue() if action.long_running

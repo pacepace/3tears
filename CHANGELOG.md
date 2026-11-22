@@ -6,11 +6,58 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a host draws, answers, closes and repeats a claim read through seven actions
+
+**Added (#1287), provisional:** the claim read's host door, onto the same core, as the blind read's is onto its own.
+Seven actions: `claim_read_create`, `claim_read_sheet`, `claim_read_answer`, `claim_read_close`, `claim_read_repeat`
+(`spend`, a job), `claim_read_get` and `claim_reads_list`.
+
+- **The draw** is over a campaign's runs or named runs, for one claim criterion (`claim_criterion`), with one arm per
+  variant key the graded cells carry. The caller fixes the questions (`true`, `grounded`, `is_claim`; by default all
+  three, `grounded` only where a ground step read the claims), the stratifier (`truth` or `grounded`), and the plan:
+  in all (`claim_items`) or per stratum (`per_stratum`). There is no seed parameter. The seed is derived from the
+  claims drawn over, the stratifier, the questions and how many reads were drawn over the same claims before, and the
+  line states it (`seed`, `earlier_reads`). A run holding graded cells of two arms is refused. So are two definitions
+  of the criterion grading equally many cells. Cells graded under a less common definition are left out, counted
+  `redefined`.
+- **The sheet** shows each claim, its excerpt with offsets, the passage it was said in, and the evidence the grader
+  was shown, numbered. It carries no verdict, stratum or arm, and no run, result or case id. A rater answers each
+  question pass or fail.
+- **An answer** is recorded as a person's only when the host attests the caller relaying it (`attests_person`).
+  Otherwise it is refused (403) and nothing is written.
+- **One look.** A read's line carries no figure while it is open. `claim_read_close` serves every figure once. Per
+  question, that is the weighted 2x2, kappa with its interval, recall, the false-fail rate, precision, rate bias, each
+  stratum's agreement, each arm's figures, the lean test's p, and the arms it could not read (`lean_untested`). It
+  also serves the check against people (`Check`, the calibration bar, `instrument_leans`) and the claims the draw
+  left out. A closed read refuses every later answer and a second close. A read closed with items nobody answered
+  says so (`closed_early`).
+- **A repeat** (`claim_read_repeat`) grades the drawn claims' cells again over the evidence and web windows each grade
+  stored. It keeps the claims as listed and searches nothing. It asks each run's own judge (the grader against itself,
+  ledgered `judge`) or a named one (`repeat_judge`, a second judge, ledgered `second_judge`). Its prompts change as
+  repairs ask again, so it is priced at its worst case under the criterion's repair budget, the web step's searches
+  free. Where those ceilings together pass the out-of-run cap, or cannot be priced under an enforced cap, it is
+  refused before any call. Each call is then admitted at its own prompt, and a cell never spends past its worst case
+  (`hold_exceeded`). Its readings are stored on the read, one per item per pass, written only from inside the read's
+  own repeat job. Each judge's figures are counts per question and per stratum of the draw, and the web outcomes of
+  claims both readings decided on the web.
+
+**Stored, additive (durable 17.10):** `ClaimRead.closed_at`, `closed_by`, `repeat_job_id` and `repeats`
+(`ClaimItemRepeat`: `item`, `repeat_id`, `judge_model`, `against` (`itself` or `model`), `repeated_at`, `verdict`,
+`grounded`, `first_web`, `web` and `loss`). Each is left out while unset, so a read carrying none is stored byte for
+byte as before.
+
+**Not yet on the report page:** a closed read's check reaches the host through `claim_read_get`. It does not yet reach
+the campaign report's judged measures or caveats.
+
+**For hosts:** a claim read stored by this build after it was closed or repeated is refused by name
+(`extra_forbidden`) by the build before it. Claim reads were never released, so the integration line is deployed and
+rolled back as one. `claim_read_answer` needs `attests_person`, as `blind_read_answer` does. `claim_read_repeat` is
+held to your out-of-run cap.
+
 ### evals: a claim read calibrates a claim criterion against people, and a stored grade can be read again
 
-**What ships, and what does not yet.** This ships the claim read's stored record, its statistics and the repeat of a
-stored grade, all engine-internal: no host can draw a claim read, show its items, record answers, read its figures or
-run a repeat yet. The host door for all of that is its own change, before claims are adopted.
+**What ships.** The claim read's stored record, its statistics and the repeat of a stored grade. A host drives them
+through the claim read's door (the section above).
 
 **Added (#1287), provisional:** a new durable type, the claim read (`ClaimRead`, durable 17.10), the human side of a
 claim criterion's calibration. It draws the criterion's graded claims by stratum of the instrument's own answer: its
@@ -65,8 +112,7 @@ are verified again, and each web verdict is asked again over the windows the gra
 judge's agreement with itself and a second judge's both reach the web step. A claim the repeat doubts that the first
 grade never checked reads unchecked, never searched. A replayed grade is not read again.
 
-**Left out:** the host door (drawing, sheets, answers, readable figures, a priced repeat job and where its answers are
-stored), which is its own change; a check of the extractor's recall (misses are listed, not checked); judge campaigns
+**Left out:** a check of the extractor's recall (misses are listed, not checked); judge campaigns
 for claims; a corrected contrast. `CalibrationRating` does not gain a claim reference: a claim read keeps every answer
 beside the view it was given on.
 

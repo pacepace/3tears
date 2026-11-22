@@ -47,6 +47,9 @@ from threetears.evals.schema.claim_read import (
     ClaimTruthVerdict,
     ClaimVerdict,
     ClaimItemView,
+    ClaimItemRepeat,
+    ClaimRepeatAgainst,
+    ClaimWebOutcome,
     ShownEvidence,
 )
 from threetears.evals.schema.blind_read import (
@@ -467,6 +470,9 @@ __all__ = [
     "ClaimTruthVerdict",
     "ClaimVerdict",
     "ClaimItemView",
+    "ClaimItemRepeat",
+    "ClaimRepeatAgainst",
+    "ClaimWebOutcome",
     "ShownEvidence",
     "BlindArm",
     "BlindAsk",

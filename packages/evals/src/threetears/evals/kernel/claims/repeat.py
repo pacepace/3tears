@@ -20,6 +20,8 @@ search of its run stands behind it, and every check over it reads not available 
 :func:`repeat_agreement` pairs a first grade's claims with a repeat's, per question: the pass/fail pairs on truth (the
 claim read false or not) and on groundedness, and the web outcomes of the claims both readings decided on the web.
 
+:func:`repeat_ceiling` prices a repeat before it is made, at its worst case under the criterion's budgets.
+
 Engine-internal: nothing here is exported.
 """
 
@@ -55,6 +57,33 @@ def replayed_state(grade: ClaimGrade) -> StateOf | None:
     :return: The state, or None.
     """
     return _REPLAYED if grade.web_replayed else None
+
+
+def repeat_ceiling(
+    criterion: ClaimCriterion, evidence: ClaimEvidence, *, key: ReferenceKey | None, client: CompletionClient
+) -> float | None:
+    """The most repeating one stored grade under ``criterion`` can cost on ``client``, priced before any call.
+
+    A repeat's prompts are not known before it is made: a repair asks again with what the reply got wrong. So it is
+    priced at its worst case under the criterion's own budgets: every verify step asked in full, each with its repair
+    budget (:meth:`~threetears.evals.kernel.claims.verification.ClaimVerifier.price_ceiling`), and, for a criterion
+    with a web budget, the web step with every search free, since a repeat searches nothing and reads only the
+    windows the grade stored (:meth:`~threetears.evals.kernel.claims.web.WebChecker.price_ceiling`). The extraction
+    is not priced: the repeat keeps the grade's claims as listed.
+
+    :param criterion: The criterion, as the template declares it.
+    :param evidence: The cell's claim evidence, as the trace stores it.
+    :param key: The case's reference key, or None.
+    :param client: The client the repeat is asked on, its prices brought up to date.
+    :return: The ceiling in dollars, or None when the client cannot price a call.
+    """
+    _, verifier = criterion_steps(criterion, client)
+    verification = verifier.price_ceiling(evidence.segments, key=key, documents=evidence.documents)
+    checker = web_checker(criterion, client)
+    web = 0.0 if checker is None else checker.price_ceiling(evidence.segments, query_usd=0.0)
+    if verification is None or web is None:
+        return None
+    return verification + web
 
 
 @dataclass(frozen=True)

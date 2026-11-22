@@ -260,7 +260,7 @@ operator invokes the action by name; a host's code may also call the function.
 - `ops.scope_history`: One measure over time for each contestant in the scope, with its regressions flagged.
 - `ops.templates_list`: The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
 
-## The action catalogue: 94 actions an agent calls
+## The action catalogue: 101 actions an agent calls
 
 `actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP. An agent or
 an operator invokes each by its name, with no Python, and the action does the work.
@@ -328,7 +328,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `scope_export`: Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere.
 - `campaign_export`: Export a campaign's stored documents, its host's profile and a manifest: what a writer case is minted from.
 
-### Curate (21)
+### Curate (28)
 
 - `cases_rename`: Rename a stored case: the name the report calls it by, and nothing else about it.
 - `run_archive`: Archive a run (or restore it): out of every cohort, nothing destroyed.
@@ -346,6 +346,13 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `blind_read_close`: Close a blind read: its answers become ratings, and what they say of the judge is read.
 - `blind_read_get`: Read one blind read: what was drawn, who has answered how far, and once closed what it found.
 - `blind_reads_list`: List the scope's blind reads, oldest first, or those drawn over one campaign.
+- `claim_read_create`: Draw a claim read: graded claims drawn by the grader's verdict, for people to label blind.
+- `claim_read_sheet`: Read a claim read's sheet: each claim, its passage and the evidence shown, for a rater to label.
+- `claim_read_answer`: Record a person's answer to one claim of a claim read, relayed by a caller the host attests.
+- `claim_read_close`: Close a claim read: its figures and checks are read, and later answers are refused.
+- `claim_read_repeat`: Have a judge grade a claim read's claims again over their stored evidence, priced and capped.
+- `claim_read_get`: Read one claim read: what was drawn, who answered how far, its repeats, and once closed its figures.
+- `claim_reads_list`: List the scope's claim reads, oldest first, or those drawn over one campaign.
 - `analysis_archive`: Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.
 - `writer_case_archive`: Retire a writer case (or restore it): no launch runs it again, nothing destroyed.
 - `run_delete`: Destroy a run, its results and its campaign memberships.

@@ -15,6 +15,9 @@ its subject and its sources, so two of them are not twice the evidence one is. T
 inverse-probability weights (stratum population over stratum draws) when the read is read, never stored: what is
 stored is who answered what.
 
+**A repeat grades a drawn claim again** (:class:`ClaimItemRepeat`): the same judge, for the instrument's agreement
+with itself, or another judge, over the evidence and web windows the grade stored, with nothing searched.
+
 **Who answered is part of every answer** (``made_by``, a :data:`~threetears.evals.schema.reading_states.Maker`): only a
 person's answer calibrates the instrument.
 
@@ -33,7 +36,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import CoreShapeModel, DurableDocumentModel, EvalDocumentModel
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.models import DimName, DurableSchemaVersion, utc_now_iso
+from threetears.evals.schema.models import DimName, DurableSchemaVersion, StoredClaimLoss, utc_now_iso
 from threetears.evals.schema.reading_states import Maker
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_VERSION
 
@@ -56,6 +59,13 @@ ClaimExclusion = Literal["redefined", "other_evidence", "replayed", "restatement
 
 #: A truth verdict, as a graded claim stores it.
 ClaimTruthVerdict = Literal["contradicted", "true_ungrounded", "unverifiable", "supported"]
+
+#: Who a repeat of the instrument asked: the judge that made the grade, asked again (``itself``, the instrument's
+#: agreement with itself), or another judge (``model``, a second judge's reading of the same claims and windows).
+ClaimRepeatAgainst = Literal["itself", "model"]
+
+#: What a web check of a claim found, as a stored web record says it.
+ClaimWebOutcome = Literal["true", "false", "inconclusive"]
 
 #: The strata of each stratifier, in the order a draw lists them.
 STRATA_OF: Final[Mapping[str, tuple[ClaimStratum, ...]]] = MappingProxyType(
@@ -248,6 +258,47 @@ class ClaimAnswer(EvalDocumentModel, CoreShapeModel):
         return self
 
 
+class ClaimItemRepeat(EvalDocumentModel, CoreShapeModel):
+    """One item's claim, graded again by a judge over the evidence and web windows its grade stored: what the repeat
+    answered, beside the first grade's web outcome, so the instrument's agreement with itself and a second judge's
+    with it are read from the read alone. Never shown to a rater."""
+
+    item: str = Field(min_length=1, description="The item repeated (ClaimItem.item).")
+    repeat_id: str = Field(min_length=1, description="The pass it was repeated in: the repeat job's record, by id.")
+    judge_model: str = Field(min_length=1, description="The model the repeat was asked on, as the host names it.")
+    against: ClaimRepeatAgainst = Field(
+        description="itself: the run's own judge asked again. model: another judge asked the same claims."
+    )
+    repeated_at: str = Field(default_factory=utc_now_iso)
+    verdict: ClaimTruthVerdict | None = Field(
+        default=None, description="The repeat's truth verdict; None where the repeat lost the cell (loss)."
+    )
+    grounded: bool | None = Field(
+        default=None, description="Whether the repeat grounded the claim; None where its ground step read none."
+    )
+    first_web: ClaimWebOutcome | None = Field(
+        default=None, description="What the first grade's web check of the claim found; None where it checked none."
+    )
+    web: ClaimWebOutcome | None = Field(
+        default=None,
+        description="What the repeat found reading the first grade's stored windows again; None where it read none. "
+        "Nothing is searched.",
+    )
+    loss: StoredClaimLoss | None = Field(
+        default=None, description="Why the repeat gave the cell no verdict (ClaimLoss); None where it gave one."
+    )
+
+    @model_validator(mode="after")
+    def _a_verdict_or_a_loss(self) -> Self:
+        """:raises ValueError: Both a verdict and a loss, or neither."""
+        if (self.verdict is None) == (self.loss is None):
+            raise ValueError(
+                f"the repeat of item {self.item!r} carries a verdict or a loss, one of the two; it has "
+                f"{'both' if self.verdict is not None else 'neither'}"
+            )
+        return self
+
+
 class ClaimRead(DurableDocumentModel):
     """A stratified draw of one claim criterion's graded claims, and the answers given to it.
 
@@ -255,6 +306,10 @@ class ClaimRead(DurableDocumentModel):
     reset; the runs and results it was drawn over are provenance and may dangle. Every item carries the view it was
     answered on and the instrument's answer, so every figure is read from the read alone
     (:func:`threetears.evals.analysis.claim_read.read_claim_calibration`), and none is stored.
+
+    **Closed once.** Its figures are read once it is closed, and a closed read takes no answer, so the check is read at
+    one look, never at whichever look first met it. Its repeats (``repeats``) are the instrument's own readings of
+    the drawn claims, made by a repeat job open or closed, and read beside people's.
     """
 
     doc_type: Literal["claim_read"] = "claim_read"
@@ -274,6 +329,24 @@ class ClaimRead(DurableDocumentModel):
     draw: ClaimDraw
     items: list[ClaimItem] = Field(default_factory=list, description="The items, in a seeded order.")
     answers: list[ClaimAnswer] = Field(default_factory=list)
+    closed_at: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="When it was closed: its figures are read from then on, and it takes no answer after. None: open.",
+    )
+    closed_by: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+    repeat_job_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="The job its latest repeat runs in, by its record's id: a repeat is taken into the read only "
+        "from inside that job. None: no repeat was started.",
+    )
+    repeats: list[ClaimItemRepeat] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each item's claim graded again by a judge, one per item per pass. Never shown to a rater.",
+    )
 
     @model_validator(mode="after")
     def _items_agree_with_the_draw(self) -> Self:
@@ -281,8 +354,9 @@ class ClaimRead(DurableDocumentModel):
 
         :raises ValueError: A question asked twice; a run named by two arms; an item of no arm, twice, in a stratum
             its instrument answer does not give, or past the cap of its cell; a stratum whose drawn count is not its
-            items; an item asked groundedness with no groundedness reading; or an answer to no item or to a question
-            the read does not ask.
+            items; an item asked groundedness with no groundedness reading; an answer to no item or to a question
+            the read does not ask; a close with no closer, or a closer with no close; or a repeat of no item, or of
+            one item twice in one pass.
         """
         if len(set(self.questions)) != len(self.questions):
             raise ValueError(f"a claim read asks each question once, and this one asks {self.questions}")
@@ -321,6 +395,13 @@ class ClaimRead(DurableDocumentModel):
                 raise ValueError(f"an answer names item {answer.item!r}, which is no item of claim read {self.id!r}")
             if unasked := sorted({v.question for v in answer.verdicts} - set(self.questions)):
                 raise ValueError(f"the answer to item {answer.item!r} answers {unasked}, which the read does not ask")
+        if (self.closed_at is None) != (self.closed_by is None):
+            raise ValueError(f"claim read {self.id!r} names when it was closed and who closed it, both or neither")
+        passes = Counter((repeat.item, repeat.repeat_id) for repeat in self.repeats)
+        if stray := sorted({repeat.item for repeat in self.repeats} - known):
+            raise ValueError(f"repeats name items {stray}, which are no items of claim read {self.id!r}")
+        if twice := sorted(f"{item} in {repeat}" for (item, repeat), count in passes.items() if count > 1):
+            raise ValueError(f"items are repeated more than once in one pass: {twice}")
         return self
 
 
@@ -347,6 +428,9 @@ __all__ = [
     "ClaimTruthVerdict",
     "ClaimVerdict",
     "ClaimItemView",
+    "ClaimItemRepeat",
+    "ClaimRepeatAgainst",
+    "ClaimWebOutcome",
     "ShownEvidence",
     "item_view_digest",
 ]

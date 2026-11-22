@@ -112,7 +112,7 @@ NEEDS A SHIPPED EXAMPLE (#1199): the only door to each; no shipped example uses 
   ops.start_action_job: A host's own action runs work that is not one paid call as a job through it
     (`start_paid_call` covers one paid call).
 
-ACTIONS: 94, called without writing Python
+ACTIONS: 101, called without writing Python
   actions.eval_catalogue() holds them; transports.fastmcp.mount_fastmcp serves them over MCP
     (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/serving.md).
   Find what is there: templates_list, judge_configs_list, runs_list, runs_unreadable,
@@ -130,7 +130,9 @@ ACTIONS: 94, called without writing Python
   Curate: cases_rename, run_archive, run_label, campaign_archive, result_regrade, run_remeasure,
     runs_attest, result_rate, result_rate_person, blind_read_create, blind_read_sheet,
     blind_read_answer, blind_read_review, blind_read_close, blind_read_get, blind_reads_list,
-    analysis_archive, writer_case_archive, run_delete, analysis_delete, insight_delete
+    claim_read_create, claim_read_sheet, claim_read_answer, claim_read_close, claim_read_repeat,
+    claim_read_get, claim_reads_list, analysis_archive, writer_case_archive, run_delete,
+    analysis_delete, insight_delete
   Investigate: snapshot: report_snapshot_freeze
   Investigate: facts: campaign_overview, readings_list, contrasts_list, measure_read, examples_list,
     caveats_list, figure_keys_check
