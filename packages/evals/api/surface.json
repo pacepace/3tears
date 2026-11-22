@@ -356,7 +356,17 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimArmFigures": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimCall": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimCheckRecord": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -386,12 +396,22 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimFigure": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimGrade": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.schema.ClaimItem": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimItemRepeat": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -416,6 +436,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimQuestionFigures": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimRead": {
       "kind": "model",
       "signature": "",
@@ -423,6 +448,16 @@
     },
     "threetears.evals.schema.ClaimReadArm": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimReadReport": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimRepeatAgainst": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -438,6 +473,11 @@
     },
     "threetears.evals.schema.ClaimStratum": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ClaimStratumAgreement": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

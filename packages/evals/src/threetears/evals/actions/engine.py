@@ -25,6 +25,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.blind_reads import blind_read_actions
+from threetears.evals.actions.claim_reads import claim_read_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
@@ -3385,6 +3386,7 @@ def _engine_actions() -> tuple[Action, ...]:
             ),
         ),
         *blind_read_actions(CURATE),
+        *claim_read_actions(CURATE),
         Action(
             name="analysis_archive",
             summary="Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.",
