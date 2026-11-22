@@ -1178,8 +1178,9 @@ unverified pick, so reasons move no count and no measure definition. The default
 
 A `Judge` scores an answer as a whole. `Claims(model, name="claims", *, unit="answer", segments=None,
 case_documents=None, grounded_in=None, guidance="", search=None, web=None, pages=..., repairs=...)`, listed among the
-graders, has a model list the factual claims each answer makes and checks each one. It is provisional: its names may
-change in any release, and its docstring carries its examples until it is promoted. Its readings rank arms, each on
+graders, has a model list the factual claims each answer makes and checks each one. It is provisional: it and
+`Document` are served by `threetears.evals.quick`, not the package root, their names may change in any release, and
+its docstring carries its examples until it is promoted. Its readings rank arms, each on
 its own, and none enters a case's pass:
 
 | Reading | What it counts | Better |

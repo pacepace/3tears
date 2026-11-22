@@ -43,7 +43,8 @@ checked, beside the grounded share that reads what the answers say.
 cells pending, cells its claim reader could not read, and cells whose web check skipped claims past the budget or
 failed. Before this only the report's caveat list held them.
 
-`Claims` and `Document` are provisional. `Answer.documents` is optional and defaults to `None`, so a runner returning an
+`Claims` and `Document` are provisional, served by `threetears.evals.quick` (`from threetears.evals.quick import Claims,
+Document`), not the package root, whose names are the stable ladder. `Answer.documents` is optional and defaults to `None`, so a runner returning an
 `Answer` without it is unchanged; nothing stored gains a field.
 
 ### evals: a host's own readings of a claim criterion's grade

@@ -3,9 +3,7 @@
 "tiers": {
 "threetears.evals.__version__": "host-contract",
 "threetears.evals.Answer": "host-contract",
-"threetears.evals.Claims": "provisional",
 "threetears.evals.declared_names": "provisional",
-"threetears.evals.Document": "provisional",
 "threetears.evals.Eval": "host-contract",
 "threetears.evals.Example": "host-contract",
 "threetears.evals.grader": "host-contract",
@@ -1276,6 +1274,8 @@
 "threetears.evals.testing.StoreConformanceCase": "host-contract",
 "threetears.evals.testing.StoreConformanceFailure": "provisional",
 "threetears.evals.quick.as_host": "host-contract",
+"threetears.evals.quick.Claims": "provisional",
+"threetears.evals.quick.Document": "provisional",
 "threetears.evals.quick.ExampleGrade": "provisional",
 "threetears.evals.quick.EXIT_FAILED": "stable",
 "threetears.evals.quick.EXIT_GATE_FAILED": "stable",

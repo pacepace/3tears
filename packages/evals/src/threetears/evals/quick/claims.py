@@ -24,7 +24,9 @@ What the grader reads, each the eval's to say:
 - **The web**, with ``search``: a port the grader checks a doubted claim on, within a budget (``web``), whose
   searches are recorded as the run's spend.
 
-Two short examples. The first grades each answer's claims against its case's ``source``::
+Two short examples, both importing it from the quick path's root while it is provisional
+(``from threetears.evals.quick import Claims, Document``). The first grades each answer's claims against its case's
+``source``::
 
     claims = Claims(model, case_documents="source")
     result = await Eval(cases, describe, [claims]).run()

@@ -25,8 +25,8 @@ import pytest
 
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.off_loop import off_loop
-from threetears.evals import Answer, Claims, Document, Eval, Judge, grader
-from threetears.evals.quick import as_host
+from threetears.evals import Answer, Eval, Judge, grader
+from threetears.evals.quick import Claims, Document, as_host
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.claims.readings import claim_readings

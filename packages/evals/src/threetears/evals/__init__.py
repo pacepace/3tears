@@ -21,8 +21,7 @@ under test (a function, or a mapping of them whose first key is the control) and
 field names, a :class:`Judge`) — and ``await ev.run()`` runs it, returning a :class:`Result` that prints quietly and
 writes its report. ``python -m threetears.evals FILE`` runs every eval a ``.py`` or ``.toml`` file declares. The
 names that take it further are this module's own: :class:`World` (another shape of runner),
-:func:`grader` (what a reading declares beside its grade), :class:`Example`, :class:`Model`, :class:`Answer`,
-:class:`Claims` (the factual claims in each answer, checked) and :class:`Document` (what a candidate read). Each
+:func:`grader` (what a reading declares beside its grade), :class:`Example`, :class:`Model` and :class:`Answer`. Each
 is loaded on first use, so importing this package loads none of the engine.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
@@ -57,8 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from threetears.evals.providers import Model
-    from threetears.evals.quick.answer import Answer, Document
-    from threetears.evals.quick.claims import Claims
+    from threetears.evals.quick.answer import Answer
     from threetears.evals.quick.contract import Eval
     from threetears.evals.quick.graders import grader
     from threetears.evals.quick.judged import Example, Judge
@@ -82,8 +80,6 @@ __version__: str
 _LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
     {
         "Answer": "threetears.evals.quick.answer",
-        "Claims": "threetears.evals.quick.claims",
-        "Document": "threetears.evals.quick.answer",
         "Eval": "threetears.evals.quick.contract",
         "Example": "threetears.evals.quick.judged",
         "Judge": "threetears.evals.quick.judged",
@@ -222,8 +218,6 @@ __all__ = [
     "PUBLIC_ROOTS",
     "ROOT_EXTRAS",
     "Answer",
-    "Claims",
-    "Document",
     "Eval",
     "Example",
     "Judge",

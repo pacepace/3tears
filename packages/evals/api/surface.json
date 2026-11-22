@@ -11,18 +11,8 @@
       "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None, documents: Sequence[Document | str] | None = None)",
       "tier": "host-contract"
     },
-    "threetears.evals.Claims": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.declared_names": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.Document": {
-      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -6375,6 +6365,16 @@
       "kind": "function",
       "signature": "as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost",
       "tier": "host-contract"
+    },
+    "threetears.evals.quick.Claims": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.quick.Document": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.quick.ExampleGrade": {
       "kind": "dataclass",
