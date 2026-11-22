@@ -29,6 +29,12 @@ into the current or the previous table, never into one being emptied, as long as
 transaction) ends within the other half of the fence. Clocks: the validity is read and checked on the
 database's clock, so no process clock enters it; between YugabyteDB nodes the skew is bounded far below
 the margin.
+
+**A bulk writer buffers its notes.** A note inserted into the ring a row is a distributed write a row on YugabyteDB,
+most of a bulk write's cost. A writer that sets :data:`_NOTE_BUFFER_SETTING` has each row's note written by the same
+trigger into its connection's buffer, and moves them into the ring with one insert just before its COMMIT; a flagged
+COMMIT without that flush fails. The notes are the same either way. Measurements, rules and the rollout:
+``docs/writing-to-l3-on-yugabytedb.md``.
 """
 
 from __future__ import annotations
@@ -58,6 +64,8 @@ __all__ = [
     "change_notes_ddl",
     "inexact_note_columns",
     "note_function_name",
+    "note_buffer_open_sql",
+    "note_flush_sql",
     "note_reach_text",
     "prefix_write_mark_sql",
     "prefix_write_restore_sql",
@@ -187,6 +195,67 @@ _NOTED_WHOLE_GUARD: Final = "threetears.noted_whole_"
 #: The hub's ``l3.tx.copy`` counts a session's copied rows against it; a direct connection's
 #: :meth:`~threetears.core.backends.sql.SqlL3Backend.copy_many` its own call's
 WHOLE_COPY_ROWS: Final = 10_000
+
+#: the transaction-local setting a writer that flushes its notes sets (:func:`note_buffer_open_sql`): while it is
+#: ``'1'`` a table's row trigger writes each note into the connection's buffer (:data:`_NOTE_BUFFER_TABLE`) instead of
+#: the ring, and the writer moves them all into the ring with one statement just before its COMMIT
+#: (:func:`note_flush_sql`). Unset, the trigger writes each note into the ring as it always did.
+#:
+#: WHY (2026-11-21, YugabyteDB 2026.1, the reports pod's 34-column candidates table, 1000 rows, median of 5): a note
+#: inserted into the ring a row is a distributed write a row, the cost of a write's notes: an insert 29 ms bare, 471 ms
+#: with today's triggers, 103 ms buffered; an upsert moving an invalidation column 203 / 1402 / 684 ms. The buffer is a
+#: temp table, local to the node, so a buffered note costs a local insert; the flush is one set-based insert. The
+#: notes are the trigger's own, row for row: nothing about what is noted changes (docs/writing-to-l3-on-yugabytedb.md)
+_NOTE_BUFFER_SETTING: Final = "threetears.note_buffer"
+
+#: the connection's temp table a flagged transaction's notes wait in until its flush: emptied by the flush, and a
+#: flagged transaction that commits without its flush is refused at its COMMIT (:data:`_NOTE_GUARD_TABLE`)
+_NOTE_BUFFER_TABLE: Final = "threetears_note_buffer"
+
+#: the connection's temp table holding one row a flagged transaction, until its flush deletes it. Its column refers to
+#: :data:`_NOTE_NEVER_TABLE`, which never holds a row, by a deferred foreign key: a COMMIT that finds the row still
+#: there (a writer that set the flag and never flushed) fails on the key, so the transaction's rows never commit
+#: without their notes. A deferred key, not a deferred constraint trigger: YugabyteDB 2026.1 refuses ``CREATE
+#: CONSTRAINT TRIGGER`` ("not supported yet")
+_NOTE_GUARD_TABLE: Final = "threetears_note_buffer_guard"
+_NOTE_NEVER_TABLE: Final = "threetears_note_buffer_never"
+
+#: the name of the guard's key, as a refused COMMIT's error names it
+_NOTE_BUFFER_GUARD: Final = "threetears_note_buffer_flushed"
+
+#: the functions that open a transaction's buffer and flush it
+_BUFFER_OPEN_FUNCTION: Final = "threetears_change_note_buffer_open"
+_FLUSH_FUNCTION: Final = "threetears_change_note_flush"
+
+
+def note_buffer_open_sql(schema: str) -> str:
+    """the statement a writer runs in its transaction, before its first write, to buffer the transaction's notes.
+
+    Makes the connection's buffer where missing (a temp table, kept for the connection's life) and sets
+    :data:`_NOTE_BUFFER_SETTING` for the transaction. Idempotent within a transaction. The writer must run
+    :func:`note_flush_sql` before its COMMIT; a flagged COMMIT without it fails on :data:`_NOTE_BUFFER_GUARD`.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :return: the ``SELECT``
+    :rtype: str
+    """
+    return f"SELECT {quote_identifier(schema)}.{quote_identifier(_BUFFER_OPEN_FUNCTION)}()"
+
+
+def note_flush_sql(schema: str) -> str:
+    """the statement that moves a transaction's buffered notes into the ring, in one insert, answering how many.
+
+    Run just before the COMMIT (and before a notes bracket is read). Clears :data:`_NOTE_BUFFER_SETTING`, so a write
+    after it is noted straight into the ring, and deletes the guard's row, so the COMMIT is allowed. Answers ``0`` on
+    a connection that never buffered.
+
+    :param schema: the schema holding the ring, a TRUSTED identifier
+    :ptype schema: str
+    :return: the ``SELECT``
+    :rtype: str
+    """
+    return f"SELECT {quote_identifier(schema)}.{quote_identifier(_FLUSH_FUNCTION)}()"
 
 
 def note_reach_text(*, prefixes: Sequence[Mapping[str, Any]] | None = None, reason: str | None = None) -> str:
@@ -470,6 +539,8 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         "ON CONFLICT (id) DO NOTHING",
         _put_function_sql(schema),
         _whole_function_sql(schema),
+        _buffer_open_function_sql(schema),
+        _flush_function_sql(schema),
     )
 
 
@@ -486,8 +557,6 @@ def _put_function_sql(schema: str) -> str:
     :rtype: str
     """
     owner = quote_identifier(schema)
-    ring = f"{owner}.{quote_identifier(RING_TABLE)}"
-    slots = f"[0-{NOTE_RING_SIZE - 1}]"
     inserts = []
     for index in range(NOTE_RING_SIZE):
         table = f"{owner}.{quote_identifier(note_table(index))}"
@@ -511,8 +580,30 @@ def _put_function_sql(schema: str) -> str:
         # a whole-table note (no keys) names the write's reach, when the write named one (NOTE_REACH_SETTING)
         "  IF noted_keys IS NULL AND noted_columns IS NULL THEN\n"
         f"    noted_columns := nullif(current_setting('{NOTE_REACH_SETTING}', true), '')::jsonb;\n"
-        "  END IF;\n"
+        "  END IF;\n" + _slot_block(schema) + "".join(inserts) + "  END IF;\n"
+        "END\n"
+        "$put$"
+    )
+
+
+def _slot_block(schema: str) -> str:
+    """the plpgsql that decides the ring slot a statement's notes go into, into ``ring`` and ``read_ring``.
+
+    At a statement's first note it takes the slot from the connection's cached copy (:data:`NOTE_SLOT_SETTING`)
+    while that copy is valid by the database's clock, and reads the ring row only when it is not; either way it keeps
+    the slot for the rest of the statement. Shared by the put and the flush, so both decide alike. Declares nothing:
+    its function declares ``ring``, ``cached``, ``read_ring`` and ``kept``.
+
+    :param schema: the schema holding the ring
+    :ptype schema: str
+    :return: the statements
+    :rtype: str
+    """
+    ring = f"{quote_identifier(schema)}.{quote_identifier(RING_TABLE)}"
+    slots = f"[0-{NOTE_RING_SIZE - 1}]"
+    return (
         # the slot is decided at a statement's first note and kept for the rest of that statement
+        # one line: plpgsql source; each interpolated piece is a fixed name or statement this module builds
         "  IF current_setting('threetears.note_ring_at', true) IS DISTINCT FROM statement_timestamp()::text THEN\n"
         f"    cached := current_setting('{NOTE_SLOT_SETTING}', true);\n"
         f"    IF cached ~ '^{slots}:[0-9]+(\\.[0-9]+)?$' "
@@ -521,7 +612,7 @@ def _put_function_sql(schema: str) -> str:
         "      read_ring := NULL;\n"
         "    ELSE\n"
         # the rare path: no valid cached copy on this connection
-        f"      SELECT current_ring INTO ring FROM {ring} WHERE id = 1;\n"
+        f"      SELECT current_ring INTO ring FROM {ring} WHERE id = 1;\n"  # noqa: S608 - trusted identifiers
         "      ring := coalesce(ring, 0);\n"
         "      read_ring := TRUE;\n"
         "    END IF;\n"
@@ -531,9 +622,110 @@ def _put_function_sql(schema: str) -> str:
         "    kept := current_setting('threetears.note_ring');\n"
         "    ring := left(kept, 1)::smallint;\n"
         "    read_ring := CASE WHEN length(kept) > 1 THEN TRUE END;\n"
-        "  END IF;\n" + "".join(inserts) + "  END IF;\n"
+        "  END IF;\n"
+    )
+
+
+def _buffer_open_function_sql(schema: str) -> str:
+    """the function a writer opens its transaction's buffer with (:func:`note_buffer_open_sql`).
+
+    The buffer and the guard are temp tables made once per connection (``to_regclass`` finds them on the
+    connection's own temp schema, and a create in a transaction that rolled back is simply made again). The flag and
+    the guard's row are the transaction's, set once: the guard's deferred key fails the COMMIT unless the flush deleted
+    the row (:data:`_NOTE_GUARD_TABLE`).
+
+    :param schema: the schema holding the ring
+    :ptype schema: str
+    :return: the ``CREATE OR REPLACE FUNCTION`` statement
+    :rtype: str
+    """
+    owner = quote_identifier(schema)
+    buffer = quote_identifier(_NOTE_BUFFER_TABLE)
+    guard = quote_identifier(_NOTE_GUARD_TABLE)
+    never = quote_identifier(_NOTE_NEVER_TABLE)
+    return (
+        # one line: plpgsql source; each interpolated piece is a fixed name or statement this module builds
+        f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_BUFFER_OPEN_FUNCTION)}() "
+        "RETURNS void LANGUAGE plpgsql AS $open$\n"
+        "BEGIN\n"
+        f"  IF to_regclass('pg_temp.{_NOTE_BUFFER_TABLE}') IS NULL THEN\n"
+        # each note names the ring its trigger writes into, so a flush moves only its own ring's notes
+        f"    CREATE TEMP TABLE IF NOT EXISTS {buffer} (ring_schema TEXT NOT NULL, table_name TEXT NOT NULL, keys TEXT[], columns JSONB, "
+        "tenant TEXT, noted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());\n"
+        "  END IF;\n"
+        f"  IF to_regclass('pg_temp.{_NOTE_GUARD_TABLE}') IS NULL THEN\n"
+        f"    CREATE TEMP TABLE IF NOT EXISTS {never} (opened INTEGER PRIMARY KEY);\n"
+        f"    CREATE TEMP TABLE IF NOT EXISTS {guard} (opened INTEGER CONSTRAINT {quote_identifier(_NOTE_BUFFER_GUARD)} "
+        f"REFERENCES pg_temp.{never} (opened) DEFERRABLE INITIALLY DEFERRED);\n"
+        "  END IF;\n"
+        f"  IF current_setting('{_NOTE_BUFFER_SETTING}', true) IS DISTINCT FROM '1' THEN\n"
+        f"    PERFORM set_config('{_NOTE_BUFFER_SETTING}', '1', true);\n"
+        f"    INSERT INTO pg_temp.{guard} (opened) VALUES (1);\n"
+        "  END IF;\n"
         "END\n"
-        "$put$"
+        "$open$"
+    )
+
+
+def _text_literal(value: str) -> str:
+    """``value`` as a SQL text literal, its quotes doubled.
+
+    :param value: the text
+    :ptype value: str
+    :return: the literal
+    :rtype: str
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _flush_function_sql(schema: str) -> str:
+    """the function that moves a transaction's buffered notes into the ring's current table in one insert.
+
+    The slot is decided as the put decides it (:func:`_slot_block`); each note keeps the time its row was noted
+    (``noted_at``), so a note reads as the trigger would have written it. Clears the flag first, so a later write of
+    the transaction is noted straight into the ring, and empties the guard's table.
+
+    :param schema: the schema holding the ring
+    :ptype schema: str
+    :return: the ``CREATE OR REPLACE FUNCTION`` statement
+    :rtype: str
+    """
+    owner = quote_identifier(schema)
+    buffer = f"pg_temp.{quote_identifier(_NOTE_BUFFER_TABLE)}"
+    moves = []
+    for index in range(NOTE_RING_SIZE):
+        keyword = "IF" if index == 0 else "ELSIF"
+        moves.append(
+            f"  {keyword} ring = {index} THEN\n"
+            f"    WITH taken AS (DELETE FROM {buffer} WHERE ring_schema = {_text_literal(schema)} "
+            "RETURNING table_name, keys, columns, tenant, noted_at) "
+            f"INSERT INTO {owner}.{quote_identifier(note_table(index))} "
+            "(table_name, keys, key_text, columns, tenant, noted_at, ring_read) "
+            "SELECT table_name, keys, array_to_string(keys, chr(31)), columns, tenant, noted_at, read_ring FROM taken;\n"
+            "    GET DIAGNOSTICS flushed = ROW_COUNT;\n"
+        )
+    return (
+        # one line: plpgsql source; each interpolated piece is a fixed name or statement this module builds
+        f"CREATE OR REPLACE FUNCTION {owner}.{quote_identifier(_FLUSH_FUNCTION)}() "
+        "RETURNS bigint LANGUAGE plpgsql AS $flush$\n"
+        "DECLARE\n"
+        "  ring SMALLINT;\n"
+        "  cached TEXT;\n"
+        "  read_ring BOOLEAN;\n"
+        "  kept TEXT;\n"
+        "  flushed BIGINT := 0;\n"
+        "BEGIN\n"
+        f"  PERFORM set_config('{_NOTE_BUFFER_SETTING}', '', true);\n"
+        f"  IF to_regclass('pg_temp.{_NOTE_BUFFER_TABLE}') IS NULL THEN\n"
+        "    RETURN 0;\n"
+        # one line: plpgsql source; each interpolated piece is a fixed name or statement this module builds
+        "  END IF;\n" + _slot_block(schema) + "".join(moves) + "  END IF;\n"
+        # the guard's row goes only once the buffer is empty: a note of another ring left in it (a trigger writing into
+        # a ring this flush is not) keeps the COMMIT refused rather than lost
+        f"  DELETE FROM pg_temp.{quote_identifier(_NOTE_GUARD_TABLE)} WHERE NOT EXISTS (SELECT 1 FROM {buffer});\n"
+        "  RETURN flushed;\n"
+        "END\n"
+        "$flush$"
     )
 
 
@@ -646,15 +838,25 @@ def _put_statement(
     :ptype tenancy: Tenancy | None
     :param kinds: each column's ``data_type`` (:func:`_row_terms`)
     :ptype kinds: Mapping[str, str] | None
-    :return: the ``PERFORM`` statement
+    :return: the statement: into the buffer while the transaction is flagged, else the ring
     :rtype: str
     """
     terms = _row_terms(prefix, columns, kinds)
     named = ", ".join(f"'{column}', {term}" for column, term in zip(columns, terms, strict=True))
     carried = f"jsonb_build_object({named})" if columns else "NULL"
+    args = (
+        f"TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys, kinds))}], {carried}, {tenant_sql(tenancy, prefix)}"
+    )
+    # a flagged transaction's note waits in the connection's buffer for its writer's flush (_NOTE_BUFFER_SETTING): the
+    # same note, the same values, written by one set-based insert at the end rather than one ring insert a row
     return (
-        f"PERFORM {quote_identifier(notes_schema)}.{quote_identifier(_RING_FUNCTION)}"
-        f"(TG_TABLE_NAME, ARRAY[{', '.join(_row_terms(prefix, keys, kinds))}], {carried}, {tenant_sql(tenancy, prefix)});"
+        # one line: plpgsql source; each interpolated piece is a fixed name or statement this module builds
+        f"IF current_setting('{_NOTE_BUFFER_SETTING}', true) = '1' THEN\n"
+        f"      INSERT INTO pg_temp.{quote_identifier(_NOTE_BUFFER_TABLE)} (ring_schema, table_name, keys, columns, tenant) "
+        f"VALUES ({_text_literal(notes_schema)}, {args});\n"
+        "    ELSE\n"
+        f"      PERFORM {quote_identifier(notes_schema)}.{quote_identifier(_RING_FUNCTION)}({args});\n"
+        "    END IF;"
     )
 
 
