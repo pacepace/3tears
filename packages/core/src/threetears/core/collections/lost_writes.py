@@ -710,7 +710,13 @@ class WriteBackstop:
         self._clock = clock
         # the passes, each its own loop; a failed pass is logged and the next one runs
         self._loops = [
-            PeriodicTask(self.beat, interval=beat_seconds, name="write-ledger-beat", logger=log),
+            # the first beat runs at once, in the loop, not in start(): the hub declares the leases bucket, and a
+            # service the hub waits on (identity-core, whose health the hub's start depends on) would otherwise fail
+            # its own start until the hub is up, which it never is (2026-11-22 replay: identity-core crash-looped on
+            # "bucket=aibots-leases does not exist"). A beat that cannot land is retried each interval; the
+            # watermark keeps every lost advance's start (WriteLedger.watermark), so the first beat that lands
+            # covers them
+            PeriodicTask(self.beat, interval=beat_seconds, first_delay=0, name="write-ledger-beat", logger=log),
             PeriodicTask(self.repair_pass, interval=1.0, name="write-ledger-repair", logger=log),
         ]
         if recover:
@@ -932,14 +938,13 @@ class WriteBackstop:
         return await _drop_leftover_write_mark_triggers(self._pool, marks_schema=self._notes_schema)
 
     async def start(self) -> None:
-        """beat once, then run the beat, the repairs and (with ``recover``) recovery and the leftover sweep, each a
-        :class:`~threetears.observe.periodic.PeriodicTask`.
+        """run the beat (its first at once), the repairs and (with ``recover``) recovery and the leftover sweep, each a
+        :class:`~threetears.observe.periodic.PeriodicTask`. Never waits on the leases bucket.
 
         :return: nothing
         :rtype: None
         """
         self._ledger.attach_repairer()
-        await self.beat()
         for loop in self._loops:
             loop.start()
 

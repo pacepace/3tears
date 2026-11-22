@@ -16,6 +16,7 @@ Against a real database: ``tests/integration/test_lost_writes_live.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -110,6 +111,15 @@ class _Source:
         return f"inc:{len(self.records)}"
 
 
+async def _beaten(bucket: Any, key: str) -> bool:
+    """whether ``key`` holds a beat within a second: the first beat runs in the beat loop, not in start()."""
+    for _ in range(100):
+        if await bucket.get(key=key) is not None:
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
 def _backstop(
     nats: FakeNatsClient,
     process: str,
@@ -200,7 +210,7 @@ async def test_stopping_with_every_repair_landed_deletes_the_key_and_with_one_le
     backstop = _backstop(nats, "writer", clock, source, pool, ledger, recover=False)
     bucket = await KVLease(nats, pod_id="reader").bucket()
     await backstop.start()
-    assert await bucket.get(key=backstop.key) is not None
+    assert await _beaten(bucket, backstop.key)
     assert await backstop.stop(drain_seconds=0) == 0
     assert await bucket.get(key=backstop.key) is None
 
@@ -212,3 +222,29 @@ async def test_stopping_with_every_repair_landed_deletes_the_key_and_with_one_le
     assert await backstop.stop(drain_seconds=0) == 1
     raw = await bucket.get(key=backstop.key)
     assert raw is not None and datetime.fromisoformat(json.loads(raw)["watermark"]) == _at(_START)
+
+
+async def test_start_never_waits_on_the_leases_bucket_and_beats_once_it_is_declared() -> None:
+    """Flips if start() waits on (or fails for) a leases bucket the hub has not declared yet: a service the hub's own
+    start waits on (identity-core) then never starts (2026-11-22 replay), or if no beat lands once it is declared."""
+    nats, pool, source = FakeNatsClient(), _Pool(), _Source()
+    clock = _Clock()
+    backstop = WriteBackstop(
+        pool,  # type: ignore[arg-type]
+        generation_source=source,
+        notes_schema="platform",
+        lease=KVLease(nats, pod_id="writer", create_if_missing=False),
+        process_id="writer",
+        ledger=WriteLedger(clock=clock),
+        recover=False,
+        beat_seconds=0.02,
+        stale_seconds=_STALE,
+        clock=clock,
+    )
+    await asyncio.wait_for(backstop.start(), timeout=5)
+    try:
+        # the hub declares it after
+        bucket = await KVLease(nats, pod_id="hub").bucket()
+        assert await _beaten(bucket, backstop.key)
+    finally:
+        await backstop.stop(drain_seconds=0)
