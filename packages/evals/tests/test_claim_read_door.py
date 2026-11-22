@@ -20,14 +20,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
+
+import pytest
 from typing import Any
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis.claim_read import read_claim_calibration, report_checks
 from threetears.evals.kernel.claims.grading import criterion_fingerprint, criterion_steps, grade_tally
 from threetears.evals.kernel.errors import EvalServiceError
+from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.ops import claim_reads
 from threetears.evals.ops.claim_reads import keep_repeats
 from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.jobs import JobStatus
 from threetears.evals.schema import ClaimItemRepeat, ClaimRead
 from threetears.evals.schema.models import ClaimCriterion, EvalTrace, PageBudget, RepairBudget, eval_trace_doc_id
 from packages.evals.tests.claim_read_support import graded_cell
@@ -74,7 +79,8 @@ class _ProviderDown(Exception):
 @dataclass
 class _Trip:
     """How the judge misbehaves on calls about one claim, named by its text once it is drawn: priced past any hold
-    (``price``), priced at nothing it can say (``unpriced``), or failed by the provider (``raise``)."""
+    (``price``), priced at nothing it can say (``unpriced``), failed by the provider (``raise``), or answered by a
+    client breaking the completion protocol (``defect``)."""
 
     mode: str
     text: str = ""
@@ -112,6 +118,8 @@ class _FakeClaimsJudge:
         self.asked.append(name)
         if self._tripped(user) == "raise":
             raise _ProviderDown("the provider failed the call")
+        if self._tripped(user) == "defect":
+            raise CompletionProtocolDefect(_Reply("{}"), "sent_settings", "the client reports settings as a string")
         if name == "claim_truth":
             return _Reply(json.dumps({"claims": [{"claim": 0, "citations": [], "suspect": False}]}))
         return _Reply(json.dumps({"claims": [{"claim": 0, "citations": []}]}))
@@ -509,9 +517,9 @@ async def test_a_closed_reads_figures_are_kept_and_a_later_read_moves_nothing_on
     assert later["borrowed"] > 0
 
 
-async def _repeated_with(mode: str) -> tuple[ClaimRead, str]:
+async def _repeated_with(mode: str, *, completed: bool = True) -> tuple[ClaimRead, str, JobStatus]:
     """A read whose repeat meets a judge misbehaving, as ``mode`` says, on calls about one drawn claim; the read as
-    stored once the repeat ended, and the misbehaving cell."""
+    stored once the repeat ended (``completed``, or failed), and the misbehaving cell, which is repeated first."""
     trip = _Trip(mode)
     host, fixture, _ = _world(trip=trip)
     read = _stored(host, (await _drawn(host, fixture, per_stratum={"contradicted": 3, "supported": 3}))["read_id"])
@@ -520,8 +528,8 @@ async def _repeated_with(mode: str) -> tuple[ClaimRead, str]:
     started = await _call(host, "claim_read_repeat", claim_read_id=read.id)
     assert not started.is_error, started.text
     status = await settled(host, started.structured["jobs"][0]["job_id"])
-    assert status.done
-    return _stored(host, read.id), target.result_id
+    assert status.done and (status.status == "completed") is completed, status
+    return _stored(host, read.id), target.result_id, status
 
 
 def _outcomes(read: ClaimRead, cell: str) -> tuple[set[str | None], set[str | None]]:
@@ -533,7 +541,7 @@ def _outcomes(read: ClaimRead, cell: str) -> tuple[set[str | None], set[str | No
 
 
 async def test_a_call_past_its_cells_worst_case_loses_that_cell_alone_as_hold_exceeded() -> None:
-    read, cell = await _repeated_with("price")
+    read, cell, _ = await _repeated_with("price")
 
     tripped, others = _outcomes(read, cell)
 
@@ -543,7 +551,7 @@ async def test_a_call_past_its_cells_worst_case_loses_that_cell_alone_as_hold_ex
 
 
 async def test_a_call_the_enforced_cap_cannot_price_loses_that_cell_alone_as_cost_cap() -> None:
-    read, cell = await _repeated_with("unpriced")
+    read, cell, _ = await _repeated_with("unpriced")
 
     tripped, others = _outcomes(read, cell)
 
@@ -552,9 +560,41 @@ async def test_a_call_the_enforced_cap_cannot_price_loses_that_cell_alone_as_cos
 
 
 async def test_a_provider_failing_a_call_loses_that_cell_alone_as_provider_error() -> None:
-    read, cell = await _repeated_with("raise")
+    read, cell, _ = await _repeated_with("raise")
 
     tripped, others = _outcomes(read, cell)
 
     assert tripped == {"provider_error"}
     assert others == {"unverifiable"}
+
+
+async def test_a_completion_breaking_the_protocol_stops_the_repeat_and_reads_as_no_cells_loss() -> None:
+    read, cell, status = await _repeated_with("defect", completed=False)
+
+    assert "CompletionProtocolDefect" in (status.detail or "") or "protocol" in (status.detail or ""), status
+    assert cell in {item.result_id for item in read.items}
+    assert read.repeats == [], "the defect is the host's client's, so the repeat stops at the first cell it meets"
+
+
+async def test_a_read_closed_at_the_same_instant_as_another_borrows_nothing_from_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, fixture, _ = _world()
+    first = _stored(host, (await _drawn(host, fixture))["read_id"])
+    second = _stored(host, (await _drawn(host, fixture))["read_id"])
+    for item in first.items:
+        await _call(
+            host,
+            "claim_read_answer",
+            claim_read_id=first.id,
+            item=item.item,
+            person=PERSON,
+            claim_answers={"true": "pass"},
+        )
+    monkeypatch.setattr(claim_reads, "utc_now_iso", lambda: "2026-11-22T12:00:00.000000+00:00")
+
+    await _call(host, "claim_read_close", claim_read_id=first.id)
+    same = (await _call(host, "claim_read_close", claim_read_id=second.id)).structured
+
+    assert same["closed_at"] == _stored(host, first.id).closed_at
+    assert (same["borrowed_from"], same["borrowed"]) == ([], 0), "a read closed at the same instant is not before it"

@@ -235,7 +235,7 @@ class ClaimReadLine(EvalBaseModel):
     )
     borrowed_from: list[str] = Field(
         default_factory=list,
-        description="Once closed: the reads answers could be taken from, each closed before it, by id.",
+        description="Once closed: the reads answers could be taken from, each closed strictly before it, by id.",
     )
     repeat_job_id: str | None = Field(description="The latest repeat's job, to poll with job_poll; None until started.")
     repeats: list[ClaimRepeatFigures] = Field(
@@ -763,7 +763,7 @@ def claim_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     """Close the read: read its figures and checks once, keep them on it, and refuse every later answer.
 
     People's answers given on a byte-identical view in another read of the same definition stand for an item nobody
-    answered here, taken only from reads closed before this one, which take no answer after their close; which reads
+    answered here, taken only from reads closed strictly before this one (never one closed at the same instant), which take no answer after their close; which reads
     could lend is kept (``borrowed_from``). Nothing read after the close moves what the read said.
 
     :param host: The host whose store holds the read.
@@ -784,7 +784,7 @@ def claim_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
             for other in host.storage.query_claim_reads(scope_id)
             if other.id != read.id
             and other.closed_at is not None
-            and other.closed_at <= closed_at
+            and other.closed_at < closed_at
             and other.criterion_fingerprint == read.criterion_fingerprint
             and any(item.view_digest in views for item in other.items)
         ]
