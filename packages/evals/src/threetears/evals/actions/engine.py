@@ -1677,8 +1677,8 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
 
 async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradeParams) -> Regrade:
     eval_host = host.eval_host
-    options = {"checks": params.checks, "judges": params.judges}
-    reported = await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=False)
+    checks, judges = params.checks, params.judges
+    reported = await regrade(eval_host, params.result_id, caller.scope_id, checks=checks, judges=judges, apply=False)
     if not params.apply:
         return reported
     if reported.judge_dims or reported.claim_criteria:
@@ -1689,7 +1689,7 @@ async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradePa
             remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims and claim "
             "criteria again through regrade(..., apply=True), with its web search for a criterion that searches",
         )
-    return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
+    return await regrade(eval_host, params.result_id, caller.scope_id, checks=checks, judges=judges, apply=True)
 
 
 async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasureParams) -> Remeasure:
