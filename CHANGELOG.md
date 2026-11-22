@@ -36,6 +36,78 @@ For hosts: nothing to do. `Answer.session` defaults to `None`, so a runner retur
 unchanged. Nothing stored gains a field: `ClaimEvidence.session` and `ClaimTally.derived` exist already, so a build
 from before this change reads every document a run with these doors writes.
 
+### evals: a claim read calibrates a claim criterion against people, and a stored grade can be read again
+
+**What ships, and what does not yet.** This ships the claim read's stored record, its statistics and the repeat of a
+stored grade, all engine-internal: no host can draw a claim read, show its items, record answers, read its figures or
+run a repeat yet. The host door for all of that is its own change, before claims are adopted.
+
+**Added (#1287), provisional:** a new durable type, the claim read (`ClaimRead`, durable 17.10), the human side of a
+claim criterion's calibration. It draws the criterion's graded claims by stratum of the instrument's own answer: its
+truth verdict (`contradicted`, `true_ungrounded`, `unverifiable`, `supported`), or whether it grounded the claim. Each
+stratum is planned by the misses it is expected to hold: a floor of a tenth of the plan each, then Neyman allocation
+over a planning guess of how often people fail a claim of the stratum, so `unverifiable` and `supported`, where the
+instrument's misses hide, are drawn well past an even split. Each claim is selected by a seeded coin at its stratum's
+rate, and a cell that selected more than two keeps two in a seeded order, so every item records its exact chance of
+being drawn (`ClaimItem.inclusion`). The draw records its seed and each stratum's population, its claims by arm, its
+plan and its draws (`ClaimDraw`, `ClaimStratumDraw`), and every claim it left out by why (`ClaimExclusion`:
+`redefined`, `other_evidence`, `replayed`, `restatement`, `no_ground_reading`). Each item shows the claim as the
+instrument read it (`ClaimItemView`: the claim, its excerpt and segment, the numbered evidence and the web windows),
+with no verdict, citation or arm; its digest is the label's key. People answer `true` (the claim is not false),
+`grounded` (a document the candidate was given supports it) and `is_claim` (the extractor's precision) (`ClaimAnswer`,
+`ClaimVerdict`). A model's answer is counted and read in no figure. Stored through `EvalStorage.save_claim_read`,
+`load_claim_read_with_etag` and `query_claim_reads`. Nothing derived is stored.
+
+**Read, per question:** every answered item stands for one over its chance of being drawn, held so each arm's items of
+a stratum stand for exactly that arm's claims of it. The population's 2x2 (the instrument fails a claim, people fail
+it), kappa on it with a smoothed stratified bootstrap interval (Jeffreys' half added in each stratum, so a stratum people
+passed whole still carries its spread), each stratum's agreement, and detection recall, the false-fail rate, precision
+and rate bias, overall and per arm. Every interval end is held to its figure's range. An arm's rate whose answered
+claims expect fewer than five on either side (an arm with three false claims answered) carries no interval. The check's
+floor counts cells, not claims. What the draw left out is carried on the reading beside the figures. A read with
+nothing but replayed grades reads not available (`replayed`).
+
+**The lean test** is one test across every arm, on recall and the false-fail rate: the two rates a fair instrument
+holds equal whatever each arm's share of false claims. Precision and bias move with that share, so they are shown per
+arm and not tested. Arms differ in their verdict mixes and the strata are drawn at rates several-fold apart, so the
+test reads each arm's rates through the draw's weights. Where the instrument's answer is the stratum (truth under a draw
+by truth verdict), the test's law under a fair instrument is drawn by a parametric bootstrap that imposes the pooled
+rates on every arm and lends each cell a frailty from its own arm, so two claims of one cell move together. Where the
+answer varies within a stratum (groundedness under a draw by truth verdict), it is read exactly, by permuting arm labels
+within each stratum and people's answer. A rate whose answered claims expect fewer than five on either side does not
+enter. A lean reads `not_met`, reason `instrument_leans`.
+
+**Certified** (`claim-read.*`): 4,000 seeded campaigns a row (8,000 for groundedness at four arms, whose exact
+permutation sits at its level), at two, three and four arms, 200 labels and at most two claims a cell, on arms alike,
+and on arms whose verdict mixes, base rates and cell sizes differ sharply under a fair instrument, on truth and on
+groundedness. Kappa's one-sided 95% lower end sits above the campaign's own kappa at most
+6% of the time, against its nominal 5% within a tolerance of one point. Its one-sided 97.5% upper end falls short at
+most 3.5%, against its nominal 2.5% within the same tolerance. The lean test reads a lean at most 6%, against its
+nominal α of 5% within the same tolerance. On arms alike, an arm's recall's ends hold the same two levels. An
+instrument catching 80% of one arm's false claims and 45% of the other's, on 400 labels, reads as leaning at least 60%
+of the time (66% measured). That power is certified only for two arms of one verdict mix. The truth lean test is
+conservative: on arms whose mixes differ sharply it rarely has enough answered claims to read a rate at all, and a check
+names every arm its lean test could not read (`Check.lean_untested`, `lean_untested_reason` `too_few`), so a `met` never
+reads as a lean ruled out.
+
+**Also added:** a stored claim grade read again (engine-internal). The claims are kept as listed, truth and groundedness
+are verified again, and each web verdict is asked again over the windows the grade stored, with no search. So the same
+judge's agreement with itself and a second judge's both reach the web step. A claim the repeat doubts that the first
+grade never checked reads unchecked, never searched. A replayed grade is not read again.
+
+**Left out:** the host door (drawing, sheets, answers, readable figures, a priced repeat job and where its answers are
+stored), which is its own change; a check of the extractor's recall (misses are listed, not checked); judge campaigns
+for claims; a corrected contrast. `CalibrationRating` does not gain a claim reference: a claim read keeps every answer
+beside the view it was given on.
+
+**Exports carry claim reads.** A campaign export (`campaign_export`) now carries the claim reads drawn over the campaign
+(`claim_read`, by `campaign_id`), people's answers included, as it already carries blind reads: they are its claim
+criteria's calibration evidence. Put into another store, a claim read loads whole, names the exported results it was
+drawn from, and reads the same figures.
+
+**For hosts:** nothing to do. A build before this one never reads a claim read, since every read selects by
+`doc_type`; its wipe of durable documents leaves them in place. Rolling back ignores stored claim reads.
+
 ### evals: `Claims` on the quick path, and `Answer.documents`
 
 **Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,

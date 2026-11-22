@@ -145,6 +145,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
     _CHECK: (
         "kernel/evidence_tiers.py:CriterionState",
         "kernel/evidence_tiers.py:JudgedTierRule",
+        "schema/claim_read.py:ClaimTruthVerdict",
         "schema/models.py:GoalCheckProof",
     ),
     _CLAUSE: (

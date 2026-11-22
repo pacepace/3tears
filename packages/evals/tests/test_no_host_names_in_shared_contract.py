@@ -197,6 +197,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/aspect_label.py",
     # The blind read's stored shapes: a draw, a sheet, answers and what a close found. No host is named.
     "schema/blind_read.py",
+    "schema/claim_read.py",
     # The one function reading a lever id as words, which every surface naming a lever calls.
     "schema/lever_words.py",
     # A case's reference key, which a host fills, and the case material a judge reads it as. No host is named.

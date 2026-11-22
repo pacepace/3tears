@@ -41,6 +41,7 @@ from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, SIGNIFI
 
 from packages.evals.tests import advice_nulls as advice
 from packages.evals.tests import claim_loss_nulls as claim_loss
+from packages.evals.tests import claim_read_nulls as claim_read
 from packages.evals.tests import engine_take_up as engine
 from packages.evals.tests import null_newcomers as quick
 
@@ -63,6 +64,7 @@ RUN_KEY = Path(__file__).resolve().parent / "fixtures" / "stats_certification_ru
 ENTRY_POINTS = (
     "packages/evals/tests/advice_nulls.py",
     "packages/evals/tests/claim_loss_nulls.py",
+    "packages/evals/tests/claim_read_nulls.py",
     "packages/evals/tests/null_newcomers.py",
     "packages/evals/tests/engine_take_up.py",
     "packages/evals/tests/stats_certificate.py",
@@ -206,8 +208,8 @@ Through = Literal["restated", "product"]
 #: as metrics those its claims read (:func:`recorded_fields`): ``n`` newcomers or comparisons read; ``hits`` the
 #: claim's event (separated, missed, crossed); ``better`` and ``worse`` the strong evidence each way; ``held`` how many
 #: held what an exact claim asserts of each; ``low`` and ``high`` the intervals whose lower end passed the true
-#: difference, and whose upper end fell short of it.
-FIELDS = ("n", "hits", "better", "worse", "held", "low", "high")
+#: difference, and whose upper end fell short of it; ``arm_low`` and ``arm_high`` the same of one arm's figure.
+FIELDS = ("n", "hits", "better", "worse", "held", "low", "high", "arm_low", "arm_high")
 
 
 @dataclass(frozen=True)
@@ -573,6 +575,19 @@ def _shards() -> list[Shard]:
                     {"row": row, "start": block.start, "count": len(block)},
                 )
             )
+    # A claim instrument's calibration read off a claim read under known truth: each row its draws, in shards of a
+    # hundred (draws claim-read-<row>-<index>).
+    for row, read in claim_read.ROWS.items():
+        for block in _blocks(read.draws, 100):
+            shards.append(
+                Shard(
+                    f"claim-read-{row}-{block.start}",
+                    f"claim-read-{row}",
+                    "product",
+                    "claim-read",
+                    {"row": row, "start": block.start, "count": len(block)},
+                )
+            )
     return shards
 
 
@@ -580,6 +595,10 @@ def _shards() -> list[Shard]:
 #: twelve cases at two repeats, is withheld at least this often (about 80% at 200 draws; the claim reads the 95% lower
 #: bound over a thousand).
 CLAIM_LOSS_POWER_FLOOR = 0.75
+
+#: The power the lopsided claim-read row floors: an instrument catching 80% of one arm's false claims and 45% of the
+#: other's, read on 400 labels, is read as leaning at least this often (about 68% over a thousand draws).
+CLAIM_READ_POWER_FLOOR = 0.6
 
 #: How far above α a claim-loss null row's 95% upper bound may sit. The permutation test's size is α by construction,
 #: and where ties are few it reaches it, so no draw count could put the bound under α itself. A row instead certifies
@@ -741,6 +760,16 @@ async def run_product(shard: Shard) -> dict[str, int]:
             claim_loss.withheld(args["row"], index) for index in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(withheld), sum(withheld))
+    if shard.job == "claim-read":
+        outcomes = [claim_read.one(args["row"], index) for index in range(args["start"], args["start"] + args["count"])]
+        return _counts(
+            len(outcomes),
+            sum(outcome.leaned for outcome in outcomes),
+            low=sum(outcome.low_missed for outcome in outcomes),
+            high=sum(outcome.high_missed for outcome in outcomes),
+            arm_low=sum(outcome.arm_low_missed for outcome in outcomes),
+            arm_high=sum(outcome.arm_high_missed for outcome in outcomes),
+        )
     if shard.job == "engine-counted":
         separated, _ = await engine.simulate(
             args["reading"], args["law"], args["grader"], args["stop"], args["count"], "engine", start=args["start"]
@@ -1230,6 +1259,93 @@ def _claims() -> list[Claim]:
                 f"claim-loss-{row}-<index>, 0-{held.draws - 1} in shards of 100, through the bundle's judged measures",
             )
         )
+    for row, read in claim_read.ROWS.items():
+        group = f"claim-read-{row}"
+        seeds = (
+            f"claim-read-{row}-<index>, 0-{read.draws - 1} in shards of 100, through draw_claim_read and its reading"
+        )
+        arms = len(read.arms)
+        if row.startswith("lopsided"):
+            claims.append(
+                Claim(
+                    f"claim-read.{row}.lean",
+                    f"A claim read of {read.planned} labels over two arms whose instrument catches 80% and 45% of their "
+                    f"false claims reads a lean at least {CLAIM_READ_POWER_FLOOR:.0%} of the time. Power is certified "
+                    "for two arms of one verdict mix only; on truth the test is conservative.",
+                    group,
+                    "hits",
+                    "above",
+                    CLAIM_READ_POWER_FLOOR,
+                    seeds,
+                )
+            )
+            continue
+        arms_read = (
+            f"{arms} arms alike"
+            if row.startswith("equal")
+            else f"{arms} arms whose verdict mixes, base rates and cell sizes differ sharply, the instrument fair, on "
+            f"{'groundedness under the draw by truth verdict' if read.question == 'grounded' else 'truth'}"
+        )
+        common = f"At {arms_read}, {read.planned} labels and at most two claims a cell"
+        claims.extend(
+            [
+                Claim(
+                    f"claim-read.{row}.lower",
+                    f"{common}, kappa's one-sided 95% lower end sits above the campaign's own kappa at most 6% of the "
+                    "time: its nominal 5%, within a tolerance of one point.",
+                    group,
+                    "low",
+                    "at_most",
+                    0.06,
+                    seeds,
+                ),
+                Claim(
+                    f"claim-read.{row}.upper",
+                    f"{common}, kappa's one-sided 97.5% upper end falls short of the campaign's own kappa at most 3.5% "
+                    "of the time: its nominal 2.5%, within a tolerance of one point.",
+                    group,
+                    "high",
+                    "at_most",
+                    0.035,
+                    seeds,
+                ),
+                Claim(
+                    f"claim-read.{row}.lean",
+                    f"{common}, the one lean test across every arm reads a lean at most 6% of the time: its nominal α "
+                    "of 5%, within a tolerance of one point.",
+                    group,
+                    "hits",
+                    "at_most",
+                    alpha + 0.01,
+                    seeds,
+                ),
+            ]
+        )
+        if row.startswith("equal"):
+            claims.extend(
+                [
+                    Claim(
+                        f"claim-read.{row}.arm-lower",
+                        f"{common}, an arm's recall's one-sided 95% lower end sits above the instrument's recall on "
+                        "that arm at most 6% of the time: its nominal 5%, within a tolerance of one point.",
+                        group,
+                        "arm_low",
+                        "at_most",
+                        0.06,
+                        seeds,
+                    ),
+                    Claim(
+                        f"claim-read.{row}.arm-upper",
+                        f"{common}, an arm's recall's one-sided 97.5% upper end falls short of the instrument's recall "
+                        "on that arm at most 3.5% of the time: its nominal 2.5%, within a tolerance of one point.",
+                        group,
+                        "arm_high",
+                        "at_most",
+                        0.035,
+                        seeds,
+                    ),
+                ]
+            )
     return claims
 
 

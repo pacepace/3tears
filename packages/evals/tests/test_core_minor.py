@@ -650,7 +650,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.quick.guardrails import GuardrailDirection
     from threetears.evals.run.judge_second import SecondJudgeAskedBy
     from threetears.evals.run.job_work import JobOutcome
-    from threetears.evals.schema import blind_read, models, reading_states
+    from threetears.evals.schema import blind_read, claim_read, models, reading_states
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
@@ -721,6 +721,11 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
         "BlindPreferenceTest": values(blind_read.BlindPreferenceTest),
         "BlindPreference.verdict": frozenset({"improved", "regressed", "not_separated"}),
+        "ClaimQuestion": values(claim_read.ClaimQuestion),
+        "ClaimStratifier": values(claim_read.ClaimStratifier),
+        "ClaimStratum": values(claim_read.ClaimStratum),
+        "ClaimExclusion": values(claim_read.ClaimExclusion),
+        "ShownEvidence.provenance": frozenset({"case", "run", "web"}),
         "ReadingState": values(reading_states.ReadingState),
         "SetAsideReason": values(reading_states.SetAsideReason),
         "WithheldReason": values(reading_states.WithheldReason),
