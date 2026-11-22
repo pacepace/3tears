@@ -1208,6 +1208,20 @@ inode, size and modified time, 65,536 files), and `column_print(path, columns)` 
 without tokens prints as its identity). A memo over a version reruns a query only when a column it reads moved, with no
 row read again. Guide: docs/shared-arrow.md, "Know which columns a write moved".
 
+### ci: workflows pin every action to a commit and run release steps uncached
+
+**Changed:** every `uses:` in `.github/workflows/` names a full commit SHA, with the release tag in a trailing
+comment, so a moved or hijacked tag cannot change what a job runs; that includes the PyPI publish action, which
+tracked the `release/v1` branch. `.github/dependabot.yml` proposes pin updates weekly into `develop`, grouped,
+once a release is two weeks old.
+
+**Hardened:** `ci.yml` declares a read-only token instead of inheriting the repository default. Every checkout
+sets `persist-credentials: false`, so the token is not left in `.git/config` for later steps. In `release.yml`
+the uv and npm caches are off, so nothing a cache restores feeds a published artifact, and the sidecar image's
+version reaches its shell through the environment rather than being expanded into the script. No workflow uses
+`pull_request_target`, `issue_comment` or `workflow_run`. `zizmor` reports nothing beyond the release unit job's
+Playwright cache, which holds only the test browser and carries an inline ignore saying so.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and

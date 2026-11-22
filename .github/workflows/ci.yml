@@ -19,6 +19,12 @@ on:
   push:
     branches: [develop]
 
+# Read-only token for every job. Stated here rather than inherited from the repository's default
+# workflow permissions, so a change to that setting cannot quietly hand the push-to-develop runs a
+# write token. No job in this workflow writes through the token; one that needs to asks per job.
+permissions:
+  contents: read
+
 # A newer run of the same ref makes an older one meaningless, so it cancels it: two merges into develop
 # seconds apart (2026-11-12) ran the whole suite twice, a fresh uncached unit run each on the testament
 # pool, and only the newer head's result is ever read -- the release PR is gated on develop's head, which
@@ -44,11 +50,11 @@ jobs:
       pool: ${{ steps.route.outputs.pool }}
       why: ${{ steps.route.outputs.why }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           version: "latest"
 
@@ -85,7 +91,7 @@ jobs:
     steps:
       # fetch-depth 0: the scope step diffs against the PR base, and the client sends the worktree
       # as a commit whose objects it walks, with the release tags the manifest asks for.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -97,7 +103,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/ci-scope.sh
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         if: steps.scope.outputs.needed == 'true'
         with:
           version: "latest"
@@ -132,7 +138,7 @@ jobs:
 
       # the envelope and JUnit report, for reading a run after the fact: never the verdict, so an
       # artifact-service outage does not fail the check (run 43094188951 lost ten minutes and the job to one)
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.scope.outputs.needed == 'true'
         continue-on-error: true
         with:
@@ -159,8 +165,9 @@ jobs:
     steps:
       # fetch-depth 0: the scope step diffs against the PR base, and the API-growth gate in
       # tests/enforcement compares against the latest vX.Y.Z tag; a shallow clone has neither.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       # the same classifier `check` runs (scripts/ci-scope.sh), so a doc-only PR skips the shards too
@@ -171,7 +178,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/ci-scope.sh
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         if: steps.scope.outputs.needed == 'true'
         with:
           version: "latest"
@@ -197,7 +204,7 @@ jobs:
           test -n "$version"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.scope.outputs.needed == 'true' && startsWith(matrix.shard, 'evals-')
         with:
           path: ~/.cache/ms-playwright
@@ -269,8 +276,9 @@ jobs:
 
       # fetch-depth 0 because the scope step below diffs against the PR base,
       # which a shallow clone does not have.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       # CLAUDE.md: "No agent attribution. Anywhere. Ever." Coding agents end every commit with a
@@ -294,7 +302,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/ci-scope.sh
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         if: steps.scope.outputs.needed == 'true'
         with:
           version: "latest"
@@ -374,10 +382,12 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
       - name: Set up Python
         run: uv python install 3.14

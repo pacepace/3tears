@@ -83,8 +83,9 @@ jobs:
   tag-on-main:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Ref must be on main
@@ -127,12 +128,14 @@ jobs:
       # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
       # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual
       # dispatch's shallow checkout carries no tags at all.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
+          enable-cache: false
           version: "latest"
 
       - name: Set up Python
@@ -152,7 +155,9 @@ jobs:
           test -n "$version"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v6
+      # Caching stays on here alone in this workflow: it holds the test browser, which runs the render
+      # tests and never reaches a published artifact. Every step that feeds what is published runs uncached.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # zizmor: ignore[cache-poisoning]
         if: startsWith(matrix.shard, 'evals-')
         with:
           path: ~/.cache/ms-playwright
@@ -202,12 +207,14 @@ jobs:
       # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
       # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual
       # dispatch's shallow checkout carries no tags at all.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
+          enable-cache: false
           version: "latest"
 
       - name: Set up Python
@@ -237,10 +244,13 @@ jobs:
     needs: tag-on-main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
           version: "latest"
 
       - name: Set up Python
@@ -268,10 +278,13 @@ jobs:
     needs: [check, live-claude-cli]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
           version: "latest"
 
       - name: Set up Python
@@ -342,7 +355,7 @@ jobs:
         # existing zip behaviour. v7 requires Actions Runner >= 2.327.1, which the
         # GitHub-hosted runners below satisfy; a self-hosted runner would need
         # checking first.
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -365,7 +378,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dist
           path: dist/
@@ -375,7 +388,7 @@ jobs:
         # scoped to every project whose trusted publisher matches this
         # (repo, workflow, environment), so every package routes in one shot.
         # skip-existing makes a re-run after a partial failure idempotent.
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
           skip-existing: true
@@ -407,10 +420,13 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          package-manager-cache: false
           node-version: "24"
           registry-url: https://registry.npmjs.org
 
@@ -453,10 +469,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download distributions
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dist
           path: dist/
@@ -518,7 +536,9 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The tag on a release, the dispatched version on a republish. `github.ref_name` is
       # the tag for a push and the BRANCH NAME for a workflow_dispatch, so using it alone
@@ -526,8 +546,12 @@ jobs:
       # a version whose artifacts went missing.
       - name: Resolve the version to tag the image with
         id: version
+        # Through the environment, not interpolated into the script: an expression expanded into
+        # `run:` becomes shell source, so a dispatch input carrying `$(...)` would execute.
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${REQUESTED_VERSION}"
           case "$VERSION" in
             v*) ;;
             *) VERSION="v${VERSION}" ;;
@@ -536,10 +560,10 @@ jobs:
           echo "tagging the sidecar image ${VERSION}"
 
       - name: Set up buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
