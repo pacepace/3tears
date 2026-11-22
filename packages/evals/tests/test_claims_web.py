@@ -33,7 +33,9 @@ from threetears.evals.kernel.usage_capture import ExternalRateTable
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.runner import RunnerOptions, execute_run, run_one_result
-from threetears.evals.schema import Segment, WebPage
+from threetears.evals.kernel.claims.readings import claim_tally
+from threetears.evals.run.runner import judge_witnessed_output
+from threetears.evals.schema import Segment, WebPage, WebSearchResult
 from threetears.evals.schema.models import (
     ClaimCall,
     ClaimCriterion,
@@ -69,6 +71,9 @@ _NOTES = EvidenceDocument(
 _SEGMENTS = (Segment(text=_FIRST, unit=0), Segment(text=_SECOND, unit=1), Segment(text="Again: " + _FIRST, unit=2))
 
 _EVIDENCE = ClaimEvidence(segmentation="sentences-v1", segments=_SEGMENTS, documents=(_NOTES,))
+
+#: Case evidence that bears on no claim the cell states.
+_ROOM_RULES = "Readers of the Lantern Almanac must wear gloves, and no volume leaves the reading room."
 
 #: A page that states the first claim.
 _PAGE = WebPage(
@@ -147,7 +152,7 @@ class _FakeWebJudge:
     Records each call's schema name and the prompt it was sent.
     """
 
-    script: dict[str, list[str]] = field(default_factory=dict)
+    script: dict[str, list[Any]] = field(default_factory=dict)
     usd_per_call: float | None = None
     model_name: str = _JUDGE
     asked: list[str] = field(default_factory=list)
@@ -165,6 +170,8 @@ class _FakeWebJudge:
         answer = answers[min(self.asked.count(name), len(answers)) - 1]
         if answer == "hang":
             await asyncio.Event().wait()
+        if isinstance(answer, BaseException):
+            raise answer
         return _Reply(content=answer)
 
     async def aclose(self) -> None:
@@ -174,19 +181,21 @@ class _FakeWebJudge:
 # parity-with: threetears.evals.schema.web_search.WebSearch
 @dataclass
 class _FakeWebSearch:
-    """Answers every query with its pages, or raises its failure; records every query it was asked."""
+    """Answers every query with its pages (``by_query`` first), or raises its failure; records every query asked."""
 
     pages: tuple[WebPage, ...] = (_PAGE,)
     usd_per_query: float | None = 0.01
+    reported_usd: float | None = None
+    by_query: dict[str, tuple[WebPage, ...]] = field(default_factory=dict)
     failure: BaseException | None = None
     identity: str = _PORT
     queries: list[str] = field(default_factory=list)
 
-    async def search(self, query: str) -> tuple[WebPage, ...]:
+    async def search(self, query: str) -> WebSearchResult:
         self.queries.append(query)
         if self.failure is not None:
             raise self.failure
-        return self.pages
+        return WebSearchResult(pages=self.by_query.get(query, self.pages), usd=self.reported_usd)
 
     def price_ceiling(self) -> float | None:
         return self.usd_per_query
@@ -259,9 +268,10 @@ async def _cell(
     *,
     template: EvalTemplate | None = None,
     rates: ExternalRateTable | None = _RATES,
+    evidence: ClaimEvidence = _EVIDENCE,
 ) -> Any:
     template = template or _template()
-    kind = _FakeWebKind()
+    kind = _FakeWebKind(evidence)
     return await run_one_result(
         toyhost_host(),
         template=template,
@@ -357,11 +367,15 @@ async def test_case_evidence_decides_a_claim_the_web_never_searches_past(stance:
 
 async def test_the_web_step_is_shown_neither_the_candidates_documents_nor_any_case_evidence() -> None:
     judge = _FakeWebJudge()
+    case = EvidenceDocument(id="rules", provenance="case", title="Reading room rules", text=_ROOM_RULES)
+    evidence = ClaimEvidence(segmentation="sentences-v1", segments=_SEGMENTS, documents=(_NOTES, case))
 
-    await _cell(judge, _FakeWebSearch())
+    await _cell(judge, _FakeWebSearch(), evidence=evidence)
 
+    truth = [prompt for name, prompt in zip(judge.asked, judge.prompts, strict=True) if name == "claim_truth"]
+    assert truth and _ROOM_RULES in truth[0], "the control: the truth step was shown the case document"
     web_prompts = [prompt for name, prompt in zip(judge.asked, judge.prompts, strict=True) if "web" in name]
-    assert web_prompts and not any(_NOTES.text in prompt for prompt in web_prompts)
+    assert web_prompts and not any(_NOTES.text in prompt or _ROOM_RULES in prompt for prompt in web_prompts)
 
 
 async def test_searches_are_billed_to_the_judge_role_in_a_row_of_their_own_per_query() -> None:
@@ -398,14 +412,66 @@ async def test_a_decisive_answer_whose_quote_is_in_no_window_is_asked_again_and_
     assert claim.verdict == "true_ungrounded" and grade.calls[claim.decided_by or 0].role == "repair"
 
 
-async def test_a_decisive_answer_never_quoting_a_window_loses_the_criterion_past_its_repairs() -> None:
-    invented = _verdict("false", quote="It was first printed in 1931.", value="1931")
-    judge = _FakeWebJudge(script={"claim_web_verdict": [invented], "claim_web_repair": [invented]})
+#: A case document that supports the second claim, so the cell holds a verdict case evidence decided.
+_BINDING = EvidenceDocument(id="binding", provenance="case", title="Binding notes", text=_SECOND)
 
-    result, _ = await _cell(judge, _FakeWebSearch())
+#: Two claims: the first nominated for the web, the second supported by case evidence.
+_MIXED = {
+    "claim_listing": [_listing(_listed(0, _FIRST), _listed(1, _SECOND))],
+    "claim_truth": [
+        _truth(0),
+        _truth(
+            1,
+            suspect=False,
+            cited=[
+                {"ref": "S1", "stance": "supports", "quote": _SECOND, "subject": "Its pages", "value": "green cloth"}
+            ],
+        ),
+    ],
+}
 
-    assert result.claim_failures == {_CRITERION: "repair_budget_spent"}, "an unquoted verdict never decides a claim"
-    assert judge.asked.count("claim_web_repair") == 2
+_UNQUOTED = _verdict("false", quote="It was first printed in 1931.", value="1931")
+
+
+@pytest.mark.parametrize(
+    ("script", "port", "loss"),
+    [
+        pytest.param(
+            {"claim_web_verdict": [_UNQUOTED], "claim_web_repair": [_UNQUOTED]},
+            None,
+            "repair_budget_spent",
+            id="unquoted",
+        ),
+        pytest.param({"claim_web_queries": ["not json"]}, None, "unreadable", id="unreadable"),
+        pytest.param(
+            {"claim_web_verdict": [ConnectionError("the provider is unavailable")]},
+            None,
+            "provider_error",
+            id="provider",
+        ),
+        pytest.param({}, ConnectionError("the search is unavailable"), "port_error", id="port"),
+    ],
+)
+async def test_a_failed_web_step_is_its_own_loss_and_every_verdict_case_evidence_decided_stands(
+    script: dict[str, list[Any]], port: BaseException | None, loss: str
+) -> None:
+    # A failure here must never cost a cell its case-decided truth: how many claims the judge doubts differs by arm.
+    judge = _FakeWebJudge(script={**_MIXED, **script})
+    evidence = ClaimEvidence(segmentation="sentences-v1", segments=_SEGMENTS, documents=(_BINDING,))
+
+    result, trace = await _cell(judge, _FakeWebSearch(failure=port), evidence=evidence)
+
+    assert result.claim_failures == {}, "a web step's failure is never the criterion's loss"
+    tally = result.claim_tallies[_CRITERION]
+    assert tally.web_loss == loss
+    grade = trace.claim_grades[_CRITERION]
+    assert grade.web_loss == loss and grade.web == ()
+    doubted, supported = grade.claims
+    assert (doubted.web, doubted.verdict, doubted.graded_against) == ("lost", "unverifiable", None)
+    assert (supported.verdict, supported.graded_against) == ("supported", "case"), "case evidence's verdict stands"
+    (counts,) = tally.by_judge
+    assert (counts.asserted_contradicted, counts.unverifiable, counts.web_skipped) == (0, 1, 0), "never read as false"
+    assert claim_tally(grade, evidence, grounded_in=None).web_loss == loss, "recomputed from the stored grade, it stays"
 
 
 async def test_claims_past_the_cells_web_budget_read_skipped_cap_and_unverifiable_never_false() -> None:
@@ -442,16 +508,32 @@ async def test_a_restatement_takes_its_originals_web_outcome_from_the_one_check_
     assert counts.asserted_contradicted == 2, "a restatement is counted as heard, with its original's verdict"
 
 
-async def test_a_port_failing_a_search_loses_the_criterion_once_and_is_never_retried() -> None:
-    port = _FakeWebSearch(failure=ConnectionError("the search is unavailable"))
+async def test_a_port_failing_a_search_is_never_retried_and_keeps_the_checks_already_decided() -> None:
+    listing = _listing(_listed(0, _FIRST), _listed(1, _SECOND))
+    queries = [json.dumps({"queries": ["first"]}), json.dumps({"queries": ["second"]})]
+    judge = _FakeWebJudge(
+        script={"claim_listing": [listing], "claim_truth": [_truth(0), _truth(1)], "claim_web_queries": queries}
+    )
 
-    result, trace = await _cell(_FakeWebJudge(), port)
+    @dataclass
+    class _FailsSecond(_FakeWebSearch):  # parity-exempt: a scripted search whose second query fails, for one test
+        async def search(self, query: str) -> WebSearchResult:
+            if query == "second":
+                self.queries.append(query)
+                raise ConnectionError("the search is unavailable")
+            return await super().search(query)
 
-    assert result.claim_failures == {_CRITERION: "port_error"} and result.claim_tallies == {}
-    assert len(port.queries) == 1, "the engine never retries a port's search"
-    assert result.judge_error is None and trace.claim_evidence == _EVIDENCE
+    port = _FailsSecond()
+
+    result, trace = await _cell(judge, port)
+
+    assert port.queries == ["first", "second"], "the engine never retries a port's search"
+    first, second = trace.claim_grades[_CRITERION].claims
+    assert (first.web, first.verdict) == ("checked", "true_ungrounded"), "the check already decided stands"
+    assert (second.web, second.verdict) == ("lost", "unverifiable")
+    assert result.claim_tallies[_CRITERION].web_loss == "port_error" and result.claim_failures == {}
     (row,) = [row for row in result.usage if row.provider == _PORT]
-    assert row.call_count == 1, "a search sent is billed, answered or not"
+    assert row.call_count == 2, "a search sent is billed, answered or not"
 
 
 async def test_a_replay_miss_from_the_port_fails_the_run_naming_the_search(tmp_path: Path) -> None:
@@ -471,14 +553,24 @@ async def test_a_recorded_search_replays_by_identity_and_query_and_its_grades_sa
     _, recorded = await _cell(_FakeWebJudge(), RecordedWebSearch.record(live, recording))
     replaying = RecordedWebSearch.replay(recording)
 
-    result, replayed = await _cell(_FakeWebJudge(), replaying, rates=None)
+    result, replayed = await _cell(_FakeWebJudge(), replaying)
 
     assert replaying.identity == _PORT and replaying.price_ceiling() == 0.0
     assert replayed.claim_grades[_CRITERION].web == recorded.claim_grades[_CRITERION].web
     assert replayed.claim_grades[_CRITERION].web_replayed and not recorded.claim_grades[_CRITERION].web_replayed
     assert len(live.queries) == 1, "the replay searched nothing"
     (row,) = [row for row in result.usage if row.provider == _PORT]
-    assert row.cost_usd == 0.0, "a replay spends nothing"
+    assert row.cost_usd == 0.0, "a replay spends nothing, whatever rate the run declares"
+
+
+async def test_recording_a_query_the_file_holds_answers_from_the_file(tmp_path: Path) -> None:
+    live = _FakeWebSearch()
+    recorder = RecordedWebSearch.record(live, tmp_path / "search.jsonl")
+
+    first = await recorder.search("q")
+    again = await recorder.search("q")
+
+    assert live.queries == ["q"] and again.pages == first.pages and again.replayed and not first.replayed
 
 
 async def test_a_recording_takes_one_port_and_refuses_a_second_onto_its_file(tmp_path: Path) -> None:
@@ -651,3 +743,84 @@ def test_a_grade_holds_one_web_record_per_check_which_each_restatement_shares() 
         _grade((_graded(), again), (_RECORD, _RECORD.model_copy(update={"claim": 1})))
     with pytest.raises(ValidationError, match="web check found 'false'"):
         _grade((_graded(), _graded(restates=0, verdict="true_ungrounded")), (_RECORD,))
+
+
+async def test_a_search_whose_result_reports_its_cost_is_billed_at_that_over_any_declared_rate() -> None:
+    result, _ = await _cell(_FakeWebJudge(), _FakeWebSearch(reported_usd=0.003))
+
+    (row,) = [row for row in result.usage if row.provider == _PORT]
+    assert (row.cost_usd, row.price_source) == (0.003, f"{_PORT}:reported")
+
+
+async def test_only_the_first_results_per_query_of_a_search_are_read() -> None:
+    pages = tuple(
+        WebPage(url=f"https://example.org/{n}", title="", text=f"The Lantern Almanac, page {n}.") for n in range(3)
+    )
+    template = _template(_criterion(web=_WEB.model_copy(update={"results_per_query": 2})))
+
+    _, trace = await _cell(
+        _FakeWebJudge(script={"claim_web_verdict": [_verdict("inconclusive")]}),
+        _FakeWebSearch(pages=pages),
+        template=template,
+    )
+
+    (record,) = trace.claim_grades[_CRITERION].web
+    assert record.urls == ("https://example.org/0", "https://example.org/1")
+    assert {window.url for window in record.windows} == {"https://example.org/0", "https://example.org/1"}
+
+
+async def test_a_page_two_searches_return_is_read_once() -> None:
+    queries = json.dumps({"queries": ["Lantern Almanac first printed", "Lantern Almanac 1921"]})
+
+    _, trace = await _cell(_FakeWebJudge(script={"claim_web_queries": [queries]}), _FakeWebSearch())
+
+    (record,) = trace.claim_grades[_CRITERION].web
+    assert record.urls == (_PAGE.url, _PAGE.url), "every result is recorded, in order"
+    assert [window.url for window in record.windows] == [_PAGE.url], "and the page is read once"
+
+
+async def test_at_most_page_chars_of_a_page_is_read_in_windows_cut_around_the_claim() -> None:
+    filler = "The reading room opens at nine and closes at five. " * 40
+    page = WebPage(url="https://example.org/long", title="", text=filler + _PAGE.text + " " + filler)
+    budget = _WEB.model_copy(update={"page_chars": 300, "window_chars": 100})
+
+    _, trace = await _cell(
+        _FakeWebJudge(script={"claim_web_verdict": [_verdict("inconclusive")]}),
+        _FakeWebSearch(pages=(page,)),
+        template=_template(_criterion(web=budget)),
+    )
+
+    (record,) = trace.claim_grades[_CRITERION].web
+    assert len(page.text) > 3 * 300 and sum(len(window.text) for window in record.windows) <= 300
+    assert any("1921" in window.text for window in record.windows), "the windows read are those the claim names"
+
+
+async def test_a_reply_writing_more_searches_than_the_budget_is_asked_again() -> None:
+    too_many = json.dumps({"queries": ["a", "b", "c"]})
+    judge = _FakeWebJudge(script={"claim_web_queries": [too_many, _ANSWERS["claim_web_queries"]]})
+    port = _FakeWebSearch()
+
+    await _cell(judge, port)
+
+    assert judge.asked.count("claim_web_queries") == 2 and port.queries == ["Lantern Almanac first printed"]
+
+
+async def test_a_witnessed_cell_refuses_a_web_budget_saying_it_is_not_supported_there() -> None:
+    template = _template()
+
+    with pytest.raises(ValueError, match="not supported on witnessed cells yet, so declare web None"):
+        await judge_witnessed_output(
+            template=template,
+            test_case=EvalTestCase(template_id=template.id, scope_id="u"),
+            output=CandidateOutput(output=[{"answer": _FIRST}], claim_evidence=_EVIDENCE),
+            goal_outcomes=[],
+            judged_artifact=JudgedArtifact.UNJUDGED,
+            judge_service=_service(_FakeWebJudge()),
+            concurrency=1,
+            eval_run_id="run-1",
+        )
+
+
+async def test_a_port_whose_ceiling_is_no_amount_is_refused_at_launch_with_no_cap() -> None:
+    with pytest.raises(ValueError, match="a ceiling is a finite amount"):
+        await _run(_FakeWebSearch(usd_per_query=-1.0), rates=None, cap_usd=None)

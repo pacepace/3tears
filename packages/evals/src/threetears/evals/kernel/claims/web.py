@@ -28,10 +28,13 @@ recorded as a :class:`~threetears.evals.schema.models.ClaimCall` (``web`` for a 
 ``repair`` for an answer asked again) and folded into the cell's ``judge`` ledger; the searches are billed by the
 caller's port.
 
-**Failures.** A reply cut short, unreadable after its attempts, or past its repairs fails as the truth step fails
-(:class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`), costing the cell the criterion. What the port
-raises is the caller's to classify (``port_error``). A cost-cap refusal of a call or a search stops the web step: the
-claim it struck and every later one read ``skipped_cap``, and the truth already found stands.
+**Failures are the web step's own, never the criterion's**, as the ground step's are: how many claims the judge
+doubts differs by arm, so a failure here must never cost a cell the verdicts case evidence already decided. A reply
+cut short, unreadable after its attempts, or past its repairs, the port failing a search (``port_error``) and the
+provider failing a call (``provider_error``) stop the step: the claim it struck and every later one read ``lost`` and
+unverifiable, the checks already decided stand, and the loss is the grade's ``web_loss``. A cost-cap refusal of a call
+or a search stops it too, as no loss: those claims read ``skipped_cap``. A replay's miss and a completion breaking
+the protocol fail the run.
 
 Engine-internal: the claims grading of the judge phase builds and calls it, and nothing here is exported.
 """
@@ -50,6 +53,7 @@ from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.claims.extraction import ExtractedClaim, claim_call, echo_chars, filler
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.claims.verification import (
     CheckedQuote,
     WebGraded,
@@ -62,18 +66,22 @@ from threetears.evals.kernel.provider import describe_incomplete_completion, ext
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.claims import Segment
-from threetears.evals.schema.completion import CompletionClient
+from threetears.evals.schema.completion import CompletionClient, CompletionProtocolDefect
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     CLAIM_QUOTE_CHARS,
     ClaimCall,
+    KnownClaimLoss,
     PageBudget,
     RepairBudget,
     WebBudget,
     WebCheckRecord,
     WebWindow,
 )
-from threetears.evals.schema.web_search import WebPage
+from threetears.evals.schema.web_search import WebPage, WebSearchResult
+
+log = get_logger(__name__)
 
 #: How many times one call is asked in full: the first and two more when a finished reply will not parse.
 _ATTEMPTS: Final = 3
@@ -172,7 +180,7 @@ _VERDICT_SCHEMA: Final[dict[str, Any]] = {
 }
 
 #: A host's search, as the web step calls it: one query in, its results out, billed and bounded by the caller.
-type Search = Callable[[str], Awaitable[Sequence[WebPage]]]
+type Search = Callable[[str], Awaitable[WebSearchResult]]
 
 #: The unit a search is billed in, as a ``judge`` row of a cell's spend names it (``provider_unit``).
 QUERY_UNIT: Final = "query"
@@ -213,11 +221,17 @@ class WebCheck:
     :ivar records: One record per claim it checked, in claim order.
     :ivar outcomes: What each nominated claim's check left, by its position, with each deciding call's place in the
         grade's calls: what :func:`~threetears.evals.kernel.claims.verification.graded_claims` reads.
+    :ivar loss: Why the step failed, when it did: the claims it had not decided read ``lost``. None when it did not.
+    :ivar failure: What failed, named, beside :attr:`loss`; None with it.
+    :ivar replayed: Whether a search it read answered from a recording.
     """
 
     calls: tuple[ClaimCall, ...]
     records: tuple[WebCheckRecord, ...]
     outcomes: Mapping[int, WebGraded]
+    loss: KnownClaimLoss | None = None
+    failure: str | None = None
+    replayed: bool = False
 
 
 def web_definition(budget: WebBudget, repairs: RepairBudget, guidance: str) -> str:
@@ -294,9 +308,10 @@ def _repair_format() -> dict[str, Any]:
 
 @dataclass
 class _Budget:
-    """The web step's repair budget as one cell spends it."""
+    """The web step's repair budget as one cell spends it, and whether a search it read was replayed."""
 
     left: int
+    replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -387,18 +402,22 @@ class WebChecker:
         :param claims: The cell's claims, as listed.
         :param nominated: The positions of the claims the judge nominated, each a world claim that restates nothing,
             in claim order.
-        :param search: The host's search, billed and bounded by the caller; what it raises, but a cost-cap refusal,
-            is not caught.
+        :param search: The host's search, billed and bounded by the caller.
         :param ledger: The cell's ``judge`` ledger.
         :param calls_before: How many of the grade's calls precede this step's, so each deciding call is a place in
             the grade's calls.
-        :return: The calls, the records and each nominated claim's outcome.
+        :return: The calls, the records and each nominated claim's outcome, with the step's loss if it failed.
+            **Every way the step fails is its own loss, never the criterion's**, as the ground step's is: a reply cut
+            short (``cut_short``), unreadable after its attempts (``unreadable``), an answer still failing within the
+            repair budget (``repair_budget_spent``), the port failing a search (``port_error``, raised by ``search``)
+            and the provider failing a call (``provider_error``). The claim it struck and every later one read
+            ``lost``; the checks already decided stand, and so does every verdict case evidence decided, since how
+            many claims the judge doubts differs by arm and must not decide whether a cell keeps its truth reading. A
+            cost-cap refusal (``cost_cap``) is no loss: the claim it struck and every later one read ``skipped_cap``.
         :raises ValueError: ``ledger`` is not the ``judge`` role's, or a nominated position is no world claim that
             restates nothing.
-        :raises ClaimGradingFailed: A reply was cut short (``cut_short``), a call's reply did not parse in its
-            attempts (``unreadable``), or an answer still failed within the repair budget (``repair_budget_spent``).
-            A cost-cap refusal (``cost_cap``) is not raised: the claim it struck and every later one read
-            ``skipped_cap``.
+        :raises ApparatusError: The rig could not serve a call or a search (a replay's miss), which fails the run.
+        :raises CompletionProtocolDefect: A web call's completion breaks the protocol, which fails the run.
         """
         if ledger.role != _ROLE:
             raise ValueError(
@@ -416,6 +435,7 @@ class WebChecker:
         outcomes: dict[int, WebGraded] = {}
         repairs = _Budget(left=self.repairs.max_items_per_cell)
         order = list(nominated)
+        lost: ClaimGradingFailed | None = None
         for at, position in enumerate(order):
             if at >= self.budget.max_checked_per_cell:
                 outcomes[position] = WebGraded("skipped_cap")
@@ -423,14 +443,36 @@ class WebChecker:
             try:
                 record, call = await self._check_one(position, cell[position], search, calls, ledger, repairs)
             except ClaimGradingFailed as failed:
-                if failed.loss != "cost_cap":
-                    raise
-                # Recorded, never swallowed: the cap left this claim and every later one unchecked, which each reads.
-                outcomes.update((later, WebGraded("skipped_cap")) for later in order[at:])
-                break
-            records.append(record)
-            outcomes[position] = WebGraded(record.outcome, None if call is None else calls_before + call)
-        return WebCheck(calls=tuple(calls), records=tuple(records), outcomes=outcomes)
+                # Recorded, never swallowed: the claim it struck and every later one read what stopped the step.
+                if failed.loss == "cost_cap":
+                    outcomes.update((later, WebGraded("skipped_cap")) for later in order[at:])
+                    break
+                lost = failed
+            except ApparatusError:
+                # A replay's miss is no grading outcome: it fails the run, naming the call or search.
+                raise
+            except CompletionProtocolDefect:
+                # A completion breaking the protocol is the host's defect, which fails the run as a truth call's does.
+                raise
+            except Exception as failure:  # prawduct:ok-broad-except — provider boundary; a web call's failure is the web step's loss alone
+                contain(failure, log=log, what="a claim criterion's web call failed", level="error")
+                lost = ClaimGradingFailed(
+                    f"a web call failed: {type(failure).__name__}: {failure}", loss="provider_error"
+                )
+            else:
+                records.append(record)
+                outcomes[position] = WebGraded(record.outcome, None if call is None else calls_before + call)
+                continue
+            outcomes.update((later, WebGraded("lost")) for later in order[at:])
+            break
+        return WebCheck(
+            calls=tuple(calls),
+            records=tuple(records),
+            outcomes=outcomes,
+            loss=None if lost is None else lost.loss,
+            failure=None if lost is None else str(lost),
+            replayed=repairs.replayed,
+        )
 
     async def _check_one(
         self,
@@ -449,7 +491,9 @@ class WebChecker:
         pages: list[WebPage] = []
         read: set[str] = set()
         for query in queries:
-            for page in tuple(await search(query))[: self.budget.results_per_query]:
+            result = await search(query)
+            repairs.replayed = repairs.replayed or result.replayed
+            for page in result.pages[: self.budget.results_per_query]:
                 urls.append(page.url)
                 if page.url not in read and page.text.strip():
                     read.add(page.url)

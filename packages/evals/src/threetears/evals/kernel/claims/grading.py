@@ -15,8 +15,10 @@ cut short, unreadable or past its repairs, and a grade whose payload would not f
 
 **The web check** runs last, for a criterion with a web budget, over the claims the truth step nominated
 (:class:`~threetears.evals.kernel.claims.web.WebChecker`), on the caller's search. A claim it did not check (past the
-cell's budget, refused by the cost cap, or cut by the cell's deadline) reads ``skipped_cap`` and ``unverifiable``; a
-criterion with no web budget checks nothing, and a nominated claim reads ``unverifiable`` with no web state.
+cell's budget, refused by the cost cap, or cut by the cell's deadline) reads ``skipped_cap`` and ``unverifiable``. A
+web step that fails is its own loss (``web_loss``), as a ground step's is: the claims it left undecided read ``lost``
+and ``unverifiable``, and truth stands. A criterion with no web budget checks nothing, and a nominated claim reads
+``unverifiable`` with no web state.
 
 Engine-internal: the judge phase calls it, and nothing here is exported.
 """
@@ -64,11 +66,14 @@ class GradedCriterion:
     :ivar grade: The grade.
     :ivar tally: Its counts, with a lost ground step recorded on them.
     :ivar ground_failure: What failed in the ground step when it was lost, named; None when it was not.
+    :ivar web_failure: What failed in the web step when it failed (its loss is the grade's ``web_loss``), named; None
+        when it did not.
     """
 
     grade: ClaimGrade
     tally: ClaimTally
     ground_failure: str | None = None
+    web_failure: str | None = None
 
 
 def criterion_steps(criterion: ClaimCriterion, client: CompletionClient) -> tuple[ClaimExtractor, ClaimVerifier]:
@@ -189,14 +194,14 @@ async def grade_criterion(
     graded: Mapping[str, ClaimGrade],
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
-    web_replayed: bool = False,
 ) -> GradedCriterion:
     """Grade one cell under one criterion: list its claims, verify them, check the nominated ones on the web where it
     declares a budget, and keep the grade with its tally.
 
-    What the client raises in the extraction, a truth call or a web call (a provider failure, a replay's miss, a
-    completion that breaks the protocol), and what ``search`` raises but a cost-cap refusal, is not caught: it is the
-    judge phase's to classify.
+    What the client raises in the extraction or a truth call (a provider failure, a replay's miss, a completion that
+    breaks the protocol) is not caught: it is the judge phase's to classify. The web step's failures are its own
+    (:meth:`~threetears.evals.kernel.claims.web.WebChecker.check`): they ride on the grade's ``web_loss`` and the
+    tally's, and truth stands; a replay's miss or a protocol defect there is raised too.
 
     :param criterion: The criterion.
     :param evidence: The cell's claim evidence.
@@ -211,9 +216,8 @@ async def grade_criterion(
         claim the criterion would check on the web reads ``skipped_cap``. Not told when that grade would not fit the
         trace.
     :param search: The host's search, billed and bounded by the caller; required for a criterion with a web budget
-        that nominates a claim.
-    :param web_replayed: Whether ``search`` serves recorded results, which the grade records
-        (:attr:`~threetears.evals.schema.models.ClaimGrade.web_replayed`) for a grade that checked any claim.
+        that nominates a claim. A grade that checked a claim on a result a recording served is marked
+        (:attr:`~threetears.evals.schema.models.ClaimGrade.web_replayed`).
     :return: The grade and its tally.
     :raises ClaimGradingFailed: A step failed (``cut_short``, ``unreadable``, ``repair_budget_spent``, or
         ``cost_cap`` from a client its hold refuses outside the web step), or the grade would take the trace past
@@ -253,7 +257,8 @@ async def grade_criterion(
             documents_truncated=verification.documents_truncated,
             claims=graded_claims(claims, verification, calls_before=len(calls), web=web.outcomes),
             web=web.records,
-            web_replayed=web_replayed and bool(web.records),
+            web_loss=web.loss,
+            web_replayed=web.replayed and bool(web.records),
         )
         held = claim_payload_bytes(evidence, {**graded, criterion.name: grade})
         if held > CLAIM_TRACE_BYTES:
@@ -263,7 +268,9 @@ async def grade_criterion(
                 loss="evidence_over_cap",
             )
         tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=verification.ground_loss)
-        return GradedCriterion(grade=grade, tally=tally, ground_failure=verification.ground_failure)
+        return GradedCriterion(
+            grade=grade, tally=tally, ground_failure=verification.ground_failure, web_failure=web.failure
+        )
 
     def fallback(verification: Verification) -> None:
         """Tell ``truth_kept`` what the cell keeps if its deadline strikes in the next step."""

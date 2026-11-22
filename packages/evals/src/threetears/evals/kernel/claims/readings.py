@@ -423,6 +423,9 @@ def claim_tally(
     - **Units** are the evidence's distinct units, however many segments each spans; a unit holds a false claim when
       any of its segments holds an asserted contradicted world claim, read off the segment, which a claim's ``unit``
       must agree with.
+    - A **failed web step** costs only the web's decisions: the claims it left undecided read ``lost`` and count
+      unverifiable, and the tally carries the grade's ``web_loss``, read off the stored grade so a tally recomputed
+      from it keeps the loss.
 
     :param grade: The criterion's grade of the cell.
     :param evidence: The claim evidence it graded.
@@ -507,6 +510,7 @@ def claim_tally(
         session_claims=session,
         by_judge=tuple(_counted(calls[key], claims) for key, claims in groups.items()),
         ground_loss=ground_loss,
+        web_loss=grade.web_loss,
     )
 
 

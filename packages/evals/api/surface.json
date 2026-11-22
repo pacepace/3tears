@@ -1516,6 +1516,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.WebSearchResult": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.WebWindow": {
       "kind": "model",
       "signature": "",

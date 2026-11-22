@@ -11,10 +11,11 @@ every page window it read on the cell's trace and never searches for a stored gr
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
-__all__ = ["WebPage", "WebSearch"]
+__all__ = ["WebPage", "WebSearch", "WebSearchResult"]
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,38 @@ class WebPage:
             raise ValueError("a web page names where it is: its url is blank")
 
 
+@dataclass(frozen=True)
+class WebSearchResult:
+    """What one search answered: its results, and what the port knows of how it answered.
+
+    :ivar pages: The results, in the search's own order.
+    :ivar usd: What this search actually cost, in dollars, when the port knows it; None when it does not, and the
+        search is billed at a rate the run declares, else at the port's ``price_ceiling``.
+    :ivar replayed: The results came from a recording, not a live search: the grades they decide are marked
+        replayed, so a check that needs a live search over them is not made.
+    """
+
+    pages: tuple[WebPage, ...]
+    usd: float | None = None
+    replayed: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse results that are not pages, a cost that is no amount, or a flag that is not a bool.
+
+        :raises TypeError: ``pages`` is not a tuple of :class:`WebPage`, or ``replayed`` is not a bool.
+        :raises ValueError: ``usd`` is negative or not finite.
+        """
+        if not isinstance(self.pages, tuple) or not all(isinstance(page, WebPage) for page in self.pages):
+            raise TypeError("a search result's pages are a tuple of WebPage")
+        if not isinstance(self.replayed, bool):
+            raise TypeError(f"a search result's replayed is a bool, and this one's is {type(self.replayed)}")
+        usd = self.usd
+        if usd is not None and (
+            isinstance(usd, bool) or not isinstance(usd, int | float) or not math.isfinite(usd) or usd < 0
+        ):
+            raise ValueError(f"a search result's usd is a finite amount, 0 or more, or None; got {usd!r}")
+
+
 class WebSearch(Protocol):
     """A host's web search, which claims grading's web check sends its queries to.
 
@@ -57,17 +90,18 @@ class WebSearch(Protocol):
     provider, another index).
 
     **Price.** ``price_ceiling`` is the most one query can cost, in dollars, or ``None`` when the port cannot say. The
-    run's cost cap admits a criterion's web check on it before any query exists, and, where the run declares no rate
-    for ``(identity, "query")``, each query is billed at it. Under an enforcing cost cap a port that states none, with
-    no declared rate, is refused at launch.
+    run's cost cap admits each search on it, or on a rate the run declares for ``(identity, "query")``, before the
+    search is sent. A search is billed at what its result reports it cost (:attr:`WebSearchResult.usd`), else at the
+    declared rate, else at the ceiling, which is then an upper bound on the spend, not an observation. Under an
+    enforcing cost cap a port that states no ceiling, with no declared rate, is refused at launch.
 
-    **Failures.** A search that raises is the criterion's loss for that cell (``port_error``): the engine never
-    retries it, so a port that wants retries makes them inside ``search``. Return the results in the search's own
-    order; the engine reads at most its budget's ``results_per_query`` of them.
+    **Failures.** A search that raises fails the cell's web step (``port_error``): the claims it had not decided read
+    unverifiable, and every verdict case evidence decided stands. The engine never retries it, so a port that wants
+    retries makes them inside ``search``. Return the results in the search's own order; the engine reads at most its
+    budget's ``results_per_query`` of them.
 
-    A port that serves recorded results rather than searching may say so with a ``replayed`` attribute that is
-    ``True`` (as :class:`~threetears.evals.testing.RecordedWebSearch` does in replay): the grades it served are marked
-    replayed, so a check that needs a live search over them is not made.
+    A port that serves recorded results rather than searching says so on each result
+    (:attr:`WebSearchResult.replayed`), as :class:`~threetears.evals.testing.RecordedWebSearch` does in replay.
 
     ``search`` must be safe to call concurrently on one instance: a run's cells may search at once.
     """
@@ -77,11 +111,11 @@ class WebSearch(Protocol):
         """The search's name, as the run's spend and its rate table key it."""
         ...
 
-    async def search(self, query: str) -> tuple[WebPage, ...]:
+    async def search(self, query: str) -> WebSearchResult:
         """Search the web for ``query``.
 
         :param query: The search, as the judge wrote it.
-        :return: Its results, in order.
+        :return: Its results, in order, with what the port knows of the search.
         """
         ...
 

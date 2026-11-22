@@ -6354,10 +6354,11 @@ class GradedClaim(CoreShapeModel):
         description="Whether a document the candidate itself was given supports it; None where no criterion asked.",
     )
     evidence_conflict: bool = Field(default=False, description="Case evidence both supports and contradicts it.")
-    web: Literal["checked", "skipped_cap", "none"] = Field(
+    web: Literal["checked", "skipped_cap", "lost", "none"] = Field(
         default="none",
         description="`checked` on the web; `skipped_cap`, nominated and not checked (past the cell's web budget, "
-        "refused by the cost cap, or cut by the cell's deadline); or `none`. A restatement reads its original's.",
+        "refused by the cost cap, or cut by the cell's deadline); `lost`, nominated and left undecided by a web step "
+        "that failed (the grade's `web_loss`); or `none`. A restatement reads its original's.",
     )
     decided_by: int | None = Field(
         default=None, ge=0, description="The call whose answer fixed the verdict, by its place in the grade's calls."
@@ -6492,6 +6493,13 @@ class ClaimGrade(CoreShapeModel):
         description="Every web check, in claim order: one per claim checked that restates nothing, which every "
         "restatement of it shares.",
     )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the web step failed (CLAIM_LOSSES), which costs the cell only the web's decisions: the claims "
+        "it had not decided read `lost` and unverifiable, never false, and every verdict case evidence or an earlier "
+        "web check decided stands. None (left out) when it did not fail, or was not asked.",
+    )
     web_replayed: bool = Field(
         default=False,
         exclude_if=lambda value: not value,
@@ -6531,6 +6539,12 @@ class ClaimGrade(CoreShapeModel):
                 raise ValueError(
                     f"claim {place} restates claim {claim.restates}, which is no earlier claim of its scope"
                 )
+        lost = [place for place, claim in enumerate(self.claims) if claim.web == "lost"]
+        if bool(lost) != (self.web_loss is not None):
+            raise ValueError(
+                f"the grade's web step reads lost ({self.web_loss!r}) and claims {lost} read web 'lost': a failed web "
+                "step leaves at least one claim lost, and only a failed one does"
+            )
         for place, claim in enumerate(self.claims):
             if claim.restates is not None and claim.web != self.claims[claim.restates].web:
                 raise ValueError(
@@ -6654,6 +6668,13 @@ class ClaimTally(CoreShapeModel):
         description="Why the cell lost its ground step alone (CLAIM_LOSSES), which costs it the groundedness reading "
         "and no other: its truth counts stand, and it counts no grounded claim. None (left out) when the step was not "
         "lost, or not asked.",
+    )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell's web step failed (CLAIM_LOSSES), its grade's `web_loss`, which costs it only the "
+        "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
+        "stands. None (left out) when the step did not fail, or was not asked.",
     )
 
     @model_validator(mode="after")

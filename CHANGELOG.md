@@ -10,8 +10,10 @@ packages (bumped in lock-step).
 
 **Added (#1287):** a claim criterion with a `web` budget checks, on a host's web search, the claims its judge nominated
 by its own suspicion: claims no case evidence bears on that the judge doubts. The new port
-`threetears.evals.schema.WebSearch` (`identity`, `async search(query) -> tuple[WebPage, ...]`, and `price_ceiling()`,
-the most one query costs) goes on `RunnerOptions.web_search`, or `KindWiring.web_search` at launch. For each
+`threetears.evals.schema.WebSearch` (`identity`, `async search(query) -> WebSearchResult`, and `price_ceiling()`, the
+most one query costs) goes on `RunnerOptions.web_search`, or `KindWiring.web_search` at launch. A `WebSearchResult`
+holds the `pages` (`WebPage`), what the search actually cost when the port knows it (`usd`), and whether a recording
+served it (`replayed`). For each
 nominated claim, in claim order and up to `max_checked_per_cell`, the judge writes at most `max_queries_per_claim`
 searches from the claim alone; code cuts windows from the first `results_per_query` results of each, at most
 `page_chars` of a page; and the judge answers true, false or inconclusive. A true or false answer quotes one sentence
@@ -23,21 +25,30 @@ the web step. The windows read are stored on the grade (`WebCheckRecord`), so a 
 not hold is refused as a replay miss, which fails the run.
 
 **Changed:** a claim the web did not check (past the cell's budget, refused by the cost cap, or cut by the cell's
-deadline) reads `skipped_cap` and `unverifiable`, never false, and the criterion keeps every other claim. A port that
-fails a search loses the criterion for that cell (`port_error`), and the engine never retries it. A restatement takes
-its original's web check and shares its one record. Searches are billed to the cell's `judge` role, in rows of their
+deadline) reads `skipped_cap` and `unverifiable`, never false, and the criterion keeps every other claim. Every way the
+web step fails is its own loss, as a ground step's is, and never the criterion's: how many claims the judge doubts
+differs by arm, so a web failure must never cost a cell the verdicts case evidence decided. A port failing a search
+(`port_error`, never retried), the provider failing a web call (`provider_error`), and a web reply cut short,
+unreadable or still unquoted past its repairs stop the web step: the claims it had not decided read web `lost` and
+`unverifiable`, the checks already decided stand, and the cause is on the grade and the tally as `web_loss` (new,
+optional, beside `ground_loss`). A restatement takes its original's web check and shares its one record. Searches are billed to the cell's `judge` role, in rows of their
 own: `provider` the port's identity, `provider_unit` `query`, one unit and one call per search sent, and no tokens.
-Each is priced at the rate the run declares for `(identity, "query")`, else at the port's own ceiling (price source
-`<identity>:price_ceiling`), else left unpriced. `ClaimGrade.web_replayed` (new, optional, left out while False)
-marks a grade whose web checks a recording served, so a check that needs a live search can say it is not available.
+Each is billed at what its result reports it cost (price source `<identity>:reported`), else at the rate the run
+declares for `(identity, "query")`, else at the port's own ceiling (price source `<identity>:price_ceiling`), else
+left unpriced. `ClaimGrade.web_replayed` (new, optional, left out while False) marks a grade whose web checks a
+recording served. It is a stored flag only: the checks over claim grades that read it as not available (replayed),
+the claims judge repeats and the claim reads, are not built yet.
 
 **For hosts:** a template whose criterion declares a `web` budget needs a web search on the run, or the run is refused
 at launch. Under an enforcing cost cap the search must be priced, by its `price_ceiling` or a declared rate, or the run
-is refused. A port that wants retries makes them inside its own `search`. A witnessed cell is graded with no web
-search, so a criterion with a web budget is refused there. `ClaimGrade.web_replayed`, and a checked restatement that
-shares its original's record, join core minor 15.24, which has not shipped: a 15.23 build keeps them under its
-newer-minor tolerance. A build of this unreleased line from before the web check refuses a grade carrying either, so
-upgrade every reader of the line before running a criterion with a web budget.
+is refused; a ceiling that is no amount is refused at launch whatever the cap. Spend billed at a ceiling is a bound,
+not an observation: report a search's real cost on its result (`usd`) where the port knows it. A port that wants
+retries makes them inside its own `search`. Web checks are not supported on witnessed cells yet, so a criterion with
+a web budget is refused there. `ClaimGrade.web_loss`, `ClaimGrade.web_replayed`, `ClaimTally.web_loss`, the web state
+`lost`, and a checked restatement that shares its original's record join core minor 15.24, which has not shipped: a
+15.23 build keeps them under its newer-minor tolerance. A build of this unreleased line from before the web check
+refuses a document carrying any of them, so upgrade every reader of the line before running a criterion with a web
+budget.
 
 ### evals: claim criteria graded in the judge phase
 

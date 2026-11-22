@@ -7,16 +7,19 @@ Claims grading's web check sends its queries to a host's port (:class:`~threetea
 **What a search is matched on: the port's identity and the query, exactly.** A recording holds one port's searches,
 under its identity, which the replay answers under too, so a replayed run's spend names the same search. A query the
 judge writes the same way again is answered with what it was answered first: a recording keeps one answer per query,
-the first it saw, so replays are the same whatever order a run's cells search in.
+the first it saw, so replays are the same whatever order a run's cells search in. Recording, a query the file already
+holds is answered from it too, so the recording run grades on what its replay serves.
 
 **A miss is refused, never searched live.** A query the recording does not hold, a missing or unreadable file, a line
 from a newer format, or a second identity recorded onto one file, raises
 :class:`~threetears.evals.testing.RecordingRefused`, a :class:`~threetears.evals.kernel.host.ReplayMiss`: the cell is
 recorded ``apparatus_failed`` naming the search, and the run fails with it, as a replayed completion's miss does.
 
-**Replayed grades say so.** In replay, :attr:`RecordedWebSearch.replayed` is ``True``, and every grade it served is
-stored as replayed (:attr:`~threetears.evals.schema.ClaimGrade.web_replayed`): no live search stands behind it, so a
-check that needs one is not available. A replay costs nothing (:meth:`RecordedWebSearch.price_ceiling` is ``0.0``).
+**Replayed grades say so.** Every answer the recording serves says it was replayed
+(:attr:`~threetears.evals.schema.WebSearchResult.replayed`), and a grade it decided is stored as replayed
+(:attr:`~threetears.evals.schema.ClaimGrade.web_replayed`): no live search stands behind it. An answer the recording
+serves reports it cost nothing (``usd`` 0.0), which is what it is billed at whatever rate the run declares; replaying,
+:meth:`RecordedWebSearch.price_ceiling` is ``0.0``.
 
 Line format 1: ``{"format": 1, "identity": str, "query": str, "pages": [{"url", "title", "text", "snippet_only"}]}``.
 """
@@ -28,7 +31,7 @@ import threading
 from pathlib import Path
 from typing import Any, Final, Self
 
-from threetears.evals.schema.web_search import WebPage, WebSearch
+from threetears.evals.schema.web_search import WebPage, WebSearch, WebSearchResult
 from threetears.evals.testing.recorded_completions import RecordingRefused
 
 __all__ = ["RecordedWebSearch"]
@@ -128,37 +131,37 @@ class RecordedWebSearch:
             raise RuntimeError("a recorded web search is built through record or replay, which name its identity")
         return self._identity
 
-    @property
-    def replayed(self) -> bool:
-        """Whether it answers from the recording rather than searching: True when replaying."""
-        return self._inner is None
-
     def price_ceiling(self) -> float | None:
         """The most one search can cost: the live port's ceiling when recording, ``0.0`` when replaying."""
         if self._inner is None:
             return 0.0
         return self._inner.price_ceiling()
 
-    async def search(self, query: str) -> tuple[WebPage, ...]:
-        """Answer ``query``: from the recording, or from the live port, whose first answer is recorded.
+    async def search(self, query: str) -> WebSearchResult:
+        """Answer ``query``: from the recording when it holds it, else from the live port, whose answer is recorded.
+
+        An answer the recording serves, replaying or recording, costs nothing and says it was replayed, so a
+        recording run grades a repeated query on the answer its replay will serve. A live answer is the inner port's,
+        as it returned it.
 
         :param query: The search.
-        :return: Its results, in order.
+        :return: Its result.
         :raises RecordingRefused: Replaying, and the recording holds no answer for ``query``.
         """
+        with self._lock:
+            held = self._recorded.get(query)
+        if held is not None:
+            return WebSearchResult(pages=held, usd=0.0, replayed=True)
         if self._inner is None:
-            pages = self._recorded.get(query)
-            if pages is None:
-                raise RecordingRefused(
-                    self._path, f"it holds no search {query!r} for the web search {self.identity!r}", self._remedy
-                )
-            return pages
-        pages = tuple(await self._inner.search(query))
+            raise RecordingRefused(
+                self._path, f"it holds no search {query!r} for the web search {self.identity!r}", self._remedy
+            )
+        result = await self._inner.search(query)
         with self._lock:
             if query not in self._recorded:
-                self._recorded[query] = pages
-                _append(self._path, self.identity, query, pages)
-        return pages
+                self._recorded[query] = result.pages
+                _append(self._path, self.identity, query, result.pages)
+        return result
 
 
 def _append(path: Path, identity: str, query: str, pages: tuple[WebPage, ...]) -> None:

@@ -274,8 +274,9 @@ type _Step = Literal["truth", "ground"]
 #: The steps in the order their batches run and their failing items are asked again.
 _STEPS: Final[tuple[_Step, ...]] = ("truth", "ground")
 
-#: A web check's outcome as the verdict table reads it: what the page said, or that the cell's budget skipped it.
-type WebOutcome = Literal["true", "false", "inconclusive", "skipped_cap"]
+#: A web check's outcome as the verdict table reads it: what the page said; that the cell's budget, the cost cap or the
+#: deadline left it unchecked (``skipped_cap``); or that the web step failed before deciding it (``lost``).
+type WebOutcome = Literal["true", "false", "inconclusive", "skipped_cap", "lost"]
 
 type Verdict = Literal["supported", "contradicted", "unverifiable", "true_ungrounded"]
 
@@ -433,8 +434,9 @@ def truth_verdict(citations: Sequence[ClaimCitation], *, suspect: bool, web: Web
 class WebGraded:
     """What the web check left for one nominated claim, as its grade reads it.
 
-    :ivar outcome: What the page said (``true``, ``false``, ``inconclusive``), or ``skipped_cap``: the cell's web
-        budget, the run's cost cap or the cell's deadline left it unchecked.
+    :ivar outcome: What the page said (``true``, ``false``, ``inconclusive``); ``skipped_cap``, the cell's web budget,
+        the run's cost cap or the cell's deadline left it unchecked; or ``lost``, the web step failed before deciding
+        it. The last two read ``unverifiable``.
     :ivar call: The call whose answer fixed its verdict, by its place in the grade's calls; None where no verdict
         call was asked (skipped, or no window read), and the truth call stands.
     """
@@ -506,8 +508,8 @@ def graded_claims(
                     "evidence_conflict": verdict.evidence_conflict,
                     "web": "none"
                     if checked is None
-                    else "skipped_cap"
-                    if checked.outcome == "skipped_cap"
+                    else checked.outcome
+                    if checked.outcome in {"skipped_cap", "lost"}
                     else "checked",
                     "decided_by": decided,
                 }
