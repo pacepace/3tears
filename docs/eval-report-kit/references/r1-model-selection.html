@@ -649,7 +649,7 @@ function kShape(s){if(s==null)return "circle";if(!K_SHAPES.includes(s))throw new
 // washed in its token and the texture drawn over it in the token as plain lines and dots, clipped to the box by
 // geometry, so a pattern references nothing outside its own marks. The texture is sparse (12 px apart), so a light
 // tint carries it and a bar of failures never reads as a block of ink.
-const K_PATTERNS=["hatch","cross","dots","rows","cols"];
+const K_PATTERNS=["hatch","cross","dots","rows","cols","grid"];
 function kPatternName(name){if(!K_PATTERNS.includes(name))throw new Error(`pattern ${JSON.stringify(name)} is not one of ${K_PATTERNS.join(", ")}`);return name;}
 function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("g",{style:`opacity:${opacity}`},g),P=12;
   S("rect",{x,y,width:w,height:h,rx:2,style:`fill:color-mix(in oklab, var(${color}) 22%, var(--surface));stroke:var(${color});stroke-width:1`},t);
@@ -658,8 +658,8 @@ function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("
   const diag=(sx,sy,dir)=>{const a=Math.max(0,x-sx),b=Math.min(h,x+w-sx);if(b>a)d.push(`M${sx+a},${sy+dir*a}L${sx+b},${sy+dir*b}`);};
   if(name==="hatch"||name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y+h,-1);
   if(name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y,1);
-  if(name==="rows")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
-  if(name==="cols")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
+  if(name==="rows"||name==="grid")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
+  if(name==="cols"||name==="grid")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
   if(d.length)S("path",{d:d.join(""),style:`fill:none;stroke:var(${color});stroke-width:${name==="cross"?1:1.4}`},t);
   if(name==="dots")for(let i=x+P/2;i<x+w;i+=P)for(let j=y+P/2;j<y+h;j+=P)S("circle",{cx:i,cy:j,r:1.4,style:`fill:var(${color})`},t);
   return t;}
