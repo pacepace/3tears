@@ -440,6 +440,115 @@ def test_a_pending_tally_is_counted_apart_and_never_as_a_loss() -> None:
     assert measure.withheld is None, "a population not yet known is no loss, so nothing is withheld for it"
 
 
+#: A cell whose candidate said nothing: no unit, no claim, no loss.
+_SILENT_TALLY = ClaimTally(
+    criterion_fingerprint=_SHA,
+    documents_declared=True,
+    grounded=True,
+    units=0,
+    units_with_false=0,
+    session_claims=0,
+    silent=True,
+)
+
+
+def _lookup_silent(case: int, k: int) -> dict[str, Any]:
+    """The lookup arm silent on the rules criterion in two cells of every three, and speaking in the third."""
+    held = _lookup_cell(case, k)
+    if (case * K + k) % 3:
+        held["claim_tallies"][RULES] = _SILENT_TALLY
+    return held
+
+
+def test_an_arm_silent_in_most_cells_is_counted_apart_read_on_what_it_said_and_never_a_loss() -> None:
+    """Silent cells have no denominator: each ranked reading leaves them out of ``n`` and the mean (never a 0 false
+    claims in the arm's mean), counts them on the arm, withholds nothing for them, and the control is untouched."""
+    bundle = _bundle(lookup=_lookup_silent)
+    speaking = [(case, k) for case in range(CASES) for k in range(1, K + 1) if not (case * K + k) % 3]
+    silent = CASES * K - len(speaking)
+    assert silent > CASES * K // 2, "the arm is silent in most of its cells"
+
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        lookup = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+        memory = next(arm for arm in measure.arms if arm.variant_key == fixture_variant_key(MEMORY))
+        assert (lookup.n, lookup.n_claim_silent, lookup.n_claim_lost, lookup.n_infra_excluded) == (
+            len(speaking),
+            silent,
+            0,
+            0,
+        )
+        assert (memory.n, memory.n_claim_silent) == (CASES * K, 0)
+        assert measure.withheld is None, "silence is no loss, so nothing is withheld for it"
+    rate = next(m for m in bundle.judged_measures if m.name == f"{RULES}_false_per_unit")
+    lookup = next(arm for arm in rate.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+    said = [
+        float(_lookup_cell(case, k)["claim_tallies"][RULES].by_judge[0].asserted_contradicted) for case, k in speaking
+    ]
+    assert lookup.mean == pytest.approx(sum(said) / len(said)), "the mean is over the cells the arm spoke in"
+
+
+def test_a_silent_arm_raises_a_class_b_caveat_naming_it_and_the_page_says_so() -> None:
+    bundle = _bundle(lookup=_lookup_silent)
+    built = report_input(campaign_bundle(bundle))
+    caveat = next(c for c in built.caveat_list if c.id == f"claims_silent:{RULES}")
+    reading = built.judged[f"{RULES}_false_per_unit"]
+
+    assert (caveat.kind, caveat.cls) == ("claims_silent", "B")
+    assert caveat.arms == list(reading.silent), "only the arm that was silent"
+    assert sum(reading.silent.values()) == 16 and not reading.lost
+    assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "silence is never a loss"
+    page = report_markdown(
+        build_code_only_report(
+            _bundle(lookup=_lookup_silent), assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c"
+        )
+    )
+    (line,) = [held for held in page.splitlines() if held.startswith("The candidate said nothing in ")]
+    assert re.fullmatch(
+        r"The candidate said nothing in 16 cells of (?P<arm>.+) on rules\.claims, so its claim readings there rest "
+        r"on the cells it spoke in; a silent cell is no loss and never reads as 0 false claims\.",
+        line,
+    ), line
+
+
+def _undeclared(share: int) -> Any:
+    """The lookup arm with one cell in ``share`` declaring no documents: its ground step lost as documents_undeclared."""
+
+    def cell(case: int, k: int) -> dict[str, Any]:
+        held = _lookup_cell(case, k)
+        if not (case * K + k) % share:
+            held["claim_tallies"][RULES] = ClaimTally(
+                criterion_fingerprint=_SHA,
+                documents_declared=False,
+                grounded=True,
+                units=1,
+                units_with_false=0,
+                session_claims=0,
+                by_judge=(_counts(4, specific=4),),
+                ground_loss="documents_undeclared",
+            )
+        return held
+
+    return cell
+
+
+def test_undeclared_documents_on_one_arm_withhold_the_grounded_share_alone_as_a_ground_loss() -> None:
+    """Undeclared documents take the ground-loss path: the grounded share counts them as lost on the arm, a lopsided
+    share of them withholds it, and the truth readings keep every cell."""
+    bundle = _bundle(lookup=_undeclared(share=2))
+    measures = {measure.name: measure for measure in bundle.judged_measures}
+    grounded = measures[f"{RULES}_grounded_share"]
+    lookup = next(arm for arm in grounded.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+
+    assert lookup.n_claim_lost == CASES * K // 2 and lookup.n == CASES * K // 2
+    assert grounded.withheld is not None and grounded.withheld.reason == "trials_lost"
+    assert measures[f"{RULES}_false_per_unit"].withheld is None
+    assert measures[f"{RULES}_false_unit_share"].withheld is None
+    built = report_input(campaign_bundle(bundle))
+    lost = next(c for c in built.caveat_list if c.id == f"claims_lost:{RULES}")
+    assert lost.readings == [f"rules/{RULES}_grounded_share"] and len(lost.arms) == 1
+
+
 def _all_on_one_arm(cases: int) -> bool:
     """Whether a reading is withheld where one arm lost its one cell in each of ``cases`` cases and the other none."""
     runs = [

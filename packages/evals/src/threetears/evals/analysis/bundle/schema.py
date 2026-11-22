@@ -951,7 +951,7 @@ class JudgedArm(EvalDocumentModel):
             "left out of `n` and the mean. Not a fault: the judge worked and declined to guess."
         ),
     )
-    # The three below are claim readings' alone, and left out of the document while 0, so a bundle assembled before
+    # The counts below are claim readings' alone, and left out of the document while 0, so a bundle assembled before
     # they existed serializes, and is fingerprinted, as it did.
     n_claim_lost: int = Field(
         default=0,
@@ -979,6 +979,16 @@ class JudgedArm(EvalDocumentModel):
             "On a reading the host derives from a claim criterion: cells its claim reader could not read, left out of "
             "`n` and the mean and counted as no loss: the cell's grade stands, and a re-measure with a fixed reader "
             "reads it."
+        ),
+    )
+    n_claim_silent: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose candidate said nothing (`ClaimTally.silent`), left out of `n` and the "
+            "mean and counted as no loss: with no unit and no claim the cell has no denominator, so it never reads as 0 "
+            "false claims."
         ),
     )
     n_web_skipped: int = Field(

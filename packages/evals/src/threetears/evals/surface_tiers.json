@@ -69,6 +69,7 @@
 "threetears.evals.schema.CellTimeoutOrigin": "provisional",
 "threetears.evals.schema.CellTrace": "stable",
 "threetears.evals.schema.check_after": "host-contract",
+"threetears.evals.schema.CLAIM_DOCUMENT_BYTES": "provisional",
 "threetears.evals.schema.CLAIM_LOSSES": "provisional",
 "threetears.evals.schema.ClaimCall": "provisional",
 "threetears.evals.schema.ClaimCitation": "provisional",

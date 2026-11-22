@@ -6094,6 +6094,9 @@ class JudgeEvidence(CoreShapeModel):
 #: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
 #: ``protocol_defect`` (a ground call's completion broke the protocol: the host's client is at fault, and only the
 #: ground step is lost, as :attr:`ClaimTally.ground_loss`, since a defect in any other step fails the run),
+#: ``documents_undeclared`` (a criterion naming ``grounded_in`` met a cell whose evidence declares no documents, None
+#: rather than empty: nothing says what the candidate was given, so only the ground step is lost, never asked, and
+#: truth stands),
 #: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or had too little
 #: left for its next call), ``hold_exceeded`` (a call would have spent past the ceiling the criterion was priced and
 #: held at: a reply outgrew what its price assumed, which is the pricing's miss, never the cap's), ``deadline`` (the
@@ -6115,6 +6118,7 @@ KnownClaimLoss = Literal[
     "repair_budget_spent",
     "provider_error",
     "protocol_defect",
+    "documents_undeclared",
     "port_error",
     "cost_cap",
     "hold_exceeded",
@@ -6216,7 +6220,11 @@ class ClaimEvidence(CoreShapeModel):
         description="The host's name for how it cut the output into segments and units; change it whenever the "
         "cutting changes, since it sets every per-unit denominator.",
     )
-    segments: tuple[Segment, ...] = Field(min_length=1, description="The output, cut, in the order it reads.")
+    segments: tuple[Segment, ...] = Field(
+        description="The output, cut, in the order it reads. Empty: the candidate said nothing in an output that holds "
+        "other parties' lines (a persona cut off, or silent), so the cell is graded with no call and carries no claim "
+        "reading, never a reading of 0 (`ClaimTally.silent`)."
+    )
     documents: tuple[EvidenceDocument, ...] | None = Field(
         default=None,
         description="The documents claims may be checked against. Empty: the candidate was given or fetched none, "
@@ -6493,7 +6501,10 @@ class ClaimGrade(CoreShapeModel):
 
     criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it graded under.")
     claim_evidence_digest: str = Field(pattern=_SHA256_HEX, description="The claim evidence it graded, by digest.")
-    calls: tuple[ClaimCall, ...] = Field(min_length=1, description="Every call it made, in order.")
+    calls: tuple[ClaimCall, ...] = Field(
+        description="Every call it made, in order. None for a cell whose candidate said nothing (claim evidence with no "
+        "segment), which lists no claim."
+    )
     evidence: tuple[EvidenceRef, ...] = Field(default=(), description="The evidence its calls were shown, numbered.")
     documents_truncated: tuple[str, ...] = Field(
         default=(), description="The documents its page budget did not read whole, by id."
@@ -6535,8 +6546,22 @@ class ClaimGrade(CoreShapeModel):
         :raises ValueError: Two refs alike; a citation of no ref; a deciding call it did not make; a restatement of no
             earlier claim of its scope, or one whose web state is not its original's; a web check of no claim, of one
             twice, of a restatement, or for a claim not checked; a claim's verdict that is not the one its web check
-            gives; or a claim grounded where the ground step was lost.
+            gives; a claim grounded where the ground step was lost; or a grade that made no call and holds anything
+            but its identity (a silent cell's grade lists no claim, numbers no evidence and loses no step).
         """
+        if not self.calls and (
+            self.claims
+            or self.evidence
+            or self.documents_truncated
+            or self.web
+            or self.ground_loss is not None
+            or self.web_loss is not None
+            or self.web_replayed
+        ):
+            raise ValueError(
+                "a claim grade that made no call is a silent cell's: it lists no claim, numbers no evidence, checks "
+                "nothing on the web and loses no step"
+            )
         if self.ground_loss is not None and any(claim.grounded for claim in self.claims):
             raise ValueError(
                 f"a claim grade grounds a claim, and its ground step was lost ({self.ground_loss!r}), which grounds none"
@@ -6684,6 +6709,14 @@ class ClaimTally(CoreShapeModel):
     by_judge: tuple[ClaimJudgeCounts, ...] = Field(
         default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."
     )
+    silent: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="The candidate said nothing in the cell (its claim evidence holds no segment): graded with no "
+        "call, it counts no unit and no claim, and carries no claim reading at all, so it is in no reading's "
+        "population and never reads as 0 false claims; it is no loss, and each arm counts it apart. False (left out) "
+        "for a cell with something said.",
+    )
     grounded: bool = Field(
         default=False,
         exclude_if=lambda value: not value,
@@ -6741,8 +6774,23 @@ class ClaimTally(CoreShapeModel):
         :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
             holds a false claim only by holding one); derived readings beside a reader's defect; a grounded claim where no documents were declared, where the
             ground step was lost, or where the criterion asks no groundedness; a lost ground step where it asks none;
-            or two entries for one judge.
+            a ground step lost to undeclared documents where documents were declared; a silent cell counting a unit,
+            a claim, a loss or a derived reading; or two entries for one judge.
         """
+        if self.silent and (
+            self.units
+            or self.session_claims
+            or self.by_judge
+            or self.ground_loss is not None
+            or self.web_loss is not None
+            or self.derived
+            or self.derived_unread is not None
+        ):
+            raise ValueError(
+                "a silent cell's tally counts no unit and no claim, loses no step and carries no derived reading"
+            )
+        if self.ground_loss == "documents_undeclared" and self.documents_declared:
+            raise ValueError("a tally lost its ground step to undeclared documents, and the cell declared them")
         if self.units_with_false > self.units:
             raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
         if self.derived_unread is not None and self.derived:

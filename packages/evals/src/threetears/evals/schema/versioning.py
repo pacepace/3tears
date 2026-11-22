@@ -523,8 +523,10 @@ CORE_SCHEMA_VERSION: int = 15
 #:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``grounded`` says the criterion asks
 #:   groundedness, so every reading is read off the tally with no template in hand, whose ``ground_loss`` records a
 #:   ground step lost alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the
-#:   grade, and whose ``web_loss`` records a web step lost alone, costing only the web's decisions, as
-#:   ``ClaimGrade.web_loss`` records it) and
+#:   grade (``documents_undeclared`` where the evidence declares no documents under ``grounded_in``), whose
+#:   ``web_loss`` records a web step lost alone, costing only the web's decisions, as ``ClaimGrade.web_loss`` records
+#:   it, and whose ``silent`` marks a cell whose candidate said nothing: its evidence holds no segment, its grade makes
+#:   no call, and it carries no claim reading and no loss) and
 #:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
 #:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
 #:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``, whose

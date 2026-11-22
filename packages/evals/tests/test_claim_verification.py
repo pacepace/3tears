@@ -1138,9 +1138,26 @@ async def test_a_ledger_of_another_role_is_refused() -> None:
         await _verify(_FakeScriptedClient([]), ledger=RoleUsageLedger(role="candidate"))
 
 
-async def test_grounded_in_with_undeclared_documents_is_refused() -> None:
-    with pytest.raises(ValueError, match="declares none"):
-        await _verify(_FakeScriptedClient([]), documents=None, grounded_in=("run",))
+async def test_grounded_in_with_undeclared_documents_asks_no_ground_step_and_loses_it_alone() -> None:
+    """Nothing says what the candidate was given, so no ground call is made: the ground step is lost as
+    ``documents_undeclared`` and every truth finding is what the same cell reads with no ground step asked."""
+
+    def script() -> _FakeScriptedClient:
+        return _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1, _cite("K1")), _answer(2))])
+
+    undeclared = await _verify(script(), documents=None, grounded_in=("run",))
+    alone = await _verify(script(), documents=None)
+
+    assert undeclared.ground_loss == "documents_undeclared"
+    assert undeclared.ground_failure is not None and "declares no documents" in undeclared.ground_failure
+    assert [call.role for call in undeclared.calls] == ["truth", "truth"], "no ground call is asked"
+    assert [f.truth_citations if f else None for f in undeclared.findings] == [
+        f.truth_citations if f else None for f in alone.findings
+    ]
+    assert all(f is not None and f.grounded is None for f in undeclared.findings)
+    assert [c.verdict for c in _grade(_CLAIMS, undeclared).claims] == [c.verdict for c in _grade(_CLAIMS, alone).claims]
+    nothing = await _verify(_FakeScriptedClient([]), (), documents=None, grounded_in=("run",))
+    assert (nothing.calls, nothing.ground_loss) == ((), "documents_undeclared"), "a cell with no claim loses it too"
 
 
 def test_a_client_that_names_no_model_is_refused() -> None:

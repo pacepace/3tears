@@ -497,6 +497,34 @@ def test_a_trace_holding_only_claim_shapes_is_written_beside_its_result(graded: 
     assert storage.load_eval_trace("res-1", "uni-1") == trace
 
 
+def test_a_silent_cell_s_evidence_grade_and_tally_round_trip_and_hold_nothing_but_their_identity() -> None:
+    """Evidence with no segment is a candidate that said nothing: its grade made no call and lists nothing, its tally is
+    silent with no count, and anything more on either is refused."""
+    silent = _evidence_of_claims(segments=(), documents=None)
+    grade = _grade(calls=(), evidence=(), claims=())
+    tally = _tally(units=0, session_claims=0, by_judge=(), silent=True)
+    trace = _claims_trace(claim_evidence=silent, claim_grades={"rules.claims": grade})
+
+    assert EvalTrace.from_dict(trace.to_dict()) == trace
+    stored = make_eval_result(claim_tallies={"rules.claims": tally})
+    assert type(stored).from_dict(stored.to_dict()).claim_tallies["rules.claims"].silent
+    assert "silent" not in _tally().model_dump(mode="json"), "left out while False, so no other tally moves"
+    with pytest.raises(ValidationError, match="made no call is a silent cell's"):
+        _grade(calls=(), claims=())
+    for changes in ({"units": 1}, {"session_claims": 1}, {"by_judge": (_counts(),)}, {"ground_loss": "deadline"}):
+        with pytest.raises(ValidationError, match="silent cell's tally counts no unit"):
+            _tally(**{"units": 0, "session_claims": 0, "by_judge": (), "silent": True, **changes})
+
+
+def test_a_ground_step_lost_to_undeclared_documents_is_a_cell_that_declared_none() -> None:
+    lost = _tally(
+        documents_declared=False, by_judge=(_counts(grounded_specific=0),), ground_loss="documents_undeclared"
+    )
+    assert lost.ground_loss == "documents_undeclared"
+    with pytest.raises(ValidationError, match="undeclared documents, and the cell declared them"):
+        _tally(by_judge=(_counts(grounded_specific=0),), ground_loss="documents_undeclared")
+
+
 def test_a_trace_holds_grades_only_of_the_evidence_it_holds() -> None:
     with pytest.raises(ValidationError, match="only beside the claim evidence"):
         make_eval_trace(claim_grades={"rules.claims": _grade()})
@@ -742,6 +770,7 @@ def test_a_criterion_is_tallied_or_lost_never_both_and_a_loss_is_named() -> None
         "repair_budget_spent",
         "provider_error",
         "protocol_defect",
+        "documents_undeclared",
         "port_error",
         "cost_cap",
         "hold_exceeded",

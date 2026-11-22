@@ -823,6 +823,11 @@ _CLAIM_LINES: Final[tuple[tuple[str, str], ...]] = (
         "read.",
     ),
     (
+        "n_claim_silent",
+        "The candidate said nothing in {who} on {criterion}, so its claim readings there rest on the cells it spoke in; "
+        "a silent cell is no loss and never reads as 0 false claims.",
+    ),
+    (
         "n_web_skipped",
         "The web budget of {criterion} skipped claims in {who}: each reads unverifiable, never false, so its false "
         "claims there may be undercounted.",
@@ -837,7 +842,8 @@ _CLAIM_LINES: Final[tuple[tuple[str, str], ...]] = (
 
 def claim_caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
     """What qualifies a claim criterion's readings, said under the scoreboard: a line for each criterion whose cells
-    were lost, are pending, went unread by its claim reader, or had claims the web left unchecked, naming each arm.
+    were lost, are pending, went unread by its claim reader, said nothing, or had claims the web left unchecked, naming
+    each arm.
 
     Each count is an arm's most over the criterion's readings, so a cell is named once however many readings it
     touches.

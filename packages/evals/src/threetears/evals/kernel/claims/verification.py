@@ -50,7 +50,9 @@ keeps a truth reading. That holds for every way a ground call can fail: a reply 
 repairs, the run's cost cap, the provider failing the call, and a completion that breaks the protocol on it. The
 verification comes back with every truth finding, no groundedness, and the ground step's loss on
 :attr:`Verification.ground_loss`, for the judge phase to record against the groundedness reading alone. Only a call
-the rig could not serve (a replay's miss) is raised from the ground step, since that fails the run.
+the rig could not serve (a replay's miss) is raised from the ground step, since that fails the run. A cell whose
+evidence declares no documents (None, not empty) asks no ground step at all: nothing says what its candidate was given,
+so its ground step is lost as ``documents_undeclared`` and truth is checked as for any cell.
 
 **It records what it spent, and how it read.** Every completion is folded into the cell's ``judge`` ledger and
 recorded as a :class:`~threetears.evals.schema.models.ClaimCall`. :attr:`ClaimVerifier.identity` names the model and a
@@ -204,6 +206,12 @@ _FACT_TEMPLATE: Final = "{ref}. A key fact about {entity}: {claim}"
 _PASSAGE_TEMPLATE: Final = "{ref}. From {title}, characters {start} to {end}:\n{text}"
 
 _NO_EVIDENCE: Final = "None."
+
+#: What failed in the ground step of a cell whose evidence declares no documents under ``grounded_in``.
+_UNDECLARED: Final = (
+    "the cell's claim evidence declares no documents (None, not empty), so nothing says what the candidate was given "
+    "and no claim can be grounded"
+)
 
 _CLAIM_TEMPLATE: Final = 'Claim {position}, {place}: {claim}\nIt is said as: "{excerpt}"'
 
@@ -368,7 +376,7 @@ class Verification:
     :ivar findings: One per claim, in the claims' order: a :class:`ClaimFinding` for a world claim, None for a session
         claim.
     :ivar ground_loss: Why the ground step was lost (``cut_short``, ``unreadable``, ``repair_budget_spent``,
-        ``cost_cap``, ``hold_exceeded``, ``provider_error`` or ``protocol_defect``), its
+        ``cost_cap``, ``hold_exceeded``, ``provider_error``, ``protocol_defect`` or, never asked, ``documents_undeclared``), its
         own loss and never the criterion's: the truth findings stand, and every finding's ``grounded`` reads None.
         None when the step was not lost, or not asked.
     :ivar ground_failure: What failed in the ground step, named, beside :attr:`ground_loss`; None with it.
@@ -380,6 +388,12 @@ class Verification:
     findings: tuple[ClaimFinding | None, ...]
     ground_loss: KnownClaimLoss | None = None
     ground_failure: str | None = None
+
+
+def _undeclared(undeclared: bool) -> tuple[KnownClaimLoss | None, str | None]:
+    """The ground step's loss and its failure for a cell whose documents are undeclared under ``grounded_in``; else
+    neither."""
+    return ("documents_undeclared", _UNDECLARED) if undeclared else (None, None)
 
 
 @dataclass(frozen=True)
@@ -968,15 +982,15 @@ class ClaimVerifier:
             same scope that restates nothing.
         :param key: The case's reference key, whose facts are numbered ``K1..``; None when the case has none.
         :param documents: The cell's evidence documents, in order: ``()`` when the candidate was given none, None when
-            undeclared.
+            undeclared, which under ``grounded_in`` asks no ground step and loses it (``documents_undeclared``).
         :param ledger: The cell's ``judge`` ledger.
         :param truth_done: Told, once the truth step has finished and before the ground step starts, what truth
             found, with no claim grounded: so a caller whose deadline strikes in the ground step, whose length grows
             with what the arm fetched, keeps truth. Not told when no ground step is asked.
         :return: The evidence shown, the documents truncated, the calls made, one finding per claim, and the ground
             step's loss when it was lost.
-        :raises ValueError: ``ledger`` is not the ``judge`` role's; ``grounded_in`` is named and the documents are
-            undeclared; or a ``restates`` names no earlier original of its scope.
+        :raises ValueError: ``ledger`` is not the ``judge`` role's, or a ``restates`` names no earlier original of its
+            scope.
         :raises ClaimGradingFailed: A truth reply was cut short, a truth batch's reply did not parse in its attempts, or
             a claim still failed its truth checks within the repair budget. The same in the ground step never raises:
             it is :attr:`Verification.ground_loss`, as is a ground call the provider failed or whose completion breaks
@@ -987,11 +1001,9 @@ class ClaimVerifier:
             raise ValueError(
                 f"a claim verifier's calls are billed to the {_ROLE!r} role, and the ledger is {ledger.role!r}'s"
             )
-        if self.grounded_in is not None and documents is None:
-            raise ValueError(
-                "a criterion with grounded_in reads the documents the candidate was given, and this cell declares "
-                "none; declare them, empty when it was given none"
-            )
+        # Nothing says what the candidate was given, so no ground step can be asked: groundedness alone is lost, and
+        # truth, which reads case evidence alone, is checked as for any cell.
+        undeclared = self.grounded_in is not None and documents is None
         cell = tuple(claims)
         for position, claim in enumerate(cell):
             original = claim.restates
@@ -1003,7 +1015,7 @@ class ClaimVerifier:
                 )
         batches = _batches(cell)
         if not batches:
-            return Verification((), (), (), tuple(None for _ in cell))
+            return Verification((), (), (), tuple(None for _ in cell), *_undeclared(undeclared))
         # prose-canary: allow — `scope` is the closed Literal world/session the extractor checked, not free text
         world = [claim for claim in cell if claim.scope == "world"]
         facts = [] if key is None else [(entity.name, fact) for entity in key.fact_entities for fact in entity.facts]
@@ -1071,6 +1083,15 @@ class ClaimVerifier:
                 lost = ClaimGradingFailed(
                     f"a ground call failed: {type(failure).__name__}: {failure}", loss="provider_error"
                 )
+        if undeclared:
+            return Verification(
+                evidence=_index(shown),
+                documents_truncated=tuple(document.id for document in given if document.id in truth_cut),
+                calls=tuple(calls),
+                findings=_findings(cell, checked, grounded=False),
+                ground_loss="documents_undeclared",
+                ground_failure=_UNDECLARED,
+            )
         return Verification(
             evidence=_index(shown),
             documents_truncated=tuple(document.id for document in given if document.id in {*truth_cut, *ground_cut}),

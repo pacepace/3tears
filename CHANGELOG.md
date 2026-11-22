@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a silent candidate, undeclared documents, and `CLAIM_DOCUMENT_BYTES`
+
+**Changed (#1287):** a candidate that said nothing in an output holding other parties' lines (a persona cut off, or
+silent) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
+claims call and spends nothing; its grade lists no claim (`calls=()`), and its tally is marked `silent` with no unit
+and no claim. A silent cell carries no claim reading at all: it is in no reading's population, never reads as 0 false
+claims in its arm's mean, and is no loss, so it never withholds a reading. Each arm counts its silent cells beside
+its mean, and a class-B caveat (`claims_silent:<criterion>`) names each arm that has some, with a line on the page
+under the scoreboard. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
+a kind that forgot from a candidate that said nothing.
+
+**Changed (#1287):** claim evidence whose `documents` is None under a criterion naming `grounded_in` is no longer
+refused. The cell's ground step alone is lost, as the new loss `documents_undeclared`; no ground call is made, and
+truth stands. It is counted and disclosed per arm as any ground loss is, and a share of such cells that differs
+between arms withholds the grounded share. The quick path still refuses an answer that says nothing of what it read
+under `Claims(grounded_in="run")`.
+
+**Added (#1287):** `CLAIM_DOCUMENT_BYTES`, exported from `threetears.evals.schema` (provisional), so a kind can
+truncate its documents to the cap by name.
+
+**For hosts:** render `segments=()` for a cell whose candidate said nothing, rather than leaving `claim_evidence`
+None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent` and the report input's `Judged.silent`
+(each left out while unset, so no stored document without a silent cell moves) and the loss `documents_undeclared`.
+The build before them is at the same unreleased core minor (15.24) and refuses each by name (an empty `segments` or
+`calls` as too short, the new fields as `extra_forbidden`, the loss as one it does not know), so deploy and roll back
+the evals line as one.
+
 ### evals: `Claims` on the quick path, and `Answer.documents`
 
 **Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,

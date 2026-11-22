@@ -42,6 +42,7 @@ from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
     CLAIM_PENDING_OUTCOME,
+    CLAIM_SILENT_OUTCOME,
     CLAIM_UNREAD_OUTCOME,
     claim_instruments,
     claim_reading_ranks,
@@ -145,14 +146,15 @@ def judged_values(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord
 
 
 #: The outcomes of a judged row with no value that an arm counts: the judge could not tell, the harness faulted the
-#: result, and, on a claim reading, its criterion lost the cell, its tally waits on its stored grade, or, on a reading
-#: the host derives, its claim reader could not read the cell.
+#: result, and, on a claim reading, its criterion lost the cell, its tally waits on its stored grade, the candidate said
+#: nothing in it, or, on a reading the host derives, its claim reader could not read the cell.
 _NULL_JUDGED_OUTCOMES: frozenset[str] = frozenset(
     {
         JUDGE_CANNOT_TELL_OUTCOME,
         ResultOutcome.INFRA_EXCLUDE.value,
         CLAIM_LOST_OUTCOME,
         CLAIM_PENDING_OUTCOME,
+        CLAIM_SILENT_OUTCOME,
         CLAIM_UNREAD_OUTCOME,
     }
 )
@@ -199,7 +201,8 @@ def judged_measures(
     **A claim reading** (a row carrying an ``instrument``) is described as its criterion's reading
     (:func:`~threetears.evals.kernel.claims.readings.describe_judged_reading`), a rate or a share and never a level on
     a rubric scale. Only the three that rank are summarised here; the diagnostics stay in the projection. Each arm
-    counts the cells its criterion lost and the cells still pending apart from its mean, a pending cell as no loss,
+    counts the cells its criterion lost, the cells still pending and the cells its candidate said nothing in apart from
+    its mean, a pending or silent cell as no loss,
     and the cells whose web check skipped a claim past its budget. The reading is withheld (``trials_lost``) where two
     arms' shares of cells lost differ beyond chance, by one test across every arm (:func:`_differential_claim_loss`).
 
@@ -252,6 +255,7 @@ def judged_measures(
             lost = [row for row in rows if row.outcome == CLAIM_LOST_OUTCOME]
             pending = [row for row in rows if row.outcome == CLAIM_PENDING_OUTCOME]
             unread = [row for row in rows if row.outcome == CLAIM_UNREAD_OUTCOME]
+            silent = [row for row in rows if row.outcome == CLAIM_SILENT_OUTCOME]
             counted = [row for row in rows if row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES]
             valued = [row for row in counted if row.value is not None]
             values = [float(row.value) for row in valued if row.value is not None]
@@ -269,12 +273,19 @@ def judged_measures(
                     n=len(values),
                     n_independent=len(set(value_cases)),
                     n_infra_excluded=(
-                        len(rows) - len(counted) - len(cannot_tell) - len(lost) - len(pending) - len(unread)
+                        len(rows)
+                        - len(counted)
+                        - len(cannot_tell)
+                        - len(lost)
+                        - len(pending)
+                        - len(unread)
+                        - len(silent)
                     ),
                     n_cannot_tell=len(cannot_tell),
                     n_claim_lost=len(lost),
                     n_claim_pending=len(pending),
                     n_claim_unread=len(unread),
+                    n_claim_silent=len(silent),
                     n_web_skipped=(0 if criterion is None else _web_skipped_cells(results_by_cell[key], criterion)),
                     n_web_lost=0 if criterion is None else _web_lost_cells(results_by_cell[key], criterion),
                     mean=sum(values) / len(values) if values else None,

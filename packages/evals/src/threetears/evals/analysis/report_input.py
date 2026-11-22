@@ -610,7 +610,7 @@ class Judged(_Part):
         description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
         "else the first).",
     )
-    # The four below are a claim reading's alone, and left out of the document while unset, so an input built before
+    # The fields below are a claim reading's alone, and left out of the document while unset, so an input built before
     # they existed digests as it did.
     instrument: str | None = Field(
         default=None,
@@ -632,6 +632,12 @@ class Judged(_Part):
         exclude_if=lambda value: not value,
         description="On a reading the host derives from a claim criterion: the cells its claim reader could not read, "
         "by arm; no loss, read once the reader is fixed and the run re-measured.",
+    )
+    silent: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose candidate said nothing, by arm; no loss, and in no mean, since "
+        "a cell with nothing said has no denominator.",
     )
     web_skipped: dict[str, int] = Field(
         default_factory=dict,

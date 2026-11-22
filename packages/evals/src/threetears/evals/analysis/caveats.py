@@ -18,8 +18,9 @@ something to qualify adds a raiser and one row of :data:`CLASS_OF_KIND`, and ren
   holds of an arm not being one cell (an arm read per answering model, an arm holding several cells of one rig), all
   grouped once; then every check of a judge that does not speak for it (a claim criterion's readings sharing one
   caveat per question and rater), every claim criterion whose readings lost cells, hold cells still pending, hold
-  cells the host's claim reader could not read, or had claims skipped past the web budget
-  (``claims_lost:<criterion>``, ``claims_pending:<criterion>``, ``claims_unread:<criterion>``,
+  cells the host's claim reader could not read, hold cells whose candidate said nothing, or had claims skipped past
+  the web budget (``claims_lost:<criterion>``, ``claims_pending:<criterion>``, ``claims_unread:<criterion>``,
+  ``claims_silent:<criterion>``,
   ``claims_web_skipped:<criterion>``, and ``claims_web_lost:<criterion>`` for a web step that failed, naming the
   arms), and looks past their plan.
 - *The bundle's* (:func:`from_bundle`): results with no ordered time, and request settings not confirmed as sent.
@@ -174,6 +175,7 @@ CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
         "claims_lost": "B",  # a claim criterion lost some cells: the reading rests on fewer than were run
         "claims_pending": "B",  # some cells' claim tallies wait on their stored grade: not yet known
         "claims_unread": "B",  # the host's claim reader could not read some cells: its derived readings rest on fewer
+        "claims_silent": "B",  # the candidate said nothing in some cells: the readings rest on the cells it spoke in
         "claims_web_skipped": "B",  # some cells' web checks skipped claims past their budget: read unverifiable
         "claims_web_lost": "B",  # some cells' web steps failed, a cause apart from the budget: read unverifiable
         "request_settings": "B",  # default: the code page's "request settings not confirmed"
@@ -240,6 +242,8 @@ _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
         "claims_lost": "resume_or_rerun",
         "claims_pending": "resume_or_rerun",
         "claims_unread": "repair_rig",
+        # A candidate silent in its cell was given no turn or was cut off: the session that ran it is what to look at.
+        "claims_silent": "repair_rig",
         "claims_web_skipped": "resume_or_rerun",
         "claims_web_lost": "repair_rig",
         "request_settings": "record_and_rerun",
@@ -1084,6 +1088,7 @@ _CLAIM_KINDS: Final[tuple[tuple[str, str], ...]] = (
     ("claims_lost", "lost"),
     ("claims_pending", "pending"),
     ("claims_unread", "unread"),
+    ("claims_silent", "silent"),
     ("claims_web_skipped", "web_skipped"),
     ("claims_web_lost", "web_lost"),
 )
