@@ -1,8 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, since durable v16 campaigns, and since later minors the analyst's gap notes and
-blind reads) out of
+sets, test cases, calibration ratings, since durable v16 campaigns, and since later minors the analyst's gap notes,
+blind reads and claim reads) out of
 the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
@@ -55,26 +55,27 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 9
+PINNED_DURABLE_SCHEMA_MINOR = 10
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    # Re-taken under durable 17.9: every durable type's ``schema_minor`` default moved, and the template's shape gained
-    # ``claim_criteria`` (``ClaimCriterion``) and ``claim_unit_names``. (Under 17.8 the test case's reference key gained
-    # ``context``; under 17.7 the test case's shape gained ``reference`` (``ReferenceKey``); under 17.6 the
-    # campaign's gained ``Aspect.undo`` and ``Aspect.undo_ignored``; under 17.5 the blind read's gained
-    # ``BlindPreference.shares`` and ``stake_items``.)
-    "blind_read": "774df05f6d4a1409188f7fa99de99bd229f887eaa39d11c562057c5300b69215",
-    "calibration_rating": "143666bef32c6029c3d22bb50f4e0f4e4389788a479e430726182c1bc54e1f5a",
-    "case_set": "e56ca9664b333b00940b8b9d7ea1f51b2b92aec450ac25295dfe902bf62836b5",
-    "eval_analyst_gap": "5457b37d574e5820de6e27e8a8e77d727cbf4ade286e1874a032ddc0548ca692",
-    "eval_campaign": "2c20bb95b375ec2b969d122d18847549cd67b56fcd9089b98b7794a18de410c1",
-    "eval_template": "5aab9957c0f5828a1909a23e64dcc5b6c71932a1153428b6841f7e6c54b8fc1a",
-    "eval_test_case": "e1caf80563ac9fbc35065c5118fa40947df30dd171f6527e8653d12eb3be1a66",
-    "judge_config": "2fd15b02f9076bec6df3e0f4850f606c33a5067077967b4513d5a4a09d0e448a",
-    "judge_config_tombstone": "c7b6c4ba7c709a7bbd1f5eeb18874f7dafcfafef56b4e3186be687f51b03364c",
-    "rubric_dim": "8cc2ea69c418200939bd48bb666a51373d40d366f62e3dbf4e1673822f9a1797",
-    "rubric_dim_tombstone": "eed477ee17ba45f7dac6c619b6f31e02d62dd93a2bf60583e4a426c7f92a03b6",
+    # Re-taken under durable 17.10: every durable type's ``schema_minor`` default moved, and the claim read
+    # (``claim_read``) is a new type. (Under 17.9 the template's shape gained ``claim_criteria`` and
+    # ``claim_unit_names``; under 17.8 the test case's reference key gained ``context``; under 17.7 the test case's shape
+    # gained ``reference`` (``ReferenceKey``); under 17.6 the campaign's gained ``Aspect.undo`` and ``Aspect.undo_ignored``;
+    # under 17.5 the blind read's gained ``BlindPreference.shares`` and ``stake_items``.)
+    "blind_read": "a0499961129776ba1743a0aa960fb47f8164da0d2836bdc5387404b7beda7b62",
+    "calibration_rating": "d94b117332f440e35c12532e7b5bd8dbfbe5726cf9ebc449f67f4eb621db44ac",
+    "case_set": "6d861cec19358d1cf6134780974cf9d16afa6312b67cf501f9959eab18e110bd",
+    "claim_read": "13db3affd8ed5e75ae3af0460c44ea755e765900f0aa46bb8e1e8964b9506fb1",
+    "eval_analyst_gap": "282cf01b6791ab624cbaf24175f2825f22fce3c5ef80c8fb635c97e8bcf589f8",
+    "eval_campaign": "8d8ece91fbdf5a3cc9de2ed63c0a7744c917bbe0bcde09b234e25645d6ed0c49",
+    "eval_template": "66ea02948b64c844362f08210569aafe01d8dfca37e5c34d4b3492377c010843",
+    "eval_test_case": "e3fcbbf4328c970fc12280772bc0d12841bc6fcbb6b01d0d5b6385c771e3fc1d",
+    "judge_config": "43407321d6f65dfa3e70ea86f488ef3c178ee21700a228ed742dee5c4dd5d124",
+    "judge_config_tombstone": "a73b1bee2ddd43edb6578d4044112bd0ea15db99f1beae0f204e810771933322",
+    "rubric_dim": "c2520fdb19c8c89c9c61cbbee2be3b8e5296482ae8be211321bb74f7a404bdf5",
+    "rubric_dim_tombstone": "a1c906a52f1abd12eea25992283f1a08035767ed1c5750f6cd977544b3c36f2c",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -106,6 +107,7 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     ),
     "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
     "blind_read": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
+    "claim_read": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
@@ -137,6 +139,8 @@ FIXTURE_DIGESTS: dict[str, str] = {
     # Re-written from its stored sample (unshipped 17.4, #1208): the report now holds agreement counts for a person and
     # a served model and a reviewer check, where it held none; its person's preference names no served model.
     "v17/blind_read.json": "abedc5ff4965a019f10656233c0384347a4e0471aa044f51371edd6cbd2e2e71",
+    # A claim read as durable 17.10 first stores one: a supported claim drawn by truth verdict, answered by one person.
+    "v17/claim_read.json": "0a97bb900a5bea7a8846d7de6e61323e074a5ff13915afd7a1615d49666c2e20",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

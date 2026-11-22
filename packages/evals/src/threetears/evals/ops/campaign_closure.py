@@ -70,6 +70,7 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.schema import DOC_TYPE_FACTS
 from threetears.evals.schema.models import is_builtin_judge_config_id, judge_config_of
 from threetears.evals.schema.blind_read import BlindRead
+from threetears.evals.schema.claim_read import ClaimRead
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.campaign import (
@@ -117,6 +118,7 @@ _BEYOND_ID: Final[Mapping[str, tuple[str, ...]]] = {
     for model in (
         BlindRead,
         CalibrationRating,
+        ClaimRead,
         CaseSet,
         EvalAnalysis,
         EvalAnalysisAttempt,
@@ -187,7 +189,8 @@ _CLOSURE_RULES: Final[tuple[str, ...]] = (
     (
         "each run's results and traces (the documents whose eval_run_id is the run's id), its calibration ratings,"
         " second judge passes, judge temperature checks and out-of-run spend (whose run_id is); the campaign's own"
-        " out-of-run spend, sweeps, analysis attempts and generation slot (whose campaign_id is); every document is"
+        " out-of-run spend, sweeps, analysis attempts, generation slot, blind reads and claim reads (whose campaign_id"
+        " is); every document is"
         " exported verbatim under its stored id, and how the export reached it binds no reader"
     ),
     (
@@ -603,6 +606,8 @@ def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> No
         closure.where("eval_out_of_run_spend", run_id=run_id)
     # The blind reads drawn over the campaign: what people answered of its outputs, and what the reads found.
     closure.where("blind_read", campaign_id=campaign["id"])
+    # The claim reads drawn over it: what people answered of its claim criteria's claims, the claims' calibration.
+    closure.where("claim_read", campaign_id=campaign["id"])
 
     # Definitions the runs ran: templates, cases, case sets, judge configs and their rubric dims, cassettes.
     case_sets: list[dict[str, Any]] = []
