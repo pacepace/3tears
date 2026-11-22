@@ -16,7 +16,6 @@ from threetears.evals.kernel.declaration import Floor
 
 __all__ = [
     "ANSWERED_WORDS",
-    "MIXED_WORDS",
     "PASS_WORDS",
     "RateWords",
     "floor_of",
@@ -56,7 +55,7 @@ ANSWERED_WORDS: Final = RateWords(
 
 #: The words across aspects some of which read a pass rate and some the share answered: neither name alone is true of
 #: every figure, so the rate is named as both.
-MIXED_WORDS: Final = RateWords(
+_MIXED_WORDS: Final = RateWords(
     heading="Pass or answered rate",
     measure="pass or answered rate",
     verb="passed or answered",
@@ -76,7 +75,7 @@ def rate_words(bundles: Iterable[AnalysisContextBundle]) -> RateWords:
     answered = [reads_answered(bundle) for bundle in bundles]
     if answered and all(answered):
         return ANSWERED_WORDS
-    return MIXED_WORDS if any(answered) else PASS_WORDS
+    return _MIXED_WORDS if any(answered) else PASS_WORDS
 
 
 def named_arms(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict[str, ArmName]:
