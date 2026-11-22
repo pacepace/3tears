@@ -1638,6 +1638,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         # or none recorded where a result holds a host measure, is a boundary with no verdict across it.
         "regressed": frozenset(
             {
+                "claim_failures",
+                "claim_tallies",
                 "async_deliveries",
                 "async_deliveries[].model_copy()",
                 "async_deliveries[].substituted",
@@ -1725,6 +1727,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "toyhost": frozenset(
             {
+                "claim_failures",
+                "claim_tallies",
                 "written_over",
                 "async_deliveries",
                 "async_deliveries[].acknowledged_turn",
