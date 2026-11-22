@@ -35,7 +35,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
-from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, derive_claim_readings
+from threetears.evals.kernel.claims.derived import ClaimDerivation, derive_claim_readings
+from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.readings import claim_tally

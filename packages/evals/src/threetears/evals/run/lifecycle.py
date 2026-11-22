@@ -33,7 +33,8 @@ from threetears.evals.schema.models import CLAIM_PENDING, NON_TERMINAL_RUN_STATU
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
-from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, claim_derivations
+from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
+from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.grading import GradedCriterion, finish_web_step, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable

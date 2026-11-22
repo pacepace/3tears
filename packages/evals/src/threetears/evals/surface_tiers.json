@@ -639,6 +639,7 @@
 "threetears.evals.kernel.host.check_world_conformance": "stable",
 "threetears.evals.kernel.host.CheckName": "provisional",
 "threetears.evals.kernel.host.ClaimReader": "provisional",
+"threetears.evals.kernel.host.ClaimReaderDefect": "provisional",
 "threetears.evals.kernel.host.Comparability": "provisional",
 "threetears.evals.kernel.host.CompletionClients": "host-contract",
 "threetears.evals.kernel.host.CompletionRole": "host-contract",

@@ -231,7 +231,7 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             + ", so the run would have gone otherwise under the current one and its stored cells cannot say how",
             remedy="run it again under the current definition; the stored run stays in the cell it was measured in",
         )
-    derived_of = {descriptor.name: descriptor.derived_from for descriptor in measures.derived}
+    derived_of = {d.name: d.derived_from for d in measures.derived if d.derived_from is not None}
     derivations = claim_derivations(host.profile)
     rereads: list[_Reread] = []
     unanswered: list[str] = []
@@ -278,7 +278,7 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
         tallies: dict[str, ClaimTally] = {}
         derived: dict[str, float | None] = {}
         derived_was: dict[str, float] = {}
-        for criterion in sorted({derived_of[name] for name in derived_asked if derived_of[name] is not None}):
+        for criterion in sorted({derived_of[name] for name in derived_asked}):
             stored = trace_of()
             grade = None if stored is None else stored.claim_grades.get(criterion)
             evidence = None if stored is None else stored.claim_evidence

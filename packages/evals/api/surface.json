@@ -3191,6 +3191,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.ClaimReaderDefect": {
+      "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.Comparability": {
       "kind": "literal",
       "signature": "",

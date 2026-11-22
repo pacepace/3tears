@@ -23,21 +23,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.metrics import MetricDescriptor
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.measures import ClaimReader, MeasureRegistry
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import ClaimEvidence, ClaimGrade
-
-
-class ClaimReaderDefect(RuntimeError):
-    """A host's claim reader raised, or answered a reading its measures do not hold.
-
-    The host's code, not an outcome of the cell: the same reader reads every cell of the run. So it fails what asked
-    (the run, a re-judge, a re-measure), passed through every per-criterion catch, and is never recorded as the
-    criterion's loss or as a value.
-    """
 
 
 @dataclass(frozen=True)

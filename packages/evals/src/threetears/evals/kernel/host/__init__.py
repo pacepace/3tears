@@ -67,6 +67,7 @@ from threetears.evals.kernel.host.kinds import (
 )
 from threetears.evals.kernel.host.measures import (
     ClaimReader,
+    ClaimReaderDefect,
     MeasureRegistrationError,
     MeasureRegistry,
     MeasureRereader,
@@ -140,6 +141,7 @@ __all__ = [
     "CellTimeoutFactory",
     "CheckName",
     "ClaimReader",
+    "ClaimReaderDefect",
     "Comparability",
     "CompletionClients",
     "CompletionRole",

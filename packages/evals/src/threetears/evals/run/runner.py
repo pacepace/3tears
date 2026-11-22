@@ -81,7 +81,8 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
-from threetears.evals.kernel.claims.derived import ClaimDerivation, ClaimReaderDefect, claim_derivations
+from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
+from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,

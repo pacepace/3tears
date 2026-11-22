@@ -80,6 +80,15 @@ MeasureRereader = Callable[[MeasureRereadRequest], "Mapping[str, bool | float | 
 ClaimReader = Callable[["ClaimGrade", "ClaimEvidence"], "Mapping[str, float | bool]"]
 
 
+class ClaimReaderDefect(RuntimeError):
+    """PROVISIONAL. A host's claim reader (:data:`ClaimReader`) raised, or answered a reading its measures do not hold.
+
+    The host's code, not an outcome of the cell: the same reader reads every cell of the run. So it fails what asked
+    (the run, a re-judge, a re-measure), passed through every per-criterion catch, and is never recorded as the
+    criterion's loss or as a value.
+    """
+
+
 class MeasureRegistrationError(ValueError):
     """A measure declaration contradicts what this registry promises."""
 
@@ -340,4 +349,11 @@ class MeasureRegistry(HostAttributed):
         return descriptor
 
 
-__all__ = ["ClaimReader", "MeasureRegistrationError", "MeasureRegistry", "MeasureRereadRequest", "MeasureRereader"]
+__all__ = [
+    "ClaimReader",
+    "ClaimReaderDefect",
+    "MeasureRegistrationError",
+    "MeasureRegistry",
+    "MeasureRereadRequest",
+    "MeasureRereader",
+]
