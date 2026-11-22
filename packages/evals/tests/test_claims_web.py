@@ -1367,3 +1367,24 @@ async def test_a_loss_to_the_traces_cap_is_never_graded_again_and_a_rejudge_refu
         await rejudge_result(host, result.id, "u", web_search=port)
 
     assert again.asked == [] and port.queries == [], "refused before any call or search"
+
+
+async def test_a_rejudge_grades_the_other_lost_criterion_and_names_the_one_lost_to_the_traces_cap_as_skipped() -> None:
+    # Two criteria, both lost on the first grade; the cell's store then says the second outgrew the trace.
+    other = "almanac.dates"
+    template = _template(_criterion())
+    template = template.model_copy(update={"claim_criteria": [_criterion(), _criterion(name=other, web=None)]})
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), again, _FakeWebSearch(), template=template)
+    assert result.claim_failures == {_CRITERION: "provider_error", other: "provider_error"}
+    trace = off_loop(host.storage.load_eval_trace, result.id, "u")
+    over = result.model_copy(update={"claim_failures": {_CRITERION: "provider_error", other: "evidence_over_cap"}})
+    off_loop(host.storage.save_eval_result, over, trace)
+
+    rejudged = await rejudge_result(host, result.id, "u", web_search=_FakeWebSearch())
+
+    assert again.asked.count("claim_listing") == 1, "only the criterion not lost to the cap is graded again"
+    assert rejudged.claim_failures == {other: "evidence_over_cap"}, "the one lost to the cap is left as stored"
+    assert set(rejudged.claim_tallies) == {_CRITERION}
+    (rescore,) = rejudged.claim_rescores
+    assert (rescore.criteria, rescore.skipped) == ([_CRITERION], {other: "evidence_over_cap"})

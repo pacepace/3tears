@@ -417,7 +417,8 @@ def apply_claim_rejudge(
     Each criterion graded again lands its tally on the result and its grade on the trace, or its loss again. A
     criterion whose web step was finished lands its grade and tally the same way, its web step's loss again, if any,
     on the tally and in the rescore's ``lost``: it is never lost whole. Every other criterion, tallied or lost, is left
-    as it stands. A :class:`~threetears.evals.schema.models.ClaimRescore` recording it is appended.
+    as it stands. A :class:`~threetears.evals.schema.models.ClaimRescore` recording it is appended, naming in
+    ``skipped`` each criterion or web step lost to the trace's cap that it left as stored.
 
     :param result: The stored result. Not mutated.
     :param inputs: What the re-judge read (:func:`reproducible_claim_inputs`).
@@ -465,6 +466,8 @@ def apply_claim_rejudge(
         prior=prior,
         lost=lost,
         web_steps=list(inputs.web_steps),
+        # Left as stored, never graded again: named, so a reader of the rescore sees what it did not re-judge and why.
+        skipped={name: _UNCHANGED_EVIDENCE_LOSS for name in _claims_over_the_trace(result)},
         judge_model=inputs.judge_model,
         usage=usage,
         cost_usd=cost_usd,

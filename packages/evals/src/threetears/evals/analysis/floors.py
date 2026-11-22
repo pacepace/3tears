@@ -1071,11 +1071,13 @@ def floor_readings(
                 )
             )
     # A judged dimension on the pass/fail scale is a pass rate too: each score a 1 or a 0, its count the mean times
-    # its scores. A boundary dimension is a guardrail, held on its own, never a floor's reading.
+    # its scores. A boundary dimension is a guardrail, held on its own, never a floor's reading. A claim reading is no
+    # pass rate, whatever its range: a share of a cell's claims or units ranks arms and decides no pass, floor or bar.
     for judged in sorted(bundle.judged_measures, key=lambda measure: measure.name):
         read = any(rate.measure == judged.name for rate in rates)
         if (
             read
+            or judged.instrument is not None
             or not reads_as_rate("judged", judged.name, value_range=judged.value_range)
             or judged.axis != "capability"
         ):

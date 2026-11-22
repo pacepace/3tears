@@ -81,6 +81,7 @@ import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, get_args
 
+from threetears.evals.kernel.claims.readings import claim_reading_is_share
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.keys.figure import DIRECTION_WORDS
@@ -633,8 +634,22 @@ def _selected_stats(chart: PlannedChart, report_input: ReportInput) -> list[Stat
 
 
 def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str]:
-    scales = [judged.scale for key, judged in report_input.judged.items() if not measures or key in measures]
-    return ["percent" if scale == "pass_fail" else "score" for scale in scales]
+    """Each judged reading's unit: a pass/fail dimension's percent, a 1-5 dimension's score; a claim reading's percent
+    where it is a share, else none (a count per unit, its name says), never a score."""
+    return [
+        _claim_unit(key, judged.instrument)
+        if judged.instrument is not None
+        else "percent"
+        if judged.scale == "pass_fail"
+        else "score"
+        for key, judged in report_input.judged.items()
+        if not measures or key in measures
+    ]
+
+
+def _claim_unit(name: str, criterion: str) -> str:
+    """A claim reading's unit: percent for a share on 0 to 1; none for a count per unit, a bare number its name states."""
+    return "percent" if claim_reading_is_share(name, criterion) else ""
 
 
 def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:

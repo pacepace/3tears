@@ -464,7 +464,7 @@ def reading_heading(
     if reading != "judged" and goal_check_of(name) is not None:
         return measure_name(name, declared=declared)
     if reading == "judged":
-        return judged_heading(name)
+        return judged_heading(name, declared)
     return reading_name(surface.measure_heading(name, reading))
 
 
@@ -472,14 +472,18 @@ def reading_heading(
 PASS_RATE = "Pass rate"
 
 
-def judged_heading(name: str) -> str:
-    """A judged dimension as every surface names it: its name as :func:`~threetears.evals.analysis.style.measure_name`
-    spells it, marked judged (``reply stays on topic (judged)``, ``outcome (judged)``), never its stored id.
+def judged_heading(name: str, declared: str | None = None) -> str:
+    """A judged reading as every surface names it: its declared name where the bundle declares one (a claim
+    reading's, ``False claims per answer (rules.claims, judged)``), else its name as
+    :func:`~threetears.evals.analysis.style.measure_name` spells it, marked judged (``reply stays on topic (judged)``,
+    ``outcome (judged)``), never its stored id.
 
-    :param name: The dimension, as the rubric names it.
+    :param name: The dimension or reading, as its key names it.
+    :param declared: Its declared name (``AnalysisContextBundle.judged_label``), or None.
     :return: The name.
     """
-    return f"{judged_name(name)} (judged)"
+    said = judged_name(name, declared)
+    return f"{said[:-1]}, judged)" if said.endswith(")") else f"{said} (judged)"
 
 
 def _judged_label(heading: str) -> str:

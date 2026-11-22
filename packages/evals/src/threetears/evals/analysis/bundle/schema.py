@@ -951,6 +951,45 @@ class JudgedArm(EvalDocumentModel):
             "left out of `n` and the mean. Not a fault: the judge worked and declined to guess."
         ),
     )
+    # The three below are claim readings' alone, and left out of the document while 0, so a bundle assembled before
+    # they existed serializes, and is fingerprinted, as it did.
+    n_claim_lost: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose claim criterion lost the reading (a reply cut short, a budget spent, the "
+            "cost cap, the deadline; on the grounded share, its ground step alone), left out of `n` and the mean."
+        ),
+    )
+    n_claim_pending: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose tally still waits on its stored grade, left out of `n` and the mean "
+            "and counted as no loss: not yet known."
+        ),
+    )
+    n_web_skipped: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells where the web check skipped a claim past its budget. Each claim skipped reads "
+            "unverifiable, never false, so a cell's truth readings count fewer claims checked than its suspicion asked."
+        ),
+    )
+    n_web_lost: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "On a claim reading: cells whose web step failed (the port, a malformed reply, a verdict with no quote), a "
+            "cause apart from the budget. Its undecided claims read unverifiable, never false, and truth stands. "
+            "Read off the tally's `web_loss`."
+        ),
+    )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
         default=None,
@@ -1026,6 +1065,30 @@ class JudgedMeasure(EvalDocumentModel):
     arms: list[JudgedArm] = Field(
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
+    )
+    # The three below are a claim reading's alone, and left out of the document while unset, so a bundle assembled
+    # before they existed serializes, and is fingerprinted, as it did.
+    instrument: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The claim criterion this reading is one of, where it is a claim reading (a rate or a share of a cell's "
+            "claims, never a score); None for a rubric dimension or a dual-score axis."
+        ),
+    )
+    reader_name: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="What a reader calls a claim reading, naming its criterion's unit (`False claims per answer`).",
+    )
+    withheld: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why the reading ranks nothing, where it does not: `withheld`, `trials_lost` when its arms lost cells to "
+            "the claim criterion at shares that differ beyond chance (one test across every arm, stratified by case), so what is left is not read as each "
+            "arm's. None reads counted."
+        ),
     )
     second_judges: list[InterJudgeDimension] = Field(
         default_factory=list,
@@ -4145,6 +4208,34 @@ class AnalysisContextBundle(EvalDocumentModel):
                     if value.content_hash == content_hash:
                         return value.display
         return content_hash[:12]
+
+    def judged_label(self, name: str) -> str | None:
+        """What a page calls a judged reading where the bundle names it: a claim reading's reader name, in its
+        criterion's unit (``False claims per answer (rules.claims)``); None for a rubric dimension or a dual axis, which
+        a page names by its key.
+
+        :param name: The judged reading's name.
+        :return: The name; None where none is declared.
+        """
+        return next((measure.reader_name for measure in self.judged_measures if measure.name == name), None)
+
+    def judged_withheld(self, name: str) -> bool:
+        """Whether a judged reading is withheld: a claim reading whose arms lost cells unevenly ranks nothing.
+
+        :param name: The judged reading's name.
+        :return: Whether it is withheld.
+        """
+        return any(measure.name == name and measure.withheld is not None for measure in self.judged_measures)
+
+    def reading_label(self, name: str, reading: str) -> str | None:
+        """What a page calls a reading where its name is declared: a judged reading's (:meth:`judged_label`), a goal
+        check's (:meth:`check_name`); None for any other.
+
+        :param name: The reading's key.
+        :param reading: ``judged`` for a judged reading; anything else reads a measure.
+        :return: The declared name, or None.
+        """
+        return self.judged_label(name) if reading == "judged" else self.check_name(name)
 
     def check_name(self, measure: str) -> str | None:
         """What a page calls the goal check ``measure`` reads (:meth:`named_checks`), for

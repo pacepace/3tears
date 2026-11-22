@@ -1218,7 +1218,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
                     declared=bundle.check_name(comparison.name),
                 )
                 if comparison.reading == "judged":
-                    reading = judged_heading(comparison.name)
+                    reading = judged_heading(comparison.name, bundle.judged_label(comparison.name))
                 elif comparison.reading == "trial":
                     reading = PASS_RATE
                 words = comparison_words(

@@ -520,13 +520,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   numbered evidence, every ``GradedClaim``, every ``WebCheckRecord`` (one per check, which a restatement shares) and
 #:   ``web_loss`` and ``web_replayed``, each left out while unset), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
-#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``ground_loss`` records a ground step lost
-#:   alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the grade, and
-#:   ``web_loss`` a web step lost alone, costing only the web's decisions, as ``ClaimGrade.web_loss`` records it) and
+#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``grounded`` says the criterion asks
+#:   groundedness, so every reading is read off the tally with no template in hand, whose ``ground_loss`` records a
+#:   ground step lost alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the
+#:   grade, and whose ``web_loss`` records a web step lost alone, costing only the web's decisions, as
+#:   ``ClaimGrade.web_loss`` records it) and
 #:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
 #:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
 #:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``, whose
-#:   ``web_steps`` names the completed criteria whose lost web step alone it finished). Each is left
+#:   ``web_steps`` names the completed criteria whose lost web step alone it finished, and ``skipped`` those lost to the
+#:   trace's cap it left as stored). Each is left
 #:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims

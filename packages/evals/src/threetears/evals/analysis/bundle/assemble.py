@@ -850,6 +850,7 @@ def assemble_context_bundle(
             declared_design,
             tiers=bundle.judge_evidence_tiers,
             person_scores=person_scores,
+            claim_units=_claim_units(runs, templates),
         )
     ]
     bundle.bar_adjudications = bar_adjudications(
@@ -1077,6 +1078,22 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
         for dimension in template.rubric:
             criteria.setdefault(dimension.name, dimension.description)
     return criteria
+
+
+def _claim_units(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """What a page calls one unit of each claim criterion, as the member runs' templates name it
+    (``EvalTemplate.claim_unit_names``), by criterion.
+
+    Presentation only: a claim reading's reader name. A template that no longer resolves names nothing, and a
+    criterion two templates name differently is absent, read as a ``unit``, rather than under a noun one template chose.
+    """
+    given: dict[str, set[str]] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is not None:
+            for criterion, noun in template.claim_unit_names.items():
+                given.setdefault(criterion, set()).add(noun)
+    return {criterion: next(iter(nouns)) for criterion, nouns in given.items() if len(nouns) == 1}
 
 
 def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:

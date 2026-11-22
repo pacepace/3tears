@@ -265,8 +265,9 @@ async def rejudge_result(
     one thing: a grade whose web step was lost alone (its tally's ``web_loss``) has that step finished, and only that
     step (:func:`~threetears.evals.kernel.claims.grading.finish_web_step`), over the claims it left lost, live through
     ``web_search``: its truth and ground steps stand as stored, and no claim it checked is searched again. A criterion
-    or web step lost to the trace's cap (``evidence_over_cap``) is never graded again, since its evidence is the same;
-    a re-judge with nothing else to do refuses it by name, before any call. The new grades are written to the trace
+    or web step lost to the trace's cap (``evidence_over_cap``) is never graded again, since its evidence is the same:
+    a re-judge with nothing else to do refuses it by name, before any call, and one that grades others names it in the
+    rescore's ``skipped`` and on its log line. The new grades are written to the trace
     before the result, each write conditional on the document as read, and a
     :class:`~threetears.evals.schema.models.ClaimRescore` records it on the result
     (:func:`~threetears.evals.run.rejudge.apply_claim_rejudge`). A criterion lost again is recorded with its new loss,
@@ -453,11 +454,12 @@ async def rejudge_result(
     if claim_inputs is not None:
         claims = updated.claim_rescores[-1]
         log.info(
-            "eval.rejudge_result result=%s run=%s criteria=%s lost_again=%s cost=%s",
+            "eval.rejudge_result result=%s run=%s criteria=%s lost_again=%s skipped=%s cost=%s",
             result_id,
             run.id,
             ",".join(claims.criteria),
             ",".join(f"{name}={loss}" for name, loss in claims.lost.items()) or "-",
+            ",".join(f"{name}={loss}" for name, loss in claims.skipped.items()) or "-",
             _dollars(claims.cost_usd),
         )
     return updated

@@ -503,6 +503,7 @@ def test_a_tally_that_lost_its_ground_step_counts_no_grounded_claim_and_stores_t
             units_with_false=0,
             session_claims=1,
             by_judge=counts,
+            grounded=True,
             ground_loss="cut_short",
         )
     lost = claim_tally(
@@ -594,7 +595,12 @@ def test_a_lost_cell_carries_only_its_loss() -> None:
 
 def test_a_cell_with_no_unit_and_no_claim_carries_no_rate() -> None:
     tally = ClaimTally(
-        criterion_fingerprint=_SHA, documents_declared=True, units=0, units_with_false=0, session_claims=0
+        criterion_fingerprint=_SHA,
+        documents_declared=True,
+        grounded=True,
+        units=0,
+        units_with_false=0,
+        session_claims=0,
     )
     readings = claim_readings(_C, tally, grounded=True)
 

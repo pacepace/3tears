@@ -94,7 +94,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_judge_temperature_check": "4d8e401d407bc1c345e8db2ec255ef407cc3be286ee0c3ecbc999137d615c442",
     "eval_launch": "231668558a55ada65632949e463fc611988bf64ec5756ea8b21753835e160160",
     "eval_out_of_run_spend": "c6145bc279f1868ea5316a09b214fa44da57af58d578993cfebc0c1d225759a8",
-    "eval_result": "224aca5d3fcd25bedde01c0834929a106ae3eea888c1d7246ee6f8b1132c988f",
+    "eval_result": "deaef828f8de7f128b152f7c2ea5212ec393673994c111ab517460ec4c55d677",
     "eval_run": "fcd46b5389e78e0a32c44586ef49418e50720b9e8ccf0ffe27ef9e125e1697ff",
     "eval_second_judge_pass": "f8d98681f6379a7e5cbd540af34e0881c872c6f31293384b53d6db45365a7293",
     "eval_sweep": "1e3b43af8cec4e082d59441517e958a6d7cf06daa37a121165188ef6c2726119",

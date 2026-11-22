@@ -257,7 +257,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             measure_name(name, catalog[name].reader_name if name in catalog else None, declared=bundle.check_name(name))
             for name in one_figure_each(scope.exploratory_measures, read=catalog)
         ),
-        *(judged_heading(name) for name in scope.exploratory_dimensions),
+        *(judged_heading(name, bundle.judged_label(name)) for name in scope.exploratory_dimensions),
     ]
     if exploratory and scope.questions_declared:
         blocks.append(_readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]))
@@ -288,7 +288,13 @@ def _contrast_blocks(
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers, forms))
     blocks.extend(
         _strata_blocks(
-            surface, names, rulers, forms, check_names=bundle.named_checks(), stratum_names=_printed_strata(bundle)
+            surface,
+            names,
+            rulers,
+            forms,
+            check_names=bundle.named_checks(),
+            stratum_names=_printed_strata(bundle),
+            judged=bundle,
         )
     )
     blocks.extend(_label_blocks(surface, names, rulers, forms))

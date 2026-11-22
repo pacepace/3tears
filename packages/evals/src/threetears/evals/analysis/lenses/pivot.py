@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, get_args
 
 from pydantic import Field
 
+from threetears.evals.kernel.claims.readings import describe_claim_reading
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
@@ -276,6 +277,14 @@ class PivotTable(EvalBaseModel):
     #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and
     #: did not run, or ran where this table does not separate it. Empty when no estimate was given.
     unplaced_predicted_models: list[str] = []
+
+
+def _row_scale(record: ScoreRecord) -> str | None:
+    """What a row's value is on, for the pooling rule: its rubric scale, or, for a claim reading, the reading itself
+    (``claim:<reading>``), which no other reading shares; None for a row with neither."""
+    if record.instrument is not None:
+        return f"claim:{record.rubric_dim}"
+    return record.rubric_scale
 
 
 def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: HostProfile) -> bool:
@@ -750,8 +759,18 @@ def compute_pivot(
     # A per-dimension score's catalogue range spans every scale, since the catalogue cannot know
     # which dimensions a table holds. The table can: when every row was judged on one scale, its
     # measure carries that scale's range, so a 1-5 table does not claim a floor of 0.
-    if len(table_scales := {r.rubric_scale for r in selected if r.rubric_scale is not None}) == 1:
-        measure = measure.model_copy(update={"value_range": SCALES[table_scales.pop()].value_range})
+    if len(table_scales := {scale for r in selected if (scale := _row_scale(r)) is not None}) == 1:
+        scale = table_scales.pop()
+        if scale in SCALES:
+            measure = measure.model_copy(update={"value_range": SCALES[scale].value_range})
+        else:
+            # A table of one claim reading is that reading: its range is the reading's own, a share's 0 to 1 or none
+            # for a per-unit rate, never a rubric scale's.
+            name, criterion = min(
+                (r.rubric_dim or "", r.instrument or "") for r in selected if r.instrument is not None
+            )
+            claimed = describe_claim_reading(name, criterion=criterion)
+            measure = measure.model_copy(update={"value_range": claimed.value_range})
 
     # The no-pooling rule, enforced before any number is computed rather than as a badge after:
     # a table that has already averaged across subjects cannot be un-averaged by
@@ -782,10 +801,13 @@ def compute_pivot(
 
     # A mean of 1-5 levels and 1/0 pass/fail answers is neither a level nor a pass rate, so a cell
     # pooling both is refused before it is computed, like the subject pooling above.
+    # A claim reading is a rate or a share of claims, its own scale: pooled with a dimension, or with another claim
+    # reading, a cell's mean is none of them.
     for (row, column), members in grouped.items():
-        if len(scales := {r.rubric_scale for r in members if r.rubric_scale is not None}) > 1:
+        if len(scales := {scale for r in members if (scale := _row_scale(r)) is not None}) > 1:
             raise PivotError(
-                f"cell ({row}, {column}) pools rubric dimensions judged on different scales ({', '.join(sorted(scales))})",
+                f"cell ({row}, {column}) pools rubric dimensions judged on different scales, or claim readings "
+                f"({', '.join(sorted(scales))})",
                 remedy="put 'rubric_dim' on an axis so each cell holds one dimension",
             )
 

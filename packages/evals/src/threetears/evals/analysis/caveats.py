@@ -16,7 +16,11 @@ something to qualify adds a raiser and one row of :data:`CLASS_OF_KIND`, and ren
 - *Typed* (:func:`from_states`): every reading, contrast, pair and figure the input holds in a state other than
   counted, every arm whose identity is not one cell, and, where the builder holds the bundle, what only the bundle
   holds of an arm not being one cell (an arm read per answering model, an arm holding several cells of one rig), all
-  grouped once; then every check of a judge that does not speak for it, and looks past their plan.
+  grouped once; then every check of a judge that does not speak for it (a claim criterion's readings sharing one
+  caveat per question and rater), every claim criterion whose readings lost cells, hold cells still pending, or had
+  claims skipped past the web budget (``claims_lost:<criterion>``, ``claims_pending:<criterion>``,
+  ``claims_web_skipped:<criterion>``, and ``claims_web_lost:<criterion>`` for a web step that failed, naming the
+  arms), and looks past their plan.
 - *The bundle's* (:func:`from_bundle`): results with no ordered time, and request settings not confirmed as sent.
 
 **Ids are unique by construction**, and :func:`raise_caveats` refuses two different entries under one id rather than
@@ -166,6 +170,10 @@ CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
         "no_control": "B",  # default
         "nothing_declared": "B",  # default
         "untimed": "B",  # default: the code page's "no ordered time"
+        "claims_lost": "B",  # a claim criterion lost some cells: the reading rests on fewer than were run
+        "claims_pending": "B",  # some cells' claim tallies wait on their stored grade: not yet known
+        "claims_web_skipped": "B",  # some cells' web checks skipped claims past their budget: read unverifiable
+        "claims_web_lost": "B",  # some cells' web steps failed, a cause apart from the budget: read unverifiable
         "request_settings": "B",  # default: the code page's "request settings not confirmed"
         # C: an instrument on an asked reading is unchecked, or checked against a model only.
         "judge_uncalibrated": "C",
@@ -227,6 +235,10 @@ _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
         "no_control": "name_control",
         "nothing_declared": "declare_criteria",
         "untimed": "record_and_rerun",
+        "claims_lost": "resume_or_rerun",
+        "claims_pending": "resume_or_rerun",
+        "claims_web_skipped": "resume_or_rerun",
+        "claims_web_lost": "repair_rig",
         "request_settings": "record_and_rerun",
         "judge_uncalibrated": "check_against_people",
         "judge_partly_uncalibrated": "check_against_people",
@@ -761,6 +773,12 @@ def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
             held = contrast.state
             at = f"{contrast.aspect or lead}/{contrast.measure}"
             yield _Fact(held.state, held.reason, held.coordinate, at, contrast.arm, contrast.n_cases)
+    # A judged reading's figures: a claim reading whose arms lost cells at shares that differ is withheld on each arm.
+    for key, judged in report_input.judged.items():
+        for arm, stat in judged.per_arm.items():
+            if stat.state is not None and stat.state.state != "counted":
+                held = stat.state
+                yield _Fact(held.state, held.reason, held.coordinate, f"{lead}/{key}", arm, stat.n_cases)
     for key, measure in report_input.measures.items():
         figures = [(lead, measure.per_arm), *measure.by_aspect.items()]
         for aspect_id, per_arm in figures:
@@ -858,11 +876,19 @@ def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
     """A caveat per check of a judge against people or a model. A check against people that is met qualifies
     nothing, so it is said one step down, where it still silences a check against a model on its criterion."""
     repeats: dict[str, int] = {}
+    # A claim criterion's readings share their instrument's checks: one check of one question against one kind of
+    # rater is one caveat, whichever of its readings carry it, so three readings of one criterion raise it once.
+    said: set[tuple[str, str, str]] = set()
     for dimension, judged in report_input.judged.items():
         for check in judged.checks:
             if check.against not in ("people", "model"):
                 continue
-            check_id = f"check:{dimension}:{check.criterion or check.instrument}:{check.against}"
+            if judged.instrument is not None:
+                once = (judged.instrument, check.criterion or check.instrument, check.against)
+                if once in said:
+                    continue
+                said.add(once)
+            check_id = f"check:{judged.instrument or dimension}:{check.criterion or check.instrument}:{check.against}"
             repeats[check_id] = repeats.get(check_id, 0) + 1
             if repeats[check_id] > 1:
                 check_id = f"{check_id}:{repeats[check_id]}"
@@ -1047,7 +1073,47 @@ def from_states(report_input: ReportInput, bundle: CampaignBundle | None = None)
     :return: The caveats, each holder's in the input's order then the bundle's, then the checks', then the looks'.
     """
     facts = [*_input_facts(report_input), *(_bundle_facts(bundle) if bundle is not None else ())]
-    return [*_from_facts(report_input, facts), *_checks(report_input), *_looks(report_input)]
+    return [*_from_facts(report_input, facts), *_checks(report_input), *_claims(report_input), *_looks(report_input)]
+
+
+#: The claim caveats, by the count on a claim reading's input that raises each.
+_CLAIM_KINDS: Final[tuple[tuple[str, str], ...]] = (
+    ("claims_lost", "lost"),
+    ("claims_pending", "pending"),
+    ("claims_web_skipped", "web_skipped"),
+    ("claims_web_lost", "web_lost"),
+)
+
+
+def _claims(report_input: ReportInput) -> Iterator[CaveatEntry]:
+    """A caveat per claim criterion whose readings lost cells, have cells still pending, had claims skipped past the
+    web budget, or lost their web step to a failure: one per criterion and kind, whichever of its readings hold it, naming each arm that does.
+
+    Each is the evidence not being what it appears: a reading over fewer cells than ran, a population not yet whole,
+    or claims a suspicious judge could not check, which read unverifiable and never false. The arms are named, so a
+    reader sees which side of a comparison it touches.
+    """
+    lead = report_input.aspects[0].id if report_input.aspects else ""
+    by_criterion: dict[tuple[str, str], tuple[set[str], list[str]]] = {}
+    for key, judged in report_input.judged.items():
+        if judged.instrument is None:
+            continue
+        for kind, field in _CLAIM_KINDS:
+            held: dict[str, int] = getattr(judged, field)
+            if held:
+                arms, readings = by_criterion.setdefault((kind, judged.instrument), (set(), []))
+                arms.update(held)
+                readings.append(f"{lead}/{key}")
+    asked = {aspect.id for aspect in asked_aspects(report_input)}
+    for (kind, criterion), (arms, readings) in sorted(by_criterion.items()):
+        yield _entry(
+            report_input,
+            f"{kind}:{criterion}",
+            kind,
+            "report" if not asked or lead in asked else "scoped",
+            arms=[arm.id for arm in report_input.arms if arm.id in arms] or sorted(arms),
+            readings=readings,
+        )
 
 
 def _bundle_facts(bundle: CampaignBundle) -> Iterator[_Fact]:
