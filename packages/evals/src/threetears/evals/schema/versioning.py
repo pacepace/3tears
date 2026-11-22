@@ -521,7 +521,8 @@ CORE_SCHEMA_VERSION: int = 15
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 #: - **v15.24** — claim grading's stored shapes (#1287): a trace may carry ``EvalTrace.claim_evidence``
 #:   (``ClaimEvidence``: the host's segmentation, its segments with their units, the documents claims are checked
-#:   against and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
+#:   against, each case document naming the case documents it overrides in ``EvidenceDocument.overrides``, left out
+#:   while empty, and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
 #:   numbered evidence, every ``GradedClaim``, every ``WebCheckRecord`` (one per check, which a restatement shares) and
 #:   ``web_loss`` and ``web_replayed``, each left out while unset), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
