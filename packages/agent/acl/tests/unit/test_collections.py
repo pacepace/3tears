@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
+import asyncpg
 import duckdb
 import pytest
 from threetears.agent.acl import (
@@ -688,6 +689,47 @@ class TestEnsureGroupRoleAssignment:
                 scope_type="namespace",
                 scope_id=uuid7(),
             )
+
+    @pytest.mark.asyncio
+    async def test_a_yugabyte_conflict_on_the_insert_answers_the_winner(self) -> None:
+        """Flips if YugabyteDB's SerializationError on a racing insert escapes the ensure (every hub replica ensures
+        the same grant at deploy): the insert is tried again, absorbed by the winner's row, and the winner answered."""
+        winner = uuid7()
+
+        async def fetch(sql: str, *args: Any) -> list[dict[str, Any]]:
+            # the natural-key read finds none held (nor a namespace customer); the winner read finds the winner
+            if '"date_granted"' in sql:
+                return [{"row_scope": "customer", "assignment_id": winner, "date_granted": None}]
+            return []
+
+        pool = AsyncMock()
+        pool.fetch.side_effect = fetch
+        pool.fetchval.side_effect = [asyncpg.SerializationError("conflict with concurrently committed data"), None]
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        group_id = uuid7()
+        assignment_id, created = await coll.ensure_group_role_assignment(
+            group_id=group_id, role_id=uuid7(), scope_type="namespace", scope_id=uuid7(), managed_by="bootstrap"
+        )
+        assert (assignment_id, created) == (winner, False)
+        assert pool.fetchval.await_count == 2
+        coll.invalidate_cache_many.assert_awaited_once_with([("customer", winner)], rows=[{"group_id": group_id}])
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_never_clears_is_raised(self) -> None:
+        """Flips if a conflict on every attempt is swallowed (the grant would be answered as held, unwritten), or the
+        insert is never tried again."""
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        pool.fetchval.side_effect = asyncpg.SerializationError("conflict with concurrently committed data")
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        with pytest.raises(asyncpg.SerializationError):
+            await coll.ensure_group_role_assignment(
+                group_id=uuid7(), role_id=uuid7(), scope_type="namespace", scope_id=uuid7()
+            )
+        assert pool.fetchval.await_count > 1
+        coll.invalidate_cache_many.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_unsupported_scope_type(self) -> None:

@@ -8,10 +8,9 @@ that passed and leaves its schema behind.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-import asyncpg
+from threetears.core.utils.serialization_retry import retry_serialization_conflicts
 
 __all__ = ["drop_schema"]
 
@@ -36,13 +35,8 @@ async def drop_schema(conn: Any, schema: str, *, attempts: int = _ATTEMPTS, firs
     :rtype: None
     :raises asyncpg.SerializationError: when every attempt conflicts
     """
-    wait = first_wait
-    for attempt in range(1, attempts + 1):
-        try:
-            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-            return
-        except asyncpg.SerializationError:
-            if attempt == attempts:
-                raise
-            await asyncio.sleep(wait)
-            wait *= 2
+
+    async def drop() -> None:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+    await retry_serialization_conflicts(drop, attempts=attempts, first_wait=first_wait)

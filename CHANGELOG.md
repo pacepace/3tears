@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-acl: a role assignment ensure that meets YugabyteDB's conflict answers the winner
+
+**Fixed:** `RoleAssignmentCollection.ensure_group_role_assignment` let YugabyteDB's `SerializationError` out when its
+insert met a concurrent ensure's commit ("query layer retry isn't possible, READ COMMITTED transaction was aborted and
+some data was already sent to the user", kConflict on the natural-key index): about one race in three of twelve
+ensures on the integration YugabyteDB, and every hub replica runs the ensure at once at deploy. The insert is now
+tried again (up to 5 times, 5 ms doubling): the conflict aborted it, and the winner has committed, so the next try is
+absorbed and answers the winner, `created=False`. PostgreSQL never raises it there. **Added:**
+`threetears.core.utils.retry_serialization_conflicts`, the one retry of a re-runnable unit on SQLSTATE 40001
+(`threetears.core.testing.drop_schema` now uses it).
+
 ### core: a bulk writer's change notes reach the ring in one insert at its commit
 
 **Added:** `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
