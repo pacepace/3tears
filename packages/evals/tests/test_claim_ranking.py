@@ -661,8 +661,8 @@ def _all_on_one_arm(cases: int) -> bool:
 
 def test_few_losses_are_read_by_their_own_conditional_law() -> None:
     """Four cells lost in four cases, all on one arm: the chi-square law reads p 0.046 and would withhold the reading,
-    and the exact chance of so lopsided a split is 1/8, which the permutation p reads (0.109 over its 999 draws), so the
-    reading stands. Six such cells (exact chance 1/32) are withheld. The error rates at scale are certified
+    and the exact chance of so lopsided a split is 1/8, which the permutation reads as no less than 5% (its draws stop
+    once 49 are as lopsided), so the reading stands. Six such cells (exact chance 1/32) are withheld. The error rates at scale are certified
     (``claim-loss.*`` in ``stats_certificate.py``), not run here."""
     assert not _all_on_one_arm(4)
     assert _all_on_one_arm(6)
