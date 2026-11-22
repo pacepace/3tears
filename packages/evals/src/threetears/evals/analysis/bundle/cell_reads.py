@@ -20,6 +20,7 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.arms import surface_order
 from threetears.evals.analysis.cells import Cell
+from threetears.evals.analysis.permutation import sequential_permutation_p, stratified_hypergeometric_totals
 from threetears.evals.analysis.reporting import (
     METRIC_OUTCOME,
     METRIC_SCORE,
@@ -416,21 +417,23 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     every arm.
 
     Each cell the reading could have been read on (read, or left unread: lost, silent, pending, or unread by the host's
-    reader for a derived reading; a harness-faulted cell is in neither) is one trial of a case: unread or kept. A
-    silent or pending cell is no loss and is in no mean, but its absence may track arm as a loss's may, so an arm
-    silent, or waiting on its grades, on a sharply higher share of cells has the reading withheld as one that lost them
-    would; a pending backlog normally settles on its own, and the reading is read again once it has. The test is the Cochran-Mantel-Haenszel test of general association between arm
-    and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
-    is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
-    of moves nothing on its own. Its p is the statistic's conditional permutation p at every size, never the chi-square
-    law's: the permutation is valid and conservative however many cells were lost, and one law at every count means no
-    reading's p moves as a campaign's losses cross a threshold. Its 5% is held by that construction: the permutation's
-    size is its level. The ``claim-loss.*`` claims of ``tests/stats_certificate.py`` certify the implementation is not
-    anti-conservative, each null row's false-withhold rate not above 5% by more than one point on the 95% upper bound of
-    4,000 draws: over twelve cases at two, three and four arms, equal losses of 10% and of 3%, at one repeat a case, and a
-    loss a few cases carry; an equal 20% over forty cases of four repeats at two arms (about 64 lost cells); and a loss
-    two fifths of sixty cases carry at one repeat a case, at three and four arms (about 49 and 65 lost cells, in strata of
-    three or four cells). A 0% against 30% loss is caught at least 75% of the time.
+    reader for a derived reading; a harness-faulted cell is in neither) is one trial of a case: unread or kept. A silent
+    or pending cell is no loss and is in no mean, but its absence may track arm as a loss's may, so an arm silent, or
+    waiting on its grades, on a sharply higher share of cells has the reading withheld as one that lost them would; a
+    pending backlog normally settles on its own, and the reading is read again once it has. The test is the
+    Cochran-Mantel-Haenszel test of general association between arm and loss, stratified by case
+    (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading is withheld for chance loss
+    at most as often as its level allows at two arms or at four, and a case one arm ran more of moves nothing on its
+    own. Its p is the statistic's conditional permutation p at every size, never the chi-square law's: the permutation
+    is valid and conservative however many cells were lost, and one law at every count means no reading's p moves as a
+    campaign's losses cross a threshold. Its 5% is held by that construction: the permutation's size is its level, and
+    reading its draws sequentially adds at most 0.0003. The ``claim-loss.*`` claims of ``tests/stats_certificate.py``
+    certify the implementation is not anti-conservative, each null row's false-withhold rate not above 5% by more than
+    one point on the 95% upper bound of 4,000 draws: over twelve cases at two, three and four arms, equal losses of 10%
+    and of 3%, at one repeat a case, and a loss a few cases carry; an equal 20% over forty cases of four repeats at two
+    arms (about 64 lost cells); and a loss two fifths of sixty cases carry at one repeat a case, at three and four arms
+    (about 49 and 65 lost cells, in strata of three or four cells). A 0% against 30% loss is caught at least 75% of the
+    time.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.
@@ -454,9 +457,13 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
     cases, form the statistic. Its p is the statistic's own conditional law, never the chi-square law's (with few losses
     the law misstates the chance: four losses in four cases, all on one arm, read p 0.046 by the law, 1/8 by the draw;
     with many it runs near its nominal level, which no bound on its false withholds can sit under): each case's losses
-    drawn again among its cells :data:`_CLAIM_LOSS_DRAWS` times from :data:`_CLAIM_LOSS_SEED`, ``p = (1 + draws at least
-    as extreme) / (1 + draws)``, which errs at most its level at any count. At about forty thousand cells over four arms,
-    a tenth of them lost, the draws take about a second a reading.
+    drawn again among its cells up to :data:`_CLAIM_LOSS_DRAWS` times from :data:`_CLAIM_LOSS_SEED`, ``p = (1 + draws
+    at least as extreme) / (1 + draws)``, which errs at most its level at any count. The draws are each arm's losses
+    summed over cases, drawn from each case's margins as counts, never by shuffling cells, and read sequentially
+    (:func:`~threetears.evals.analysis.permutation.sequential_permutation_p`): a read stops once its p can no longer
+    fall under 5%, which changes no decision, or, at an early look, once so few draws are as extreme that it rejects,
+    which adds at most 0.0003 to the false-withhold rate. At forty thousand cells over four arms, a tenth or a quarter
+    of them lost, a reading takes a few hundredths of a second, and at most about a fifth where every draw is read.
     """
     tables: dict[str, list[tuple[int, bool]]] = defaultdict(list)
     for arm, rows in enumerate(by_cell.values()):
@@ -496,17 +503,23 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
         return sum(deviation[i] * columns[j][i] * deviation[j] for i in range(len(free)) for j in range(len(free)))
 
     observed = statistic(Counter(arm for cells in informative for arm, held in cells if held))
-    # Each case's arms in its cells' order and its losses, read once: a draw takes as many of its arms as it lost,
-    # without replacement, the same draws as taking that many of its cells' places.
-    strata = [([arm for arm, _ in cells], sum(held for _, held in cells)) for cells in informative]
-    draw = random.Random(_CLAIM_LOSS_SEED)
-    at_least = 0
-    for _ in range(_CLAIM_LOSS_DRAWS):
-        drawn: Counter[int] = Counter()
-        for arms_of_cells, lost_in_case in strata:
-            drawn.update(draw.sample(arms_of_cells, lost_in_case))
-        at_least += statistic(drawn) >= observed - 1e-9
-    return (1 + at_least) / (1 + _CLAIM_LOSS_DRAWS)
+    # Each case's cells by arm and its losses: its margins, all the conditional law reads. A draw takes each case's
+    # losses among its cells without replacement, as counts by arm (``stratified_hypergeometric_totals``).
+    strata = [
+        (tuple(Counter(arm for arm, _ in cells)[each] for each in arms), sum(held for _, held in cells))
+        for cells in informative
+    ]
+    totals = stratified_hypergeometric_totals(strata, random.Random(_CLAIM_LOSS_SEED))
+    read: dict[tuple[int, ...], bool] = {}
+
+    def at_least_as_extreme() -> bool:
+        drawn = next(totals)
+        extreme = read.get(drawn)
+        if extreme is None:
+            extreme = read[drawn] = statistic(Counter(dict(zip(arms, drawn, strict=True)))) >= observed - 1e-9
+        return extreme
+
+    return sequential_permutation_p(at_least_as_extreme, draws=_CLAIM_LOSS_DRAWS, level=_CLAIM_LOSS_LEVEL)
 
 
 def _solve(matrix: list[list[float]], vector: list[float]) -> list[float] | None:

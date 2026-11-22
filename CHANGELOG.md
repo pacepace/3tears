@@ -66,6 +66,22 @@ the trial cause `code_raised`, the decision surface's `JudgedDimensionFacts.nonn
 analysis carrying any of them (`extra_forbidden`, or the trial cause as no `FailCause`), so the integration line is
 deployed and rolled back as one, as the rest of 15.24 is.
 
+### evals: the claim-loss test reads a large campaign in hundredths of a second
+
+**Changed (#1301):** the test that withholds a claim reading whose arms lost cells unevenly is the same conditional
+permutation within case, with ties counted against withholding. It is now drawn and read faster:
+
+- **Counts, not shuffles.** Each draw takes each case's losses among its cells from the case's margins, as counts by
+  arm (`analysis.permutation.stratified_hypergeometric_totals`). Cases that share margins are drawn together.
+- **A sequential read** (`analysis.permutation.sequential_permutation_p`). The read stops once 49 of its 999 draws are
+  as extreme, since its p can no longer fall under 5%; this changes no decision. At 99, 199, 399 and 799 draws it also
+  stops and withholds when so few draws are as extreme that a true p of 5% would give so few at most 1% of the time.
+  This raises the false-withhold rate by at most 0.0003, bounded over every law a valid test's p can have.
+
+At 4 arms × 10,000 cells, a reading took 0.6 to 6.3 s and now takes about 0.03 to 0.09 s. One whose p sits near 5%
+reads all 999 draws and takes up to about 0.2 s. The draws come from a new random stream, so a reading whose p sits
+near 5% may now land on the other side of it.
+
 ### evals: a host draws, answers, closes and repeats a claim read through seven actions
 
 **Added (#1287), provisional:** the claim read's host door, onto the same core, as the blind read's is onto its own.
