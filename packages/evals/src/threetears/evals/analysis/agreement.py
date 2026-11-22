@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 
 from pydantic import Field
 
+from threetears.evals.kernel.claims.readings import claim_judge_config_id, claim_reading_question
 from threetears.evals.analysis.stats import (
     KappaMoments,
     cohen_kappa,
@@ -206,6 +207,37 @@ def judge_key(result: ResultView, dim: str) -> JudgeKey | None:
         score.judge_temperature,
         sent_settings_key(score.judge_sent_settings),
     )
+
+
+def claim_judge_keys(result: ResultView, reading: str, *, criterion: str) -> list[JudgeKey]:
+    """The judges behind a cell's value on a claim reading: one key per judge whose calls decided its claims.
+
+    A claim reading rests on pass/fail answers to one question (``<criterion>.true`` for truth, ``<criterion>.grounded``
+    for groundedness), asked by the criterion's built-in prompts under its fingerprint
+    (``claims:<criterion>@<sha12>``). A cell whose claims two judge keys decided (a fallback model served a retry)
+    names both, so its arm can only carry the tier of the weaker.
+
+    :param result: The result.
+    :param reading: The claim reading's name.
+    :param criterion: The criterion it reads.
+    :return: The keys; empty where the criterion has no tally on the result, or its tally decided no claim.
+    """
+    tally = result.claim_tallies.get(criterion)
+    if tally is None:
+        return []
+    question = claim_reading_question(reading, criterion=criterion)
+    config = claim_judge_config_id(criterion, tally.criterion_fingerprint)
+    return [
+        JudgeKey(
+            question,
+            "pass_fail",
+            entry.served_model,
+            config,
+            entry.judge_temperature,
+            sent_settings_key(entry.judge_sent_settings),
+        )
+        for entry in tally.by_judge
+    ]
 
 
 def judge_sort_key(key: JudgeKey) -> tuple[str, str, str, str, str, str]:

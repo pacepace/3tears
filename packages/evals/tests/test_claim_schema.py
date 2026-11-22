@@ -269,6 +269,7 @@ def _tally(**changes: Any) -> ClaimTally:
     fields: dict[str, Any] = {
         "criterion_fingerprint": _SHA,
         "documents_declared": True,
+        "grounded": True,
         "units": 1,
         "units_with_false": 0,
         "session_claims": 1,

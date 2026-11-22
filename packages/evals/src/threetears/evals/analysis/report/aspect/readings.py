@@ -103,14 +103,20 @@ def _readings_blocks(
                     "cases": summary.n_independent or None,
                 }
             )
-        for reading in sorted(cell.judged, key=lambda reading: judged_heading(reading.dimension)):
+
+        def heading(dimension: str) -> str:
+            return judged_heading(dimension, bundle.judged_label(dimension))
+
+        for reading in sorted(cell.judged, key=lambda reading: heading(reading.dimension)):
             ruler = rulers.of(reading.dimension, "judged")
             places.append((cell, reading.dimension, "judged", reading.mean))
             rows.append(
                 {
                     "arm": label,
-                    "reading": judged_heading(reading.dimension),
-                    "value": None
+                    "reading": heading(reading.dimension),
+                    "value": _WITHHELD_UNEVEN_LOSS
+                    if bundle.judged_withheld(reading.dimension)
+                    else None
                     if reading.mean is None
                     else _figure_text(
                         reading.mean, reading.sem, ruler, forms, measure=reading.dimension, kind="judged"
@@ -191,8 +197,12 @@ def _strata_blocks(
     *,
     check_names: Mapping[str, str],
     stratum_names: Mapping[str, str],
+    judged: AnalysisContextBundle | None = None,
 ) -> list[ReportBlock]:
-    """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
+    """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum.
+
+    ``judged`` is the aspect's bundle, which names each claim reading and says which it withheld; None names every
+    judged reading by its key."""
     control = surface.control_variant_key
     cells = surface_order(
         (cell for cell in surface.cells if cell.strata),
@@ -236,7 +246,7 @@ def _strata_blocks(
                 )
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, forms, check_names=check_names))
-        rows.extend(_judged_rows(arm, cell, by_name, columns, rulers, forms))
+        rows.extend(_judged_rows(arm, cell, by_name, columns, rulers, forms, judged=judged))
     order = (
         surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
         + " Within each arm: its cases, then each measure by name, then each judged dimension."
@@ -398,8 +408,11 @@ def _judged_rows(
     columns: dict[str | None, str],
     rulers: Rulers,
     forms: PageForms,
+    *,
+    judged: AnalysisContextBundle | None = None,
 ) -> list[dict[str, CellValue]]:
-    """One row per judged dimension the arm or any of its strata was scored on."""
+    """One row per judged reading the arm or any of its strata was scored on, each named as the bundle names it, a
+    withheld claim reading marked so in every column."""
     pooled = {reading.dimension: reading for reading in cell.judged}
     per_stratum = {
         name: {reading.dimension: reading for reading in stratum.judged} for name, stratum in by_name.items()
@@ -408,16 +421,34 @@ def _judged_rows(
     rows: list[dict[str, CellValue]] = []
     for dimension in dimensions:
         ruler = rulers.of(dimension, "judged")
+        label = judged.judged_label(dimension) if judged is not None else None
+        withheld = judged is not None and judged.judged_withheld(dimension)
+
+        def text(reading: JudgedReading) -> str:
+            if withheld:
+                return _WITHHELD_UNEVEN_LOSS
+            return _judged_text(reading, ruler, forms, empty=_NO_SCORE if label is None else _NO_READING)
+
         row: dict[str, CellValue] = {
             "arm": arm,
-            "reading": judged_heading(dimension),
-            "all": _judged_text(pooled[dimension], ruler, forms) if dimension in pooled else None,
+            "reading": judged_heading(dimension, label),
+            "all": text(pooled[dimension]) if dimension in pooled else None,
         }
         for name in columns:
             readings = per_stratum.get(name, {})
-            row[columns[name]] = _judged_text(readings[dimension], ruler, forms) if dimension in readings else None
+            row[columns[name]] = text(readings[dimension]) if dimension in readings else None
         rows.append(row)
     return rows
+
+
+#: What a judged cell with no figure says: a dimension has no score there, a claim reading no reading (a rate of
+#: claims is never a score).
+_NO_SCORE = "no score"
+_NO_READING = "no reading"
+
+#: What a withheld claim reading's cell says in place of its figure: the arms lost its cells at shares that differ
+#: beyond chance, so no arm's figure is read as the arm's.
+_WITHHELD_UNEVEN_LOSS = "withheld: its arms lost cells unevenly"
 
 
 def _summary_text(summary: MeasureSummary, ruler: MeasureRuler, forms: PageForms) -> str:
@@ -440,10 +471,11 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler, forms: PageForms
     return "; ".join(f"{category}: {count}" for category, count in counts) + f" {n}"
 
 
-def _judged_text(reading: JudgedReading, ruler: MeasureRuler, forms: PageForms) -> str:
-    """One judged dimension's mean, with its standard error and the scores it rests on, on the dimension's ruler."""
+def _judged_text(reading: JudgedReading, ruler: MeasureRuler, forms: PageForms, *, empty: str = "no score") -> str:
+    """One judged reading's mean, with its standard error and the values it rests on, on its ruler; ``empty`` and the
+    count where it has none."""
     if reading.mean is None:
-        return f"no score (n={reading.n})"
+        return f"{empty} (n={reading.n})"
     figure = _figure_text(reading.mean, reading.sem, ruler, forms, measure=reading.dimension, kind="judged")
     text = f"{figure} {_n_text(reading.n, reading.n_independent)}"
     if (powered := reading.prediction_powered) is not None:

@@ -6,6 +6,54 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: claim readings rank arms, and a criterion's losses withhold only what they cost
+
+**Added (#1287):** a claim criterion's readings are read on the ranking path as judged readings. The score projection
+emits one row per reading per cell: the reading's name on `rubric_dim`, no `rubric_scale`, and the criterion on a new
+`ScoreRecord.instrument`. The bundle summarises the three readings that rank (false claims per unit, the share of units
+with a false claim, and, under `grounded_in`, the grounded share) as judged measures. Each one carries its criterion
+(`JudgedMeasure.instrument`) and a reader name in the template's unit noun ("False claims per answer"). The comparison
+family tests each one beside the rubric dimensions: a share takes the bounded test and the per-unit rate the t-path. The
+diagnostics stay in the projection (export and pivot), and a claim about the session itself counts only in
+`<criterion>_session_claims`. A claim reading decides no trial's pass, no floor and no bar: a floor reads none of them
+as a pass rate, and a bar naming one is refused (`BarNameRefusal` gains `ranks_only`), so none is ever cleared on a
+reading, least of all a withheld one.
+A claim reading's judge key is its question (`<criterion>.true`, `<criterion>.grounded`) on a pass/fail scale under
+`claims:<criterion>@<sha12>`, one key per judge that decided its claims.
+
+**Losses are per criterion and per reading.** A lost criterion leaves every reading of the cell, a lost ground step
+only the grounded share, and a tally still waiting on its stored grade (`trace_pending`) is counted apart and is never a
+loss. Each arm counts them (`JudgedArm.n_claim_lost`, `n_claim_pending`), and an arm that lost every cell counts them
+on the grounded share too. A reading is withheld (`trials_lost`) and tested in no family when one test across every arm
+says its arms lost cells at shares that differ beyond chance: the Cochran-Mantel-Haenszel test of arm against loss,
+stratified by case, at 5%, whose p is its conditional permutation p (999 draws from a fixed seed) wherever the cases
+that tell arms apart hold at most 40 lost cells. Its rates are certified claims (`claim-loss.*` in the statistics
+certificate, a thousand seeded draws each, twelve cases): under equal loss at two, three and four arms (10% over two
+repeats, 3%, one repeat a case, and a loss three cases carry most of), it withholds at most 5% of the time, the 95%
+upper bound; a loss of 0% against 30% is withheld more than 75% of the time, the 95% lower bound. Any loss,
+pending cell, claim skipped past the web budget, or failed web step raises a class-B caveat
+(`claims_lost:<criterion>`, `claims_pending:`, `claims_web_skipped:`, `claims_web_lost:`) naming the arms it touches.
+A skipped or unchecked claim reads unverifiable, never false.
+
+**Changed:** a claim reading is a rate or a share on every page, never a score: a share reads as a share and a per-unit
+rate as a bare number its name qualifies. The aspect page heads each claim reading by its reader name ("False claims
+per answer (rules.claims, judged)"), says "no reading" where a cell holds none, and marks a withheld reading as withheld
+in its tables and in its contrasts section. A cell that only claim criteria judged no longer reads "No judge produced
+output". Its judging state is `scored`, or `failed` where every criterion lost it, and its disclosure names each lost
+criterion and each one still pending. A claim reading's unit noun is pluralised by the regular English rules
+("entries", not "entrys"). Claim criterion names that collide with a host measure were already refused at admission
+and launch, and still are.
+
+**For hosts:** `ClaimTally` gains `grounded` (whether the criterion asks groundedness; left out while false), so every
+reading is read off the tally with no template in hand. It amends core 15.24, which is unreleased. A build before this
+change refuses a stored tally that carries `grounded: true`, naming the field, since the claim records forbid unknown
+fields within their minor. The reverse holds too: this build refuses a grounded criterion's tally an earlier 15.24
+build wrote, if it counts grounded claims or a lost ground step, because that tally lacks the field. A tally that counts
+neither reads as asking no groundedness and loses its grounded share. So an integration store holding claim tallies from
+an earlier 15.24 build is re-judged or discarded before this build reads it. Roll this build out before any run writes a
+grounded criterion's tally, and roll back only over stores holding none. `ResultView` now carries `claim_tallies` and `claim_failures`. A hand-built `ClaimTally` of
+a grounded criterion must set `grounded=True`; one that counts grounded claims without it is refused.
+
 ### evals: claim criteria check the claims their judge doubts on a host's web search
 
 **Added (#1287):** a claim criterion with a `web` budget checks, on a host's web search, the claims its judge nominated

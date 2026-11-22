@@ -6680,6 +6680,13 @@ class ClaimTally(CoreShapeModel):
     by_judge: tuple[ClaimJudgeCounts, ...] = Field(
         default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."
     )
+    grounded: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether the criterion asks groundedness (declares grounded_in), which alone gives the cell a "
+        "grounded share: what lets every reading be computed from the tally, with no template in hand. False (left "
+        "out) for a criterion with no groundedness reading.",
+    )
     ground_loss: StoredClaimLoss | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -6700,8 +6707,9 @@ class ClaimTally(CoreShapeModel):
         """Refuse counts the cell's claims could not give.
 
         :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
-            holds a false claim only by holding one); a grounded claim where no documents were declared, or where the
-            ground step was lost; or two entries for one judge.
+            holds a false claim only by holding one); a grounded claim where no documents were declared, where the
+            ground step was lost, or where the criterion asks no groundedness; a lost ground step where it asks none;
+            or two entries for one judge.
         """
         if self.units_with_false > self.units:
             raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
@@ -6713,6 +6721,10 @@ class ClaimTally(CoreShapeModel):
             )
         if not self.documents_declared and any(entry.grounded_specific for entry in self.by_judge):
             raise ValueError("a tally counts grounded claims, and the cell declared no documents to ground them")
+        if not self.grounded and (self.ground_loss is not None or any(e.grounded_specific for e in self.by_judge)):
+            raise ValueError(
+                "a tally of a criterion that asks no groundedness counts grounded claims or a lost ground step"
+            )
         if self.ground_loss is not None and any(entry.grounded_specific for entry in self.by_judge):
             raise ValueError(
                 f"a tally counts grounded claims, and the cell lost its ground step ({self.ground_loss!r}), which "

@@ -64,6 +64,7 @@ from threetears.evals.analysis.report.words import (
     disclosure_words,
     estimate_sentence,
     evidence_sentence,
+    judged_heading,
     proof_bar_words,
     reading_heading,
     reading_verb,
@@ -662,7 +663,12 @@ def _plan_lines(bundle: AnalysisContextBundle, surface: DecisionSurface, forms: 
         if (unkept := _unkept(bundle, family)) is None:
             continue
         named = [
-            reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
+            reading_heading(
+                surface,
+                comparison.name,
+                comparison.reading,
+                declared=bundle.reading_label(comparison.name, comparison.reading),
+            )
             for comparison in family.comparisons
             if comparison.interval_basis is not None
             # prose-canary: allow — UnkeptPlan.why is a Literal code decides (past, uncounted, sized), not a model's
@@ -748,7 +754,10 @@ def contrast_verdicts(
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             heading = reading_heading(
-                surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name)
+                surface,
+                comparison.name,
+                comparison.reading,
+                declared=bundle.reading_label(comparison.name, comparison.reading),
             )
             margin = _contrast_margin(bundle, comparison)
             ruler = rulers.of(comparison.name, comparison.reading)
@@ -986,6 +995,22 @@ def _comparison_blocks(
                 }
             )
     blocks: list[ReportBlock] = []
+    # A withheld claim reading is in no family, so no row tests it: the section says it ranks nothing, and why.
+    if withheld := [
+        judged_heading(measure.name, measure.reader_name) for measure in bundle.judged_measures if measure.withheld
+    ]:
+        blocks.append(
+            DisclosureBlock(
+                section="contrasts",
+                source="comparisons",
+                text=(
+                    f"Withheld: {_listed(withheld)}. "
+                    + ("Its arms" if len(withheld) == 1 else "On each, the arms")
+                    + " lost cells to claim grading at shares that differ beyond chance, so no arm's figure is read "
+                    "as the arm's, and " + ("it ranks nothing." if len(withheld) == 1 else "none of them ranks.")
+                ),
+            )
+        )
     if under and not shown:
         blocks.append(
             DisclosureBlock(
@@ -1070,7 +1095,12 @@ def _comparison_blocks(
         blocks.extend(_note(line) for line in _plan_lines(bundle, surface, forms))
     unranged = sorted(
         {
-            reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
+            reading_heading(
+                surface,
+                comparison.name,
+                comparison.reading,
+                declared=bundle.reading_label(comparison.name, comparison.reading),
+            )
             for family in comparisons.families
             for comparison in family.comparisons
             if comparison.equivalence_untested_reason is not None

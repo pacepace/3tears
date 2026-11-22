@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import (
         AsyncDelivery,
         CellTermination,
+        ClaimTally,
         ClientRequestSettings,
         ConversationStopCause,
         EvalResult,
@@ -403,6 +404,10 @@ class ResultView(Protocol):
     def judge_cannot_tell_boundary(self) -> Sequence[str]: ...
     @property
     def judge_cut_short(self) -> Mapping[str, JudgeCutShort]: ...
+    @property
+    def claim_tallies(self) -> Mapping[str, ClaimTally]: ...
+    @property
+    def claim_failures(self) -> Mapping[str, str]: ...
     @property
     def candidate_error(self) -> str | None: ...
     @property
@@ -829,6 +834,9 @@ class ResultReading:
     judge_cannot_tell: tuple[str, ...]
     judge_cannot_tell_boundary: Sequence[str]
     judge_cut_short: Mapping[str, JudgeCutShort]
+    #: Each claim criterion's tally of the cell, carried whole (frozen stored models), and the criteria it lost.
+    claim_tallies: Mapping[str, ClaimTally]
+    claim_failures: Mapping[str, str]
     candidate_error: str | None
     infra_error: str | None
     scored_at: str
@@ -897,6 +905,8 @@ class ResultReading:
             judge_cannot_tell=held.texts(result.judge_cannot_tell),
             judge_cannot_tell_boundary=held.texts(result.judge_cannot_tell_boundary),
             judge_cut_short=held.mapping(result.judge_cut_short),
+            claim_tallies=held.mapping(result.claim_tallies),
+            claim_failures=held.mapping(result.claim_failures),
             candidate_error=result.candidate_error,
             infra_error=result.infra_error,
             scored_at=result.scored_at,

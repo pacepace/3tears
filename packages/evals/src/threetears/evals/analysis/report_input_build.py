@@ -64,6 +64,8 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     ArmPricing,
     FamilyComparison,
+    JudgedArm,
+    JudgedMeasure,
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
@@ -864,19 +866,28 @@ class _Builder:
             for measure in aspect.judged_measures:
                 held = checks.setdefault(measure.name, [])
                 held.extend(check for check in measure.checks if check not in held)
+        # A claim reading, as the lead aspect's judged measures hold it: its criterion, its reader name, whether it is
+        # withheld, and each arm's cells lost, pending and past the web budget.
+        claimed = {measure.name: measure for measure in self.lead.judged_measures if measure.instrument is not None}
         judged: dict[str, Judged] = {}
         for dimension, by_aspect in figures.items():
             tier = tiers.get(dimension)
+            claim = claimed.get(dimension)
+            per_arm = by_aspect.get(self.lead.aspect, {})
+            if claim is not None and claim.withheld is not None:
+                per_arm = {label: stat.model_copy(update={"state": claim.withheld}) for label, stat in per_arm.items()}
             judged[dimension] = Judged(
+                label=claim.reader_name if claim is not None else None,
                 scale=tier.scale if tier is not None else described.get(dimension),
                 tier=evidence[dimension],
                 judge_model=tier.judge_model if tier is not None else None,
                 calibration=tier.calibration.state if tier is not None else None,
                 calibration_ratings=tier.calibration.n if tier is not None else None,
                 agreement=tier.calibration.agreement if tier is not None else None,
-                per_arm=by_aspect.get(self.lead.aspect, {}),
+                per_arm=per_arm,
                 checks=checks.get(dimension, []),
                 by_aspect={label: arms for label, arms in by_aspect.items() if label != self.lead.aspect},
+                **(_claim_counts(claim, self.arm) if claim is not None else {}),
             )
         return judged
 
@@ -1201,6 +1212,26 @@ def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
 def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
     """Judged where a rubric dimension counts toward a pass, checked where checks alone do, else neither."""
     return "judged" if rule.dimensions else "checked" if rule.checks else None
+
+
+def _claim_counts(measure: JudgedMeasure, arm: Callable[[str], str]) -> dict[str, Any]:
+    """A claim reading's criterion and its arms' cells lost, pending and past the web budget, by arm label, each where
+    any arm has one."""
+
+    def by_arm(count: Callable[[JudgedArm], int]) -> dict[str, int]:
+        found: dict[str, int] = {}
+        for held in measure.arms:
+            if count(held):
+                found[arm(held.variant_key)] = found.get(arm(held.variant_key), 0) + count(held)
+        return found
+
+    return {
+        "instrument": measure.instrument,
+        "lost": by_arm(lambda held: held.n_claim_lost),
+        "pending": by_arm(lambda held: held.n_claim_pending),
+        "web_skipped": by_arm(lambda held: held.n_web_skipped),
+        "web_lost": by_arm(lambda held: held.n_web_lost),
+    }
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:

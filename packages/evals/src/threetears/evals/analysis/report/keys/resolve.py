@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
+from threetears.evals.kernel.claims.readings import claim_reading_is_share
 from threetears.evals.analysis.costs import PER_THOUSAND_FACTORS
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -464,6 +465,10 @@ def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None,
             return _rate_unit(held_means(report_input, key))
         return unit
     judged = report_input.judged.get(key)
+    if judged is not None and judged.instrument is not None:
+        # A claim reading is a rate of claims, never a score: a share where it is one, else a bare count per unit, which
+        # its name states (``False claims per answer``).
+        return _rate_unit(held_means(report_input, key)) if claim_reading_is_share(key, judged.instrument) else ""
     if judged is not None:
         return _rate_unit(held_means(report_input, key)) if judged.scale == "pass_fail" else "score"
     return ""

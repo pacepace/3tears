@@ -44,6 +44,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY
 from threetears.evals.kernel.result_reading import GoalView, ResultView, ScoreView
 from threetears.evals.schema.models import (
+    CLAIM_PENDING,
     RESERVED_DIM_IDS,
     SCALES,
     CellTermination,
@@ -347,12 +348,18 @@ def _classify_judging(result: EvalResult) -> JudgingState:
     """
     # A "can't tell" answer is judge output too: the judge worked and said the evidence does not
     # decide the dim, so a result whose every dim was answered that way was judged, not skipped.
+    # A claim criterion's tally is judge output too, and one still waiting on its stored grade was graded: a cell a
+    # claim criterion alone judged was judged. A criterion it lost never becomes a judge error (the trial keeps its
+    # pass); where nothing else was judged it reads as the judge failing, and the claims line says which criterion.
+    claims_lost = any(loss != CLAIM_PENDING for loss in result.claim_failures.values())
     scored = bool(
         result.judge_reasoning
         or result.transcript_score is not None
         or result.outcome_score is not None
         or result.rubric_scores
         or result.judge_cannot_tell
+        or result.claim_tallies
+        or len(result.claim_failures) > sum(loss != CLAIM_PENDING for loss in result.claim_failures.values())
     )
     if result.judge_error and result.judging_set_aside:
         # The cost cap kept the judge from being asked: nothing errored, so a judge never asked is not one that failed,
@@ -360,7 +367,32 @@ def _classify_judging(result: EvalResult) -> JudgingState:
         return "not_asked"
     if result.judge_error:
         return "partial" if scored else "failed"
+    if claims_lost and not scored:
+        return "failed"
     return "scored" if scored else "not_attempted"
+
+
+def _claims_disclosure(result: ResultView) -> str | None:
+    """Name the claim criteria that lost the result, and those whose tally waits on its stored grade.
+
+    Separate from the judging state for the reason the "cannot tell" line is: it says which criterion, and that the
+    trial's pass, its rubric scores and every other reading keep the cell.
+    """
+    lost = {criterion: loss for criterion, loss in result.claim_failures.items() if loss != CLAIM_PENDING}
+    pending = sorted(criterion for criterion, loss in result.claim_failures.items() if loss == CLAIM_PENDING)
+    parts = []
+    if lost:
+        named = ", ".join(f"{criterion} ({loss.replace('_', ' ')})" for criterion, loss in sorted(lost.items()))
+        parts.append(
+            f"Claim grading lost this result on {named}, so it carries none of those criteria's readings; its pass "
+            "and every other reading keep it."
+        )
+    if pending:
+        parts.append(
+            f"The claim readings of {', '.join(pending)} wait on this result's stored grade, so they are not yet "
+            "known; that is no loss."
+        )
+    return " ".join(parts) or None
 
 
 #: Disclosure text per termination arm. A mapping rather than a chain of ``if``\\ s so
@@ -643,6 +675,7 @@ def resolve_result_condition(result: EvalResult) -> ResultCondition:
         else _SCORING_DISCLOSURE[scoring],
         _JUDGING_DISCLOSURE[judging],
         _cannot_tell_disclosure(result),
+        _claims_disclosure(result),
     ]
     disclosure = " ".join(part for part in parts if part) or None
     return ResultCondition(
