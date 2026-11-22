@@ -33,6 +33,7 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
+from threetears.evals.analysis.bundle.trials import reads_a_rate
 from threetears.evals.analysis.report.campaign.common import PASS_WORDS, RateWords, rate_words
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.words import campaign_arm_tags
@@ -104,7 +105,11 @@ def aggregate_blocks(
     names = AspectNames.of((report.bundle for report in reports.values()), campaign=campaign.name or None)
     # The rate across aspects named as each aspect's page names it: no figure over an aspect nothing graded can fail a
     # trial on is called a pass rate.
-    words = rate_words(reports[aspect].bundle for aspect in readings.aspects if aspect in reports)
+    words = rate_words(
+        reports[aspect].bundle
+        for aspect in readings.aspects
+        if aspect in reports and reads_a_rate(reports[aspect].bundle)
+    )
     row = _row_aggregate(readings) is not None
     charted = _charted(readings, aggregate)
     blocks: list[ReportBlock] = []

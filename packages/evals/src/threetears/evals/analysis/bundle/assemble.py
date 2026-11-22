@@ -863,6 +863,7 @@ def assemble_context_bundle(
             person_scores=person_scores,
             claim_units=_claim_units(runs, templates),
             registry=profile.measures,
+            claim_checks={read.criterion: _claim_check(read) for read in claim_reads},
         )
     ]
     bundle.bar_adjudications = bar_adjudications(

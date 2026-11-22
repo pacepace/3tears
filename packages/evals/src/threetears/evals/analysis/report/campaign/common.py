@@ -9,7 +9,7 @@ from typing import Final
 
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.bundle.trials import reads_answered
+from threetears.evals.analysis.bundle.trials import holds_a_check
 from threetears.evals.analysis.report.words import PASS_RATE
 from threetears.evals.analysis.style import ArmName, arm_name
 from threetears.evals.kernel.declaration import Floor
@@ -65,14 +65,16 @@ _MIXED_WORDS: Final = RateWords(
 
 
 def rate_words(bundles: Iterable[AnalysisContextBundle]) -> RateWords:
-    """The words for the rate of the aspects ``bundles`` hold: the share answered where every one reads it
-    (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`), a pass rate where none does, and both names
-    where some do, so no figure over an aspect nothing can fail a trial on is called a pass rate.
+    """The words for the rate of the aspects ``bundles`` hold: the share answered where nothing graded can fail a
+    trial on any of them (:func:`~threetears.evals.analysis.bundle.trials.holds_a_check`), a pass rate where something
+    can on every one, and both names where they mix, so no figure over an aspect nothing can fail a trial on is called
+    a pass rate.
 
     :param bundles: The aspects' evidence.
     :return: The words.
     """
-    answered = [reads_answered(bundle) for bundle in bundles]
+    # A rate on an aspect nothing graded can fail a trial on is the share answered, whether or not any arm failed.
+    answered = [not holds_a_check(bundle) for bundle in bundles]
     if answered and all(answered):
         return ANSWERED_WORDS
     return _MIXED_WORDS if any(answered) else PASS_WORDS

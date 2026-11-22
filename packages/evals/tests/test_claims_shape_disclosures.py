@@ -38,7 +38,9 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.off_loop import off_loop
 from threetears.evals import Answer, Eval, Judge
-from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.report_input_build import report_input
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.summary import summarize_run
@@ -726,6 +728,12 @@ def _closed_read(result: str, *, lean_untested: tuple[str, ...] = (), campaign_i
 def _checked_pages(result: str | None, *, lean_untested: tuple[str, ...] = ()) -> tuple[str, str]:
     """The derived fixture's two arms on one aspect, its criterion's judge checked by a closed read deciding ``result``
     (None: no read): the aspect's page and the campaign's, as Markdown."""
+    _, aspect, page = _checked(result, lean_untested=lean_untested)
+    return aspect, page
+
+
+def _checked(result: str | None, *, lean_untested: tuple[str, ...] = ()) -> tuple[AnalysisContextBundle, str, str]:
+    """:func:`_checked_pages`, with the aspect's bundle the pages were built from."""
     runs, results = _stored({"memory-model": [0.0] * 12, "lookup-model": [0.0] * 12})
     asked = min(run.created_at for run in runs)
     control = CampaignArm(
@@ -756,7 +764,7 @@ def _checked_pages(result: str | None, *, lean_untested: tuple[str, ...] = ()) -
     arms = [control, CampaignArm(label="lookup", role="candidate", variant_key=fixture_variant_key("lookup-model"))]
     readings = campaign_readings(campaign, {"show": bundle}, arms=arms)
     page = build_campaign_report(campaign, readings, {"show": report})
-    return report_markdown(report), campaign_report_markdown(page)
+    return bundle, report_markdown(report), campaign_report_markdown(page)
 
 
 @pytest.mark.parametrize(
@@ -837,4 +845,30 @@ def test_a_floor_on_an_aspect_with_no_rate_still_has_a_row_to_settle() -> None:
     assert (aspect, label, status) == ("tone", "v2", "unclear")
     page = campaign_report_markdown(shape.page())
     assert "**To settle**" in page
-    assert _lines(page, r"^\| v2 \| .* \| tone \| the 5-point floor holds \|")
+    (row,) = _lines(page, r"^\| v2 \| .* \| tone \| the 5-point floor holds \|")
+    # Worded as what the floor reads there: the share answered, never a pass rate.
+    assert "the share answered cannot separate the arms (both 20 of 20)" in row, row
+    assert "A floor reads every rate its clause names, so its count can need more than the share answered's." in page
+    assert _lines(page, r"^\| no share answered drops by more than 5 points \| Share answered \|")
+    left = page.replace("tone has no pass rate", "")
+    assert "pass rate" not in left.lower().replace("such as a pass rate dropping too far", ""), "no other pass rate"
+
+
+@pytest.mark.parametrize(("result", "uncalibrated"), [("met", False), (None, True)], ids=["met", "no-read-control"])
+def test_a_met_claim_read_puts_its_readings_on_a_calibrated_judge_on_every_surface(
+    result: str | None, uncalibrated: bool
+) -> None:
+    """The claim readings' tier follows the stored check as a rubric dimension's follows its calibration, so the
+    pages, the report input every written page is read from, and its caveats state one state; with no read, all say
+    uncalibrated, so the test can trip."""
+    bundle, aspect, page = _checked(result)
+
+    tiers = {arm.evidence_tier for measure in bundle.judged_measures if measure.instrument for arm in measure.arms}
+    assert tiers == ({"undetermined"} if uncalibrated else {"calibrated"}), tiers
+    built = report_input(campaign_bundle(bundle))
+    caveats = {caveat.kind for caveat in built.caveat_list}
+    assert bool(caveats & {"judge_uncalibrated", "judge_partly_uncalibrated"}) is uncalibrated, caveats
+    assert {judged.tier for judged in built.judged.values()} == ({"undetermined"} if uncalibrated else {"calibrated"})
+    for surface in (aspect, page):
+        assert ("uncalibrated" in surface.lower()) is uncalibrated
+        assert ("directional" in surface) is uncalibrated
