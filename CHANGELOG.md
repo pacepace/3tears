@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: claim criteria graded in the judge phase
+
+**Added (#1287):** the judge phase grades every claim criterion a template declares, after the rubric dimensions and on
+the same judge, over the claim evidence the kind renders on its new `CandidateOutput.claim_evidence`. A cell carrying
+claim evidence is claim-graded whatever its kind declares a judge reads, so a kind graded by code is graded on its
+claims too. Each criterion lists the claims, checks them against the case's evidence and, under `grounded_in`, against
+the candidate's own documents, and stores its grade on `EvalTrace.claim_grades` and its counts on
+`EvalResult.claim_tallies`. The rubric hold is released before the first criterion is admitted, and each criterion's
+before the next. Each criterion is priced against the run's cost cap before any call, per step with each step's own
+repair budget, and never spends past what the cap set aside for it. A witnessed cell's claims are graded the same way.
+
+**Changed:** every way a criterion fails is that criterion's loss on `EvalResult.claim_failures`, never a judge error,
+so the trial keeps its pass, its rubric scores and every other criterion. This covers a reply cut short, unreadable or
+past its repairs, the cost cap (`cost_cap`), a deadline inside it (`deadline`), a grade past the trace's cap
+(`evidence_over_cap`), and the judge's provider failing a call (`provider_error`, a new value of `CLAIM_LOSSES`). A
+ground call's failure costs groundedness alone, however the call fails (a deadline striking in the ground step
+included), and truth stands. A criterion the cap sets aside is not counted among the run's cells not judged: the
+cell's dims were judged. A trace that is not stored
+loses the criteria it backs: their tallies are written lost (`trace_lost`), so no reading rests on a grade that is not
+stored. A run cell's row is written before its trace, so its tallied criteria are first written `trace_pending` (a new
+value of `CLAIM_LOSSES` that is no loss: not yet known), then restored once the trace lands, or written `trace_lost`
+once the trace write is known to have failed. A row left `trace_pending` (a store outage, or a process stopped between
+the writes) reads no claim reading and no loss; its grade is on the trace, so re-grading the criterion recovers it. A completion that breaks the protocol in the extraction or a truth call fails the run, as a dimension's does.
+The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.
+`RepairBudget` and `PageBudget` now say their budgets are per step and separate.
+
+**Not yet:** a criterion declaring a `web` budget is refused at the run, since the web check is not built. Re-judging a
+cell's claims from stored evidence is not built either, and nor is the quick path's door.
+
+**For hosts:** a template with claim criteria needs a judge at launch, whatever its kind declares a judge reads:
+`build_judge_service` now builds one for an unjudged kind whose template declares claim criteria, and a launch whose
+launcher wired none is refused. A kind renders `claim_evidence` for every non-empty output of such a template, or the
+cell is refused. Claims grading runs inside the cell's deadline, so raise `cell_timeout` for criteria over long
+outputs. `provider_error` joins core minor 15.24, which has not shipped: a build at 15.23 reads a row carrying it under
+its newer-minor tolerance and keeps it, and no released build refuses it.
+
 ### evals: the claims family, and the readings of a claim tally (none produced yet)
 
 **Added (#1287):** a seventh engine measure family, `claims`, graded by a judge: a claim criterion's readings, which

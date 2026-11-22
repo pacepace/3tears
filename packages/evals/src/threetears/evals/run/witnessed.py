@@ -425,6 +425,7 @@ async def record_witnessed_cell(
                     concurrency=DEFAULT_JUDGE_CONCURRENCY,
                     eval_run_id=run.id,
                     settled=settled,
+                    kind_name=candidate_kind,
                 )
         except CompletionProtocolDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was

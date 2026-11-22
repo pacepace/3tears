@@ -4016,6 +4016,12 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         candidate_model = _refuse_wiring_the_request_contradicts(request, wiring)
         test_cases = list(wiring.test_cases)
         judge = wiring.judge
+        if template.claim_criteria and judge is None:
+            raise ValueError(
+                f"template {template.id!r} declares claim criteria, which the run's judge grades, and kind "
+                f"{request.kind!r}'s launcher wired no judge; build one (build_judge_service) for the arm, whatever "
+                "its kind declares a judge reads"
+            )
         # Whether each pinned role was named by the launch or resolved from the role's default: the
         # request says which, so the run records it without the launcher restating it.
         role_provenance: dict[str, KnownRoleModelOrigin] = {
@@ -4464,9 +4470,10 @@ def build_judge_service(
         a different dim; or a rubric dim's declared judge is missing or one the
         scope contradicts (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
     :raises ValueError: The host supplies no completion clients, so nothing could score the run, or
-        ``judged_artifact`` declares a kind no judge reads.
+        ``judged_artifact`` declares a kind no judge reads and the template declares no claim criteria, which the
+        judge grades whatever the kind declares.
     """
-    if judged_artifact is JudgedArtifact.UNJUDGED:
+    if judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
         raise ValueError("an unjudged kind has no judge to build; its grade is the kind's own measures")
     clients = host.completion_clients("a judged run")
     dim_ids, configs = _judge_configs(host.storage, template, selection, judged_artifact)
@@ -4546,6 +4553,10 @@ def _judge_configs(
     :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
+        if template.claim_criteria:
+            # A kind graded by code scores no dimension; its template's claim criteria are graded by the judge alone,
+            # on the built-in prompts, which no config supplies.
+            return [], {}
         raise ValueError("an unjudged kind has no judge to build; its grade is the kind's own measures")
     dim_ids = scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)
     chosen = _resolve_selected_judge_configs(storage, dict(selection or {}), dim_ids, template.scope_id)

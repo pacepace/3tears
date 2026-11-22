@@ -102,6 +102,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.models import (
     AsyncDelivery,
     CellTermination,
+    ClaimEvidence,
     ConversationStopCause,
     EvalTestCase,
     GoalStateOutcome,
@@ -365,6 +366,16 @@ class CandidateOutput(EvalBaseModel):
     each cell to its kind's declaration. The engine renders no subject, transcript or document
     of its own, so what a judge sees — including facts the candidate's interlocutors never saw —
     is the kind's to decide. Stored on the cell's trace, so a re-judge sends exactly this again.
+    """
+
+    claim_evidence: ClaimEvidence | None = None
+    """What the cell's claims are listed from and graded against, as the kind renders it: the output cut into segments
+    and units, and the documents a claim may be checked against.
+
+    Required with every non-empty ``output`` of a cell whose template declares claim criteria, whatever the kind's
+    ``judged_artifact``: a kind graded by code is claim-graded all the same. Beside ``judge_evidence`` and independent
+    of it, so no rubric dimension reads it. Stored on the cell's trace, so a re-grade reads exactly this again.
+    ``None`` for a kind that renders none, which a template with no claim criteria never asks for.
     """
 
     stop_cause: ConversationStopCause | None = None

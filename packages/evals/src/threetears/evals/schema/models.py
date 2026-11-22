@@ -1723,10 +1723,19 @@ _MAX_UTF8_BYTES: Final = 4
 
 
 class PageBudget(EvalDocumentModel, CoreShapeModel):
-    """How much of a cell's evidence documents a criterion's verify calls may read: passages chosen by code."""
+    """How much of a cell's evidence documents a criterion's verify calls may read: passages chosen by code.
+
+    Each verify step reads under it on its own: the truth step over the case's documents, the ground step over the
+    candidate's own. So what an arm fetched never takes the case's share, and truth reads the same case passages
+    whatever an arm fetched.
+    """
 
     per_document_chars: int = Field(ge=1, description="The most characters read from any one document.")
-    total_chars: int = Field(ge=1, description="The most characters read from all of a cell's documents together.")
+    total_chars: int = Field(
+        ge=1,
+        description="The most characters one verify step reads from all of its documents together: the truth step's "
+        "case documents and the ground step's run documents each have this much, separately.",
+    )
     window_chars: int = Field(ge=1, description="The length of one passage cut around what a claim names.")
 
     @model_validator(mode="after")
@@ -1744,10 +1753,19 @@ class PageBudget(EvalDocumentModel, CoreShapeModel):
 
 
 class RepairBudget(EvalDocumentModel, CoreShapeModel):
-    """How many items a criterion asks again, and how often, past which the cell is the criterion's loss."""
+    """How many items a criterion asks again, and how often, past which the cell is the criterion's loss.
 
-    rounds: int = Field(default=2, ge=0, description="How many rounds a failing item is asked again alone.")
-    max_items_per_cell: int = Field(ge=0, description="The most items one cell may ask again, over every round.")
+    Held per step, each on its own: the extraction, the truth step and the ground step each have the whole budget.
+    So a ground step that spends its repairs on the candidate's own documents never costs truth one, and the most a
+    cell asks again is three times ``max_items_per_cell``.
+    """
+
+    rounds: int = Field(default=2, ge=0, description="How many rounds a failing item is asked again alone, per step.")
+    max_items_per_cell: int = Field(
+        ge=0,
+        description="The most items one step of one cell may ask again, over every round: the extraction, the truth "
+        "step and the ground step each have this many, separately.",
+    )
 
 
 class WebBudget(EvalDocumentModel, CoreShapeModel):
@@ -6073,10 +6091,16 @@ class JudgeEvidence(CoreShapeModel):
 
 #: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
 #: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
-#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside), ``deadline`` (the
+#: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
+#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or a call would have
+#: spent past what the cap set aside for the criterion), ``deadline`` (the
 #: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
 #: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
-#: vocabulary: a reader counts every loss, a reason it does not know by name.
+#: vocabulary: a reader counts every loss, a reason it does not know by name. One value is no loss:
+#: ``trace_pending`` (:data:`CLAIM_PENDING`), a row written before its trace whose trace write is not yet known to
+#: have landed; it reads as not yet known, never lost. Its grade is on the trace whenever the trace landed, so it is
+#: recoverable: re-grading the criterion from the trace's stored evidence settles it, and so would recomputing its
+#: tally from the stored grade, which needs the grade to record its ground step's loss (not stored yet).
 ClaimLoss = str
 
 #: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
@@ -6084,12 +6108,18 @@ KnownClaimLoss = Literal[
     "cut_short",
     "unreadable",
     "repair_budget_spent",
+    "provider_error",
     "port_error",
     "cost_cap",
     "deadline",
     "evidence_over_cap",
     "trace_lost",
+    "trace_pending",
 ]
+
+#: The one value of :data:`ClaimLoss` that is no loss: a criterion whose tally waits on its trace's write, which every
+#: reader takes as not yet known, never as a lost criterion.
+CLAIM_PENDING: Final = "trace_pending"
 
 #: The claim losses this build knows, in the order its readers list them.
 CLAIM_LOSSES: Final[tuple[str, ...]] = get_args(KnownClaimLoss)

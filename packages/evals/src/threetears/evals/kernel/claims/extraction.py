@@ -20,14 +20,17 @@ and the excerpt kept is the segment's text at the offsets found, never the model
 
 **Repair, not refusal.** A reply that will not parse is asked again in full, naming why, twice, then raises. An item
 that fails a check (an excerpt not in its segment, a ``restates`` that names no earlier claim) is asked again alone,
-with its failure named, in up to two repair rounds; one still failing then raises. A failing item is never dropped or
+with its failure named, in up to two repair rounds; one still failing then raises. Under a criterion's
+:class:`~threetears.evals.schema.models.RepairBudget` the rounds are its own and every item asked again counts against
+its ``max_items_per_cell``, which the extraction holds as its own step's, apart from the verify steps'. A failing item is never dropped or
 downgraded, since dropping the claims a model found hardest to quote would bias every reading counted over them. A
 reply cut short raises at once, since the same request would meet the same cap. Every failure is
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, which costs the cell only this criterion's
 readings.
 
 **It records what it spent, and how the list was made.** Every completion, parsed or not, is folded into the cell's
-``judge`` ledger. :attr:`ClaimExtractor.identity` names the model and a digest of everything that shapes the list: the
+``judge`` ledger, and recorded as a :class:`~threetears.evals.schema.models.ClaimCall` where the caller keeps the
+grade's calls. :attr:`ClaimExtractor.identity` names the model and a digest of everything that shapes the list: the
 prompts with the host's ``guidance`` in them, the reply schemas, the verbatim fold's identity (its tables and Unicode
 version), and the retry and repair budgets. Claims listed two ways never pool.
 
@@ -49,9 +52,16 @@ from threetears.evals.kernel.claims.verbatim import VERBATIM_FOLD, verbatim_span
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.schema.claims import Segment
-from threetears.evals.schema.completion import CompletionClient
+from threetears.evals.schema.completion import (
+    CompletionClient,
+    CompletionProtocolDefect,
+    CompletionResult,
+    sent_settings_of,
+)
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, ClaimCall, RepairBudget
 
 #: What a claim is about: the world, which truth grading reads, or this output or session itself, which it never does.
 type ClaimScope = Literal["world", "session"]
@@ -125,6 +135,65 @@ _REPAIR_TEMPLATE: Final = (
     "# Segment {segment}\n\n{text}\n\n# Claims listed before it\n\n{earlier}\n\n"
     "# The claim, at position {position}\n\n{listed}\n\n# What is wrong\n\n{failure}"
 )
+
+#: How much of a model's own earlier reply a later call may echo, priced before any call is made: a call's claims, a
+#: listed item, an answer or a failure it is shown again. The claims a text states are bounded by the text itself, so
+#: the allowance is this many characters of the text the claims come from, plus :data:`ECHO_FLOOR_CHARS`. A ceiling, not
+#: a guess at the bill; a call whose echo outgrows it is refused by the hold that priced it, never sent past it.
+ECHO_FACTOR: Final = 3
+
+#: The characters of echo every allowance holds however short its text: a claim's framing, a failure named, an answer.
+ECHO_FLOOR_CHARS: Final = 2000
+
+#: The character a priced prompt's allowance is filled with: four bytes in UTF-8, the most one character takes, so a
+#: token bound counted in bytes over the filler is never below one over the real text.
+_FILLER: Final = "\U0001d465"
+
+
+#: A number as wide as any claim's place in a list is printed: what a priced prompt prints where a place will stand.
+_WIDEST_PLACE: Final = 999_999_999
+
+
+def echo_chars(*texts: str) -> int:
+    """The allowance for what a call may echo of the claims ``texts`` state (:data:`ECHO_FACTOR`).
+
+    :param texts: The text the claims come from.
+    :return: The characters.
+    """
+    return ECHO_FACTOR * sum(len(text) for text in texts) + ECHO_FLOOR_CHARS
+
+
+def filler(chars: int) -> str:
+    """``chars`` characters standing in, when a call is priced, for text a model has not written yet.
+
+    :param chars: How many.
+    :return: The filler.
+    """
+    return _FILLER * chars
+
+
+def claim_call(role: Literal["extract", "truth", "ground", "repair", "web"], completion: CompletionResult) -> ClaimCall:
+    """One completion as a claim grade records its call: the role, and the judge's identity as the reply reported it.
+
+    :param role: What the call was asked.
+    :param completion: The completion.
+    :return: The call.
+    :raises CompletionProtocolDefect: The completion carries no ``temperature``, or a ``sent_settings`` of the wrong
+        type.
+    """
+    try:
+        sent = completion.temperature
+    except AttributeError as missing:
+        raise CompletionProtocolDefect(
+            completion, "temperature", "a claim's grade records the temperature each call was sent at"
+        ) from missing
+    return ClaimCall(
+        role=role,
+        served_model=getattr(completion, "served_model", None) or None,
+        judge_temperature=MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent),
+        judge_sent_settings=sent_settings_of(completion),
+    )
+
 
 _CLAIM_PROPERTIES: Final[dict[str, Any]] = {
     "claim": {"type": "string"},
@@ -235,10 +304,14 @@ class ClaimExtractor:
         extractor would let two models' lists pool.
     :ivar guidance: The host's own notes on what counts as a claim in its domain, with its own examples, appended to
         the prompts. Empty by default.
+    :ivar repairs: The criterion's repair budget, whose rounds the extraction takes and whose ``max_items_per_cell``
+        bounds the items it asks again, as its own step's; None (a bare extractor) asks up to two rounds of every
+        failing item.
     """
 
     client: CompletionClient
     guidance: str = ""
+    repairs: RepairBudget | None = None
 
     def __post_init__(self) -> None:
         """Refuse a client that names no model.
@@ -274,22 +347,75 @@ class ClaimExtractor:
 
     @property
     def identity(self) -> str:
-        """``<model>|claims:<sha12>``: the model, and a digest of the prompts (with the host's guidance), the reply
-        schemas, the verbatim fold's identity and the retry and repair budgets."""
-        digest = canonical_digest(
-            {
-                "system": self._system_prompt,
-                "user": [_USER_TEMPLATE, _SEGMENT_TEMPLATE, _AGAIN_TEMPLATE],
-                "repair_system": self._repair_system_prompt,
-                "repair_user": _REPAIR_TEMPLATE,
-                "schema": self.response_format,
-                "repair_schema": self.repair_response_format,
-                "fold": VERBATIM_FOLD.identity,
-                "attempts": _ATTEMPTS,
-                "repair_rounds": _REPAIR_ROUNDS,
-            }
+        """``<model>|claims:<sha12>``: the model, and :attr:`definition`'s first twelve characters."""
+        return f"{self.model_name}|claims:{self.definition[:12]}"
+
+    @property
+    def definition(self) -> str:
+        """A digest of everything but the model that shapes the list: the prompts (with the host's guidance), the
+        reply schemas, the verbatim fold's identity and the retry and repair budgets. What a criterion's fingerprint
+        reads, since which model listed the claims is recorded on each call."""
+        shape: dict[str, Any] = {
+            "system": self._system_prompt,
+            "user": [_USER_TEMPLATE, _SEGMENT_TEMPLATE, _AGAIN_TEMPLATE],
+            "repair_system": self._repair_system_prompt,
+            "repair_user": _REPAIR_TEMPLATE,
+            "schema": self.response_format,
+            "repair_schema": self.repair_response_format,
+            "fold": VERBATIM_FOLD.identity,
+            "attempts": _ATTEMPTS,
+            "repair_rounds": _REPAIR_ROUNDS,
+        }
+        if self.repairs is not None:
+            # Only when a budget is given, so a bare extractor's identity is the one it always was.
+            shape["repairs"] = self.repairs.model_dump(mode="json")
+        return canonical_digest(shape)
+
+    def price_ceiling(self, segments: Sequence[Segment]) -> float | None:
+        """The most extracting ``segments`` can cost on this extractor's client, before any call is made.
+
+        Every attempt of the listing call, its retries priced with a failure named at the echo allowance
+        (:func:`echo_chars`), and the most items the repair budget lets it ask again, each priced at its largest
+        segment and the allowance for the claims listed before it, the item and its failure.
+
+        :param segments: The cell's segments.
+        :return: The ceiling in dollars, or None when the client cannot price a call, or no repair budget bounds the
+            items asked again.
+        """
+        cell = tuple(segments)
+        if not cell:
+            return 0.0
+        if self.repairs is None:
+            return None
+        rendered = "\n\n".join(
+            _SEGMENT_TEMPLATE.format(index=index, text=segment.text) for index, segment in enumerate(cell)
         )
-        return f"{self.model_name}|claims:{digest[:12]}"
+        echo = filler(ECHO_FLOOR_CHARS)
+        listing = call_ceiling(
+            self.client,
+            system=self._system_prompt,
+            user=_AGAIN_TEMPLATE.format(user=_USER_TEMPLATE.format(segments=rendered), failure=echo),
+            response_format=self.response_format,
+            attempts=_ATTEMPTS,
+        )
+        longest = max(cell, key=lambda segment: len(segment.text.encode("utf-8")))
+        repair = call_ceiling(
+            self.client,
+            system=self._repair_system_prompt,
+            user=_REPAIR_TEMPLATE.format(
+                segment=len(cell),
+                text=longest.text,
+                earlier=filler(echo_chars(*(segment.text for segment in cell))),
+                # The widest place a claim can be printed at: a bound on its digits, never a count of claims.
+                position=_WIDEST_PLACE,
+                listed=filler(echo_chars(longest.text)),
+                failure=echo,
+            ),
+            response_format=self.repair_response_format,
+        )
+        if listing is None or repair is None:
+            return None
+        return listing + repair * self.repairs.max_items_per_cell
 
     @property
     def _system_prompt(self) -> str:
@@ -302,7 +428,9 @@ class ClaimExtractor:
     def _with_guidance(self, prompt: str) -> str:
         return prompt + _GUIDANCE_HEADING + self.guidance.strip() if self.guidance.strip() else prompt
 
-    async def extract(self, segments: Sequence[Segment], *, ledger: RoleUsageLedger) -> tuple[ExtractedClaim, ...]:
+    async def extract(
+        self, segments: Sequence[Segment], *, ledger: RoleUsageLedger, calls: list[ClaimCall] | None = None
+    ) -> tuple[ExtractedClaim, ...]:
         """List the claims ``segments`` state, in the order they appear.
 
         The claims come back ordered by segment, and a claim's ``restates`` names the earlier position, in the tuple
@@ -312,11 +440,13 @@ class ClaimExtractor:
 
         :param segments: The cell's segments, in order.
         :param ledger: The cell's ``judge`` ledger.
+        :param calls: Where each call is recorded as the grade keeps it, in order: ``extract`` for the listing and its
+            retries, ``repair`` for an item asked again; None records none.
         :return: The checked claims.
         :raises ValueError: ``ledger`` is not the ``judge`` role's, or the segments' units are not numbered 0..n-1,
             with no gap.
-        :raises ClaimGradingFailed: A reply was cut short, no attempt's reply parsed, or an item still failed its
-            checks after the repair rounds.
+        :raises ClaimGradingFailed: A reply was cut short, no attempt's reply parsed, a round would ask more items again
+            than the repair budget has left, or an item still failed its checks after the repair rounds.
         """
         if ledger.role != _ROLE:
             raise ValueError(
@@ -326,14 +456,25 @@ class ClaimExtractor:
         _check_units(cell)
         if not cell:
             return ()
-        listed = await self._list(cell, ledger)
+        recorded: list[ClaimCall] = calls if calls is not None else []
+        listed = await self._list(cell, ledger, recorded)
         failures = {position: failure for position in range(len(listed)) if (failure := _fault(position, listed, cell))}
-        for _round in range(_REPAIR_ROUNDS):
+        rounds = _REPAIR_ROUNDS if self.repairs is None else self.repairs.rounds
+        asked = 0
+        for _round in range(rounds):
             if not failures:
                 break
+            if self.repairs is not None and asked + len(failures) > self.repairs.max_items_per_cell:
+                named = "; ".join(f"claim {position}: {failure}" for position, failure in sorted(failures.items()))
+                raise ClaimGradingFailed(
+                    f"the claim extractor would ask {len(failures)} claim(s) again with {asked} of the step's "
+                    f"{self.repairs.max_items_per_cell} repairs spent: {named}",
+                    loss="repair_budget_spent",
+                )
+            asked += len(failures)
             unreadable: dict[int, str] = {}
             for position in sorted(failures):
-                repaired, failure = await self._repair(position, listed, cell, failures[position], ledger)
+                repaired, failure = await self._repair(position, listed, cell, failures[position], ledger, recorded)
                 listed[position] = repaired
                 if failure is not None:
                     unreadable[position] = failure
@@ -347,26 +488,36 @@ class ClaimExtractor:
         if failures:
             named = "; ".join(f"claim {position}: {failure}" for position, failure in sorted(failures.items()))
             raise ClaimGradingFailed(
-                f"the claim extractor could not repair {len(failures)} claim(s) in {_REPAIR_ROUNDS} rounds: {named}",
+                f"the claim extractor could not repair {len(failures)} claim(s) in {rounds} rounds: {named}",
                 loss="repair_budget_spent",
             )
         return _checked(listed, cell)
 
     async def _complete(
-        self, *, system: str, user: str, response_format: dict[str, Any], ledger: RoleUsageLedger
+        self,
+        *,
+        role: Literal["extract", "repair"],
+        system: str,
+        user: str,
+        response_format: dict[str, Any],
+        ledger: RoleUsageLedger,
+        calls: list[ClaimCall],
     ) -> str:
-        """One billed call's finished reply.
+        """One billed and recorded call's finished reply.
 
         :raises ClaimGradingFailed: The reply was cut short.
         """
         completion = await self.client.generate(system=system, user=user, response_format=response_format)
         ledger.add_llm_result(completion)
+        calls.append(claim_call(role, completion))
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
             raise ClaimGradingFailed(f"the claim extractor's reply was cut short: {cut_short}", loss="cut_short")
         return completion.content
 
-    async def _list(self, cell: tuple[Segment, ...], ledger: RoleUsageLedger) -> list[_ListedClaim]:
+    async def _list(
+        self, cell: tuple[Segment, ...], ledger: RoleUsageLedger, calls: list[ClaimCall]
+    ) -> list[_ListedClaim]:
         """The claims one reply lists, asked again in full, naming why, while a finished reply will not parse.
 
         :raises ClaimGradingFailed: A reply was cut short, or none of the attempts' replies parsed.
@@ -379,7 +530,12 @@ class ClaimExtractor:
         unreadable: ValueError | None = None
         for _attempt in range(_ATTEMPTS):
             content = await self._complete(
-                system=self._system_prompt, user=user, response_format=self.response_format, ledger=ledger
+                role="extract",
+                system=self._system_prompt,
+                user=user,
+                response_format=self.response_format,
+                ledger=ledger,
+                calls=calls,
             )
             try:
                 return _read_listing(content, len(cell))
@@ -397,6 +553,7 @@ class ClaimExtractor:
         cell: tuple[Segment, ...],
         failure: str,
         ledger: RoleUsageLedger,
+        calls: list[ClaimCall],
     ) -> tuple[_ListedClaim, str | None]:
         """The item at ``position`` asked again alone, with ``failure`` named, and what is still wrong with it.
 
@@ -418,7 +575,12 @@ class ClaimExtractor:
             failure=failure,
         )
         content = await self._complete(
-            system=self._repair_system_prompt, user=user, response_format=self.repair_response_format, ledger=ledger
+            role="repair",
+            system=self._repair_system_prompt,
+            user=user,
+            response_format=self.repair_response_format,
+            ledger=ledger,
+            calls=calls,
         )
         try:
             repaired = _Repaired.model_validate(extract_json(content))

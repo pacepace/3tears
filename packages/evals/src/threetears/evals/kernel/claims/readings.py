@@ -36,7 +36,7 @@ from threetears.evals.schema import (
     EvidenceProvenance,
     EvalTemplate,
 )
-from threetears.evals.schema.models import ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
+from threetears.evals.schema.models import CLAIM_PENDING, ClaimCall, GradedClaim, KnownClaimLoss, request_settings_order
 
 
 @dataclass(frozen=True)
@@ -275,8 +275,11 @@ def claim_readings(criterion: str, outcome: ClaimTally | ClaimLoss, *, grounded:
     :param outcome: The cell's tally under it (:attr:`EvalResult.claim_tallies`), or why the cell lost it
         (:attr:`EvalResult.claim_failures`).
     :param grounded: Whether the criterion declares ``grounded_in``.
-    :return: Each reading the cell carries, by name.
+    :return: Each reading the cell carries, by name; none while its tally waits on its trace
+        (:data:`~threetears.evals.schema.models.CLAIM_PENDING`), which is not yet known and never a loss.
     """
+    if outcome == CLAIM_PENDING:
+        return {}
     if isinstance(outcome, str):
         return {f"{criterion}_lost": 1.0}
     tally = outcome

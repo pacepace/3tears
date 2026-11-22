@@ -227,7 +227,7 @@ class JudgeFold(NamedTuple):
     cut_short: dict[str, JudgeCutShort]
 
 
-def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
+def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]], *, also_billed: Sequence[object] = ()) -> JudgeFold:
     """Fold judge calls' outcomes into their configs, errors and spend.
 
     Shared by the cell's judge phase and a later re-judge, so both read an outcome the same
@@ -240,6 +240,8 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
     when any call went unpriced (:func:`~threetears.evals.kernel.usage_capture.blended_cost`).
 
     :param outcomes: ``(dim_id, outcome)`` for every call made, in call order.
+    :param also_billed: The completions of the cell's other judge calls, its claim criteria's, folded into the same
+        rows after the dims' calls: one judge role, one row per model, whichever of the judge's questions a call asked.
     :return: The fold.
     """
     config_ids: dict[str, str] = {}
@@ -260,6 +262,8 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
             errors.append((dim_id, outcome.error or "the judge returned neither a score nor an error"))
             if outcome.cut_short is not None:
                 cut_short[dim_id] = outcome.cut_short
+    for completion in also_billed:
+        ledger.add_llm_result(completion)
     rows = ledger.rows()
     return JudgeFold(
         config_ids=config_ids,
@@ -731,6 +735,16 @@ class JudgeService:
         :return: The client, built on first ask and cached like every other.
         """
         return self._client_for(request.config)
+
+    def default_client(self) -> Any:
+        """The client a call no config supplies is sent on: the run's judge pin, at the default judge temperature.
+
+        What the claim criteria's calls are sent on, since a claim criterion is graded by the engine's built-in prompts
+        alone; the same cached client a built-in rubric dimension's call is sent on.
+
+        :return: The client, built on first ask and cached like every other.
+        """
+        return self._client_for(None)
 
     def price_ceiling(self, request: JudgeRequest) -> float | None:
         """The most sending ``request`` can cost, every attempt included, or ``None`` when its client cannot say.
