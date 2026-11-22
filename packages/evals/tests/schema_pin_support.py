@@ -20,7 +20,7 @@ __all__ = ["ADDED_AT_MAJOR", "keeps", "minor_entries", "minors_missing_the_sente
 
 #: Each kept or durable type added after its space's baseline, by the major it was added in: the analyst's gap notes,
 #: added at a durable v16 minor, have no v15 document.
-ADDED_AT_MAJOR: dict[str, int] = {"eval_analyst_gap": 16, "blind_read": 17}
+ADDED_AT_MAJOR: dict[str, int] = {"eval_analyst_gap": 16, "blind_read": 17, "claim_read": 17}
 
 #: A minor's ledger entry, as the comment block above a ``*_SCHEMA_MINOR`` writes one: ``#: - **v14.1** — …``,
 #: through the end of its (possibly wrapped) comment lines.

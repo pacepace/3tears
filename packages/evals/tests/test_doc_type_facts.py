@@ -53,6 +53,7 @@ DURABLE = frozenset(
         "eval_test_case",
         "calibration_rating",
         "blind_read",
+        "claim_read",
         "eval_campaign",
         "eval_analyst_gap",
     }
@@ -174,6 +175,7 @@ def test_the_placements_the_registry_records() -> None:
         "eval_trace": ("record", "kept"),
         "calibration_rating": ("record", "durable"),
         "blind_read": ("record", "durable"),
+        "claim_read": ("record", "durable"),
         "eval_out_of_run_spend": ("record", "kept"),
         "eval_sweep": ("record", "kept"),
         "eval_analysis_attempt": ("record", "kept"),

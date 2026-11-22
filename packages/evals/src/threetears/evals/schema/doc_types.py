@@ -115,6 +115,8 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "calibration_rating": DocTypeFacts(origin="record", lifecycle="durable"),
         # A blind read: the drawn order and what people (and a declared model) answered of it. Authored, like a rating.
         "blind_read": DocTypeFacts(origin="record", lifecycle="durable"),
+        # A claim read: one claim criterion's graded claims drawn by stratum, and what people answered of them.
+        "claim_read": DocTypeFacts(origin="record", lifecycle="durable"),
         "eval_out_of_run_spend": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_sweep": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),

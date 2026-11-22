@@ -66,6 +66,17 @@ class Check(_Shape):
     kappa_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     lean: float | None = Field(default=None, description="The instrument's lean toward one arm.")
     lean_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
+    lean_untested: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The arms, by key, a lean across arms was not tested on, each for lean_untested_reason: so a met "
+        "check never reads as one that ruled a lean out on them.",
+    )
+    lean_untested_reason: Reason | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the lean was not tested on those arms: too_few, their answered claims too few to read a rate.",
+    )
     half_width: float | None = Field(default=None, description="The half-width the check was read at.")
     reads: int | None = Field(default=None, description="Reads behind the figures.")
     delta: float | None = Field(default=None, description="The difference between identical arms.")
