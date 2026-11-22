@@ -1220,7 +1220,9 @@ class CallRead(_Part):
 
 
 #: The one act that would close a caveat, as a closed kind; ``no_action`` where nothing the package knows of closes it,
-#: with the reason the step states (:data:`NoActionReason`).
+#: with the reason the step states (:data:`NoActionReason`). ``inspect_arm`` is a person reading the cells the caveat
+#: counts on the arms it names (the cells a candidate said nothing in) to tell whether the candidate declined or its
+#: session gave it no turn; no catalogue action takes it, and no rig is presumed at fault.
 Remedy = Literal[
     "resume_or_rerun",
     "rerun_on_one_cell",
@@ -1237,6 +1239,7 @@ Remedy = Literal[
     "run_live",
     "draw_at_random",
     "finish_read",
+    "inspect_arm",
     "declare_looks",
     "declare_criteria",
     "name_control",
@@ -1258,10 +1261,8 @@ UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "
 #: re-run whose fault (an answering model split by the provider, a rig, recording, a replay, a confound no launch
 #: setting holds alike) is not a parameter a launch sets; the serial re-run of cases run at once, which a launch can
 #: ask for (``measure_latency``) but which has not been driven; and more cases on a contrast where every arm the
-#: caveat names but the control would run in a call of its own, which adds no pair (``unpaired_arms``);
-#: ``candidate_silent``, the arm's candidate said nothing on some of its cells, which the caveat counts per arm: what
-#: the candidate did, whether it declined or the session gave it no turn, which no act of the catalogue repairs.
-NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown", "candidate_silent"]
+#: caveat names but the control would run in a call of its own, which adds no pair (``unpaired_arms``).
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "lift_not_shown"]
 
 #: A value one argument of a catalogue action's call takes.
 StepArgument = str | bool | int | list[str]

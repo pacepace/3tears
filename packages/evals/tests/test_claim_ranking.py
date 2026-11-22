@@ -549,7 +549,8 @@ def test_a_silent_arm_raises_a_class_b_caveat_naming_it_and_the_page_says_so() -
 
     assert (caveat.kind, caveat.cls) == ("claims_silent", "B")
     step = caveat_step(caveat)
-    assert (step.remedy, step.no_action) == ("no_action", "candidate_silent"), "no rig is blamed for silence"
+    assert step.remedy == "inspect_arm" and step.action is None, "a person reads the silent cells; no rig is blamed"
+    assert step.arms == caveat.arms
     assert caveat.arms == list(reading.silent), "only the arm that was silent"
     assert sum(reading.silent.values()) == 16 and not reading.lost
     assert f"claims_lost:{RULES}" not in {c.id for c in built.caveat_list}, "silence is never a loss"

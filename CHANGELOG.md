@@ -18,8 +18,8 @@ cells as unread beside lost ones: arms silent on shares of cells that differ bey
 (`trials_lost`). The same test now counts the cells a host's claim reader could not read beside lost ones, for the
 readings derived from the criterion. Each arm counts its silent cells beside its mean, and a class-B caveat
 (`claims_silent:<criterion>`) names each arm that has some, with a line on the page under the scoreboard saying the
-candidate said nothing on so many of that arm's cells; its step takes no action (`candidate_silent`, new), since
-nothing in the catalogue repairs what a candidate chose to say. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
+candidate said nothing on so many of that arm's cells. Its remedy is `inspect_arm` (new): a person reads those cells
+to tell whether the candidate declined or its session gave it no turn; no rig is presumed at fault. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
 a kind that forgot from a candidate that said nothing.
 
 **Changed (#1287):** claim evidence whose `documents` is None under a criterion naming `grounded_in` is no longer
@@ -52,7 +52,7 @@ action applies over it.
 
 **For hosts:** render `segments=()` for a cell whose candidate said nothing, rather than leaving `claim_evidence`
 None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent`, the report input's `Judged.silent` and
-the no-action reason `candidate_silent`
+the remedy `inspect_arm`
 (each left out while unset, so no stored document without a silent cell moves) and the loss `documents_undeclared`.
 The build before them is at the same unreleased core minor (15.24) and refuses each by name (an empty `segments` or
 `calls` as too short, the new fields as `extra_forbidden`, the loss as one it does not know), so deploy and roll back

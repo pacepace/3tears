@@ -3097,6 +3097,7 @@
       "run_live",
       "draw_at_random",
       "finish_read",
+      "inspect_arm",
       "declare_looks",
       "declare_criteria",
       "name_control",
@@ -3332,8 +3333,7 @@
         "unclassed_kind",
         "method_only",
         "no_interval_to_gain",
-        "lift_not_shown",
-        "candidate_silent"
+        "lift_not_shown"
        ],
        "type": "string"
       },
