@@ -44,6 +44,7 @@ from threetears.evals.schema import (
     ClaimEvidence,
     CompletionClient,
     EvidenceDocument,
+    EvidenceProvenance,
     PageBudget,
     RepairBudget,
     Segment,
@@ -86,7 +87,7 @@ DEFAULT_WEB = WebBudget(
 )
 
 #: The provenances ``grounded_in`` names.
-_PROVENANCES = ("case", "run")
+_PROVENANCES: tuple[EvidenceProvenance, ...] = ("case", "run")
 
 
 class Claims:
@@ -279,7 +280,7 @@ class Claims:
                 raise ValueError("the claims grader's segments returned a blank piece") from refused
         if not all(isinstance(piece, Segment) for piece in pieces):
             raise ValueError(f"the claims grader's segments returned {pieces!r}; each piece is text or a Segment")
-        return tuple(pieces)
+        return tuple(piece for piece in pieces if isinstance(piece, Segment))
 
     def _case_held(self, case: Mapping[str, Any]) -> list[Document]:
         """The case's own documents, as ``case_documents`` reads them; none where it names none."""
@@ -311,7 +312,7 @@ def _cut_name(segments: Segmenter | None) -> str:
     return named if isinstance(named, str) and named.strip() else type(segments).__qualname__
 
 
-def _provenances(grounded_in: str | Iterable[str] | None) -> tuple[str, ...] | None:
+def _provenances(grounded_in: str | Iterable[str] | None) -> tuple[EvidenceProvenance, ...] | None:
     """``grounded_in`` as the criterion stores it.
 
     :raises ValueError: A provenance other than ``case`` and ``run``, or none named.
@@ -324,7 +325,7 @@ def _provenances(grounded_in: str | Iterable[str] | None) -> tuple[str, ...] | N
             f"Claims(grounded_in=...) names 'run' (the candidate's own documents) or 'case' (the case's), not "
             f"{', '.join(map(repr, unknown))}"
         )
-    return named
+    return tuple(given for given in _PROVENANCES if given in named)
 
 
 def _documents_in(value: object, where: str) -> list[Document]:
@@ -351,7 +352,7 @@ def _documents_in(value: object, where: str) -> list[Document]:
     return documents
 
 
-def _fitted(documents: list[Document], provenance: str) -> tuple[EvidenceDocument, ...]:
+def _fitted(documents: list[Document], provenance: EvidenceProvenance) -> tuple[EvidenceDocument, ...]:
     """``documents`` as stored evidence, cut to fit their half of what one cell's documents may hold.
 
     The case's documents and the candidate's own each get half, apart, so what an arm fetched never cuts the case's

@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `Claims` on the quick path, and `Answer.documents`
+
+**Added (#1287):** `Claims(model, name="claims", *, unit="answer", segments=None, segmentation=None,
+case_documents=None, grounded_in=None, guidance="", search=None, web=None, pages=..., repairs=...)`, a grader an eval
+lists as it lists a `Judge`. Its template declares one claim criterion (`answer.claims` by default), and the engine
+lists and checks each answer's factual claims in its judge phase: false claims per answer and the share of answers
+holding one, and, with `grounded_in`, the grounded share of specific claims. Each ranks on its own, appears on the
+page beside the other readings, and is no lead or bar a grader's reading is. An eval graded by `Claims` alone is judged:
+its template is the judged callable kind's, and its run's judge pin is the grader's model. An eval graded by a `Judge`
+and `Claims` grades both on one model, and two models are refused when the eval is built, as are two `Claims`, a `web`
+budget with no `search`, and a `grounded_in` other than `run` and `case`.
+
+- **The case's evidence** is a field of the case (`case_documents="source"`: a text, a list of texts, or mappings with
+  `text`, `title` and `url`) or a callable rendering a case's documents. A case missing the field is left out of the
+  run by name.
+- **What a candidate read** rides on `Answer.documents` (new, optional): each passage it was given or page it fetched,
+  a `Document(text, title=None, url=None)` (new) or its text. `()` says it read none, and reads a grounded share of
+  0. `None` says nothing, and fails a run whose `Claims` reads the candidate's own documents (`grounded_in="run"`),
+  naming the fix. The documents are stored as the cell's claim evidence, never in its answer. The case's documents and
+  the candidate's each take half of what one cell's documents may hold, apart, and a document cut to fit says so in its
+  title, so what an arm read never cuts the case's evidence.
+- **Each answer is one unit** unless `segments` cuts it: `(case, answer) -> [...]`, text pieces each a unit in order,
+  or `Segment` values for a piece in no unit, a unit spanning pieces, or the host's own tags. `unit` names it on the
+  page, and is part of the case set's id with the criterion.
+- **The web:** `search=` takes a `WebSearch` port, or a `RecordedWebSearch` to replay one, and turns the web check on at
+  `web=` (a `WebBudget`; a generic default when left out).
+
+`Claims` and `Document` are provisional. `Answer.documents` is optional and defaults to `None`, so a runner returning an
+`Answer` without it is unchanged; nothing stored gains a field.
+
 ### evals: web checks on witnessed cells, and a re-judge that finishes a lost web step
 
 **Added (#1287):** a witnessed cell checks its nominated claims on the web as a run's cell does.
