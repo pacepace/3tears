@@ -328,9 +328,10 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
     is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
     of moves nothing on its own; with few losses its p is the conditional permutation p
-    (:data:`_CLAIM_LOSS_EXACT_AT_MOST`). The rates ``tests/test_claim_ranking.py`` simulates over twelve cases, at two,
-    three and four arms: equal losses of 10% and of 3%, at one repeat a case, and a loss a few cases carry, each withhold
-    under the level, and a 0% against 30% loss is caught four times in five.
+    (:data:`_CLAIM_LOSS_EXACT_AT_MOST`). Its rates are certified (the ``claim-loss.*`` claims of
+    ``tests/stats_certificate.py``) over twelve cases at two, three and four arms: equal losses of 10% and of 3%, at one
+    repeat a case, and a loss a few cases carry, each withholding at most 5% of the time, and a 0% against 30% loss caught
+    at least 75% of the time.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.

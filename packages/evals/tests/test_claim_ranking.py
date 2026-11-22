@@ -18,16 +18,14 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``projected_claim_readings``: dropping the null rows of a lost criterion, so no arm counts a loss and nothing is
   withheld.
 - ``judged_measures``: describing a claim reading by ``describe_rubric_dim``, which refuses it (no scale recorded).
-- ``_differential_claim_loss``: reading any loss as differential, so the equal-loss simulations withhold far more
-  often than they pin; or testing each pair at the nominal level, so three and four arms withhold more often.
+- ``_claim_loss_homogeneity_p``: reading few losses by the chi-square law, so four lost cells on one arm withhold.
 - ``_family_readings``: dropping the ``withheld`` filter, so a withheld reading is tested in the family.
 - ``figure_unit``: reading a claim reading as a 1-5 score.
 """
 
 from __future__ import annotations
 
-import random
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from functools import cache
 
 import pytest
@@ -439,78 +437,39 @@ def test_a_pending_tally_is_counted_apart_and_never_as_a_loss() -> None:
     assert measure.withheld is None, "a population not yet known is no loss, so nothing is withheld for it"
 
 
-def _clustered(case: int) -> float:
-    """A loss three of the twelve cases carry most of: 36% of their cells, 1.3% of the rest's, about 10% overall."""
-    return 0.36 if case < 3 else 0.013
-
-
-def _withheld_in(seeds: int, *losses: float | Callable[[int], float], repeats: int = K) -> int:
-    """Of ``seeds`` seeded draws, how many withhold the false claims per unit, over one arm per entry of ``losses``,
-    each losing each of its cells to its criterion at its own share (or at a share its case sets), independently, over
-    twelve cases at ``repeats`` repeats."""
+def _all_on_one_arm(cases: int) -> bool:
+    """Whether a reading is withheld where one arm lost its one cell in each of ``cases`` cases and the other none."""
     runs = [
-        make_eval_run(status="completed", candidate_model=f"arm-{index}", template_id="tpl-rules")
-        for index in range(len(losses))
+        make_eval_run(status="completed", candidate_model=model, template_id="tpl-rules") for model in (MEMORY, LOOKUP)
     ]
-    withheld = 0
-    for seed in range(seeds):
-        draw = random.Random(seed)
-        results: list[EvalResult] = []
-        for index, (run, loss) in enumerate(zip(runs, losses, strict=True)):
-            for case in range(CASES):
-                for k in range(1, repeats + 1):
-                    if draw.random() < (loss(case) if callable(loss) else loss):
-                        fields: dict[str, Any] = {"claim_tallies": {}, "claim_failures": {RULES: "cut_short"}}
-                    else:
-                        fields = {"claim_tallies": {RULES: _lookup_cell(case, k)["claim_tallies"][RULES]}}
-                    results.append(_result(run, f"arm-{index}", case, k, **fields))
-        records = project_score_records(runs, results, archived_run_ids=None, profile=toyhost_profile()).records
-        by_cell = {
-            (f"arm-{index}", "rig"): [result for result in results if result.model == f"arm-{index}"]
-            for index in range(len(losses))
-        }
-        measured = judged_measures(records, by_cell, None, tiers=[])
-        withheld += next(m for m in measured if m.name == f"{RULES}_false_per_unit").withheld is not None
-    return withheld
+    results = [
+        _result(
+            run,
+            model,
+            case,
+            1,
+            **(
+                {"claim_tallies": {}, "claim_failures": {RULES: "cut_short"}}
+                if model == LOOKUP
+                else {"claim_tallies": {RULES: _tally(grounded=3)}}
+            ),
+        )
+        for run, model in zip(runs, (MEMORY, LOOKUP), strict=True)
+        for case in range(cases)
+    ]
+    records = project_score_records(runs, results, archived_run_ids=None, profile=toyhost_profile()).records
+    by_cell = {(fixture_variant_key(m), "rig"): [r for r in results if r.model == m] for m in (MEMORY, LOOKUP)}
+    measured = judged_measures(records, by_cell, None, tiers=[])
+    return next(m for m in measured if m.name == f"{RULES}_false_per_unit").withheld is not None
 
 
-#: Equal loss on every arm, 500 seeded draws a row, twelve cases: each row's count of draws that withhold the reading,
-#: produced on this path, at 2, 3 and 4 arms. 10% loss at two repeats: 0.6%, 2.2%, 2.0%. 3% loss: 0%, 0.6%, 1.4%. One
-#: repeat a case: 0%, 0.8%, 1.4%. A loss three cases carry most of: 0.2%, 1.8%, 2.4%. Each holds the 5% level, since the
-#: test takes its conditional permutation p wherever the cases holding losses carry few of them; by the chi-square law
-#: alone, the case-clustered loss read 5.4% at two arms over 1,000 draws.
-_EQUAL_LOSS_ROWS = [
-    # (row, loss, repeats, arms, withheld of 500)
-    ("ten-percent", 0.10, 2, 2, 3),
-    ("ten-percent", 0.10, 2, 3, 11),
-    ("ten-percent", 0.10, 2, 4, 10),
-    ("three-percent", 0.03, 2, 2, 0),
-    ("three-percent", 0.03, 2, 3, 3),
-    ("three-percent", 0.03, 2, 4, 7),
-    ("one-repeat", 0.10, 1, 2, 0),
-    ("one-repeat", 0.10, 1, 3, 4),
-    ("one-repeat", 0.10, 1, 4, 7),
-    ("clustered", _clustered, 2, 2, 1),
-    ("clustered", _clustered, 2, 3, 9),
-    ("clustered", _clustered, 2, 4, 12),
-]
-
-
-@pytest.mark.parametrize(
-    ("loss", "repeats", "arms", "withheld"),
-    [(loss, repeats, arms, withheld) for _, loss, repeats, arms, withheld in _EQUAL_LOSS_ROWS],
-    ids=[f"{row}-{arms}-arms" for row, _, _, arms, _ in _EQUAL_LOSS_ROWS],
-)
-def test_equal_shares_of_loss_withhold_a_reading_within_the_level_whatever_the_arms_cases_or_spread(
-    loss: float | Callable[[int], float], repeats: int, arms: int, withheld: int
-) -> None:
-    assert _withheld_in(500, *[loss] * arms, repeats=repeats) == withheld
-    assert withheld / 500 <= 0.05
-
-
-def test_a_lopsided_loss_is_caught_most_of_the_time() -> None:
-    """One arm loses nothing and the other 30% of its cells: 161 of 200 seeded draws withhold the reading (80.5%)."""
-    assert _withheld_in(200, 0.0, 0.30) == 161
+def test_few_losses_are_read_by_their_own_conditional_law() -> None:
+    """Four cells lost in four cases, all on one arm: the chi-square law reads p 0.046 and would withhold the reading,
+    and the exact chance of so lopsided a split is 1/8, which the permutation p reads (0.109 over its 999 draws), so the
+    reading stands. Six such cells (exact chance 1/32) are withheld. The error rates at scale are certified
+    (``claim-loss.*`` in ``stats_certificate.py``), not run here."""
+    assert not _all_on_one_arm(4)
+    assert _all_on_one_arm(6)
 
 
 def test_a_pivot_pools_one_claim_reading_on_its_own_range_and_refuses_two() -> None:

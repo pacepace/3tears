@@ -40,6 +40,7 @@ from typing import Any, Literal, cast
 from threetears.evals.analysis.stats import ADVICE_BARS, EVIDENCE_STEPS, SIGNIFICANCE_ALPHA, exact_rate_interval
 
 from packages.evals.tests import advice_nulls as advice
+from packages.evals.tests import claim_loss_nulls as claim_loss
 from packages.evals.tests import engine_take_up as engine
 from packages.evals.tests import null_newcomers as quick
 
@@ -61,6 +62,7 @@ RUN_KEY = Path(__file__).resolve().parent / "fixtures" / "stats_certification_ru
 #: digest: the package's reading, its runner and its engine, and every other workspace module they reach.
 ENTRY_POINTS = (
     "packages/evals/tests/advice_nulls.py",
+    "packages/evals/tests/claim_loss_nulls.py",
     "packages/evals/tests/null_newcomers.py",
     "packages/evals/tests/engine_take_up.py",
     "packages/evals/tests/stats_certificate.py",
@@ -558,7 +560,29 @@ def _shards() -> list[Shard]:
                     },
                 )
             )
+    # The claim-loss test across arms, read through the bundle's judged measures: each row a thousand draws, in shards
+    # of a hundred (draws claim-loss-<row>-<index>).
+    for row in claim_loss.ROWS:
+        for block in _blocks(CLAIM_LOSS_REPLICATES, 100):
+            shards.append(
+                Shard(
+                    f"claim-loss-{row}-{block.start}",
+                    f"claim-loss-{row}",
+                    "product",
+                    "claim-loss",
+                    {"row": row, "start": block.start, "count": len(block)},
+                )
+            )
     return shards
+
+
+#: The draws each claim-loss row reads.
+CLAIM_LOSS_REPLICATES = 1000
+
+#: The power the lopsided claim-loss row floors: one arm losing nothing against one losing 30% of its cells, over
+#: twelve cases at two repeats, is withheld at least this often (about 80% at 200 draws; the claim reads the 95% lower
+#: bound over a thousand).
+CLAIM_LOSS_POWER_FLOOR = 0.75
 
 
 #: Every shard of every claim group.
@@ -709,6 +733,11 @@ async def run_product(shard: Shard) -> dict[str, int]:
             tally["hits"] += outcome.separated
             tally["held"] += 1
         return tally
+    if shard.job == "claim-loss":
+        withheld = [
+            claim_loss.withheld(args["row"], index) for index in range(args["start"], args["start"] + args["count"])
+        ]
+        return _counts(len(withheld), sum(withheld))
     if shard.job == "engine-counted":
         separated, _ = await engine.simulate(
             args["reading"], args["law"], args["grader"], args["stop"], args["count"], "engine", start=args["start"]
@@ -1174,6 +1203,27 @@ def _claims() -> list[Claim]:
                 shown,
                 alpha if shown == "at_most" else engine.UNINTERRUPTED_LOOKS,
                 seeds,
+            )
+        )
+    for row, held in claim_loss.ROWS.items():
+        arms, lopsided = len(held.losses), row.startswith("lopsided")
+        claims.append(
+            Claim(
+                f"claim-loss.{row}",
+                (
+                    f"A claim reading whose arms lose cells unevenly (none against 30%, {claim_loss.CASES} cases of "
+                    f"{held.repeats} repeats) is withheld at least {CLAIM_LOSS_POWER_FLOOR:.0%} of the time."
+                    if lopsided
+                    else f"Under equal claim loss ({row.split('.')[0]}) at {arms} arms, {claim_loss.CASES} cases of "
+                    f"{held.repeats} repeat{'s' if held.repeats > 1 else ''}, one test across every arm withholds a "
+                    "claim reading at most α."
+                ),
+                f"claim-loss-{row}",
+                "hits",
+                "above" if lopsided else "at_most",
+                CLAIM_LOSS_POWER_FLOOR if lopsided else alpha,
+                f"claim-loss-{row}-<index>, 0-{CLAIM_LOSS_REPLICATES - 1} in shards of 100, through the bundle's "
+                "judged measures",
             )
         )
     return claims
