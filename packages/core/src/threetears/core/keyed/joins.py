@@ -25,18 +25,19 @@ IO only: one statement for the read, one keyed batch a joined table.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Hashable, Mapping, Sequence
+from typing import Any, Final
 
 from threetears.core.keyed._filters import Const, Fragment, Selected
 from threetears.core.keyed._filters import sent_by
 from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
-from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
+from threetears.interfaces.keyed.filters import AnyOf, by_conditions, quote_identifier, quoted_table
 from threetears.core.keyed.page import keyset_page
 from threetears.core.keyed.point import read_by
 from threetears.core.keyed.rows import read_keyed
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.rows import KeyBatch
+from threetears.observe import BuildOnce
 
 __all__ = [
     "Joined",
@@ -165,7 +166,7 @@ async def read_reached(
     if not columns:
         raise ValueError(f"a walk of {table} answers at least one column")
     if depth is not None:
-        sql, params = _reached_statement(
+        sql, params = _held_statement(
             table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
         )
         return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
@@ -193,6 +194,134 @@ async def read_reached(
             conn, table, keys=KeyBatch((on,), [(node,) for node in nodes], (cast,)), columns=read, by=by, batch=batch
         )
     return list(answered.values())
+
+
+#: a walk's statement by the shape of its call (:func:`_statement_key`), and the binds after its first rows' pins: the
+#: text a shape writes is the same every call, so it is written once. WHY (2026-11-21): writing the visible-customer
+#: walk's statement (threetears.agent.acl.visible_customers: four joins, 14 columns) cost 16.4 us of a 149 us call on
+#: the exclusive runner, against the 72 us of the reached-CTE it replaced, and took the set over its bar of twice that
+#: statement (test_visible_customers_speed_live, 2.0-2.4x; held, with the set's Python trimmed: 1.60-1.67x). Bounded at
+#: 256 shapes (a process walks a few); a shape past the bound is written for its call
+_HELD_STATEMENTS: BuildOnce[Hashable, tuple[str, tuple[Any, ...]]] = BuildOnce(cost=lambda _: 1, max_cost=256)
+
+#: a first-row pin bound as a placeholder (``= $n``), whatever its value: the statement's text does not hold it
+_BOUND: Final = object()
+
+
+def _pin_shape(value: Any) -> Any:
+    """how :func:`~threetears.interfaces.keyed.filters.by_conditions` writes a pin of ``value`` into the text: a value
+    it binds as one placeholder (:data:`_BOUND`), or, for one it writes otherwise (a literal, ``IS NULL``, a set),
+    the value itself beside its type (``1`` binds; ``True`` is written as ``TRUE``).
+
+    :param value: the pin's value
+    :ptype value: Any
+    :return: the shape, hashable when the value is
+    :rtype: Any
+    """
+    if value is None or value is True or value is False or isinstance(value, (AnyOf, Const)):
+        return (type(value), value)
+    return _BOUND
+
+
+def _mapping_key(pins: Mapping[str, Any] | None) -> Hashable:
+    """``pins`` exactly, each column and value beside its type (a :class:`~threetears.core.keyed.Pin` is rendered
+    as written, a column of the same text quoted).
+
+    :param pins: the pins
+    :ptype pins: Mapping[str, Any] | None
+    :return: a tuple of them; None for None
+    :rtype: Hashable
+    """
+    return None if pins is None else tuple((type(c), c, type(v), v) for c, v in pins.items())
+
+
+def _statement_key(
+    table: str,
+    *,
+    start: Mapping[str, Any],
+    on: str,
+    to: str,
+    columns: Sequence[str],
+    by: Mapping[str, Any] | None,
+    follow: Mapping[str, Any] | None,
+    depth: int,
+    joins: Sequence[Joined],
+) -> Hashable | None:
+    """what a walk's statement text is written from: every argument as given, except the first rows' bound pins,
+    held by their shape (:func:`_pin_shape`); None when a value is not hashable (an :class:`AnyOf` of a list).
+
+    :return: the key, or None
+    :rtype: Hashable | None
+    """
+    key = (
+        table,
+        on,
+        to,
+        tuple(columns),
+        type(depth),
+        depth,
+        tuple((type(c), c, _pin_shape(v)) for c, v in start.items()),
+        _mapping_key(by),
+        _mapping_key(follow),
+        tuple(
+            (
+                j.table,
+                tuple(j.on.items()),
+                tuple(j.columns.items()),
+                j.left,
+                _mapping_key(j.by),
+                j.matched,
+                tuple(j.casts.items()),
+                tuple(j.counts.items()),
+            )
+            for j in joins
+        ),
+    )
+    try:
+        hash(key)
+    except TypeError:
+        # NOSILENT: an unhashable pin (an AnyOf of a list) only means the shape is not held: its statement is
+        # written for the call, as every statement was before shapes were held
+        return None
+    return key
+
+
+def _held_statement(
+    table: str,
+    *,
+    start: Mapping[str, Any],
+    on: str,
+    to: str,
+    columns: Sequence[str],
+    by: Mapping[str, Any] | None,
+    follow: Mapping[str, Any] | None,
+    depth: int,
+    joins: Sequence[Joined],
+) -> tuple[str, list[Any]]:
+    """:func:`_reached_statement`'s statement and binds, its text written once a call shape
+    (:data:`_HELD_STATEMENTS`): the first rows' pins are bound first, so a held shape's binds are this call's
+    pins' then the binds held after them.
+
+    :return: the statement and its binds
+    :rtype: tuple[str, list[Any]]
+    """
+    key = _statement_key(
+        table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+    )
+    if key is None:
+        return _reached_statement(
+            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+        )
+    pinned = by_conditions(start, alias="t")[1]
+
+    def write() -> tuple[str, tuple[Any, ...]]:
+        sql, params = _reached_statement(
+            table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
+        )
+        return sql, tuple(params[len(pinned) :])
+
+    sql, after = _HELD_STATEMENTS.get(key, write)
+    return sql, [*pinned, *after]
 
 
 def _reached_statement(

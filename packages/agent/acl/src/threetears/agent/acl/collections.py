@@ -99,6 +99,7 @@ from threetears.core.keyed import (
 )
 from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_contains
 from threetears.core.tenancy import no_tenant, tenant_column
+from threetears.core.utils.serialization_retry import retry_serialization_conflicts
 from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.observe import get_logger
 from threetears.core.eviction import Declared, Policy
@@ -117,6 +118,17 @@ _ACCESS_MACHINERY_TENANCY: Final = no_tenant(
 #: the order a concurrent ensure's winner is read in: the earliest grant, then its key. The natural-key indexes leave
 #: at most one row matching (they span both scopes), so the order only makes the answer one row on every read
 _GRANT_WINNER_ORDER: Final[tuple[k.Sort, ...]] = (k.Sort("date_granted"), k.Sort("assignment_id"))
+
+#: the tries of an ensure's insert before a YugabyteDB conflict is raised, and the wait before the second (doubled
+#: each time). Every hub replica ensures the same manifest at once at deploy; on YugabyteDB a racing insert
+#: can meet the winner's commit with SerializationError ("query layer retry isn't possible, READ COMMITTED transaction
+#: was aborted and some data was already sent to the user", kConflict on the natural-key index), which YugabyteDB asks
+#: the client to retry: about one race in three of twelve ensures on the integration YugabyteDB
+#: (test_role_assignment_ensure_race, 2026-11-21). The winner has committed, so the insert tried again is absorbed and
+#: answers it: one more is almost always enough; the waits (5 ms .. 40 ms) only space them. PostgreSQL never raises it
+#: here: one run.
+_ENSURE_ATTEMPTS: Final[int] = 5
+_ENSURE_FIRST_WAIT: Final[float] = 0.005
 
 
 #: rows a listing's page keeps unless its caller asks for fewer
@@ -1786,6 +1798,10 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         ``created=False``. Without such an index nothing is absorbed and two
         racing callers can both insert, which the evaluator reads as one
         grant; declare the index.
+        On YugabyteDB the loser's insert can meet the winner's commit with a
+        ``SerializationError`` YugabyteDB does not retry itself; the insert is
+        tried again (``_ENSURE_ATTEMPTS``), and the next is absorbed and
+        answers the winner.
 
         **Announced, with its advance.** The table carries a write generation,
         so a statement that may have written it is followed by one eviction of
@@ -1869,75 +1885,108 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             ),
             None,
         )
-        result: UUID
-        created: bool
         if existing_row is not None:
-            result = existing_row["assignment_id"]
-            created = False
-        else:
-            new_id = uuid7()
-            now = datetime.now(UTC)
-            # the grant's customer (acl v005): a namespace grant's is its namespace's (None for a platform one), read
-            # by the namespace's key; an 'all' grant has none
-            customer_id = (
-                None
-                if scope_id is None
-                else await k.read_value(self.l3_pool, "namespaces", by={"namespace_id": scope_id}, column="customer_id")
+            found: UUID = existing_row["assignment_id"]
+            return found, False
+        # the grant's customer (acl v005): a namespace grant's is its namespace's (None for a platform one), read
+        # by the namespace's key; an 'all' grant has none
+        customer_id = (
+            None
+            if scope_id is None
+            else await k.read_value(self.l3_pool, "namespaces", by={"namespace_id": scope_id}, column="customer_id")
+        )
+        # every hub replica runs this at once at deploy; on YugabyteDB the insert can meet the winner's commit with a
+        # conflict YugabyteDB does not retry itself (see _ENSURE_ATTEMPTS). The insert is tried again: a conflict
+        # aborts it, so the failed attempt wrote nothing, and the winner has committed, so the next is absorbed by the
+        # natural-key index and answers the winner
+        assignment_id, assignment_scope, created = await retry_serialization_conflicts(
+            lambda: self._insert_grant(row_scope, group_id, role_id, scope_type, scope_id, managed_by, customer_id),
+            attempts=_ENSURE_ATTEMPTS,
+            first_wait=_ENSURE_FIRST_WAIT,
+        )
+        if not created:
+            log.info(
+                "role assignment ensure lost a concurrent insert of the same grant; answering the row that won",
+                extra={
+                    "extra_data": {
+                        "group_id": f"{group_id}",
+                        "role_id": f"{role_id}",
+                        "scope_type": scope_type,
+                        "assignment_id": f"{assignment_id}",
+                    }
+                },
             )
-            inserted = await self.l3_pool.fetchval(
-                """
-                INSERT INTO role_assignments (
-                    row_scope, assignment_id, role_id, group_id, scope_type,
-                    scope_namespace_id, scope_namespace_type,
-                    scope_customer_id, granted_by, date_granted,
-                    managed_by, customer_id
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9
-                )
-                ON CONFLICT DO NOTHING
-                RETURNING assignment_id
-                """,
-                row_scope,
-                new_id,
-                role_id,
-                group_id,
-                scope_type,
-                scope_id,
-                now,
-                managed_by,
-                customer_id,
+        # an insert ran (landed, or absorbed by the natural-key index): announce the row that holds the grant
+        await self._announce_rows(((assignment_scope, assignment_id),), group_id)
+        return assignment_id, created
+
+    async def _insert_grant(
+        self,
+        row_scope: str,
+        group_id: UUID,
+        role_id: UUID,
+        scope_type: str,
+        scope_id: UUID | None,
+        managed_by: str,
+        customer_id: UUID | None,
+    ) -> tuple[UUID, str, bool]:
+        """one attempt at :meth:`ensure_group_role_assignment`'s insert: the grant's row, or, when the deploying
+        application's natural-key index absorbed it, the row that won. Re-runnable: it decides on what it reads.
+
+        :param row_scope: the partition the grant is filed in
+        :ptype row_scope: str
+        :param group_id: the grant's group
+        :ptype group_id: UUID
+        :param role_id: its role
+        :ptype role_id: UUID
+        :param scope_type: ``"namespace"`` or ``"all"``
+        :ptype scope_type: str
+        :param scope_id: its namespace, None for ``"all"``
+        :ptype scope_id: UUID | None
+        :param managed_by: provenance stamped on the row
+        :ptype managed_by: str
+        :param customer_id: its customer (acl v005)
+        :ptype customer_id: UUID | None
+        :return: the grant's ``assignment_id`` and ``row_scope``, and whether this attempt inserted it
+        :rtype: tuple[UUID, str, bool]
+        :raises RuntimeError: when the insert was absorbed by a unique index while no row holds the natural key
+        """
+        pool = self.required_l3_pool
+        inserted = await pool.fetchval(
+            """
+            INSERT INTO role_assignments (
+                row_scope, assignment_id, role_id, group_id, scope_type,
+                scope_namespace_id, scope_namespace_type,
+                scope_customer_id, granted_by, date_granted,
+                managed_by, customer_id
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9
             )
-            if inserted is not None:
-                result = inserted
-                created = True
-                await self._announce_rows(((row_scope, inserted),), group_id)
-            else:
-                # a concurrent ensure inserted the same grant between the lookup and
-                # this insert, and the deploying app's natural-key index absorbed ours
-                winner_row = await self.grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
-                if winner_row is None:
-                    raise RuntimeError(
-                        f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
-                        "not inserted: a unique index absorbed it, yet no row holds that grant; the conflict "
-                        "is on something other than the grant's natural key"
-                    )
-                winner: UUID = winner_row["assignment_id"]
-                log.info(
-                    "role assignment ensure lost a concurrent insert of the same grant; answering the row that won",
-                    extra={
-                        "extra_data": {
-                            "group_id": f"{group_id}",
-                            "role_id": f"{role_id}",
-                            "scope_type": scope_type,
-                            "assignment_id": f"{winner}",
-                        }
-                    },
-                )
-                winner_scope: str = winner_row["row_scope"]
-                await self._announce_rows(((winner_scope, winner),), group_id)
-                result = winner
-                created = False
-        return result, created
+            ON CONFLICT DO NOTHING
+            RETURNING assignment_id
+            """,
+            row_scope,
+            uuid7(),
+            role_id,
+            group_id,
+            scope_type,
+            scope_id,
+            datetime.now(UTC),
+            managed_by,
+            customer_id,
+        )
+        if inserted is not None:
+            return inserted, row_scope, True
+        # a concurrent ensure inserted the same grant between the lookup and this insert, and the deploying app's
+        # natural-key index absorbed ours
+        winner_row = await self.grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
+        if winner_row is None:
+            raise RuntimeError(
+                f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
+                "not inserted: a unique index absorbed it, yet no row holds that grant; the conflict "
+                "is on something other than the grant's natural key"
+            )
+        return winner_row["assignment_id"], winner_row["row_scope"], False
 
     async def backfill_customers(self, *, limit: int = 500, cursor: str | None = None) -> CustomerBackfillPage:
         """set ``customer_id`` on one page of grants, read in key order from ``cursor`` (acl v005's backfill).

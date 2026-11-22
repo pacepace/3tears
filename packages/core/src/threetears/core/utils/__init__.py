@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         resolve_pool_connect_timeout,
     )
     from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
+    from threetears.core.utils.serialization_retry import retry_serialization_conflicts
     from threetears.core.utils.session_settings import session_settings_connection_class
     from threetears.core.utils.write_ledger import (
         WriteLedger,
@@ -81,6 +82,7 @@ _LAZY: dict[str, tuple[str, str]] = {
         "threetears.core.utils.change_note_slot",
         "change_note_slot_connection_class",
     ),
+    "retry_serialization_conflicts": ("threetears.core.utils.serialization_retry", "retry_serialization_conflicts"),
     "session_settings_connection_class": (
         "threetears.core.utils.session_settings",
         "session_settings_connection_class",
@@ -129,6 +131,7 @@ __all__ = [
     "render_local_time",
     "resolve_pool_connect_timeout",
     "resolve_zone",
+    "retry_serialization_conflicts",
     "session_settings_connection_class",
     "WriteLedger",
     "process_write_ledger",
