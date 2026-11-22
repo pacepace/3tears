@@ -356,12 +356,13 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
     of moves nothing on its own. Its p is the statistic's conditional permutation p at every size, never the chi-square
     law's: the permutation is valid and conservative however many cells were lost, and one law at every count means no
-    reading's p moves as a campaign's losses cross a threshold. Its rates are certified (the ``claim-loss.*`` claims of
-    ``tests/stats_certificate.py``) over twelve cases at two, three and four arms: equal losses of 10% and of 3%, at one
-    repeat a case, and a loss a few cases carry, each withholding at most 5% of the time, and a 0% against 30% loss caught
-    at least 75% of the time; and where many cells are lost: an equal 20% over forty cases of four repeats at two arms
-    (about 64 lost cells), and a loss two fifths of sixty cases carry at one repeat a case, at three and four arms (about
-    49 and 65 lost cells, in strata of three or four cells), each withholding at most 5% of the time too.
+    reading's p moves as a campaign's losses cross a threshold. Its 5% is held by that construction: the permutation's
+    size is its level. The ``claim-loss.*`` claims of ``tests/stats_certificate.py`` certify the implementation is not
+    anti-conservative, each null row's false-withhold rate not above 5% by more than one point on the 95% upper bound of
+    4,000 draws: over twelve cases at two, three and four arms, equal losses of 10% and of 3%, at one repeat a case, and a
+    loss a few cases carry; an equal 20% over forty cases of four repeats at two arms (about 64 lost cells); and a loss
+    two fifths of sixty cases carry at one repeat a case, at three and four arms (about 49 and 65 lost cells, in strata of
+    three or four cells). A 0% against 30% loss is caught at least 75% of the time.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.

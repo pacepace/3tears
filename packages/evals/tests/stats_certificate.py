@@ -581,6 +581,12 @@ def _shards() -> list[Shard]:
 #: bound over a thousand).
 CLAIM_LOSS_POWER_FLOOR = 0.75
 
+#: How far above α a claim-loss null row's 95% upper bound may sit. The permutation test's size is α by construction,
+#: and where ties are few it reaches it, so no draw count could put the bound under α itself. A row instead certifies
+#: the implementation is not anti-conservative: at its draws (``claim_loss_nulls.NULL_DRAWS``) a true rate of 5% clears
+#: this margin and a true 7% does not.
+CLAIM_LOSS_TOLERANCE = 0.01
+
 
 #: Every shard of every claim group.
 SHARDS: tuple[Shard, ...] = tuple(_shards())
@@ -1213,12 +1219,14 @@ def _claims() -> list[Claim]:
                     if lopsided
                     else f"Under equal claim loss ({_claim_loss_words(row)}) at {arms} arms, {held.cases} cases of "
                     f"{held.repeats} repeat{'s' if held.repeats > 1 else ''}, one test across every arm withholds a "
-                    "claim reading at most α."
+                    f"claim reading not more than {CLAIM_LOSS_TOLERANCE:.0%} above α: the implementation is not "
+                    "anti-conservative. The 5% itself is held by the test's construction, a conditional permutation "
+                    "whose size is its level."
                 ),
                 f"claim-loss-{row}",
                 "hits",
                 "above" if lopsided else "at_most",
-                CLAIM_LOSS_POWER_FLOOR if lopsided else alpha,
+                CLAIM_LOSS_POWER_FLOOR if lopsided else alpha + CLAIM_LOSS_TOLERANCE,
                 f"claim-loss-{row}-<index>, 0-{held.draws - 1} in shards of 100, through the bundle's judged measures",
             )
         )

@@ -48,7 +48,10 @@ draws take about a second a reading. `measure_definition_digests` leaves `derive
 not declare it, so every stored run's measure definitions read as before. The `claim-loss.*` certified claims gain
 `claim-loss.many-20.2-arms` (20% of 40 cases of four repeats at two arms, about 64 lost cells a draw) and
 `claim-loss.sparse-clustered.3-arms` and `.4-arms` (60 cases of one repeat, two fifths carrying most of the loss, about
-49 and 65 lost cells a draw). Each withholds a claim reading at most 5% of the time.
+49 and 65 lost cells a draw). Every claim-loss null row now certifies that the implementation is not
+anti-conservative: on 4,000 seeded draws, its false-withhold rate's 95% upper bound is at most 6%, α plus one point.
+The 5% itself is held by the test's construction: a conditional permutation's size is its level, and where ties are few
+it reaches it, so no draw count could put a bound under 5%. The lopsided row's power floor is unchanged.
 
 **For hosts:** `ClaimTally` gains `derived` (left out while empty) and `derived_unread` (left out while None). They
 amend core 15.24, which is unreleased. A build before this change refuses a stored result whose tally carries either
