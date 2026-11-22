@@ -568,6 +568,9 @@ async def test_a_provider_failing_a_call_loses_that_cell_alone_as_provider_error
     assert others == {"unverifiable"}
 
 
+@pytest.mark.expect_contained(
+    CompletionProtocolDefect, why="the repeat's job ends failed on the host's defect, which its job runner records"
+)
 async def test_a_completion_breaking_the_protocol_stops_the_repeat_and_reads_as_no_cells_loss() -> None:
     read, cell, status = await _repeated_with("defect", completed=False)
 
