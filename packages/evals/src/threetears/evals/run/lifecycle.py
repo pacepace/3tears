@@ -34,7 +34,6 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
-from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.grading import GradedCriterion, finish_web_step, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -318,8 +317,6 @@ async def rejudge_result(
     :raises CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
         Nothing is stored; the spend is on the log line.
     :raises ApparatusError: The rig could not serve a claims call (a replay's miss). Nothing is stored.
-    :raises ClaimReaderDefect: The host's reader of a claim criterion raised, or answered what its measures cannot
-        hold — the host's defect. Nothing of the re-judge is stored.
     :raises StorageError: The result was re-scored and stored but its run's excluded-cell count
         could not be updated, or a claims re-judge's trace did not land (then nothing was stored).
     """
@@ -390,7 +387,7 @@ async def rejudge_result(
                 regraded = await _regrade_claims(
                     claim_inputs, billing, result_id=result_id, derivations=claim_derivations(host.profile)
                 )
-            except CompletionProtocolDefect, ApparatusError, ClaimReaderDefect:
+            except CompletionProtocolDefect, ApparatusError:
                 log.error(
                     "eval.rejudge_result result=%s run=%s — a claims call could not be read or served, so nothing was "
                     "stored; the claims calls cost %s",
@@ -552,7 +549,6 @@ async def _regrade_claims(
     :return: criterion -> its grade, or its loss.
     :raises CompletionProtocolDefect: A completion in an extraction, a truth call or a web call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call or a search.
-    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     evidence = inputs.claim_evidence
     criteria = {criterion.name: criterion for criterion in inputs.template.claim_criteria}

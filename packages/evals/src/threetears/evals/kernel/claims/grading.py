@@ -64,6 +64,7 @@ from threetears.evals.schema.completion import CompletionClient, CompletionProto
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import (
+    CLAIM_READER_DEFECT_CHARS,
     CLAIM_TRACE_BYTES,
     ClaimCall,
     ClaimCriterion,
@@ -178,7 +179,8 @@ def grade_tally(
 
     The grade records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a recomputed tally loses
     groundedness exactly where the grading did, and never truth. The host's readings of the grade
-    (:mod:`~threetears.evals.kernel.claims.derived`) are made here too, so no tally is ever built without them.
+    (:mod:`~threetears.evals.kernel.claims.derived`) are made here too, so no tally is ever built without them; where
+    the host's reader fails, the tally keeps its counts and records the defect (``ClaimTally.derived_unread``).
 
     :param grade: The criterion's grade of the cell, as the trace stores it.
     :param evidence: The claim evidence it graded, as the trace stores it.
@@ -188,7 +190,6 @@ def grade_tally(
     :return: The tally.
     :raises ValueError: The grade does not grade ``evidence`` (another digest), its claims do not give a tally
         (:func:`~threetears.evals.kernel.claims.readings.claim_tally`), or ``derivation`` is another criterion's.
-    :raises ClaimReaderDefect: The host's reader raised, or answered what its measures cannot hold.
     """
     if derivation is not None and derivation.criterion != criterion.name:
         raise ValueError(
@@ -202,7 +203,21 @@ def grade_tally(
     tally = claim_tally(grade, evidence, grounded_in=criterion.grounded_in, ground_loss=grade.ground_loss)
     if derivation is None:
         return tally
-    return tally.model_copy(update={"derived": derive_claim_readings(derivation, grade, evidence)})
+    try:
+        derived = derive_claim_readings(derivation, grade, evidence)
+    except ClaimReaderDefect as defect:
+        # The host's code failed on a cell whose grade is paid for: the cell keeps its grade and its counts, its derived
+        # readings are marked unread with the defect, and the operator sees it here; a re-measure with a fixed reader
+        # reads them from the stored grade.
+        contain(
+            defect,
+            log=log,
+            what=f"The host's claim reader for criterion {criterion.name!r} could not read a cell; its derived "
+            "readings are marked unread until a re-measure with a fixed reader reads them",
+            level="error",
+        )
+        return tally.model_copy(update={"derived_unread": str(defect)[:CLAIM_READER_DEFECT_CHARS]})
+    return tally.model_copy(update={"derived": derived})
 
 
 def claim_evidence_digest(evidence: ClaimEvidence) -> str:
@@ -406,7 +421,6 @@ async def grade_criterion(
         take the trace past :data:`~threetears.evals.schema.models.CLAIM_TRACE_BYTES` with no web check in it
         (``evidence_over_cap``); web checks past the cap are the web step's loss alone (:func:`within_the_trace`).
     :raises ValueError: A criterion with a web budget nominated a claim, and no search was given.
-    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
     extractor, verifier = criterion_steps(criterion, client)
     checker = web_checker(criterion, client)
@@ -514,9 +528,10 @@ async def grade_or_loss(
     """Grade one cell under one criterion (:func:`grade_criterion`), or name the loss the cell records instead.
 
     Every way the criterion fails is its own loss, logged: a step's (:class:`ClaimGradingFailed`), and the provider
-    failing a call (``provider_error``). Raised instead, failing what asked, since none is an outcome of the cell:
-    a completion that breaks the protocol in the extraction or a truth call, a call the rig could not serve (a
-    replay's miss), and the host's claim reader failing (:class:`ClaimReaderDefect`).
+    failing a call (``provider_error``). Raised instead, failing what asked, since neither is an outcome of the cell:
+    a completion that breaks the protocol in the extraction or a truth call, and a call the rig could not serve (a
+    replay's miss). The host's claim reader failing is neither a loss nor raised: the tally records it
+    (:func:`grade_tally`).
 
     :param criterion: The criterion.
     :param evidence: The cell's claim evidence.
@@ -532,7 +547,6 @@ async def grade_or_loss(
     :return: The grade and its tally, or the loss.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
-    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
     try:
         return await grade_criterion(
@@ -549,7 +563,7 @@ async def grade_or_loss(
         # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.
         log.warning("%s lost (%s): %s", what, failed.loss, failed)
         return failed.loss
-    except CompletionProtocolDefect, ApparatusError, ClaimReaderDefect:
+    except CompletionProtocolDefect, ApparatusError:
         raise
     except (
         Exception
@@ -598,7 +612,6 @@ async def finish_web_step(
         fingerprint than the grade's, or the grade does not grade ``evidence``.
     :raises ApparatusError: The rig could not serve a call or a search (a replay's miss).
     :raises CompletionProtocolDefect: A web call's completion breaks the protocol.
-    :raises ClaimReaderDefect: The host's reader of the criterion raised, or answered what its measures cannot hold.
     """
     checker = web_checker(criterion, client)
     if grade.web_loss is None or checker is None:

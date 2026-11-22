@@ -82,7 +82,6 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
 from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
-from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
     GradedCriterion,
@@ -2563,7 +2562,6 @@ async def _run_claims_phase(
     :return: The phase's wall clock in milliseconds.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
-    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     started = time.monotonic()
     try:
@@ -5107,7 +5105,7 @@ async def execute_run(
         # A ``KeyboardInterrupt`` raised in this cell's own step (a Ctrl+C landing while candidate code or the cell's
         # scoring runs on the loop thread): the cell is recorded cut as a cancelled one is, then it is raised.
         interrupted: KeyboardInterrupt | None = None
-        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | ClaimReaderDefect | None = None
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
                 result, cell_trace = await run_one_result(
@@ -5211,16 +5209,10 @@ async def execute_run(
                     failed, log=log, what=f"an interrupted cell of run {run.id} could not be recorded", level="error"
                 )
                 raise stopped from failed
-        except (
-            CandidateKindDefect,
-            CompletionProtocolDefect,
-            ApparatusError,
-            ClaimReaderDefect,
-            JudgeCallUnserved,
-        ) as raised:
+        except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
-            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol, a claim
-            # reader that raised or answered what its measures cannot hold — which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
+            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
+            # which every cell would meet, so it fails the run; it is re-raised below. So does a replay miss wherever
             # it is met (a ReplayMiss: a recording that cannot serve the run), and any judge call the rig could not
             # serve, the run's scoring
             # judge's or, carried out of ``invoke`` as a JudgeCallUnserved, the judge kind's judge under test (a

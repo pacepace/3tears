@@ -64,7 +64,6 @@ from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeOutcome, JudgeService, fold_judge_outcomes, judge_clients_for_run
 from threetears.evals.kernel.claims.derived import claim_derivations
-from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.rejudge import (
@@ -329,8 +328,6 @@ async def record_witnessed_cell(
     :raises CompletionProtocolDefect: A judged run's judge client returned a completion that does not meet the protocol
         — the host's defect, raised rather than recorded as the cell's judge error. The judge calls already
         paid for are counted against the run's judge ceiling through ``judging``.
-    :raises ClaimReaderDefect: The host's claim reader raised, or answered what its measures cannot hold — the host's
-        defect, raised as a protocol defect is, its paid calls counted the same way.
     :raises LeverCoordinateError: The host's profile cannot derive the run's variant identity.
     :raises BudgetStoppedError: A judged run's saved cells already carry judge spend past its ceiling, or
         unpriced judge spend under an enforced one — raised before the judge is called.
@@ -449,7 +446,7 @@ async def record_witnessed_cell(
                     claims_searched=claims_searched,
                     derivations=claim_derivations(host.profile),
                 )
-        except CompletionProtocolDefect, ClaimReaderDefect:
+        except CompletionProtocolDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
             # found were paid for, its claim criteria's calls and searches included, so they count against the run's
             # judge ceiling as a judged cell's would.

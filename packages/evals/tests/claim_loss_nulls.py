@@ -1,6 +1,6 @@
 """Claim losses under the null, and one lopsided loss: seeded campaigns read by the bundle's claim-loss test.
 
-Each draw is one campaign of a row's cases (twelve, but for the row above the permutation switch): one arm per entry of a
+Each draw is one campaign of a row's cases (twelve, but for the rows that lose many cells): one arm per entry of a
 row's losses, each arm losing each of its cells to a
 claim criterion (``rules.claims``, grounded in the arm's own documents) at its own share, or at a share its case sets,
 independently. The draw reads the bundle's judged measures over the projection's rows, as assembly does, and reports
@@ -37,6 +37,11 @@ def _clustered(case: int) -> float:
     return 0.36 if case < 3 else 0.013
 
 
+def _sparse_clustered(case: int) -> float:
+    """A loss two fifths of sixty cases carry most of: 60% of their cells, 5% of the rest's, about 27% overall."""
+    return 0.60 if case < 24 else 0.05
+
+
 @dataclass(frozen=True)
 class Row:
     """One row of draws: each arm's loss (a share, or a share by case), the repeats each case runs, how many draws
@@ -65,10 +70,15 @@ ROWS: Final[Mapping[str, Row]] = MappingProxyType(
             for arms in (2, 3, 4)
         },
         "lopsided-0-30": Row((0.0, 0.30), 2, 1000),
-        # Above the switch to the chi-square law (more than 40 lost cells in the cases that tell arms apart): 40 cases
-        # of four repeats at two arms, each losing 20%, about 64 lost cells a draw and fewer than 41 in under one draw in
-        # a thousand, so the law, not the permutation, gives every p the row reads.
-        "above-switch.2-arms": Row((0.20, 0.20), 4, 1000, cases=40),
+        # Many losses: forty cases of four repeats at two arms, each losing 20%, about 64 lost cells a draw in dense
+        # strata of eight cells.
+        "many-20.2-arms": Row((0.20, 0.20), 4, 1000, cases=40),
+        # Many losses in sparse strata: sixty cases of one repeat, two fifths of them carrying most of the loss, at
+        # three and four arms (about 49 and 65 lost cells a draw, in strata of three or four cells).
+        **{
+            f"sparse-clustered.{arms}-arms": Row((_sparse_clustered,) * arms, 1, 4000 if arms == 4 else 1000, cases=60)
+            for arms in (3, 4)
+        },
     }
 )
 

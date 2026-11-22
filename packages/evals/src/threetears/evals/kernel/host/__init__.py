@@ -68,10 +68,13 @@ from threetears.evals.kernel.host.kinds import (
 from threetears.evals.kernel.host.measures import (
     ClaimReader,
     ClaimReaderDefect,
+    ClaimView,
     MeasureRegistrationError,
     MeasureRegistry,
     MeasureRereader,
     MeasureRereadRequest,
+    ViewedClaim,
+    ViewedSegment,
 )
 from threetears.evals.kernel.host.profile import (
     Coverage,
@@ -142,6 +145,7 @@ __all__ = [
     "CheckName",
     "ClaimReader",
     "ClaimReaderDefect",
+    "ClaimView",
     "Comparability",
     "CompletionClients",
     "CompletionRole",
@@ -186,6 +190,8 @@ __all__ = [
     "Triggered",
     "UnsupportedSchemaError",
     "VariantLeverReader",
+    "ViewedClaim",
+    "ViewedSegment",
     "When",
     "WorldCapability",
     "WorldConformanceError",

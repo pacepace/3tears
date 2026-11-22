@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from threetears.evals.kernel.host.attribution import HostAttributed
 from threetears.evals.kernel.metrics import (
@@ -40,7 +40,7 @@ from threetears.evals.kernel.metrics import (
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
-    from threetears.evals.schema.models import ClaimEvidence, ClaimGrade, EvalResult, EvalRun, EvalTrace
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTrace
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,23 +69,86 @@ class MeasureRereadRequest:
 #: nothing may guess the new one. Raise to refuse a result outright.
 MeasureRereader = Callable[[MeasureRereadRequest], "Mapping[str, bool | float | str]"]
 
+
+@dataclass(frozen=True, slots=True)
+class ViewedClaim:
+    """PROVISIONAL. One claim a criterion's judge listed in a cell, as a claim reader sees it.
+
+    :ivar text: The proposition, stated on its own.
+    :ivar excerpt: The span of its segment that states it, verbatim.
+    :ivar scope: ``world`` (about the world: graded for truth) or ``session`` (about the output or session itself:
+        graded by no truth step, and what a reader most often reads against the session record).
+    :ivar verdict: Its truth verdict (``supported``, ``contradicted``, ``unverifiable``, ``true_ungrounded``); None for
+        a session claim, which no truth step grades.
+    :ivar specific: Whether it states a name, number, date or rule a source could settle.
+    :ivar hedged: Whether the text marks it as its own uncertain recollection.
+    :ivar attributed: Whether the text reports it without vouching for it.
+    :ivar unit: Its segment's unit, or None for a segment outside every unit.
+    :ivar segment: The position of its segment among the view's ``segments``.
+    """
+
+    text: str
+    excerpt: str
+    scope: Literal["world", "session"]
+    verdict: str | None
+    specific: bool
+    hedged: bool
+    attributed: bool
+    unit: int | None
+    segment: int
+
+
+@dataclass(frozen=True, slots=True)
+class ViewedSegment:
+    """PROVISIONAL. One segment of a cell's output, as a claim reader sees it.
+
+    :ivar text: Its text.
+    :ivar unit: Its unit, or None for a segment outside every unit.
+    :ivar tags: The host's own tags on it, read-only.
+    """
+
+    text: str
+    unit: int | None
+    tags: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimView:
+    """PROVISIONAL. What a claim reader is handed of one cell under one criterion: a frozen copy, never the stored grade
+    or evidence, so nothing a reader does reaches what the engine stores, and the stored shapes may move under it.
+
+    It grows by adding fields, never by exposing the grade. A host whose reader comes to read a field the view gains
+    raises its measures' ``definition_revision``.
+
+    :ivar claims: Every claim the judge listed, in the grade's order.
+    :ivar segments: The output's segments, in order.
+    :ivar session: The run's own record the cell's kind stored (``ClaimEvidence.session``), deep-frozen: every mapping
+        read-only and every list a tuple; None where the kind stored none.
+    """
+
+    claims: tuple[ViewedClaim, ...]
+    segments: tuple[ViewedSegment, ...]
+    session: Mapping[str, object] | None
+
+
 #: PROVISIONAL. Read one cell's grade under a claim criterion into the host's own readings of it: the measures it
 #: declares with ``derived_from`` naming that criterion (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.derived_from`),
-#: by name. Pure and synchronous, and handed only what the engine stores: the criterion's grade of the cell (each claim,
-#: its ``scope`` and its excerpt) and the cell's claim evidence (each segment's ``tags``, and the run's own
-#: ``session`` record, a play order or a game state). Host code the engine calls from the claims phase, a re-judge, the
-#: settling of a pending row and a re-measure, and never inspects. A reading it leaves out is one the cell does not
-#: carry (none of its claims is about what the reading counts), never a zero. It raises only on its own defect, which
-#: fails what asked (``ClaimReaderDefect``): it is never read as a value, and never as the criterion's loss.
-ClaimReader = Callable[["ClaimGrade", "ClaimEvidence"], "Mapping[str, float | bool]"]
+#: by name. Pure and synchronous, and handed a frozen :class:`ClaimView` of the cell: its claims (each one's ``scope``,
+#: excerpt, tags and verdict), its segments with their ``tags``, and the run's own ``session`` record (a play order, a
+#: game state). Host code the engine calls from the claims phase, a re-judge, the settling of a pending row and a
+#: re-measure, and never inspects; launch runs it first on two synthetic views and refuses a reader that fails there.
+#: A reading it leaves out is one the cell does not carry (none of its claims is about what the reading counts), never
+#: a zero. Where it raises, or answers what its measures cannot hold, on a graded cell, the cell keeps its grade and
+#: tally, its derived readings are marked unread with the defect, and a re-measure with a fixed reader reads them.
+ClaimReader = Callable[[ClaimView], "Mapping[str, float | bool]"]
 
 
 class ClaimReaderDefect(RuntimeError):
     """PROVISIONAL. A host's claim reader (:data:`ClaimReader`) raised, or answered a reading its measures do not hold.
 
-    The host's code, not an outcome of the cell: the same reader reads every cell of the run. So it fails what asked
-    (the run, a re-judge, a re-measure), passed through every per-criterion catch, and is never recorded as the
-    criterion's loss or as a value.
+    The host's code, not an outcome of the cell, and never recorded as the criterion's loss or as a value. Where it
+    meets a graded cell, the cell's derived readings are marked unread (``ClaimTally.derived_unread``) and the defect is
+    recorded where an operator sees it; at launch, and in a re-measure, which pay for nothing, it refuses what asked.
     """
 
 
@@ -352,6 +415,9 @@ class MeasureRegistry(HostAttributed):
 __all__ = [
     "ClaimReader",
     "ClaimReaderDefect",
+    "ClaimView",
+    "ViewedClaim",
+    "ViewedSegment",
     "MeasureRegistrationError",
     "MeasureRegistry",
     "MeasureRereadRequest",

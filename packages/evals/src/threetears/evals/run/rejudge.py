@@ -514,7 +514,6 @@ def settled_pending_claims(
         for when the trace's write may still land (a take-up's start: an earlier holder's trace write is not fenced).
     :return: The result as it then stands, or ``None`` when no pending criterion was settled.
     :raises ValueError: A stored grade does not give a tally under its criterion.
-    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     pending = [name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING]
     if not pending:
@@ -561,7 +560,7 @@ def settle_pending_claims(
 
     **It never raises a row's failure**: a grade that gives no tally, a lost race or a store that fails leaves that
     row pending, logged, and the rest are settled; a re-judge settles it later. The host's claim reader failing is no
-    row's failure but the host's code (``ClaimReaderDefect``), and is raised. Blocking: called off the event loop.
+    row's failure: the row is settled with its derived readings marked unread. Blocking: called off the event loop.
 
     :param storage: The run's store.
     :param run_id: The run.
@@ -572,7 +571,6 @@ def settle_pending_claims(
     :param lose_untraced: Whether a row whose trace is absent is lost (``trace_lost``), or left pending.
     :return: The ids of the rows settled.
     :raises StorageError: The run's rows could not be listed.
-    :raises ClaimReaderDefect: The host's reader of a criterion raised, or answered what its measures cannot hold.
     """
     if not template.claim_criteria:
         return []

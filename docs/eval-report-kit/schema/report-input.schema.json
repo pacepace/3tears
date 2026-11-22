@@ -948,6 +948,11 @@
      "additionalProperties": {"type": "integer"},
      "description": "On a claim reading: the cells whose tally waits on its stored grade, by arm: no loss, not yet known."
     },
+    "unread": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "On a reading the host derives from a claim criterion: the cells its claim reader could not read, by arm; no loss, read once the reader is fixed and the run re-measured."
+    },
     "web_skipped": {
      "type": "object",
      "additionalProperties": {"type": "integer"},

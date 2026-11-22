@@ -1226,10 +1226,12 @@ def _claims() -> list[Claim]:
 
 
 def _claim_loss_words(row: str) -> str:
-    """How a claim-loss row's equal loss reads in its claim: its name, or, above the permutation switch, the share and
-    the law that reads its p."""
-    if row.startswith("above-switch"):
-        return "20% of cells, about 64 lost a draw, past the 40 where the chi-square law gives the p"
+    """How a claim-loss row's equal loss reads in its claim: its name, or, for a row that loses many cells, its share
+    and how many cells a draw loses."""
+    if row.startswith("many-20"):
+        return "20% of cells, about 64 lost a draw, in strata of eight"
+    if row.startswith("sparse-clustered"):
+        return "two fifths of the cases carrying most of it, about 49 to 65 lost a draw, in strata of one cell an arm"
     return row.split(".")[0]
 
 

@@ -3196,6 +3196,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.host.ClaimView": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.host.Comparability": {
       "kind": "literal",
       "signature": "",
@@ -3458,6 +3463,16 @@
     },
     "threetears.evals.kernel.host.VariantLeverReader": {
       "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ViewedClaim": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.host.ViewedSegment": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

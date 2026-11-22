@@ -20,7 +20,9 @@ needs no reading: there is nothing to read again, and the run takes the current 
 claim evidence its trace stores, through the host's claim reader
 (:attr:`~threetears.evals.kernel.host.profile.HostProfile.claim_readers`), onto the criterion's tally, never through
 ``measure_rereader``. A result whose tally for such a criterion has no stored grade beside it refuses the run, as a
-value nothing can read again does.
+value nothing can read again does. A cell the reader once could not read (``ClaimTally.derived_unread``) is read
+again the same way, whether or not any definition moved, so a fixed reader recovers every reading from the stored
+grades.
 
 **A run its measure shaped is refused.** A measure that declares
 :attr:`~threetears.evals.kernel.metrics.MetricDescriptor.shapes_run` decided what the run did (a stop rule, a floor the
@@ -166,7 +168,7 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
     report = Remeasure(
         run_id=run.id,
         applied=apply,
-        already_current=run.measure_definitions == plan.now and not remeasure_unfinished(run),
+        already_current=run.measure_definitions == plan.now and not remeasure_unfinished(run) and not plan.rereads,
         was=run.measure_definitions,
         now=plan.now,
         moved=plan.moved,
@@ -217,7 +219,9 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             remedy=f"re-measure once it has finished (job_poll run:{run.id})",
         )
     now, was = measures.definition_digests(), run.measure_definitions
-    if was == now and not remeasure_unfinished(run):
+    # A host deriving readings from claim criteria may hold cells its reader could not read, which a re-measure reads
+    # under unchanged definitions too: its results are read even where nothing moved.
+    if was == now and not remeasure_unfinished(run) and not measures.derived:
         return _Plan(run=run, now=now, moved=[], rereads=[])
     moved = sorted(name for name in {*now, *(was or {})} if was is None or was.get(name) != now.get(name))
     # A measure the host no longer declares has no current definition to read under: its stored values stay as
@@ -248,7 +252,12 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
         # A reading derived from a claim criterion is the engine's to read again, from the stored grade; every other
         # moved measure is the host's reader's.
         asked = tuple(name for name in moved_here if name not in derived_of)
-        derived_asked = [name for name in moved_here if derived_of.get(name) in result.claim_tallies]
+        # A criterion whose reader could not read the cell is read again whole, whether or not its definitions moved.
+        unread = {c for c, tally in result.claim_tallies.items() if tally.derived_unread is not None}
+        derived_asked = sorted(
+            {name for name in moved_here if derived_of.get(name) in result.claim_tallies}
+            | {name for name, criterion in derived_of.items() if criterion in unread}
+        )
         held = [name for name in asked if name in result.host_measures]
         loaded: list[EvalTrace | None] = []
 
@@ -292,7 +301,10 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             derived_was.update({name: tally.derived[name] for name in names if name in tally.derived})
             kept = {name: value for name, value in tally.derived.items() if name not in names}
             tallies[criterion] = tally.model_copy(
-                update={"derived": dict(sorted({**kept, **{n: read[n] for n in names if n in read}}.items()))}
+                update={
+                    "derived": dict(sorted({**kept, **{n: read[n] for n in names if n in read}}.items())),
+                    "derived_unread": None,
+                }
             )
         if values or tallies:
             rereads.append(

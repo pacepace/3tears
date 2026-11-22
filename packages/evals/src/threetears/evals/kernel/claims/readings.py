@@ -432,6 +432,12 @@ CLAIM_LOST_OUTCOME: Final = "claim_lost"
 #: never shrinks without a word.
 CLAIM_PENDING_OUTCOME: Final = "claim_pending"
 
+#: The ``outcome`` a projected row of a reading the host derives from a criterion carries where its claim reader could
+#: not read the cell (:attr:`~threetears.evals.schema.models.ClaimTally.derived_unread`): no value and no loss, since the
+#: cell's grade stands and a re-measure with a fixed reader reads it, counted apart so the population never shrinks
+#: without a word.
+CLAIM_UNREAD_OUTCOME: Final = "claim_unread"
+
 #: What each reading's claims rest on, as a calibration question names it (``<criterion>.<question>``): the
 #: groundedness readings on whether the documents shown support a claim, the counts of claims on whether the judge's
 #: claim is one, every other on whether a claim is true.
@@ -477,7 +483,8 @@ def projected_claim_readings(
     :param grounded: Whether the criterion asks groundedness, for a cell with no tally to say so (a lost or pending
         one); a tally's own record wins.
     :param derived_ranked: The readings the host derives from the criterion that rank, which a lost or pending cell
-        counts as the criterion's own ranked readings are counted; a ground or web step's loss never touches them.
+        counts as the criterion's own ranked readings are counted, and a cell its reader could not read counts under
+        :data:`CLAIM_UNREAD_OUTCOME`; a ground or web step's loss never touches them.
     :return: The rows, valued ones first.
     """
     rows: list[tuple[str, float | None, str | None]] = [
@@ -489,8 +496,11 @@ def projected_claim_readings(
             (name, None, missing)
             for name in (*ranked_claim_reading_names(criterion, grounded=grounded), *sorted(derived_ranked))
         ]
-    elif outcome.grounded and outcome.ground_loss is not None:
-        rows.append((f"{criterion}_grounded_share", None, CLAIM_LOST_OUTCOME))
+    else:
+        if outcome.grounded and outcome.ground_loss is not None:
+            rows.append((f"{criterion}_grounded_share", None, CLAIM_LOST_OUTCOME))
+        if outcome.derived_unread is not None:
+            rows += [(name, None, CLAIM_UNREAD_OUTCOME) for name in sorted(derived_ranked)]
     return rows
 
 
