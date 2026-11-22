@@ -48,7 +48,7 @@ Seven actions: `claim_read_create`, `claim_read_sheet`, `claim_read_answer`, `cl
 **Stored, additive (durable 17.10):** `ClaimRead.closed_at`, `closed_by`, `report`, `repeat_job_id` and `repeats`.
 `report` is a `ClaimReadReport`: `read_at`, one `ClaimQuestionFigures` per question (the counts, the weighted 2x2,
 each `ClaimFigure` with its ends, `ClaimStratumAgreement`s, `ClaimArmFigures`, the lean test's p, `lean_untested`, and
-the check's decision as a `ClaimCheckRecord`: `result` (`ClaimCheckResult`), `reason`, `state`, `sample`, `skipped`),
+the check's decision as a `ClaimCheckRecord`: `result` (met, not met, undecided or insufficient), `reason`, `state`, `sample`, `skipped`),
 `model_answers`, `borrowed`, `borrowed_from` and `excluded`. `repeats` holds `ClaimItemRepeat`s: `item`,
 `repeat_id`, `judge_model`, `against` (`itself` or `model`), `repeated_at`, `verdict`, `grounded`, `first_web`, `web`
 and `loss`. Each is left out while unset, so a read carrying none is stored byte for byte as before. A close carries

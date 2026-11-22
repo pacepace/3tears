@@ -726,7 +726,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "ClaimStratum": values(claim_read.ClaimStratum),
         "ClaimExclusion": values(claim_read.ClaimExclusion),
         "ClaimRepeatAgainst": values(claim_read.ClaimRepeatAgainst),
-        "ClaimCheckResult": values(claim_read.ClaimCheckResult),
+        "ClaimCheckRecord.result": frozenset({"met", "not_met", "undecided", "insufficient"}),
         "ShownEvidence.provenance": frozenset({"case", "run", "web"}),
         "ReadingState": values(reading_states.ReadingState),
         "SetAsideReason": values(reading_states.SetAsideReason),

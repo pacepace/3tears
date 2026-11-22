@@ -64,9 +64,6 @@ ClaimTruthVerdict = Literal["contradicted", "true_ungrounded", "unverifiable", "
 #: agreement with itself), or another judge (``model``, a second judge's reading of the same claims and windows).
 ClaimRepeatAgainst = Literal["itself", "model"]
 
-#: A check's result, as the calibration criteria decide it: met, not met, undecided, or too little to decide.
-ClaimCheckResult = Literal["met", "not_met", "undecided", "insufficient"]
-
 #: The strata of each stratifier, in the order a draw lists them.
 STRATA_OF: Final[Mapping[str, tuple[ClaimStratum, ...]]] = MappingProxyType(
     {
@@ -332,7 +329,9 @@ class ClaimArmFigures(EvalDocumentModel, CoreShapeModel):
 class ClaimCheckRecord(EvalDocumentModel, CoreShapeModel):
     """What the check of the instrument against people decided on one question, beside the figures it read."""
 
-    result: ClaimCheckResult
+    result: Literal["met", "not_met", "undecided", "insufficient"] = Field(
+        description="As the calibration criteria decide it: met, not met, undecided, or too little to decide."
+    )
     reason: Reason | None = Field(default=None, description="Why it is not met, where a shared reason says it.")
     state: StateOf | None = Field(default=None, description="Where it could not be made at all: not available, why.")
     sample: SampleKind = Field(description="random where people answered drawn items; none where nobody did.")
@@ -530,7 +529,6 @@ __all__ = [
     "ClaimRepeatAgainst",
     "ClaimArmFigures",
     "ClaimCheckRecord",
-    "ClaimCheckResult",
     "ClaimFigure",
     "ClaimQuestionFigures",
     "ClaimReadReport",
