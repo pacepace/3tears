@@ -1,6 +1,6 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "39481508775626b943047539802cffe2caf82cefcd0b21c60d52519ac8386ba4",
+ "digest": "3b78e95844cdce13a18da6c5649ca4c27eda9001a21d0600d7d16e0ba91047f2",
  "entry_points": [
   "packages/evals/tests/advice_nulls.py",
   "packages/evals/tests/claim_loss_nulls.py",
@@ -31,7 +31,7 @@
   "packages/evals/src/threetears/evals/actions/params.py": "3fbfe98a36516b358dbb2efce06e0f1ed826b8c6d9953a59d9927be6a4064af3",
   "packages/evals/src/threetears/evals/actions/render.py": "7a3ae1530b84ccdc0b3fb260d9709a01b8d8b1b66f9b5844a74bcfb71453bb87",
   "packages/evals/src/threetears/evals/actions/report_writing.py": "7ce68019a16e8e10d3208a9f05974167ee82ae84cbca4d98ca37cf9f608ef914",
-  "packages/evals/src/threetears/evals/analysis/__init__.py": "baa981a0d7f296a78d751b0f68541d043297dec0994f7ab05afebb1e055e621b",
+  "packages/evals/src/threetears/evals/analysis/__init__.py": "6f1148d76edadf8b7edc668cc08cc2deda9c883c49bc42b59c19801744f43ce5",
   "packages/evals/src/threetears/evals/analysis/agreement.py": "fd6cd87bafca8eb2e7783ee5d5e3affe7c442bc346cc8f9b2e90a06948fdc0ab",
   "packages/evals/src/threetears/evals/analysis/analyst/__init__.py": "4fb90f263ac0e83dc66dbc964d54c551579d0779a140caab21079df7e5c7aae5",
   "packages/evals/src/threetears/evals/analysis/analyst/analyses.py": "1ef4dba5fcfe2fc2af5d80837940c0ff24e6edb6ed7e8f1eec22fa9d47b7b0e8",
@@ -53,34 +53,34 @@
   "packages/evals/src/threetears/evals/analysis/bar_proposals.py": "adea109532711fb15d9d423084d153d3df8e2b2f9d0142822cfd7dde85b55ce0",
   "packages/evals/src/threetears/evals/analysis/blind_read.py": "e55e8dc63aee43719dc2f4d42acafed12ffa175390cd6442dfd53d4d137cfa4b",
   "packages/evals/src/threetears/evals/analysis/bundle/__init__.py": "a68935e344893dcae5f5bcf28e12d09bf9a346f52b189ba24082df0017b3b0c7",
-  "packages/evals/src/threetears/evals/analysis/bundle/assemble.py": "33b1498806cc4d69aae6ed3c1c95c99e629e1fdd49442af7fb078e9ba77cf06c",
+  "packages/evals/src/threetears/evals/analysis/bundle/assemble.py": "75d8d54278a5568c817f4fadfa876e2b961f80fafe37517589f2795cbdcf34cb",
   "packages/evals/src/threetears/evals/analysis/bundle/bars.py": "38616c2cf85f6b7d79c594ed39466ecac182fc0336237de81f948a97a246edf6",
   "packages/evals/src/threetears/evals/analysis/bundle/caps.py": "1719271f20d9f0811233975a51f78c8442ccccdf6400fa5d79416153d75ee50f",
-  "packages/evals/src/threetears/evals/analysis/bundle/cell_notes.py": "b3ac11bd24934adc4a8b997c3b3a57869943172012b8e0d37063e1bc3b8e98a6",
-  "packages/evals/src/threetears/evals/analysis/bundle/cell_reads.py": "60532513fddeac700ee43cdacdf31871df1c3fc67814ecb7b3d805c6eb0a7475",
+  "packages/evals/src/threetears/evals/analysis/bundle/cell_notes.py": "bdd799e8dfc71af2cfdb66a82dee74acba4a467a7b5aa1ab75828d33cdd2dfc1",
+  "packages/evals/src/threetears/evals/analysis/bundle/cell_reads.py": "800e85490a9be1ca8afab65c051971af57b6cd525536032c065eabda7e1b09bb",
   "packages/evals/src/threetears/evals/analysis/bundle/comparisons.py": "6e7830b8dcbb214836ac443beb7c5260f7d572542b717ee92aeb33a36a5b5a9b",
   "packages/evals/src/threetears/evals/analysis/bundle/config.py": "bee096009c5d427c586911ea8a76800f5f7c7d25993a8c755ec73fdf8801fad1",
   "packages/evals/src/threetears/evals/analysis/bundle/confounds.py": "b31b68989265ac6847a8257343e040159b27127394c6d1dfc7f6737b382f951a",
   "packages/evals/src/threetears/evals/analysis/bundle/coverage.py": "48c5a6aab787b98b5c2590edacd0c431720189245d40bfa2744b2e3959c23acb",
   "packages/evals/src/threetears/evals/analysis/bundle/design.py": "f8aa073c87d7296f0451d0f22d3ee6b04ee68a308830009d4e2af875f5acbaba",
   "packages/evals/src/threetears/evals/analysis/bundle/divergence.py": "e6318ca89a4a2dc51f331c777a367cf9de07054269220c6e9f564ccbd809da7f",
-  "packages/evals/src/threetears/evals/analysis/bundle/evidence.py": "a4007192229d08e88ef0a16f2b3fc8fe5b5c7572626c6d0499a607c27efbff9c",
+  "packages/evals/src/threetears/evals/analysis/bundle/evidence.py": "bedceec4ccf4b7b3e3fdbea36526c561e495b8ded4078b3e9e8f517c113824fd",
   "packages/evals/src/threetears/evals/analysis/bundle/insights.py": "ba18a38c468a64f1d6caabc05f2c70e4103c6293107d684942522b4e1f60d0fe",
   "packages/evals/src/threetears/evals/analysis/bundle/judges.py": "46486854ecfa49a3ff38b39a8b7fe292c1700f2b423f3eda4a40c72fc6b153c5",
   "packages/evals/src/threetears/evals/analysis/bundle/measures.py": "ca0c9c63115184bc68355c8cfae52699f7c79192f042b257292af4629f064b90",
   "packages/evals/src/threetears/evals/analysis/bundle/mechanisms.py": "00d71379acd45ba5b40d9974526724e0a060dacf91d1b57451286301fa2c0664",
   "packages/evals/src/threetears/evals/analysis/bundle/observations.py": "7ae9d98a828fe3e65fe1f3d7bf2ac686ecdc6ebcfbbf7bfe4b3fb8e92ecd1ba0",
-  "packages/evals/src/threetears/evals/analysis/bundle/schema.py": "a91da5e6282026f8cfdbb4709cd5b42a5ccb0b65ae1ad2fdc177e0672fe72a32",
-  "packages/evals/src/threetears/evals/analysis/bundle/surface.py": "8c588742035171b60aa3b4b344fd82062e07246b1cd355d058caa71baf5aa4ee",
+  "packages/evals/src/threetears/evals/analysis/bundle/schema.py": "9efc2b7ea3f09fafd87f5de9187e7c7d012cc933c68996b8fe2366fbd5e1bb70",
+  "packages/evals/src/threetears/evals/analysis/bundle/surface.py": "19de76fc4cbc70d0f6a6efd2e47f396b1eeedb22e3ec5b24129bbb9f8adfeaa1",
   "packages/evals/src/threetears/evals/analysis/bundle/telemetry.py": "211bf24283b2c37413da25babcd37f940e27fa02bc4670ce5386b1a6d14e2a05",
   "packages/evals/src/threetears/evals/analysis/bundle/time_axis.py": "19180d76894c2c3e5c17a1106fbfd3c24cfcab0de553ce95fc6bfc0fd76bfa1f",
-  "packages/evals/src/threetears/evals/analysis/bundle/trials.py": "b5f7cceccb9757ecc6757be10c0d212353ea902caf1943d66fabd8fb6f55e79d",
+  "packages/evals/src/threetears/evals/analysis/bundle/trials.py": "4e73f6645a475a91c53be44b62ea8c218ef24614aaf81db98dca3e791885f050",
   "packages/evals/src/threetears/evals/analysis/campaign_bundle.py": "8986fba0b21769c29f5329e4e9e0806f9b9678c4f6840e10ad18a0b704aebfec",
-  "packages/evals/src/threetears/evals/analysis/campaign_readings.py": "89a026bff4c0cb9032a63410a8c22006a488b7610f111da272b24123f9506274",
+  "packages/evals/src/threetears/evals/analysis/campaign_readings.py": "0e91094bd809bc20496bff5dedd9920e06d0e0a8dc8652b3aa35ebdb37919849",
   "packages/evals/src/threetears/evals/analysis/campaign_title.py": "084bb37b357c2658d9c2b5d811862d157ae40f32f5c7f9da5037d3c38079c0c5",
   "packages/evals/src/threetears/evals/analysis/campaigns.py": "a60ede6f103331cf7978b5f3a2561b1836c98e080ebf97a389fc408d72266d19",
   "packages/evals/src/threetears/evals/analysis/cassette_mode.py": "5c69d2be89ecf5defc7c72d4cfc790fc39af9964828e81a2dd70585df99a09d8",
-  "packages/evals/src/threetears/evals/analysis/caveats.py": "bd6d9bab88c00b3142381015fd9cf62ee8bb465060af6f27c370ce21724fed18",
+  "packages/evals/src/threetears/evals/analysis/caveats.py": "c11d7812cabdb9c8af6ea743ee8ac12a10c790b09d21a213378b091d7966815f",
   "packages/evals/src/threetears/evals/analysis/cell_mean.py": "9c4a1f5be07995c7a98236aff9eda025a5f7b5c7ff37936f847f0a9c7d0623ef",
   "packages/evals/src/threetears/evals/analysis/cells.py": "29217fdf28325f0c0b0db770eea418b60daa0437deba8765128ea5a99c4ec50f",
   "packages/evals/src/threetears/evals/analysis/checks.py": "7d6767fb85534270a4ff8e8caee7e926fab24a8062ca0aa7231610f43f832d02",
@@ -95,7 +95,7 @@
   "packages/evals/src/threetears/evals/analysis/doc_analysis.py": "c834d0e0b742c9b3ca4e4f1f5bb7481df9e5cc177cecc2a76e9924b3553715f6",
   "packages/evals/src/threetears/evals/analysis/errors.py": "28b022b3b7b8f60af1e5a2844007cbda4664651c3e65b32929a6fc2af408b2ec",
   "packages/evals/src/threetears/evals/analysis/first_screen.py": "dc261871df3b32094ec559702ca0387845e843c4fbe3ed1ed8db4c5ddf4e9565",
-  "packages/evals/src/threetears/evals/analysis/floors.py": "3fed568a1469649b81e963d178f92c847ca69e3af364249ed908ba350eca7324",
+  "packages/evals/src/threetears/evals/analysis/floors.py": "dbeb3b504f3651a57ce4454d447a5132bed0aef0246971b5aa05928b0fd4fdea",
   "packages/evals/src/threetears/evals/analysis/gate.py": "a7c07e3f01416aa49b246307f459bd23165f0d34d96e749b481add2fe6e4fab7",
   "packages/evals/src/threetears/evals/analysis/generation_tally.py": "4012c80fd658b789949b5b781bb548e586af7e13cadfc3529294f4c18f0ffa57",
   "packages/evals/src/threetears/evals/analysis/judge_drift.py": "9b61d7a22a30706f869516cd6ff62d29076b7cf5bab68294a0991a938f2d2470",
@@ -123,7 +123,7 @@
   "packages/evals/src/threetears/evals/analysis/permutation.py": "555c96c478f0051cefdf7cc5afc63c16074b321b29e003f69ccbdb5ac80692f0",
   "packages/evals/src/threetears/evals/analysis/quantities.py": "2146192d6d993c06e6967b850af4f705e2f2b612e17ab45f27699be098ded0db",
   "packages/evals/src/threetears/evals/analysis/reads.py": "797322e8ac03b78b62e66727bb9c03813c9250d856e1a329556dfc63d48914ac",
-  "packages/evals/src/threetears/evals/analysis/references.py": "6c76663fdfbb1311f341cb8db8b03ccc7c3760f3f58762b1cb66b1062bdf163e",
+  "packages/evals/src/threetears/evals/analysis/references.py": "7add3641bc194dcc07e30bba37afd21f73752269811b243d0cd0a1e94186ab25",
   "packages/evals/src/threetears/evals/analysis/remainder.py": "cfba10194a18e8764e259b5df15d80b17a7a55013d7f59ce65fe6d2a97572896",
   "packages/evals/src/threetears/evals/analysis/report/__init__.py": "bb849ff5877e247b4d7ee9d018c415e2f4f1070f61037ca7eebcc812466f4d0e",
   "packages/evals/src/threetears/evals/analysis/report/aspect/__init__.py": "157a43efd7a233a20c8b0036e556282fd32d3d4c5727fdc3f991b02843f16595",
@@ -131,31 +131,31 @@
   "packages/evals/src/threetears/evals/analysis/report/aspect/contrasts.py": "52e688715e6d5ec780193e2c393f980714c277c51eb5540fb0f1c2d0e59e8725",
   "packages/evals/src/threetears/evals/analysis/report/aspect/guardrails.py": "5216abf9b178d707cc281ce216449995e921937109caa7aab05192c9790c0961",
   "packages/evals/src/threetears/evals/analysis/report/aspect/head.py": "b52e0a33047d39ad46be910657455f8301f6f268f94126e35cefac508fbcd801",
-  "packages/evals/src/threetears/evals/analysis/report/aspect/method.py": "cba049abc1c961fd45e3df30382fd99d18edd68ee46b85c1d61b2f9f01e09c89",
-  "packages/evals/src/threetears/evals/analysis/report/aspect/question.py": "6983b216bc6a562db64e30bbe34248a0dbefae38ee968faf509613d1ed66e3be",
+  "packages/evals/src/threetears/evals/analysis/report/aspect/method.py": "9bb17a6528556b526a649ac5d3a76d117b03f04057d84f29b7f888016a090f25",
+  "packages/evals/src/threetears/evals/analysis/report/aspect/question.py": "922d0cffcae2e2b44524af432f082a4ed9380f2e23e8d589834a2a1a211d0010",
   "packages/evals/src/threetears/evals/analysis/report/aspect/readings.py": "81127e6e385105c76b615f9fe8f2830c33c5a4560fc6532bc693305e553beb9b",
-  "packages/evals/src/threetears/evals/analysis/report/aspect/scoreboard.py": "6a4846790f27f37a2a4c6f423f018cf24d04c2e963a7002a8580cef899ddfe92",
-  "packages/evals/src/threetears/evals/analysis/report/aspect/trials.py": "ecdb2b745bde45ee614bb6f2c7b0df295bd65b96709094280382d6600629266e",
+  "packages/evals/src/threetears/evals/analysis/report/aspect/scoreboard.py": "4a195060db4f8a2f68c9ada9a1280896c2f5fefe354e85e9a20ffb651a5e828a",
+  "packages/evals/src/threetears/evals/analysis/report/aspect/trials.py": "11a1ad72a45c3dd6be432d698673e05f648c6731a832e9ecdfd9f40a04188ec3",
   "packages/evals/src/threetears/evals/analysis/report/blind_rates.py": "ccbcfd2009ba1e72d50287688466fda494b26495913c987d6830e185f9c200d3",
   "packages/evals/src/threetears/evals/analysis/report/block_spec.py": "36424d6ddc380b5daa2aa26e49ed5742220d7d2eb8249ede80772b86b5f0209a",
-  "packages/evals/src/threetears/evals/analysis/report/blocks.py": "1bc9faf6b062934846307c304931c26662b8bd5949854be45eaa0c26875b468f",
+  "packages/evals/src/threetears/evals/analysis/report/blocks.py": "85b2108ce2d5ebec6751a5b072fd4077ff60046cbdf0113f353f10d2e378b7af",
   "packages/evals/src/threetears/evals/analysis/report/build.py": "97e24c42745450abb9e0712db604a537202d639443899d84c04f448b1328008d",
   "packages/evals/src/threetears/evals/analysis/report/call.py": "f0b1f7a13c896086b2cf3634ca19be8ce0003e8e62b5fbf35691e70d82915320",
   "packages/evals/src/threetears/evals/analysis/report/campaign/__init__.py": "eb05e1371a5783a97f4c29fb08c878dc5e6e0b4a6ef7d9e7a0df7cb4ef310833",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py": "1abe9127f00fd9d99aca127774dc2905e2d030cf4608991c1211c65f2393ecc2",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py": "f594f50e91d3ac49c4ff0d69d18b204a02282b95d51836cb953dba4e07ecc2f8",
   "packages/evals/src/threetears/evals/analysis/report/campaign/answer_blocks.py": "a4ce2971f9f7db1fea0194f9d6724c49e747269a5480485fbebc380ce6ca5bcf",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/common.py": "edceca1102f84f32704decb349a14e4761c43327243b2138f12b453e9ba7809c",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/depth_blocks.py": "353e0c601be4ca8daf517a417d98983c4d448bffe07f4fddd44f90f18826cd63",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/common.py": "6766a8f0e27c9c7ec8c600bb1bd9a78a1108104e6bc41416446db73594ea376b",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/depth_blocks.py": "331ceb1a1e0cd80356cfd11bbc55b928d1fe245457637ad305341639aa2cf308",
   "packages/evals/src/threetears/evals/analysis/report/campaign/measure_kinds.py": "1dbf906b42a92c2ce3e0eeed1e1d1d30ce67cf15cf84bec21ed364871a48b186",
   "packages/evals/src/threetears/evals/analysis/report/campaign/names.py": "99f8eae3989571cb1bf9b80cb32b26eaf016043c0315a72efd3d4777e6d3330a",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/page.py": "9b6ca4345ab052aa06a39c9f1aea5f1e029bf09583d6f33a9ad65761fcbad7c4",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py": "b23ca61234a0529150b3afa652acf88409a49286c59d49b7c88656fa1fb2cde7",
-  "packages/evals/src/threetears/evals/analysis/report/campaign/scorecard.py": "e7d14d638177dcf7866cd407720dc3b0341b41aa648cc1c2cb87fe80cdd538cb",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/page.py": "c77e3a9947e2c73f0e676c1b831542dd42ce35fcbe157427548245f34f6a4f51",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py": "8bde0da5b86b5cd463fca7ba533b20a77cfa3d3c510a3c56056e76aa155dc81a",
+  "packages/evals/src/threetears/evals/analysis/report/campaign/scorecard.py": "f1321279b980b5f08bbacbdfb186db072fdd095759556bb9509b6e0755698c83",
   "packages/evals/src/threetears/evals/analysis/report/campaign/warnings.py": "4a7b5ea8c676371e186f69228a09b33ffef8d08cbbbba0e21576ccc2fd969ffa",
   "packages/evals/src/threetears/evals/analysis/report/campaign_page.py": "6472d453f5207804bb04eb2610e51843d46ed864eab4eb7ca4f1e8b72d8ea6f3",
   "packages/evals/src/threetears/evals/analysis/report/chart_levels.py": "761d1f5b56451d4a1efe736d5991b07db7a5026ab4085ceab8a4f2dba8e41bcd",
-  "packages/evals/src/threetears/evals/analysis/report/chart_svg.py": "298075deb433d432089af67220b44f3c9408b296178fe058bb3859a59dc4ecaf",
-  "packages/evals/src/threetears/evals/analysis/report/charts.py": "0f8516a467b449c634d53be2d3ac92e13d637fd320a23612037c65ae8485136d",
+  "packages/evals/src/threetears/evals/analysis/report/chart_svg.py": "bf9fb965cd63f548387d985b9c103994ce30b8f6f986eae98b94e4ccd378a7a1",
+  "packages/evals/src/threetears/evals/analysis/report/charts.py": "d9f5e94e3671f2bd4f83f6e69ffe018aff73702af535019e2a07de6dd6dae30e",
   "packages/evals/src/threetears/evals/analysis/report/cost_unit.py": "32edc2a964bdd5317692e47226997dd4f8db6f3890f580f799ce85d42e065159",
   "packages/evals/src/threetears/evals/analysis/report/doc_page/__init__.py": "73de03ff53f98466416e09597b1781c4cd612395740e37867fda4d1039db3f3d",
   "packages/evals/src/threetears/evals/analysis/report/doc_page/build.py": "091a0ce6d418fb67f6f04f640449a833f388713aa5e397fc04df6cb99c07a5d8",
@@ -167,7 +167,7 @@
   "packages/evals/src/threetears/evals/analysis/report/doc_page/prose.py": "f18de4eb4e1c522ac7d5c1c9d2a98ba318438ff7a309988c141ff6e04bf38ae7",
   "packages/evals/src/threetears/evals/analysis/report/doc_page/store.py": "64fdfd20fb904d79be86220548f1790fecd0d8c0eff9854b14a389cfd9cbc645",
   "packages/evals/src/threetears/evals/analysis/report/doc_page/text.py": "e908332606c23e3533d7bc91145fa6225dd20553aba9d145d79207152d4f35f9",
-  "packages/evals/src/threetears/evals/analysis/report/doc_page/words.py": "880d5b6e73c203baa75189c5298e2e1f9fcf7caf3b74d51c1deb456ebe1c0cf9",
+  "packages/evals/src/threetears/evals/analysis/report/doc_page/words.py": "7d05f4bd081985ca04305c84ba292b6cdd16f544c449ceafebc948da3e14f3b9",
   "packages/evals/src/threetears/evals/analysis/report/fact_arms.py": "83cf0b1e34305e25bc37861e3cabb3a473880b201f6db0c85a14bc5bde3048bd",
   "packages/evals/src/threetears/evals/analysis/report/figure_keys.py": "06bbf0f9d5b3e5da16651f7b0cb0094376ea27360635b9c8304a8cccdd490053",
   "packages/evals/src/threetears/evals/analysis/report/figures.py": "14af00cf06b1865799c80be4e3b708f5c93047f4cfe42a5b88542aa52edb97a8",
@@ -197,7 +197,7 @@
   "packages/evals/src/threetears/evals/analysis/report/number_forms/kinds.py": "588266b835370e479084cc33aca3d743ee8078169268af065d0dd6f8be3ddb33",
   "packages/evals/src/threetears/evals/analysis/report/number_forms/policy.py": "dcccf2599d036b97f0f4810aaa35b5634c19eaeab95cbd1717ce630131101273",
   "packages/evals/src/threetears/evals/analysis/report/number_forms/printed.py": "7d94f3085d4eb935c8e838076150e4d6222393afae2f5730b3c52db433830a5e",
-  "packages/evals/src/threetears/evals/analysis/report/number_forms/sets.py": "6ae2adb91ff6ec402add1567a39dbe4075fbe45386d84a3f17cf49adc93bbda1",
+  "packages/evals/src/threetears/evals/analysis/report/number_forms/sets.py": "ec038c64c5850025f0959c46b9e4f3cfcff24451824518d2f3fc3058ff5e335a",
   "packages/evals/src/threetears/evals/analysis/report/number_forms/written.py": "12f6643d61130058975fd7fa99346bab746aa4ce93961d46800b8303879328b0",
   "packages/evals/src/threetears/evals/analysis/report/parts/__init__.py": "015a0c73a26f1a49ec01d49b4d1b70c952534aa78b8c672213c7a7ef3b013ecf",
   "packages/evals/src/threetears/evals/analysis/report/parts/charting.py": "2d93ff20613f6cf41ec5b82ccabb1e12522a9038e8406b937bf010fc7d2705e5",
@@ -221,10 +221,10 @@
   "packages/evals/src/threetears/evals/analysis/report/serialize_md.py": "5b8eb98eea5435033778f57b902d82b7f7d077d123adabaf4ea24bec2ce9b6bc",
   "packages/evals/src/threetears/evals/analysis/report/svg.py": "4ae57717380e08b214541b9ee531300c24a91ac7d4c117c53cb853ea09554add",
   "packages/evals/src/threetears/evals/analysis/report/unit_once.py": "b7fb4ac27fd2efa5ef5528076ed6897a95b27b8b9c12869c9ef8165ec0fafbe4",
-  "packages/evals/src/threetears/evals/analysis/report/verdict.py": "eb69c849313a9e1b43f0a16e7d1e5a0089bbd17b177d30dffc8d78ba0e811ecf",
+  "packages/evals/src/threetears/evals/analysis/report/verdict.py": "649cd0220eab7a53af961c7d73761bceef2c9b0191bc03fb2a1a2d449a74b5f2",
   "packages/evals/src/threetears/evals/analysis/report/words.py": "f33e91d47ee8dc39c43692b1dc1d3ba27e1f348a1be02ad42ec5b391cee37e06",
-  "packages/evals/src/threetears/evals/analysis/report_input.py": "b0dc89c489dade4af9cd286526ce0ff50f413e42ef8d7c9deba7c65ebcaac244",
-  "packages/evals/src/threetears/evals/analysis/report_input_build.py": "a3bc6da0249d50f65a902a2f666bad9fc78febfb36cf0fa2e5f8ec368a20c802",
+  "packages/evals/src/threetears/evals/analysis/report_input.py": "5d3b546a70e38c5eac7110d45bf05ae11a87ad94632d202a228f4a0ce2128d73",
+  "packages/evals/src/threetears/evals/analysis/report_input_build.py": "2e665267e8a1bf6633afe946126899822b4bb655c33a17f8674ddd516858fafa",
   "packages/evals/src/threetears/evals/analysis/report_margins.py": "30dcbd25121056dd52be6c12e98983d2cc2181f9fd9b5b69f88c3e7488dac529",
   "packages/evals/src/threetears/evals/analysis/reporting.py": "7055601e465501a6ca9b2bb1cc9ecc3d41399012134bf1b3927ebd3c2ce818ef",
   "packages/evals/src/threetears/evals/analysis/revisions.py": "e0fb06a8d0422255a785049bb4f065e2ef3e6d0df1db3cc7afb8c65e66d8e8fe",
@@ -234,8 +234,8 @@
   "packages/evals/src/threetears/evals/analysis/service.py": "c55b1786e4be9ea9229f7497a5ebc37d6abdcdaed651a729b2d427bb60059f84",
   "packages/evals/src/threetears/evals/analysis/significance.py": "b2364503f42beb847517dadb0353cd9febb2a8eb13cd81f59bd15c9e46cabb5d",
   "packages/evals/src/threetears/evals/analysis/stats.py": "1de4ad8cf29a7ff29205bad34c2bb3e50cd8e92b1e80ac1feb9aeed2bf28195a",
-  "packages/evals/src/threetears/evals/analysis/style.py": "5b4a18ece3c3c73071c5551d0d0c0ec2d936d304bf88413dcdacaf2a0fc12d24",
-  "packages/evals/src/threetears/evals/analysis/summary.py": "f9902074a4b969bca03643340d4e599c9801dabb140d30fc706c1b95fe14407f",
+  "packages/evals/src/threetears/evals/analysis/style.py": "49ffb019a93b96eb9646b9796a6a392a25e2952bbb13e7ba6d972e51c1cbcc2a",
+  "packages/evals/src/threetears/evals/analysis/summary.py": "38d297a916e94b73e40349700c547be4d1dd6a6cf8dbfc8876e85753c627903a",
   "packages/evals/src/threetears/evals/gen/__init__.py": "bd700c5dc64da6f155f1c6942f7c6e282441dbeca316add4e13a58e6ce901b03",
   "packages/evals/src/threetears/evals/gen/prompts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "packages/evals/src/threetears/evals/gen/prompts/boundary_gen.py": "2aa28702408f0d745f8a822b19f9312a256e82d140db5a56101c3a111f89096f",
@@ -258,7 +258,7 @@
   "packages/evals/src/threetears/evals/kernel/build_stamp.py": "9aac7319b9021ac6dc6c108920b2ab7fc2eddfb22831d1531cbe9cbf30033231",
   "packages/evals/src/threetears/evals/kernel/campaign.py": "6124d4134e4a0f75d6e2bea9f43f46718d78cf59a98acce3c963da52d5ce5ec1",
   "packages/evals/src/threetears/evals/kernel/campaign_writes.py": "e75cf5f00640ca8aac28619114c7ce7fd928265f95562e2677fb7dadb1dd445a",
-  "packages/evals/src/threetears/evals/kernel/candidate_kind.py": "45a4229f2e9d17d20afd701b356c045fc5e1284d8842f2b238987e445bb0ec0e",
+  "packages/evals/src/threetears/evals/kernel/candidate_kind.py": "2d6cc78a7f2a13a83311369ece5edc7f6b6b177a1f99eef7e2fde3a7f6bfd852",
   "packages/evals/src/threetears/evals/kernel/capped_completion.py": "df837f2a055f3c7967e6a599dc408876ac16cb787e567e49faad414ccf635ea5",
   "packages/evals/src/threetears/evals/kernel/carried_measures.py": "96ea85db9a78f9219ac19b54089d2985c24c80de31a54a8b6826a5c1bb13bfa1",
   "packages/evals/src/threetears/evals/kernel/cassettes.py": "9696e58479299f0ec455e850b98df60b662cfa2cd9f038c8a0d8329e04e3ab22",
@@ -268,7 +268,7 @@
   "packages/evals/src/threetears/evals/kernel/claims/extraction.py": "76a95f341236971dc4f098d473c0f9c5729647e0ab1ef78dc16ed42629854b57",
   "packages/evals/src/threetears/evals/kernel/claims/failures.py": "0c12ff91989022429b36f1009b1f9e386dd85994df98681ef697019c99caa296",
   "packages/evals/src/threetears/evals/kernel/claims/grading.py": "07b1316904e8c793be00d4145ebd3b46b80bcb18d9e4e775ae7cdc849637d15f",
-  "packages/evals/src/threetears/evals/kernel/claims/readings.py": "a7417268b24e6a9a20c5626074c71541a1a03911433ffb46009389b49a20215b",
+  "packages/evals/src/threetears/evals/kernel/claims/readings.py": "3e7b048d1e2db229e21c0caed7694a5470e7d3d900f7f038be7c95540bce2f22",
   "packages/evals/src/threetears/evals/kernel/claims/repeat.py": "9ebf51affd063fc567381483eaf1140aec117c5024f306dce141167bf6ded069",
   "packages/evals/src/threetears/evals/kernel/claims/verbatim.py": "bfb199cdbb558e4119171d34db6fe09600faa43602c8970b6010c5bc50febe49",
   "packages/evals/src/threetears/evals/kernel/claims/verification.py": "5b0e6d904395bf428565bae971787b0326408567f05f68942663281a904a8c46",
@@ -321,8 +321,8 @@
   "packages/evals/src/threetears/evals/kernel/remedies.py": "513e8bd6c17c3692aea7ef2d5fc3f229e434604f87aa5b9dcace160575ebd72c",
   "packages/evals/src/threetears/evals/kernel/report_doc.py": "d40990b95b3392ecfcc4cd3b3fab40baaf2f6e4d3583aac0bd7f93d90af773eb",
   "packages/evals/src/threetears/evals/kernel/report_snapshot.py": "bc1445f3a42963b0bf6654e7637488d0f6295bf4197cacd8e105c68eced4b7c7",
-  "packages/evals/src/threetears/evals/kernel/result_condition.py": "ff4c3efb32e84beae6b943c124688486ea4d859ece2033f74a8c1905ba40cd53",
-  "packages/evals/src/threetears/evals/kernel/result_reading.py": "d31734f394c5f4c0aaad7f21773c2e1b0d4b5c6300cf267bf28c22a1bbbf5f5b",
+  "packages/evals/src/threetears/evals/kernel/result_condition.py": "3afcf6a06840c62be7b500d4ca3162d940a15830d6956d45579d396784f4c424",
+  "packages/evals/src/threetears/evals/kernel/result_reading.py": "c5949c0a3cd1306f181703590a5ee6a32ea274ac7b10caffb77b2aa1d957cefa",
   "packages/evals/src/threetears/evals/kernel/run_pages.py": "4ba6433d2bde11c3ae28f07187705b50fec50a1ba08470e47cdc0929a393b02c",
   "packages/evals/src/threetears/evals/kernel/runner_spend.py": "c38b9f1e3abf5ab3d886724e2b4a928340dc3d685f37a3b76d581d85ed942e40",
   "packages/evals/src/threetears/evals/kernel/scoring.py": "7e251d5033a22fe7876afad27822b233aaa2a6017443a0ed284e528bc7ed78af",
@@ -330,7 +330,7 @@
   "packages/evals/src/threetears/evals/kernel/spend.py": "2b97d805058933c6f930b6332e883876f4a16caeefc92b6250871b195a4b2eee",
   "packages/evals/src/threetears/evals/kernel/status_filter.py": "c1bcb57abfd2b897c3f51425fbba2b2d84585e356cbb671a475a94c207c42866",
   "packages/evals/src/threetears/evals/kernel/storage.py": "30b541643e95a6bd4f080dd858994127c492751bf00c9f10366fcecf2cb898e2",
-  "packages/evals/src/threetears/evals/kernel/surface.py": "2edbbefcd7262db1ee9fe86e86ea5f62428bf222af2f1f694854f6f47b687596",
+  "packages/evals/src/threetears/evals/kernel/surface.py": "ae03c37a7ae6564f5558e0bc1ab45e9be69144d2fc9df0771c0254ad070a8daf",
   "packages/evals/src/threetears/evals/kernel/text_block.py": "0e5df2a4d7ecd47196a4b30e5bf0751a1cbf60a8c329aa7242887d53a508f90a",
   "packages/evals/src/threetears/evals/kernel/usage_capture.py": "e918f9424728e6a545ad6bb139275440d54bd0ac8d0604e9e9082140af7ae6f7",
   "packages/evals/src/threetears/evals/kernel/world_session.py": "47f1ebccf4d5b454a54b1ea7c629e12133e92e9831207280e53d304ae800d504",
@@ -387,7 +387,7 @@
   "packages/evals/src/threetears/evals/providers/retry.py": "217dd72ea56361a92654ad3bc63d00373061bb1e5e9fb616ef23c37d76408c4f",
   "packages/evals/src/threetears/evals/providers/wire.py": "4c91ce3228f9439e55644600e425fab732758895712cb58e5148fcfd2aac0302",
   "packages/evals/src/threetears/evals/quick/__init__.py": "0d5a908cf6e5580f3c58f4a3c12f706d90c4ec79e95e3dbf87fe4b8351f0d6bc",
-  "packages/evals/src/threetears/evals/quick/answer.py": "33c79644be114583806c3ec3c7b6abb140de3063b9c99f244b42a781147fc51a",
+  "packages/evals/src/threetears/evals/quick/answer.py": "be518b5ac34d90a50bc72f2733511dc6028dd6753ce8115c82aa519265df77c2",
   "packages/evals/src/threetears/evals/quick/blind.py": "ef2e7e12bbfe6b70ecb37d80b0da370082e0f4cf9d7c493f9508c9e4470acb2d",
   "packages/evals/src/threetears/evals/quick/claims.py": "e9adb636295a3cfe069bc1353afb6129a1cbbb0b370272c86d29aefda05a1fe6",
   "packages/evals/src/threetears/evals/quick/cli.py": "f9f4de470ffd99f25ce9289c756ffe94c11710a8279ce3273a4b28e71f8a9f0b",
@@ -400,8 +400,8 @@
   "packages/evals/src/threetears/evals/quick/levers.py": "d0c4260807ff1c7de2df50b79c4aa6eae9df5c8d5b9dd697f1657091793c34c6",
   "packages/evals/src/threetears/evals/quick/logged.py": "0bd0ad9477aed339d6d813bbe9f723f98ffcc2eaa4ac53013c3963a226fbf2ab",
   "packages/evals/src/threetears/evals/quick/measures.py": "bd2100a27ac5e22ec7801e3ba3a5affd1e53c2d0e82b02218005953aeaa561f0",
-  "packages/evals/src/threetears/evals/quick/one_call.py": "2a6b34e1b95f39fda8a7f875b8f880594ef85721b6b67fcdd7c5f74ea414419f",
-  "packages/evals/src/threetears/evals/quick/result.py": "7c563754cff738744d0425c172cb72fd188148086879e257f61c28691ea7d3e8",
+  "packages/evals/src/threetears/evals/quick/one_call.py": "7a8d0ff14494c1714b986f894e8959851092f2f80fedfaeaae9be88424573263",
+  "packages/evals/src/threetears/evals/quick/result.py": "805b44dee3564e85226de4cea885c04d23b6a76651c5afb59a069968540cfe2e",
   "packages/evals/src/threetears/evals/quick/toml_file.py": "bf53c8e2014c2a80e48a4c82b095ea1f61e9c40f59c5c7d84d8be76b1c371536",
   "packages/evals/src/threetears/evals/quick/tools.py": "fc7c2d9897caaaa5d60ee70c4f131fc1aa9d1533a7a9ca571408816dab7f54b1",
   "packages/evals/src/threetears/evals/quick/world.py": "adc80525acb6c20e139aa9dc10c7604f2cf05e65c7d3268d8cb76e8c513b95ec",
@@ -442,7 +442,7 @@
   "packages/evals/src/threetears/evals/run/remeasure.py": "228add7a55eb043d4cd9dbdfe45c0ca7146779a5fbb1154e2c381f57113398d8",
   "packages/evals/src/threetears/evals/run/resume.py": "3dcdbe373ceae414b1a3b8867373c83bd649173b1120129e98196bdd21ceaaf2",
   "packages/evals/src/threetears/evals/run/run_document.py": "86257306aee95d81ad6343ec00da0f6944bbc986490592a22c404ad62bec5a70",
-  "packages/evals/src/threetears/evals/run/runner.py": "af5bf2e65439eaa4eb54ee3f57483934b5503d1ddab5187104caf4263114d936",
+  "packages/evals/src/threetears/evals/run/runner.py": "8cf4a4316574776767632eedabf133ae6699c7963ea0d4e13a9b91c75546dc00",
   "packages/evals/src/threetears/evals/run/simulator.py": "906fdb1170b1889b02dca971807cdfb71544f9864895988d80e40f2951030775",
   "packages/evals/src/threetears/evals/run/witnessed.py": "857b61da4690e75f9ee544470a7daedd15e31b3e7e14df9c305d11b4f53c6c39",
   "packages/evals/src/threetears/evals/schema/__init__.py": "99d0db531fbe20279455d70de7e36154aea38fbabfd012bb4c2b812dc0b8fec3",
@@ -463,7 +463,7 @@
   "packages/evals/src/threetears/evals/schema/judge_attribution.py": "5a1bafab97ab513a03693c85daf9e13ca3687b4681751a2a10988c39dbcab70c",
   "packages/evals/src/threetears/evals/schema/lever_words.py": "1de3c1861f39ed83fe0d4ad818b7df0a3d73f67acd01da599656cea58b9d846c",
   "packages/evals/src/threetears/evals/schema/logs.py": "bcf51e8fb6753ac9270560f444da38a0d2355fb9009a05fd35bd376b3e5fc723",
-  "packages/evals/src/threetears/evals/schema/models.py": "915b33c8fb45a35f17ee3ae77249b6168f579ca101021bf51efed71755880277",
+  "packages/evals/src/threetears/evals/schema/models.py": "e033e6c27a21fcf9a8442684c765c0665e398e996d2ef7a9c102e54d10bf74cc",
   "packages/evals/src/threetears/evals/schema/out_of_run_spend.py": "7ca7a0a578841e12015f21bd99be703cbf403206761ec84307a850e1e9cedd68",
   "packages/evals/src/threetears/evals/schema/prose.py": "66b17cd60a08e59aade48544a572af7628375c1b34bb56f61c27b9502fee71e9",
   "packages/evals/src/threetears/evals/schema/reading_states.py": "7f230527f8ca0dfb61639f9a2139fad8b25f4db15e094f255fafcd3240916c2d",
@@ -518,8 +518,8 @@
   "packages/evals/tests/test_certified_simulations.py": "7a76b6b312d21a98abf4b1852bac8830bdfe69399dd51d4ce4a85f38a92e3cb4",
   "packages/evals/tests/v15_shapes.py": "571f6ed22383d3bc087aebe8bc9497fe8e386e04cb9cb29c945568bb0e947ee6"
  },
- "pool_request": "ee60ce937f214aa7af5561618eaa901e",
- "wall_s": 1541,
+ "pool_request": "b3d5952fb77b41cb893bb84cf41dafe8",
+ "wall_s": 1089,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -1876,13 +1876,13 @@
    "says": "Watchers whose arms are b-slower-4x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
    "test": "share_below",
    "target": 0.1,
-   "count": 22,
+   "count": 21,
    "replicates": 1000,
    "bounds": [
-    0.013837414172072945,
-    0.03311966451498799
+    0.01304519229038709,
+    0.03192233518041715
    ],
-   "figure": 0.022,
+   "figure": 0.021,
    "holds": true,
    "seeds": "cut-b-slower-4x-<index>, 0-999, through the product"
   },
@@ -2656,13 +2656,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 59,
+   "count": 74,
    "replicates": 2400,
    "bounds": [
-    0.01876541514694742,
-    0.03159729719824872
+    0.024286687253419523,
+    0.03855526422451144
    ],
-   "figure": 0.03159729719824872,
+   "figure": 0.03855526422451144,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-check-drain-<index>, through the engine"
   },
@@ -2686,13 +2686,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 54,
+   "count": 70,
    "replicates": 2400,
    "bounds": [
-    0.016946810034611307,
-    0.029256640321311755
+    0.022805868547060917,
+    0.03670811316470329
    ],
-   "figure": 0.029256640321311755,
+   "figure": 0.03670811316470329,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-drain-<index>, through the engine"
   },
@@ -2701,13 +2701,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 71,
+   "count": 73,
    "replicates": 2400,
    "bounds": [
-    0.023175543563431766,
-    0.03717042045488267
+    0.023915960012635976,
+    0.03809398911625944
    ],
-   "figure": 0.03717042045488267,
+   "figure": 0.03809398911625944,
    "holds": true,
    "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine"
   },
@@ -2731,13 +2731,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 67,
+   "count": 74,
    "replicates": 2400,
    "bounds": [
-    0.021699066903240624,
-    0.03531901185759606
+    0.024286687253419523,
+    0.03855526422451144
    ],
-   "figure": 0.03531901185759606,
+   "figure": 0.03855526422451144,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -2761,13 +2761,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 89,
+   "count": 75,
    "replicates": 2400,
    "bounds": [
-    0.029884729755766955,
-    0.04543790746798965
+    0.024657751441259854,
+    0.03901620862903671
    ],
-   "figure": 0.04543790746798965,
+   "figure": 0.03901620862903671,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -2776,13 +2776,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 65,
+   "count": 68,
    "replicates": 2400,
    "bounds": [
-    0.020963133106270057,
-    0.03439104973311519
+    0.022067622326943842,
+    0.035782416492628866
    ],
-   "figure": 0.03439104973311519,
+   "figure": 0.035782416492628866,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -2806,13 +2806,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 63,
+   "count": 73,
    "replicates": 2400,
    "bounds": [
-    0.020228828047051534,
-    0.03346149320724218
+    0.023915960012635976,
+    0.03809398911625944
    ],
-   "figure": 0.03346149320724218,
+   "figure": 0.03809398911625944,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -2836,13 +2836,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 63,
+   "count": 72,
    "replicates": 2400,
    "bounds": [
-    0.020228828047051534,
-    0.03346149320724218
+    0.023545576458215055,
+    0.03763237677678405
    ],
-   "figure": 0.03346149320724218,
+   "figure": 0.03763237677678405,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -2851,13 +2851,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read at a fixed count of 40 at \u03b1 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 74,
+   "count": 63,
    "replicates": 2400,
    "bounds": [
-    0.024286687253419523,
-    0.03855526422451144
+    0.020228828047051534,
+    0.03346149320724218
    ],
-   "figure": 0.03855526422451144,
+   "figure": 0.03346149320724218,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine"
   },
@@ -2881,13 +2881,13 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 40,
+   "count": 45,
    "replicates": 1500,
    "bounds": [
-    0.019117869613302516,
-    0.03613674069767653
+    0.021964578541778565,
+    0.03993800527966501
    ],
-   "figure": 0.03613674069767653,
+   "figure": 0.03993800527966501,
    "holds": true,
    "seeds": "engine-looks-alike-20x-check-drain-<index>, through the engine"
   },
@@ -2911,21 +2911,6 @@
    "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 36,
-   "replicates": 1500,
-   "bounds": [
-    0.016864603823180127,
-    0.03307243190970549
-   ],
-   "figure": 0.03307243190970549,
-   "holds": true,
-   "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine"
-  },
-  {
-   "id": "engine.second.looks.alike-20x.grade.separates",
-   "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
-   "test": "at_most",
-   "target": 0.05,
    "count": 44,
    "replicates": 1500,
    "bounds": [
@@ -2934,6 +2919,21 @@
    ],
    "figure": 0.039180108670074765,
    "holds": true,
+   "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine"
+  },
+  {
+   "id": "engine.second.looks.alike-20x.grade.separates",
+   "says": "Under the null, an engine comparison of coin pairs (alike-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 47,
+   "replicates": 1500,
+   "bounds": [
+    0.023111501734855544,
+    0.04145052352390416
+   ],
+   "figure": 0.04145052352390416,
+   "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine"
   },
   {
@@ -2941,13 +2941,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 105,
+   "count": 110,
    "replicates": 1500,
    "bounds": [
-    0.05760677129294202,
-    0.08410694686062986
+    0.06065353663010109,
+    0.08771240604758429
    ],
-   "figure": 0.05760677129294202,
+   "figure": 0.06065353663010109,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine"
   },
@@ -2971,13 +2971,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 40,
+   "count": 37,
    "replicates": 1500,
    "bounds": [
-    0.019117869613302516,
-    0.03613674069767653
+    0.017425706563001242,
+    0.033840644173436074
    ],
-   "figure": 0.03613674069767653,
+   "figure": 0.033840644173436074,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-drain-<index>, through the engine"
   },
@@ -2986,13 +2986,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, every interrupt cutting, separates more often than the uninterrupted watcher can (3%, engine.null.3.60.0.25.baseline): the cells the cuts draw afresh lean it.",
    "test": "above",
    "target": 0.03,
-   "count": 124,
+   "count": 130,
    "replicates": 1500,
    "bounds": [
-    0.06922527786280974,
-    0.09776737126065099
+    0.07291556989180714,
+    0.1020601344856435
    ],
-   "figure": 0.06922527786280974,
+   "figure": 0.07291556989180714,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine"
   },
@@ -3016,13 +3016,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 33,
+   "count": 34,
    "replicates": 1500,
    "bounds": [
-    0.015191023102596905,
-    0.030758435242559556
+    0.01574719303712821,
+    0.03153139214328765
    ],
-   "figure": 0.030758435242559556,
+   "figure": 0.03153139214328765,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-drain-<index>, through the engine"
   },
@@ -3031,13 +3031,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-20x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 45,
+   "count": 40,
    "replicates": 1500,
    "bounds": [
-    0.021964578541778565,
-    0.03993800527966501
+    0.019117869613302516,
+    0.03613674069767653
    ],
-   "figure": 0.03993800527966501,
+   "figure": 0.03613674069767653,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine"
   },
@@ -3061,13 +3061,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, check) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 42,
+   "count": 37,
    "replicates": 1500,
    "bounds": [
-    0.020252820876316843,
-    0.03766086044374811
+    0.017425706563001242,
+    0.033840644173436074
    ],
-   "figure": 0.03766086044374811,
+   "figure": 0.033840644173436074,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-check-drain-<index>, through the engine"
   },
@@ -3091,13 +3091,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, its interrupts draining, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 42,
+   "count": 46,
    "replicates": 1500,
    "bounds": [
-    0.020252820876316843,
-    0.03766086044374811
+    0.022537489585146418,
+    0.04069479887306077
    ],
-   "figure": 0.03766086044374811,
+   "figure": 0.04069479887306077,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-drain-<index>, through the engine"
   },
@@ -3106,13 +3106,13 @@
    "says": "Under the null, an engine comparison of coin pairs (b-slower-4x, grade) read over a plan of three looks, each at \u03b1/3 by the bounded test, three of ten interrupts cut by a second, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
-   "count": 39,
+   "count": 35,
    "replicates": 1500,
    "bounds": [
-    0.01855239568494764,
-    0.03537274562808007
+    0.016305077117125838,
+    0.03230270204903368
    ],
-   "figure": 0.03537274562808007,
+   "figure": 0.03230270204903368,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine"
   },
