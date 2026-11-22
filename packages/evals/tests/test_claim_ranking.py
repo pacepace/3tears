@@ -47,6 +47,7 @@ from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.reporting import METRIC_SCORE, project_score_records
 from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel import claim_readings as public_claim_readings
 from threetears.evals.kernel.claims.readings import (
     CLAIM_LOST_OUTCOME,
     CLAIM_PENDING_OUTCOME,
@@ -305,6 +306,38 @@ def test_a_lost_criterion_a_lost_ground_step_and_a_pending_tally_each_leave_only
     held = _rows(pending, run, sibling)
     assert {r.rubric_dim for r in held if r.outcome == CLAIM_PENDING_OUTCOME} == ranked
     assert not any(r.outcome == CLAIM_LOST_OUTCOME or r.rubric_dim == f"{RULES}_lost" for r in held)
+
+
+def test_the_public_claim_readings_are_what_the_ranking_path_reads_off_the_same_tally() -> None:
+    """A host reads a cell's readings with the engine's own function (``threetears.evals.kernel.claim_readings``),
+    never a formula of its own: every valued row the projection emits is that function's value for the cell's tally,
+    and each ranked reading's arm mean is the mean of those values."""
+    runs, results = _campaign(lookup=_lookup_silent)
+    projection = project_score_records(
+        runs, [r for rs in results.values() for r in rs], archived_run_ids=None, profile=toyhost_profile()
+    )
+    for run in runs:
+        for result in results[run.id]:
+            for criterion, tally in result.claim_tallies.items():
+                rows = {
+                    r.rubric_dim: r.value
+                    for r in projection.records
+                    if r.result_id == result.id and r.instrument == criterion and r.value is not None
+                }
+                assert rows == public_claim_readings(criterion, tally)
+    bundle = _bundle(lookup=_lookup_silent)
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_false_unit_share", f"{RULES}_grounded_share"):
+        measure = next(m for m in bundle.judged_measures if m.name == name)
+        for arm, model in ((fixture_variant_key(MEMORY), MEMORY), (fixture_variant_key(LOOKUP), LOOKUP)):
+            read = [
+                public_claim_readings(RULES, r.claim_tallies[RULES]).get(name)
+                for rs in results.values()
+                for r in rs
+                if r.model == model
+            ]
+            values = [v for v in read if v is not None]
+            held = next(a for a in measure.arms if a.variant_key == arm)
+            assert held.mean == pytest.approx(sum(values) / len(values))
 
 
 def test_a_claim_reading_never_enters_a_trial_s_pass_or_its_composite() -> None:

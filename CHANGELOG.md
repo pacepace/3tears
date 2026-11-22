@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a silent candidate, undeclared documents, and `CLAIM_DOCUMENT_BYTES`
+### evals: a silent candidate, undeclared documents, and host doors for claim readings, completeness and regrade
 
 **Changed (#1287):** a candidate that said nothing in an output holding other parties' lines (cut off, or given
 no turn) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
@@ -25,6 +25,22 @@ under `Claims(grounded_in="run")`.
 
 **Added (#1287):** `CLAIM_DOCUMENT_BYTES`, exported from `threetears.evals.schema` (provisional), so a kind can
 truncate its documents to the cap by name.
+
+**Added (#1287):** `claim_readings(criterion, outcome)`, exported from `threetears.evals.kernel` (provisional): a
+cell's claim readings from its stored tally (or its loss), exactly as the ranking path reads them, so a host never
+restates a reading's formula off `ClaimTally`.
+
+**Added:** `summarize_completeness(run, cells)` is exported from `threetears.evals.kernel` again (provisional; it was
+to leave the root unreleased), beside `CellSummary`, so a host closes a witnessed run through public names: it saves
+the run `completed` with `completed_at` and `completeness=summarize_completeness(run, cells)`
+(`host.storage.save_eval_run`), and no sweep for abandoned runs writes it lost.
+
+**Changed (#1287):** `regrade` takes `web_search` and `external_rates` (keyword, default None) and grades again the
+claim criteria a result lost, whole or their web step alone, through `rejudge_result`, after its checks: its report
+names them (`Regrade.claim_criteria`, new) and what grading them cost (`Regrade.claim_cost_usd`, new). Applied, a
+criterion with a web budget and no `web_search` is refused by name before anything is written or spent. The
+`result_regrade` action, which makes no model call, now refuses `apply` on a result with such criteria as it refuses
+one with failed judged dims; `judges=false` stores the re-graded checks alone.
 
 **For hosts:** render `segments=()` for a cell whose candidate said nothing, rather than leaving `claim_evidence`
 None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent` and the report input's `Judged.silent`

@@ -283,7 +283,7 @@ names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "ble
          "RELAUNCH_TO_REJUDGE", "request_job_cancel", "require_held", "require_output_contract", "REREAD_AND_RETRY",
          "resolve_bar_name", "resolve_context_identity", "resolve_result_condition", "RUBRIC_FAMILY",
          "RUN_MARGIN_MEASURES", "run_margin_refusal", "running_job", "SCHEMA_REMEDY", "separation_criterion",
-         "settle_job_record", "summarize_completeness", "TEMPERATURE_SETTINGS", "TemperatureSettingSpec",
+         "settle_job_record", "TEMPERATURE_SETTINGS", "TemperatureSettingSpec",
          "template_text", "tier_of", "timed_out_detail", "TRUNCATED_ROUNDS_KEY", "UndeclarableAxisError",
          "UnreadableBarName", "weakest_judged_tier", "write_held_record", "WRITER_REMEDY"]
 why = """

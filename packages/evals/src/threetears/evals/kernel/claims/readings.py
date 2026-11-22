@@ -18,7 +18,9 @@ count (a session claim counts in none of the world readings; a hedged or attribu
 out of the asserted counts; a statement the text backs with a source is asserted) is settled once, in
 :func:`claim_tally`.
 
-Engine-internal: the judge phase tallies, the ranking path reads, and nothing here is a host's to import.
+The judge phase tallies and the ranking path reads. One name is a host's: :func:`claim_readings`, exported from
+:mod:`threetears.evals.kernel` (provisional), so a host reads a cell's readings off its stored tally exactly as the
+ranking path does and never restates a formula. Nothing else here is a host's to import.
 """
 
 from __future__ import annotations

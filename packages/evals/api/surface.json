@@ -1901,6 +1901,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.claim_readings": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.classifier_label_measure": {
       "kind": "function",
       "signature": "",
@@ -3000,6 +3005,11 @@
       "kind": "function",
       "signature": "strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]",
       "tier": "host-contract"
+    },
+    "threetears.evals.kernel.summarize_completeness": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.SWEEP_JOB": {
       "kind": "constant (LeasedJobKind)",
@@ -4198,7 +4208,7 @@
     },
     "threetears.evals.run.regrade": {
       "kind": "async function",
-      "signature": "regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade",
+      "signature": "regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False, web_search: WebSearch | None = None, external_rates: ExternalRateTable | None = None) -> Regrade",
       "tier": "stable"
     },
     "threetears.evals.run.RegradedDim": {

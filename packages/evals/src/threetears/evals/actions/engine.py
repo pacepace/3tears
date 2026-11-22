@@ -1681,12 +1681,13 @@ async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradePa
     reported = await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=False)
     if not params.apply:
         return reported
-    if reported.judge_dims:
+    if reported.judge_dims or reported.claim_criteria:
+        asked = ", ".join([*reported.judge_dims, *reported.claim_criteria])
         raise ValidationFailedError(
-            f"result '{params.result_id}' has judged dims whose judging failed ({', '.join(reported.judge_dims)}); "
+            f"result '{params.result_id}' has judged dims or claim criteria whose judging failed ({asked}); "
             "asking its judge again spends, and this action makes no model call",
-            remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims again "
-            "through regrade(..., apply=True)",
+            remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims and claim "
+            "criteria again through regrade(..., apply=True), with its web search for a criterion that searches",
         )
     return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
 

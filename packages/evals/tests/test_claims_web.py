@@ -42,6 +42,7 @@ from threetears.evals.kernel.claims.readings import claim_tally
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.lifecycle import rejudge_result
+from threetears.evals.run import regrade
 from threetears.evals.run.runner import StoredCell, StoredCells, judge_witnessed_output
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.schema.completion import CompletionProtocolDefect
@@ -995,6 +996,37 @@ async def test_a_rejudge_of_a_lost_web_criterion_with_no_port_is_refused_by_name
     assert again.asked == [], "refused before any call"
     stored = off_loop(host.storage.load_eval_result, result.id, "u")
     assert stored is not None and stored.claim_failures == {_CRITERION: "provider_error"}, "never read as a new loss"
+
+
+async def test_a_regrade_reports_a_lost_web_criterion_and_applied_grades_it_again_on_the_port_it_is_handed() -> None:
+    """The re-grade door names the claim criteria a result lost and, applied, grades them again through the re-judge,
+    its web step searching live on the port the caller hands in, billed at the run's rates."""
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), again, _FakeWebSearch())
+
+    reported = await regrade(host, result.id, "u", checks=False)
+    assert (reported.claim_criteria, reported.applied, again.asked) == ([_CRITERION], False, [])
+
+    port = _FakeWebSearch()
+    applied = await regrade(host, result.id, "u", checks=False, apply=True, web_search=port, external_rates=_RATES)
+
+    assert applied.claim_criteria == [_CRITERION] and applied.claim_cost_usd is not None
+    assert port.queries == ["Lantern Almanac first printed"], "the web step searched live through the port"
+    stored = off_loop(host.storage.load_eval_result, result.id, "u")
+    assert stored is not None and stored.claim_failures == {} and stored.claim_tallies[_CRITERION].by_judge
+
+
+async def test_a_regrade_of_a_lost_web_criterion_with_no_port_is_refused_by_name_before_anything_is_written() -> None:
+    again = _FakeWebJudge()
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), again, _FakeWebSearch())
+    before, etag = off_loop(host.storage.load_eval_result_with_etag, result.id, "u")
+
+    with pytest.raises(ValidationFailedError, match=f"claim criteria '{_CRITERION}'.*declare a web budget"):
+        await regrade(host, result.id, "u", apply=True)
+
+    assert again.asked == [], "refused before any call"
+    after, etag_after = off_loop(host.storage.load_eval_result_with_etag, result.id, "u")
+    assert (after, etag_after) == (before, etag), "nothing was written, the re-graded checks included"
 
 
 async def test_a_take_up_grades_the_cells_it_runs_on_the_runs_own_web_search() -> None:
