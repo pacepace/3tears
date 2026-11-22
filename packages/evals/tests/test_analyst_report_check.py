@@ -494,7 +494,12 @@ def _served(tool: MountedTool) -> list[str]:
 #: which writes the ones missing." Diffed against the text served before: nothing else moved.
 #: Taken again over runs_attest's text (#1187) when both met: diffed against the text served without the door, the
 #: only lines that moved are the door's and campaign_record's above.
-_EVALS_BYTES = "3d319028771cf338e1500fa725bd63c1d73e62a1df89a6341e87389fbe1db626"
+#: result_regrade reports and settles claim criteria (#1287 S4)
+#: The evals tool moved again when it gained the claim read's host door (#1287): seven actions (claim_read_create,
+#: _sheet, _answer, _close, _repeat, _get, claim_reads_list), each a help page and a help-index line with its
+#: parameters in the input schema. Diffed against the text served before: nothing else moved (the description, the
+#: topics and the primer are as they were).
+_EVALS_BYTES = "c7b19aec0194d4fd45c46743a0c28134187ae9b2a4a46bea8cd2644942c158f6"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

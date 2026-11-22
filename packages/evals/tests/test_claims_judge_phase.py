@@ -737,6 +737,75 @@ async def test_a_grade_records_its_lost_ground_step_so_its_tally_is_recomputed_f
         )
 
 
+#: A candidate that said nothing in an output holding other parties' lines: claim evidence with no segment.
+_SILENT = ClaimEvidence(segmentation="sentences-v1", segments=(), documents=None)
+
+
+async def test_a_cell_whose_candidate_said_nothing_asks_nothing_and_is_tallied_silent_never_lost() -> None:
+    """No segment: no claims call is made for any criterion, nothing is billed, the grade lists no claim, and the
+    tally is silent with no unit and no claim, so the cell carries no claim reading and no loss. Undeclared documents
+    under grounded_in cost a silent cell nothing either: there is no claim to ground."""
+    judge = _FakeClaimsJudge()
+    template = _template(_criterion("almanac.first"), _criterion("almanac.second", grounded_in=None))
+
+    result, trace = await _cell(judge, template, _FakeClaimsKind(_output(evidence=_SILENT)))
+
+    assert judge.asked == [], "a cell with nothing said makes no judge call"
+    assert result.claim_failures == {} and result.judge_error is None
+    for name, criterion in zip(("almanac.first", "almanac.second"), template.claim_criteria, strict=True):
+        tally = result.claim_tallies[name]
+        assert (tally.silent, tally.units, tally.by_judge, tally.ground_loss) == (True, 0, (), None)
+        assert claim_readings(name, tally) == {}, "no reading, never a count of 0 false claims"
+        grade = trace.claim_grades[name]
+        assert (grade.calls, grade.claims) == ((), ())
+        assert grade_tally(grade, trace.claim_evidence, criterion, derivation=None) == tally
+    assert not [row for row in result.usage if row.role == "judge" and row.call_count]
+
+
+async def test_a_silent_cell_is_neither_admitted_against_the_cap_nor_lost_to_it() -> None:
+    # Each call is priced at $0.30, so a criterion that asked anything would not fit what the dims leave of $1.
+    judge = _FakeClaimsJudge(usd_per_call=0.3)
+    kind = _FakeClaimsKind(_output(judged=True, evidence=_SILENT), judged_artifact=JudgedArtifact.DOCUMENT)
+
+    result, _, _ = await _judged_run(judge, _template(rubric=_RUBRIC), kind, cap_usd=1.0)
+
+    assert result.claim_failures == {} and result.claim_tallies[_CRITERION].silent
+    assert judge.asked == ["judge_reply"]
+
+
+async def test_output_with_no_claim_evidence_is_refused_and_evidence_with_no_segment_is_not() -> None:
+    """None is a kind that forgot, and no reader could tell it from silence: it is refused before the judge is paid.
+    No segment is the candidate's silence, which is graded."""
+    with pytest.raises(ValueError, match="rendered no claim_evidence"):
+        await _cell(_FakeClaimsJudge(), _template(), _FakeClaimsKind(_output(evidence=None)))
+    result, _ = await _cell(_FakeClaimsJudge(), _template(), _FakeClaimsKind(_output(evidence=_SILENT)))
+    assert result.claim_tallies[_CRITERION].silent
+
+
+async def test_undeclared_documents_under_grounded_in_lose_the_ground_step_alone_and_truth_stands() -> None:
+    """Evidence with documents None under grounded_in is graded: no ground call is made, the grade and its tally
+    record the ground step lost as documents_undeclared, and the truth counts are those of the declared cell."""
+    judge = _FakeClaimsJudge()
+    undeclared = ClaimEvidence(segmentation="sentences-v1", segments=_SEGMENTS, documents=None)
+
+    result, trace = await _cell(judge, _template(), _FakeClaimsKind(_output(evidence=undeclared)))
+    declared, _ = await _cell(_FakeClaimsJudge(), _template(), _FakeClaimsKind(_output()))
+
+    assert judge.asked == ["claim_listing", "claim_truth"], "no ground call"
+    tally = result.claim_tallies[_CRITERION]
+    assert (tally.ground_loss, tally.documents_declared, tally.silent) == ("documents_undeclared", False, False)
+    assert result.claim_failures == {}, "a ground loss is the tally's, never the criterion's"
+    (counts,), (whole,) = tally.by_judge, declared.claim_tallies[_CRITERION].by_judge
+    assert (counts.asserted, counts.asserted_contradicted) == (whole.asserted, whole.asserted_contradicted)
+    assert counts.grounded_specific == 0
+    readings = claim_readings(_CRITERION, tally)
+    assert f"{_CRITERION}_grounded_share" not in readings and readings[f"{_CRITERION}_ground_lost"] == 1.0
+    grade = trace.claim_grades[_CRITERION]
+    assert grade.ground_loss == "documents_undeclared" and grade.claims[0].verdict == "supported"
+    (criterion,) = _template().claim_criteria
+    assert grade_tally(grade, trace.claim_evidence, criterion, derivation=None) == tally
+
+
 async def test_a_cell_records_each_due_criterions_fingerprint_whether_it_was_graded_or_lost() -> None:
     judge = _FakeClaimsJudge(
         script={"claim_listing": [ConnectionError("the provider is unavailable"), _ANSWERS["claim_listing"]]}

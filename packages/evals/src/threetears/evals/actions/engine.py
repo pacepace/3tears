@@ -25,6 +25,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.blind_reads import blind_read_actions
+from threetears.evals.actions.claim_reads import claim_read_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
@@ -979,10 +980,20 @@ class ResultRegradeParams(EvalBaseModel):
     result_id: ResultId
     checks: Annotated[bool, Field(description="Re-grade the result's check dims (goal checks) from its trace.")] = True
     judges: Annotated[
-        bool, Field(description="Name its judged dims whose judging failed; this action never asks a judge.")
+        bool,
+        Field(
+            description="Name its judged dims whose judging failed and the claim criteria it lost; this action never "
+            "asks a judge."
+        ),
     ] = True
     apply: Annotated[
-        bool, Field(description="Store the re-graded check verdicts; false (the default) reports and writes nothing.")
+        bool,
+        Field(
+            description="Store the re-graded check verdicts, and settle claim criteria still pending from their stored "
+            "grade at no cost; false (the default) reports and writes nothing. A result with judged dims whose judging "
+            "failed or claim criteria it lost is refused, since grading them again spends and this action makes no "
+            "model call: apply with judges=false to store the checks alone."
+        ),
     ] = False
 
 
@@ -1677,18 +1688,19 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
 
 async def _result_regrade(host: OpsHost, caller: Caller, params: ResultRegradeParams) -> Regrade:
     eval_host = host.eval_host
-    options = {"checks": params.checks, "judges": params.judges}
-    reported = await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=False)
+    checks, judges = params.checks, params.judges
+    reported = await regrade(eval_host, params.result_id, caller.scope_id, checks=checks, judges=judges, apply=False)
     if not params.apply:
         return reported
-    if reported.judge_dims:
+    if reported.judge_dims or reported.claim_criteria:
+        asked = ", ".join([*reported.judge_dims, *reported.claim_criteria])
         raise ValidationFailedError(
-            f"result '{params.result_id}' has judged dims whose judging failed ({', '.join(reported.judge_dims)}); "
+            f"result '{params.result_id}' has judged dims or claim criteria whose judging failed ({asked}); "
             "asking its judge again spends, and this action makes no model call",
-            remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims again "
-            "through regrade(..., apply=True)",
+            remedy="apply with judges=false to store the re-graded checks; the host asks the judged dims and claim "
+            "criteria again through regrade(..., apply=True), with its web search for a criterion that searches",
         )
-    return await regrade(eval_host, params.result_id, caller.scope_id, **options, apply=True)
+    return await regrade(eval_host, params.result_id, caller.scope_id, checks=checks, judges=judges, apply=True)
 
 
 async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasureParams) -> Remeasure:
@@ -3374,6 +3386,7 @@ def _engine_actions() -> tuple[Action, ...]:
             ),
         ),
         *blind_read_actions(CURATE),
+        *claim_read_actions(CURATE),
         Action(
             name="analysis_archive",
             summary="Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.",

@@ -610,7 +610,7 @@ class Judged(_Part):
         description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
         "else the first).",
     )
-    # The four below are a claim reading's alone, and left out of the document while unset, so an input built before
+    # The fields below are a claim reading's alone, and left out of the document while unset, so an input built before
     # they existed digests as it did.
     instrument: str | None = Field(
         default=None,
@@ -632,6 +632,12 @@ class Judged(_Part):
         exclude_if=lambda value: not value,
         description="On a reading the host derives from a claim criterion: the cells its claim reader could not read, "
         "by arm; no loss, read once the reader is fixed and the run re-measured.",
+    )
+    silent: dict[str, int] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="On a claim reading: the cells whose candidate said nothing, by arm; no loss, and in no mean, since "
+        "a cell with nothing said has no denominator.",
     )
     web_skipped: dict[str, int] = Field(
         default_factory=dict,
@@ -1219,7 +1225,9 @@ class CallRead(_Part):
 
 
 #: The one act that would close a caveat, as a closed kind; ``no_action`` where nothing the package knows of closes it,
-#: with the reason the step states (:data:`NoActionReason`).
+#: with the reason the step states (:data:`NoActionReason`). ``inspect_arm`` is a person reading the cells the caveat
+#: counts on the arms it names (the cells a candidate said nothing in) to tell whether the candidate declined or its
+#: session gave it no turn; no catalogue action takes it, and no rig is presumed at fault.
 Remedy = Literal[
     "resume_or_rerun",
     "rerun_on_one_cell",
@@ -1236,6 +1244,7 @@ Remedy = Literal[
     "run_live",
     "draw_at_random",
     "finish_read",
+    "inspect_arm",
     "declare_looks",
     "declare_criteria",
     "name_control",

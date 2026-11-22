@@ -35,8 +35,15 @@ suite keeps a fast seeded case of each (``tests/test_simulated_claim_read.py``).
 missing at random within its stratum.
 A model's answer is never a person's: it is counted and read in no figure.
 
-Engine-internal: nothing here is exported, and no host can draw or read a claim read yet; the host door is its own
-change.
+- :func:`claim_read_report` keeps a read's calibration as the read stores it at its close, and
+  :func:`report_checks` gives its checks back from what was kept.
+- :func:`read_claim_repeats` reads the read's repeats (``ClaimRead.repeats``) against the first grade, per judge
+  asked: the instrument against itself, or a second judge against it. Counts only, per question and per stratum of
+  the draw, and the web outcomes of claims both readings decided on the web: a repeat is a pair of readings of one
+  claim, and its counts are of the drawn items, not weighted to the campaign.
+
+Engine-internal: nothing here is exported. A host draws, answers, closes, repeats and reads a claim read through
+its door (:mod:`threetears.evals.ops.claim_reads`).
 """
 
 from __future__ import annotations
@@ -68,6 +75,13 @@ from threetears.evals.schema.claim_read import (
     ClaimStratum,
     ClaimAnswer,
     ClaimItemView,
+    ClaimArmFigures,
+    ClaimCheckRecord,
+    ClaimFigure,
+    ClaimQuestionFigures,
+    ClaimReadReport,
+    ClaimRepeatAgainst,
+    ClaimStratumAgreement,
     ClaimStratumDraw,
     ClaimTruthVerdict,
     ClaimVerdict,
@@ -195,7 +209,11 @@ def allocate_draws(
 
 def item_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimItemView:
     """One graded claim as a rater reads it: the claim, its excerpt and segment, every piece of evidence the grade
-    numbered for the cell and every window its web check of the claim read, and nothing the grade concluded.
+    numbered for the cell, and nothing the grade concluded.
+
+    The windows its web check read are left out: the grade checks on the web only a claim its judge doubted, so a
+    window on a view would tell the rater the grader doubted the claim. The rater may search on their own; a repeat
+    reads the windows from the stored grade.
 
     :param grade: The cell's grade.
     :param evidence: The cell's claim evidence, which the grade graded.
@@ -226,9 +244,6 @@ def item_view(grade: ClaimGrade, evidence: ClaimEvidence, place: int) -> ClaimIt
                 text=document.text[entry.span.start : entry.span.end],
             )
         )
-    record = next((check for check in grade.web if check.claim == place), None)
-    for at, window in enumerate(record.windows if record is not None else (), start=1):
-        shown.append(ShownEvidence(ref=f"W{at}", provenance="web", title=window.title or window.url, text=window.text))
     return ClaimItemView(
         claim=claim.claim,
         excerpt=claim.excerpt,
@@ -1369,6 +1384,272 @@ def _check(
         lean_untested=list(lean_untested),
         lean_untested_reason="too_few" if lean_untested else None,
     )
+
+
+# --- what a closed read keeps ----------------------------------------------------------------------------------
+
+
+def _kept(estimate: Estimate) -> ClaimFigure:
+    return ClaimFigure(value=estimate.value, lower=estimate.lower, upper=estimate.upper)
+
+
+def claim_read_report(
+    calibration: ClaimCalibration, *, read_at: str, borrowed_from: Sequence[str] = ()
+) -> ClaimReadReport:
+    """A read's calibration as the read keeps it once closed: every figure, each check's decision, and what was left
+    out, so nothing read later moves what it said (:func:`report_checks` gives the checks back).
+
+    :param calibration: The calibration, read at the close (:func:`read_claim_calibration`).
+    :param read_at: When it was read: the close.
+    :param borrowed_from: The reads the calibration could take answers from.
+    :return: The report.
+    """
+    return ClaimReadReport(
+        read_at=read_at,
+        questions=[
+            ClaimQuestionFigures(
+                question=reading.question,
+                items=reading.items,
+                cells=reading.cells,
+                cases=reading.cases,
+                skipped=reading.skipped,
+                table=reading.table,
+                kappa=_kept(reading.kappa),
+                recall=_kept(reading.recall),
+                false_fail=_kept(reading.false_fail),
+                precision=_kept(reading.precision),
+                bias=_kept(reading.bias),
+                failed=_kept(reading.failed),
+                strata=[
+                    ClaimStratumAgreement(
+                        stratum=stratum.stratum,
+                        population=stratum.population,
+                        items=stratum.items,
+                        agreed=stratum.agreed,
+                    )
+                    for stratum in reading.strata
+                ],
+                unread_strata=list(reading.unread_strata),
+                arms=[
+                    ClaimArmFigures(
+                        arm=arm.arm,
+                        items=arm.items,
+                        cells=arm.cells,
+                        recall=_kept(arm.recall),
+                        false_fail=_kept(arm.false_fail),
+                        precision=_kept(arm.precision),
+                        bias=_kept(arm.bias),
+                        failed=_kept(arm.failed),
+                    )
+                    for arm in reading.arms
+                ],
+                lean_p=reading.lean_p,
+                lean_untested=list(reading.lean_untested),
+                check=None
+                if reading.check is None
+                else ClaimCheckRecord(
+                    result=reading.check.result,
+                    reason=reading.check.reason,
+                    state=reading.check.state,
+                    sample=reading.check.sample or "none",
+                    skipped=reading.check.skipped or 0,
+                ),
+            )
+            for reading in calibration.questions
+        ],
+        model_answers=calibration.model_answers,
+        borrowed=calibration.borrowed,
+        borrowed_from=sorted(borrowed_from),
+        excluded=dict(calibration.excluded),
+    )
+
+
+def report_checks(read: ClaimRead) -> list[Check]:
+    """The checks a closed read kept, each as :func:`read_claim_calibration` made it at the close.
+
+    :param read: The read.
+    :return: One per question its report checked, in its order; empty while the read is open.
+    """
+    if read.report is None:
+        return []
+    instrument = f"claims:{read.criterion}@{read.criterion_fingerprint[:12]}"
+    checks = []
+    for figures in read.report.questions:
+        kept = figures.check
+        if kept is None:
+            continue
+        criterion = f"{read.criterion}.{figures.question}"
+        if kept.state is not None:
+            checks.append(
+                Check(
+                    instrument=instrument,
+                    criterion=criterion,
+                    against="people",
+                    sample="none",
+                    read_id=read.id,
+                    result=kept.result,
+                    state=kept.state,
+                )
+            )
+            continue
+        kappa = figures.kappa
+        checks.append(
+            Check(
+                instrument=instrument,
+                criterion=criterion,
+                against="people",
+                sample=kept.sample,
+                sample_results=figures.cells,
+                sample_cases=figures.cases,
+                skipped=kept.skipped,
+                read_id=read.id,
+                result=kept.result,
+                reason=kept.reason,
+                kappa=kappa.value,
+                kappa_interval=None if kappa.lower is None or kappa.upper is None else (kappa.lower, kappa.upper),
+                reads=figures.items,
+                lean_untested=list(figures.lean_untested),
+                lean_untested_reason="too_few" if figures.lean_untested else None,
+            )
+        )
+    return checks
+
+
+# --- repeats ---------------------------------------------------------------------------------------------------
+
+
+#: The questions a repeat answers: truth, and groundedness where both readings' ground steps read the claim. Whether a
+#: listed claim is a claim is the extraction's, which a repeat keeps as listed.
+REPEAT_QUESTIONS: Final[tuple[ClaimQuestion, ...]] = ("true", "grounded")
+
+
+@dataclass(frozen=True)
+class RepeatStratum:
+    """How a repeat stood to the first grade in one stratum of the draw.
+
+    :ivar stratum: The stratum.
+    :ivar items: The repeats both readings answered the question on.
+    :ivar agreed: How many of them read alike: both failed the claim, or both passed it.
+    """
+
+    stratum: ClaimStratum
+    items: int
+    agreed: int
+
+
+@dataclass(frozen=True)
+class RepeatQuestion:
+    """How a repeat stood to the first grade on one question, as counts over the repeated items.
+
+    :ivar question: ``true`` (a claim fails when it reads ``contradicted``) or ``grounded`` (it fails when not grounded).
+    :ivar items: The repeats both readings answered it on.
+    :ivar cells: The distinct cells they come from.
+    :ivar table: (both fail, only the first grade fails, only the repeat fails, both pass).
+    :ivar agreed: Both fail plus both pass.
+    :ivar strata: Each stratum of the draw, in its order.
+    """
+
+    question: ClaimQuestion
+    items: int
+    cells: int
+    table: tuple[int, int, int, int]
+    agreed: int
+    strata: tuple[RepeatStratum, ...]
+
+
+@dataclass(frozen=True)
+class ClaimRepeatReading:
+    """What one judge's repeats of a read's items say of the instrument.
+
+    :ivar against: ``itself`` (the run's judge asked again) or ``model`` (another judge).
+    :ivar judge_model: The judge asked.
+    :ivar passes: The repeat passes behind it.
+    :ivar repeats: Its repeats in all, lost ones included.
+    :ivar lost: The repeats that gave no verdict, by the loss that cost it.
+    :ivar questions: One reading per question a repeat answers (:data:`REPEAT_QUESTIONS`).
+    :ivar web: (first grade's outcome, repeat's outcome) -> claims, over claims both readings decided on the web.
+    """
+
+    against: ClaimRepeatAgainst
+    judge_model: str
+    passes: int
+    repeats: int
+    lost: Mapping[str, int]
+    questions: tuple[RepeatQuestion, ...]
+    web: Mapping[tuple[str, str], int]
+
+
+def _repeat_fails(question: ClaimQuestion, verdict: ClaimTruthVerdict | None, grounded: bool | None) -> int | None:
+    """1 where a reading fails the claim on ``question``, 0 where it passes it, None where it gave no answer."""
+    if question == "true":
+        return None if verdict is None else int(verdict == "contradicted")
+    return None if grounded is None else int(not grounded)
+
+
+def read_claim_repeats(read: ClaimRead) -> tuple[ClaimRepeatReading, ...]:
+    """Read a claim read's repeats against the first grade, one reading per judge asked, in the order first repeated.
+
+    :param read: The read.
+    :return: The readings; empty where nothing was repeated.
+    """
+    items = {item.item: item for item in read.items}
+    strata = [stratum.stratum for stratum in read.draw.strata]
+    grouped: dict[tuple[ClaimRepeatAgainst, str], list[int]] = {}
+    for at, repeat in enumerate(read.repeats):
+        grouped.setdefault((repeat.against, repeat.judge_model), []).append(at)
+    readings = []
+    for (against, judge_model), places in grouped.items():
+        repeats = [read.repeats[at] for at in places]
+        lost = Counter(repeat.loss for repeat in repeats if repeat.loss is not None)
+        questions = []
+        for question in REPEAT_QUESTIONS:
+            pairs: list[tuple[ClaimItem, int, int]] = []
+            for repeat in repeats:
+                item = items[repeat.item]
+                first = _repeat_fails(question, item.verdict, item.grounded)
+                again = _repeat_fails(question, repeat.verdict, repeat.grounded)
+                if first is not None and again is not None:
+                    pairs.append((item, first, again))
+            table = (
+                sum(1 for _, a, b in pairs if a and b),
+                sum(1 for _, a, b in pairs if a and not b),
+                sum(1 for _, a, b in pairs if b and not a),
+                sum(1 for _, a, b in pairs if not a and not b),
+            )
+            questions.append(
+                RepeatQuestion(
+                    question=question,
+                    items=len(pairs),
+                    cells=len({item.result_id for item, _, _ in pairs}),
+                    table=table,
+                    agreed=table[0] + table[3],
+                    strata=tuple(
+                        RepeatStratum(
+                            stratum=stratum,
+                            items=sum(1 for item, _, _ in pairs if item.stratum == stratum),
+                            agreed=sum(1 for item, a, b in pairs if item.stratum == stratum and a == b),
+                        )
+                        for stratum in strata
+                    ),
+                )
+            )
+        web = Counter(
+            (repeat.first_web, repeat.web)
+            for repeat in repeats
+            if repeat.first_web is not None and repeat.web is not None
+        )
+        readings.append(
+            ClaimRepeatReading(
+                against=against,
+                judge_model=judge_model,
+                passes=len({repeat.repeat_id for repeat in repeats}),
+                repeats=len(repeats),
+                lost=MappingProxyType(dict(sorted(lost.items()))),
+                questions=tuple(questions),
+                web=MappingProxyType(dict(sorted(web.items()))),
+            )
+        )
+    return tuple(readings)
 
 
 __all__: list[str] = []

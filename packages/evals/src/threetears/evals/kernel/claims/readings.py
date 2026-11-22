@@ -18,7 +18,9 @@ count (a session claim counts in none of the world readings; a hedged or attribu
 out of the asserted counts; a statement the text backs with a source is asserted) is settled once, in
 :func:`claim_tally`.
 
-Engine-internal: the judge phase tallies, the ranking path reads, and nothing here is a host's to import.
+The judge phase tallies and the ranking path reads. One name is a host's: :func:`claim_readings`, exported from
+:mod:`threetears.evals.kernel` (provisional), so a host reads a cell's readings off its stored tally exactly as the
+ranking path does and never restates a formula. Nothing else here is a host's to import.
 """
 
 from __future__ import annotations
@@ -294,7 +296,8 @@ def claim_readings(
         (:attr:`ClaimTally.grounded`), which a lost cell's single reading does not need.
     :return: Each reading the cell carries, by name, the host's derived readings (:attr:`ClaimTally.derived`) after the
         engine's; none while its tally waits on its trace
-        (:data:`~threetears.evals.schema.models.CLAIM_PENDING`), which is not yet known and never a loss.
+        (:data:`~threetears.evals.schema.models.CLAIM_PENDING`), which is not yet known and never a loss, and none for
+        a cell whose candidate said nothing (:attr:`ClaimTally.silent`), which has no denominator and is no loss.
     :raises ValueError: ``grounded`` disagrees with the tally's own record of whether its criterion asks groundedness.
     """
     if outcome == CLAIM_PENDING:
@@ -302,6 +305,9 @@ def claim_readings(
     if isinstance(outcome, str):
         return {f"{criterion}_lost": 1.0}
     tally = outcome
+    if tally.silent:
+        # The candidate said nothing: no denominator, so no reading, and never a count of 0 false claims in a mean.
+        return {}
     if grounded is None:
         grounded = tally.grounded
     elif grounded != tally.grounded:
@@ -432,6 +438,11 @@ CLAIM_LOST_OUTCOME: Final = "claim_lost"
 #: never shrinks without a word.
 CLAIM_PENDING_OUTCOME: Final = "claim_pending"
 
+#: The ``outcome`` a projected claim row carries where the candidate said nothing in the cell
+#: (:attr:`~threetears.evals.schema.models.ClaimTally.silent`): no value and no loss, since the cell has no denominator,
+#: counted apart so an arm silent in most of its cells is seen to be.
+CLAIM_SILENT_OUTCOME: Final = "claim_silent"
+
 #: The ``outcome`` a projected row of a reading the host derives from a criterion carries where its claim reader could
 #: not read the cell (:attr:`~threetears.evals.schema.models.ClaimTally.derived_unread`): no value and no loss, since the
 #: cell's grade stands and a re-measure with a fixed reader reads it, counted apart so the population never shrinks
@@ -476,7 +487,8 @@ def projected_claim_readings(
     Every reading the cell carries (:func:`claim_readings`) is a valued row. A ranked reading the cell would carry but
     lost is a null row whose outcome says so, so each arm counts what it lost: every ranked reading where the criterion
     lost the cell (:data:`CLAIM_LOST_OUTCOME`), the grounded share alone where only its ground step was, and every ranked
-    reading, under :data:`CLAIM_PENDING_OUTCOME`, while the tally waits on its trace, which is no loss.
+    reading, under :data:`CLAIM_PENDING_OUTCOME`, while the tally waits on its trace, which is no loss; and every ranked
+    reading, under :data:`CLAIM_SILENT_OUTCOME`, where the candidate said nothing, which is no loss either.
 
     :param criterion: The criterion's name.
     :param outcome: The cell's tally under it, or why it lost it.
@@ -495,6 +507,11 @@ def projected_claim_readings(
         rows += [
             (name, None, missing)
             for name in (*ranked_claim_reading_names(criterion, grounded=grounded), *sorted(derived_ranked))
+        ]
+    elif outcome.silent:
+        rows += [
+            (name, None, CLAIM_SILENT_OUTCOME)
+            for name in (*ranked_claim_reading_names(criterion, grounded=outcome.grounded), *sorted(derived_ranked))
         ]
     else:
         if outcome.grounded and outcome.ground_loss is not None:
@@ -684,6 +701,10 @@ def claim_tally(
     - A **lost ground step** (``ground_loss``) costs only groundedness: every world claim's ``grounded`` reads None,
       no claim is grounded, the truth counts stand, and the tally records the loss so no grounded share is read. A
       world claim whose ``grounded`` is None under ``grounded_in`` with no such loss is refused, never read as 0.
+    - **Undeclared documents** (None, not empty) under ``grounded_in`` lose the ground step alone
+      (``documents_undeclared``), which the grade records as any ground loss.
+    - **A silent cell** (evidence with no segment: the candidate said nothing) is tallied ``silent``, with no unit and
+      no claim, and carries no reading at all (:func:`claim_readings`).
     - **Units** are the evidence's distinct units, however many segments each spans; a unit holds a false claim when
       any of its segments holds an asserted contradicted world claim, read off the segment, which a claim's ``unit``
       must agree with.
@@ -704,15 +725,20 @@ def claim_tally(
         decides; a claim cites evidence of a provenance ``grounded_in`` does not name as its ground (any, where the
         criterion asks no groundedness), or a key fact as its ground; a world claim's groundedness disagrees with
         whether the criterion asks it and whether its ground step was lost; a criterion with ``grounded_in`` grades a
-        cell whose documents are undeclared; a world claim names no deciding call; or a claim sits in a segment the
+        cell whose documents are undeclared with its ground step not lost as ``documents_undeclared``; a silent cell
+        lists a claim or loses a step; a world claim names no deciding call; or a claim sits in a segment the
         evidence does not hold, or names a unit other than its segment's.
     """
     if grounded_in is None and ground_loss is not None:
         raise ValueError(f"a ground step was lost ({ground_loss!r}), and the criterion asks no groundedness")
-    if grounded_in is not None and evidence.documents is None:
+    silent = not evidence.segments
+    if grounded_in is not None and evidence.documents is None and not silent and ground_loss != "documents_undeclared":
         raise ValueError(
-            "a criterion with grounded_in reads the documents the candidate was given, and the cell declares none"
+            "a criterion with grounded_in reads the documents the candidate was given, and the cell declares none, "
+            "which loses its ground step as documents_undeclared"
         )
+    if silent and (grade.claims or ground_loss is not None):
+        raise ValueError("a cell whose candidate said nothing lists no claim and loses no step")
     provenance = {entry.ref: entry.provenance for entry in grade.evidence}
     key_facts = {entry.ref for entry in grade.evidence if entry.fact is not None}
     allowed = frozenset(grounded_in or ())
@@ -776,6 +802,7 @@ def claim_tally(
         units_with_false=len(units_with_false),
         session_claims=session,
         by_judge=tuple(_counted(calls[key], claims) for key, claims in groups.items()),
+        silent=silent,
         grounded=grounded_in is not None,
         ground_loss=ground_loss,
         web_loss=grade.web_loss,

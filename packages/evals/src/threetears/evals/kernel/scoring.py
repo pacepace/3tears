@@ -101,8 +101,8 @@ class CellSummary:
     load it back through the storage layer by :attr:`result_id`
     (:meth:`~threetears.evals.kernel.storage.EvalStorage.load_eval_result`) — but check
     :attr:`persisted` first, because a pointer is only as good as the write it
-    points at, and ``save_eval_result`` reports a failed write by returning
-    ``False`` rather than raising.
+    points at: a run's loop records a cell whose write raised as not persisted
+    and goes on, so a summary can point at a record that never landed.
     """
 
     #: Id of the persisted :class:`~threetears.evals.schema.models.EvalResult` — the
@@ -120,9 +120,8 @@ class CellSummary:
     #: The result's ``cost_usd`` — ``None`` when its spend could not be priced.
     cost_usd: float | None
     #: Whether the write this summary points at actually landed. ``False`` means
-    #: the cell ran and produced a result that no longer exists anywhere: the
-    #: storage layer logs and returns ``False`` on a write failure instead of
-    #: raising, and the run continues. Recorded rather than inferred, because
+    #: the cell ran and produced a result that no longer exists anywhere: its
+    #: write raised (``StorageError``), and the run continued. Recorded rather than inferred, because
     #: this is the one field whose ``False`` a reader cannot recover by loading
     #: the record — there is no record to load.
     persisted: bool
@@ -136,7 +135,7 @@ class CellSummary:
         """Summarize a persisted result down to its bounded coordinates.
 
         :param result: the result that was just written.
-        :param persisted: what ``storage.save_eval_result`` reported. Required
+        :param persisted: whether the result's write landed (it returned, rather than raising ``StorageError``). Required
             rather than defaulted, so a new call site has to state whether
             the write was checked instead of inheriting an optimistic
             ``True``.

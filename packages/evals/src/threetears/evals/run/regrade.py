@@ -27,6 +27,11 @@ reported in its own words). It re-grades nothing of a result whose checks were n
 termination but ``completed``: a cell cut off carries unevaluated checks, and a replay must never turn those into
 passes), or one of whose checks no longer evaluates.
 
+**Lost claim criteria are graded again through the same door** (:func:`~threetears.evals.run.rejudge.claims_due_rejudge`:
+each lost whole, and each whose web step alone was lost), on the run's judge, and a criterion with a web budget on the
+web search the caller hands in; one with no search to search on is refused by name before anything is written. A
+criterion still pending is no loss: applying settles it from its stored grade with no call, and no port is asked for.
+
 **Judged dims are asked again, never re-scored from a guess.** A judge's reply is not stored, so a judged dim can be
 graded again only by asking its judge. The dims re-asked are those the result's judging failed to answer
 (:func:`~threetears.evals.run.rejudge.failed_judge_dims`: a can't-tell is an answer and is never re-asked), each held to
@@ -52,7 +57,13 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 from threetears.evals.run.lifecycle import rejudge_result
-from threetears.evals.run.rejudge import failed_judge_dims, reproducible_judge_inputs
+from threetears.evals.run.rejudge import (
+    claims_due_rejudge,
+    failed_judge_dims,
+    judged_template,
+    refuse_unsearched_claims,
+    reproducible_judge_inputs,
+)
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.call_ledger import CallLedger
@@ -65,11 +76,18 @@ from threetears.evals.schema.goal_grammar import (
     speaks_the_goal_language,
 )
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
+from threetears.evals.schema.models import (
+    CLAIM_PENDING,
+    NON_TERMINAL_RUN_STATUSES,
+    ApparatusProvenance,
+    GoalStateOutcome,
+)
 from threetears.evals.schema.world_events import Firings
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.kernel.usage_capture import ExternalRateTable
+    from threetears.evals.schema.web_search import WebSearch
     from threetears.evals.kernel.host.world import WorldRegistry
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.schema.models import EvalResult, EvalRun
@@ -119,6 +137,21 @@ class Regrade(EvalBaseModel):
     judges_not_regraded: str | None = Field(
         default=None, description="Why no judged dim is asked again; None when some is (or, unapplied, would be)."
     )
+    claim_criteria: list[str] = Field(
+        default_factory=list,
+        description="The claim criteria the result lost, whole or their web step alone: graded again when applied, "
+        "otherwise what applying grades again. A criterion lost to the trace's cap is never among them.",
+    )
+    claims_pending: list[str] = Field(
+        default_factory=list,
+        description="The claim criteria whose tally still waits on the stored grade: no loss, and settled from that "
+        "grade with no call when applied (lost as trace_lost where no trace was ever stored), never graded again.",
+    )
+    claim_cost_usd: float | None = Field(
+        default=None,
+        description="What grading the claim criteria again cost, searches included; None when nothing was graded or "
+        "it is unpriced.",
+    )
     judge_cost_usd: float | None = Field(
         default=None, description="What asking the judge again cost; None when nothing was asked or it is unpriced."
     )
@@ -132,13 +165,17 @@ async def regrade(
     checks: bool = True,
     judges: bool = True,
     apply: bool = False,
+    web_search: WebSearch | None = None,
+    external_rates: ExternalRateTable | None = None,
 ) -> Regrade:
     """Grade one stored result again from what its cell stored, and report every verdict that moved.
 
     Check dims (goal checks) are re-graded from the result's trace through the function the cell was graded with;
-    judged dims whose judging failed are named and, applied, asked of the run's judge again. Nothing is written
-    unless ``apply``; then the moved check verdicts are stored, conditional on the result as read, and the judged
-    dims are asked and stored through ``rejudge_result``, in that order.
+    judged dims whose judging failed, and claim criteria the result lost (whole, or their web step alone), are named
+    and, applied, asked of the run's judge again. Nothing is written unless ``apply``; then the moved check verdicts
+    are stored, conditional on the result as read, and the judged dims and claim criteria are asked and stored through
+    ``rejudge_result``, in that order. A claim criterion with a web budget searches live on ``web_search``, and one
+    with no search to search on is refused by name before anything is written or spent.
 
     :param host: The host: the result's store, the world registry a ``state.*`` check resolves through
         (``profile.world``), and, to apply a judged re-ask, the judge clients.
@@ -147,11 +184,17 @@ async def regrade(
     :param checks: Re-grade its check dims from its trace.
     :param judges: Name its failed judged dims, and ask them again when applying.
     :param apply: Store the new verdicts and ask the judge; ``False`` (the default) reports and spends nothing.
+    :param web_search: The web search a lost claim criterion with a web budget is graded again on, or a lost web step
+        is finished on, live: the run's own port, or a recording of it for a replay (``rejudge_result``). ``None``
+        refuses such a criterion by name when applying, before anything is written.
+    :param external_rates: The run's rate table, which prices a search its port reports no cost for, as the run did;
+        ``None`` declares none.
     :return: What moved, what was left as stored and why, and whether it was written.
     :raises NotFoundError: No such result, or its run, in the scope.
     :raises ValidationFailedError: Its run is still pending or running; or a failed judged dim's apparatus cannot be
         reproduced from what the run recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
-        names it), before anything is written or spent; ask with ``judges=False`` to re-grade its checks alone.
+        names it), before anything is written or spent; ask with ``judges=False`` to re-grade its checks alone. Also,
+        when applying, a lost claim criterion with a web budget and no ``web_search``, before anything is written.
     :raises ValueError: Applying a judged re-ask on a host that supplies no completion clients, before anything is
         written.
     :raises ConflictError: Something else wrote the result since it was read: nothing of the checks was stored. Raised
@@ -167,9 +210,15 @@ async def regrade(
         report.checks_not_regraded = "checks were not asked for (checks=False)"
     report.judge_dims = failed
     report.judges_not_regraded = read.judges_not_regraded
-    if apply and failed:
+    claims = list(read.claim_criteria)
+    report.claim_criteria = claims
+    report.claims_pending = list(read.claims_pending)
+    if apply and (failed or claims):
         # Refused here, before the checks are written, rather than after.
-        host.completion_clients("a re-grade's judged dims")
+        host.completion_clients("a re-grade's judged dims and claim criteria")
+    if apply and claims:
+        template = await run_blocking(host.blocking_executor, judged_template, host.storage, run, scope_id)
+        refuse_unsearched_claims(template, claims, web=web_search)
     if apply and outcomes is not None:
         updated = result.model_copy(update={"goal_state_outcomes": outcomes})
         try:
@@ -179,8 +228,12 @@ async def regrade(
                 f"result '{result.id}' changed while it was being re-graded; nothing was stored",
                 remedy="re-grade it again",
             ) from raced
+    if apply and (failed or claims or report.claims_pending):
+        # A pending criterion alone asks nothing: the re-judge settles it from the stored grade and returns.
+        rejudged = await rejudge_result(host, result.id, scope_id, web_search=web_search, external_rates=external_rates)
+        if claims and rejudged.claim_rescores:
+            report.claim_cost_usd = rejudged.claim_rescores[-1].cost_usd
     if apply and failed:
-        rejudged = await rejudge_result(host, result.id, scope_id)
         rescore = rejudged.judge_rescores[-1]
         report.judge_cost_usd = rescore.cost_usd
         report.judge_errors = dict(rescore.errors)
@@ -202,6 +255,8 @@ async def regrade(
         len(report.kept_as_stored),
         ",".join(failed) or "-",
     )
+    if claims:
+        log.info("eval.regrade result=%s claim_criteria=%s applied=%s", result.id, ",".join(claims), apply)
     return report
 
 
@@ -217,6 +272,8 @@ class _Read:
     variation: dict[str, Any] | None
     failed_judge_dims: list[str]
     judges_not_regraded: str | None
+    claim_criteria: tuple[str, ...]
+    claims_pending: tuple[str, ...]
 
 
 def _read(storage: EvalStorage, result_id: str, scope_id: str, *, judges: bool) -> _Read:
@@ -252,6 +309,12 @@ def _read(storage: EvalStorage, result_id: str, scope_id: str, *, judges: bool) 
         variation=dict(case.variation_params) if case is not None else None,
         failed_judge_dims=failed,
         judges_not_regraded=why_not,
+        claim_criteria=tuple(dict.fromkeys(name for names in claims_due_rejudge(result) for name in names))
+        if judges
+        else (),
+        claims_pending=tuple(name for name, loss in result.claim_failures.items() if loss == CLAIM_PENDING)
+        if judges
+        else (),
     )
 
 

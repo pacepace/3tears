@@ -54,6 +54,121 @@ the trial cause `code_raised`, the decision surface's `JudgedDimensionFacts.nonn
 analysis carrying any of them (`extra_forbidden`, or the trial cause as no `FailCause`), so the integration line is
 deployed and rolled back as one, as the rest of 15.24 is.
 
+### evals: a host draws, answers, closes and repeats a claim read through seven actions
+
+**Added (#1287), provisional:** the claim read's host door, onto the same core, as the blind read's is onto its own.
+Seven actions: `claim_read_create`, `claim_read_sheet`, `claim_read_answer`, `claim_read_close`, `claim_read_repeat`
+(`spend`, a job), `claim_read_get` and `claim_reads_list`.
+
+- **The draw** is over a campaign's runs or named runs, for one claim criterion (`claim_criterion`), with one arm per
+  variant key the graded cells carry. The caller fixes the questions (`true`, `grounded`, `is_claim`; by default all
+  three, `grounded` only where a ground step read the claims), the stratifier (`truth` or `grounded`), and the plan:
+  in all (`claim_items`) or per stratum (`per_stratum`). There is no seed parameter. The seed is derived from the
+  claims drawn over, the stratifier, the questions and how many reads were drawn over the same claims before, and the
+  line states it (`seed`, `earlier_reads`). A run holding graded cells of two arms is refused. So are two definitions
+  of the criterion grading equally many cells. Cells graded under a less common definition are left out, counted
+  `redefined`.
+- **The sheet** shows each claim, its excerpt with offsets, the passage it was said in, and the evidence the grader
+  was shown, numbered. It carries no verdict, stratum or arm, and no run, result or case id. A rater answers each
+  question pass or fail. It shows no window of the grader's web check: the grader checks on the web only a claim it
+  doubted, so a window would point at its verdict. The rater may search on their own.
+- **An answer** is recorded as a person's only when the host attests the caller relaying it (`attests_person`).
+  Otherwise it is refused (403) and nothing is written.
+- **One look.** A read's line carries no figure while it is open. `claim_read_close` reads every figure once and
+  keeps it on the read (`ClaimRead.report`). `claim_read_get` serves that copy, and nothing read later moves it.
+  People's answers on byte-identical views are borrowed only at the close, only from reads closed before it, and the
+  report names those reads (`borrowed_from`). Per
+  question, that is the weighted 2x2, kappa with its interval, recall, the false-fail rate, precision, rate bias, each
+  stratum's agreement, each arm's figures, the lean test's p, and the arms it could not read (`lean_untested`). It
+  also serves the check against people (`Check`, the calibration bar, `instrument_leans`) and the claims the draw
+  left out. A closed read refuses every later answer and a second close. A read closed with items nobody answered
+  says so (`closed_early`).
+- **A repeat** (`claim_read_repeat`) grades the drawn claims' cells again over the evidence and web windows each grade
+  stored. It keeps the claims as listed and searches nothing. It asks each run's own judge (the grader against itself,
+  ledgered `judge`) or a named one (`repeat_judge`, a second judge, ledgered `second_judge`). Its prompts change as
+  repairs ask again, so it is priced at its worst case under the criterion's repair budget, the web step's searches
+  free. Where those ceilings together pass the out-of-run cap, or cannot be priced under an enforced cap, it is
+  refused before any call. Each call is then admitted at its own prompt, and a cell never spends past its worst case
+  (`hold_exceeded`). Its readings are stored on the read, one per item per pass, written only from inside the read's
+  own repeat job. Each judge's figures are counts per question and per stratum of the draw, and the web outcomes of
+  claims both readings decided on the web.
+
+**Stored, additive (durable 17.10):** `ClaimRead.closed_at`, `closed_by`, `report`, `repeat_job_id` and `repeats`.
+`report` is a `ClaimReadReport`: `read_at`, one `ClaimQuestionFigures` per question (the counts, the weighted 2x2,
+each `ClaimFigure` with its ends, `ClaimStratumAgreement`s, `ClaimArmFigures`, the lean test's p, `lean_untested`, and
+the check's decision as a `ClaimCheckRecord`: `result` (met, not met, undecided or insufficient), `reason`, `state`, `sample`, `skipped`),
+`model_answers`, `borrowed`, `borrowed_from` and `excluded`. `repeats` holds `ClaimItemRepeat`s: `item`,
+`repeat_id`, `judge_model`, `against` (`itself` or `model`), `repeated_at`, `verdict`, `grounded`, `first_web`, `web`
+and `loss`. Each is left out while unset, so a read carrying none is stored byte for byte as before. A close carries
+its closer and its report, all or none.
+
+**Changed: the item view leaves out web windows.** `ClaimItemView.evidence` no longer carries the windows the grade's
+web check read. So the view's digest, which is the label's key, moves for every claim the grade checked on the web. No
+claim read was ever released or read in production, so no stored label is orphaned. A read drawn before this change
+still holds its windows, and its sheet never shows them.
+
+**Not yet on the report page:** a closed read's check reaches the host through `claim_read_get`. It does not yet reach
+the campaign report's judged measures or caveats.
+
+**For hosts:** a claim read stored by this build after it was closed or repeated is refused by name
+(`extra_forbidden`) by the build before it. On a rollback, that build's listing of the scope's claim reads
+(`query_claim_reads`) refuses the whole listing once any read carries those fields, not just that read. Claim reads
+were never released, so the integration line is deployed and rolled back as one. `claim_read_answer` needs `attests_person`, as `blind_read_answer` does. `claim_read_repeat` is
+held to your out-of-run cap.
+
+### evals: a silent candidate, undeclared documents, and host doors for claim readings, completeness and regrade
+
+**Changed (#1287):** a candidate that said nothing in an output holding other parties' lines (cut off, or given
+no turn) is claim evidence with no segment, `ClaimEvidence(segments=())`, which is no longer refused. Its cell makes no
+claims call and spends nothing; its grade lists no claim (`calls=()`), and its tally is marked `silent` with no unit
+and no claim. A silent cell carries no claim reading at all: it is in no reading's population, never reads as 0 false
+claims in its arm's mean, and is no loss. But silence is missing data that may track arm (an arm quiet on its hard
+cells would lower its false claims by selection), so the test that withholds a reading on uneven loss counts silent
+cells as unread beside lost ones: arms silent on shares of cells that differ beyond chance have the reading withheld
+(`trials_lost`). The same test now counts pending cells (a tally waiting on its stored grade) and the cells a host's
+claim reader could not read, for the readings derived from the criterion, beside lost ones: an arm-skewed backlog
+withholds a reading until it settles, and the page's pending line says so where the backlog is all that is missing. Each arm counts its silent cells beside its mean, and a class-B caveat
+(`claims_silent:<criterion>`) names each arm that has some, with a line on the page under the scoreboard saying the
+candidate said nothing on so many of that arm's cells. Its remedy is `inspect_arm` (new): a person reads those cells
+to tell whether the candidate declined or its session gave it no turn; no rig is presumed at fault. `claim_evidence=None` on an output that holds something is still refused: no reader could tell
+a kind that forgot from a candidate that said nothing.
+
+**Changed (#1287):** claim evidence whose `documents` is None under a criterion naming `grounded_in` is no longer
+refused. The cell's ground step alone is lost, as the new loss `documents_undeclared`; no ground call is made, and
+truth stands. It is counted and disclosed per arm as any ground loss is, and a share of such cells that differs
+between arms withholds the grounded share. The quick path still refuses an answer that says nothing of what it read
+under `Claims(grounded_in="run")`.
+
+**Added (#1287):** `CLAIM_DOCUMENT_BYTES`, exported from `threetears.evals.schema` (provisional), so a kind can
+truncate its documents to the cap by name.
+
+**Added (#1287):** `claim_readings(criterion, outcome)`, exported from `threetears.evals.kernel` (provisional): a
+cell's claim readings from its stored tally (or its loss), exactly as the ranking path reads them, so a host never
+restates a reading's formula off `ClaimTally`.
+
+**Added:** `summarize_completeness(run, cells)` is exported from `threetears.evals.kernel` again (provisional; it was
+to leave the root unreleased), beside `CellSummary`, so a host closes a witnessed run through public names: it saves
+the run `completed` with `completed_at` and `completeness=summarize_completeness(run, cells)`
+(`host.storage.save_eval_run`), and no sweep for abandoned runs writes it lost.
+
+**Changed (#1287):** `regrade` takes `web_search` and `external_rates` (keyword, default None) and grades again the
+claim criteria a result lost, whole or their web step alone, through `rejudge_result`, after its checks: its report
+names them (`Regrade.claim_criteria`, new) and what grading them cost (`Regrade.claim_cost_usd`, new). Applied, a
+criterion with a web budget and no `web_search` is refused by name before anything is written or spent. The
+`result_regrade` action, which makes no model call, now refuses `apply` on a result with such criteria as it refuses
+one with failed judged dims, and its `apply` description says so; `judges=false` stores the re-graded checks alone.
+A criterion still pending is no loss and never due a paid re-grade: `regrade` reports it apart
+(`Regrade.claims_pending`, new) and, applied, settles it from the stored grade with no call and no web search, and the
+action applies over it.
+
+**For hosts:** render `segments=()` for a cell whose candidate said nothing, rather than leaving `claim_evidence`
+None. The stored shapes gain `ClaimTally.silent`, `JudgedArm.n_claim_silent`, the report input's `Judged.silent` and
+the remedy `inspect_arm`
+(each left out while unset, so no stored document without a silent cell moves) and the loss `documents_undeclared`.
+The build before them is at the same unreleased core minor (15.24) and refuses each by name (an empty `segments` or
+`calls` as too short, the new fields as `extra_forbidden`, the loss as one it does not know), so deploy and roll back
+the evals line as one.
+
 ### evals: readings of your own, the session record and the cells read back, on the quick path
 
 **Added (#1287), provisional:** three doors a quick-path eval graded by `Claims` used to need the host path for.
@@ -92,9 +207,8 @@ from before this change reads every document a run with these doors writes.
 
 ### evals: a claim read calibrates a claim criterion against people, and a stored grade can be read again
 
-**What ships, and what does not yet.** This ships the claim read's stored record, its statistics and the repeat of a
-stored grade, all engine-internal: no host can draw a claim read, show its items, record answers, read its figures or
-run a repeat yet. The host door for all of that is its own change, before claims are adopted.
+**What ships.** The claim read's stored record, its statistics and the repeat of a stored grade. A host drives them
+through the claim read's door (the section above).
 
 **Added (#1287), provisional:** a new durable type, the claim read (`ClaimRead`, durable 17.10), the human side of a
 claim criterion's calibration. It draws the criterion's graded claims by stratum of the instrument's own answer: its
@@ -149,8 +263,7 @@ are verified again, and each web verdict is asked again over the windows the gra
 judge's agreement with itself and a second judge's both reach the web step. A claim the repeat doubts that the first
 grade never checked reads unchecked, never searched. A replayed grade is not read again.
 
-**Left out:** the host door (drawing, sheets, answers, readable figures, a priced repeat job and where its answers are
-stored), which is its own change; a check of the extractor's recall (misses are listed, not checked); judge campaigns
+**Left out:** a check of the extractor's recall (misses are listed, not checked); judge campaigns
 for claims; a corrected contrast. `CalibrationRating` does not gain a claim reference: a claim read keeps every answer
 beside the view it was given on.
 
