@@ -21,14 +21,18 @@ itself, of a document the cell's evidence lacks, of a `run` document, or in a cy
 its passages, which shown document overrides which, by title and passage ref, and is told to cite both sides, since
 code applies the precedence. A cell whose documents override none is shown, stored and digested exactly as before.
 
-**Changed (#1287):** a semicolon is no longer a break between a citation's subject and its value. It joins clauses of
-one sentence, so a quote such as "members may renew a loan once; doing so costs two dollars" binds its subject and
-value with no repair call. A full stop, `!`, `?` or a line break between them is still refused and asked again. A
-subject and a value either side of a semicolon are now the model's to bind, as within any one sentence, and calibration
-measures what remains. This holds for a web window's quote too. The verifier's identity, and with it every claim
+**Changed (#1287):** a semicolon is no longer a break between a citation's subject and its value: clauses joined by
+one count as one sentence. A quote such as "members may renew a loan once; doing so costs two dollars" now passes with
+no repair call. A full stop, `!`, `?` or a line break between them is still refused and asked again. Binding across a
+semicolon is not proved by code: a value cited for the wrong subject across one ("the pamphlet appeared in 1931; the
+bound volume followed in 1932", the 1931 cited for the bound volume) now passes every code check and is the model's to
+bind, as within any one sentence, and calibration measures what remains. The trade-off is fewer forced repairs on
+rule-style sentences for a weaker code check. This holds for a web window's quote too. The verifier's identity, and with it every claim
 criterion's fingerprint, moves: a grade stored before this build reads as graded under an earlier definition.
 
-For hosts: `overrides` amends core 15.24, which is unreleased. A build before this change refuses a stored trace whose
+For hosts: precedence never reaches the case key's facts. A key fact an overriding document contradicts still reads
+`supported` with `evidence_conflict`, and code cannot tell it is stale, so keep key facts to the values in force.
+`overrides` amends core 15.24, which is unreleased. A build before this change refuses a stored trace whose
 claim evidence carries an override (`extra_forbidden`, naming `claim_evidence.documents.<n>.overrides`), and reads one
 whose documents override none. Roll this build out before any kind renders an override, and roll back only after
 removing them. The quick path's `case_documents` cannot yet declare an override.

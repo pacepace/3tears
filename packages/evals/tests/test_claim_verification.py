@@ -410,6 +410,25 @@ async def test_a_semicolon_joins_clauses_of_one_sentence_and_a_full_stop_still_p
         assert (citation.quote, grade.claims[0].verdict) == (text, "supported")
 
 
+async def test_a_misbinding_across_a_semicolon_passes_every_code_check_and_is_left_to_the_model() -> None:
+    """A semicolon joins clauses of one sentence, so the pamphlet's year cited for the bound volume across one is no
+    code failure: the binding is the model's reading, as within any one sentence, and calibration measures it. The
+    accepted trade-off: fewer forced repairs on rule-style sentences, for a weaker code check."""
+    text = "The pamphlet edition of Harrow Tales appeared in 1931; the bound volume of Harrow Tales followed in 1932."
+    joined = EvidenceDocument(id="joined", provenance="case", title="Joined", text=text)
+    client = _FakeScriptedClient(
+        [
+            _batch(_answer(0, _cite("S1", quote=text, subject="the bound volume of Harrow Tales", value="1931"))),
+            _batch(_answer(1), _answer(2)),
+        ]
+    )
+
+    grade = _grade(_CLAIMS, await _verify(client, documents=(joined,)))
+
+    assert len(client.calls) == 2, "no repair call"
+    assert grade.claims[0].verdict == "supported", "a misbinding across a semicolon passes every code check"
+
+
 async def test_one_sentence_naming_two_subjects_is_left_to_the_model_to_bind() -> None:
     """Code narrows a neighbouring value to one sentence; inside one, which value belongs to which subject is the
     model's reading, and calibration measures it."""

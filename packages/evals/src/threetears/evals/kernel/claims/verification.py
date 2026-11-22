@@ -25,11 +25,13 @@ take the case's share: truth reads the same case passages whatever an arm fetche
 elsewhere in its document), and names, inside that quote, the words that name the claim's subject and the words that
 state the value. Both are found inside the stored quote, and no sentence end (``.``, ``!`` or ``?`` before a space or
 the end) or line break may lie between them. That narrows the neighbouring-value error, a value taken from the sentence
-or row next to the one about this subject, to one sentence or row. A semicolon joins clauses of one sentence, so a
-subject and a value either side of one ("members may renew a loan once; doing so costs two dollars") are bound
-in one sentence. It does not prove the value belongs to that subject: a sentence stating two values for two subjects
-("the pamphlet in 1931 and the bound volume in 1932", or the same joined by a semicolon) stays the model's to bind, and
-calibration measures what remains. What is stored is the passage's own slice, never the
+or row next to the one about this subject, to one sentence or row. Clauses joined by a semicolon count as one
+sentence, so a subject and a value either side of one ("members may renew a loan once; doing so costs two dollars")
+pass with no repair; binding across the semicolon is not proved by code. That is the accepted trade-off: fewer forced
+repairs on rule-style sentences, for a weaker code check. Nor does the check prove the value belongs to that subject
+within any sentence: one stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932", or
+"the pamphlet appeared in 1931; the bound volume followed in 1932") stays the model's to bind, and calibration
+measures what remains. What is stored is the passage's own slice, never the
 model's strings. A key fact is cited whole, with no quote.
 
 **Precedence among case documents.** A case document may override others (``EvidenceDocument.overrides``: house
@@ -39,8 +41,9 @@ applies the precedence and the model never decides a verdict. A citation is over
 that overrides its own cites the claim with the opposite stance. So a claim supported only from an overridden document
 that an overriding one contradicts reads ``contradicted``; support from the overriding document stands over a
 contradiction from the one it overrides; and where the overriding document is silent, the overridden one's citation
-stands. A key fact is no document: it overrides nothing and is never overruled. The ground step reads no precedence,
-since it cites support alone.
+stands. A key fact is no document: it overrides nothing and is never overruled, so a key fact an overriding document
+contradicts still reads ``supported`` with ``evidence_conflict``, which code cannot detect as stale. A host keeps its
+key facts to the values in force. The ground step reads no precedence, since it cites support alone.
 
 **Batches.** One call per unit, holding every world claim of that unit, and one more for the claims outside any unit.
 A restatement is not asked again: it rides in its original's batch, shown beside it, and takes the original's

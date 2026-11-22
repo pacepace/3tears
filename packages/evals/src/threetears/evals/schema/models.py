@@ -6201,8 +6201,10 @@ class EvidenceDocument(CoreShapeModel):
         description="The case documents this case document overrides, by id: where it and one of them bear on a claim "
         "with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a "
         "policy update over the old policy). Where it is silent, the other's stands. Precedence follows the chain: a "
-        "document overrides what the documents it overrides override. Empty (left out) for a document that overrides "
-        "none, and always for a `run` document.",
+        "document overrides what the documents it overrides override. It never reaches the case key's facts, which "
+        "are no document: a key fact an overriding document contradicts reads supported with a conflict, so keep key "
+        "facts to the values in force. Empty (left out) for a document that overrides none, and always for a `run` "
+        "document.",
     )
 
     @field_validator("text", mode="after")
