@@ -42,6 +42,7 @@ from threetears.evals.kernel.build_stamp import package_rev, package_version
 from threetears.evals.kernel.host.eval_host import CompletionRole, EvalHost
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.schema.completion import ModelListing
+from threetears.evals.schema.web_search import WebSearch
 from threetears.evals.schema.models import ArmSchedule, EvalTemplate, RunDisclosure, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
@@ -1511,6 +1512,8 @@ class KindWiring:
         no answer, by the take-up's own rule (:func:`~threetears.evals.kernel.result_condition.runs_again`), so their
         cells run again. Every cell must be one of the run's cases at one of its repeats. ``None`` runs every cell;
         never beside a take-up, which holds its own.
+    :ivar web_search: The web search a claim criterion with a web budget checks its nominated claims on
+        (:attr:`~threetears.evals.run.runner.RunnerOptions.web_search`), or ``None`` for none.
     """
 
     kind_factory: KindFactory
@@ -1527,6 +1530,7 @@ class KindWiring:
     teardown: contextlib.AsyncExitStack | None = None
     max_concurrent_cells: int | None = 1
     observed: StoredCells | None = None
+    web_search: WebSearch | None = None
 
     def __post_init__(self) -> None:
         """Refuse a width no run can execute at.
@@ -4274,6 +4278,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # dispatch's kind is the only key, so the factory cannot be registered under another.
             candidate_kinds={request.kind: wiring.kind_factory},
             external_rates=wiring.external_rates,
+            web_search=wiring.web_search,
             # Each cell's own deadline, the one the run records: every cell opens its own timeout from it.
             cell_timeout_s=cell_timeout_s,
             # Measurement-condition probe (R4): the job manager is the only thing that can

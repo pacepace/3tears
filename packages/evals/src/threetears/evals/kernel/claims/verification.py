@@ -429,30 +429,69 @@ def truth_verdict(citations: Sequence[ClaimCitation], *, suspect: bool, web: Web
     return TruthVerdict("unverifiable", None, False, "judge")
 
 
+@dataclass(frozen=True)
+class WebGraded:
+    """What the web check left for one nominated claim, as its grade reads it.
+
+    :ivar outcome: What the page said (``true``, ``false``, ``inconclusive``), or ``skipped_cap``: the cell's web
+        budget, the run's cost cap or the cell's deadline left it unchecked.
+    :ivar call: The call whose answer fixed its verdict, by its place in the grade's calls; None where no verdict
+        call was asked (skipped, or no window read), and the truth call stands.
+    """
+
+    outcome: WebOutcome
+    call: int | None = None
+
+
 def graded_claims(
-    claims: Sequence[ExtractedClaim], verification: Verification, *, calls_before: int
+    claims: Sequence[ExtractedClaim],
+    verification: Verification,
+    *,
+    calls_before: int,
+    web: Mapping[int, WebGraded] | None = None,
 ) -> tuple[GradedClaim, ...]:
-    """Each claim as the grade stores it, with no web check run: a nominated claim reads ``unverifiable``.
+    """Each claim as the grade stores it, its verdict read from its case citations, its suspicion and, for a
+    nominated claim, what the web check found (:func:`truth_verdict`).
+
+    A restatement takes its original's web outcome, as it takes its citations: it states the same fact, and the web
+    check is made once, for the original. With no web outcome (web off), a nominated claim reads ``unverifiable``.
 
     :param claims: The cell's claims, as listed.
     :param verification: What :meth:`ClaimVerifier.verify` found for them.
     :param calls_before: How many of the grade's calls precede the verify step's (the extraction's), so each
         ``decided_by`` is a place in the grade's calls.
+    :param web: What the web check left, by the position of each nominated claim that restates nothing; None or
+        empty when the criterion checks nothing on the web.
     :return: One graded claim per claim, in order.
-    :raises ValueError: The verification holds a finding for another number of claims.
+    :raises ValueError: The verification holds a finding for another number of claims; or a web outcome is given for
+        a session claim, a restatement, or a claim nobody nominated.
     """
     if len(verification.findings) != len(claims):
         raise ValueError(
             f"a verification holds {len(verification.findings)} findings, and there are {len(claims)} claims"
         )
+    outcomes = dict(web or {})
+    if stray := sorted(
+        position
+        for position in outcomes
+        if position >= len(claims) or claims[position].restates is not None or verification.findings[position] is None
+    ):
+        raise ValueError(
+            f"web outcomes are given for claims {stray}, which are no world claims that restate nothing: a "
+            "restatement takes its original's"
+        )
     graded: list[GradedClaim] = []
-    for claim, finding in zip(claims, verification.findings, strict=True):
+    for position, (claim, finding) in enumerate(zip(claims, verification.findings, strict=True)):
         # The extractor's fields are the stored claim's own: where it stands, the proposition and its tags.
         base: dict[str, Any] = claim.model_dump()
         if finding is None:
             graded.append(GradedClaim.model_validate(base))
             continue
-        verdict = truth_verdict(finding.truth_citations, suspect=finding.suspect)
+        checked = outcomes.get(position if claim.restates is None else claim.restates)
+        verdict = truth_verdict(
+            finding.truth_citations, suspect=finding.suspect, web=None if checked is None else checked.outcome
+        )
+        decided = calls_before + finding.truth_call if checked is None or checked.call is None else checked.call
         graded.append(
             GradedClaim.model_validate(
                 {
@@ -465,7 +504,12 @@ def graded_claims(
                     "graded_against": verdict.graded_against,
                     "grounded": finding.grounded,
                     "evidence_conflict": verdict.evidence_conflict,
-                    "decided_by": calls_before + finding.truth_call,
+                    "web": "none"
+                    if checked is None
+                    else "skipped_cap"
+                    if checked.outcome == "skipped_cap"
+                    else "checked",
+                    "decided_by": decided,
                 }
             )
         )
@@ -511,7 +555,7 @@ class _Shown:
         return "\n\n".join(lines) or _NO_EVIDENCE
 
 
-def _anchors(texts: Iterable[str]) -> frozenset[str]:
+def anchors_of(texts: Iterable[str]) -> frozenset[str]:
     """The folded words of ``texts`` that anchor a passage: at least :data:`_ANCHOR_MIN_CHARS` long, or holding a
     digit. A retrieval key, never a check of what any text says."""
     words: set[str] = set()
@@ -534,18 +578,38 @@ def select_passages(
     :param budget: The criterion's page budget.
     :return: The passages in document order and, within one, by offset; and the ids of the documents truncated.
     """
+    spans = select_spans([document.text for document in documents], anchors, budget)
+    passages: list[_Passage] = []
+    truncated: list[str] = []
+    for document, joined in zip(documents, spans, strict=True):
+        passages.extend(_Passage(document, start, end) for start, end in joined)
+        if sum(end - start for start, end in joined) < len(document.text):
+            truncated.append(document.id)
+    return tuple(passages), tuple(truncated)
+
+
+def select_spans(
+    texts: Sequence[str], anchors: frozenset[str], budget: PageBudget
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """The stretches of each of ``texts`` one step reads under ``budget``, by the selection rule
+    (:data:`_SELECTION_RULE`): what :func:`select_passages` cuts its passages from, and the web check its windows.
+
+    :param texts: The texts, in order.
+    :param anchors: The folded words a tile is ranked by.
+    :param budget: How much is read: of one text, of all of them, and in tiles of what length.
+    :return: For each text, its stretches as ``(start, end)`` offsets, adjacent tiles joined, in offset order.
+    """
     width = budget.window_chars
     ranked: list[list[tuple[int, int]]] = []
-    for document in documents:
-        text = document.text
+    for text in texts:
         tiles = [(start, min(start + width, len(text))) for start in range(0, len(text), width)]
-        held = [_anchors([text[start:end]]) & anchors for start, end in tiles]
+        held = [anchors_of([text[start:end]]) & anchors for start, end in tiles]
         spread = Counter(word for words in held for word in words)
         weight = [sum((Fraction(1, spread[word]) for word in words), Fraction(0)) for words in held]
         order = sorted(range(len(tiles)), key=lambda at: (-weight[at], at))
         ranked.append([tiles[at] for at in order])
-    taken: list[list[tuple[int, int]]] = [[] for _ in documents]
-    document_left = [budget.per_document_chars] * len(documents)
+    taken: list[list[tuple[int, int]]] = [[] for _ in texts]
+    document_left = [budget.per_document_chars] * len(texts)
     total_left = budget.total_chars
     for rank in range(max((len(tiles) for tiles in ranked), default=0)):
         for place, tiles in enumerate(ranked):
@@ -556,19 +620,16 @@ def select_passages(
                 taken[place].append((start, end))
                 document_left[place] -= end - start
                 total_left -= end - start
-    passages: list[_Passage] = []
-    truncated: list[str] = []
-    for document, spans in zip(documents, taken, strict=True):
+    selected: list[tuple[tuple[int, int], ...]] = []
+    for spans in taken:
         joined: list[list[int]] = []
         for start, end in sorted(spans):
             if joined and joined[-1][1] == start:
                 joined[-1][1] = end
             else:
                 joined.append([start, end])
-        passages.extend(_Passage(document, start, end) for start, end in joined)
-        if sum(end - start for start, end in joined) < len(document.text):
-            truncated.append(document.id)
-    return tuple(passages), tuple(truncated)
+        selected.append(tuple((start, end) for start, end in joined))
+    return tuple(selected)
 
 
 def _batches(claims: Sequence[ExtractedClaim]) -> list[tuple[int, ...]]:
@@ -901,7 +962,7 @@ class ClaimVerifier:
         world = [claim for claim in cell if claim.scope == "world"]
         facts = [] if key is None else [(entity.name, fact) for entity in key.fact_entities for fact in entity.facts]
         names = [] if key is None else [name for entity in key.fact_entities for name in (entity.name, *entity.aliases)]
-        anchors = _anchors([*names, *(claim.claim for claim in world), *(claim.excerpt for claim in world)])
+        anchors = anchors_of([*names, *(claim.claim for claim in world), *(claim.excerpt for claim in world)])
         given = tuple(documents or ())
         truth_passages, truth_cut = select_passages(
             [document for document in given if document.provenance == "case"], anchors, self.pages
@@ -1218,33 +1279,84 @@ def _passage_citation(ref: str, cited: _Cited, passage: _Passage) -> tuple[Claim
 
     :return: The stored citation, or the failure named.
     """
-    if cited.quote is None or not cited.quote.strip():
+    checked, fault = check_quote(
+        ref,
+        quote=cited.quote,
+        subject=cited.subject,
+        value=cited.value,
+        shown=passage.document.text[passage.start : passage.end],
+    )
+    if checked is None:
+        return None, fault
+    return (
+        ClaimCitation(
+            ref=ref, stance=cited.stance, quote=checked.quote, subject_span=checked.subject, value_span=checked.value
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class CheckedQuote:
+    """A quote that passed its checks: the shown text's own slice, and where its subject and value stand in it.
+
+    :ivar quote: The slice of the shown text the quote matched, never the model's string.
+    :ivar subject: Where the quote names the claim's subject.
+    :ivar value: Where it states the value at issue.
+    """
+
+    quote: str
+    subject: TextSpan
+    value: TextSpan
+
+
+def check_quote(
+    ref: str, *, quote: str | None, subject: str | None, value: str | None, shown: str
+) -> tuple[CheckedQuote | None, str | None]:
+    """Check one quote of a text a call was shown: one unbroken stretch of it, at most
+    :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, with its subject and value inside it and no
+    sentence or row break between them. The rule every quote a claim is decided by follows, a passage's or a web
+    window's.
+
+    :param ref: How the call cited the text (``S1``, ``W2``), for the failure named.
+    :param quote: The quote, as the model wrote it.
+    :param subject: The words of it the model says name the claim's subject.
+    :param value: The words of it the model says state the value.
+    :param shown: The text the call was shown under ``ref``, and nothing more of its document.
+    :return: The checked quote, or the failure named, as a repair tells it.
+    """
+    if quote is None or not quote.strip():
         return None, _FAULTS["no_quote"].format(ref=ref)
-    shown = passage.document.text[passage.start : passage.end]
-    span = verbatim_span(cited.quote, shown)
+    span = verbatim_span(quote, shown)
     if span is None:
         return None, _FAULTS["not_shown"].format(ref=ref)
-    quote = shown[span[0] : span[1]]
-    if len(quote) > CLAIM_QUOTE_CHARS:
-        return None, _FAULTS["too_long"].format(ref=ref, length=len(quote), cap=CLAIM_QUOTE_CHARS)
+    held = shown[span[0] : span[1]]
+    if len(held) > CLAIM_QUOTE_CHARS:
+        return None, _FAULTS["too_long"].format(ref=ref, length=len(held), cap=CLAIM_QUOTE_CHARS)
     spans: dict[str, TextSpan] = {}
-    for what, words in (("subject", cited.subject), ("value", cited.value)):
+    for what, words in (("subject", subject), ("value", value)):
         if words is None or not words.strip():
             return None, _FAULTS["no_span"].format(ref=ref, what=what)
-        found = verbatim_span(words, quote)
+        found = verbatim_span(words, held)
         if found is None:
             return None, _FAULTS["span_outside"].format(ref=ref, what=what)
         spans[what] = TextSpan(start=found[0], end=found[1])
     first, second = sorted((spans["subject"], spans["value"]), key=lambda found: found.start)
-    # The quote is the passage's own text, not a model's: where its sentences break is structure, read by position.
-    if second.start > first.end and _SENTENCE_BREAK.search(quote[first.end : second.start]):
+    # The quote is the shown text's own, not a model's: where its sentences break is structure, read by position.
+    if second.start > first.end and _SENTENCE_BREAK.search(held[first.end : second.start]):
         return None, _FAULTS["apart"].format(ref=ref)
-    return (
-        ClaimCitation(
-            ref=ref, stance=cited.stance, quote=quote, subject_span=spans["subject"], value_span=spans["value"]
-        ),
-        None,
-    )
+    return CheckedQuote(quote=held, subject=spans["subject"], value=spans["value"]), None
+
+
+def quote_check_definition() -> dict[str, Any]:
+    """Everything :func:`check_quote` holds a quote to, for an identity that reads it: the failures it names, the
+    sentence-break rule, the quote cap and the verbatim fold's identity."""
+    return {
+        "faults": dict(_FAULTS),
+        "sentence_break": _SENTENCE_BREAK.pattern,
+        "quote_chars": CLAIM_QUOTE_CHARS,
+        "fold": VERBATIM_FOLD.identity,
+    }
 
 
 def _index(shown: Mapping[_Step, _Shown]) -> tuple[EvidenceRef, ...]:

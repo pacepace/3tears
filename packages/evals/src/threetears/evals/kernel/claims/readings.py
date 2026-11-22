@@ -206,13 +206,14 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             evidence="world claims of every tag the judge doubted, no case evidence covered, and the web budget reached",
         ),
         "web_skipped": _Reading(
-            "Claims past the web budget",
+            "Claims the web did not check",
             None,
             share=False,
-            formula="world claims nominated for the web check past the cell's budget",
+            formula="world claims nominated for the web check and not checked: past the cell's budget, refused by the "
+            "cost cap, or cut by the cell's deadline",
             population=_TALLIED,
-            evidence="world claims of every tag the judge doubted, no case evidence covered, and the cell's web budget "
-            "did not reach; each reads unverifiable",
+            evidence="world claims of every tag the judge doubted and no case evidence covered, that the web did not "
+            "check; each reads unverifiable, never false",
         ),
         "session_claims": _Reading(
             "Claims about the session itself",

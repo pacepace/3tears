@@ -302,6 +302,7 @@ from threetears.evals.schema.values import (
     OrdinalScale,
     Scale,
 )
+from threetears.evals.schema.web_search import WebPage, WebSearch
 from threetears.evals.schema.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
@@ -533,6 +534,8 @@ __all__ = [
     "TextSpan",
     "WebBudget",
     "WebCheckRecord",
+    "WebPage",
+    "WebSearch",
     "WebWindow",
     "JudgeRepeat",
     "JudgeRescore",

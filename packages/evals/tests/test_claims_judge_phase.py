@@ -394,7 +394,7 @@ async def test_no_input_a_rubric_call_binds_reaches_a_claims_call() -> None:
     assert {inputs for name, inputs in judge.bound if name.startswith("claim_")} == {None}
 
 
-async def test_a_template_with_claim_criteria_needs_a_judge_and_states_no_web_check_this_build_lacks() -> None:
+async def test_a_template_with_claim_criteria_needs_a_judge_and_a_web_budget_needs_a_web_search() -> None:
     template = _template()
     run = make_eval_run(scope_id="u", template_id=template.id, candidate_kind=_KIND, test_case_ids=["tc-1"])
     kind = _FakeClaimsKind(_output())
@@ -415,7 +415,7 @@ async def test_a_template_with_claim_criteria_needs_a_judge_and_states_no_web_ch
             )
         )
     )
-    with pytest.raises(ValueError, match="this build has no web check"):
+    with pytest.raises(ValueError, match="this run has no web search"):
         await _cell(_FakeClaimsJudge(), webbed, kind)
 
 

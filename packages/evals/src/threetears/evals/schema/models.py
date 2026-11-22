@@ -6355,7 +6355,9 @@ class GradedClaim(CoreShapeModel):
     )
     evidence_conflict: bool = Field(default=False, description="Case evidence both supports and contradicts it.")
     web: Literal["checked", "skipped_cap", "none"] = Field(
-        default="none", description="`checked` on the web, `skipped_cap` past the cell's budget, or `none`."
+        default="none",
+        description="`checked` on the web; `skipped_cap`, nominated and not checked (past the cell's web budget, "
+        "refused by the cost cap, or cut by the cell's deadline); or `none`. A restatement reads its original's.",
     )
     decided_by: int | None = Field(
         default=None, ge=0, description="The call whose answer fixed the verdict, by its place in the grade's calls."
@@ -6485,15 +6487,29 @@ class ClaimGrade(CoreShapeModel):
         default=(), description="The documents its page budget did not read whole, by id."
     )
     claims: tuple[GradedClaim, ...] = Field(default=(), description="Every claim it listed, in the order said.")
-    web: tuple[WebCheckRecord, ...] = Field(default=(), description="Every web check, in claim order.")
+    web: tuple[WebCheckRecord, ...] = Field(
+        default=(),
+        description="Every web check, in claim order: one per claim checked that restates nothing, which every "
+        "restatement of it shares.",
+    )
+    web_replayed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its web checks read results a recording served, never a live search: a check that needs a live "
+        "search over this grade is not available (replayed). Left out while False.",
+    )
 
     @model_validator(mode="after")
     def _references_resolve(self) -> Self:
         """Refuse a grade whose claims, citations and checks point at what it does not hold, or disagree with it.
 
+        A restatement takes its original's web check: it reads the web state its original reads, and a checked one
+        shares its original's record, so the grade holds one record per check made.
+
         :raises ValueError: Two refs alike; a citation of no ref; a deciding call it did not make; a restatement of no
-            earlier claim of its scope; a web check of no claim, of one twice, or for a claim not checked; or a claim's
-            verdict that is not the one its web check gives.
+            earlier claim of its scope, or one whose web state is not its original's; a web check of no claim, of one
+            twice, of a restatement, or for a claim not checked; or a claim's verdict that is not the one its web
+            check gives.
         """
         refs = [entry.ref for entry in self.evidence]
         if twice := sorted({ref for ref in refs if refs.count(ref) > 1}):
@@ -6515,21 +6531,32 @@ class ClaimGrade(CoreShapeModel):
                 raise ValueError(
                     f"claim {place} restates claim {claim.restates}, which is no earlier claim of its scope"
                 )
+        for place, claim in enumerate(self.claims):
+            if claim.restates is not None and claim.web != self.claims[claim.restates].web:
+                raise ValueError(
+                    f"claim {place} restates claim {claim.restates}, and reads web {claim.web!r} where its original "
+                    f"reads {self.claims[claim.restates].web!r}: a restatement takes its original's web check"
+                )
         checked = [record.claim for record in self.web]
         if misplaced := sorted({place for place in checked if place >= len(self.claims) or checked.count(place) > 1}):
             raise ValueError(f"the grade's web checks name claims {misplaced} more than once, or that it does not hold")
-        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked"}
+        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked" and claim.restates is None}
         if set(checked) != wanted:
             raise ValueError(
-                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}"
+                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}, "
+                "each restatement sharing its original's check"
             )
         for record in self.web:
-            claim = self.claims[record.claim]
-            if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
-                raise ValueError(
-                    f"claim {record.claim}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
-                    f"against {claim.graded_against!r}"
-                )
+            sharing = [record.claim] + [
+                place for place, claim in enumerate(self.claims) if claim.restates == record.claim
+            ]
+            for place in sharing:
+                claim = self.claims[place]
+                if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
+                    raise ValueError(
+                        f"claim {place}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
+                        f"against {claim.graded_against!r}"
+                    )
         return self
 
 
@@ -6556,7 +6583,11 @@ class ClaimJudgeCounts(CoreShapeModel):
     web_decided: int = Field(ge=0, description="Asserted claims whose verdict the web decided.")
     evidence_conflicts: int = Field(ge=0)
     web_checked: int = Field(ge=0)
-    web_skipped: int = Field(ge=0, description="Claims nominated past the cell's web budget.")
+    web_skipped: int = Field(
+        ge=0,
+        description="Claims nominated and not checked on the web: past the cell's budget, refused by the cost cap, or "
+        "cut by the cell's deadline.",
+    )
 
     @model_validator(mode="after")
     def _counts_nest(self) -> Self:

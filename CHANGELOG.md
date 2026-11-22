@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: claim criteria check the claims their judge doubts on a host's web search
+
+**Added (#1287):** a claim criterion with a `web` budget checks, on a host's web search, the claims its judge nominated
+by its own suspicion: claims no case evidence bears on that the judge doubts. The new port
+`threetears.evals.schema.WebSearch` (`identity`, `async search(query) -> tuple[WebPage, ...]`, and `price_ceiling()`,
+the most one query costs) goes on `RunnerOptions.web_search`, or `KindWiring.web_search` at launch. For each
+nominated claim, in claim order and up to `max_checked_per_cell`, the judge writes at most `max_queries_per_claim`
+searches from the claim alone; code cuts windows from the first `results_per_query` results of each, at most
+`page_chars` of a page; and the judge answers true, false or inconclusive. A true or false answer quotes one sentence
+or row of a window it was shown, verbatim, with the claim's subject and value inside it, under the rule a case
+citation follows, or it is asked again within the web step's own repair budget. Case evidence always decides first:
+a claim case evidence supports or contradicts is never searched, and the candidate's own documents are never shown to
+the web step. The windows read are stored on the grade (`WebCheckRecord`), so a stored grade is never searched again.
+`threetears.evals.testing.RecordedWebSearch` records a port once and replays it by identity and query; a query it does
+not hold is refused as a replay miss, which fails the run.
+
+**Changed:** a claim the web did not check (past the cell's budget, refused by the cost cap, or cut by the cell's
+deadline) reads `skipped_cap` and `unverifiable`, never false, and the criterion keeps every other claim. A port that
+fails a search loses the criterion for that cell (`port_error`), and the engine never retries it. A restatement takes
+its original's web check and shares its one record. Searches are billed to the cell's `judge` role, in rows of their
+own: `provider` the port's identity, `provider_unit` `query`, one unit and one call per search sent, and no tokens.
+Each is priced at the rate the run declares for `(identity, "query")`, else at the port's own ceiling (price source
+`<identity>:price_ceiling`), else left unpriced. `ClaimGrade.web_replayed` (new, optional, left out while False)
+marks a grade whose web checks a recording served, so a check that needs a live search can say it is not available.
+
+**For hosts:** a template whose criterion declares a `web` budget needs a web search on the run, or the run is refused
+at launch. Under an enforcing cost cap the search must be priced, by its `price_ceiling` or a declared rate, or the run
+is refused. A port that wants retries makes them inside its own `search`. A witnessed cell is graded with no web
+search, so a criterion with a web budget is refused there. `ClaimGrade.web_replayed`, and a checked restatement that
+shares its original's record, join core minor 15.24, which has not shipped: a 15.23 build keeps them under its
+newer-minor tolerance. A build of this unreleased line from before the web check refuses a grade carrying either, so
+upgrade every reader of the line before running a criterion with a web budget.
+
 ### evals: claim criteria graded in the judge phase
 
 **Added (#1287):** the judge phase grades every claim criterion a template declares, after the rubric dimensions and on
@@ -32,8 +65,7 @@ the writes) reads no claim reading and no loss; its grade is on the trace, so re
 The extraction's repairs count against the criterion's `RepairBudget.max_items_per_cell`, held per step.
 `RepairBudget` and `PageBudget` now say their budgets are per step and separate.
 
-**Not yet:** a criterion declaring a `web` budget is refused at the run, since the web check is not built. Re-judging a
-cell's claims from stored evidence is not built either, and nor is the quick path's door.
+**Not yet:** re-judging a cell's claims from stored evidence is not built, and nor is the quick path's door.
 
 **For hosts:** a template with claim criteria needs a judge at launch, whatever its kind declares a judge reads:
 `build_judge_service` now builds one for an unjudged kind whose template declares claim criteria, and a launch whose

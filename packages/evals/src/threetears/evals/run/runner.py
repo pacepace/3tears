@@ -86,8 +86,9 @@ from threetears.evals.kernel.claims.grading import (
     claim_payload_bytes,
     criterion_ceiling,
     grade_criterion,
-    refuse_unbuilt_claim_steps,
 )
+from threetears.evals.kernel.claims.web import QUERY_UNIT, SearchBill
+from threetears.evals.kernel.spend import reported_price_source
 from threetears.evals.kernel.covariates import (
     count_delivered_turns,
     count_dropped_tool_calls,
@@ -103,6 +104,7 @@ from threetears.evals.schema.completion import CompletionProtocolDefect, Complet
 from threetears.evals.run.judge import defect_usage
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.schema.web_search import WebPage, WebSearch
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
@@ -238,6 +240,12 @@ class RunnerOptions:
     # counted and unpriced, which every cost surface discloses; it is never a claim that
     # the calls were free.
     external_rates: ExternalRateTable | None = None
+    # The web search a claim criterion with a web budget checks its nominated claims on (``WebBudget``): a host's port,
+    # or a recording of one (``RecordedWebSearch``). Its queries are billed to each cell's ``judge`` role, as rows of
+    # their own (provider: the port's identity, unit ``query``), at the rate ``external_rates`` declares for
+    # ``(identity, "query")``, else at the port's own ``price_ceiling``. ``None``: no web search, and a template whose
+    # criterion declares a web budget is refused at launch; so is an unpriced port under an enforcing cost cap.
+    web_search: WebSearch | None = None
     # The run's metered-call ledger — the same object a kind's collaborators declare on every
     # subject they build, so what the dispatcher counts and what the runner reports are one
     # tally rather than two that can disagree. It rides here for the reason
@@ -702,6 +710,9 @@ class _ClaimsPhase:
     failures: dict[str, KnownClaimLoss] = field(default_factory=dict)
     grades: dict[str, ClaimGrade] = field(default_factory=dict)
     billed: list[object] = field(default_factory=list)
+    #: Every search a claims grade sent to the run's web port, in order: what the cell's judge rows fold in as rows of
+    #: their own, beside the calls.
+    searched: list[SearchBill] = field(default_factory=list)
     #: Whether the evidence is stored on the trace: False once it alone outgrew the trace's cap.
     stored: bool = True
     #: Whether the phase has begun, after the dims. A cell is due its claims phase before its dims are judged, so a
@@ -1775,7 +1786,13 @@ async def _run_one_result(
             "nothing for a judge to read, and this run wires a judge service; pass no judge service, or wire a kind "
             "that renders what a judge reads"
         )
-    _refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
+    _refuse_claim_criteria_unjudged(
+        template,
+        judged=judge_service is not None,
+        web=options.web_search,
+        rates=options.external_rates,
+        enforced=sink.judging_gate is not None,
+    )
     # The width the run executes at was sized from what the kind's launcher said the kind declares
     # (``KindWiring.max_concurrent_cells``); the kind's own declaration is the authority on whether it is safe
     # there. Refused before ``prepare``, and the RUN rather than the cell, like an unknown kind: every cell would
@@ -2052,8 +2069,10 @@ async def _run_one_result(
             awaiting_room=sink.wait_for_room,
             judge_billed=sink.judge_billed,
             set_aside=judged.set_aside,
+            web=options.web_search,
+            rates=options.external_rates,
         )
-        judged = _with_claims(judged, claiming.record(), outcomes=sink.judged, billed=claiming.billed)
+        judged = _with_claims(judged, claiming, outcomes=sink.judged)
         judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
 
     # Second (and final) conditions sample — see _sample_concurrent_eval_jobs. Taken after
@@ -2259,7 +2278,15 @@ class _ClaimsClient:
     """
 
     def __init__(
-        self, inner: Any, *, phase: _ClaimsPhase, sink: CellSink | None, hold: _JudgeHold | None, criterion: str
+        self,
+        inner: Any,
+        *,
+        phase: _ClaimsPhase,
+        sink: CellSink | None,
+        hold: _JudgeHold | None,
+        criterion: str,
+        web: WebSearch | None = None,
+        query_price: tuple[float | None, str | None] = (None, None),
     ) -> None:
         """Bind the judge's client, the phase that keeps its completions, the cell's sink and the criterion's hold.
 
@@ -2268,12 +2295,16 @@ class _ClaimsClient:
         :param sink: The cell's sink, which counts each completion in its judge spend; ``None`` for a witnessed cell.
         :param hold: The criterion's hold against the run's cost cap; ``None`` when no enforcing cap bounds the cell.
         :param criterion: The criterion's name, for a refusal.
+        :param web: The run's web search, which :meth:`search` sends to; ``None`` when the run has none.
+        :param query_price: What one search is billed, and where that figure comes from (:func:`_query_price`).
         """
         self._inner = inner
         self._phase = phase
         self._sink = sink
         self._hold = hold
         self._criterion = criterion
+        self._web = web
+        self._query_price = query_price
         self._billed: float | None = 0.0
         #: Whether the run's cost cap refused a call (rather than the criterion's own hold), so no later criterion asks.
         self.refused_by_cap = False
@@ -2316,6 +2347,54 @@ class _ClaimsClient:
         if self._sink is not None:
             self._sink.add_spend("judge", usage.cost_usd)
 
+    async def search(self, query: str) -> tuple[WebPage, ...]:
+        """Send one search to the run's web port within the criterion's hold, and bill it.
+
+        A search sent is billed, answered or not: a query is priced per query sent. The port is never asked twice for
+        one search: a port that retries does so inside its own ``search``.
+
+        :param query: The search, as the judge wrote it.
+        :return: Its results, in order.
+        :raises ClaimGradingFailed: The hold has too little left for it (``cost_cap``), or the port failed it or
+            returned something other than pages (``port_error``).
+        :raises ApparatusError: The port could not serve it from its recording (a replay's miss); nothing is billed.
+        """
+        web = self._web
+        if web is None:
+            raise RuntimeError("a claims client was asked to search with no web port bound")
+        if self._hold is not None:
+            self._admit_amount(self._query_price[0], what="its next search")
+        try:
+            pages = await web.search(query)
+        except ApparatusError:
+            raise
+        except (
+            Exception
+        ) as failure:  # prawduct:ok-broad-except — web port boundary; a failed search is this criterion's loss alone
+            self._bill_search()
+            raise ClaimGradingFailed(
+                f"the web port {web.identity!r} failed a search for claim criterion {self._criterion!r}: "
+                f"{type(failure).__name__}: {failure}",
+                loss="port_error",
+            ) from failure
+        self._bill_search()
+        results = tuple(pages) if isinstance(pages, tuple | list) else None
+        if results is None or not all(isinstance(page, WebPage) for page in results):
+            raise ClaimGradingFailed(
+                f"the web port {web.identity!r} answered a search with {type(pages).__name__}, not a tuple of WebPage",
+                loss="port_error",
+            )
+        return results
+
+    def _bill_search(self) -> None:
+        """Count one search's price in the criterion's hold and the cell's, and keep it for the cell's judge rows."""
+        assert self._web is not None
+        usd, source = self._query_price
+        self._phase.searched.append(SearchBill(provider=self._web.identity, cost_usd=usd, price_source=source))
+        self._billed = None if self._billed is None or usd is None else self._billed + usd
+        if self._sink is not None:
+            self._sink.add_spend("judge", usd)
+
     def _admit(self, *, system: str, user: str, response_format: dict[str, Any] | None) -> None:
         """Refuse a call the criterion's hold has no room for.
 
@@ -2323,20 +2402,33 @@ class _ClaimsClient:
         """
         hold = self._hold
         assert hold is not None
+        ceiling = (
+            call_ceiling(self._inner, system=system, user=user, response_format=response_format)
+            if hold.usd is not None and self._billed is not None
+            else None
+        )
+        self._admit_amount(ceiling, what="its next call")
+
+    def _admit_amount(self, ceiling: float | None, *, what: str) -> None:
+        """Refuse a call or search, of at most ``ceiling``, the criterion's hold has no room for.
+
+        :raises ClaimGradingFailed: It has none (``cost_cap``).
+        """
+        hold = self._hold
+        assert hold is not None
         if hold.usd is not None and self._billed is not None:
-            ceiling = call_ceiling(self._inner, system=system, user=user, response_format=response_format)
             if ceiling is not None:
                 if self._billed + ceiling <= hold.usd:
                     return
                 raise ClaimGradingFailed(
                     f"claim criterion {self._criterion!r} has billed {self._billed} of the {hold.usd} its hold set "
-                    f"aside, and its next call can cost {ceiling}: the cap set aside too little for what it said",
+                    f"aside, and {what} can cost {ceiling}: the cap set aside too little for what it said",
                     loss="cost_cap",
                 )
         if not hold.may_send(counts_cell=False):
             self.refused_by_cap = True
             raise ClaimGradingFailed(
-                f"the run's cost cap had too little left for claim criterion {self._criterion!r}'s next call",
+                f"the run's cost cap had too little left for claim criterion {self._criterion!r}'s {what.removeprefix('its ')}",
                 loss="cost_cap",
             )
 
@@ -2353,6 +2445,8 @@ async def _run_claims_phase(
     awaiting_room: Callable[[bool], None] | None = None,
     judge_billed: Callable[[], float] | None = None,
     set_aside: bool = False,
+    web: WebSearch | None = None,
+    rates: ExternalRateTable | None = None,
 ) -> float:
     """Grade a cell under each claim criterion its template declares, in order, each under its own hold.
 
@@ -2362,8 +2456,13 @@ async def _run_claims_phase(
     it (``cost_cap``) with every criterion after it, since spend only grows: the dims' scores stand. Each criterion's
     outcome lands on ``phase`` as it is decided, so a deadline striking inside one keeps the rest.
 
+    A criterion with a web budget checks the claims its judge nominated on ``web``, each search billed to the cell's
+    judge role at :func:`_query_price` and held to the criterion's hold like a call.
+
     **Every way a criterion fails is its own loss, never a judge error**: a step's reply cut short, unreadable or past
-    its repairs, the cap, the provider failing a call (``provider_error``) and a grade over the trace's cap. The cell
+    its repairs, the cap, the provider failing a call (``provider_error``), the web port failing a search
+    (``port_error``, never retried) and a grade over the trace's cap. A cost-cap refusal inside the web step is no
+    loss: the claims it left unchecked read ``skipped_cap``. The cell
     keeps its pass, its rubric scores and every other criterion. A lost ground step costs only groundedness, and rides
     on the tally. Raised instead, as the dims' phase raises them, and failing the run: a completion that breaks the
     protocol in the extraction or a truth call, and a call the rig could not serve (a replay's miss).
@@ -2381,6 +2480,9 @@ async def _run_claims_phase(
     :param judge_billed: What the cell has been billed for judging so far, which each hold counts its calls against.
     :param set_aside: Whether the cap already set the cell's dims aside: then no criterion is asked, and each is lost
         to the cap.
+    :param web: The run's web search; ``None`` when it has none, which launch refuses for a criterion with a web
+        budget.
+    :param rates: The run's rate table, which may price the port's queries.
     :return: The phase's wall clock in milliseconds.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
@@ -2389,6 +2491,9 @@ async def _run_claims_phase(
     try:
         criteria = {criterion.name: criterion for criterion in template.claim_criteria}
         client = judge_service.default_client()
+        query_price = _query_price(web, rates) if web is not None else (None, None)
+        # A port serving recorded results says so; the grades it served say so too.
+        web_replayed = web is not None and getattr(web, "replayed", False) is True
         capped = set_aside
         if (held := claim_payload_bytes(phase.evidence, {})) > CLAIM_TRACE_BYTES:
             # The evidence alone outgrows the trace: no grade could be stored beside it, so none is asked, and the
@@ -2414,7 +2519,9 @@ async def _run_claims_phase(
                 ceiling: float | None
                 try:
                     await refresh_prices(client)
-                    ceiling = criterion_ceiling(criterion, phase.evidence, key=test_case.reference, client=client)
+                    ceiling = criterion_ceiling(
+                        criterion, phase.evidence, key=test_case.reference, client=client, query_usd=query_price[0]
+                    )
                 except (
                     Exception
                 ) as e:  # prawduct:ok-broad-except — judge boundary; an unpriced criterion is admitted alone
@@ -2436,7 +2543,9 @@ async def _run_claims_phase(
                     capped = True
                     phase.failures[name] = "cost_cap"
                     continue
-            claims_client = _ClaimsClient(client, phase=phase, sink=sink, hold=hold, criterion=name)
+            claims_client = _ClaimsClient(
+                client, phase=phase, sink=sink, hold=hold, criterion=name, web=web, query_price=query_price
+            )
             try:
                 graded = await grade_criterion(
                     criterion,
@@ -2445,6 +2554,8 @@ async def _run_claims_phase(
                     client=claims_client,
                     graded=phase.grades,
                     truth_kept=partial(phase.provisional.__setitem__, name),
+                    search=claims_client.search if web is not None and criterion.web is not None else None,
+                    web_replayed=web_replayed,
                 )
             except ClaimGradingFailed as failed:
                 # Recorded, never swallowed: the criterion's loss is on the cell, which keeps every other reading.
@@ -2502,31 +2613,45 @@ async def _run_claims_phase(
 
 
 def _with_claims(
-    judged: _JudgeRecord, claims: _ClaimsRecord, *, outcomes: list[tuple[str, JudgeOutcome]], billed: Sequence[object]
+    judged: _JudgeRecord, phase: _ClaimsPhase, *, outcomes: list[tuple[str, JudgeOutcome]]
 ) -> _JudgeRecord:
-    """A cell's judge record with what its claim criteria left: their tallies and losses, and their calls folded into
-    the judge rows beside the dims'.
+    """A cell's judge record with what its claim criteria left: their tallies and losses, and their calls and searches
+    folded into the judge rows beside the dims'.
 
     :param judged: What the dims' phase left, or the unjudged record.
-    :param claims: What the claims phase left.
+    :param phase: The claims phase, finished: what it left, every completion its calls returned and every search.
     :param outcomes: The dims' calls that returned, whose rows the record's usage is folded from again.
-    :param billed: Every completion the claims calls returned.
     :return: The record.
     """
-    return judged._replace(usage=fold_judge_outcomes(outcomes, also_billed=billed).usage, claims=claims)
+    folded = fold_judge_outcomes(outcomes, also_billed=phase.billed, also_searched=phase.searched)
+    return judged._replace(usage=folded.usage, claims=phase.record())
 
 
-def _refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> None:
+def _refuse_claim_criteria_unjudged(
+    template: EvalTemplate,
+    *,
+    judged: bool,
+    web: WebSearch | None = None,
+    rates: ExternalRateTable | None = None,
+    enforced: bool = False,
+) -> None:
     """Refuse a run whose template's claim criteria nothing would grade, or would grade otherwise than declared.
 
     A claim criterion is graded by the run's judge, so a run of a template declaring one needs a judge, whatever its
-    kind declares a judge reads; without one its criteria would grade nothing and say nothing. A criterion declaring a
-    step this build does not run is refused too (:func:`~threetears.evals.kernel.claims.grading.refuse_unbuilt_claim_steps`).
+    kind declares a judge reads; without one its criteria would grade nothing and say nothing. A criterion with a web
+    budget checks its nominated claims on the run's web search, so it needs one: run without, it would grade every
+    nominated claim ``unverifiable`` under a fingerprint that says the web was asked. Under an enforcing cost cap the
+    search must be priced, by a rate the run declares for ``(identity, "query")`` or by the port's own
+    ``price_ceiling``: an unpriced search could spend past what the cap set aside.
 
     :param template: The run's template.
     :param judged: Whether the run has a judge.
-    :raises ValueError: The template declares claim criteria and the run has no judge, or a criterion declares a step
-        this build does not run.
+    :param web: The run's web search, or ``None``.
+    :param rates: The run's rate table, or ``None``.
+    :param enforced: Whether an enforcing cost cap bounds the run.
+    :raises ValueError: The template declares claim criteria and the run has no judge; a criterion declares a web
+        budget and the run has no web search, or one with no identity; or the search is unpriced under an enforcing
+        cap.
     """
     if not template.claim_criteria:
         return
@@ -2537,7 +2662,55 @@ def _refuse_claim_criteria_unjudged(template: EvalTemplate, *, judged: bool) -> 
             + ", which the run's judge grades, and this run has no judge; build its judge (build_judge_service) for "
             "the kind, whatever it declares a judge reads"
         )
-    refuse_unbuilt_claim_steps(template)
+    webbed = [criterion.name for criterion in template.claim_criteria if criterion.web is not None]
+    if not webbed:
+        return
+    named = ", ".join(map(repr, webbed))
+    if web is None:
+        raise ValueError(
+            f"claim criteria {named} of template {template.name!r} declare a web budget, and this run has no web "
+            "search; hand one in (RunnerOptions.web_search, or KindWiring.web_search at launch), or declare web None "
+            "to grade against the case's evidence alone"
+        )
+    identity = getattr(web, "identity", None)
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError(
+            f"the run's web search ({type(web).__name__}) names no identity, which the run's spend records its "
+            "searches under; give it a non-blank identity"
+        )
+    if enforced and _query_price(web, rates)[0] is None:
+        raise ValueError(
+            f"claim criteria {named} of template {template.name!r} check claims on the web search {identity!r}, "
+            "which states no price_ceiling, and the run declares no rate for it (ExternalRateTable "
+            f"{(identity, QUERY_UNIT)!r}); under an enforcing cost cap every search is priced before it is sent, so "
+            "declare that rate, give the port a price_ceiling, or run without the cap"
+        )
+
+
+def _query_price(web: WebSearch, rates: ExternalRateTable | None) -> tuple[float | None, str | None]:
+    """What one search on ``web`` is billed, and where that figure comes from.
+
+    A rate the run declares for ``(identity, "query")`` wins: it is the operator's, and the spend names it
+    configured. Else the port's own ``price_ceiling``, the most a query can cost, named as the port's ceiling, so a
+    reader can tell a bound from an observation. Else unpriced: counted, its dollars unknown.
+
+    :param web: The run's web search.
+    :param rates: The run's rate table, or ``None``.
+    :return: The dollars, or None; and the price source, or None with it.
+    :raises ValueError: The port's ceiling is negative or not a finite number.
+    """
+    identity = web.identity
+    rate = None if rates is None else rates.rates.get((identity, QUERY_UNIT))
+    if rate is not None:
+        return float(rate), reported_price_source(identity, from_rate_table=True)
+    ceiling = web.price_ceiling()
+    if ceiling is None:
+        return None, None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int | float) or not math.isfinite(ceiling) or ceiling < 0:
+        raise ValueError(
+            f"web search {identity!r} priced a query at {ceiling!r}; a ceiling is a finite amount, 0 or more"
+        )
+    return float(ceiling), f"{identity}:price_ceiling"
 
 
 def _hold_to_claim_criteria(kind_name: str, template: EvalTemplate, output: CandidateOutput) -> None:
@@ -2611,7 +2784,7 @@ async def judge_witnessed_output(
     :raises CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
         judge error on the cell.
     :raises ValueError: The template declares claim criteria the output cannot be graded on
-        (:func:`_hold_to_claim_criteria`), or one declares a step this build does not run.
+        (:func:`_hold_to_claim_criteria`), or one declares a web budget: a witnessed cell is graded with no web search.
     """
     _refuse_claim_criteria_unjudged(template, judged=True)
     _hold_to_claim_criteria(kind_name, template, output)
@@ -2652,7 +2825,7 @@ async def judge_witnessed_output(
             eval_run_id=eval_run_id,
             sink=None,
         )
-        judged = _with_claims(judged, claiming.record(), outcomes=outcomes, billed=claiming.billed)
+        judged = _with_claims(judged, claiming, outcomes=outcomes)
         judge_ms = claims_ms if judge_ms is None else judge_ms + claims_ms
     assert judge_ms is not None
     return judged, judge_ms
@@ -3447,7 +3620,11 @@ def _degraded_capture_fields(
     :return: The keyword arguments every degraded ``EvalResult`` spreads.
     """
     side = sink.side()
-    judged = fold_judge_outcomes(sink.judged, also_billed=sink.claiming.billed if sink.claiming is not None else ())
+    judged = fold_judge_outcomes(
+        sink.judged,
+        also_billed=sink.claiming.billed if sink.claiming is not None else (),
+        also_searched=sink.claiming.searched if sink.claiming is not None else (),
+    )
     if sink.cassettes is not None:
         # The cell ended here, wherever it was — inside ``prepare`` included, which the close after
         # ``invoke`` never reaches. Idempotent, so a cell already closed is unchanged.
@@ -4525,8 +4702,16 @@ async def execute_run(
             "scores with, or pass no judge service."
         )
 
-    # Refused before any cell runs, so nothing has been spent: a template's claim criteria are the judge's to grade.
-    _refuse_claim_criteria_unjudged(template, judged=judge_service is not None)
+    # Refused before any cell runs, so nothing has been spent: a template's claim criteria are the judge's to grade,
+    # and one with a web budget checks claims on the run's web search, priced wherever a cost cap is enforced. A gate
+    # that admits any amount enforces nothing, as the judging gate below reads it.
+    _refuse_claim_criteria_unjudged(
+        template,
+        judged=judge_service is not None,
+        web=options.web_search,
+        rates=options.external_rates,
+        enforced=budget_gate is not None and budget_gate(math.inf) is not None,
+    )
 
     # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
     # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).

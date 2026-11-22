@@ -95,6 +95,7 @@ from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import BoundCompletionClient, FailureOwner, ProviderFailureDescriber
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
+from threetears.evals.kernel.claims.web import QUERY_UNIT, SearchBill
 from threetears.evals.run.judge import (
     CANNOT_TELL,
     JUDGE_CALL_ATTEMPTS,
@@ -227,7 +228,12 @@ class JudgeFold(NamedTuple):
     cut_short: dict[str, JudgeCutShort]
 
 
-def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]], *, also_billed: Sequence[object] = ()) -> JudgeFold:
+def fold_judge_outcomes(
+    outcomes: list[tuple[str, JudgeOutcome]],
+    *,
+    also_billed: Sequence[object] = (),
+    also_searched: Sequence[SearchBill] = (),
+) -> JudgeFold:
     """Fold judge calls' outcomes into their configs, errors and spend.
 
     Shared by the cell's judge phase and a later re-judge, so both read an outcome the same
@@ -242,6 +248,9 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]], *, also_billed
     :param outcomes: ``(dim_id, outcome)`` for every call made, in call order.
     :param also_billed: The completions of the cell's other judge calls, its claim criteria's, folded into the same
         rows after the dims' calls: one judge role, one row per model, whichever of the judge's questions a call asked.
+    :param also_searched: The searches the cell's claim criteria sent to a web port, folded into the judge role as
+        rows of their own, one per port and price source: no model and no tokens, each search a call and one
+        ``query`` unit.
     :return: The fold.
     """
     config_ids: dict[str, str] = {}
@@ -264,6 +273,19 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]], *, also_billed
                 cut_short[dim_id] = outcome.cut_short
     for completion in also_billed:
         ledger.add_llm_result(completion)
+    for search in also_searched:
+        ledger.add(
+            model=None,
+            prompt_tokens=None,
+            completion_tokens=None,
+            reasoning_tokens=None,
+            cost_usd=search.cost_usd,
+            calls=1,
+            provider_units=1,
+            provider=search.provider,
+            provider_unit=QUERY_UNIT,
+            price_source=search.price_source,
+        )
     rows = ledger.rows()
     return JudgeFold(
         config_ids=config_ids,

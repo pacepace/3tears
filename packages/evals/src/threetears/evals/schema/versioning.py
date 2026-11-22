@@ -517,7 +517,8 @@ CORE_SCHEMA_VERSION: int = 15
 #: - **v15.24** — claim grading's stored shapes (#1287): a trace may carry ``EvalTrace.claim_evidence``
 #:   (``ClaimEvidence``: the host's segmentation, its segments with their units, the documents claims are checked
 #:   against and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
-#:   numbered evidence, every ``GradedClaim`` and every ``WebCheckRecord``), beside its judge evidence and never in it,
+#:   numbered evidence, every ``GradedClaim``, every ``WebCheckRecord`` (one per check, which a restatement shares) and
+#:   ``web_replayed``, left out while False), beside its judge evidence and never in it,
 #:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
 #:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``ground_loss`` records a ground step lost
 #:   alone, costing only the groundedness reading) and ``EvalResult.claim_failures`` (criterion -> a
