@@ -486,6 +486,41 @@ class TestCounts:
             assert recorder.plans[0].rows_scanned <= 102, (table, recorder.plans[0])
             assert all(plan.rows_scanned <= 2 for plan in recorder.plans[1:]), (table, recorder.plans[1:])
 
+    async def test_a_paged_count_past_marks_answers_every_group_once_on_the_engine(self, seeded: _Seeded) -> None:
+        """Flips if the keyset pages of a count past marks (``page=``) are not SQL PostgreSQL and YugabyteDB run, or
+        answer a group twice, split or skip one, or a page holds more groups than ``page``: the 401 geographies past
+        the mark (one of S48's, every one of S49's and S50's), 30 rows each, in pages of 150."""
+        # asyncpg binds CAST($n AS TIMESTAMP) a timestamp, not its text (the rail's JSON carries the text)
+        mark = (_START + timedelta(seconds=49 * _GEOS * _IDS)).replace(tzinfo=None)
+        expected = {
+            (row["state"], row["geo"], int(row["n"]))
+            for row in await seeded.conn.fetch(
+                f"SELECT state, geo, count(*) AS n FROM {_TABLE} "
+                "WHERE CAST(stamp AS TIMESTAMP) > CAST($1 AS TIMESTAMP) GROUP BY state, geo",
+                mark,
+            )
+        }
+        assert len(expected) > 300
+        answered: list[int] = []
+
+        class _Counting:
+            async def fetch(self, query: str, *params: Any) -> list[Any]:
+                rows = await seeded.conn.fetch(query, *params)
+                answered.append(len(rows))
+                return list(rows)
+
+        counted = await counts_by_relations(
+            _Counting(),
+            {"a": _TABLE},
+            column="state",
+            since={"a": {"stamp": cast(Any, mark)}},
+            group={"a": "geo"},
+            page=150,
+        )
+        got = [(found.value, found.group, found.rows) for found in counted["a"]]
+        assert len(got) == len(set(got)) and set(got) == expected
+        assert max(answered) <= 150 and len(answered) == len(expected) // 150 + 1
+
 
 class TestMarks:
     @pytest.mark.loop_timing

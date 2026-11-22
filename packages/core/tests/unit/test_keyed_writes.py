@@ -15,7 +15,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.backends.protocol import RowcountUnreadableError
+from threetears.core.backends.protocol import L3AnswerCutError, RowcountUnreadableError
 from threetears.interfaces.keyed.sweeps import update_before_statement
 from threetears.interfaces.keyed.writes import update_keyed_statements
 from threetears.core.keyed import (
@@ -714,6 +714,106 @@ class TestCountsSinceMarks:
             }
             assert got == expected, packed_rows
             assert len(reader.statements) == 1
+
+    async def test_paged_groups_past_marks_come_whole_each_page_under_its_size(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a paged count past marks (``page=``) splits a group across pages (groups hold more rows than a
+        page), skips or repeats one at a page boundary (between relations, inside a value's groups, at a NULL value
+        or group), answers a page of more groups than ``page``, takes more statements than its groups need, or
+        differs from the hand-written change statement. The groups past the marks here outnumber every page but the
+        last two, as a backlog past the hub's row cap does."""
+        _changes(db)
+        # a NULL state too: a key no "> last" of a value reaches unless NULL is ordered as a value
+        db.execute("UPDATE rb SET state = NULL WHERE up LIKE '%:5_:00'")
+        expected = _hand_written(db)
+        assert any(state is None for _, state, *_ in expected) and any(grp is None for _, _, grp, *_ in expected)
+        assert max(rows for _, _, _, rows, _, _ in expected) > 2
+        for page in (1, 2, 5, len(expected) - 1, len(expected), 999):
+            answered: list[int] = []
+
+            class _Counting(_Recording):
+                async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+                    rows = await super().fetch(query, *params)
+                    answered.append(len(rows))
+                    return rows
+
+            answer = await counts_by_relations(
+                _Counting(db),
+                {"ra": "ra", "rb": "rb"},
+                column="state",
+                since=_MARKS,
+                group={"ra": "geo", "rb": "geo"},
+                max_of=["src"],
+                fresh="up",
+                page=page,
+            )
+            got = [
+                (label, found.value, found.group, found.rows, found.newest["src"], found.fresh)
+                for label, groups in answer.items()
+                for found in groups
+            ]
+            assert len(got) == len(set(got)), page
+            assert set(got) == expected, page
+            assert max(answered) <= page, page
+            # every page full but the last
+            assert len(answered) == len(expected) // page + 1, page
+
+    async def test_a_paged_count_past_marks_cut_by_its_transport_reads_the_page_again_in_halves(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a page the transport cuts (the hub's row cap or its reply's bytes, under ``page``) fails the
+        read or is taken as every group, rather than read again in smaller pages; or if a cut page of one group is
+        not raised."""
+        _changes(db)
+        expected = _hand_written(db)
+
+        class _Capped(_Recording):
+            def __init__(self, conn: duckdb.DuckDBPyConnection, cap: int) -> None:
+                super().__init__(conn)
+                self.cap = cap
+
+            async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+                rows = await super().fetch(query, *params)
+                if len(rows) > self.cap:
+                    raise L3AnswerCutError("cut", rows=self.cap)
+                return rows
+
+        answer = await counts_by_relations(
+            _Capped(db, 3),
+            {"ra": "ra", "rb": "rb"},
+            column="state",
+            since=_MARKS,
+            group={"ra": "geo", "rb": "geo"},
+            max_of=["src"],
+            fresh="up",
+            page=50,
+        )
+        got = {
+            (label, found.value, found.group, found.rows, found.newest["src"], found.fresh)
+            for label, groups in answer.items()
+            for found in groups
+        }
+        assert got == expected
+        with pytest.raises(L3AnswerCutError):
+            await counts_by_relations(_Capped(db, 0), {"ra": "ra"}, column="state", since={"ra": _MARKS["ra"]}, page=4)
+
+    async def test_a_paged_count_is_refused_what_it_cannot_answer(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if page= under one, page= beside packed_rows=, or page= with no since= is sent rather than
+        refused."""
+        _changes(db)
+        conn = ThreadedDuckDB(db)
+        with pytest.raises(ValueError, match="at least one group"):
+            await counts_by_relations(conn, {"ra": "ra"}, column="state", since={"ra": {"up": None}}, page=0)
+        with pytest.raises(ValueError, match="packed_rows="):
+            await counts_by_relations(
+                conn, {"ra": "ra"}, column="state", since={"ra": {"up": None}}, page=5, packed_rows=5, groups=5
+            )
+        with pytest.raises(ValueError, match="need since="):
+            # no overload takes page= without since=: the refusal is for an untyped caller
+            await counts_by_relations(  # type: ignore[call-overload]
+                conn, {"ra": "ra"}, column="state", values=AnyOf(["S1"], "text"), page=5
+            )
 
     async def test_a_count_past_marks_is_refused_what_it_cannot_answer(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a relation with no marks, a fresh stamp no relation marks, values= beside since=, or group= with

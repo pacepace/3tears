@@ -43,6 +43,7 @@ from threetears.core.keyed._filters import (
     yugabyte_index_hint,
 )
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.counts import (
     NO_MARK_FLOOR,
@@ -526,6 +527,7 @@ async def counts_by_relations(
     max_of: Sequence[str] = (),
     fresh: str | None = None,
     pins: Mapping[str, Mapping[str, Any]] | None = None,
+    page: None = None,
 ) -> dict[str, dict[Any, int]]: ...
 
 
@@ -547,6 +549,7 @@ async def counts_by_relations(
     max_of: Sequence[str] = (),
     fresh: str | None = None,
     pins: None = None,
+    page: int | None = None,
 ) -> dict[str, list[MarkedCount]]: ...
 
 
@@ -567,6 +570,7 @@ async def counts_by_relations(
     max_of: Sequence[str] = (),
     fresh: str | None = None,
     pins: Mapping[str, Mapping[str, Any]] | None = None,
+    page: int | None = None,
 ) -> dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]:
     """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
     keyed count, so a warehouse answers every relation in the statements one relation took.
@@ -595,6 +599,13 @@ async def counts_by_relations(
     mark yet is past :data:`NO_MARK_FLOOR`, which every stamp is, and a NULL stamp is past nothing. Each relation
     reads only its rows past the marks through its stamp's index: a relation with nothing past them answers none.
     The answer is :class:`MarkedCount` groups, per label.
+
+    With ``page`` beside ``since`` (a transport that cuts an answer at a row cap, and a backlog whose groups outnumber
+    it: the datasource rail's 1,000, a cold load's minutes of uploads past the marks), the groups come in keyset pages
+    of at most ``page`` groups, every page read: ordered by the relation's place, the value's text and the group's text
+    (a NULL as the empty text, before every value), each page the groups past the last one answered. The page's
+    boundary is a group's key, so a group is counted whole in one page or not at all: none split, none skipped, none
+    twice. A page the transport cuts anyway (a reply's bytes) is read again in halves, a cut page of one group raised.
 
     :param conn: anything with an asyncpg-shaped ``fetch``
     :ptype conn: Any
@@ -634,12 +645,17 @@ async def counts_by_relations(
         lack (one sorted by ``data_time`` among ones sorted by ``run_id``) is read by its own key in the same one
         statement; packed too. Not with ``since``
     :ptype pins: Mapping[str, Mapping[str, Any]] | None
+    :param page: with ``since``, the most groups a statement answers, every page read (unpaged, one statement, when
+        None); not with ``packed_rows``
+    :ptype page: int | None
     :return: label -> value -> its rows; every label present. With ``since``: label -> its groups past the marks
     :rtype: dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]
     :raises ValueError: as :func:`counts_by`, when no relation is named, or packed with neither ``values`` nor
         ``groups``, or ``packed_rows`` under one; with ``since``, when a label has no marks, ``values`` is given, or
         ``fresh`` is not a stamp of every relation's marks; ``group``, ``max_of`` or ``fresh`` without ``since``;
-        ``pins`` naming a label ``tables`` does not, pinning ``column`` or a column ``by`` pins, or given with ``since``
+        ``pins`` naming a label ``tables`` does not, pinning ``column`` or a column ``by`` pins, or given with ``since``;
+        ``page`` under one, beside ``packed_rows``, or without ``since``
+    :raises L3AnswerCutError: paged, when the transport cuts a page of one group
     """
     quote_identifier(packed_as)
     if since is None:
@@ -662,9 +678,10 @@ async def counts_by_relations(
             packed_rows,
             groups,
             packed_as,
+            page,
         )
-    if group or max_of or fresh is not None:
-        raise ValueError("group=, max_of= and fresh= group the rows past a relation's marks: they need since=")
+    if group or max_of or fresh is not None or page is not None:
+        raise ValueError("group=, max_of=, fresh= and page= group the rows past a relation's marks: they need since=")
     if batch < 1:
         raise ValueError(f"a keyed count answers at least one group a statement, got {batch}")
     if not tables:
@@ -985,11 +1002,17 @@ async def _counts_since(
     packed_rows: int | None,
     groups: int | None,
     packed_as: str,
+    page: int | None = None,
 ) -> dict[str, list[MarkedCount]]:
-    """every relation's groups past its marks, one statement (:func:`counts_by_relations` with ``since``).
+    """every relation's groups past its marks, one statement, or keyset pages of ``page`` groups
+    (:func:`counts_by_relations` with ``since``).
 
     :raises ValueError: as :func:`counts_by_relations` says for ``since``
     """
+    if page is not None and page < 1:
+        raise ValueError(f"a paged count answers at least one group a page, got {page}")
+    if page is not None and packed_rows is not None:
+        raise ValueError("a paged count reads every page under the cap: it is not packed (packed_rows=) too")
     if not tables:
         raise ValueError("a keyed count names at least one relation")
     if values is not None:
@@ -1013,6 +1036,8 @@ async def _counts_since(
     quoted = quote_identifier(column)
     newest = [f"CAST(max({quote_identifier(name)}) AS VARCHAR)" for name in max_of]
     parts: list[tuple[int, str, str, str, str]] = []
+    # paged: each relation's FROM, WHERE and its group's key text, for the page's statement
+    paged: list[tuple[int, str, str, str, str, str, str]] = []
     for index, label in enumerate(labels):
         past, marks, compared = _past_marks(since[label], len(params) + 1)
         params += marks
@@ -1020,8 +1045,50 @@ async def _counts_since(
         group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
         flag = "0" if fresh is None else f"max(CASE WHEN {compared[fresh]} THEN 1 ELSE 0 END)"
         clause = " AND ".join([*conditions, past])
-        tail = f"FROM {relation(tables[label], 'r', params)} WHERE {clause} GROUP BY {quoted}"
-        parts.append((index, group_text, flag, tail, "" if grouped is None else f", {quote_identifier(grouped)}"))
+        source = relation(tables[label], "r", params)
+        tail = f"FROM {source} WHERE {clause} GROUP BY {quoted}"
+        extra = "" if grouped is None else f", {quote_identifier(grouped)}"
+        parts.append((index, group_text, flag, tail, extra))
+        group_key = "''" if grouped is None else _nullable_text(quote_identifier(grouped))
+        paged.append((index, group_text, flag, source, clause, extra, group_key))
+    newest_columns = "".join(f", {stamp} AS m{at}" for at, stamp in enumerate(newest))
+    if page is not None:
+        # keyset pages on (the relation's place, the value's text, the group's text): each text 'v' and the value's,
+        # or empty for NULL (_nullable_text), so a NULL is ordered as a value and no comparison is NULL. The
+        # boundary is three parameters after the marks' (the first page's is before every key: -1, '', ''), a
+        # condition on the grouped columns alone in each relation's WHERE, so a group's rows are all in a page or
+        # none: never split. A relation before the boundary's reads nothing: its place against the parameter alone,
+        # a filter PostgreSQL decides once, before its rows are read
+        value_key = _nullable_text(quoted)
+        at, value_at, group_at = len(params) + 1, len(params) + 2, len(params) + 3
+        sql = " UNION ALL ".join(
+            f"SELECT {index} AS relation, {quoted} AS counted, {group_text} AS grp, count(*) AS held{newest_columns}, "
+            f"{flag} AS fresh, {value_key} AS value_key, {group_key} AS group_key FROM {source} WHERE {clause} "
+            f"AND {index} >= ${at} AND ({index} > ${at} OR {value_key} > ${value_at} OR ({value_key} = ${value_at} "
+            f"AND {group_key} > ${group_at})) GROUP BY {quoted}{extra}"
+            for index, group_text, flag, source, clause, extra, group_key in paged
+        )
+        boundary: tuple[int, str, str] = (-1, "", "")
+        size = page
+        while True:
+            try:
+                rows = await sent_by(conn).fetch(
+                    f"SELECT * FROM ({sql}) AS paged ORDER BY relation, value_key, group_key LIMIT {size}",
+                    *params,
+                    *boundary,
+                )
+            except L3AnswerCutError:
+                # the transport cut the page under its row cap (the hub's reply bytes): the page read again at half
+                # its size, and the rest of the read keeps the smaller page; a page of one group cut is raised
+                if size == 1:
+                    raise
+                size //= 2
+                continue
+            for row in rows:
+                answer[labels[int(row["relation"])]].append(_marked(row, max_of))
+            if len(rows) < size:
+                return answer
+            boundary = (int(rows[-1]["relation"]), str(rows[-1]["value_key"]), str(rows[-1]["group_key"]))
     if packed_rows is not None:
         if packed_rows < 1:
             raise ValueError(f"a packed count answers at least one row, got {packed_rows}")
@@ -1049,20 +1116,22 @@ async def _counts_since(
                 )
             )
         return answer
-    newest_columns = "".join(f", {stamp} AS m{at}" for at, stamp in enumerate(newest))
     sql = " UNION ALL ".join(
         f"SELECT {index} AS relation, {quoted} AS counted, {group_text} AS grp, count(*) AS held{newest_columns}, "
         f"{flag} AS fresh {tail}{extra}"
         for index, group_text, flag, tail, extra in parts
     )
     for row in await sent_by(conn).fetch(sql, *params):
-        answer[labels[int(row["relation"])]].append(
-            MarkedCount(
-                value=row["counted"],
-                group=None if row["grp"] is None else str(row["grp"]),
-                rows=int(row["held"]),
-                newest={name: None if row[f"m{at}"] is None else str(row[f"m{at}"]) for at, name in enumerate(max_of)},
-                fresh=bool(int(row["fresh"])),
-            )
-        )
+        answer[labels[int(row["relation"])]].append(_marked(row, max_of))
     return answer
+
+
+def _marked(row: Mapping[str, Any], max_of: Sequence[str]) -> MarkedCount:
+    """one answered group past the marks, unpacked."""
+    return MarkedCount(
+        value=row["counted"],
+        group=None if row["grp"] is None else str(row["grp"]),
+        rows=int(row["held"]),
+        newest={name: None if row[f"m{at}"] is None else str(row[f"m{at}"]) for at, name in enumerate(max_of)},
+        fresh=bool(int(row["fresh"])),
+    )
