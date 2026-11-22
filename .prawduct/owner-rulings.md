@@ -5,6 +5,20 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-22.** "yes push, but we cannot merge PR's." Sessions push work branches and
+never merge a PR; the maintainer merges. Landed in `project-preferences.md` § Workflow (PR merge).
+
+**2026-11-22.** "For test execution, everything that can run on testament should run on testament."
+Landed in `project-preferences.md` § Workflow (Inner-loop verification, Delegate verification).
+
+**2026-11-22.** "For delegation, yes light testing for delegates, and if several delegates are
+running a dedicated integrator subagent should be used to maintain and merge into an integration
+branch. Main model can use judgment for when that becomes more efficient than doing integration
+itself." Landed in `project-preferences.md` § Workflow (Delegation, Delegate verification).
+
+**2026-11-22.** Write the seven missing strategy-class artifacts properly (not stubs), with
+subagents "when efficient and when sequencing makes sense", then push.
+
 **2026-11-22.** On the prawduct health check's repair plan: "yes approved on all." That covered
 narrowing `.gitignore` so prawduct's governance state is tracked, scaffolding the core state
 (`init-product`), moving the governance anchor into `AGENTS.md`, adding the unloaded-plugin
