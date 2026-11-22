@@ -8,6 +8,7 @@ The populations the bars, comparisons and decision surface share — results the
 from __future__ import annotations
 
 import math
+import random
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
@@ -325,15 +326,28 @@ def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bo
     Each cell the reading could have been read on (read, or lost; a pending or harness-faulted cell is in neither) is
     one trial of a case: lost or kept. The test is the Cochran-Mantel-Haenszel test of general association between arm
     and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
-    is withheld for chance loss about as often as its level allows at two arms or at four, and a case one arm ran more
-    of moves nothing on its own. The rates ``tests/test_claim_ranking.py`` simulates, at twelve cases of two repeats:
-    equal 10% losses withhold at two, three and four arms near the level, and a 0% against 30% loss is caught.
+    is withheld for chance loss at most as often as its level allows at two arms or at four, and a case one arm ran more
+    of moves nothing on its own; with few losses its p is the conditional permutation p
+    (:data:`_CLAIM_LOSS_EXACT_AT_MOST`). The rates ``tests/test_claim_ranking.py`` simulates over twelve cases, at two,
+    three and four arms: equal losses of 10% and of 3%, at one repeat a case, and a loss a few cases carry, each withhold
+    under the level, and a 0% against 30% loss is caught four times in five.
 
     :param by_cell: Each arm's rows of the reading, by cell.
     :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.
     """
     p = _claim_loss_homogeneity_p(by_cell)
     return p is not None and p < _CLAIM_LOSS_LEVEL
+
+
+#: At most this many lost cells in the cases that tell arms apart, the test's p is its conditional permutation p
+#: (:func:`_claim_loss_homogeneity_p`), never the chi-square law's: with few losses the law misstates the chance (four
+#: losses in four cases, all on one arm, read p 0.046 by the law, 1/8 by the draw), and a case where a few cases carry
+#: most of the loss read 5.4% false withholds by the law at two arms.
+_CLAIM_LOSS_EXACT_AT_MOST = 40
+
+#: The draws a permutation p is read over, and the fixed seed they are drawn from, so one bundle reads one p.
+_CLAIM_LOSS_DRAWS = 999
+_CLAIM_LOSS_SEED = 1287
 
 
 def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> float | None:
@@ -343,42 +357,60 @@ def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> f
 
     Per case, a table of each arm's cells and losses; under no difference between arms, each case's losses fall among
     its cells as a draw without replacement (hypergeometric), and the deviations of every arm but one, summed over
-    cases, are tested against their summed covariance.
+    cases, are tested against their summed covariance. Where the cases that tell arms apart hold at most
+    :data:`_CLAIM_LOSS_EXACT_AT_MOST` losses, the p is the statistic's own conditional law instead: each case's losses
+    drawn again among its cells :data:`_CLAIM_LOSS_DRAWS` times from :data:`_CLAIM_LOSS_SEED`, ``p = (1 + draws at
+    least as extreme) / (1 + draws)``, which errs at most its level at any count.
     """
-    tables: dict[str, list[list[int]]] = defaultdict(lambda: [[0, 0] for _ in by_cell])
+    tables: dict[str, list[tuple[int, bool]]] = defaultdict(list)
     for arm, rows in enumerate(by_cell.values()):
         for row in rows:
             if row.outcome == CLAIM_LOST_OUTCOME or (
                 row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES and row.value is not None
             ):
-                held = tables[row.test_case_id][arm]
-                held[0] += 1
-                held[1] += row.outcome == CLAIM_LOST_OUTCOME
+                tables[row.test_case_id].append((arm, row.outcome == CLAIM_LOST_OUTCOME))
     informative = [
         cells
-        for cells in tables.values()
-        if (total := sum(n for n, _ in cells)) >= 2 and 0 < sum(x for _, x in cells) < total
+        for _, cells in sorted(tables.items())
+        if len(cells) >= 2 and 0 < sum(lost for _, lost in cells) < len(cells)
     ]
-    arms = [arm for arm in range(len(by_cell)) if any(cells[arm][0] for cells in informative)]
+    arms = sorted({arm for cells in informative for arm, _ in cells})
     if len(arms) < 2:
         return None
     free = arms[:-1]
-    deviation = [0.0] * len(free)
     covariance = [[0.0] * len(free) for _ in free]
+    expected = [0.0] * len(free)
     for cells in informative:
-        total = sum(n for n, _ in cells)
-        lost = sum(x for _, x in cells)
+        total, lost = len(cells), sum(held for _, held in cells)
+        sizes = Counter(arm for arm, _ in cells)
         scale = lost * (total - lost) / (total * total * (total - 1))
         for i, a in enumerate(free):
-            n_a, x_a = cells[a]
-            deviation[i] += x_a - n_a * lost / total
+            expected[i] += sizes[a] * lost / total
             for j, b in enumerate(free):
-                covariance[i][j] += scale * ((total * n_a if a == b else 0) - n_a * cells[b][0])
-    solved = _solve(covariance, deviation)
-    if solved is None:
+                covariance[i][j] += scale * ((total * sizes[a] if a == b else 0) - sizes[a] * sizes[b])
+    inverse = [
+        _solve(covariance, [1.0 if row == column else 0.0 for row in range(len(free))]) for column in range(len(free))
+    ]
+    if any(column is None for column in inverse):
         return None
-    statistic = sum(d * y for d, y in zip(deviation, solved, strict=True))
-    return _chi_square_tail(statistic, len(free))
+    columns = [column for column in inverse if column is not None]
+
+    def statistic(lost_by_arm: Counter[int]) -> float:
+        deviation = [lost_by_arm[a] - expected[i] for i, a in enumerate(free)]
+        return sum(deviation[i] * columns[j][i] * deviation[j] for i in range(len(free)) for j in range(len(free)))
+
+    observed = statistic(Counter(arm for cells in informative for arm, held in cells if held))
+    if sum(held for cells in informative for _, held in cells) > _CLAIM_LOSS_EXACT_AT_MOST:
+        return _chi_square_tail(observed, len(free))
+    draw = random.Random(_CLAIM_LOSS_SEED)
+    at_least = 0
+    for _ in range(_CLAIM_LOSS_DRAWS):
+        drawn: Counter[int] = Counter()
+        for cells in informative:
+            for place in draw.sample(range(len(cells)), sum(held for _, held in cells)):
+                drawn[cells[place][0]] += 1
+        at_least += statistic(drawn) >= observed - 1e-9
+    return (1 + at_least) / (1 + _CLAIM_LOSS_DRAWS)
 
 
 def _solve(matrix: list[list[float]], vector: list[float]) -> list[float] | None:

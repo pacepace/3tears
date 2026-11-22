@@ -26,8 +26,11 @@ only the grounded share, and a tally still waiting on its stored grade (`trace_p
 loss. Each arm counts them (`JudgedArm.n_claim_lost`, `n_claim_pending`), and an arm that lost every cell counts them
 on the grounded share too. A reading is withheld (`trials_lost`) and tested in no family when one test across every arm
 says its arms lost cells at shares that differ beyond chance: the Cochran-Mantel-Haenszel test of arm against loss,
-stratified by case, at 5%. In seeded simulation over twelve cases of two repeats, equal 10% losses withhold it in 24, 16
-and 11 of 500 draws at two, three and four arms, and a loss of 0% against 30% in 195 of 200. Any loss,
+stratified by case, at 5%, whose p is its conditional permutation p (999 draws from a fixed seed) wherever the cases
+that tell arms apart hold at most 40 lost cells. In seeded simulation over twelve cases, 500 draws a row, at two, three
+and four arms with equal loss, it withholds at most 2.4% of the time: at 10% loss over two repeats (0.6%, 2.2%, 2.0%),
+at 3% loss (0%, 0.6%, 1.4%), at one repeat a case (0%, 0.8%, 1.4%), and where three cases carry most of the loss
+(0.2%, 1.8%, 2.4%). A loss of 0% against 30% is caught in 161 of 200 draws. Any loss,
 pending cell, claim skipped past the web budget, or failed web step raises a class-B caveat
 (`claims_lost:<criterion>`, `claims_pending:`, `claims_web_skipped:`, `claims_web_lost:`) naming the arms it touches.
 A skipped or unchecked claim reads unverifiable, never false.
