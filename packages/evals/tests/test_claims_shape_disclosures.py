@@ -31,6 +31,7 @@ from packages.evals.tests.factories import (
     make_template,
     minimal_aspect_design,
 )
+from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, shape_of
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
@@ -211,6 +212,26 @@ async def test_an_answer_carrying_only_documents_reports_no_model_call() -> None
     assert [[row.role for row in cell.usage] for cell in stored] == [["judge"]] * 3, "no candidate row"
     first = off_loop(get_result_trace, result.host.storage, stored[0]).claim_evidence
     assert first is not None and [document.title for document in first.documents or ()] == ["archive"]
+
+
+@pytest.mark.parametrize(
+    "carried",
+    [
+        pytest.param({"session": {"ordered": ["tea"]}}, id="session"),
+        pytest.param({"session": {"ordered": ["tea"]}, "documents": ["The archive."]}, id="session-and-documents"),
+    ],
+)
+async def test_an_answer_carrying_only_its_session_or_documents_reports_no_model_call(carried: dict[str, Any]) -> None:
+    """The run's own record beside the answer is no model call either: no candidate usage row, no unpriced call."""
+
+    async def kept(case: dict[str, Any]) -> Answer:
+        return Answer(await recalls(case), **carried)
+
+    result = await Eval(CASES[:3], kept, [_claims()], k=1).run(store=MEMORY)
+
+    stored = off_loop(list_results, result.host.storage, result.summary.run_id, result.scope_id)
+    assert [[row.role for row in cell.usage] for cell in stored] == [["judge"]] * 3, "no candidate row"
+    assert "unpriced" not in result.render() and "Model identity unconfirmed" not in result.render()
 
 
 async def test_an_answer_naming_its_model_still_reports_its_call() -> None:
@@ -585,3 +606,47 @@ async def test_a_runner_raising_what_a_client_raises_is_still_read_as_its_model_
     stored = off_loop(list_results, result.host.storage, result.arms["refused"].run_id, result.scope_id)
     assert all(cell.candidate_code_raised is None for cell in stored)
     assert len(_lines(report_markdown(result.report), r"\| refused \| failed \| model failed \|")) == 3
+
+
+# =============================================================================
+# Across aspects: the aggregate and the sizing table name the rate as each aspect reads it
+# =============================================================================
+
+
+def _across(*, facts_checked: bool) -> str:
+    """A change on two aspects, its candidate failing to answer some cases on each: nothing graded can fail a trial on
+    ``tone``, and on ``facts`` only where ``facts_checked``. The campaign's page, as Markdown."""
+    facts = (
+        [ArmTrials(label="v1", passing=20), ArmTrials(label="v2", passing=18, unanswered=2)]
+        if facts_checked
+        else [ArmTrials(label="v1"), ArmTrials(label="v2", unanswered=2)]
+    )
+    aspects = [
+        AspectTrials(label="tone", arms=[ArmTrials(label="v1"), ArmTrials(label="v2", unanswered=3)], checks=False),
+        AspectTrials(label="facts", arms=facts, checks=facts_checked),
+    ]
+    return campaign_report_markdown(shape_of("answering", aspects, control=True).page())
+
+
+def test_across_aspects_nothing_can_fail_the_aggregate_and_the_sizing_table_read_answered() -> None:
+    page = _across(facts_checked=False)
+
+    assert "pass rate" not in page.replace("has no pass rate", "").lower().replace("never on a pass rate", "")
+    assert _lines(page, r"^\| Aspect \| Cases \| ▸ v1 · answered \| v2 · answered vs v1 \|$")
+    assert "**Answered and cost per 1,000 replies, each arm, 95% intervals, all aspects (equal weight)**" in page
+    assert _lines(page, r"^\| Arm \| Cost per 1,000 replies \| Interval \| Answered \(%\) \| Interval \(%\) \|$")
+    sized = _lines(page, r"^\| v2 \| .* \| (tone|facts) \| no worse than the 10-point margin \|")
+    assert len(sized) == 2 and all("| Answered |" in row for row in sized), sized
+
+
+def test_across_aspects_one_with_a_check_the_rate_is_named_as_both_and_each_row_as_its_own() -> None:
+    page = _across(facts_checked=True)
+
+    assert _lines(page, r"^\| Aspect \| Cases \| ▸ v1 · pass or answered rate \| v2 · pass or answered rate vs v1 \|$")
+    assert (
+        "**Pass or answered rate and cost per 1,000 replies, each arm, 95% intervals, all aspects (equal weight)**"
+        in page
+    )
+    (tone,) = _lines(page, r"^\| v2 \| .* \| tone \| no worse than the 10-point margin \|")
+    (facts,) = _lines(page, r"^\| v2 \| .* \| facts \| no worse than the 10-point margin \|")
+    assert "| Answered |" in tone and "| Pass rate |" in facts

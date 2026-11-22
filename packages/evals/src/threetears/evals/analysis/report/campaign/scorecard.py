@@ -36,9 +36,8 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Final
 from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
@@ -69,7 +68,13 @@ from threetears.evals.analysis.report.figures import MeasureRuler, Rulers, repor
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.number_forms.printed import Printed
 from threetears.evals.kernel.surface import DecisionSurface
-from threetears.evals.analysis.report.campaign.common import floor_of
+from threetears.evals.analysis.report.campaign.common import (
+    ANSWERED_WORDS,
+    PASS_WORDS,
+    RateWords,
+    floor_of,
+    rate_words,
+)
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.floors import (
     CasesNeeded,
@@ -157,41 +162,6 @@ _CONTRAST_WORDS: dict[str, str] = {
 
 #: The contrast verdict that says what a row's reading says, for the two readings a contrast can also reach.
 _CONTRAST_OF: dict[str, str] = {"better": "improved", "worse": "regressed"}
-
-
-@dataclass(frozen=True)
-class RateWords:
-    """How a page words an aspect's rate of trials: a pass rate, or where nothing graded can fail a trial and an arm
-    failed to answer some, the share answered (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`).
-
-    :ivar heading: The reading's name, as a lead or a row heads it (``Pass rate``, ``Answered``).
-    :ivar measure: As a column head names it after an arm (``pass rate``, ``answered``).
-    :ivar verb: What an arm did with a trial it counts (``passed``, ``answered``).
-    :ivar term: The glossary term a column of the counts carries.
-    """
-
-    heading: str
-    measure: str
-    verb: str
-    term: str
-
-
-#: A pass rate's words.
-PASS_WORDS: Final = RateWords(heading=PASS_RATE, measure=PASS_RATE.lower(), verb="passed", term="passed")
-
-#: The share answered's words, where nothing graded can fail a trial.
-ANSWERED_WORDS: Final = RateWords(heading="Answered", measure="answered", verb="answered", term="answered")
-
-
-def rate_words(bundles: Iterable[AnalysisContextBundle]) -> RateWords:
-    """The words for the rate of the aspects ``bundles`` hold: the share answered where every one reads it
-    (:func:`~threetears.evals.analysis.bundle.trials.reads_answered`), else a pass rate.
-
-    :param bundles: The aspects' evidence.
-    :return: The words.
-    """
-    held = list(bundles)
-    return ANSWERED_WORDS if held and all(reads_answered(bundle) for bundle in held) else PASS_WORDS
 
 
 def _rate_level(forms: PageForms, level: float) -> Printed:
@@ -585,7 +555,11 @@ def table_blocks(
     # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse. It is
     # a method, so it is the page's methods, not its scorecard.
     read = [
-        *(_level_lines(levels, readings, forms, _unkept(readings, reports), names) if readings.readings else []),
+        *(
+            _level_lines(levels, readings, forms, _unkept(readings, reports), names, reports)
+            if readings.readings
+            else []
+        ),
         *_within_lines(readings, names, forms),
     ]
     if read:
@@ -982,6 +956,7 @@ def _level_lines(
     forms: PageForms,
     unkept: Sequence[tuple[str, UnkeptPlan]],
     names: AspectNames,
+    reports: Mapping[str, Report],
 ) -> list[str]:
     """The level the corrected intervals were read at (``levels``: every reading's but one no worse than the margin,
     whose sentence is :func:`_within_lines`; none where every reading is) and why it is wider than a plain interval,
@@ -1030,7 +1005,7 @@ def _level_lines(
             if guarantee is None
             else FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
         )
-        lines += _plan_lines(level, unkept, names, len(families) > 1)
+        lines += _plan_lines(level, unkept, names, len(families) > 1, reports)
     else:
         half = _level_text(forms, readings.alpha / 2)
         lines.append(
@@ -1066,11 +1041,19 @@ def _unkept(readings: CampaignReadings, reports: Mapping[str, Report]) -> list[t
     return found
 
 
-def _plan_lines(level: str, unkept: Sequence[tuple[str, UnkeptPlan]], names: AspectNames, per_arm: bool) -> list[str]:
-    """The plan's ``level`` with its condition (``plan_condition``), one per reason and count, naming its pass rates."""
+def _plan_lines(
+    level: str,
+    unkept: Sequence[tuple[str, UnkeptPlan]],
+    names: AspectNames,
+    per_arm: bool,
+    reports: Mapping[str, Report],
+) -> list[str]:
+    """The plan's ``level`` with its condition (``plan_condition``), one per reason and count, naming each aspect's
+    rate as its page names it (:func:`rate_words`)."""
     grouped: dict[tuple[str, int | None], tuple[UnkeptPlan, list[str]]] = {}
     for aspect, plan in unkept:
-        grouped.setdefault((plan.why, plan.taken), (plan, []))[1].append(f"the pass rate on {names(aspect)}")
+        noun = rate_words([reports[aspect].bundle]).noun if aspect in reports else PASS_WORDS.noun
+        grouped.setdefault((plan.why, plan.taken), (plan, []))[1].append(f"{noun} on {names(aspect)}")
     return [plan_condition(level, plan, named, per_arm=per_arm) for plan, named in grouped.values()]
 
 
@@ -1169,7 +1152,7 @@ def _reconciled(
 ) -> str:
     """One row and the contrast reading its values to another verdict: both verdicts, then how each was read."""
     if comparison.reading == "trial":
-        reading = "the pass rate"
+        reading = rate_words([bundle]).noun
     elif comparison.reading == "judged":
         reading = judged_name(comparison.name)
     else:
@@ -1305,6 +1288,7 @@ def settle_blocks(
     sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports, forms)]
     if not sizings:
         return []
+    words = rate_words(reports[sizing.aspect].bundle for sizing in sizings if sizing.aspect in reports)
     # The arm and both counts lead, so a frame as narrow as a host's (688 px) shows them without scrolling; the
     # aspect, what settling shows and why it is unclear follow, the last in words that wrap.
     columns = [
@@ -1341,10 +1325,10 @@ def settle_blocks(
             title="To settle",
             columns=columns,
             rows=rows,
-            order="as the matrix, each arm's reading on the pass rate before its floors",
+            order=f"as the matrix, each arm's reading on {words.noun} before its floors",
             total_rows=len(rows),
         ),
-        DisclosureBlock(section="scorecard", source="comparisons", text=_settle_note(sizings, forms)),
+        DisclosureBlock(section="scorecard", source="comparisons", text=_settle_note(sizings, forms, words)),
     ]
 
 
@@ -1368,7 +1352,7 @@ def _sizings(
             aspect=row.aspect,
             arm=row.arm_label,
             shows=f"no worse than the {forms.declared(row.margin).text}-point margin",
-            decided_by=PASS_RATE,
+            decided_by=rate_words([bundle]).heading,
             why=reason_words(why) or "",
             projection=row.projection,
         )
@@ -1413,7 +1397,7 @@ def _sizings(
                 aspect=row.aspect,
                 arm=row.arm_label,
                 shows=f"the {forms.declared(clause.max_points).text}-point floor holds",
-                decided_by=None if deciding is None else _rate_words(deciding),
+                decided_by=None if deciding is None else _rate_words(deciding, rate_words([bundle])),
                 why=reason_words(forms.said(verdict.reason if deciding is None else deciding.reason)) or "",
                 projection=projection,
                 floor=True,
@@ -1441,12 +1425,13 @@ def _more(need: CasesNeeded, than: CasesNeeded) -> bool:
     return need != than and than.most(need) == need
 
 
-def _rate_words(rate: RateVerdict) -> str:
-    """A rate a floor reads, as the sizing table names it: ``Pass rate``, or the check's or dimension's own name."""
-    return PASS_RATE if rate.rate.measure is None else rate.rate.name
+def _rate_words(rate: RateVerdict, words: RateWords = PASS_WORDS) -> str:
+    """A rate a floor reads, as the sizing table names it: the aspect's rate of trials by ``words`` (``Pass rate``, or
+    ``Answered`` where nothing graded can fail a trial), or the check's or dimension's own name."""
+    return words.heading if rate.rate.measure is None else rate.rate.name
 
 
-def _settle_note(sizings: Sequence[_Sizing], forms: PageForms) -> str:
+def _settle_note(sizings: Sequence[_Sizing], forms: PageForms, words: RateWords = PASS_WORDS) -> str:
     """The sentences under the sizing table, each said only where a row needs it: how a count is read, what each side
     assumes, why a floor's count can exceed the pass rate's, what ``none would`` and ``re-run the lost trials`` mean,
     and how rough a count is."""
@@ -1464,7 +1449,7 @@ def _settle_note(sizings: Sequence[_Sizing], forms: PageForms) -> str:
         "this run saw.",
     ]
     if floors:
-        said.append("A floor reads every rate its clause names, so its count can need more than the pass rate's.")
+        said.append(f"A floor reads every rate its clause names, so its count can need more than {words.noun}'s.")
     if any(need.kind == "never" for need in needs):
         said.append(
             'A "none would" means the observed drop is already past it, so only a change to the arm could show it '
@@ -1719,7 +1704,11 @@ def pair_blocks(
         # are read under is not shown to hold it, the level is stated with its condition.
         joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
         unkept = _unkept(readings, reports)
-        notes += _plan_lines(joint, unkept, names, False) if unkept else [f"The intervals hold together at {joint}."]
+        notes += (
+            _plan_lines(joint, unkept, names, False, reports)
+            if unkept
+            else [f"The intervals hold together at {joint}."]
+        )
     elif levels:
         notes.append(f"Each interval is read at {_level_text(forms, levels[0])}.")
     notes += [

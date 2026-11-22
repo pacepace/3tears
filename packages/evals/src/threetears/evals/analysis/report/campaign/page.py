@@ -41,6 +41,7 @@ from threetears.evals.analysis.report.campaign.answer_blocks import (
     call_blocks,
     unread_analysis_blocks,
 )
+from threetears.evals.analysis.report.campaign.common import ANSWERED_WORDS, rate_words
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.provenance import (
     caveat_blocks,
@@ -55,9 +56,7 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     measure_blocks,
     measured_figure,
     pair_blocks,
-    ANSWERED_WORDS,
     pairs_words,
-    rate_words,
     reads_undecided,
     row_figures,
     row_sentence,

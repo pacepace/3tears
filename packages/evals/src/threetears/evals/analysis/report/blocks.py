@@ -994,6 +994,15 @@ class ChartBlock(_Block):
             "nothing, or the head marking a level other than the page's main one; None for the level's own head."
         ),
     )
+    rate_heading: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What a cost/quality chart names its rate axis and column: `Answered` where nothing graded can fail a "
+            "trial on its aspects, so no axis calls a share answered a pass rate; None for `Pass rate`."
+        ),
+    )
     data: KitChart | None = Field(
         default=None,
         description=(
@@ -1198,7 +1207,7 @@ class ChartBlock(_Block):
             x_fmt=f"usd:{decimals}" if decimals is not None else cost_axis_format(x_domain[1], money=False),
             y_fmt="pct",
             x_title=f"Cost {per}{unit}",
-            y_title="Pass rate",
+            y_title=self.rate_heading or "Pass rate",
             level=self.level,
             level_head=self.level_head,
             legend=legend,
@@ -1238,7 +1247,13 @@ class ChartBlock(_Block):
             def said(amount: float) -> str:
                 return spelled(amount) if money else number_in(amount * scale, self.unit)
 
-            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
+            headers = [
+                "Arm",
+                f"Cost {per}{cost}",
+                f"Interval{cost}",
+                f"{self.rate_heading or 'Pass rate'} (%)",
+                "Interval (%)",
+            ]
             # The pass rate is one measure, so its column reads at one precision: its narrowest interval's.
             rates = policy_interval_set(
                 [(point.pass_rate, point.pass_rate_low, point.pass_rate_high) for point in self.points], rate=True
