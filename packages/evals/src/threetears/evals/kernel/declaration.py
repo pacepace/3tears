@@ -1376,8 +1376,9 @@ BarNameKind = Literal["measure", "judged", "goal_state"]
 #: Why a bar name has no verdict to give. ``not_numeric`` — it names a categorical measure, which a
 #: threshold has nothing to compare against. ``no_better_end`` — it names a numeric measure that
 #: declares no direction (a raw count, or a diagnostic), so clearing it would mean nothing.
-#: ``not_carried`` — no result can carry a value under it as any of the three kinds.
-BarNameRefusal = Literal["not_numeric", "no_better_end", "not_carried"]
+#: ``not_carried`` — no result can carry a value under it as any of the three kinds. ``ranks_only`` — it names a
+#: claim criterion's reading, a rate or a share of a cell's claims that ranks arms and decides no pass, floor or bar.
+BarNameRefusal = Literal["not_numeric", "no_better_end", "not_carried", "ranks_only"]
 
 
 @dataclass(frozen=True)
@@ -1406,7 +1407,7 @@ class UnreadableBarName:
     """A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 
     :ivar name: The name, exactly as the bar spells it.
-    :ivar refusal: Which of the three reasons applies; see :data:`BarNameRefusal`.
+    :ivar refusal: Which of the reasons applies; see :data:`BarNameRefusal`.
     :ivar reason: One sentence saying why, naming what the name is where anything describes it.
     """
 
@@ -1437,10 +1438,10 @@ def resolve_bar_name(
        is code-graded (:func:`~threetears.evals.kernel.metrics.is_code_graded`), numeric and declares
        a better end. A non-numeric one (categorical, boolean) is refused as ``not_numeric`` and a
        directionless one as ``no_better_end``.
-    2. A judged reading — one of ``rubric_dimensions``, a reserved dual-score axis, which every
-       run scores whatever its template says, or one of ``claim_readings``, described as its claim criterion's
-       reading (a rate or a share, never a level on a rubric scale). A claim reading that is a diagnostic is
-       refused as ``no_better_end``.
+    2. A judged reading — one of ``rubric_dimensions``, or a reserved dual-score axis, which every
+       run scores whatever its template says. One of ``claim_readings`` is resolved as its claim criterion's
+       reading, never keyed to a rubric scale, and refused as ``ranks_only``: a claim reading ranks arms on its
+       own and never decides a trial, a floor or a bar, so no bar is cleared on one (nor on one the engine withheld).
     3. One of ``goal_state_checks``, by its verbatim text or by the measure name the bundle publishes
        for it (:func:`~threetears.evals.kernel.metrics.goal_check_measure`), which reads as the check.
 
@@ -1480,13 +1481,12 @@ def resolve_bar_name(
             )
         return BarName(name, "measure", descriptor)
     if (claimed := (claim_readings or {}).get(name)) is not None:
-        if (what := no_better_end(claimed)) is not None:
-            return UnreadableBarName(
-                name,
-                "no_better_end",
-                f"{name} declares no better end — {what} — so clearing a threshold on it means nothing",
-            )
-        return BarName(name, "judged", claimed)
+        return UnreadableBarName(
+            name,
+            "ranks_only",
+            f"{name} is a claim reading ({claimed.reader_name}): it ranks arms on its own, and no pass, floor or bar "
+            "is decided on it",
+        )
     if name in RESERVED_DIM_IDS or name in rubric_dimensions:
         return BarName(
             name,
@@ -1908,8 +1908,8 @@ def refuse_an_undeclarable_design(
             dims = ", ".join(sorted(rubric)) or "none — the campaign's template declares no rubric"
             goals = "; ".join(repr(check) for check in sorted(checks)) or "none — the campaign's template declares none"
             minted = f"Rubric dimensions of the template: {dims}. Goal-state checks of the template: {goals}"
-            if ranked := sorted(name for name, descriptor in claimed.items() if not descriptor.diagnostic):
-                minted += f". Ranked claim readings of the template: {', '.join(ranked)}"
+            if claimed:
+                minted += ". The template's claim readings rank arms and are read by no bar"
         readable = sorted(
             descriptor.name
             for descriptor in list_metrics(profile.measures)

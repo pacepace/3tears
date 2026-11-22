@@ -1086,7 +1086,7 @@ class JudgedMeasure(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description=(
             "Why the reading ranks nothing, where it does not: `withheld`, `trials_lost` when its arms lost cells to "
-            "the claim criterion at shares that differ beyond the interval on their difference, so what is left is not read as each "
+            "the claim criterion at shares that differ beyond chance (one test across every arm, stratified by case), so what is left is not read as each "
             "arm's. None reads counted."
         ),
     )
@@ -4208,6 +4208,34 @@ class AnalysisContextBundle(EvalDocumentModel):
                     if value.content_hash == content_hash:
                         return value.display
         return content_hash[:12]
+
+    def judged_label(self, name: str) -> str | None:
+        """What a page calls a judged reading where the bundle names it: a claim reading's reader name, in its
+        criterion's unit (``False claims per answer (rules.claims)``); None for a rubric dimension or a dual axis, which
+        a page names by its key.
+
+        :param name: The judged reading's name.
+        :return: The name; None where none is declared.
+        """
+        return next((measure.reader_name for measure in self.judged_measures if measure.name == name), None)
+
+    def judged_withheld(self, name: str) -> bool:
+        """Whether a judged reading is withheld: a claim reading whose arms lost cells unevenly ranks nothing.
+
+        :param name: The judged reading's name.
+        :return: Whether it is withheld.
+        """
+        return any(measure.name == name and measure.withheld is not None for measure in self.judged_measures)
+
+    def reading_label(self, name: str, reading: str) -> str | None:
+        """What a page calls a reading where its name is declared: a judged reading's (:meth:`judged_label`), a goal
+        check's (:meth:`check_name`); None for any other.
+
+        :param name: The reading's key.
+        :param reading: ``judged`` for a judged reading; anything else reads a measure.
+        :return: The declared name, or None.
+        """
+        return self.judged_label(name) if reading == "judged" else self.check_name(name)
 
     def check_name(self, measure: str) -> str | None:
         """What a page calls the goal check ``measure`` reads (:meth:`named_checks`), for

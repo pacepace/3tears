@@ -10,7 +10,7 @@ grounded in nothing, the web off).
 
 Losses are per criterion and per reading: a lost criterion leaves every reading of the cell, a lost ground step only
 the grounded share, and a tally still waiting on its stored grade is counted apart and never as a loss. A reading
-whose arms lost cells at shares that differ beyond their interval is withheld (``trials_lost``) and tested in no family;
+whose arms lost cells at shares that differ beyond chance, by one test across every arm, is withheld (``trials_lost``) and tested in no family;
 any loss, pending cell or web check skipped past its budget raises a class-B caveat naming the arms.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
@@ -18,8 +18,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``projected_claim_readings``: dropping the null rows of a lost criterion, so no arm counts a loss and nothing is
   withheld.
 - ``judged_measures``: describing a claim reading by ``describe_rubric_dim``, which refuses it (no scale recorded).
-- ``_differential_claim_loss``: reading any loss as differential, so the equal-loss simulation withholds far more
-  often than it pins; or reading two arms' own intervals for overlap, so the lopsided loss is caught 4 times in 200.
+- ``_differential_claim_loss``: reading any loss as differential, so the equal-loss simulations withhold far more
+  often than they pin; or testing each pair at the nominal level, so three and four arms withhold more often.
 - ``_family_readings``: dropping the ``withheld`` filter, so a withheld reading is tested in the family.
 - ``figure_unit``: reading a claim reading as a 1-5 score.
 """
@@ -27,6 +27,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from functools import cache
 
 import pytest
@@ -37,7 +38,11 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.analysis.agreement import claim_judge_keys
 from threetears.evals.analysis.bundle.cell_reads import judged_measures, judged_values
 from threetears.evals.analysis.bundle.trials import read_trial
+from threetears.evals.analysis.bundle.bars import bar_adjudications
 from threetears.evals.analysis.first_screen import RANKS
+from threetears.evals.analysis.floors import floor_readings
+from threetears.evals.analysis.report.build import build_code_only_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report_input_build import report_input
@@ -48,11 +53,11 @@ from threetears.evals.kernel.claims.readings import (
     CLAIM_PENDING_OUTCOME,
     template_claim_readings,
 )
-from threetears.evals.kernel.declaration import BarName, UnreadableBarName, resolve_bar_name
+from threetears.evals.kernel.declaration import BarOverride, UnreadableBarName, resolve_bar_name
 from threetears.evals.kernel.result_condition import resolve_result_condition
 from threetears.evals.kernel.scoring import result_composite
 from threetears.evals.schema import ClaimCriterion, EvalResult, EvalRun, EvalTemplate, PageBudget, RepairBudget
-from threetears.evals.schema.models import ClaimJudgeCounts, ClaimTally
+from threetears.evals.schema.models import ClaimJudgeCounts, ClaimTally, EvalCaseStratum
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import (
     fixture_variant_key,
@@ -197,7 +202,14 @@ def _campaign(
     return runs, results
 
 
-def _bundle(memory: Any = _memory_cell, lookup: Any = _lookup_cell) -> AnalysisContextBundle:
+class _StratifiedStorage(ToyhostStorage):
+    """The toy store, its cases sorted into two strata (``early``, ``late``), so a page lays out its strata table."""
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:
+        return [EvalCaseStratum(id=case, stratum="early" if case < "tc-06" else "late") for case in test_case_ids]
+
+
+def _bundle(memory: Any = _memory_cell, lookup: Any = _lookup_cell, *, strata: bool = False) -> AnalysisContextBundle:
     runs, results = _campaign(memory, lookup)
     asked = min(run.created_at for run in runs)
     campaign = make_aspect_campaign(
@@ -213,7 +225,7 @@ def _bundle(memory: Any = _memory_cell, lookup: Any = _lookup_cell) -> AnalysisC
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="s",
     )
-    storage = ToyhostStorage(runs, results, templates=[_template()])
+    storage = (_StratifiedStorage if strata else ToyhostStorage)(runs, results, templates=[_template()])
     return assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
 
@@ -427,42 +439,54 @@ def test_a_pending_tally_is_counted_apart_and_never_as_a_loss() -> None:
     assert measure.withheld is None, "a population not yet known is no loss, so nothing is withheld for it"
 
 
-def _withheld_in(seeds: int, memory_loss: float, lookup_loss: float) -> int:
-    """Of ``seeds`` seeded draws, how many withhold the false claims per unit, each arm losing each of its cells to its
-    criterion at its own share, independently, over twelve cases at two repeats."""
-    runs, _ = _campaign()
-    shares = {MEMORY: memory_loss, LOOKUP: lookup_loss}
+def _withheld_in(seeds: int, *losses: float) -> int:
+    """Of ``seeds`` seeded draws, how many withhold the false claims per unit, over one arm per entry of ``losses``,
+    each losing each of its cells to its criterion at its own share, independently, over twelve cases at two repeats.
+    """
+    runs = [
+        make_eval_run(status="completed", candidate_model=f"arm-{index}", template_id="tpl-rules")
+        for index in range(len(losses))
+    ]
     withheld = 0
     for seed in range(seeds):
         draw = random.Random(seed)
         results: list[EvalResult] = []
-        for run, model, cell in ((runs[0], MEMORY, _memory_cell), (runs[1], LOOKUP, _lookup_cell)):
+        for index, (run, loss) in enumerate(zip(runs, losses, strict=True)):
             for case in range(CASES):
                 for k in range(1, K + 1):
-                    if draw.random() < shares[model]:
+                    if draw.random() < loss:
                         fields: dict[str, Any] = {"claim_tallies": {}, "claim_failures": {RULES: "cut_short"}}
                     else:
-                        fields = {"claim_tallies": {RULES: cell(case, k)["claim_tallies"][RULES]}}
-                    results.append(_result(run, model, case, k, **fields))
+                        fields = {"claim_tallies": {RULES: _lookup_cell(case, k)["claim_tallies"][RULES]}}
+                    results.append(_result(run, f"arm-{index}", case, k, **fields))
         records = project_score_records(runs, results, archived_run_ids=None, profile=toyhost_profile()).records
         by_cell = {
-            (fixture_variant_key(model), "rig"): [result for result in results if result.model == model]
-            for model in (MEMORY, LOOKUP)
+            (f"arm-{index}", "rig"): [result for result in results if result.model == f"arm-{index}"]
+            for index in range(len(losses))
         }
         measured = judged_measures(records, by_cell, None, tiers=[])
         withheld += next(m for m in measured if m.name == f"{RULES}_false_per_unit").withheld is not None
     return withheld
 
 
-def test_equal_shares_of_loss_withhold_a_reading_about_as_often_as_the_level_allows() -> None:
-    """Both arms lose each cell at 10%: 42 of 1,000 seeded draws withhold the reading (4.2%), within the 5% the
-    difference interval's level allows."""
-    assert _withheld_in(1000, 0.10, 0.10) == 42
+@pytest.mark.parametrize(
+    ("arms", "withheld"),
+    [(2, 24), (3, 16), (4, 11)],
+    ids=["two-arms", "three-arms", "four-arms"],
+)
+def test_equal_shares_of_loss_withhold_a_reading_near_the_level_whatever_the_arm_count(
+    arms: int, withheld: int
+) -> None:
+    """Every arm loses each cell at 10%: of 500 seeded draws, one test across all arms withholds the reading 24 times
+    at two arms (4.8%), 16 at three (3.2%) and 11 at four (2.2%), each within the test's 5% level. Pairwise tests at
+    the nominal level would compound to about 12% at three arms and 25% at four. At 1,000 draws the same rates read
+    5.3%, 3.0% and 2.9%, and 4.5% at three arms losing 30% each."""
+    assert _withheld_in(500, *[0.10] * arms) == withheld
 
 
 def test_a_lopsided_loss_is_caught_most_of_the_time() -> None:
-    """One arm loses nothing and the other 30% of its cells: 180 of 200 seeded draws withhold the reading (90%)."""
-    assert _withheld_in(200, 0.0, 0.30) == 180
+    """One arm loses nothing and the other 30% of its cells: 195 of 200 seeded draws withhold the reading (97.5%)."""
+    assert _withheld_in(200, 0.0, 0.30) == 195
 
 
 def test_a_pivot_pools_one_claim_reading_on_its_own_range_and_refuses_two() -> None:
@@ -504,20 +528,82 @@ def test_a_pivot_pools_one_claim_reading_on_its_own_range_and_refuses_two() -> N
 # --- bars, the page and the caveats ---------------------------------------------------------------------------------
 
 
-def test_a_bar_names_a_ranked_claim_reading_and_never_a_diagnostic() -> None:
+def test_no_bar_is_read_on_a_claim_reading_ranked_diagnostic_or_withheld() -> None:
+    """A claim reading ranks arms on its own: the resolver knows it as one, never as a rubric dimension, and refuses
+    every bar on it, so no bar is cleared on a reading, least of all on one the engine withheld."""
     claimed = template_claim_readings(_template())
     measures = toyhost_profile().measures
 
-    ranked = resolve_bar_name(
-        f"{RULES}_false_per_unit", rubric_dimensions={}, goal_state_checks=(), measures=measures, claim_readings=claimed
-    )
-    assert isinstance(ranked, BarName) and ranked.kind == "judged" and ranked.higher_is_better is False
-    diagnostic = resolve_bar_name(
-        f"{RULES}_claims", rubric_dimensions={}, goal_state_checks=(), measures=measures, claim_readings=claimed
-    )
-    assert isinstance(diagnostic, UnreadableBarName) and diagnostic.refusal == "no_better_end"
+    for name in (f"{RULES}_false_per_unit", f"{RULES}_grounded_share", f"{RULES}_claims"):
+        refused = resolve_bar_name(
+            name, rubric_dimensions={}, goal_state_checks=(), measures=measures, claim_readings=claimed
+        )
+        assert isinstance(refused, UnreadableBarName) and refused.refusal == "ranks_only"
     unknown = resolve_bar_name(f"{RULES}_false_per_unit", rubric_dimensions={}, goal_state_checks=(), measures=measures)
-    assert isinstance(unknown, UnreadableBarName), "a judged name is never keyed to a rubric scale it has none of"
+    assert isinstance(unknown, UnreadableBarName) and unknown.refusal == "not_carried"
+
+    runs, results = _campaign(lookup=_lookup_losing("cut_short", share=2))
+    every = [result for held in results.values() for result in held]
+    records = project_score_records(runs, every, archived_run_ids=None, profile=toyhost_profile()).records
+    by_cell = {(fixture_variant_key(m), "rig"): [r for r in every if r.model == m] for m in (MEMORY, LOOKUP)}
+    assert next(
+        m for m in judged_measures(records, by_cell, None, tiers=[]) if m.name == f"{RULES}_false_per_unit"
+    ).withheld
+    design = minimal_aspect_design().model_copy(
+        update={"bars": [BarOverride(measure_id=f"{RULES}_false_per_unit", threshold=5.0, direction="lower_is_better")]}
+    )
+    (adjudication,) = bar_adjudications(
+        "b", design, by_cell, records, tiers=[], frontier_bar=None, profile=toyhost_profile()
+    )
+    assert adjudication.state != "adjudicated" and not adjudication.verdicts, "a withheld claim reading clears no bar"
+
+
+def test_no_claim_reading_is_a_floor_s_pass_rate() -> None:
+    """A floor reads pass rates; a share of claims or units is none, so no claim reading is among a floor's rates."""
+    bundle = _ranked()
+    rates = floor_readings(bundle, fixture_variant_key(MEMORY), fixture_variant_key(LOOKUP)).rates
+
+    assert rates, "the trials' pass rate is still read"
+    assert not [rate.measure for rate in rates if (rate.measure or "").startswith((RULES, SCOUT))]
+
+
+def test_an_arm_that_lost_every_cell_counts_its_losses_on_the_grounded_share_too() -> None:
+    def lost(case: int, k: int) -> dict[str, Any]:
+        return {"claim_tallies": {SCOUT: _tally(grounded=None)}, "claim_failures": {RULES: "cost_cap"}}
+
+    bundle = _bundle(lookup=lost)
+    grounded = next(m for m in bundle.judged_measures if m.name == f"{RULES}_grounded_share")
+    lookup = next(arm for arm in grounded.arms if arm.variant_key == fixture_variant_key(LOOKUP))
+
+    assert (lookup.n, lookup.n_claim_lost) == (0, CASES * K)
+    assert grounded.withheld is not None, "an arm that lost everything differs from one that lost nothing"
+    built = report_input(campaign_bundle(bundle))
+    lost_caveat = next(c for c in built.caveat_list if c.id == f"claims_lost:{RULES}")
+    assert f"rules/{RULES}_grounded_share" in lost_caveat.readings and len(lost_caveat.arms) == 1
+
+
+def test_the_aspect_page_names_a_claim_reading_as_the_report_does_and_marks_a_withheld_one() -> None:
+    """The code page over a claims campaign: each claim reading headed by its reader name, never called a score, and a
+    withheld one said so."""
+    ranked = report_markdown(
+        build_code_only_report(_ranked(), assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c")
+    )
+    assert "False claims per answer (rules.claims, judged)" in ranked
+    assert "Grounded share of specific claims (rules.claims, judged)" in ranked
+    assert "Rules.claims false per unit" not in ranked and "rules.claims_false_per_unit (judged)" not in ranked
+    claim_lines = [
+        line for line in ranked.splitlines() if "(rules.claims, judged)" in line or "(scout.claims, judged)" in line
+    ]
+    assert claim_lines and not any("score" in line.lower() for line in claim_lines)
+
+    uneven = _bundle(lookup=_lookup_losing("cut_short", share=2), strata=True)
+    page = report_markdown(build_code_only_report(uneven, assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c"))
+    assert "Withheld: " in page and "False claims per answer (rules.claims, judged)" in page
+    assert "lost cells to claim grading at shares that differ beyond chance" in page
+    strata_rows = [line for line in page.splitlines() if line.startswith("|") and "(rules.claims, judged)" in line]
+    assert strata_rows and all("withheld: its arms lost cells unevenly" in line for line in strata_rows), (
+        "the strata table marks a withheld reading in place of every figure"
+    )
 
 
 def test_the_page_calls_a_per_unit_rate_a_number_and_a_share_a_share_never_a_score() -> None:

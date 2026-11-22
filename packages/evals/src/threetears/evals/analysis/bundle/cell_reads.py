@@ -7,6 +7,7 @@ The populations the bars, comparisons and decision surface share — results the
 
 from __future__ import annotations
 
+import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
@@ -28,7 +29,6 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import (
     PPI_MIN_LABELLED_RESULTS,
     clustered_standard_error,
-    difference_interval,
     prediction_powered_mean,
     small_sample_case_means,
 )
@@ -191,7 +191,7 @@ def judged_measures(
     a rubric scale. Only the three that rank are summarised here; the diagnostics stay in the projection. Each arm
     counts the cells its criterion lost and the cells still pending apart from its mean, a pending cell as no loss,
     and the cells whose web check skipped a claim past its budget. The reading is withheld (``trials_lost``) where two
-    arms' shares of cells lost differ beyond the interval on their difference (:func:`_differential_claim_loss`).
+    arms' shares of cells lost differ beyond chance, by one test across every arm (:func:`_differential_claim_loss`).
 
     :param records: The assembly's score projection rows.
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
@@ -315,42 +315,99 @@ def _web_skipped_cells(members: Sequence[ResultView], criterion: str) -> int:
     )
 
 
-def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bool:
-    """Whether two arms lost a claim reading's cells at shares that differ beyond their interval.
+#: The level the test of claim losses across arms rejects at: a reading whose losses it calls uneven is withheld.
+_CLAIM_LOSS_LEVEL = 0.05
 
-    Each arm's share is read per case, as a rate is: the share of the case's cells its criterion lost, of the cells the
-    reading could have been read on (read, or lost; a pending or harness-faulted cell is in neither). Two arms differ
-    where the interval on the difference of those per-case shares (:func:`~threetears.evals.analysis.stats.
-    difference_interval`, paired over the cases both ran, on 0 to 1) excludes zero: the test a comparison of two rates
-    reads, so equal shares of loss withhold a reading about as often as its level allows and a lopsided loss is caught
-    (both rates ``tests/test_claim_ranking.py`` simulates). Where the per-case differences hold no spread, the shares
-    differ exactly where they are not equal: one arm lost every case's cells and the other none.
+
+def _differential_claim_loss(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> bool:
+    """Whether a claim reading's arms lost its cells at shares that differ beyond chance, by one test across every arm.
+
+    Each cell the reading could have been read on (read, or lost; a pending or harness-faulted cell is in neither) is
+    one trial of a case: lost or kept. The test is the Cochran-Mantel-Haenszel test of general association between arm
+    and loss, stratified by case (:func:`_claim_loss_homogeneity_p`): one test whatever the number of arms, so a reading
+    is withheld for chance loss about as often as its level allows at two arms or at four, and a case one arm ran more
+    of moves nothing on its own. The rates ``tests/test_claim_ranking.py`` simulates, at twelve cases of two repeats:
+    equal 10% losses withhold at two, three and four arms near the level, and a 0% against 30% loss is caught.
+
+    :param by_cell: Each arm's rows of the reading, by cell.
+    :return: Whether the test rejects at :data:`_CLAIM_LOSS_LEVEL`.
     """
-    shares: list[dict[str, float]] = []
-    for rows in by_cell.values():
-        by_case: dict[str, list[bool]] = defaultdict(list)
+    p = _claim_loss_homogeneity_p(by_cell)
+    return p is not None and p < _CLAIM_LOSS_LEVEL
+
+
+def _claim_loss_homogeneity_p(by_cell: Mapping[CellKey, list[ScoreRecord]]) -> float | None:
+    """The generalized Cochran-Mantel-Haenszel p for arm against loss, stratified by case, on ``arms - 1`` degrees of
+    freedom; None where fewer than two arms hold a cell in a case whose cells were neither all lost nor all kept (no
+    stratum then tells the arms apart).
+
+    Per case, a table of each arm's cells and losses; under no difference between arms, each case's losses fall among
+    its cells as a draw without replacement (hypergeometric), and the deviations of every arm but one, summed over
+    cases, are tested against their summed covariance.
+    """
+    tables: dict[str, list[list[int]]] = defaultdict(lambda: [[0, 0] for _ in by_cell])
+    for arm, rows in enumerate(by_cell.values()):
         for row in rows:
             if row.outcome == CLAIM_LOST_OUTCOME or (
                 row.outcome not in _UNCOUNTED_JUDGED_OUTCOMES and row.value is not None
             ):
-                by_case[row.test_case_id].append(row.outcome == CLAIM_LOST_OUTCOME)
-        shares.append({case: sum(lost) / len(lost) for case, lost in by_case.items()})
-    for index, first in enumerate(shares):
-        for second in shares[index + 1 :]:
-            common = sorted(set(first) & set(second))
-            paired = len(common) >= 2
-            a = [first[case] for case in common] if paired else list(first.values())
-            b = [second[case] for case in common] if paired else list(second.values())
-            if not a or not b:
-                continue
-            interval = difference_interval(a, b, paired=paired, value_range=(0.0, 1.0))
-            if interval is None:
-                # No spread to test over two cases or more: the shares are what they are, and differ where unequal.
-                if min(len(a), len(b)) >= 2 and sum(a) / len(a) != sum(b) / len(b):
-                    return True
-            elif interval[0] > 0 or interval[1] < 0:
-                return True
-    return False
+                held = tables[row.test_case_id][arm]
+                held[0] += 1
+                held[1] += row.outcome == CLAIM_LOST_OUTCOME
+    informative = [
+        cells
+        for cells in tables.values()
+        if (total := sum(n for n, _ in cells)) >= 2 and 0 < sum(x for _, x in cells) < total
+    ]
+    arms = [arm for arm in range(len(by_cell)) if any(cells[arm][0] for cells in informative)]
+    if len(arms) < 2:
+        return None
+    free = arms[:-1]
+    deviation = [0.0] * len(free)
+    covariance = [[0.0] * len(free) for _ in free]
+    for cells in informative:
+        total = sum(n for n, _ in cells)
+        lost = sum(x for _, x in cells)
+        scale = lost * (total - lost) / (total * total * (total - 1))
+        for i, a in enumerate(free):
+            n_a, x_a = cells[a]
+            deviation[i] += x_a - n_a * lost / total
+            for j, b in enumerate(free):
+                covariance[i][j] += scale * ((total * n_a if a == b else 0) - n_a * cells[b][0])
+    solved = _solve(covariance, deviation)
+    if solved is None:
+        return None
+    statistic = sum(d * y for d, y in zip(deviation, solved, strict=True))
+    return _chi_square_tail(statistic, len(free))
+
+
+def _solve(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    """``matrix⁻¹ · vector`` by Gaussian elimination with partial pivoting; None for a singular matrix."""
+    size = len(vector)
+    rows = [[*row, value] for row, value in zip(matrix, vector, strict=True)]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(rows[row][column]))
+        if abs(rows[pivot][column]) < 1e-12:
+            return None
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        for row in range(size):
+            if row != column:
+                factor = rows[row][column] / rows[column][column]
+                rows[row] = [held - factor * lead for held, lead in zip(rows[row], rows[column], strict=True)]
+    return [rows[row][size] / rows[row][row] for row in range(size)]
+
+
+def _chi_square_tail(statistic: float, df: int) -> float:
+    """``P(χ²_df ≥ statistic)`` for a whole ``df``: the upper regularized gamma at ``df/2``, built up from its value at
+    1/2 (``erfc``) or at 1 (``e^-x``) by ``Q(a + 1, x) = Q(a, x) + x^a e^-x / Γ(a + 1)``."""
+    if statistic <= 0:
+        return 1.0
+    half = statistic / 2
+    a, tail = (0.5, math.erfc(math.sqrt(half))) if df % 2 else (1.0, math.exp(-half))
+    while a < df / 2:
+        tail += math.exp(a * math.log(half) - half - math.lgamma(a + 1))
+        a += 1
+    return min(1.0, tail)
 
 
 def _prediction_powered(

@@ -1660,11 +1660,13 @@ def project_score_records(
 
     records: list[ScoreRecord] = []
     factors_by_run = _run_factors(placed, profile=profile)
-    # The claim criteria each run's tallies record as asking groundedness: what a lost or pending cell, which holds no
-    # tally of its own, is read by when its arm's losses on the grounded share are counted.
-    grounded_by_run: dict[str, set[str]] = {run.id: set() for run, _, _ in placed}
-    for run, result, _ in placed:
-        grounded_by_run[run.id] |= {criterion for criterion, tally in result.claim_tallies.items() if tally.grounded}
+    # The claim criteria any projected tally records as asking groundedness, across every run: what a lost or pending
+    # cell, which holds no tally of its own, is read by when its arm's losses on the grounded share are counted. Read
+    # over the whole projection, not one run, so an arm that lost every cell (the cost cap set the criterion aside for
+    # it) still counts its losses on the grounded share beside an arm whose tallies say the criterion asks it.
+    grounded = {
+        criterion for _, result, _ in placed for criterion, tally in result.claim_tallies.items() if tally.grounded
+    }
 
     for run, result, subject_id in placed:
         coordinates: dict[str, Any] = {
@@ -1827,7 +1829,7 @@ def project_score_records(
         claimed: dict[str, ClaimTally | str] = {**result.claim_tallies, **result.claim_failures}
         for criterion in sorted(claimed):
             for reading, value, missing in projected_claim_readings(
-                criterion, claimed[criterion], grounded=criterion in grounded_by_run[run.id]
+                criterion, claimed[criterion], grounded=criterion in grounded
             ):
                 records.append(
                     ScoreRecord(
