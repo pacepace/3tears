@@ -224,7 +224,8 @@ class MigrationRunner:
         :raises MigrationFailedError: wrapping original migration exception
         """
         async with self._locked(store) as session:
-            began = await _clock(session)
+            # the run's window is read only for an announcer: with none there is nothing to announce
+            began = await _clock(session) if self._announcer is not None else None
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.PLATFORM, target, applied)
@@ -258,7 +259,8 @@ class MigrationRunner:
         :raises MigrationFailedError: wrapping original migration exception
         """
         async with self._locked(store) as session:
-            began = await _clock(session)
+            # the run's window is read only for an announcer: with none there is nothing to announce
+            began = await _clock(session) if self._announcer is not None else None
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             result = await self._apply_scope(session, MigrationScope.AGENT, target, applied)
@@ -351,7 +353,8 @@ class MigrationRunner:
             msg = f"downgrade steps must be >= 1, got {steps}"
             raise MigrationError(msg)
         async with self._locked(store) as session:
-            began = await _clock(session)
+            # the run's window is read only for an announcer: with none there is nothing to announce
+            began = await _clock(session) if self._announcer is not None else None
             await self._ensure_migrations_table(session)
             history = await self._query_history(session)
             in_scope = {p.name for p in self._packages.values() if p.scope == scope}
@@ -504,7 +507,8 @@ class MigrationRunner:
             raise KeyError(msg)
         package = self._packages[package_name]
         async with self._locked(store) as session:
-            began = await _clock(session)
+            # the run's window is read only for an announcer: with none there is nothing to announce
+            began = await _clock(session) if self._announcer is not None else None
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
             self._verify_ledger_identity([package], applied)
@@ -619,13 +623,13 @@ class MigrationRunner:
                 )
         return count
 
-    async def _announce_run(self, store: DataStore, began: datetime, count: int) -> None:
+    async def _announce_run(self, store: DataStore, began: datetime | None, count: int) -> None:
         """announce the run's writes to switched tables, from the change notes of its window, once it applied any.
 
         :param store: the run's locked store
         :ptype store: DataStore
-        :param began: the run's start, by the database's clock
-        :ptype began: datetime
+        :param began: the run's start, by the database's clock; ``None`` when the runner has no announcer
+        :ptype began: datetime | None
         :param count: the migrations it applied (or rolled back)
         :ptype count: int
         :return: nothing
@@ -633,15 +637,15 @@ class MigrationRunner:
         """
         if count < 1:
             return
-        rows = await store.query(_CLOCK_SQL)
-        ended, schema = rows[0]["now"], str(rows[0]["schema_name"])
-        if self._announcer is None:
+        if self._announcer is None or began is None:
             log.warning(
                 "a migration run wrote with no announcer: followers of the switched tables it wrote are not told; "
                 "give the runner the process's WriteBackstop (MigrationRunner(announcer=...))",
-                extra={"extra_data": {"schema": schema, "since": began.isoformat(), "until": ended.isoformat()}},
+                extra={"extra_data": {"applied": count}},
             )
             return
+        rows = await store.query(_CLOCK_SQL)
+        ended, schema = rows[0]["now"], str(rows[0]["schema_name"])
         await self._announcer.announce_window(began, ended, schema=schema)
 
     async def _apply_package_pending(
