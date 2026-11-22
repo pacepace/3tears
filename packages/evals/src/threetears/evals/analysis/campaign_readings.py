@@ -1366,20 +1366,26 @@ def campaign_readings(
         )
     candidates = _candidates(campaign, every)
     rows: list[_Row] = []
+    # The candidates read on an aspect with no rate, which no row holds: their floors are read off these.
+    unrated: list[tuple[str, CampaignArm, FloorReadings]] = []
     for aspect in campaign.aspects:
         bundle = checked[aspect.label]
         control_key = _bundle_control(bundle)
+        if control_key is None:
+            continue
         # Where nothing the aspect grades can fail a trial, its pass rate counts every answered trial as passed: no row
         # reads it, and it spends none of the family's error, unless an arm failed to answer some trial, where the rate
-        # is the share answered and its row compares that (``reads_answered``).
-        if control_key is None or not reads_a_rate(bundle):
-            continue
+        # is the share answered and its row compares that (``reads_answered``). Its floors are read all the same.
+        rated = reads_a_rate(bundle)
         per_case = case_cost_usd(bundle)
         for arm in candidates:
             if arm.variant_key == control_key:
                 continue
             rate = memo.pass_rate(bundle, control_key, arm.variant_key)
             if rate is None:
+                continue
+            if not rated:
+                unrated.append((aspect.label, arm, memo.readings(bundle, control_key, arm.variant_key)))
                 continue
             rows.append(
                 _Row(
@@ -1476,10 +1482,13 @@ def campaign_readings(
             )
         )
     floors = [
-        evaluate_floor(floor, row.base, arm=row.arm_key, arm_label=row.arm_label, control_label=control.label)
+        evaluate_floor(floor, base, arm=arm_key, arm_label=arm_label, control_label=control.label)
         for floor in campaign.floors
-        for row in rows
-        if row.aspect == floor.aspect
+        for aspect_label, arm_key, arm_label, base in [
+            *((row.aspect, row.arm_key, row.arm_label, row.base) for row in rows),
+            *((label, arm.variant_key, arm.label, base) for label, arm, base in unrated),
+        ]
+        if aspect_label == floor.aspect
     ]
     return _aggregated(
         CampaignReadings(
