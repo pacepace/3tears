@@ -76,6 +76,9 @@ Pick variants with `--variants` (e.g. `--variants declared declared+notes`).
 The script times each append through the source's public `advance_with_change`, so its append columns
 measure the shipped path.
 
+For what a change note and a write mark cost a bulk write on YugabyteDB, and the buffered notes that answer it, see
+[Writing to L3 on YugabyteDB](writing-to-l3-on-yugabytedb.md).
+
 ## How to read the result
 
 The output is one markdown table:

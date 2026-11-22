@@ -3,6 +3,9 @@
 Below every package that runs it -- the migration runner gives switched-on tables their trigger, the
 reconciler (:mod:`threetears.core.collections.write_marks`) installs and drains them -- so neither imports
 the other for it. The reconciler re-exports every name.
+
+What a write mark and a change note cost a bulk write on YugabyteDB, and why the mark stays a row trigger:
+``docs/writing-to-l3-on-yugabytedb.md``.
 """
 
 from __future__ import annotations

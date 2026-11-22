@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a bulk writer's change notes reach the ring in one insert at its commit
+
+**Added:** `NOTE_BUFFER_SETTING`, `note_buffer_open_sql` and `note_flush_sql` (`threetears.core.ddl.change_notes`), and
+the ring's functions behind them. A writer that opens the buffer in its transaction has each row's note written by the
+table's own trigger into its connection's buffer (a temp table) instead of the ring, and moves them into the ring with
+one insert just before its COMMIT. A flagged COMMIT without the flush fails on the buffer's guard
+(`NOTE_BUFFER_GUARD`, a deferred foreign key), so no row commits without its note. With no flag the trigger writes into
+the ring row by row, as before. WHY: on YugabyteDB a note inserted into the ring a row is a distributed write a row:
+a 1000-row copy of a pod's 34-column table 471 ms against 29 ms bare, 103 ms buffered; an upsert moving an
+invalidation column 1402 / 203 / 684 ms (YugabyteDB 2026.1, median of 5). The notes are the trigger's own, note for
+note, so followers' keyed catch-up, the write-mark reconciler and a restore after a NATS loss read what they read
+before. Rollout: the trigger body gains the buffer's branch under the same names; an older body notes a flagged write
+straight into the ring and the flush moves nothing, so each row is noted once whichever body a table has.
+`docs/writing-to-l3-on-yugabytedb.md` holds the measurements and the rules.
+
 ### core: an operator can forget tables in a copy follower's checkpoint
 
 **Added:** `CopyCheckpoints.forget(names)`, an operator's reset (`@operator_reset`, never automatic). It drops the named
