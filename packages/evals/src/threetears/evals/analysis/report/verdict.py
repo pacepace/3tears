@@ -808,6 +808,66 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     ]
 
 
+#: The page's line for each way a claim criterion's cells are not what they appear, by the count on a claim reading's
+#: arm that raises it: ``{criterion}`` the criterion, ``{who}`` each arm with its cells (``3 cells of v2``). The
+#: caveat list's claim kinds (:mod:`~threetears.evals.analysis.caveats`), said on the page under the scoreboard.
+_CLAIM_LINES: Final[tuple[tuple[str, str], ...]] = (
+    ("n_claim_lost", "Claim grading lost {who} on {criterion}, so its readings there rest on the cells it graded."),
+    (
+        "n_claim_pending",
+        "The claims on {criterion} are not yet known for {who}: each waits on its stored grade, which is no loss.",
+    ),
+    (
+        "n_claim_unread",
+        "The claim reader of {criterion} could not read {who}, so the readings derived from it rest on the cells it "
+        "read.",
+    ),
+    (
+        "n_web_skipped",
+        "The web budget of {criterion} skipped claims in {who}: each reads unverifiable, never false, so its false "
+        "claims there may be undercounted.",
+    ),
+    (
+        "n_web_lost",
+        "The web check of {criterion} failed in {who}: its undecided claims read unverifiable, never false, so its "
+        "false claims there may be undercounted.",
+    ),
+)
+
+
+def claim_caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
+    """What qualifies a claim criterion's readings, said under the scoreboard: a line for each criterion whose cells
+    were lost, are pending, went unread by its claim reader, or had claims the web left unchecked, naming each arm.
+
+    Each count is an arm's most over the criterion's readings, so a cell is named once however many readings it
+    touches.
+
+    :param bundle: The campaign's evidence.
+    :param arm: Names an arm by its variant key.
+    :return: The lines, criterion by criterion in name order, each kind in :data:`_CLAIM_LINES`' order; none where
+        nothing holds.
+    """
+    counted: dict[tuple[str, str], dict[str, int]] = {}
+    for measure in bundle.judged_measures:
+        if measure.instrument is None:
+            continue
+        for field, _ in _CLAIM_LINES:
+            for judged in measure.arms:
+                held = counted.setdefault((measure.instrument, field), {})
+                held[judged.variant_key] = max(held.get(judged.variant_key, 0), getattr(judged, field))
+    order = {board.variant_key: at for at, board in enumerate(bundle.scoreboard)}
+    lines: list[str] = []
+    for criterion in sorted({instrument for instrument, _ in counted}):
+        for field, line in _CLAIM_LINES:
+            held = {key: n for key, n in counted.get((criterion, field), {}).items() if n}
+            if not held:
+                continue
+            ranked = sorted(held, key=lambda key: order.get(key, len(order)))
+            who = ", ".join(f"{held[key]} {'cell' if held[key] == 1 else 'cells'} of {arm(key)}" for key in ranked)
+            lines.append(line.format(criterion=criterion, who=who))
+    return lines
+
+
 def _control_key(bundle: AnalysisContextBundle) -> str | None:
     """The control's variant key, when it ran."""
     control = bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None
@@ -1244,6 +1304,7 @@ __all__ = [
     "SETUP_GATE_SHARE",
     "CauseWords",
     "caveat_lines",
+    "claim_caveat_lines",
     "VerdictLine",
     "VerdictRule",
     "arm_exclusions",

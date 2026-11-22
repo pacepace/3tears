@@ -1174,6 +1174,37 @@ records each credited spelling with its entity and reason (`SetGrade.credits`), 
 unverified pick, so reasons move no count and no measure definition. The default gives every credit the reason
 `folded`, and refuses a name that is one of the key's context entities with the reason `context`.
 
+## Grading the claims in an answer: `Claims`
+
+A `Judge` scores an answer as a whole. `Claims(model, name="claims", *, unit="answer", segments=None,
+case_documents=None, grounded_in=None, guidance="", search=None, web=None, pages=..., repairs=...)`, listed among the
+graders, has a model list the factual claims each answer makes and checks each one. It is provisional: it and
+`Document` are served by `threetears.evals.quick`, not the package root, their names may change in any release, and
+its docstring carries its examples until it is promoted. Its readings rank arms, each on
+its own, and none enters a case's pass:
+
+| Reading | What it counts | Better |
+|---|---|---|
+| False claims per answer (`answer.claims_false_per_unit`) | Claims the case's evidence contradicts, per answer | Lower |
+| Share of answers with a false claim (`answer.claims_false_unit_share`) | Answers holding at least one | Lower |
+| Grounded share of specific claims (`answer.claims_grounded_share`), with `grounded_in` | Specific claims the candidate's own documents support | Higher |
+
+- **Truth** is decided by the case's own evidence, the same for every arm: `case_documents` names the field holding it
+  (a text, a list of texts, or mappings with `text`, `title` and `url`), or is a callable rendering a case's documents.
+- **What the candidate read** rides beside its answer, on `Answer.documents`, and never in it. `grounded_in="run"`
+  reads it for the grounded share. An arm that read nothing returns `documents=()` and reads a share of 0. An answer
+  that says nothing of what it read fails a run grounded in it, since a missing list could not be told from an empty one.
+- **Each answer is one unit**, unless a `segments` callable cuts it: `(case, answer) -> [...]`, each piece its text (a
+  unit of its own, in order) or a `Segment` for a piece outside every unit, a unit spanning several pieces, or your own
+  tags. `unit="entry"` names the unit on the page.
+- **The web**: with `search=`, a `WebSearch` port (a `RecordedWebSearch` replays one offline), a claim no case evidence
+  covers that the grader doubts is checked on the web, within `web=`, a `WebBudget`.
+
+A `Claims` with nothing to check a claim against (no `case_documents`, no `search`, no `grounded_in`) is refused,
+since its every reading would read 0. With `grounded_in="run"` alone, nothing decides truth, and the result says its
+false claims were not checked. The run's judge model is the grader's, so an eval graded by a `Judge` and `Claims`
+gives both one model, and calls the `Judge`'s client for both.
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the

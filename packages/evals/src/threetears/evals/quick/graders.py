@@ -22,6 +22,7 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
 - **An expression** (``"state.light == 'on'"``, ``'calls("room.switch") <= 1'``): a goal-state check over the world
   the runner left and the calls it made, accepted only when the runner is a world's.
 - **A** :class:`~threetears.evals.quick.judged.Judge`, scoring one dimension per rubric key.
+- **A** :class:`~threetears.evals.quick.claims.Claims`, listing the factual claims in each answer and checking each.
 
 Any function or field may be wrapped by :func:`grader` to declare what the reading needs beside its grade: a margin
 for equivalence (``margin=``), a guardrail no arm may get worse on by more than its margin (``guard=``), or the range
@@ -43,6 +44,7 @@ from typing import Any, overload
 from pydantic import BaseModel
 
 from threetears.evals.kernel import ACCURACY_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.quick.claims import Claims
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.measures import Measure
@@ -97,6 +99,8 @@ class Grader:
         """
         if isinstance(self.target, Judge):
             raise ValueError("a Judge declares its guardrails itself (Judge(guard={'dimension': 0.02})); list it bare")
+        if isinstance(self.target, Claims):
+            raise ValueError("Claims declares its readings itself, each ranked on its own; list it bare")
         if not (isinstance(self.target, str) and self.target.isidentifier()) and not callable(self.target):
             raise ValueError(f"grader() wraps a function or a field name, not {self.target!r}")
         for name in ("margin", "guard"):
@@ -382,12 +386,14 @@ class GraderPlan:
     :ivar fields: Every field grader, in order, the classifier first.
     :ivar goal_checks: Every expression grader.
     :ivar judge: The judge, or ``None``.
+    :ivar claims: The claims grader, or ``None``.
     :ivar margins: Each scorer's equivalence margin, by name.
     :ivar ranges: Each numeric scorer's range, by name.
     :ivar guardrails: Each scorer declared a guardrail, by name.
     :ivar classifier_margin: The classifier's accuracy margin, declared on the runs; ``None`` for none.
     :ivar readings: The measure each grader reads, in the order the graders are listed: the classifier's
         ``accuracy``, any other field's or function's own name, a judge's every dimension, an expression as written.
+        A claims grader's readings are none of them: each ranks on the page on its own, and no lead or bar reads one.
     """
 
     scorers: list[GraderFunction] = field(default_factory=list)
@@ -395,6 +401,7 @@ class GraderPlan:
     fields: list[str] = field(default_factory=list)
     goal_checks: list[str] = field(default_factory=list)
     judge: Judge | None = None
+    claims: Claims | None = None
     margins: dict[str, float] = field(default_factory=dict)
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     guardrails: dict[str, Guardrail] = field(default_factory=dict)
@@ -461,15 +468,16 @@ def plan_graders(graders: Any) -> GraderPlan:
     :param graders: One grader, or a list of them, each a function, a field name, an expression, a
         :class:`~threetears.evals.quick.judged.Judge` or a :class:`Grader`.
     :return: The plan.
-    :raises ValueError: No grader; two judges; a grader of no known form; a function that cannot take ``(case,
+    :raises ValueError: No grader; two judges, two claims graders, or a judge and a claims grader on two models; a
+        grader of no known form; a function that cannot take ``(case,
         out)``; a function written ``async def`` or whose return annotation is read as both kinds, neither, or names
         ``None`` (:func:`declares_a_check`); a field named after an engine core measure; or a name graded twice.
     """
     listed: Sequence[Any] = graders if isinstance(graders, list | tuple) else [graders]
     if not listed:
         raise ValueError(
-            "an eval needs at least one grader — a function, a field name, an expression or a Judge: a run nothing "
-            "grades measures nothing"
+            "an eval needs at least one grader — a function, a field name, an expression, a Judge or Claims: a run "
+            "nothing grades measures nothing"
         )
     plan = GraderPlan()
     seen: list[str] = []
@@ -481,6 +489,15 @@ def plan_graders(graders: Any) -> GraderPlan:
                 raise ValueError("an eval is graded by one judge; list one Judge, with every dimension in its rubric")
             plan.judge = target
             plan.readings += [dimension.name for dimension in target.dims]
+            continue
+        if isinstance(target, Claims):
+            if plan.claims is not None:
+                raise ValueError(
+                    "an eval is graded by one Claims: each answer is cut once, and its claims read against one "
+                    "set of documents"
+                )
+            # Its readings rank on the page beside the rest, and none is a grader's reading a lead or a bar reads.
+            plan.claims = target
             continue
         if isinstance(target, str):
             if not target.isidentifier():
@@ -509,7 +526,7 @@ def plan_graders(graders: Any) -> GraderPlan:
         elif not callable(target):
             raise ValueError(
                 "a grader is a function (case, out) -> bool for pass or fail or -> float for a score, a field name, "
-                f"an expression over a world, a Judge or a grader(...), not {target!r}"
+                f"an expression over a world, a Judge, Claims or a grader(...), not {target!r}"
             )
         else:
             name = getattr(target, "__name__", None)
@@ -535,6 +552,11 @@ def plan_graders(graders: Any) -> GraderPlan:
                 plan.guardrails[name] = Guardrail(margin=declared.guard, direction="higher_is_better")
     if repeated := sorted({name for name in seen if seen.count(name) > 1}):
         raise ValueError(f"{', '.join(repeated)} is graded more than once; each grader is one reading")
+    if plan.judge is not None and plan.claims is not None and plan.judge.model != plan.claims.model:
+        raise ValueError(
+            f"a run has one judge model, and its Judge calls {plan.judge.model!r} while its Claims calls "
+            f"{plan.claims.model!r}; give both the same model"
+        )
     return plan
 
 

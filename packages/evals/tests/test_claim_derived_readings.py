@@ -40,6 +40,8 @@ from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyh
 from packages.evals.tests.off_loop import off_loop
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.bundle.cell_reads import judged_measures
+from threetears.evals.analysis.report.build import build_code_only_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.analysis.reporting import project_score_records
@@ -929,6 +931,23 @@ def test_unread_cells_are_counted_apart_on_each_arm_and_raise_a_class_b_caveat_n
     assert judged.unread == {arm: 3} and judged.lost == {}, "unread is no loss"
     caveat = {entry.id: entry for entry in built.caveat_list}[f"claims_unread:{_SHOW}"]
     assert (caveat.kind, caveat.cls, caveat.arms) == ("claims_unread", "B", [arm])
+
+
+def test_the_aspect_page_says_which_arm_s_cells_the_claim_reader_could_not_read() -> None:
+    def lookup(case: int, k: int) -> dict[str, Any]:
+        tally = _tally(1.0)
+        if case < 3 and k == 1:
+            tally = tally.model_copy(update={"derived": {}, "derived_unread": "ValueError: out of step"})
+        return {"claim_tallies": {_SHOW: tally}}
+
+    page = report_markdown(
+        build_code_only_report(_show_bundle(lookup), assembled_at="2026-11-22T00:00:00+00:00", campaign_name="c")
+    )
+    pattern = (
+        rf"^The claim reader of {re.escape(_SHOW)} could not read 3 cells of .+, so the readings derived from it rest "
+        r"on the cells it read\.$"
+    )
+    assert len([line for line in page.splitlines() if re.match(pattern, line)]) == 1
 
 
 def _show_bundle(lookup: Any) -> AnalysisContextBundle:

@@ -1288,6 +1288,8 @@
 "threetears.evals.testing.StoreConformanceCase": "host-contract",
 "threetears.evals.testing.StoreConformanceFailure": "provisional",
 "threetears.evals.quick.as_host": "host-contract",
+"threetears.evals.quick.Claims": "provisional",
+"threetears.evals.quick.Document": "provisional",
 "threetears.evals.quick.ExampleGrade": "provisional",
 "threetears.evals.quick.EXIT_FAILED": "stable",
 "threetears.evals.quick.EXIT_GATE_FAILED": "stable",
