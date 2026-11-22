@@ -798,7 +798,7 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 |---|---|---|
 | `typed` | 12 | a newcomer writes it in an eval file |
 | `bound` | 95 | a host implements it or hands it to the engine |
-| `action` | 17 | the function behind an action of the catalogue, which an agent or operator invokes by name |
+| `action` | 17 | the function behind a catalogue action, which an agent or operator invokes by name |
 | `invoked` | 94 | a function a host's own code calls, to make the engine act or do one step its way |
 | `received` | 261 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |

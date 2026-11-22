@@ -775,7 +775,7 @@ KIND_MEANINGS: Mapping[Kind, str] = MappingProxyType(
     {
         "typed": "a newcomer writes it in an eval file",
         "bound": "a host implements it or hands it to the engine",
-        "action": "the function behind an action of the catalogue, which an agent or operator invokes by name",
+        "action": "the function behind a catalogue action, which an agent or operator invokes by name",
         "invoked": "a function a host's own code calls, to make the engine act or do one step its way",
         "received": "a value someone is handed and reads",
         "tests": "a kit, recorder or guard a host runs in its own tests",

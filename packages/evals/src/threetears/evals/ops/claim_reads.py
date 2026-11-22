@@ -66,7 +66,7 @@ from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import ACTION_JOB_PREFIX, AdmittedJob, JobsStarted, job_poll, start_job
@@ -859,16 +859,14 @@ class _HeldClient:
         ceiling: float | None = self._inner.price_ceiling(system=system, user=user, response_format=response_format)
         return ceiling
 
-    async def generate(
-        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
-    ) -> CompletionResult:
-        """Admit one call at its own prompt and make it through the budget, which ledgers it.
+    def _hold_and_admit(self, call: PlannedCall) -> AdmittedCall:
+        """Price one call at its own prompt, within the cell's worst case, and admit it against the cap: the planned
+        half, which makes no call.
 
         :raises ClaimGradingFailed: The call would take the cell past its worst case (``hold_exceeded``), or the cap
-            has no room for it (``cost_cap``).
+            has no room for it, or cannot price it under an enforced cap (``cost_cap``).
         """
-        call = PlannedCall(system=system, user=user, response_format=response_format)
-        ceiling = self.price_ceiling(system=system, user=user, response_format=response_format)
+        ceiling = self.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
         if self._hold is not None and ceiling is not None and self._admitted + ceiling > self._hold:
             raise ClaimGradingFailed(
                 f"a repeat call priced at up to {ceiling} would take its cell past the {self._hold} it was priced at",
@@ -879,8 +877,23 @@ class _HeldClient:
         except ValidationFailedError as refused:
             raise ClaimGradingFailed(str(refused), loss="cost_cap") from refused
         self._admitted += admitted.ceiling_usd or 0.0
+        return admitted
+
+    async def _make(self, admitted: AdmittedCall) -> CompletionResult:
+        """Make one admitted call through the budget, which ledgers it: the made half, which admits nothing."""
         result: CompletionResult = (await self._budget.generate(self._inner, admitted)).result
         return result
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        """Admit one call at its own prompt (:meth:`_hold_and_admit`), then make it (:meth:`_make`).
+
+        :raises ClaimGradingFailed: The call would take the cell past its worst case (``hold_exceeded``), or the cap
+            has no room for it (``cost_cap``); nothing is sent.
+        """
+        admitted = self._hold_and_admit(PlannedCall(system=system, user=user, response_format=response_format))
+        return await self._make(admitted)
 
     async def aclose(self) -> None:
         """Release nothing: the host's client is the repeat's, which releases it when the job ends."""
