@@ -56,6 +56,7 @@ from threetears.evals.schema import (
     ClaimCriterion,
     PageBudget,
     RepairBudget,
+    WebBudget,
     ConversationSpec,
     EvalRun,
     EvalTemplate,
@@ -650,6 +651,20 @@ async def test_a_cap_below_a_claim_criterions_hold_floor_is_refused_naming_the_c
 
 async def test_a_cap_above_every_claim_criterions_hold_floor_is_admitted() -> None:
     subject = off_loop(_Subject, claim_criteria=(_claims(),))
+
+    arm = await subject.estimate(_CLAIMS_FLOOR_USD + 0.5)
+
+    assert (arm.outcome, arm.refusal) == ("admitted", None)
+    assert arm.plan.call_ceiling.usd == pytest.approx(_CLAIMS_FLOOR_USD)
+
+
+async def test_a_criterion_with_a_web_budget_is_floored_without_its_web_step_and_never_refused_as_unpriced() -> None:
+    # The floor's one segment may state no claim the judge doubts, so the web step adds nothing to it: no search is
+    # priced before launch, and a cap that holds the rest admits the arm.
+    web = WebBudget(
+        max_queries_per_claim=2, max_checked_per_cell=2, results_per_query=2, page_chars=400, window_chars=200
+    )
+    subject = off_loop(_Subject, claim_criteria=(_claims().model_copy(update={"web": web}),))
 
     arm = await subject.estimate(_CLAIMS_FLOOR_USD + 0.5)
 

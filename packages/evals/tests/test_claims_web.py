@@ -950,3 +950,14 @@ async def test_a_take_up_grades_the_cells_it_runs_on_the_runs_own_web_search() -
     rows = off_loop(host.storage.query_eval_results_by_run, taken_up.id, "u")
     (ran,) = [r for r in rows if r.test_case_id == second.id]
     assert ran.claim_failures == {} and ran.claim_tallies[_CRITERION].by_judge[0].web_checked == 1
+
+
+async def test_a_rejudge_bills_an_unreported_search_in_the_runs_order_its_declared_rate_before_the_ceiling() -> None:
+    host, result = await _stored_web_cell(_FakeWebJudge(script=_LOST_FIRST), _FakeWebJudge(), _FakeWebSearch())
+
+    rejudged = await rejudge_result(
+        host, result.id, "u", web_search=_FakeWebSearch(usd_per_query=0.5), external_rates=_RATES
+    )
+
+    (searched,) = [row for row in rejudged.claim_rescores[0].usage if row.provider == _PORT]
+    assert (searched.cost_usd, searched.price_source) == (0.01, f"{_PORT}:configured_rate")

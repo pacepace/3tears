@@ -35,6 +35,7 @@ from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.kernel.claims.grading import GradedCriterion, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
+from threetears.evals.kernel.usage_capture import ExternalRateTable
 from threetears.evals.schema.web_search import WebSearch, WebSearchResult
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.usage_capture import CallUsage
@@ -246,6 +247,7 @@ async def rejudge_result(
     scope_id: str,
     *,
     web_search: WebSearch | None = None,
+    external_rates: ExternalRateTable | None = None,
 ) -> EvalResult:
     """Re-score a finished result's failed judge dimensions and lost claim criteria from the evidence its judge read.
 
@@ -288,6 +290,9 @@ async def rejudge_result(
     :param web_search: The web search a lost criterion with a web budget is graded again on, its web step included,
         live: the run's own port, or a recording of it for a replay. ``None`` refuses such a criterion by name before
         any call. A completed grade is never searched again.
+    :param external_rates: The run's rate table, which prices a search its port reports no cost for, as the run did:
+        a search is billed at what it reports, else at the rate declared for ``(identity, "query")``, else at the
+        port's ``price_ceiling``. ``None`` declares none.
     :return: The result as stored after the re-judge. Dims that failed again stay missing
         and are named in its recomposed ``judge_error``; criteria lost again stay lost, with their new loss.
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
@@ -360,7 +365,7 @@ async def rejudge_result(
             updated = apply_rejudge(result, inputs.template, outcomes, judge_model=inputs.judge_model)
         trace = None
         if claim_inputs is not None:
-            billing = _BilledClaimsClient(judge_service.default_client(), web=web_search)
+            billing = _BilledClaimsClient(judge_service.default_client(), web=web_search, rates=external_rates)
             try:
                 regraded = await _regrade_claims(claim_inputs, billing, result_id=result_id)
             except CompletionProtocolDefect, ApparatusError:
@@ -450,15 +455,16 @@ class _BilledClaimsClient:
     the step that asked, so what the re-judge paid is still on its log line.
     """
 
-    def __init__(self, inner: Any, *, web: WebSearch | None = None) -> None:
+    def __init__(self, inner: Any, *, web: WebSearch | None = None, rates: ExternalRateTable | None = None) -> None:
         """Bind the judge's client, and the web search a criterion with a web budget searches on.
 
         :param inner: The client, which names its model.
         :param web: The web search, or ``None``.
+        :param rates: The run's rate table, which prices a search its port reports no cost for, or ``None``.
         """
         self._inner = inner
         self._web = web
-        self._query_price = query_price(web, None) if web is not None else (None, None)
+        self._query_price = query_price(web, rates) if web is not None else (None, None)
         self.model_name: str = getattr(inner, "model_name", "")
         #: Every call's usage, in order.
         self.billed: list[CallUsage] = []
