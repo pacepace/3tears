@@ -248,3 +248,24 @@ async def test_start_never_waits_on_the_leases_bucket_and_beats_once_it_is_decla
         assert await _beaten(bucket, backstop.key)
     finally:
         await backstop.stop(drain_seconds=0)
+
+
+async def test_a_retry_that_hangs_never_holds_a_stop_past_its_drain() -> None:
+    """Flips if a lost advance whose retry never answers (an epoch bucket that hangs) holds stop() past drain_seconds:
+    the retry is bounded, stays held, and the stop beats once more so recovery announces it."""
+    nats, pool, source = FakeNatsClient(), _Pool(), _Source()
+    clock = _Clock()
+    ledger = WriteLedger(clock=clock)
+    backstop = _backstop(nats, "writer", clock, source, pool, ledger, recover=False)
+    bucket = await KVLease(nats, pod_id="reader").bucket()
+    await backstop.start()
+
+    async def hangs() -> None:
+        await asyncio.Event().wait()
+
+    ledger.lost_advance(_TABLE, hangs)
+    started = asyncio.get_running_loop().time()
+    left = await asyncio.wait_for(backstop.stop(drain_seconds=0.3), timeout=5)
+    assert left == 1
+    assert asyncio.get_running_loop().time() - started < 2
+    assert await bucket.get(key=backstop.key) is not None

@@ -768,13 +768,15 @@ class WriteBackstop:
         await bucket.put(key=self.key, value=beat.encode())
         return beat
 
-    async def repair_pass(self) -> int:
+    async def repair_pass(self, *, deadline: float | None = None) -> int:
         """make each lost advance of this process again; release those that land.
 
+        :param deadline: a ``time.monotonic()`` past which no retry runs on (:meth:`WriteLedger.repair_pending`)
+        :ptype deadline: float | None
         :return: how many are still held
         :rtype: int
         """
-        return await self._ledger.repair_pending()
+        return await self._ledger.repair_pending(deadline=deadline)
 
     async def announce_window(self, since: datetime, until: datetime, *, schema: str | None = None) -> _WindowAnnounced:
         """announce a migration run's window: every switched table of ``schema`` the window's notes name.
@@ -960,10 +962,10 @@ class WriteBackstop:
         for loop in self._loops:
             await loop.stop()
         deadline = time.monotonic() + drain_seconds
-        left = await self.repair_pass()
+        left = await self.repair_pass(deadline=deadline)
         while left and time.monotonic() < deadline:
-            await asyncio.sleep(0.5)
-            left = await self.repair_pass()
+            await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+            left = await self.repair_pass(deadline=deadline)
         self._ledger.detach_repairer()
         try:
             if left:

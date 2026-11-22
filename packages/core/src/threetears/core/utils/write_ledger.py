@@ -26,6 +26,7 @@ The ledger is per process (:func:`process_write_ledger`): one watermark covers e
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -222,16 +223,26 @@ class WriteLedger:
         """
         self.repairing = False
 
-    async def repair_pending(self) -> int:
+    async def repair_pending(self, *, deadline: float | None = None) -> int:
         """retry every held advance once, oldest first; release each that lands.
 
+        Each retry is bounded by :data:`_RETRY_SECONDS` (and by ``deadline``): one that hangs (an epoch bucket that never
+        answers) stays held like one that fails, so it neither stalls the others' repairs nor holds a stop past its
+        drain (``WriteBackstop.stop``).
+
+        :param deadline: a ``time.monotonic()`` past which no retry starts or runs on; ``None`` for none
+        :ptype deadline: float | None
         :return: how many are still held
         :rtype: int
         """
         for lost in list(self._lost.values()):
+            budget = _RETRY_SECONDS if deadline is None else min(_RETRY_SECONDS, deadline - time.monotonic())
+            if budget <= 0:
+                break
             lost.attempts += 1
             try:
-                await lost.retry()
+                async with asyncio.timeout(budget):
+                    await lost.retry()
             # prawduct:allow prawduct/broad-except -- a retry that fails keeps its advance held (and the watermark with it) for the next pass
             except Exception as exc:
                 lost.error = f"{type(exc).__name__}: {exc}"
@@ -252,6 +263,10 @@ class WriteLedger:
             )
         _PENDING.set(len(self._lost))
         return len(self._lost)
+
+
+#: the longest one retry of a lost advance may take; past it the advance stays held for the next pass
+_RETRY_SECONDS: Final = 10.0
 
 
 _PROCESS_LEDGER: Final = WriteLedger()
