@@ -544,7 +544,7 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 199, aggregates 103, planning 131.
+#: docstring for the path syntax). Sizes: bundle 201, aggregates 105, planning 133.
 #:
 #: The measure walk reads each model type's declared fields, never the judge's prose
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
@@ -555,10 +555,12 @@ def _where(site: str) -> str:
 #: count, outside every digest and fingerprint, so a re-judge's time moves no verdict, interval or figure.
 #:
 #: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
-#: two exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
-#: them out) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
+#: three exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
+#: them out), ``judge_cut_short{}`` (carried whole by the reading; no campaign
 #: carries a cut-short judge answer, so its items' fields are unmeasured; one item read is known by reading the code,
-#: ``.sent_settings`` at ``analysis/bundle/cell_reads.py``).
+#: ``.sent_settings`` at ``analysis/bundle/cell_reads.py``), and ``claim_tallies{}`` with ``claim_failures{}`` (carried
+#: whole; no campaign here is claim-graded, so each tally's counts are unmeasured; ``tests/test_claim_ranking.py``
+#: reads a claim-graded campaign's).
 PINNED: dict[str, frozenset[str]] = {
     "bundle": frozenset(
         {
@@ -605,6 +607,8 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_cannot_tell_boundary",
             "judge_config_ids",
             "judge_cut_short",
+            "claim_failures",
+            "claim_tallies",
             "judge_error",
             "judge_model",
             "judge_repeats",
@@ -787,6 +791,8 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_cannot_tell_boundary",
             "judge_config_ids",
             "judge_cut_short",
+            "claim_failures",
+            "claim_tallies",
             "judge_error",
             "judge_model",
             "judge_repeats",
@@ -915,6 +921,8 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_cannot_tell_boundary",
             "judge_config_ids",
             "judge_cut_short",
+            "claim_failures",
+            "claim_tallies",
             "judge_error",
             "judge_model",
             "k_iteration",

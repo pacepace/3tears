@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import random
 from functools import cache
+
+import pytest
 from typing import Any
 
 
@@ -36,6 +38,7 @@ from threetears.evals.analysis.agreement import claim_judge_keys
 from threetears.evals.analysis.bundle.cell_reads import judged_measures, judged_values
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.analysis.first_screen import RANKS
+from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.reporting import METRIC_SCORE, project_score_records
@@ -393,6 +396,19 @@ def test_a_lopsided_loss_withholds_the_reading_and_keeps_it_out_of_the_family() 
     assert measures[f"{SCOUT}_false_per_unit"].withheld is None, "another criterion keeps its cells"
 
 
+def test_a_withheld_claim_reading_raises_its_withheld_caveat_on_each_arm() -> None:
+    built = report_input(campaign_bundle(_bundle(lookup=_lookup_losing("cut_short", share=2))))
+    withheld = [
+        caveat
+        for caveat in built.caveat_list
+        if caveat.state == "withheld"
+        and caveat.reason == "trials_lost"
+        and any(f"/{RULES}_false_per_unit" in r for r in caveat.readings)
+    ]
+
+    assert withheld and withheld[0].cls == "A", "a withheld reading changed the answer"
+
+
 def test_a_lost_ground_step_withholds_the_grounded_share_alone() -> None:
     bundle = _bundle(lookup=_lookup_losing("ground", share=2))
     measures = {measure.name: measure for measure in bundle.judged_measures}
@@ -447,6 +463,42 @@ def test_equal_shares_of_loss_withhold_a_reading_about_as_often_as_the_level_all
 def test_a_lopsided_loss_is_caught_most_of_the_time() -> None:
     """One arm loses nothing and the other 30% of its cells: 180 of 200 seeded draws withhold the reading (90%)."""
     assert _withheld_in(200, 0.0, 0.30) == 180
+
+
+def test_a_pivot_pools_one_claim_reading_on_its_own_range_and_refuses_two() -> None:
+    runs, results = _campaign()
+    records = project_score_records(
+        runs, [r for rs in results.values() for r in rs], archived_run_ids=None, profile=toyhost_profile()
+    ).records
+    profile = toyhost_profile()
+
+    share = compute_pivot(
+        records,
+        row_factor="model",
+        column_factor="run_id",
+        metric="score",
+        filters={"rubric_dim": f"{RULES}_grounded_share"},
+        profile=profile,
+    )
+    assert share.measure.value_range == (0.0, 1.0)
+    rate = compute_pivot(
+        records,
+        row_factor="model",
+        column_factor="run_id",
+        metric="score",
+        filters={"rubric_dim": f"{RULES}_false_per_unit"},
+        profile=profile,
+    )
+    assert rate.measure.value_range is None, "a per-unit rate has no range, and no rubric scale's"
+    with pytest.raises(PivotError, match="claim readings"):
+        compute_pivot(
+            records,
+            row_factor="model",
+            column_factor="run_id",
+            metric="score",
+            filters={"instrument": RULES},
+            profile=profile,
+        )
 
 
 # --- bars, the page and the caveats ---------------------------------------------------------------------------------
