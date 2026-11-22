@@ -70,6 +70,11 @@ stored), which is its own change; a check of the extractor's recall (misses are 
 for claims; a corrected contrast. `CalibrationRating` does not gain a claim reference: a claim read keeps every answer
 beside the view it was given on.
 
+**Exports carry claim reads.** A campaign export (`campaign_export`) now carries the claim reads drawn over the campaign
+(`claim_read`, by `campaign_id`), people's answers included, as it already carries blind reads: they are its claim
+criteria's calibration evidence. Put into another store, a claim read loads whole, names the exported results it was
+drawn from, and reads the same figures.
+
 **For hosts:** nothing to do. A build before this one never reads a claim read, since every read selects by
 `doc_type`; its wipe of durable documents leaves them in place. Rolling back ignores stored claim reads.
 
