@@ -159,6 +159,14 @@ GATED_WHOLE_READ_WHYS: Final = _WHOLE_READS.gated
 #: behind reasons the change notes have already failed to answer this pass: asking them again would only wait again
 _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "notes_whole"})
 
+#: the registry's behind reasons that mean the copy can no longer walk a table's epoch log from its mark: the log was
+#: replaced under a new incarnation (every NATS replica lost), a record of it is gone, the restored log does not reach
+#: the mark, or its retention passed the mark. For a table that opts in to delta files and starts from the volume the
+#: copy reads nothing from L3 for it: it waits for the writer's recovered full (decision 28 of the delta-files design,
+#: :meth:`CopyFollower._wait_for_recovery`). A record whose file cannot name its keys (``keys_unknown``, ``notes_*``)
+#: is decision 29's, not a lost log
+_LOG_LOST: Final = frozenset({"replaced", "record_missing", "record_lost", "aged_out"})
+
 #: the most values of a key prefix's last column one partition read names
 _PREFIX_BATCH: Final = 1000
 
@@ -693,11 +701,15 @@ class _FullAfter:
         of the table, which the reset came after (a reset in this process is told before its advance is written);
         None when the copy had heard none
     :ivar inclusive: whether ``token`` is the reset's own (a full at it holds the reset table) or one it came after
+    :ivar incarnation: for a lost epoch log (decision 28), the incarnation of the log the copy reads now: a full is
+        taken only once it holds the table under it, which only the writer's recovery (or a later full) does; a full
+        of it is past a ``token`` of the lost log's incarnation. None for a reset or a schema change
     """
 
     why: str
     token: str | None
     inclusive: bool
+    incarnation: str | None = None
 
     def short_of(self, table: str, manifest: FullManifest | None) -> str | None:
         """why ``manifest`` cannot be reloaded from; None when it can.
@@ -715,16 +727,82 @@ class _FullAfter:
         entry = manifest.tables.get(table)
         if entry is None:
             return f"full {manifest.name} does not hold the table; the writer publishes one that does"
-        if self.token is None:
+        if self.token is None and self.incarnation is None:
             return None
         floor = full_table_floor(table, entry)
-        held, after = split_generation_token(floor), split_generation_token(self.token)
+        held = split_generation_token(floor)
+        if self.incarnation is not None and (held is None or held[0] != self.incarnation):
+            return (
+                f"full {manifest.name} holds the table at {floor}, not yet under incarnation {self.incarnation}: the "
+                f"writer's recovery of the {self.why} publishes one"
+            )
+        if self.token is None:
+            return None
+        after = split_generation_token(self.token)
+        if self.incarnation is not None and after is not None and after[0] != self.incarnation:
+            # the mark is of the lost log's incarnation: every full of the log read now holds the table past it
+            return None
         if held is None or after is None or held[0] != after[0]:
             # a count under one incarnation is never compared with one under another: the reset's own full is awaited
             return f"full {manifest.name} holds the table at {floor}, of another incarnation than the {self.why} at {self.token}"
         if held[1] > after[1] or (self.inclusive and held[1] == after[1]):
             return None
         return f"full {manifest.name} holds the table at {floor}, from before the {self.why} at {self.token}"
+
+
+_Heard = tuple[
+    dict[tuple[str, ...], set[str | None]],
+    list[dict[str, str]],
+    list[tuple[str, list[dict[str, str]]]],
+]
+
+
+def _held_by_full(epoch: str | None, floor: tuple[str, int] | None, after: _FullAfter) -> bool:
+    """whether the full reloaded at ``floor`` already holds the change of ``epoch``.
+
+    :param epoch: the epoch a change was heard at; None when it was heard with none (never judged held)
+    :ptype epoch: str | None
+    :param floor: the full's version of the table, split; None when it is not a generation token
+    :ptype floor: tuple[str, int] | None
+    :param after: what the table waited for: after a lost log, an epoch of the lost incarnation is held too
+    :ptype after: _FullAfter
+    :return: whether it is held
+    :rtype: bool
+    """
+    of = split_generation_token(epoch) if epoch is not None else None
+    if of is None or floor is None:
+        return False
+    if of[0] != floor[0]:
+        return after.incarnation is not None and of[0] != after.incarnation
+    return of[1] <= floor[1]
+
+
+def _past_floor(heard: _Heard, floor: str, after: _FullAfter) -> _Heard:
+    """what was heard of a table while it waited, less the changes the full it reloaded from already holds: applied
+    again over the full, an older change would undo a newer one the full holds (a row changed twice, the second in a
+    record the copy never read).
+
+    :param heard: the keys with their epochs, the partitions and the cleared prefixes with their epochs
+    :ptype heard: _Heard
+    :param floor: the full's version of the table (its oldest)
+    :ptype floor: str
+    :param after: what the table waited for
+    :ptype after: _FullAfter
+    :return: the same, without what the full holds; a key every one of whose epochs it holds is left out
+    :rtype: _Heard
+    """
+    keys, partitions, clears = heard
+    split = split_generation_token(floor)
+    kept: dict[tuple[str, ...], set[str | None]] = {}
+    for key, epochs in keys.items():
+        left = {epoch for epoch in epochs if not _held_by_full(epoch, split, after)}
+        if left or not epochs:
+            kept[key] = left
+    return (
+        kept,
+        partitions,
+        [(epoch, prefixes) for epoch, prefixes in clears if not _held_by_full(epoch, split, after)],
+    )
 
 
 class _StagesLostError(LookupError):
@@ -1109,12 +1187,94 @@ class CopyFollower:
         self._partitions[table].clear()
         self._cleared.get(table, []).clear()
         self._heard_waiting[table] = ({}, [], [])
+        self._look_for_full(table, why)
+
+    def _wait_for_recovery(self, table: str, reason: str, token: str) -> None:
+        """the copy can no longer walk an opted-in table's epoch log (a :data:`_LOG_LOST` reason): never read it from
+        L3, by the change notes or whole (decision 28 of the delta-files design: the writer recovers the table with
+        one recovery delta folded into its full, and publishes it). The copy waits for a full holding the table under
+        the incarnation of the log it reads now and past its mark, then reloads the table alone from it
+        (:meth:`_reload_from_volume`) and walks the log from the full's version. Unlike a reset, nothing the copy heard
+        is of a table that was replaced: what it heard and had not applied is held, and put back over the full, less
+        what the full already holds. The copy keeps serving the table as it held it, and keeps following every other
+        table.
+
+        :param table: the table
+        :ptype table: str
+        :param reason: the registry's behind reason
+        :ptype reason: str
+        :param token: the table's generation as read now, under the log the copy reads
+        :ptype token: str
+        :return: nothing
+        :rtype: None
+        """
+        incarnation = token.rpartition(":")[0]
+        after = _FullAfter(
+            why="lost epoch log",
+            token=self._registry.generation_marks.recorded(table),
+            inclusive=False,
+            incarnation=incarnation,
+        )
+        log.warning(
+            "the epoch log of a followed table that opts in to delta files cannot be walked from the copy's mark: it is "
+            "reloaded from the writer's recovered full on the volume once published, never read from L3; the copy "
+            "serves it as it held it meanwhile",
+            extra={"extra_data": {"table": table, "reason": reason, "read": token, "full_after": after.token}},
+        )
+        self._full_after[table] = after
+        # a stage is put back as the keys it held, which are held with the rest of what was heard
+        self._forget_tables_now([table])
+        self._whole.pop(table, None)
+        epochs = self._epochs_of.get(table, {})
+        keys = {key: set(epochs.pop(key, set())) for key in self._pending[table]}
+        self._pending[table].clear()
+        epochs.clear()
+        partitions, self._partitions[table] = list(self._partitions[table]), []
+        cleared = self._cleared.get(table, [])
+        clears = list(cleared)
+        cleared.clear()
+        self._heard_waiting[table] = (keys, partitions, clears)
+        self._look_for_full(table, after.why)
+
+    def _look_for_full(self, table: str, why: str) -> None:
+        """say in the status that ``table`` waits for a full, and look for one (:meth:`_reload_when_published`).
+
+        :param table: the table
+        :ptype table: str
+        :param why: what it waits for, for the status
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
         self._status.waiting_for_full[table] = f"{why}: looking for the writer's full of the table"
         task = self._reloads.get(table)
         if task is None or task.done():
             self._reloads[table] = asyncio.get_running_loop().create_task(
                 self._reload_when_published(table), name=f"copy follower reload of {table}"
             )
+
+    def _recovers_from_volume(self, table: str, reason: str, token: str | None) -> bool:
+        """whether ``table``, whose log the registry cannot walk (``reason``), waits for a full rather than counting
+        behind: a table that opts in to delta files and starts from the volume does (:meth:`_wait_for_recovery`), once
+        a generation names the log it reads now; one already waiting goes on waiting.
+
+        :param table: the table
+        :ptype table: str
+        :param reason: the registry's behind reason, one of :data:`_LOG_LOST`
+        :ptype reason: str
+        :param token: the table's generation as read now, None when its store holds none
+        :ptype token: str | None
+        :return: whether it waits for a full
+        :rtype: bool
+        """
+        if self._fulls is None or table not in self._fulls.tables:
+            return False
+        if table in self._full_after:
+            return True
+        if token is None:
+            return False  # no generation names the log read now: nothing to wait for yet; behind, as before
+        self._wait_for_recovery(table, reason, token)
+        return True
 
     async def _reload_when_published(self, table: str) -> None:
         """look for a full holding ``table`` at or past its reset every ``poll_seconds`` until one is published, then
@@ -1191,7 +1351,7 @@ class CopyFollower:
             self._stamps[mark] = (label, dict(self._current_marks))
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
-            keys, partitions, clears = self._heard_waiting.pop(table)
+            keys, partitions, clears = _past_floor(self._heard_waiting.pop(table), floor, after)
             del self._full_after[table]
             self._status.waiting_for_full.pop(table, None)
             self._pending[table] |= set(keys)
@@ -1537,6 +1697,9 @@ class CopyFollower:
                 token = await self._generation(name)
                 await self._registry.catch_up_generation(name, token, changes=self._changes)
                 reason = self._registry.behind_reason(name)
+                if reason in _LOG_LOST and self._recovers_from_volume(name, reason, token):
+                    # decision 28: the table waits for the writer's recovered full, and holds no other table back
+                    continue
                 if (
                     reason is not None
                     and reason not in _NOTES_CANNOT

@@ -12,7 +12,11 @@ so "the copy equals L3" and "no statement reached L3" are both checked. The cont
 - every other table keeps being followed while it waits;
 - a full from before the reset (or of none of its generation) is never taken;
 - a schema change of an opted-in table waits the same way;
-- a table that does not opt in still reads L3 whole on a reset, as before.
+- a table that does not opt in still reads L3 whole on a reset, as before;
+- a copy that can no longer walk an opted-in table's epoch log (the log lost and replaced under a new incarnation, or a
+  record of it missing) reads nothing from L3 either: it waits for the writer's recovered full (decision 28), never a
+  full from before the loss, reloads the table from it without applying again a change the full already holds, and
+  keeps following every other table meanwhile.
 """
 
 from __future__ import annotations
@@ -145,14 +149,23 @@ class _Log:
 
     def __init__(self) -> None:
         self.count: dict[str, int] = dict.fromkeys((_RESET, _OTHER, _PLAIN), 1)
+        self.incarnation: dict[str, str] = dict.fromkeys((_RESET, _OTHER, _PLAIN), "inc")
         self.records: dict[tuple[str, str], EpochChange] = {}
 
     async def current(self, table: str) -> str:
-        return f"inc:{self.count[table]}"
+        return f"{self.incarnation[table]}:{self.count[table]}"
 
     def _next(self, table: str) -> str:
         self.count[table] += 1
-        return f"inc:{self.count[table]}"
+        return f"{self.incarnation[table]}:{self.count[table]}"
+
+    def lose(self, table: str, incarnation: str) -> str:
+        """the table's log lost (every replica, or past its retention): its records gone, its generation started again
+        under a new incarnation."""
+        self.records = {key: change for key, change in self.records.items() if key[0] != table}
+        self.incarnation[table] = incarnation
+        self.count[table] = 1
+        return f"{incarnation}:1"
 
     def commit(self, table: str, keys: list[tuple[str, int]], delta_file: str | None = None) -> str:
         token = self._next(table)
@@ -424,3 +437,92 @@ async def test_a_cleared_prefix_heard_while_a_reset_table_waits_is_held_for_its_
     )
     await world.reloaded(_RESET)
     assert world.follower._cleared[_RESET] == [("inc:9", [{"state": "VA"}])]  # noqa: SLF001 - put back over the full
+
+
+async def test_a_copy_whose_log_was_replaced_reads_no_l3_and_reloads_the_table_from_the_recovered_full(
+    _volume: Path,
+) -> None:
+    """Flips if a copy that finds an opted-in table's epoch log replaced under a new incarnation (every NATS replica
+    lost) stops following the other tables, reads the table from L3 (by the change notes or whole), takes a full from
+    before the loss, or does not reload the table from the writer's recovered full and walk the new log from it, ending
+    equal to L3 (decision 28 of the delta-files design)."""
+    world = _World(_volume)
+    await world.started()
+    world.write(_RESET, [("VA", 1, 111)])
+    assert await world.follower.catch_up()
+    held = world.copy(_RESET)
+    # the log is lost while a commit lands: L3 changed, its delta file left on the volume, no record of it anywhere
+    world.l3.put(_RESET, [("IL", 2, 222)])
+    recovered_at = world.log.lose(_RESET, "new")
+    await world.follower.catch_up()
+    # nothing read L3; the table waits for the writer's recovery and is served as it was held
+    assert world.l3.statements[_RESET] == 0
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _RESET not in world.follower.status().behind
+    assert world.copy(_RESET) == held
+    await asyncio.sleep(0.05)  # several looks: the full from before the loss is never taken
+    assert "incarnation new" in world.follower.status().waiting_for_full[_RESET]
+    assert world.copy(_RESET) == held
+    # every other table keeps being followed meanwhile
+    world.write(_OTHER, [("VA", 0, 77), ("IL", 9, 9)])
+    assert await world.follower.catch_up()
+    assert world.same(_OTHER, _PLAIN)
+    # the writer's recovery: the kept full and one recovery delta, published at the new log's generation; then a commit
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, world.l3.held(_RESET), recovered_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    world.write(_RESET, [("VA", 3, 333)])
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+    assert world.l3.statements[_OTHER] == 0
+    assert world.registry.generation_marks.recorded(_RESET) == f"new:{world.log.count[_RESET]}"
+
+
+async def test_a_copy_missing_a_record_waits_for_the_recovered_full_and_applies_no_change_it_holds(
+    _volume: Path,
+) -> None:
+    """Flips if a copy whose walk of an opted-in table meets a record the log no longer holds reads L3 or stops
+    following the other tables; takes a full no newer than its mark; or, reloading from the recovered full, applies
+    again a change it heard before the loss that the full already holds (an older value over the full's newer one)."""
+    world = _World(_volume)
+    await world.started()
+    world.write(_RESET, [("VA", 1, 111)])
+    # a second commit to the same row, its record lost: the walk applies the first and stops at the hole
+    world.write(_RESET, [("VA", 1, 112)])
+    lost = f"inc:{world.log.count[_RESET]}"
+    del world.log.records[(_RESET, lost)]
+    await world.follower.catch_up()
+    assert world.l3.statements[_RESET] == 0
+    assert _RESET in world.follower.status().waiting_for_full
+    publish_full_manifest(  # a full at the mark, from before the hole: never taken
+        _volume,
+        term=2,
+        tables={name: _entry(_volume, name, world.l3.held(name), "inc:1") for name in _OPTED},
+    )
+    world.write(_OTHER, [("IL", 9, 9)])
+    assert await world.follower.catch_up()
+    assert world.same(_OTHER, _PLAIN)
+    await asyncio.sleep(0.05)
+    assert _RESET in world.follower.status().waiting_for_full
+    # the writer's recovery, at the generation past the hole
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, world.l3.held(_RESET), lost),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    await world.reloaded(_RESET)
+    world.write(_RESET, [("IL", 3, 333)])
+    assert await world.follower.catch_up()
+    assert world.same()
+    assert ("VA", 1, 112) in world.copy(_RESET)
+    assert world.l3.statements[_RESET] == 0
