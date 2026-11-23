@@ -1467,8 +1467,9 @@ class OwnDeltaSaves:
     """
 
     def __init__(self) -> None:
-        self._in_flight: dict[str, None] = {}
-        self._orphans: dict[str, None] = {}
+        #: read-only snapshots, each change a new one: never a set another call changes in place
+        self._in_flight: frozenset[str] = frozenset()
+        self._orphans: tuple[str, ...] = ()
 
     def saving(self, tables: Collection[str], write_id: str) -> list[str]:
         """note the files a write is about to save, one a table: in flight until its commit settles.
@@ -1482,7 +1483,7 @@ class OwnDeltaSaves:
         :raises ValueError: when a table or the write id cannot name a file
         """
         names = [_delta_file_name(table, write_id) for table in tables]
-        self._in_flight.update(dict.fromkeys(names))
+        self._in_flight = self._in_flight | frozenset(names)
         return names
 
     def settled(self, names: Collection[str], *, landed: bool) -> None:
@@ -1498,16 +1499,16 @@ class OwnDeltaSaves:
         :return: nothing
         :rtype: None
         """
-        for name in names:
-            self._in_flight.pop(name, None)
-            if not landed:
-                self._orphans[name] = None
-        while len(self._orphans) > _OWN_ORPHANS_HELD:
-            dropped = next(iter(self._orphans))
-            del self._orphans[dropped]
+        self._in_flight = self._in_flight - frozenset(names)
+        if landed:
+            return
+        orphans = (*self._orphans, *(name for name in names if name not in self._orphans))
+        dropped = orphans[: max(0, len(orphans) - _OWN_ORPHANS_HELD)]
+        self._orphans = orphans[len(dropped) :]
+        for name in dropped:
             log.warning(
                 "an orphan delta file no sweep reached is let go; its file stays on the volume",
-                extra={"extra_data": {"file": dropped, "held": _OWN_ORPHANS_HELD}},
+                extra={"extra_data": {"file": name, "held": _OWN_ORPHANS_HELD}},
             )
 
     @property
@@ -1517,7 +1518,7 @@ class OwnDeltaSaves:
         :return: their names
         :rtype: frozenset[str]
         """
-        return frozenset(self._in_flight)
+        return self._in_flight
 
     @property
     def orphans(self) -> tuple[str, ...]:
@@ -1526,7 +1527,7 @@ class OwnDeltaSaves:
         :return: their names
         :rtype: tuple[str, ...]
         """
-        return tuple(self._orphans)
+        return self._orphans
 
     def swept(self, names: Collection[str]) -> None:
         """forget orphans the sweep removed (or found gone).
@@ -1536,8 +1537,8 @@ class OwnDeltaSaves:
         :return: nothing
         :rtype: None
         """
-        for name in names:
-            self._orphans.pop(name, None)
+        gone = frozenset(names)
+        self._orphans = tuple(name for name in self._orphans if name not in gone)
 
 
 #: the most orphans this process holds for a sweep: each is a commit that failed, and a writer's fold sweeps them at

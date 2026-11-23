@@ -60,7 +60,7 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
     write_full_part,
 )
 from threetears.core.exceptions import GenerationUnavailableError  # noqa: E402
-from threetears.core.keyed import ThreadedDuckDB  # noqa: E402
+from threetears.core.keyed import ThreadedDuckDB, read_keyed_arrow  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE  # noqa: E402
 
@@ -1608,11 +1608,9 @@ async def test_a_recovery_builds_its_delta_in_a_worker_and_writes_l3_s_pages_bes
 
     monkeypatch.setattr(delta_files, "write_volume_file", refused)
     spilled: list[bool] = []
-    keyed = delta_fold.read_keyed_arrow
-
     async def beside(*args: Any, **kwargs: Any) -> Any:
         spilled.append(any((tmp_path / ".fulls" / "rebuild" / "votes").glob("*.pages.arrow")))
-        return await keyed(*args, **kwargs)
+        return await read_keyed_arrow(*args, **kwargs)
 
     monkeypatch.setattr(delta_fold, "read_keyed_arrow", beside)
     reader = _KeyedL3(list(held.values()))

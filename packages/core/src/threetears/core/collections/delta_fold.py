@@ -113,6 +113,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from threetears.observe import get_logger
@@ -310,6 +311,35 @@ _FULLS_PREFIX: Final = ".fulls/"
 _Share = tuple[str, str | None, str, str, int]
 
 
+def _with[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
+    """``mapping`` with ``key`` set to ``value``, as a new read-only snapshot: the fold's bookkeeping is never a dict
+    another call changes in place.
+
+    :param mapping: the snapshot
+    :ptype mapping: Mapping
+    :param key: the key
+    :ptype key: Any
+    :param value: its value
+    :ptype value: Any
+    :return: the new snapshot
+    :rtype: Mapping
+    """
+    return MappingProxyType({**mapping, key: value})
+
+
+def _without[K, V](mapping: Mapping[K, V], key: K) -> Mapping[K, V]:
+    """``mapping`` without ``key``, as a new read-only snapshot.
+
+    :param mapping: the snapshot
+    :ptype mapping: Mapping
+    :param key: the key
+    :ptype key: Any
+    :return: the new snapshot
+    :rtype: Mapping
+    """
+    return MappingProxyType({held: value for held, value in mapping.items() if held != key})
+
+
 @dataclass(frozen=True, slots=True)
 class FoldedTable:
     """one table the writer folds, as its schema declares it.
@@ -404,12 +434,12 @@ class DeltaFolds:
         if not _PYARROW:
             raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
         self.root = root
-        self.tables: Final = {table.name: table for table in tables}
+        self.tables: Final = MappingProxyType({table.name: table for table in tables})
         self._plain_tables = tuple(table.plain() for table in tables)
         self._owns_workers = workers is None
         self._workers = workers if workers is not None else ProcessWorkers(workers=1, name="delta folds")
         #: (table, file, token) of each commit not yet handed to a round that finished, in commit order
-        self._queued: list[tuple[str, str, str]] = []
+        self._queued: tuple[tuple[str, str, str], ...] = ()
         #: the commits the round running now took off the queue: still unfolded, for the gauges
         self._taken: tuple[tuple[str, str, str], ...] = ()
         #: the moment the newest queued commit was told, or its writer's oldest work in flight: a rebuild or a recovery
@@ -425,23 +455,23 @@ class DeltaFolds:
         self._failed_rounds = 0
         #: the term the running round folds at: a start of a newer term never waits on it (:meth:`start`)
         self._round_term: int | None = None
-        self._unfolded_warned: set[str] = set()
+        self._unfolded_warned: frozenset[str] = frozenset()
         #: how the writer reads L3 for a rebuild, from :meth:`start`: None until the writer's start calls it
         self._reader: _Reader | None = None
         #: tables reset or recreated (:meth:`start_fresh`), by why: rebuilt before any round folds them
-        self._fresh: dict[str, _FreshWhy] = {}
+        self._fresh: Mapping[str, _FreshWhy] = MappingProxyType({})
         #: tables whose epoch log was lost, by why: recovered by key (decision 28) before any round folds them
-        self._recover: dict[str, _RecoveryWhy] = {}
+        self._recover: Mapping[str, _RecoveryWhy] = MappingProxyType({})
         #: each table's delta files lost (missing or unreadable) that decision 29 handed to a recovery, onto the epoch
         #: whose record named each: never read for the recovery's keys, deleted once it is published; the record's
         #: notes bracket or states name the keys instead (decision 31)
-        self._lost: dict[str, dict[str, str]] = {}
+        self._lost: Mapping[str, Mapping[str, str]] = MappingProxyType({})
         #: the epoch log and the change notes, from :meth:`start`: what a lost file's record and keys are read from
         self._changes: EpochChangeReader | None = None
         self._notes: NotedKeysReader | None = None
         #: each table's recovery asks (:meth:`recover_table`): one asked while a recovery of the table runs is owed
         #: again once it ends, since the generation that recovery read may be older than the lost file's epoch
-        self._asked: Counter[str] = Counter()
+        self._asked: Mapping[str, int] = MappingProxyType({})
         #: whether a rebuild may be owed: the next round looks before it folds
         self._recheck = False
         #: whether a table was marked fresh since the last rebuild began
@@ -449,7 +479,7 @@ class DeltaFolds:
         #: how many rebuilds and recoveries published: a count, never a list growing with each
         self.published = 0
         #: the tables a rebuild or a recovery published during the :meth:`start` running, in order; None outside one
-        self._starting: list[str] | None = None
+        self._starting: tuple[str, ...] | None = None
 
     @property
     def unfolded(self) -> frozenset[str]:
@@ -511,7 +541,7 @@ class DeltaFolds:
         for table, file in files.items():
             if table not in self.tables:
                 if table not in self._unfolded_warned:
-                    self._unfolded_warned.add(table)
+                    self._unfolded_warned = self._unfolded_warned | {table}
                     log.warning(
                         "a commit named a delta file of a table the writer does not fold; its files are never folded "
                         "or deleted",
@@ -526,7 +556,7 @@ class DeltaFolds:
                     extra={"extra_data": {"table": table, "file": file, "generation": token}},
                 )
                 continue
-            self._queued.append((table, file, token))
+            self._queued = (*self._queued, (table, file, token))
         self._term = version if self._term is None else max(self._term, version)
         self._before = now if in_flight_since is None else min(now, in_flight_since)
         self._measure()
@@ -590,16 +620,15 @@ class DeltaFolds:
             await self._cut("new_term")
         self._term = version if self._term is None else max(self._term, version)
         self._recheck = True
-        published: list[str] = []
-        self._starting = published
+        self._starting = ()
         try:
             await self.wait()
             await self._relearn(generations, changes)
             self._run_rounds()
             await self.wait()
         finally:
-            self._starting = None
-        return tuple(published)
+            published, self._starting = self._starting or (), None
+        return published
 
     async def _relearn(self, generations: GenerationSource, changes: EpochChangeReader) -> None:
         """queue, as commits told, each delta file the epoch log names since each table's oldest part (module
@@ -659,7 +688,7 @@ class DeltaFolds:
             present = await asyncio.to_thread(_present, self.root, list(files))
             # a file gone was covered by a published full and deleted (nothing else deletes a committed delta)
             learned = [(name, file, files[file]) for file in present if file not in told]
-            self._queued.extend(learned)
+            self._queued = (*self._queued, *learned)
             self._measure()
             _RELEARNED.labels(table=name).inc(len(learned))
             log.info(
@@ -713,7 +742,7 @@ class DeltaFolds:
             "a folded table starts fresh: it is rebuilt from L3 and its old files dropped",
             extra={"extra_data": {"table": table, "why": why, "detail": detail}},
         )
-        self._fresh[table] = why
+        self._fresh = _with(self._fresh, table, why)
         self._recheck = True
         self._marked = True
         if self._reader is not None:
@@ -737,7 +766,7 @@ class DeltaFolds:
             "files name, read from L3 by key",
             extra={"extra_data": {"table": table, "why": why, "detail": detail}},
         )
-        self._recover[table] = why
+        self._recover = _with(self._recover, table, why)
         self._recheck = True
         self._marked = True
         if self._reader is not None:
@@ -768,8 +797,8 @@ class DeltaFolds:
         """
         if table not in self.tables:
             raise KeyError(table)
-        self._lost.setdefault(table, {})[file] = epoch
-        self._asked[table] += 1
+        self._lost = _with(self._lost, table, _with(self._lost.get(table, MappingProxyType({})), file, epoch))
+        self._asked = _with(self._asked, table, self._asked.get(table, 0) + 1)
         if self._recover.get(table) is not None:
             # owed already (perhaps failed on this very file): tried again now, without reading it
             self._recheck = True
@@ -817,7 +846,7 @@ class DeltaFolds:
         """
         self.published += 1
         if self._starting is not None:
-            self._starting.append(table)
+            self._starting = (*self._starting, table)
 
     async def wait(self) -> None:
         """wait for the round in progress, and any it starts, to end.
@@ -905,7 +934,7 @@ class DeltaFolds:
                 if self._marked and self._reader is not None:
                     continue  # a table marked fresh during that rebuild is rebuilt now, not at the next commit
                 return
-            taken, self._queued = self._queued, []
+            taken, self._queued = self._queued, ()
             self._taken = tuple(taken)
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
@@ -924,7 +953,7 @@ class DeltaFolds:
                     tuple(sorted(set(self._fresh) | set(self._recover))),
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
-                self._queued = taken + self._queued
+                self._queued = (*taken, *self._queued)
                 self._taken = ()
                 if isinstance(error, asyncio.CancelledError):
                     raise
@@ -968,7 +997,7 @@ class DeltaFolds:
                     "rounds_failed",
                     detail=f"{self._failed_rounds} fold rounds failed in a row: its queued files are recovered by key",
                 )
-        self._queued = [item for item in self._queued if item[0] not in tables]
+        self._queued = tuple(item for item in self._queued if item[0] not in tables)
         self._failed_rounds = 0
 
     def _took(self, answer: tuple[Any, ...]) -> None:
@@ -1125,9 +1154,9 @@ class DeltaFolds:
             if outcome != "rebuilt":
                 continue
             if self._fresh.get(name) == why:
-                self._fresh.pop(name)
+                self._fresh = _without(self._fresh, name)
             # a table read whole holds every change its leftover files named: no recovery is owed after it
-            self._recover.pop(name, None)
+            self._recover = _without(self._recover, name)
             self._published_one(name)
             self._drop_covered(name, token, known[name])
             log.info(
@@ -1189,7 +1218,7 @@ class DeltaFolds:
             current = await asyncio.to_thread(current_full_manifest, self.root)
             if current is None or name not in current.tables:
                 # no full holds the table: the rebuild reads it whole, the one cold start, before the next round
-                self._recover.pop(name)
+                self._recover = _without(self._recover, name)
                 self._recheck = True
                 continue
             if current.term > term:
@@ -1235,7 +1264,7 @@ class DeltaFolds:
         """
         table = self.tables[name]
         began = time.time()
-        asked = self._asked[name]
+        asked = self._asked.get(name, 0)
         lost = dict(self._lost.get(name, {}))
         known = {file for table_name, file, _ in self._queued if table_name == name} | {
             share[2] for share in self._pending if share[0] == name
@@ -1283,7 +1312,7 @@ class DeltaFolds:
         if outcome != "recovered":
             await asyncio.to_thread(_unlink_all, self.root, [file])
             if outcome == "no_full":
-                self._recover.pop(name, None)
+                self._recover = _without(self._recover, name)
                 self._recheck = True
             else:
                 log.warning(
@@ -1291,8 +1320,8 @@ class DeltaFolds:
                     extra={"extra_data": {"term": term, "manifest": manifest, "table": name}},
                 )
             return
-        if self._asked[name] == asked:
-            self._recover.pop(name, None)
+        if self._asked.get(name, 0) == asked:
+            self._recover = _without(self._recover, name)
         else:
             # asked again while it ran (decision 29): that file's epoch may be past the generation read; owed again
             self._recheck = True
@@ -1300,9 +1329,9 @@ class DeltaFolds:
         if lost:
             left = {held: epoch for held, epoch in self._lost.get(name, {}).items() if held not in lost}
             if left:
-                self._lost[name] = left
+                self._lost = _with(self._lost, name, MappingProxyType(left))
             else:
-                self._lost.pop(name, None)
+                self._lost = _without(self._lost, name)
         for lost_reach in named:
             _LOST_FILE_RECOVERIES.labels(table=name, why=lost_reach.why).inc()
             log.warning(
@@ -1563,7 +1592,7 @@ class DeltaFolds:
 
         dropped = {file for name, file, share_token in self._queued if covered(name, file, share_token)}
         dropped |= {share[2] for share in self._pending if covered(share[0], share[2], share[3])}
-        self._queued = [item for item in self._queued if not covered(*item)]
+        self._queued = tuple(item for item in self._queued if not covered(*item))
         self._pending = tuple(share for share in self._pending if not covered(share[0], share[2], share[3]))
         left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
         self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
