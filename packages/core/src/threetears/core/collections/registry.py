@@ -86,8 +86,11 @@ BEHIND_REASONS: Final[dict[str, str]] = {
     "notes_not_covered": (
         "an epoch's writer named too many rows to record, and the change notes no longer hold its bracket (or "
         "the broker has no l3.noted_keys door, or did not answer); every catch-up pass asks again, and it ends "
-        "on its own when the change-note keeper's restore of a lost log is labelled and the mark is at or past "
-        "covered_from, otherwise at a restart"
+        "on its own when the door answers again or the change-note keeper's restore of a lost log is labelled "
+        "and the mark is at or past covered_from. A restart ends it only where the start takes the mark at the "
+        "head (a first sight); a copy follower restarted from a checkpoint older than the epoch adopts that "
+        "checkpoint's mark and meets the same hole, until a checkpoint past the epoch is loaded or an operator "
+        "forgets the table from the checkpoints (CopyCheckpoints.forget), whose next start reads it whole"
     ),
     "notes_unavailable": (
         "an epoch's writer named too many rows to record, and no change-note ring is installed to name them; "
@@ -486,6 +489,11 @@ class CollectionRegistry:
         # names the keys of an epoch whose writer named too many rows to record, from the change notes: the bus's
         # l3.noted_keys door, taken from an L3 transport that has one (:meth:`configure`), or set
         self._noted_keys: NotedKeysReader | None = None
+        # table -> the database-clock time from which the change notes held the keys of the oldest epoch this
+        # registry named from them (an epoch recorded keys unknown, or a table resolved from its notes) and a copy
+        # follower has not taken yet (:meth:`take_notes_resolved`): a start from a checkpoint older than that epoch
+        # needs those notes again, so the follower's checkpoint is due before they can be emptied
+        self._notes_resolved: dict[str, datetime] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
@@ -1128,6 +1136,8 @@ class CollectionRegistry:
                 if why is not None:
                     hole = hole or (change.token, why)
                     continue
+                assert change.noted_between is not None  # noqa: S101 -- named from notes only within a bracket
+                self._noted(table_name, change.noted_between[0])
                 if hole is None:
                     reached = change.token
                 marks.applied(table_name, change.token)
@@ -1276,6 +1286,7 @@ class CollectionRegistry:
                         )
                     )
                     keys += 1
+        self._noted(table_name, bracket[0])
         self._generation_marks.adopt_generation(table_name, token)
         self._caught_up(table_name)
         self._tell_caught_up(table_name)
@@ -1284,6 +1295,31 @@ class CollectionRegistry:
             extra={"extra_data": {"table": table_name, "since": since.isoformat(), "keys": keys, "token": token}},
         )
         return None
+
+    def _noted(self, table_name: str, since: datetime) -> None:
+        """keep the oldest time the change notes held keys this registry named from them for ``table_name``.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param since: where the notes bracket the keys were named from begins (database clock)
+        :ptype since: datetime
+        :return: nothing
+        :rtype: None
+        """
+        held = self._notes_resolved.get(table_name)
+        self._notes_resolved[table_name] = since if held is None else min(held, since)
+
+    def take_notes_resolved(self, table_name: str) -> datetime | None:
+        """the oldest time from which the change notes held the keys of an epoch this registry named from them since
+        the last call, and forget it: what a copy follower hands its checkpoint once it applies those keys, so a
+        checkpoint past that epoch is written before the notes can be emptied.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the start of the oldest such notes bracket (database clock); None when none was named since
+        :rtype: datetime | None
+        """
+        return self._notes_resolved.pop(table_name, None)
 
     def behind_on(self, table_name: str) -> bool:
         """whether this registry is behind on ``table_name``: an epoch it has not been able to apply.
@@ -2143,3 +2179,4 @@ class CollectionRegistry:
         self._derived_caches.clear()
         self._generation_marks = GenerationMarks()
         self._watching = {}
+        self._notes_resolved = {}

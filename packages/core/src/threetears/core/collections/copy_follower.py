@@ -40,7 +40,7 @@ import asyncio
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -720,6 +720,12 @@ class CopyFollower:
         #: falls behind on is resolved from the change notes since then (:meth:`CollectionRegistry
         #: .resolve_behind_from_notes`), never by a warm
         self._current_at: dict[str, datetime] = {}
+        #: each table whose keys the registry named from the change notes (an epoch recorded keys unknown, or a
+        #: resolve of being behind), onto where the oldest such notes bracket begins: handed to the checkpoint once an
+        #: apply holds the table current past it, so a checkpoint past that epoch is due before the notes can go
+        self._noted: dict[str, datetime] = {}
+        #: asks for a checkpoint when an epoch applied from the notes makes one due with no change to apply then
+        self._checkpoint_wake: asyncio.TimerHandle | None = None
 
     # --- what the registry tells it -------------------------------------------------------------
 
@@ -1040,6 +1046,9 @@ class CopyFollower:
                     # never a warm: the keys the change notes name since the table was last current are read instead
                     resolved = await self._registry.resolve_behind_from_notes(name, self._current_at[name], token)
                     reason = resolved if resolved is not None else self._registry.behind_reason(name)
+                noted = self._registry.take_notes_resolved(name)
+                if noted is not None:
+                    self._noted[name] = min(self._noted.get(name, noted), noted)
                 if reason is not None:
                     # the registry's reason (BEHIND_REASONS): the status and collection_epoch_behind_total say the same
                     behind[name] = reason
@@ -1131,9 +1140,13 @@ class CopyFollower:
                 )
             # a table is current at the marks taken for this pass only when nothing of it is left to read: no key left
             # pending (a scope the write holds, a table of no scope while any write is), no whole read, no partition
-            for name in self._tables:
-                if not self._pending[name] and name not in self._whole and not self._partitions[name]:
-                    self._current_marks[name] = self._staging_marks.get(name)
+            current = [
+                name
+                for name in self._tables
+                if not self._pending[name] and name not in self._whole and not self._partitions[name]
+            ]
+            for name in current:
+                self._current_marks[name] = self._staging_marks.get(name)
             self._stamps[mark] = (label, dict(self._current_marks))
             # what this apply touched, for the checkpoint's incremental parts: a table read whole is every scope
             touched: dict[str, frozenset[str] | None] = {
@@ -1170,7 +1183,7 @@ class CopyFollower:
             )
             for listener in tuple(self._listeners):
                 listener(label)
-            self._checkpoint_when_due(rows, touched, touched_keys, whole_whys)
+            self._checkpoint_when_due(rows, touched, touched_keys, whole_whys, self._noted_held(current))
             return True
 
     async def _relabel(self, first: Any, label: Any, *, writing: bool, held: frozenset[str]) -> bool:
@@ -1222,8 +1235,20 @@ class CopyFollower:
         )
         for listener in tuple(self._listeners):
             listener(label)
-        self._checkpoint_when_due(0, {}, {}, {})
+        self._checkpoint_when_due(0, {}, {}, {}, self._noted_held(self._tables))
         return True
+
+    def _noted_held(self, current: Iterable[str]) -> datetime | None:
+        """take the notes times of the tables the copy now holds current: their marks, which a checkpoint records, are
+        past every epoch named from the notes so far. A table left pending keeps its own until it is current.
+
+        :param current: the tables whose marks this change moved
+        :ptype current: Iterable[str]
+        :return: where the oldest of their notes brackets begins; None when none was named from the notes
+        :rtype: datetime | None
+        """
+        held = [self._noted.pop(name) for name in current if name in self._noted]
+        return min(held) if held else None
 
     def _checkpoint_when_due(
         self,
@@ -1231,6 +1256,7 @@ class CopyFollower:
         touched: Mapping[str, frozenset[str] | None],
         keys: Mapping[str, frozenset[tuple[str, ...]]],
         whys: Mapping[str, str],
+        noted: datetime | None = None,
     ) -> None:
         """count a change's rows toward the next checkpoint, and write one beside the follower when it is due.
 
@@ -1243,20 +1269,42 @@ class CopyFollower:
         :param whys: each table read whole, onto why (``cold_start``, ``reset``, ``schema_change``,
             ``legacy_whole_record``)
         :ptype whys: Mapping[str, str]
+        :param noted: where the oldest notes bracket begins of the epochs this change holds that were named from the
+            change notes; None when none was
+        :ptype noted: datetime | None
         :return: nothing
         :rtype: None
         """
         if self._checkpoints is None:
             return
-        self._checkpoints.applied(rows, touched, keys, whys)
-        if not self._checkpoints.due() or (self._checkpointing is not None and not self._checkpointing.done()):
+        self._checkpoints.applied(rows, touched, keys, whys, noted=noted)
+        self._checkpoint_if_due()
+
+    def _checkpoint_if_due(self) -> None:
+        """write a checkpoint beside the follower when one is due and none is being written; otherwise, when an epoch
+        applied from the change notes will make one due, ask again then: after a large commit nothing else may be
+        applied before its notes can no longer be read (:meth:`CopyCheckpoints.noted_due_in`).
+
+        :return: nothing
+        :rtype: None
+        """
+        assert self._checkpoints is not None  # noqa: S101 -- narrowed by the callers
+        if self._checkpointing is not None and not self._checkpointing.done():
+            return  # the write's end asks again
+        if self._checkpoint_wake is not None:
+            self._checkpoint_wake.cancel()
+            self._checkpoint_wake = None
+        if self._checkpoints.due():
+            self._checkpointing = asyncio.create_task(self._write_checkpoint())
             return
-        self._checkpointing = asyncio.create_task(self._write_checkpoint())
+        wait = self._checkpoints.noted_due_in()
+        if wait is not None:
+            self._checkpoint_wake = asyncio.get_running_loop().call_later(wait, self._checkpoint_if_due)
 
     async def _write_checkpoint(self) -> None:
         assert self._checkpoints is not None  # noqa: S101 -- narrowed by the caller
         try:
-            await self._checkpoints.write(self.reading_marked)
+            written = await self._checkpoints.write(self.reading_marked)
         except asyncio.CancelledError, KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
@@ -1265,6 +1313,11 @@ class CopyFollower:
                 log=log,
                 what="a copy checkpoint could not be written; the next change that makes one due tries again",
             )
+            return
+        if written is not None:
+            # a change applied while it was written stays counted: asked again once this write is done, so an epoch
+            # applied from the notes meanwhile is not left waiting for a change that may not come
+            asyncio.get_running_loop().call_soon(self._checkpoint_if_due)
 
     async def checkpointed(self) -> None:
         """wait for a checkpoint being written, if one is.
@@ -2198,6 +2251,9 @@ class CopyFollower:
         self._removers = []
         if self._checkpointing is not None:
             self._checkpointing.cancel()
+        if self._checkpoint_wake is not None:
+            self._checkpoint_wake.cancel()
+            self._checkpoint_wake = None
         self._status.phase = FollowerPhase.STOPPED
 
     # --- reading ---------------------------------------------------------------------------------

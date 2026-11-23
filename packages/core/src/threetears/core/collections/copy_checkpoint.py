@@ -43,9 +43,12 @@ It is how a follower stuck behind on a table (an epoch the log cannot give: ``ke
 every replica restarts from a checkpoint older than that epoch is brought back: a start from the checkpoint walks the
 log from the stale mark again, a start that sees the table for the first time does not.
 
-**When.** Not on a timer: when the rows applied since the last checkpoint reach ``ratio`` (default half) of the rows it
-holds, once after the first warm, and once a table left out of the load is read again (:meth:`CopyCheckpoints.due`).
-Writes are counted in ``copy_checkpoint_writes_total{kind, outcome}``.
+**When.** When the rows applied since the last checkpoint reach ``ratio`` (default half) of the rows it holds, once
+after the first warm, once a table left out of the load is read again, and once the oldest epoch the follower applied
+from the change notes (a commit too large to record its keys) is a quarter note fence old (:meth:`CopyCheckpoints.due`):
+a start from a checkpoint older than such an epoch needs its notes again, and they answer for at least half a fence.
+Writes are counted in ``copy_checkpoint_writes_total{kind, outcome}``; how long such an epoch has waited for a
+checkpoint, in ``copy_checkpoint_notes_unsaved_age_seconds{base}``.
 """
 
 from __future__ import annotations
@@ -54,14 +57,15 @@ import asyncio
 import hashlib
 import json
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import contain, get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, gauge
 
 from threetears.core.declared import whole_read
 from threetears.core.operator import operator_reset
@@ -69,6 +73,7 @@ from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.cache.duckdb_binds import run_bound
+from threetears.core.ddl.change_notes import DEFAULT_NOTE_FENCE
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
@@ -160,6 +165,18 @@ def _writes() -> Any:
         "again) and outcome (written; failed; skipped: another replica holds the lock, the copy has no stamp yet, "
         "or a later checkpoint moved the pointer first)",
         label_names=("kind", "outcome"),
+    )
+
+
+def _notes_age() -> Any:
+    return gauge(
+        "copy_checkpoint_notes_unsaved_age_seconds",
+        description="seconds since the oldest epoch this replica's copy took from the change notes (a commit too "
+        "large to record its keys) that no checkpoint it wrote holds yet, 0 when none: a start from the checkpoint "
+        "needs those notes, which answer for at least half a note fence (5 of 10 min). A checkpoint is due at a "
+        "quarter fence; a value past it says the checkpoint is late, and past half a fence that a restart may be "
+        "stuck behind",
+        label_names=("base",),
     )
 
 
@@ -416,6 +433,7 @@ class _Taken:
     kinds: dict[str, str]
     due: bool
     whole: frozenset[str]
+    noted: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +523,7 @@ class CopyCheckpoints:
         decode_stamp: Callable[[Any], Any] = lambda data: data,
         ratio: float = _DEFAULT_RATIO,
         part_rows: int = _DEFAULT_PART_ROWS,
+        note_fence: timedelta = DEFAULT_NOTE_FENCE,
     ) -> None:
         if pa is None:
             raise ImportError("a checkpoint needs pyarrow: install 3tears[snapshot]")
@@ -550,6 +569,21 @@ class CopyCheckpoints:
         self._broken: set[tuple[int, str]] = set()
         #: the tables a follower keeps by their epochs (:meth:`follow`); every other is derived. None: every table
         self._followed: frozenset[str] | None = None
+        #: where the oldest notes bracket begins of an epoch the follower applied from the change notes since the last
+        #: checkpoint (database clock); None when none
+        self._noted: datetime | None = None
+        # Why a quarter fence: the notes keep a bracket answerable for at least half a fence from where it begins,
+        # not a whole one. A reader refuses a bracket once its reach (its start less half the ring's wait, for a
+        # writer's cached slot) is older than the switch before the current one (change_notes.py, the
+        # not_covered checks), and switches are at least the wait (at least the fence) apart: a switch just after
+        # the reach is followed by the next one wait later, half a wait after the bracket began. Due at half of
+        # that, the follower has the other quarter fence to write the checkpoint, and under continuous large
+        # commits checkpoints come at most about once a quarter fence (2.5 min at the default 10)
+        self._noted_due_after = note_fence / 4
+        held = weakref.ref(self)
+        _notes_age().labels(base=self.base).set_function(
+            lambda: checkpoints.notes_age_seconds() if (checkpoints := held()) is not None else 0.0
+        )
 
     def follow(self, names: Iterable[str]) -> None:
         """name the tables a follower keeps by their epochs; every other table this checkpoint holds is derived from
@@ -618,6 +652,7 @@ class CopyCheckpoints:
         """
         found = await self.newest()
         self._touched, self._keys, self._whole_kinds, self._since, self._stale = {}, {}, {}, 0, False
+        self._noted = None
         if found is None:
             self._held_rows, self._priors, self._whole, self._whole_due, self._missing = None, {}, set(), False, {}
             return StagedCheckpoint(
@@ -747,6 +782,7 @@ class CopyCheckpoints:
         touched: Mapping[str, frozenset[str] | None],
         keys: Mapping[str, Iterable[tuple[str, ...]]] | None = None,
         whys: Mapping[str, str] | None = None,
+        noted: datetime | None = None,
     ) -> None:
         """count a change the follower applied: its rows make the next checkpoint due, and what it touched is what
         the next checkpoint writes. Kept until a write lands.
@@ -762,6 +798,9 @@ class CopyCheckpoints:
         :param whys: each table read whole, onto why the follower read it (``cold_start``, ``reset``,
             ``schema_change``, ``legacy_whole_record``): the situation the checkpoint's whole read of it is
         :ptype whys: Mapping[str, str] | None
+        :param noted: when the change holds keys the follower named from the change notes, where the oldest of their
+            notes brackets begins (database clock): the next checkpoint is due a quarter note fence after it
+        :ptype noted: datetime | None
         :return: nothing
         :rtype: None
         :raises ValueError: when a table with no scope is touched, not whole, and no keys are named for it, or a table
@@ -772,6 +811,7 @@ class CopyCheckpoints:
         if unknown:
             raise ValueError(f"{unknown} were read whole: name why, one of {sorted(_FOLLOWER_KINDS)}")
         self._since += rows
+        self._note(noted)
         for name in whole:
             self._whole_kinds[name] = _FOLLOWER_KINDS[(whys or {})[name]]
         scopeless = {t.name for t in self._tables if t.scope is None}
@@ -791,9 +831,9 @@ class CopyCheckpoints:
                 _add_keys(self._keys, table, keys[table])
 
     def due(self) -> bool:
-        """whether a checkpoint is due: none is known, a table the load left out is due, or the rows applied since
-        reach the ratio of its rows; never while this replica is stale (the newest holds tables it could only rewrite
-        whole, until it loads again).
+        """whether a checkpoint is due: none is known, a table the load left out is due, the rows applied since
+        reach the ratio of its rows, or an epoch applied from the change notes since is a quarter note fence old; never
+        while this replica is stale (the newest holds tables it could only rewrite whole, until it loads again).
 
         :return: whether it is due
         :rtype: bool
@@ -802,7 +842,39 @@ class CopyCheckpoints:
             return False
         if self._held_rows is None or self._whole_due:
             return True
+        if self.noted_due_in() == 0.0:
+            return True
         return self._since >= max(1, int(self._ratio * self._held_rows))
+
+    def noted_due_in(self) -> float | None:
+        """the seconds until an epoch applied from the change notes since the last checkpoint makes one due: 0 once
+        it is due; None when there is none. A follower with no change to apply asks again then.
+
+        Compared on this process's clock against the notes' database clock: a skew is taken from the quarter fence the
+        rule leaves between a checkpoint due and the notes it saves being refused.
+
+        :return: the seconds; None when nothing was applied from the notes since
+        :rtype: float | None
+        """
+        if self._noted is None:
+            return None
+        waited = datetime.now(tz=self._noted.tzinfo or UTC) - self._noted
+        return max(0.0, (self._noted_due_after - waited).total_seconds())
+
+    def notes_age_seconds(self) -> float:
+        """how long the oldest epoch applied from the change notes has waited for a checkpoint holding it; 0 when
+        none waits (``copy_checkpoint_notes_unsaved_age_seconds``).
+
+        :return: the seconds
+        :rtype: float
+        """
+        if self._noted is None:
+            return 0.0
+        return max(0.0, (datetime.now(tz=self._noted.tzinfo or UTC) - self._noted).total_seconds())
+
+    def _note(self, noted: datetime | None) -> None:
+        if noted is not None:
+            self._noted = noted if self._noted is None else min(self._noted, noted)
 
     def _incremental(self) -> bool:
         return bool(self._priors)
@@ -840,8 +912,10 @@ class CopyCheckpoints:
             kinds=self._whole_kinds,
             due=self._whole_due,
             whole=frozenset(self._whole),
+            noted=self._noted,
         )
         self._touched, self._keys, self._whole_kinds, self._whole_due = {}, {}, {}, False
+        self._noted = None
         return taken
 
     def _give_back(self, taken: _Taken) -> None:
@@ -858,6 +932,7 @@ class CopyCheckpoints:
             _add_keys(self._keys, table, keys)
         self._whole_kinds = {**taken.kinds, **self._whole_kinds}
         self._whole_due = self._whole_due or taken.due
+        self._note(taken.noted)
 
     def _plan(self, table: FollowedTable, taken: _Taken, newest: Checkpoint | None) -> _Plan | None:
         """how a write writes one table; None when this replica could only rewrite whole what the newest holds.

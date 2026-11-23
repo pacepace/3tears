@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a copy follower checkpoints an epoch taken from the change notes before its notes can go
+
+**Fixed:** a reports pod restarted after a busy night stayed behind for good (`notes_not_covered`): a commit too large
+to record its keys reaches the copy from the change notes, but its few rows never made a checkpoint due, so a restart
+loaded the checkpoint from before it and found the notes emptied. `CopyCheckpoints.due()` is now also true once the
+oldest epoch the follower applied from the notes since the last checkpoint is a quarter note fence old (the notes
+answer for at least half a fence from a bracket's start); the follower asks again at that time when nothing else is
+applied. `CollectionRegistry.take_notes_resolved` hands the follower each table's oldest such bracket.
+`BEHIND_REASONS["notes_not_covered"]` now says what ends it for a follower started from a checkpoint.
+
+**Added:** `copy_checkpoint_notes_unsaved_age_seconds{base}`: seconds since the oldest epoch taken from the notes that
+no checkpoint holds yet, 0 when none. `CopyCheckpoints(note_fence=)` (default `DEFAULT_NOTE_FENCE`).
+
 ### core: a lost epoch advance is announced by its writer's backstop; the write marks are gone
 
 **Removed:** the write-mark queue's trigger, function, reader and reconciler (`threetears.core.collections.write_marks`,

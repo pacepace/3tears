@@ -129,6 +129,17 @@ class _NoOpMetric:
         :rtype: None
         """
 
+    def set_function(self, *args: Any, **kwargs: Any) -> None:
+        """No-op gauge callback.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: none
+        :rtype: None
+        """
+
     def labels(self, *args: Any, **kwargs: Any) -> "_NoOpMetric":
         """No-op label binding, returns self for chaining.
 
