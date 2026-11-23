@@ -66,7 +66,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
-from threetears.observe import contain, get_logger
+from threetears.observe import contain, get_logger, retry_until_done
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
@@ -1128,25 +1128,31 @@ class CopyFollower:
         fulls = self._fulls
         if fulls is None:
             return  # only a follower starting from the volume waits for a full
-        while table in self._full_after and self._status.phase is not FollowerPhase.STOPPED:
+
+        async def looked() -> bool:
+            if table not in self._full_after or self._status.phase is FollowerPhase.STOPPED:
+                return True
             short: str | None
             try:
                 manifest = await asyncio.to_thread(current_full_manifest, fulls.root)
                 short = self._full_after[table].short_of(table, manifest)
                 if short is None:
                     if await self._reload_from_volume(table, fulls, manifest):
-                        return
+                        return True
                     short = "the table was reset again while its full loaded; looking again"
             except FileNotFoundError as exc:
                 short = f"a part of the current full is not on the volume ({exc.filename}); looking again"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed look leaves the copy as it was; the next looks again
-                contain(exc, log=log, what="a copy follower could not reload a reset table from the volume's full")
+                contain(exc, log=log, what="a copy follower could not reload a waiting table from the volume's full")
                 short = f"the reload failed ({type(exc).__name__}: {exc}); looking again"
             if table in self._full_after:
                 self._status.waiting_for_full[table] = short
-            await asyncio.sleep(fulls.poll_seconds)
+            return False
+
+        # the platform's never-give-up loop (threetears.observe), at the volume's own pace: a look every poll_seconds
+        await retry_until_done(looked, first_delay=fulls.poll_seconds, max_delay=fulls.poll_seconds)
 
     async def _reload_from_volume(self, table: str, fulls: VolumeFulls, manifest: FullManifest | None) -> bool:
         """reload ``table`` alone from ``manifest`` in its own change, under the pass lock: its parts staged and applied
@@ -1384,16 +1390,25 @@ class CopyFollower:
         :return: what was staged; None when the follower was stopped while it waited
         :rtype: StagedFull | None
         """
-        while self._status.phase is not FollowerPhase.STOPPED:
+        staged: StagedFull | None = None
+
+        async def looked() -> bool:
+            nonlocal staged
+            if self._status.phase is FollowerPhase.STOPPED:
+                return True
             try:
                 found = await fulls.stage(self._backend)
             except FileNotFoundError as exc:
                 found = FullAbsent(f"a part of the current full is not on the volume ({exc.filename}); looking again")
             if isinstance(found, StagedFull):
-                return found
+                staged = found
+                return True
             self._say(FollowerPhase.WAITING, f"waiting for the full: {found.reason}")
-            await asyncio.sleep(fulls.poll_seconds)
-        return None
+            return False
+
+        # the platform's never-give-up loop (threetears.observe), at the volume's own pace: a look every poll_seconds
+        await retry_until_done(looked, first_delay=fulls.poll_seconds, max_delay=fulls.poll_seconds)
+        return staged
 
     async def _warm_tables(self, whys: Mapping[str, str]) -> None:
         """take these tables' marks at the head and read each whole at the next apply, counted by why.
