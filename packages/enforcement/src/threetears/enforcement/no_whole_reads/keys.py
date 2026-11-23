@@ -29,8 +29,11 @@ from threetears.enforcement.common import walk_tree
 __all__ = [
     "THREETEARS_KEY_SOURCES",
     "KeySources",
+    "ScopeSources",
     "annotated_key",
+    "annotated_scope",
     "declared_key_sources",
+    "declared_scope_sources",
 ]
 
 #: the annotations that declare a key source
@@ -49,6 +52,51 @@ THREETEARS_KEY_SOURCES: Final[frozenset[str]] = frozenset(
         "conflict_columns",
     }
 )
+
+
+#: the annotation that declares a table's state column (``Annotated[str, DeclaredScope]``): a SCOPE source, never a key
+#: source. It bounds only :func:`threetears.core.keyed.read_state_arrow`, a local copy's read of one state (Pace,
+#: 2026-11-24, decision 36 of design-pod-delta-files); a column it names pins nothing anywhere else
+_SCOPE_TYPES: Final[frozenset[str]] = frozenset({"DeclaredScope"})
+
+
+def _annotated_with(annotation: ast.expr | None, names: frozenset[str]) -> bool:
+    """whether an annotation names one of ``names`` anywhere in it, a string annotation parsed.
+
+    :param annotation: the annotation
+    :ptype annotation: ast.expr | None
+    :param names: the annotation names looked for
+    :ptype names: frozenset[str]
+    :return: whether it does
+    :rtype: bool
+    """
+    found = False
+    for node in walk_tree(annotation) if annotation is not None else ():
+        if (isinstance(node, ast.Name) and node.id in names) or (
+            isinstance(node, ast.Attribute) and node.attr in names
+        ):
+            found = True
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                parsed = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                continue  # NOSILENT: a string annotation that is not an expression declares nothing
+            found = found or _annotated_with(parsed, names)
+        if found:
+            break
+    return found
+
+
+def annotated_scope(annotation: ast.expr | None) -> bool:
+    """whether an annotation declares a table's state column: ``DeclaredScope`` anywhere in it
+    (``Annotated[str | None, DeclaredScope]``, ``Annotated[tuple[str, str] | None, DeclaredScope]``).
+
+    :param annotation: the annotation
+    :ptype annotation: ast.expr | None
+    :return: whether it does
+    :rtype: bool
+    """
+    return _annotated_with(annotation, _SCOPE_TYPES)
 
 
 def annotated_key(annotation: ast.expr | None) -> bool:
@@ -121,3 +169,48 @@ def declared_key_sources(trees: Iterable[ast.Module], *, base: frozenset[str] = 
             ):
                 names.add(node.target.attr)
     return KeySources(frozenset(names))
+
+
+@dataclass(frozen=True)
+class ScopeSources:
+    """the repo's declared state-column sources, by the name they are read under: a class field, ``self.x`` or a
+    function return annotated ``DeclaredScope`` (``TableSchema.delta_scope``, ``FollowedTable.scope``).
+
+    :ivar names: attributes and functions annotated as scope sources
+    """
+
+    names: frozenset[str] = frozenset()
+
+
+def declared_scope_sources(trees: Iterable[ast.Module]) -> ScopeSources:
+    """every state-column source the repo's modules declare: class-body annotations, ``self.x: ... = ...`` in a
+    method, and functions whose return is annotated ``DeclaredScope``. Kept apart from the key sources: a scope column
+    bounds a local copy's state read and nothing else.
+
+    :param trees: the repo's modules
+    :ptype trees: Iterable[ast.Module]
+    :return: the sources
+    :rtype: ScopeSources
+    """
+    names: set[str] = set()
+    for tree in trees:
+        for node in walk_tree(tree):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and annotated_scope(node.returns):
+                names.add(node.name)
+            elif isinstance(node, ast.ClassDef):
+                names.update(
+                    statement.target.id
+                    for statement in node.body
+                    if isinstance(statement, ast.AnnAssign)
+                    and isinstance(statement.target, ast.Name)
+                    and annotated_scope(statement.annotation)
+                )
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Attribute)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id == "self"
+                and annotated_scope(node.annotation)
+            ):
+                names.add(node.target.attr)
+    return ScopeSources(frozenset(names))

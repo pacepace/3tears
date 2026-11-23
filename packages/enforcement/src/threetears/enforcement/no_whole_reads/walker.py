@@ -119,7 +119,14 @@ from threetears.enforcement.no_whole_reads.helpers import (
     templated,
     with_relation,
 )
-from threetears.enforcement.no_whole_reads.keys import KeySources, annotated_key, declared_key_sources
+from threetears.enforcement.no_whole_reads.keys import (
+    KeySources,
+    ScopeSources,
+    annotated_key,
+    annotated_scope,
+    declared_key_sources,
+    declared_scope_sources,
+)
 from threetears.enforcement.no_whole_reads.sentinels import SentinelTemplates, declared_templates
 from threetears.enforcement.no_whole_reads.schema import (
     COPY_PREFIX,
@@ -268,6 +275,9 @@ _KEYED_PACKAGES: Final = ("threetears/core/keyed/", "threetears/interfaces/keyed
 #: the modules 3tears' keyed helpers are imported from: core's (the runners, every builder re-exported) and the
 #: interfaces package's (the builders, for a package that may not depend on core)
 _KEYED_MODULES: Final = ("threetears.core.keyed", "threetears.interfaces.keyed")
+
+#: a local copy's read of one state, bounded only by a declared state column (:meth:`_ModuleWalk._judge_state_read`)
+_STATE_READ: Final = "read_state_arrow"
 
 #: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: :data:`_KEYED_PACKAGES` and the one the
 #: caller's grants filter (``visible_rows``, :mod:`threetears.agent.acl.visible_customers`); a statement over a
@@ -2126,6 +2136,7 @@ class _ModuleWalk(ast.NodeVisitor):
         bounded: Bounded | None = None,
         sentinels: SentinelTemplates | None = None,
         key_sources: KeySources | None = None,
+        scope_sources: ScopeSources | None = None,
     ) -> None:
         """prepare a walk of one module.
 
@@ -2262,6 +2273,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._sentinels = sentinels
         #: the repo's declared key sources (:mod:`.keys`): a column interpolated from one is the table's key
         self._key_sources = key_sources if key_sources is not None else KeySources()
+        #: the repo's declared state-column sources (:mod:`.keys`): a column from one bounds read_state_arrow alone
+        self._scope_sources = scope_sources if scope_sources is not None else ScopeSources()
         #: (function, local) -> whether the local flows from a declared key source, each found once
         self._key_locals: dict[tuple[int, str], bool] = {}
         self._verify = verify
@@ -3802,6 +3815,9 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final(node)
+        if name == _STATE_READ and not _on_an_object(node, self._module_names):
+            self._judge_state_read(node)
+            return
         if (
             _on_an_attribute(node)
             or _on_an_object(node, self._module_names)
@@ -3817,6 +3833,107 @@ class _ModuleWalk(ast.NodeVisitor):
         # source, R8), as the flow says they are
         flowed = name in STEP_CALLS or name in STEP_RELATIONS
         self._judge_statements(node, self._flowed(node) if flowed else node)
+
+    def _judge_state_read(self, node: ast.Call) -> None:
+        """judge a local copy's read of one state (:func:`threetears.core.keyed.read_state_arrow`): bounded when its
+        ``scope_column`` flows from a declared state-column source (``DeclaredScope``: the table's own declaration,
+        decision 36 of design-pod-delta-files); any other column is judged as the ``read_by_statement`` it sends,
+        ``WHERE t.<column> = $1``, a predicate the rule cannot see, exactly as before the helper existed.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        column = next((k.value for k in node.keywords if k.arg == "scope_column"), None)
+        if column is None or not self._scope_sourced(column):
+            table = (
+                node.args[1]
+                if len(node.args) > 1
+                else next((k.value for k in node.keywords if k.arg == "table"), ast.Constant(None))
+            )
+            state = next((k.value for k in node.keywords if k.arg == "state"), ast.Constant(None))
+            pinned = column if column is not None else ast.Name("unsourced", ast.Load())
+            sent = ast.Call(
+                func=ast.Name("read_by_statement", ast.Load()),
+                args=[table],
+                keywords=[ast.keyword(arg="by", value=ast.Dict(keys=[pinned], values=[state]))],
+            )
+            self._judge_statements(node, ast.copy_location(sent, node))
+
+    def _scope_sourced(self, node: ast.expr, depth: int = 0) -> bool:
+        """whether a column flows from a declared state-column source (:mod:`.keys`, ``DeclaredScope``): a parameter
+        or local annotated as one, an attribute or call of a name the repo declares as one, one entry of one
+        (``table.scope[0]``), or a local bound once to one. Never a key source: it bounds read_state_arrow alone.
+
+        :param node: the expression
+        :ptype node: ast.expr
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it does
+        :rtype: bool
+        """
+        sourced = False
+        if depth <= _KEY_DEPTH:
+            if isinstance(node, ast.Subscript):
+                sourced = self._scope_sourced(node.value, depth + 1)
+            elif isinstance(node, ast.Attribute):
+                sourced = node.attr in self._scope_sources.names
+            elif isinstance(node, ast.Call):
+                sourced = _final(node) in self._scope_sources.names
+            elif isinstance(node, ast.Name):
+                sourced = self._name_scope_sourced(node.id, depth)
+        return sourced
+
+    def _name_scope_sourced(self, name: str, depth: int) -> bool:
+        """whether a name the enclosing function reads is a declared state-column source: its parameter annotated
+        ``DeclaredScope`` (the innermost function binding it decides), a local annotated as one, or a local the
+        function binds exactly once to one.
+
+        :param name: the name
+        :ptype name: str
+        :param depth: how deep the walk is
+        :ptype depth: int
+        :return: whether it is
+        :rtype: bool
+        """
+        sourced = False
+        bound: list[ast.expr] = []
+        annotated = False
+        for function in reversed(self._function_nodes):
+            arguments = function.args
+            parameter = next(
+                (
+                    argument
+                    for argument in (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                        arguments.vararg,
+                        arguments.kwarg,
+                    )
+                    if argument is not None and argument.arg == name
+                ),
+                None,
+            )
+            if parameter is not None:
+                return annotated_scope(parameter.annotation)
+        if self._function_nodes:
+            for scoped in _scope_nodes(self._function_nodes[-1]):
+                if (
+                    isinstance(scoped, ast.AnnAssign)
+                    and isinstance(scoped.target, ast.Name)
+                    and scoped.target.id == name
+                ):
+                    annotated = annotated or annotated_scope(scoped.annotation)
+                    if scoped.value is not None:
+                        bound.append(scoped.value)
+                elif isinstance(scoped, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == name for target in scoped.targets
+                ):
+                    bound.append(scoped.value)
+            sourced = annotated or (len(bound) == 1 and self._scope_sourced(bound[0], depth + 1))
+        return sourced
 
     def _flowed(self, node: ast.Call) -> ast.Call:
         """a step call with each relation it names that the flow says is a change relation, a step judged where it
@@ -9203,6 +9320,7 @@ def scan_whole_reads(
             lambda node, env: _string_text(node, dict(env)),
         )
         key_sources = declared_key_sources(trees.values())
+        scope_sources = declared_scope_sources(trees.values())
         sort_orders = ModulesByPath({relative: _sort_orders(trees[relative]) for relative, _ in modules})
         walked: list[tuple[str, Path]] = []
         for relative, path in modules:
@@ -9251,6 +9369,7 @@ def scan_whole_reads(
                 bounded=bounded,
                 sentinels=sentinel_templates.get(relative),
                 key_sources=key_sources,
+                scope_sources=scope_sources,
             )
 
         # the repo's step builders, by name across every walked module: a call of one is a step judged where it is

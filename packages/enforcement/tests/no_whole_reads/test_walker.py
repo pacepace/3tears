@@ -8209,3 +8209,47 @@ def test_a_select_list_joined_from_a_local_list_is_read_as_its_items(tmp_path: P
     found = _symbols(_config(tmp_path, {"coverage.py": _JOINED_SELECT_LIST}))
     assert ("coverage_sql", "whole-aggregate {}.{}") in found, sorted(found)
     assert ("Driver.coverage", "calls-whole-read coverage_sql") in found, sorted(found)
+
+
+#: a local copy's read of one state (decision 36 of design-pod-delta-files): read_state_arrow pinned by a declared
+#: state column, beside the same read by an undeclared column and a plain ``by=`` read of the declared column
+_DECLARED_SCOPE_READS = """
+    from dataclasses import dataclass
+    from typing import Annotated
+
+    from threetears.core.keyed import read_by, read_state_arrow
+    from threetears.interfaces.keyed import DeclaredScope
+
+
+    @dataclass(frozen=True)
+    class Followed:
+        name: str
+        scope: Annotated[tuple[str, str] | None, DeclaredScope] = None
+
+
+    class Copy:
+        async def state_rows(self, conn, table: Followed, state: str):
+            return await read_state_arrow(conn, table.name, scope_column=table.scope[0], state=state)
+
+        async def declared_parameter(self, conn, name: str, column: Annotated[str, DeclaredScope], state: str):
+            return await read_state_arrow(conn, name, scope_column=column, state=state)
+
+        async def undeclared_column(self, conn, name: str, column: str, state: str):
+            return await read_state_arrow(conn, name, scope_column=column, state=state)
+
+        async def scope_by_on_l3(self, conn, table: Followed, state: str):
+            return await read_by(conn, table.name, by={table.scope[0]: state})
+"""
+
+
+def test_a_local_state_read_is_bound_only_by_a_declared_state_column(tmp_path: Path) -> None:
+    """Flips if read_state_arrow pinned by a DeclaredScope column (a field annotated as one, ``table.scope[0]``, or a
+    parameter annotated as one) is judged a whole read; if the same call by an undeclared column passes instead of
+    staying unknown-schema; or if a declared state column bounds anything but read_state_arrow (a plain ``by=`` read
+    by it still flags: a scope column is never a key)."""
+    found = _symbols(_config(tmp_path, {"pkg/copy.py": _DECLARED_SCOPE_READS}))
+    functions = {function for function, _ in found}
+    assert "Copy.state_rows" not in functions, found
+    assert "Copy.declared_parameter" not in functions, found
+    assert any(f == "Copy.undeclared_column" and s.startswith("unknown-schema") for f, s in found), found
+    assert "Copy.scope_by_on_l3" in functions, found

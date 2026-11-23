@@ -98,6 +98,8 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_changed",
         "group_hashes",
         "counts_by",
+        # a local copy's read of one state: judged by its declared state column (walker._judge_state_read)
+        "read_state_arrow",
         "count_at_most",
         "holds_any",
         "read_after",
