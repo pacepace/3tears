@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 
 pa = pytest.importorskip("pyarrow")
 pa_ipc = pytest.importorskip("pyarrow.ipc")
@@ -27,8 +28,14 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     write_delta_file,
 )
 from threetears.core.collections import delta_fold  # noqa: E402
-from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
+from threetears.core.collections.delta_fold import DeltaFolds, DeltaScopeRule, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
+from threetears.core.collections.epoch_change import (  # noqa: E402
+    ChangedRow,
+    EpochChange,
+    EpochWalk,
+    walk_by_count,
+)
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     STRING_TYPE,
@@ -529,6 +536,24 @@ class _Generations:
         raise AssertionError("a rebuild advances nothing")
 
 
+class _Log:
+    """the NATS epoch log as a copy reads it: each advance's record, naming its commit's delta file."""
+
+    def __init__(self) -> None:
+        self.records: dict[tuple[str, str], EpochChange] = {}
+
+    def append(self, table: str, token: str, delta_file: str | None) -> None:
+        self.records[(table, token)] = EpochChange(
+            table=table, token=token, rows=[ChangedRow(ids=["k"])], delta_file=delta_file
+        )
+
+    async def change(self, table_name: str, token: str) -> EpochChange | None:
+        return self.records.get((table_name, token))
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        return await walk_by_count(self, table_name, after, upto)
+
+
 def _runs(state: str, race: str, runs: range) -> list[dict[str, Any]]:
     return [{"state": state, "race": race, "run": run, "votes": run * 10} for run in runs]
 
@@ -572,7 +597,7 @@ async def test_no_full_reads_each_table_from_l3_once_and_publishes_its_parts_at_
     or less than once, or publishes other than each table's rows kept by its keep rule, one part a state, current to
     the generation read before the rows, in a manifest at its term."""
     l3, folds = _l3(), _folds(tmp_path, workers)
-    rebuilt = await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=12)
+    rebuilt = await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), changes=_Log(), version=12)
     assert rebuilt == ("runs", "votes")
     assert l3.statements == Counter({"votes": 1, "runs": 1}), "one read of each table, nothing else"
     manifest = current_full_manifest(tmp_path)
@@ -586,7 +611,10 @@ async def test_no_full_reads_each_table_from_l3_once_and_publishes_its_parts_at_
     assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow")), "the read's rows are removed once published"
     # the full now holds every table: the writer's next start reads nothing
     assert (
-        await _folds(tmp_path, workers).start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=13) == ()
+        await _folds(tmp_path, workers).start(
+            l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), changes=_Log(), version=13
+        )
+        == ()
     )
     assert l3.statements == Counter({"votes": 1, "runs": 1})
     await folds.close()
@@ -615,7 +643,7 @@ async def test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild(
     l3, generations = _l3(), _Generations({"votes": "inc:7"})  # runs never written: no generation yet
     folds = _folds(tmp_path, workers)
     # a full lacking runs (newly opted in): votes is read, runs waits for its generation
-    assert await folds.start(l3, generations, version=5) == ("votes",)
+    assert await folds.start(l3, generations, changes=_Log(), version=5) == ("votes",)
     assert kinds() == ["cold_start"] and l3.statements == Counter({"votes": 1})
     assert "runs" not in (current_full_manifest(tmp_path) or FullManifest(0, 0, None, {})).tables
     # runs' first commit: rebuilt from L3 before that commit's round, never folded onto nothing
@@ -666,7 +694,7 @@ async def test_a_stale_writer_s_rebuild_changes_nothing_readers_see(tmp_path: Pa
 
     l3.on_read = later_writer_publishes
     folds = _folds(tmp_path, workers)
-    assert await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=12) == ()
+    assert await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), changes=_Log(), version=12) == ()
     (published,) = theirs
     assert current_full_manifest(tmp_path) == published
     assert all((tmp_path / file).exists() for file in published.files())
@@ -677,7 +705,7 @@ async def test_a_stale_writer_s_rebuild_changes_nothing_readers_see(tmp_path: Pa
     # a writer already below the current term reads nothing
     reads = sum(l3.statements.values())
     stale = _folds(tmp_path, workers)
-    assert await stale.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=13) == ()
+    assert await stale.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), changes=_Log(), version=13) == ()
     assert sum(l3.statements.values()) == reads
     await folds.close()
     await stale.close()
@@ -691,7 +719,7 @@ async def test_a_reset_drops_the_table_s_files_and_rebuilds_it_at_the_writer_s_t
     writer's term; or if a commit after the rebuild's read is lost from the full."""
     l3, generations = _l3(), _Generations({"votes": "inc:0", "runs": "inc:3"})
     folds = _folds(tmp_path, workers)
-    await folds.start(l3, generations, version=5)
+    await folds.start(l3, generations, changes=_Log(), version=5)
     writer = _Writer(tmp_path, _votes_schema(), folds)
     writer.version = 5
     # a part of varied rows, many times the size of one small delta
@@ -731,3 +759,187 @@ async def test_a_reset_drops_the_table_s_files_and_rebuilds_it_at_the_writer_s_t
     assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8) + _votes("NC", range(3, 400), 9))
     assert not any((tmp_path / file).exists() for file in old_parts | set(old_deltas))
     await folds.close()
+
+
+# --- a restarted writer re-learns its unfolded deltas (decision 24) ----------------------------------------------
+
+
+async def test_a_restarted_writer_relearns_its_unfolded_deltas_from_the_epoch_log_and_folds_them_at_half(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer that restarts with deltas on the volume not yet folded (decision 24) does not re-learn
+    exactly those from the epoch log (none already folded into a part, none it was never told), reads L3 for them, or
+    folds them other than at the half-size point counted across the restart (decision 10): a writer that forgot them
+    would fold late, and its part would lack their rows."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    log = _Log()
+
+    async def commit(rows: list[dict[str, Any]]) -> str:
+        file = await writer.commit(rows)
+        log.append("votes", f"inc:{len(writer.files)}", file)
+        return file
+
+    await commit(
+        [{"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)]
+    )
+    await commit(_votes("GA", range(3), 1))
+    part = _part(tmp_path, "votes", "state:TX")
+    assert part is not None and part.version == "inc:1"
+    held = (tmp_path / part.file).stat().st_size
+    unfolded = [await commit(_votes("TX", range(1000 + step * 8, 1008 + step * 8), 2)) for step in range(3)]
+    since = sum((tmp_path / file).stat().st_size for file in unfolded)
+    assert since * 2 < held and _part(tmp_path, "votes", "state:TX") == part, "the deltas were meant to be pending"
+    await writer.folds.close()
+
+    # the writer restarts: a new fold, knowing nothing, re-learns from the log alone
+    l3 = _L3({"votes": []}, {"votes": ("state", "geo_id")})
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    assert await writer.folds.start(l3, _Generations({"votes": "inc:5"}), changes=log, version=6) == ()
+    assert l3.statements == Counter(), "re-learned from the epoch log, never from L3"
+    assert writer.folds.unfolded == set(unfolded), "exactly the unfolded deltas"
+    assert _part(tmp_path, "votes", "state:TX") == part, "not due yet across the restart"
+    for step in range(3, 40):
+        file = writer.save(_votes("TX", range(1000 + step * 8, 1008 + step * 8), 2))
+        since += (tmp_path / file).stat().st_size
+        writer.tell(file)
+        await writer.folds.wait()
+        now = _part(tmp_path, "votes", "state:TX")
+        assert now is not None
+        if since * 2 >= held:
+            assert now.file != part.file and now.version == f"inc:{len(writer.files)}", f"step {step}: due, not folded"
+            rows = {(row["geo_id"], row["votes"]) for row in _part_rows(tmp_path, now)}
+            assert {(g, 2) for g in range(1000, 1024)} <= rows, "the re-learned deltas are folded in"
+            break
+        assert now.file == part.file, f"step {step}: folded at {since} bytes of a {held}-byte part"
+    else:
+        pytest.fail("the deltas never reached half the part")
+    assert l3.statements == Counter()
+    await writer.folds.close()
+
+
+# --- a folded table keyed without its state (scope from a key column) ----------------------------------------------
+
+
+class _StateOfRace(DeltaScopeRule):
+    """a race's state, as its office key names it: ``VA-S`` is Virginia's."""
+
+    @classmethod
+    def state_of(cls, value: Any) -> Any:
+        return str(value).split("-", 1)[0]
+
+
+def _results_schema() -> TableSchema:
+    return TableSchema(
+        name="results",
+        primary_key=("office_key", "candidate"),
+        columns=[
+            Column("office_key", STRING_TYPE),
+            Column("candidate", STRING_TYPE),
+            Column("votes", BIGINT_TYPE, nullable=True),
+        ],
+        l1_eviction=TEST_L1_TABLE,
+        delta_files=True,
+    )
+
+
+def _results(race: str, candidates: range, votes: int) -> list[dict[str, Any]]:
+    return [{"office_key": race, "candidate": f"c{c}", "votes": votes} for c in candidates]
+
+
+async def test_a_table_keyed_by_race_folds_by_the_state_its_key_names(tmp_path: Path, workers: ProcessWorkers) -> None:
+    """Flips if a table keyed without its state (AP results, keyed by office_key) cannot be folded per state through a
+    rule (DeltaScopeRule) of a key column: each state one part holding every race of it (from deltas and from the rebuild's rows),
+    and a delete marker (its key alone) folded into its race's state's part; or if a scope that no key column names, or
+    a rule a worker process cannot import by name, is accepted."""
+    schema = _results_schema()
+    scope = ("office_key", "state:")
+    l3 = _L3(
+        {"results": _results("VA-S", range(2), 1) + _results("VA-G", range(2), 1) + _results("GA-S", range(1), 1)},
+        {"results": ("office_key", "candidate")},
+    )
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=scope, scope_from=_StateOfRace)], workers=workers)
+    assert await folds.start(l3, _Generations({"results": "inc:0"}), changes=_Log(), version=5) == ("results",)
+    manifest = current_full_manifest(tmp_path)
+    assert manifest is not None
+    assert sorted(p.scope or "" for p in manifest.tables["results"].parts) == ["state:GA", "state:VA"]
+    va = _part(tmp_path, "results", "state:VA")
+    assert va is not None and va.rows == 4, "both of Virginia's races in its one part"
+    writer = _Writer(tmp_path, schema, folds)
+    await writer.commit(_results("VA-S", range(2, 40), 3) + _results("VA-G", range(2, 40), 3))
+    await writer.commit(deletes=[("VA-S", "c0")])
+    await writer.commit(_results("VA-G", range(40, 200), 4))
+    va = _part(tmp_path, "results", "state:VA")
+    assert va is not None
+    held = {(row["office_key"], row["candidate"]) for row in _part_rows(tmp_path, va)}
+    assert ("VA-S", "c0") not in held, "the delete marker named its state through its race"
+    assert ("VA-S", "c1") in held and ("VA-G", "c199") in held
+    assert all(key.startswith("VA-") for key, _ in held)
+    assert [p.rows for p in manifest.tables["results"].parts if p.scope == "state:GA"] == [1]
+    await folds.close()
+    with pytest.raises(ValueError, match="must be a key column"):
+        FoldedTable.of(schema, scope=("votes", "state:"), scope_from=_StateOfRace)
+
+    class _Local(DeltaScopeRule):
+        pass
+
+    with pytest.raises(ValueError, match="declared at module level"):
+        FoldedTable.of(schema, scope=scope, scope_from=_Local)
+
+
+# --- a new incarnation of a table's generation (its log lost) ----------------------------------------------------
+
+
+def _log_lost_rebuilds() -> float:
+    labels = {"table": "votes", "why": "log_lost", "outcome": "rebuilt"}
+    return REGISTRY.get_sample_value("delta_fold_rebuilds_total", labels) or 0.0
+
+
+async def test_a_new_incarnation_starts_the_table_fresh_from_l3_once(tmp_path: Path, workers: ProcessWorkers) -> None:
+    """Flips if a commit of a new incarnation of a table's generation (its store replaced) is refused by every round
+    instead of starting the table fresh: one read of it from L3 (counted as log_lost), published at the new
+    incarnation, the old incarnation's deltas dropped, and later commits folded onto it; and the same for a writer
+    restarting onto a new incarnation."""
+    l3, generations = _l3(), _Generations({"votes": "inc:0", "runs": "inc:3"})
+    folds = _folds(tmp_path, workers)
+    await folds.start(l3, generations, changes=_Log(), version=5)
+    writer = _Writer(tmp_path, _votes_schema(), folds)
+    await writer.commit(
+        [
+            {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"}
+            for g in range(100, 5000)
+        ]
+    )
+    pending = await writer.commit(_votes("TX", range(3), 3))
+    assert folds.unfolded == {pending}
+    before = _log_lost_rebuilds()
+    # the generation's store is replaced: the next commit's generation is of a new incarnation
+    l3.tables["votes"] = _votes("NC", range(3), 8)
+    generations.tokens["votes"] = "new:1"
+    first = writer.save(_votes("NC", range(3), 8))
+    folds.committed({"votes": first}, {"votes": "new:1"}, version=5)
+    await folds.wait()
+    assert l3.statements["votes"] == 2, "one read of the table from L3"
+    assert _log_lost_rebuilds() == before + 1
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.tables["votes"].version == "new:1"
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8))
+    assert not folds.unfolded, "the old incarnation's deltas are dropped"
+    # a later commit of the new incarnation folds onto the rebuilt parts
+    later = writer.save(_votes("NC", range(3, 400), 9))
+    folds.committed({"votes": later}, {"votes": "new:2"}, version=5)
+    await folds.wait()
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8) + _votes("NC", range(3, 400), 9))
+    assert not (tmp_path / pending).exists() and not (tmp_path / first).exists()
+    assert l3.statements["votes"] == 2
+    await folds.close()
+    # a writer restarting onto another incarnation starts the table fresh at its start
+    restarted = _folds(tmp_path, workers)
+    l3.tables["votes"] = _votes("NV", range(2), 1)
+    generations.tokens["votes"] = "again:4"
+    assert await restarted.start(l3, generations, changes=_Log(), version=6) == ("votes",)
+    assert _log_lost_rebuilds() == before + 2 and l3.statements["votes"] == 3
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.tables["votes"].version == "again:4"
+    assert _held(tmp_path, "votes") == _sorted(_votes("NV", range(2), 1))
+    await restarted.close()

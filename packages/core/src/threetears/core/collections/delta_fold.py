@@ -64,8 +64,20 @@ lease is taken during its read is refused at the publish, deletes only its own n
 reader sees. A copy never reads L3 whole: it waits for the manifest (:class:`~threetears.core.collections.
 volume_fulls.VolumeFulls`).
 
-**What it does not do.** A new incarnation of a table's generation (its store replaced) is refused by the round,
-logged and counted.
+**A restarted writer re-learns its unfolded deltas** (decisions 22 and 24). The fold's memory of each state's deltas
+since its last fold dies with its process. :meth:`DeltaFolds.start` learns it again from the NATS epoch log, never
+from a listing of the volume and never from L3: the current full says which version each part is current to, and
+every commit since has a record in the log naming its delta file. Each table's records after its oldest part's version
+are walked (``changes_after``), each file named is noted as a commit is, and a round drops each state's share a part
+is already current to (folded before the restart); a file left with no share is deleted with the round's covered
+files. So folding resumes where it stopped, at the same half-size point.
+
+**A lost log starts the table fresh.** A table whose generation is of a new incarnation (its store replaced: the
+memory-only log lost) has parts current to versions no record of the new log orders, and a walk that misses a record
+cannot say which deltas the parts lack. Either way only L3 can say what the table holds: the table starts fresh
+(``why="log_lost"``), rebuilt from L3 once under the writer's term, declared a cold start (decision 14: only L3 is
+left), logged and counted; its deltas of the old log are dropped with the rebuild. A round that finds a commit of
+another incarnation than the table's full marks it the same way rather than folding across it.
 """
 
 from __future__ import annotations
@@ -94,6 +106,7 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.delta_keep import DeltaKeepRule
+from threetears.core.collections.epoch_change import EpochChangeReader
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
 from threetears.core.declared import whole_read
@@ -121,7 +134,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; a fold refuses without it, saying so
     _PYARROW = False
 
-__all__ = ["DeltaFolds", "FoldedTable"]
+__all__ = ["DeltaFolds", "DeltaScopeRule", "FoldedTable"]
 
 log = get_logger(__name__)
 
@@ -144,7 +157,8 @@ _STATES = counter(
     label_names=("table", "how"),
 )
 
-#: rebuilds of a table's full from L3, by table, why (``cold_start``: no full holds it; ``reset``; ``schema_change``)
+#: rebuilds of a table's full from L3, by table, why (``cold_start``: no full holds it; ``reset``; ``schema_change``;
+#: ``log_lost``: the epoch log that ordered its deltas was replaced, a new incarnation, or lost a record)
 #: and outcome: ``rebuilt`` (published), ``stale`` (a later writer's term is current: nothing read or published),
 #: ``no_generation`` (the table has none yet: rebuilt before its first commit's round), ``failed`` (retried before
 #: the next round)
@@ -154,8 +168,16 @@ _REBUILDS = counter(
     label_names=("table", "why", "outcome"),
 )
 
-#: why a table starts fresh (:meth:`DeltaFolds.start_fresh`): it was reset, or recreated by a migration
-_FreshWhy = Literal["reset", "schema_change"]
+#: delta files a restarted writer re-learned from the epoch log (:meth:`DeltaFolds.start`), by table
+_RELEARNED = counter(
+    "delta_fold_relearned_files_total",
+    description="delta files a restarted writer re-learned from the NATS epoch log at its start, to fold, by table",
+    label_names=("table",),
+)
+
+#: why a table starts fresh: it was reset, or recreated by a migration (:meth:`DeltaFolds.start_fresh`), or the epoch
+#: log that ordered its deltas was lost (a new incarnation of its generation, or a record missing)
+_FreshWhy = Literal["reset", "schema_change", "log_lost"]
 
 #: where a rebuild's rows are written as they are read, under the fulls' directory: one file a table, removed once its
 #: parts are published (or the rebuild fails)
@@ -173,6 +195,30 @@ _FULLS_PREFIX: Final = ".fulls/"
 _Share = tuple[str, str | None, str, str, int]
 
 
+class DeltaScopeRule:
+    """the state a key column's value names, for a table keyed without its state (AP results, keyed by the race,
+    ``office_key``); subclass it and override :meth:`state_of`.
+
+    A class, not a function, as :class:`~threetears.core.collections.delta_keep.DeltaKeepRule` is: a round runs in a
+    worker process, which is handed plain data and classes (by name), never a function or an object. Declared at
+    module level, so the worker can import it.
+    """
+
+    @classmethod
+    def state_of(cls, value: Any) -> Any:
+        """the state the key column's ``value`` names, as its scope's suffix (``VA`` for the scope ``state:VA``).
+
+        Runs in the fold's worker process. Pure: the same value in, the same state out, for every row and every delete
+        marker of the key.
+
+        :param value: the key column's value
+        :ptype value: Any
+        :return: the state
+        :rtype: Any
+        """
+        return value
+
+
 @dataclass(frozen=True, slots=True)
 class FoldedTable:
     """one table the writer folds, as its schema declares it.
@@ -181,7 +227,11 @@ class FoldedTable:
     :ivar key: its key columns, in key order
     :ivar columns: its columns, in the order its delta files and parts hold them
     :ivar scope: the scope each row belongs to, ``(column, prefix)`` as the writer's seqlock names it (a row's state is
-        ``prefix + str(row[column])``); one part a state. None: one part for the whole table
+        ``prefix + str(row[column])``, or ``prefix + str(scope_from.state_of(row[column]))``); one part a state. The column is
+        a key column, so a delete marker (its key alone) still names its state. None: one part for the whole table
+    :ivar scope_from: for a table keyed without its state (AP results, keyed by the race, ``office_key``), the rule
+        from the scope column's value to the state (:class:`DeltaScopeRule`): ``scope=("office_key", "state:")`` with
+        the race's state. None: the column's value is the state
     :ivar keep: the rows a part keeps (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_keep`); None
         keeps every row
     :ivar kinds: each column's type tag, ``(column, column_type)`` in :attr:`columns`' order: how the writer's rebuild
@@ -194,21 +244,36 @@ class FoldedTable:
     scope: tuple[str, str] | None = None
     keep: type[DeltaKeepRule] | None = None
     kinds: tuple[tuple[str, str], ...] = ()
+    scope_from: type[DeltaScopeRule] | None = None
 
     def __post_init__(self) -> None:
         missing = [column for column in self.key if column not in self.columns]
         if missing:
             raise ValueError(f"{self.name}: key columns {missing} are not among its columns")
         if self.scope is not None and self.scope[0] not in self.key:
-            # a delete marker carries the key alone: a scope column outside the key leaves a delete's state unknown,
-            # so no one state's part could be folded past it
+            # a delete marker carries the key alone: a scope derived from no key column leaves a delete's state
+            # unknown, so no one state's part could be folded past it
             raise ValueError(
                 f"{self.name}: its scope column {self.scope[0]!r} must be a key column, so each delete marker names "
-                f"its state"
+                f"its state (a state outside the key is derived from a key column with scope_from)"
             )
+        if self.scope_from is not None:
+            if self.scope is None:
+                raise ValueError(f"{self.name}: scope_from derives a state from the scope column; name scope too")
+            if not (isinstance(self.scope_from, type) and issubclass(self.scope_from, DeltaScopeRule)):
+                raise ValueError(f"{self.name}: scope_from is a DeltaScopeRule subclass")
+            if "<" in self.scope_from.__qualname__:
+                # a round runs in a worker process, which imports the class by its module and name
+                raise ValueError(f"{self.name}: scope_from must be declared at module level, not in a function")
 
     @classmethod
-    def of(cls, schema: TableSchema, *, scope: tuple[str, str] | None = None) -> FoldedTable:
+    def of(
+        cls,
+        schema: TableSchema,
+        *,
+        scope: tuple[str, str] | None = None,
+        scope_from: type[DeltaScopeRule] | None = None,
+    ) -> FoldedTable:
         """a table as its schema declares it: its key, its columns as its delta files type them, its keep rule.
 
         :param schema: the table's schema; it must opt in to delta files
@@ -216,6 +281,9 @@ class FoldedTable:
         :param scope: the scope each row belongs to, ``(column, prefix)``, as its copy follows it
             (:attr:`~threetears.core.collections.copy_follower.FollowedTable.scope`); None folds the table whole
         :ptype scope: tuple[str, str] | None
+        :param scope_from: the rule from the scope column's value to the state, for a table keyed without its state
+            (:attr:`scope_from`); None: the column's value is the state
+        :ptype scope_from: type[DeltaScopeRule] | None
         :return: the table
         :rtype: FoldedTable
         :raises ValueError: when the table does not opt in to delta files
@@ -229,16 +297,17 @@ class FoldedTable:
             scope=scope,
             keep=schema.delta_keep,
             kinds=tuple((column.name, column.column_type) for column in schema.columns),
+            scope_from=scope_from,
         )
 
     def plain(self) -> tuple[Any, ...]:
         """the table as a worker process is handed it: plain data, and its keep rule's class by name.
 
-        :return: ``(name, key, columns, scope column, scope prefix, keep)``
+        :return: ``(name, key, columns, scope column, scope prefix, keep, scope_from)``
         :rtype: tuple
         """
         column, prefix = self.scope if self.scope is not None else (None, None)
-        return (self.name, self.key, self.columns, column, prefix, self.keep)
+        return (self.name, self.key, self.columns, column, prefix, self.keep, self.scope_from)
 
 
 class DeltaFolds:
@@ -287,6 +356,15 @@ class DeltaFolds:
         self._marked = False
         #: each table a rebuild published, in order
         self._rebuilt: list[str] = []
+
+    @property
+    def unfolded(self) -> frozenset[str]:
+        """the delta files told (or re-learned) and not folded yet, for a status line and the tests.
+
+        :return: the files, under the root
+        :rtype: frozenset[str]
+        """
+        return frozenset(file for _, file, _ in self._queued) | frozenset(share[2] for share in self._pending)
 
     def committed(
         self,
@@ -341,19 +419,30 @@ class DeltaFolds:
             self._run_rounds()
 
     async def start(
-        self, l3: Any, generations: GenerationSource, *, version: int, page_size: int = DEFAULT_PAGE_SIZE
+        self,
+        l3: Any,
+        generations: GenerationSource,
+        *,
+        changes: EpochChangeReader,
+        version: int,
+        page_size: int = DEFAULT_PAGE_SIZE,
     ) -> tuple[str, ...]:
-        """the writer's start: rebuild from L3, once, each folded table the current full on the volume lacks (no full
-        at all: a lost volume or a new environment; or one without the table), and publish them at ``version``
-        (module docstring, "The rebuild from L3"). Call it after taking the write lease and beginning the first write,
-        before that write's commit is told to :meth:`committed`. Kept for the rebuilds a later round owes
-        (:meth:`start_fresh`, a table with no generation yet).
+        """the writer's start: re-learn from the epoch log the delta files not yet folded (module docstring, "A
+        restarted writer re-learns"), then rebuild from L3, once, each folded table the current full on the volume
+        lacks (no full at all: a lost volume or a new environment; or one without the table) or whose log was lost,
+        and publish them at ``version`` (module docstring, "The rebuild from L3"); then fold each state already due.
+        Call it after taking the write lease and beginning the first write, before that write's commit is told to
+        :meth:`committed`. Kept for the rebuilds a later round owes (:meth:`start_fresh`, a table with no generation
+        yet).
 
         :param l3: the writer's L3, read whole once for each table rebuilt (the rail's proxy, or a pool)
         :ptype l3: Any
         :param generations: the writer's generation source: each table's generation is read before its rows, the
             version its parts are current to
         :ptype generations: GenerationSource
+        :param changes: the NATS epoch log, as a copy reads it: each table's records since its full's parts name the
+            delta files not folded yet (decision 24); never L3, never a listing of the volume
+        :ptype changes: EpochChangeReader
         :param version: the write's version (:meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.begin`),
             taken under the write lease: the writer's term
         :ptype version: int
@@ -363,6 +452,8 @@ class DeltaFolds:
             term is no longer the highest, or a read failed: logged and counted, retried before the next round)
         :rtype: tuple[str, ...]
         :raises ValueError: when ``page_size`` is under one, or a table names no column types (``FoldedTable.of``)
+        :raises GenerationUnavailableError: when the epoch log cannot be read: a fold without the deltas it would
+            not know of would publish parts lacking their rows, so the writer's start fails and is tried again
         """
         if page_size < 1:
             raise ValueError("page_size must be at least one")
@@ -373,9 +464,84 @@ class DeltaFolds:
         self._recheck = True
         since = len(self._rebuilt)
         await self.wait()
+        await self._relearn(generations, changes)
         self._run_rounds()
         await self.wait()
         return tuple(self._rebuilt[since:])
+
+    async def _relearn(self, generations: GenerationSource, changes: EpochChangeReader) -> None:
+        """queue, as commits told, each delta file the epoch log names since each table's oldest part (module
+        docstring, "A restarted writer re-learns"); a table whose log was lost is owed a fresh start instead.
+
+        :param generations: the writer's generation source: how far each table's log reaches
+        :ptype generations: GenerationSource
+        :param changes: the epoch log
+        :ptype changes: EpochChangeReader
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        current = await asyncio.to_thread(current_full_manifest, self.root)
+        if current is None or self._term is None or current.term > self._term:
+            return  # no full to continue (the rebuild publishes one), or a later writer's
+        told = {file for _, file, _ in self._queued} | {share[2] for share in self._pending}
+        for name in sorted(self.tables):
+            entry = current.tables.get(name)
+            if entry is None or name in self._fresh:
+                continue  # rebuilt from L3 before any round: the rebuild's parts are current to L3, no delta owed
+            try:
+                now = await generations.current(name)
+            except (
+                GenerationUnavailableError
+            ):  # NOSILENT: never written since its store was made; the round of its first commit looks
+                continue
+            held, at = split_generation_token(entry.version), split_generation_token(now)
+            if held is None or at is None:
+                continue
+            if held[0] != at[0]:
+                self._owe_fresh(name, "log_lost", detail=f"the full is of incarnation {held[0]}, the log of {at[0]}")
+                continue
+            low = min(
+                (
+                    parsed[1]
+                    for parsed in (split_generation_token(part.version) for part in entry.parts)
+                    if parsed is not None and parsed[0] == held[0]
+                ),
+                default=held[1],
+            )
+            if at[1] <= low:
+                continue
+            walk = await changes.changes_after(name, f"{held[0]}:{low}", now)
+            unnamed = [change.token for change in walk.changes if change.delta_file is None]
+            if not walk.complete or unnamed:
+                self._owe_fresh(
+                    name,
+                    "log_lost",
+                    detail=f"first missing {walk.first_missing}, records naming no file {unnamed[:5]}",
+                )
+                continue
+            files: dict[str, str] = {}
+            for change in walk.changes:
+                assert change.delta_file is not None  # noqa: S101 -- refused above
+                files[change.delta_file] = change.token  # a commit of several records: its newest
+            present = await asyncio.to_thread(_present, self.root, list(files))
+            # a file gone was covered by a published full and deleted (nothing else deletes a committed delta)
+            learned = [(name, file, files[file]) for file in present if file not in told]
+            self._queued.extend(learned)
+            _RELEARNED.labels(table=name).inc(len(learned))
+            log.info(
+                "a restarted writer re-learned its unfolded delta files from the epoch log",
+                extra={
+                    "extra_data": {
+                        "table": name,
+                        "since": f"{held[0]}:{low}",
+                        "upto": now,
+                        "records": len(walk.changes),
+                        "files": len(learned),
+                        "gone": len(files) - len(present),
+                    }
+                },
+            )
 
     def start_fresh(self, table: str, *, why: _FreshWhy) -> None:
         """start ``table`` fresh: it was reset (``SchemaBackedCollection.reset``) or dropped and recreated by a
@@ -396,9 +562,23 @@ class DeltaFolds:
             raise KeyError(table)
         if why not in ("reset", "schema_change"):
             raise ValueError(f"a table starts fresh after a reset or a schema change, not {why!r}")
+        self._owe_fresh(table, why)
+
+    def _owe_fresh(self, table: str, why: _FreshWhy, *, detail: str = "") -> None:
+        """mark ``table`` owed a rebuild from L3 before any round folds it again, its old files dropped.
+
+        :param table: the table
+        :ptype table: str
+        :param why: why it starts fresh
+        :ptype why: str
+        :param detail: what was found, for the log line
+        :ptype detail: str
+        :return: nothing
+        :rtype: None
+        """
         log.warning(
             "a folded table starts fresh: it is rebuilt from L3 and its old files dropped",
-            extra={"extra_data": {"table": table, "why": why}},
+            extra={"extra_data": {"table": table, "why": why, "detail": detail}},
         )
         self._fresh[table] = why
         self._recheck = True
@@ -488,9 +668,13 @@ class DeltaFolds:
         :return: nothing
         :rtype: None
         """
-        pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid = answer
+        pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed = answer
         self._pending, self._reused, self._doomed = pending, reused, doomed
         _ROUNDS.labels(outcome=outcome).inc()
+        for table in renewed:
+            # a commit of another incarnation than the table's full: never folded across, rebuilt from L3 instead
+            if table not in self._fresh:
+                self._owe_fresh(table, "log_lost", detail="a commit's generation is of another incarnation")
         if outcome == "no_full":
             # no full on the volume (lost since the writer's start): rebuilt before the next round
             self._recheck = True
@@ -545,12 +729,17 @@ class DeltaFolds:
             )
             return
         staged: list[tuple[str, str, str, int]] = []
+        #: each table's files told before its generation was read: covered by its rebuild whatever their incarnation
+        known: dict[str, set[str]] = {}
         cutoff = self._before
         # a rebuild's rows left by a writer that died mid-read: only the writer holding the lease writes there
         await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
         try:
             for name, why in sorted(owed.items()):
                 began = time.time()
+                known[name] = {file for table_name, file, _ in self._queued if table_name == name} | {
+                    share[2] for share in self._pending if share[0] == name
+                }
                 try:
                     # the generation before the rows: a commit during the read is in the rows and applied again over
                     # them (module docstring), never missed
@@ -581,8 +770,8 @@ class DeltaFolds:
                     pages = whole_read(
                         _cold_start_pages(reader, table),
                         kind="cold_start",
-                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment) or it was reset: the writer "
-                        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
+                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), it was reset, or the epoch log "
+                        "ordering its deltas was lost: the writer reads it once and publishes its full; copies wait for that, never reading L3 whole",
                         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
                         "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
                         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
@@ -623,7 +812,7 @@ class DeltaFolds:
             if self._fresh.get(name) == why:
                 self._fresh.pop(name)
             self._rebuilt.append(name)
-            self._drop_covered(name, token)
+            self._drop_covered(name, token, known[name])
             log.info(
                 "a table's full rebuilt from L3 and published",
                 extra={"extra_data": {"table": name, "why": why, "rows": rows, "generation": token}},
@@ -659,30 +848,35 @@ class DeltaFolds:
             await asyncio.to_thread(sink.close)
         return file, sink.rows
 
-    def _drop_covered(self, table: str, token: str) -> None:
+    def _drop_covered(self, table: str, token: str, known: set[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
-        at or below its count): a copy applies only the deltas newer than a part, and a fold of an older one would
-        undo a later write. Their files are deleted with the next round's.
+        at or below its count; of another, one told before the generation was read: a commit of the lost log): a copy
+        applies only the deltas newer than a part, and a fold of an older one would undo a later write. Their files
+        are deleted with the next round's.
 
         :param table: the table rebuilt
         :ptype table: str
         :param token: the generation its parts are current to
         :ptype token: str
+        :param known: the table's files told before that generation was read
+        :ptype known: set[str]
         :return: nothing
         :rtype: None
         """
         held = split_generation_token(token)
 
-        def covered(name: str, share_token: str) -> bool:
+        def covered(name: str, file: str, share_token: str) -> bool:
             if name != table or held is None:
                 return False
             parsed = split_generation_token(share_token)
-            return parsed is not None and parsed[0] == held[0] and parsed[1] <= held[1]
+            if parsed is not None and parsed[0] != held[0]:
+                return file in known
+            return parsed is not None and parsed[1] <= held[1]
 
-        dropped = {file for name, file, share_token in self._queued if covered(name, share_token)}
-        dropped |= {share[2] for share in self._pending if covered(share[0], share[3])}
-        self._queued = [item for item in self._queued if not covered(item[0], item[2])]
-        self._pending = tuple(share for share in self._pending if not covered(share[0], share[3]))
+        dropped = {file for name, file, share_token in self._queued if covered(name, file, share_token)}
+        dropped |= {share[2] for share in self._pending if covered(share[0], share[2], share[3])}
+        self._queued = [item for item in self._queued if not covered(*item)]
+        self._pending = tuple(share for share in self._pending if not covered(share[0], share[2], share[3]))
         left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
         self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
 
@@ -744,8 +938,8 @@ def _cold_start_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]
             lead_array=_lead_array(table),
         ),
         kind="cold_start",
-        reason="no full on the delta-files volume holds the table (a lost volume, a new environment) or it was reset: the writer "
-        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
+        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), it was reset, or the epoch log "
+        "ordering its deltas was lost: the writer reads it once and publishes its full; copies wait for that, never reading L3 whole",
         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
         "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
@@ -824,6 +1018,19 @@ def _unlink_all(root: Path, files: Sequence[str]) -> None:
     """
     for file in files:
         (root / file).unlink(missing_ok=True)
+
+
+def _present(root: Path, files: Sequence[str]) -> list[str]:
+    """each of ``files`` that is on the volume, in order; blocking. Each is opened by its name, never listed.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param files: the files, relative to it
+    :ptype files: Sequence[str]
+    :return: those present
+    :rtype: list[str]
+    """
+    return [file for file in files if (root / file).is_file()]
 
 
 def _cleared(directory: Path) -> None:
@@ -941,8 +1148,13 @@ def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[
         states.append((None, rows))
     else:
         values = rows.column(table.scope_column)
+        # several values may name one state (a table keyed by the race: each race's rows are its state's), so the
+        # values are grouped by the state they name: one part a state
+        by_state: dict[str, list[Any]] = {}
         for value in pc.unique(values).to_pylist():
-            states.append((table.scope_of(value), rows.filter(pc.equal(values, value))))
+            by_state.setdefault(table.scope_of(value), []).append(value)
+        for state, named in by_state.items():
+            states.append((state, rows.filter(pc.is_in(values, value_set=pa.array(named, values.type)))))
     parts: list[FullPart] = []
     for scope, held in sorted(states, key=lambda state: str(state[0])):
         kept = table.keep.keep(held) if table.keep is not None else held
@@ -987,9 +1199,10 @@ def fold_round(
     :ptype before: float
     :param fresh: tables owed a rebuild (reset or recreated): their files are kept, never folded onto the old parts
     :ptype fresh: tuple[str, ...]
-    :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid)``: the state for the next
-        round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how, rows)``, the files
-        deleted and swept, the manifest published (or the current one), and this worker's process id
+    :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed)``: the state for
+        the next round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how, rows)``, the
+        files deleted and swept, the manifest published (or the current one), this worker's process id, and each
+        table a commit of another incarnation than its full's was told of (its log lost: rebuilt, never folded)
     :rtype: tuple
     """
     base = Path(root)
@@ -998,22 +1211,39 @@ def fold_round(
     for table, file, token in committed:
         shares.extend(_shares(base, config[table], file, token))
     current = current_full_manifest(base)
+    renewed: tuple[str, ...] = ()
 
     def answer(
         outcome: str, manifest: str, *, folded: Sequence[Any] = (), deleted: int = 0, swept: int = 0
     ) -> tuple[Any, ...]:
-        return (tuple(shares), reused, doomed, outcome, tuple(folded), deleted, swept, manifest, os.getpid())
+        return (tuple(shares), reused, doomed, outcome, tuple(folded), deleted, swept, manifest, os.getpid(), renewed)
 
     if current is None:
         return answer("no_full", "")
     if current.term > term:
         return answer("stale", current.name)
+    # a share a part is already current to was folded before the writer restarted (its files re-learned from the
+    # epoch log, decision 24): dropped, and a file left with no share deleted with the round's covered files
+    named = {share[2] for share in shares}
+    shares = [share for share in shares if not _folded_in(current, share)]
+    doomed = tuple(sorted(set(doomed) | (named - {share[2] for share in shares} - current.files())))
+    renewed = tuple(
+        sorted(
+            {
+                share[0]
+                for share in shares
+                if share[0] in current.tables
+                and share[0] not in fresh
+                and not _one_incarnation(current.tables[share[0]].version, share[3])
+            }
+        )
+    )
     # a delta a full names as a part is kept until no manifest in use names it, then deleted: a writer that started
     # after the publish that named it learns it here, from the manifest
     reused = tuple(sorted(set(reused) | {file for file in current.files() if not file.startswith(_FULLS_PREFIX)}))
     by_state: dict[tuple[str, str | None], list[_Share]] = {}
     for share in shares:
-        if share[0] in current.tables and share[0] not in fresh:
+        if share[0] in current.tables and share[0] not in fresh and share[0] not in renewed:
             by_state.setdefault((share[0], share[1]), []).append(share)
     tables_now = dict(current.tables)
     folded: list[tuple[str, str | None, str, int]] = []
@@ -1065,6 +1295,40 @@ def fold_round(
     return answer("folded", published.name, folded=folded, deleted=len(deleted), swept=len(swept))
 
 
+def _one_incarnation(token: str, other: str) -> bool:
+    """whether two generation tokens are of one incarnation of the table's log, so their counts order them.
+
+    :param token: one token
+    :ptype token: str
+    :param other: the other
+    :ptype other: str
+    :return: whether both parse and their incarnations match
+    :rtype: bool
+    """
+    first, second = split_generation_token(token), split_generation_token(other)
+    return first is not None and second is not None and first[0] == second[0]
+
+
+def _folded_in(current: FullManifest, share: _Share) -> bool:
+    """whether the current full already holds a share: its state's part (or, for a state with no part, the table,
+    which then holds no row of the state) is current to the share's generation or a later one of its incarnation.
+
+    :param current: the current full
+    :ptype current: FullManifest
+    :param share: the share
+    :ptype share: _Share
+    :return: whether it was folded before
+    :rtype: bool
+    """
+    entry = current.tables.get(share[0])
+    if entry is None:
+        return False
+    part = next((p for p in entry.parts if p.scope == share[1]), None)
+    held = split_generation_token(part.version if part is not None else entry.version)
+    mine = split_generation_token(share[3])
+    return held is not None and mine is not None and held[0] == mine[0] and mine[1] <= held[1]
+
+
 @dataclass(frozen=True, slots=True)
 class _Folding:
     """a folded table as a round reads it from :meth:`FoldedTable.plain`."""
@@ -1075,15 +1339,17 @@ class _Folding:
     scope_column: str | None
     scope_prefix: str | None
     keep: type[DeltaKeepRule] | None
+    scope_from: type[DeltaScopeRule] | None = None
 
     @classmethod
     def of(cls, plain: tuple[Any, ...]) -> _Folding:
-        name, key, columns, column, prefix, keep = plain
-        return cls(name, tuple(key), tuple(columns), column, prefix, keep)
+        name, key, columns, column, prefix, keep, scope_from = plain
+        return cls(name, tuple(key), tuple(columns), column, prefix, keep, scope_from)
 
     def scope_of(self, value: Any) -> str:
-        """a row's state from its scope column's value, as the writer's seqlock names it."""
-        return f"{self.scope_prefix}{value}"
+        """a row's state from its scope column's value (through :attr:`FoldedTable.scope_from` when the column names
+        the state only by way of another key, a race), as the writer's seqlock names it."""
+        return f"{self.scope_prefix}{value if self.scope_from is None else self.scope_from.state_of(value)}"
 
 
 def _read_ipc(path: Path) -> Any:
