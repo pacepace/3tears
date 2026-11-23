@@ -3895,16 +3895,48 @@ class BaseCollection(ABC, Generic[EntityT]):
             return 0
         db = inline_l1(l1)
         order = [Sort(column, cast=None) for column in columns]
-        keys: list[Any] = []
-        for prefix in prefixes:
-            rows = run_inline(
-                keyed.keyset_rows(db, self.table_name, columns=columns, by=dict(prefix), order=order, page=L1_KEY_PAGE)
-            )
-            keys.extend(
-                key if len(key) > 1 else key[0] for key in (tuple(row[column] for column in columns) for row in rows)
-            )
+        found: list[tuple[Any, ...]] = []
+        walked: list[dict[str, Any]] | None = None
+        for prefix, at in zip(prefixes, positioned, strict=True):
+            lead = self._leading_key(len(at))
+            if [index for index, _ in at] == list(range(len(at))):
+                # a prefix that leads the key (a delta file's always does): read along the key's index, by the prefix
+                values = [prefix[column] for column in lead]
+                found.extend(
+                    tuple(row[column] for column in columns)
+                    for row in run_inline(
+                        keyed.keyset_rows(
+                            db,
+                            self.table_name,
+                            columns=columns,
+                            by=dict(zip(lead, values, strict=True)),
+                            order=order,
+                            page=L1_KEY_PAGE,
+                        )
+                    )
+                )
+            else:
+                # a load's constants that do not lead the key (an older writer's partition): L1's keys walked once,
+                # along the key, and those under it taken; this process's cache, never L3, and never the whole drop
+                walked = self._l1_keys(l1, self.primary_key_columns) if walked is None else walked
+                found.extend(
+                    key
+                    for key in (tuple(row[column] for column in columns) for row in walked)
+                    if all(key_text(key[index]) == value for index, value in at)
+                )
+        keys = list(dict.fromkeys(key if len(key) > 1 else key[0] for key in found))
         self._evict_l1_many(keys)
         return len(keys)
+
+    def _leading_key(self, width: int) -> KeyColumns:
+        """the key's first ``width`` columns: the columns a key prefix of that width names.
+
+        :param width: how many
+        :ptype width: int
+        :return: the columns, in key order
+        :rtype: KeyColumns
+        """
+        return tuple(self.primary_key_columns[:width])
 
     def _under_dropped_prefix(self, key: tuple[str, ...]) -> bool:
         """whether ``key`` lies under a prefix :meth:`drop_cached_prefixes` dropped in this process.
