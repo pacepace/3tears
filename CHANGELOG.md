@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a delta file never guesses what the database decides
+
+**Added:** a column whose `server_default` is a fixed literal of its own type has that value written into a delta
+row that leaves it out (`TableSchema.delta_file_defaults`); applied, a new row takes it and a held row keeps its own,
+as the database does. `check_delta_file` is public, for a broker to check a commit's delta file names.
+
+**Changed:** `TableSchema(delta_files=True)` is refused at declaration for a default the database computes (an
+expression, a function, a sequence, a type-changing cast, a timestamp literal), a tsvector column, a `cas_column`, or
+L2 order columns: a delta file is written before the commit and cannot know the database's answer.
+
 ### core: a copy follower applies an opted-in table's changes from its delta files
 
 **Added:** `FollowedTable.delta_files` (`FollowedTable.of` takes it from `TableSchema.delta_files`). A `CopyFollower`
