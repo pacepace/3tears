@@ -32,6 +32,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
+from threetears.core.collections.epoch_change import EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullAbsent,
@@ -56,6 +57,16 @@ _COLUMNS = (
 _FOLLOWED = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))
 
 _OPENED: list[Any] = []
+
+
+class _EmptyLog:
+    """the NATS epoch log of a writer's first start: no record names a delta yet."""
+
+    async def change(self, table_name: str, token: str) -> None:
+        return None
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        return await walk_by_count(self, table_name, after, upto)
 
 
 @pytest.fixture(autouse=True)
@@ -346,7 +357,8 @@ async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_
     writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
     folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))])
     try:
-        assert await folds.start(writer_l3, _Generations(), version=3) == (_TABLE,)
+        # a writer with no full yet has no delta to re-learn: the epoch log is read, and holds nothing for it
+        assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
     finally:
         await folds.close()
     assert await asyncio.wait_for(start, 5) is False
