@@ -1281,10 +1281,16 @@ class _RowsFile:
         self._writer = pa_ipc.new_file(self._sink, schema)
 
     def write(self, page: Any) -> None:
+        """append ``page``, cast to the schema, and count its rows.
+
+        :param page: rows to append
+        :ptype page: pyarrow.Table
+        """
         self._writer.write_table(page.cast(self.schema))
         self.rows += page.num_rows
 
     def close(self) -> None:
+        """finish the IPC file and close it, the file even when the writer fails."""
         try:
             self._writer.close()
         finally:
@@ -1863,6 +1869,13 @@ class _Folding:
 
     @classmethod
     def of(cls, plain: tuple[Any, ...]) -> _Folding:
+        """the folding from :meth:`FoldedTable.plain`'s tuple.
+
+        :param plain: the tuple
+        :ptype plain: tuple
+        :return: the folding
+        :rtype: _Folding
+        """
         name, key, columns, column, prefix, keep = plain
         return cls(name, tuple(key), tuple(columns), column, prefix, keep)
 

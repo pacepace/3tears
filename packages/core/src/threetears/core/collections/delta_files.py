@@ -565,24 +565,48 @@ class _HashingSink:
         self.closed = False
 
     def write(self, data: Any) -> int:
+        """hash ``data``, count it and pass it on to the file.
+
+        :param data: the bytes Arrow writes
+        :ptype data: bytes-like
+        :return: the number of bytes written
+        :rtype: int
+        """
         self._hash.update(data)
         self._written += len(memoryview(data))
         self._sink.write(data)
         return len(memoryview(data))
 
     def flush(self) -> None:
+        """flush the file."""
         self._sink.flush()
 
     def tell(self) -> int:
+        """the bytes written so far: Arrow asks where it is in the stream.
+
+        :return: the count
+        :rtype: int
+        """
         return self._written
 
     def writable(self) -> bool:
+        """always writable: Arrow checks before writing.
+
+        :return: True
+        :rtype: bool
+        """
         return True
 
     def close(self) -> None:
+        """mark the sink closed for Arrow, leaving the caller's file open."""
         self.closed = True  # the caller's file stays open for the trailer
 
     def digest(self) -> bytes:
+        """the sha256 of every byte written: the file's checksum trailer.
+
+        :return: the digest
+        :rtype: bytes
+        """
         return self._hash.digest()
 
 

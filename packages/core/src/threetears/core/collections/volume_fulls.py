@@ -128,10 +128,22 @@ class FullPart:
     rows: int
 
     def encode(self) -> dict[str, Any]:
+        """the part as the manifest's JSON holds it.
+
+        :return: the body
+        :rtype: dict[str, Any]
+        """
         return {"scope": self.scope, "file": self.file, "version": self.version, "rows": self.rows}
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> FullPart:
+        """a part from the manifest's JSON, its file checked to stay under the root.
+
+        :param body: the body :meth:`encode` wrote
+        :ptype body: Mapping[str, Any]
+        :return: the part
+        :rtype: FullPart
+        """
         scope = body["scope"]
         return cls(
             scope=None if scope is None else str(scope),
@@ -153,10 +165,22 @@ class FullTable:
     parts: tuple[FullPart, ...] = ()
 
     def encode(self) -> dict[str, Any]:
+        """the table as the manifest's JSON holds it.
+
+        :return: the body
+        :rtype: dict[str, Any]
+        """
         return {"version": self.version, "parts": [part.encode() for part in self.parts]}
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> FullTable:
+        """a table from the manifest's JSON.
+
+        :param body: the body :meth:`encode` wrote
+        :ptype body: Mapping[str, Any]
+        :return: the table
+        :rtype: FullTable
+        """
         return cls(version=str(body["version"]), parts=tuple(FullPart.decode(part) for part in body["parts"]))
 
 
@@ -194,6 +218,11 @@ class FullManifest:
         return {part.file for entry in self.tables.values() for part in entry.parts}
 
     def encode(self) -> bytes:
+        """the manifest as the JSON bytes its file holds.
+
+        :return: the bytes
+        :rtype: bytes
+        """
         body = {
             "format": _FORMAT,
             "term": self.term,
@@ -254,7 +283,9 @@ def _write_renamed(final: Path, write: Any) -> None:
     reader that opens the name sees the whole file or none. Refuses a name already taken: nothing is overwritten.
 
     :param final: the file
+    :ptype final: Path
     :param write: writes the file's bytes to the open sink
+    :ptype write: Callable[[BinaryIO], None]
     :raises FileExistsError: when ``final`` exists
     """
     final.parent.mkdir(parents=True, exist_ok=True)
