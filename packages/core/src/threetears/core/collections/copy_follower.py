@@ -44,6 +44,9 @@ everything else.
 **Start.** :meth:`CopyFollower.start` registers with the registry and takes each table's mark: from a checkpoint
 (:mod:`~threetears.core.collections.copy_checkpoint`), whose marks the registry adopts so the catch-up walks the log
 from them, or, when there is none, from the head, after which every table is read whole once (the first start only).
+A table that opts in to delta files starts instead from the full on the shared volume
+(:mod:`~threetears.core.collections.volume_fulls`): with none published the follower waits for it, its status saying so,
+and never reads that table whole from L3.
 """
 
 from __future__ import annotations
@@ -75,6 +78,7 @@ from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage
 from threetears.core.collections.scope_epochs import ScopeEpochs
+from threetears.core.collections.volume_fulls import FullAbsent, StagedFull
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
@@ -96,6 +100,7 @@ if TYPE_CHECKING:
     from threetears.core.collections.copy_checkpoint import CopyCheckpoints
     from threetears.core.collections.epoch_change import EpochChangeReader
     from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.collections.volume_fulls import VolumeFulls
 
 try:
     import pyarrow as pa
@@ -704,7 +709,12 @@ class CopyFollower:
     :param retry_waits: after a failed pass, the first wait before :meth:`run` tries again and the longest it doubles to
         (seconds)
     :ptype retry_waits: tuple[float, float]
-    :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable
+    :param fulls: the full on the delta-files volume (:mod:`~threetears.core.collections.volume_fulls`) for the tables
+        that opt in to delta files: a start loads them from it, waiting for one when none is published, and never
+        reads them whole from L3; ``checkpoints`` then holds only the other tables. None: every table starts as before
+    :ptype fulls: VolumeFulls | None
+    :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable, or a table is both
+        in ``fulls`` and in ``checkpoints``, or ``fulls`` holds a table the follower does not follow
     """
 
     def __init__(
@@ -721,6 +731,7 @@ class CopyFollower:
         checkpoints: CopyCheckpoints | None = None,
         stamp_table: str | None = None,
         retry_waits: tuple[float, float] = RETRY_WAITS,
+        fulls: VolumeFulls | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -789,6 +800,15 @@ class CopyFollower:
         #: that checkpoint walks the log from there and hears those keys again
         self._current_marks: dict[str, str | None] = {}
         self._checkpoints = checkpoints
+        self._fulls = fulls
+        if fulls is not None:
+            # an opted-in table's full is on the volume alone: the NATS checkpoint store keeps every other table
+            unknown = sorted(set(fulls.tables) - set(self._tables))
+            if unknown:
+                raise ValueError(f"the volume's fulls name {unknown}, which this follower does not follow")
+            both = sorted(set(fulls.tables) & set(checkpoints.table_names if checkpoints is not None else ()))
+            if both:
+                raise ValueError(f"{both} opt in to delta files: their full is on the volume, never in a checkpoint")
         if checkpoints is not None:
             # every other table the checkpoint holds is derived by the follower's owner: loaded with these, never warmed
             checkpoints.follow(self._tables)
@@ -978,6 +998,8 @@ class CopyFollower:
         :rtype: bool
         """
         self.register()
+        if self._fulls is not None:
+            return await self._start_from_volume(self._fulls)
         if self._checkpoints is None:
             await self.warm()
             return False
@@ -1004,6 +1026,76 @@ class CopyFollower:
         )
         self._poked.set()
         return not staged.missing
+
+    async def _start_from_volume(self, fulls: VolumeFulls) -> bool:
+        """:meth:`start` for a follower whose opted-in tables start from the full on the delta-files volume: wait for a
+        full holding every one of them (the status says so, and nothing reads L3 meanwhile), stage it, and stage every
+        other table from the checkpoint as before; apply both in one transaction, take each table's mark (an opted-in
+        table's oldest part version), and read whole only the other tables no checkpoint holds.
+
+        The copy is not labelled with a stamp here: the full's parts are each at their own version, so the copy holds
+        one state of every table only once the first catch-up applies what came after each.
+
+        :param fulls: the volume's fulls
+        :ptype fulls: VolumeFulls
+        :return: False: the copy's derived tables are derived again, since none matches parts at their own versions (and
+            False too when the follower was stopped while it waited)
+        :rtype: bool
+        """
+        full = await self._wait_for_full(fulls)
+        if full is None:
+            return False
+        staged = await self._checkpoints.stage() if self._checkpoints is not None else None
+        checkpointed = staged is not None and staged.loaded
+        marks: dict[str, str | None] = dict(full.marks)
+        changes = list(full.changes)
+        if staged is not None and checkpointed:
+            marks.update(staged.marks)
+            changes.extend(staged.changes)
+        missing = {
+            name: (staged.missing.get(name, "cold_start") if staged is not None else "cold_start")
+            for name in self._tables
+            if name not in marks
+        }
+        self._mark += 1
+        await asyncio.to_thread(self._backend.apply_staged, changes, mark=self._mark)
+        self._applied_mark = self._mark
+        self._stamps[self._mark] = (None, dict(marks))
+        self._current_marks = dict(marks)
+        for name, mark in marks.items():
+            self._registry.generation_marks.adopt_generation(name, mark)
+        if missing:
+            await self._warm_tables(missing)
+        self._say(
+            FollowerPhase.FOLLOWING,
+            f"loaded full {full.manifest} from the volume ({full.rows} rows, {len(full.marks)} tables) and "
+            f"{len(marks) - len(full.marks)} tables from a checkpoint ({len(missing)} read whole); catching up",
+        )
+        self._poked.set()
+        return False
+
+    async def _wait_for_full(self, fulls: VolumeFulls) -> StagedFull | None:
+        """the current full staged, once the writer has published one holding every opted-in table: until then the
+        status says the follower is waiting for the full, and it looks again every ``poll_seconds``. A copy never reads
+        an opted-in table whole from L3 (decision 14 of the delta-files design: the writer rebuilds the full from L3
+        once). A part the manifest names that is gone (a newer full was published and the old one swept) is looked
+        for again the same way.
+
+        :param fulls: the volume's fulls
+        :ptype fulls: VolumeFulls
+        :return: what was staged; None when the follower was stopped while it waited
+        :rtype: StagedFull | None
+        """
+        while self._status.phase is not FollowerPhase.STOPPED:
+            try:
+                found = await fulls.stage(self._backend)
+            except FileNotFoundError as exc:
+                found = FullAbsent(f"a part of the current full is not on the volume ({exc.filename}); looking again")
+            if isinstance(found, StagedFull):
+                return found
+            self._say(FollowerPhase.WAITING, f"waiting for the full: {found.reason}")
+            await asyncio.sleep(fulls.poll_seconds)
+        return None
 
     async def _warm_tables(self, whys: Mapping[str, str]) -> None:
         """take these tables' marks at the head and read each whole at the next apply, counted by why.

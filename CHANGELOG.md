@@ -26,6 +26,21 @@ as the database does. `check_delta_file` is public, for a broker to check a comm
 expression, a function, a sequence, a type-changing cast, a timestamp literal), a tsvector column, a `cas_column`, or
 L2 order columns: a delta file is written before the commit and cannot know the database's answer.
 
+### core: the writer folds each state's delta files into the full
+
+**Added:** `DeltaFolds(root, [FoldedTable.of(schema, scope=...)])` (`threetears.core.collections.delta_fold`). The
+writing load calls `committed(tx.delta_files, generations, version=)` after each commit of its opted-in tables; it
+never waits and never raises for a fold. A round runs in a worker process (`ProcessWorkers`): each delta file's bytes
+are shared among its states by rows, and a state whose bytes since its last fold reach half its part's size (at its
+first delta, with no part) gets a new part: the old part plus each delta's rows of the state merged as L3 merged them
+(`apply_delta_row`), newest per key, then the table's keep rule. A delta holding only the state that the fold keeps
+exactly is named as the part, no row copied. The round publishes a manifest at the write's version (`ScopeEpochs.begin`'s,
+the writer's term), deletes covered deltas and the files `deletable_full_files` lists, and sweeps orphans of its tables
+saved since it started. A round that fails is logged and counted (`delta_fold_rounds_total{outcome}`) and its files
+are folded by the next commit's round; a table no full holds yet is left for the writer's rebuild. `TableSchema.delta_keep`
+declares the keep rule, a `DeltaKeepRule` subclass (`threetears.core.collections.delta_keep`). `sweep_orphan_delta_files`
+takes `since=` and `tables=`.
+
 ### core: a copy follower applies an opted-in table's changes from its delta files
 
 **Added:** `FollowedTable.delta_files` (`FollowedTable.of` takes it from `TableSchema.delta_files`). A `CopyFollower`
@@ -62,6 +77,19 @@ Each row of a file names the columns its write set (`_3tears_written`, an index 
 metadata lists), the `DO UPDATE SET` list 3tears generated for it (`schema_sql.upsert_set_columns`, the bulk statement's
 `bulk_update_columns`); `delta_files.apply_delta_row` merges a file's row into the row held as L3 merged the upsert: a
 column the write left out keeps its value, `date_created` keeps the held row's.
+
+### core: a full on the delta-files volume, and a copy that starts from it
+
+**Added:** `threetears.core.collections.volume_fulls`: a full of the tables that opt in to delta files is one Arrow IPC
+part (zstd) per (table, state) plus a manifest naming each part's file and the version it is current to, under
+`THREETEARS_DELTA_FILES_DIR/.fulls/`. Manifests are named by the writer's term and a sequence
+(`full-<term>-<seq>.json`); readers take the highest term, then the newest sequence, so a stale writer's later manifest
+is ignored. `publish_full_manifest` writes under a temporary name, flushes and renames, never overwriting, and refuses
+a term below the current one (`StaleTermError`); a delta file may be named as a part. `deletable_full_files` lists what
+the writer may delete: never the current or the previous manifest's files. `CopyFollower(fulls=VolumeFulls(...))`
+starts the opted-in tables from the current full (each part's version reported in `StagedFull.versions`); with none
+published it waits, its status `waiting for the full`, and never reads L3. Tables not opted in start from the NATS
+checkpoint as before (`CopyCheckpoints.table_names` may not overlap the fulls').
 
 ### core: a copy follower checkpoints an epoch taken from the change notes before its notes can go
 

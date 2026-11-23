@@ -106,6 +106,7 @@ from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta
+from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import RESET_REASON, WholeReach
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
@@ -1261,6 +1262,11 @@ class TableSchema:
         type the file holds it as. A column's ``server_default`` must be a fixed value, which the file's row holds for
         a write that leaves the column out (:attr:`delta_file_defaults`); a default the database computes, a
         tsvector, a ``cas_column`` or the L2 order columns are refused where declared (:meth:`_refuse_undecided`)
+    :cvar delta_keep: the rows of each state a full of the table keeps when the writer folds its delta files
+        (:class:`~threetears.core.collections.delta_keep.DeltaKeepRule`, a subclass: it crosses to the fold's worker
+        process as its name); None keeps every row. Read only for a table that opts in (:attr:`delta_files`): the
+        same rule the table's copy keeps by, so a full holds what a copy holds (``design-pod-delta-files.md``,
+        decision 13)
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -1348,6 +1354,9 @@ class TableSchema:
     # every commit that writes the table saves its delta file before it commits, enforced on every write path of the
     # collection (threetears.core.collections.delta_files); the one declaration, read by the collection class
     delta_files: bool = False
+    # the rows of each state a full of the table keeps at a fold (threetears.core.collections.delta_fold); a class,
+    # compared and hashed by its name like every other field, so the schema stays a value
+    delta_keep: type[DeltaKeepRule] | None = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
