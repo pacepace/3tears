@@ -36,14 +36,19 @@ from threetears.core.collections.delta_files import (  # noqa: E402
 )
 from threetears.core.collections.registry import CollectionRegistry  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
+    BIGINT_TYPE,
+    BOOL_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
     NUMERIC_TYPE,
     STRING_TYPE,
+    TSVECTOR_TYPE,
+    UUID_TYPE,
     Column,
     TableSchema,
     collection_for_schema,
+    l2_order_columns,
 )
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
 from threetears.core.entities.base import BaseEntity  # noqa: E402
@@ -442,3 +447,143 @@ def test_a_reader_refuses_a_file_of_another_format(tmp_path: Path) -> None:
         writer.write_table(table)
     with pytest.raises(ValueError, match="format"):
         read_delta_file(path)
+
+
+def _defaulted_schema(**overrides: Any) -> TableSchema:
+    """a result table whose status, flag and share take fixed database defaults when a write leaves them out."""
+    columns = [
+        Column("office_key", STRING_TYPE),
+        Column("geo_id", STRING_TYPE),
+        Column("votes", INT_TYPE, nullable=True),
+        Column("status", STRING_TYPE, server_default="'active'::text"),
+        Column("flag", BOOL_TYPE, server_default="false"),
+        Column("share", NUMERIC_TYPE, precision=6, scale=2, server_default="0.5"),
+        Column("note", STRING_TYPE, nullable=True, server_default="NULL"),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+        *overrides.pop("extra", []),
+    ]
+    return TableSchema(
+        name=overrides.pop("name", "defaulted"),
+        primary_key=("office_key", "geo_id"),
+        columns=columns,
+        l1_eviction=TEST_L1_TABLE,
+        delta_files=True,
+        **overrides,
+    )
+
+
+async def test_a_fixed_default_lands_in_the_delta_row_of_a_new_row_and_a_held_row_keeps_its_value(root: Path) -> None:
+    """Flips if a column whose database default is a fixed value, left out of a write, shows null in the delta file
+    rather than the value the database gave a new row (decision 20), if it is counted among the columns the write set
+    (a row L3 already held keeps its value, as the ``DO UPDATE`` that never names it keeps it), or if a column a row
+    names as None is given the default (the ``INSERT`` sent the null)."""
+    collection = collection_for_schema(_defaulted_schema(), entity_class=_ResultRow)(
+        CollectionRegistry(), DefaultCoreConfig(), None
+    )
+    collection.l3_pool = ConnOnlyPool()
+    conn = _Conn(root)
+    stamp = datetime(2026, 11, 23, tzinfo=UTC)
+    single = {"office_key": "sn_NC1", "geo_id": "00001", "date_created": stamp, "date_updated": stamp}
+    async with CallerTransaction(conn) as transaction:
+        await collection.save_to_store(single, conn=conn)
+        transaction.enroll(collection, ("sn_NC1", "00001"))
+        await collection.save_rows(_rows(1), conn=conn)
+        await collection.save_rows([{**_rows(2)[1], "status": None, "flag": True}], conn=conn)
+    # the statements left the defaulted columns out, so the database filled them in
+    assert all("status" not in sql for sql, _ in conn.committed[:2])
+    changes = read_delta_file(root / transaction.delta_files["defaulted"]).changes
+    fixed = {"status": "active", "flag": False, "share": "0.50", "note": None}
+    for change in changes[:2]:
+        assert {name: change.row[name] for name in fixed} == fixed
+        assert not set(fixed) & change.written
+    assert (changes[2].row["status"], changes[2].row["flag"], changes[2].row["share"]) == (None, True, "0.50")
+    # a new row: the copy holds no row for the key, as the INSERT found none, and takes the default
+    inserted = apply_delta_row(None, changes[0])
+    assert inserted is not None and inserted["status"] == "active"
+    # a row L3 held: the column the write left out keeps the held value
+    held = {**changes[0].row, "status": "closed", "flag": True, "share": "0.75"}
+    merged = apply_delta_row(held, changes[0])
+    assert merged is not None and (merged["status"], merged["flag"], merged["share"]) == ("closed", True, "0.75")
+
+
+def test_a_fixed_default_lands_in_rows_handed_as_arrow(tmp_path: Path) -> None:
+    """Flips if an Arrow write that lacks a column with a fixed database default (its ``INSERT`` leaves the column
+    out) shows null in the file rather than the default."""
+    delta = TableDelta(
+        name="defaulted",
+        types={"geo_id": pa.string(), "status": pa.string(), "flag": pa.bool_()},
+        key=("geo_id",),
+        defaults={"status": "active", "flag": False},
+    )
+    delta.arrow(pa.table({"geo_id": ["a", "b"], "flag": [True, None]}), ["flag"])
+    changes = read_delta_file(tmp_path / write_delta_file(tmp_path, delta, "w")).changes
+    assert [change.row for change in changes] == [
+        {"geo_id": "a", "status": "active", "flag": True},
+        {"geo_id": "b", "status": "active", "flag": None},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [
+        (Column("stamped", DATETIMETZ_TYPE, server_default="now()"), "'stamped' whose server_default 'now()'"),
+        (Column("stamped", DATETIMETZ_TYPE, server_default="CURRENT_TIMESTAMP"), "database computes it"),
+        (Column("token", UUID_TYPE, server_default="gen_random_uuid()"), "'token' whose server_default"),
+        (Column("seq", INT_TYPE, server_default="nextval('defaulted_seq'::regclass)"), "database computes it"),
+        (Column("short", STRING_TYPE, server_default="'abcdef'::varchar(2)"), "database computes it"),
+        (Column("counted", INT_TYPE, server_default="'1'::text"), "cast to 'text'"),
+        (Column("when", DATETIMETZ_TYPE, server_default="'2026-11-03'"), "fixed datetimetz value"),
+        (Column("search", TSVECTOR_TYPE, immutable=True, nullable=True), "'search': a tsvector is maintained"),
+    ],
+)
+def test_a_default_the_database_computes_refuses_the_opt_in_where_declared(column: Column, message: str) -> None:
+    """Flips if a table opting in to delta files is accepted with a column whose value the database decides at the
+    commit (a function, a sequence, an expression, a cast that can change the value, a literal 3tears does not read
+    exactly, a trigger-maintained tsvector), which a file written before the commit could only guess."""
+    with pytest.raises(ValueError, match="delta_files=True") as refused:
+        _defaulted_schema(extra=[column])
+    assert message in str(refused.value)
+    assert "cannot know the database's answer" in str(refused.value)
+    # the same table not opted in is declared as before
+    TableSchema(
+        name="defaulted",
+        primary_key="id",
+        columns=[Column("id", STRING_TYPE), column],
+        l1_eviction=TEST_L1_TABLE,
+    )
+
+
+def test_a_guarded_write_refuses_the_opt_in_where_declared() -> None:
+    """Flips if a table opting in to delta files is accepted with a write the database applies only if a condition
+    holds (a compare-and-swap fence, the L2 order's fenced upsert), whose outcome a file written before the commit
+    cannot know."""
+    with pytest.raises(ValueError, match="cas_column='date_updated': a compare-and-swap"):
+        _defaulted_schema(cas_column="date_updated")
+    with pytest.raises(ValueError, match="cas_column='date_updated'"):
+        _defaulted_schema(cas_column="date_updated", cas_null_safe=True)
+    with pytest.raises(ValueError, match="L2 order columns.*an ordered upsert fenced"):
+        _defaulted_schema(extra=l2_order_columns())
+
+
+def test_a_table_with_only_fixed_defaults_and_no_guard_opts_in() -> None:
+    """Flips if a table with no computed default, no tsvector and no guarded write is refused, or if its fixed
+    defaults are not read as the database stores them and the rail answers them."""
+    schema = _defaulted_schema(
+        extra=[
+            Column("kind", STRING_TYPE, server_default="'it''s'"),
+            Column("count", BIGINT_TYPE, server_default="-3"),
+            Column("ref", UUID_TYPE, server_default="'0123456789ABCDEF0123456789ABCDEF'::uuid"),
+        ]
+    )
+    assert dict(schema.delta_file_defaults) == {
+        "status": "active",
+        "flag": False,
+        "share": "0.50",
+        "note": None,
+        "kind": "it's",
+        "count": -3,
+        "ref": "01234567-89ab-cdef-0123-456789abcdef",
+    }
+    assert _schema("plain", opted_in=True).delta_file_defaults == {}
+    assert _schema("plain_off", opted_in=False).delta_file_defaults == {}

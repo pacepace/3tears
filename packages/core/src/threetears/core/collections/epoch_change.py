@@ -88,6 +88,7 @@ __all__ = [
     "records_changes",
     "changed_row_runs",
     "check_change_form",
+    "check_delta_file",
     "check_whole_reach",
     "epoch_change_record",
     "read_epoch_change",
@@ -269,6 +270,20 @@ def _check_delta_file(delta_file: str | None) -> None:
     """
     if delta_file is not None and (len(delta_file) > _DELTA_FILE_MAX_CHARS or not _DELTA_FILE_NAME.match(delta_file)):
         raise ValueError(f"a record names a delta file as <table>/<write id>.arrow, got {delta_file!r}")
+
+
+def check_delta_file(delta_file: str | None) -> None:
+    """refuse a delta file name an epoch record would refuse: the one check the record makes
+    (:meth:`EpochChange` and :func:`epoch_change_body` run it), public so a broker checks a name a pod sent it by the
+    record's own rule rather than by building a record to see whether it is refused.
+
+    :param delta_file: the name, or None
+    :ptype delta_file: str | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is not ``<table>/<write id>.arrow`` within the record's bound
+    """
+    _check_delta_file(delta_file)
 
 
 def check_whole_reach(prefixes: Sequence[Mapping[str, str]] | None, reason: str | None, *, whole_table: bool) -> None:

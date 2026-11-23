@@ -28,6 +28,16 @@ own, so a file holds a handful of sets however many rows, and an index a row tha
 bitmask or a list a row would cost bytes a row (an LSF table has 179 columns) for what a handful of sets says.
 :func:`apply_delta_row` merges a row as L3 did, so a copy or a fold that applies the file ends exactly as L3 does.
 
+**A fixed default is written in; anything the database decides is refused** (decision 20). A column with a
+``server_default`` that a write leaves out is left out of its ``INSERT``, so a new row takes the default. When the
+default is a fixed value (``'active'``, ``0``, ``false``), the writer puts that value in the file's row
+(:attr:`TableDelta.defaults`), as the database fills it; it is not among the columns the write set, so a row L3
+already held keeps its value, as the ``DO UPDATE`` that never names the column keeps it. The file never says whether a
+row was new: the copy and the fold tell, by whether they hold the key, which is how L3 told (the conflict). A default
+the database computes (``now()``, a sequence) or a guarded write (one the database may skip) cannot be known before
+the commit, so such a table is refused where it opts in
+(:class:`~threetears.core.collections.schema_backed.TableSchema`).
+
 **Saved before the commit, under a unique name, atomically.** The file is written under a temporary name in its
 table's directory, flushed to disk, then renamed to its own name, and the directory flushed: a reader that opens the
 name sees the whole file or nothing, never part of one. A crash before the commit leaves a file no committed record
@@ -162,6 +172,9 @@ class TableDelta:
     :ivar parts: each write's part, ``("rows", rows, written)``, ``("arrow", table, written)`` or
         ``("deletes", keys, ())``; ``written`` is one set of columns for every row, or a list of one a row
     :ivar entries: rows written and keys deleted so far: one a key the transaction enrolled
+    :ivar defaults: each column whose database default is a fixed value, and that value as the rail answers it
+        (``TableSchema.delta_file_defaults``): a row written without the column was inserted with it, so the file's
+        row holds it rather than null
     """
 
     name: str
@@ -169,6 +182,7 @@ class TableDelta:
     key: tuple[str, ...]
     parts: list[tuple[str, Any, Any]] = field(default_factory=list)
     entries: int = 0
+    defaults: Mapping[str, Any] = field(default_factory=dict)
 
     def rows(self, rows: Sequence[Mapping[str, Any]], written: Written) -> None:
         """add rows written, each keyed by column, and the columns their write set.
@@ -238,9 +252,9 @@ class TableDelta:
         segments = []
         for kind, part, written in self.parts:
             if kind == "rows":
-                segment = _rail_arrow_table(part, self.types)
+                segment = _rail_arrow_table(_defaulted(part, self.defaults), self.types)
             elif kind == "arrow":
-                segment = _typed(part, self.types)
+                segment = _typed(part, self.types, self.defaults)
             else:
                 segment = _rail_arrow_table([dict(zip(self.key, key, strict=True)) for key in part], self.types)
             if kind == "rows" and written and not isinstance(written[0], str):
@@ -339,8 +353,8 @@ def read_delta_file(path: Path) -> DeltaFile:
 def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
     """the row L3 holds after a delta file's change, from the row it held before: merged as its upsert merged it.
 
-    A delete leaves no row. A row L3 did not hold is the row as the write inserted it (a column it left out is null,
-    as the file shows it). A row L3 held keeps every column the write did not set, its key and its ``date_created``
+    A delete leaves no row. A row L3 did not hold is the row as the write inserted it, every column as the file shows
+    it (a column it left out is its fixed database default, or null). A row L3 held keeps every column the write did not set, its key and its ``date_created``
     (immutable, never set by an upsert) among them, and takes the file's value of each column the write set
     (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`); a write that set none (a table that ignores
     conflicts) leaves it as it was. Pure: the copy and the fold apply a file through this one rule.
@@ -362,22 +376,46 @@ def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict
     return merged
 
 
-def _typed(rows: Any, types: Mapping[str, Any]) -> Any:
+def _defaulted(rows: Sequence[Mapping[str, Any]], defaults: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    """rows a write handed, each with the fixed database default of every column it leaves out: the value its
+    ``INSERT`` (which leaves the column out) gave a new row. A column a row names, ``None`` included, is as named:
+    the ``INSERT`` sent it. Only the rows that lack one are copied.
+
+    :param rows: the rows, as written
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param defaults: column -> its fixed default, as the rail answers it
+    :ptype defaults: Mapping[str, Any]
+    :return: the rows, defaulted
+    :rtype: Sequence[Mapping[str, Any]]
+    """
+    if not defaults:
+        return rows
+    return [
+        row if all(name in row for name in defaults) else {**{n: v for n, v in defaults.items() if n not in row}, **row}
+        for row in rows
+    ]
+
+
+def _typed(rows: Any, types: Mapping[str, Any], defaults: Mapping[str, Any]) -> Any:
     """rows a write handed as Arrow, as the table's columns typed as the rail answers them: a column already of its
     type kept, one Arrow casts exactly (integers, instants, text) cast, any other made value by value as the rail's
-    JSON carries it (a ``Decimal`` or UUID as text); a column the rows lack is null.
+    JSON carries it (a ``Decimal`` or UUID as text); a column the rows lack is its fixed database default (the write's
+    ``INSERT`` left it out, so a new row took it), or null.
 
     :param rows: the rows
     :ptype rows: pyarrow.Table
     :param types: each column's Arrow type, in order
     :ptype types: Mapping[str, pyarrow.DataType]
+    :param defaults: column -> its fixed default, as the rail answers it
+    :ptype defaults: Mapping[str, Any]
     :return: the rows, typed
     :rtype: pyarrow.Table
     """
     columns = []
     for name, kind in types.items():
         if name not in rows.column_names:
-            columns.append(pa.nulls(rows.num_rows, kind))
+            fill = defaults.get(name)
+            columns.append(pa.nulls(rows.num_rows, kind) if fill is None else pa.array([fill] * rows.num_rows, kind))
             continue
         column = rows.column(name)
         given = column.type

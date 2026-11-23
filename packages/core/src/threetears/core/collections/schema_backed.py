@@ -40,7 +40,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import wraps
 from typing import Any, ClassVar, Final, Generic, Literal, TypeVar, overload
 from uuid import UUID
@@ -356,6 +356,84 @@ def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
                 f"column {name!r} ({kind}): the rail answers it otherwise than one Arrow type; read it with fetch"
             )
     return types
+
+
+# what a delta file may hold of a column's database default (design-pod-delta-files.md, decision 20): the file is
+# written before the commit, so it holds only what 3tears knows without the database's answer. A plain literal of the
+# column's own type is a fixed value, written into the file's row as the rail answers it; anything else -- a function
+# (now(), gen_random_uuid()), a sequence (nextval), an expression, a literal 3tears does not read exactly -- is the
+# database's to decide, and refused where the table opts in rather than guessed
+
+#: a quoted SQL literal, ``''`` its escaped quote
+_QUOTED_LITERAL: Final = re.compile(r"'((?:[^']|'')*)'")
+#: an unquoted SQL literal: a number, a boolean or NULL
+_BARE_LITERAL: Final = re.compile(r"[+-]?\d+(?:\.\d+)?|true|false|null", re.IGNORECASE)
+#: a trailing cast to a plain type name (``::text``, ``::character varying``)
+_CAST: Final = re.compile(r"\s*::\s*([a-z_][a-z0-9_]*(?:\s+[a-z_][a-z0-9_]*)*)\s*", re.IGNORECASE)
+#: the type names a cast may name for each column type and leave the literal's value as it is; a cast to anything
+#: else (``varchar(2)`` cuts the text) is the database's to answer
+_SAME_TYPE_CASTS: Final[dict[str, frozenset[str]]] = {
+    STRING_TYPE: frozenset({"text", "character varying", "varchar"}),
+    UUID_TYPE: frozenset({"uuid"}),
+    INT_TYPE: frozenset({"integer", "int", "int4", "bigint", "int8"}),
+    BIGINT_TYPE: frozenset({"integer", "int", "int4", "bigint", "int8"}),
+    BOOL_TYPE: frozenset({"boolean", "bool"}),
+    NUMERIC_TYPE: frozenset({"numeric"}),
+}
+
+
+class _NotFixed(ValueError):
+    """a column's database default is not a value a delta file can hold before the commit."""
+
+
+def _fixed_default(column: Column) -> Any:
+    """the value ``column``'s ``server_default`` gives a new row, as the rail answers it: a plain literal of the
+    column's own type (``'active'``, ``0``, ``false``, ``NULL``), optionally cast to that type.
+
+    :param column: a column declaring a ``server_default``
+    :ptype column: Column
+    :return: the value: text for a text, UUID, enum or ``NUMERIC`` column (a ``NUMERIC`` at its declared scale, as the
+        database stores it), an int, a bool, or None
+    :rtype: Any
+    :raises _NotFixed: when the default is not such a literal: the database computes it, or 3tears cannot read it as
+        the database would
+    """
+    expression = (column.server_default or "").strip()
+    quoted = _QUOTED_LITERAL.match(expression)
+    bare = None if quoted else _BARE_LITERAL.match(expression)
+    literal = quoted or bare
+    if literal is None:
+        raise _NotFixed("the database computes it")
+    rest = expression[literal.end() :]
+    cast = _CAST.fullmatch(rest) if rest else None
+    if rest and cast is None:
+        raise _NotFixed("the database computes it")
+    if bare is not None and literal.group(0).lower() == "null":
+        return None
+    allowed = _SAME_TYPE_CASTS.get(column.column_type, frozenset())
+    if column.column_type == ENUM_TYPE and column.enum_name:
+        allowed = frozenset({column.enum_name.lower()})
+    if cast is not None and " ".join(cast.group(1).lower().split()) not in allowed:
+        raise _NotFixed(f"its cast to {cast.group(1)!r} is the database's to answer for a {column.column_type} column")
+    text = quoted.group(1).replace("''", "'") if quoted else literal.group(0)
+    kind = column.column_type
+    try:
+        if kind == STRING_TYPE and quoted:
+            return text
+        if kind == ENUM_TYPE and quoted and text in (column.enum_type or ()):
+            return text
+        if kind == UUID_TYPE and quoted:
+            return str(UUID(text))
+        if kind in (INT_TYPE, BIGINT_TYPE) and re.fullmatch(r"[+-]?\d+", text):
+            return int(text)
+        if kind == BOOL_TYPE and bare is not None and text.lower() in ("true", "false"):
+            return text.lower() == "true"
+        if kind == NUMERIC_TYPE and re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text) and column.scale is not None:
+            # the database stores a NUMERIC at its declared scale, and the rail answers its digits so ("0.50")
+            return str(Decimal(text).quantize(Decimal(1).scaleb(-column.scale), rounding=ROUND_HALF_UP))
+    except (ValueError, InvalidOperation) as exc:
+        raise _NotFixed(f"3tears cannot read it as a {kind} value: {exc}") from exc
+    raise _NotFixed(f"3tears does not read it as a fixed {kind} value exactly")
 
 
 #: the most columns one index may hold on YugabyteDB, its ``INCLUDE`` columns and a primary key's columns counted:
@@ -1180,7 +1258,9 @@ class TableSchema:
         wrote and the keys it deleted as one file on the shared volume, before the commit, and a write that cannot
         is refused (:mod:`~threetears.core.collections.delta_files`). Off by default: a table not opted in writes
         exactly as before. Every column must be one the rail answers as one Arrow type (``rail_arrow_types``), the
-        type the file holds it as
+        type the file holds it as. A column's ``server_default`` must be a fixed value, which the file's row holds for
+        a write that leaves the column out (:attr:`delta_file_defaults`); a default the database computes, a
+        tsvector, a ``cas_column`` or the L2 order columns are refused where declared (:meth:`_refuse_undecided`)
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -1271,6 +1351,8 @@ class TableSchema:
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
+    # each column's fixed database default, for a table that opts in to delta files (TableSchema.delta_file_defaults)
+    _delta_defaults: dict[str, Any] = field(init=False, repr=False, compare=False)
     _partition_column: str | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -1294,6 +1376,7 @@ class TableSchema:
         if self.delta_files:
             # refused where it is declared, not at the first write: a column no file can type would refuse every one
             rail_arrow_types(self.columns)
+        object.__setattr__(self, "_delta_defaults", self._refuse_undecided() if self.delta_files else {})
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
         # coerce partition columns to immutable so callers do not have
@@ -1541,6 +1624,60 @@ class TableSchema:
                 f"needs on_conflict='update' and no cas_null_safe fence -- its persist is the "
                 f"ordered ON CONFLICT DO UPDATE, fenced on the order and nothing else",
             )
+
+    def _refuse_undecided(self) -> dict[str, Any]:
+        """refuse a table opting in to delta files when the database decides part of what a write leaves: a column
+        whose default it computes, a column a trigger maintains, or a guarded write it may skip. The file is written
+        before the commit and cannot know the database's answer (design-pod-delta-files.md, decision 20), so such a
+        table is refused where it is declared rather than given a file that guesses.
+
+        :return: each column's fixed default, as the rail answers it (:attr:`delta_file_defaults`)
+        :rtype: dict[str, Any]
+        :raises ValueError: naming the table, the column or feature, and why
+        """
+        why = "a delta file is written before the commit and cannot know the database's answer"
+        guards = [
+            (self.cas_column is not None, f"cas_column={self.cas_column!r}", "a compare-and-swap fenced write"),
+            (
+                any(c.name in L2_ORDER_COLUMNS for c in self.columns),
+                f"the L2 order columns {L2_ORDER_COLUMNS!r}",
+                "an ordered upsert fenced on the L2 order",
+            ),
+        ]
+        for guarded, feature, kind in guards:
+            if guarded:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): delta_files=True with {feature}: {kind} applies only if its "
+                    f"condition holds, which the database may skip; {why}"
+                )
+        defaults: dict[str, Any] = {}
+        for column in self.columns:
+            if column.column_type == TSVECTOR_TYPE:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): delta_files=True with column {column.name!r}: a tsvector is "
+                    f"maintained by a database trigger, so the database computes its value; {why}"
+                )
+            if column.server_default is None:
+                continue
+            try:
+                defaults[column.name] = _fixed_default(column)
+            except _NotFixed as exc:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): delta_files=True with column {column.name!r} whose "
+                    f"server_default {column.server_default!r} is not a fixed value ({exc}); {why}"
+                ) from exc
+        return defaults
+
+    @property
+    def delta_file_defaults(self) -> Mapping[str, Any]:
+        """each column whose database default is a fixed value, and that value as the rail answers it, for a table
+        that opts in to delta files: a delta file's row holds it for a column its write left out. Empty for a table
+        that does not opt in.
+
+        :return: column -> its fixed default
+        :rtype: Mapping[str, Any]
+        """
+        return self._delta_defaults
 
     @property
     def declares_l2_order(self) -> bool:
@@ -2388,7 +2525,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: the delta
         :rtype: TableDelta
         """
-        return TableDelta(name=self.table_name, types=rail_arrow_types(self.schema.columns), key=self.schema.pk_columns)
+        return TableDelta(
+            name=self.table_name,
+            types=rail_arrow_types(self.schema.columns),
+            key=self.schema.pk_columns,
+            defaults=self.schema.delta_file_defaults,
+        )
 
     def _refuse_unfiled(self, writer: str) -> None:
         """refuse a write to a table that opts in to delta files on a path that cannot record its rows for the file.
