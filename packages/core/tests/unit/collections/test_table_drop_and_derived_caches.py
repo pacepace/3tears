@@ -531,6 +531,67 @@ class TestDroppingATable:
         assert sorted(gone) == ["m1", "m2"]
 
 
+class TestAPrefixClearDropsOnlyTheRowsUnderIt:
+    """a load's or a clear's reach (key prefixes, decision 23 of design-pod-delta-files) drops only the cached rows
+    under it: never the table (the whole-drop rule of tests/enforcement/test_epoch_discipline.py)."""
+
+    async def test_only_the_rows_under_the_prefix_leave_l1_and_the_rest_stay_served_from_it(
+        self, bus: _Lossy, source: _Source
+    ) -> None:
+        """Flips if a prefix reach drops a row of the table outside it from L1 (a whole drop), or leaves a row under
+        it served from L1."""
+        rows = {key: {"id": key, "member_id": f"of-{key}"} for key in ("m1", "m2", "m3")}
+        reader = _Pod(bus, rows, source, scope="reader")
+        for key in rows:
+            assert await _member_id(reader, key) == f"of-{key}"
+        assert all(reader.members.exists_in_cache_sync(key) for key in rows)
+        rows["m2"]["member_id"] = "loaded"
+
+        reader.registry.drop_partitions(_TABLE, [{"id": "m2"}], reason="test")
+
+        assert reader.members.exists_in_cache_sync("m1") and reader.members.exists_in_cache_sync("m3")
+        assert not reader.members.exists_in_cache_sync("m2")
+        fetches = reader.members.fetches
+        assert await _member_id(reader, "m1") == "of-m1"
+        assert await _member_id(reader, "m2") == "loaded"
+        assert reader.members.fetches == fetches + 1, "only the row under the prefix was read again"
+
+    async def test_a_read_in_flight_under_the_prefix_does_not_cache_what_it_read(
+        self, bus: _Lossy, source: _Source
+    ) -> None:
+        """Flips if a read of a key under the prefix, between its L3 query and its L1 write when the reach lands,
+        caches the row it read before the load."""
+        rows = {"m1": {"id": "m1", "member_id": "ada"}}
+        reader = _Pod(bus, rows, source, scope="reader")
+        inner = reader.members.fetch_from_store
+
+        async def fetch_then_clear(entity_id: Any) -> dict[str, Any] | None:
+            row = await inner(entity_id)
+            reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+            return row
+
+        reader.members.fetch_from_store = fetch_then_clear  # type: ignore[method-assign]
+        assert await _member_id(reader, "m1") == "ada"
+        assert not reader.members.exists_in_cache_sync("m1")
+
+    async def test_the_pods_own_stale_l2_entry_under_the_prefix_is_read_past(
+        self, bus: _Lossy, source: _Source
+    ) -> None:
+        """Flips if a row under the prefix is answered from this pod's own L2 entry, which the load made stale."""
+        rows: dict[str, dict[str, Any]] = {}
+        writer = _Pod(bus, rows, source, scope="writer")
+        reader = _Pod(bus, rows, source, scope="reader")
+        await _save(writer, "m1", "ada")
+        await reader.members.get("m1")
+        rows["m1"]["member_id"] = "loaded"
+
+        reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+
+        fetches = reader.members.fetches
+        assert await _member_id(reader, "m1") == "loaded"
+        assert reader.members.fetches == fetches + 1
+
+
 class TestADropDoesNotPutAnOlderL3RowOverANewerL2Row:
     """where L2 is ahead of L3 by design, a drop leaves L2 trusted: reading L3 would move readers back."""
 

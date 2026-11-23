@@ -21,7 +21,7 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -622,6 +622,20 @@ class _L1Fence:
         self._changes += len(keys)
         for key, activity in self._keys.items():
             if key in among:
+                activity.changes += 1
+
+    def changed_under(self, positions: Sequence[tuple[int, str]]) -> None:
+        """record that every key whose values at ``positions`` are those values was evicted: a ticket on such a key
+        taken before now may not cache what it read, and no scan's either. Only keys with work in flight are walked.
+
+        :param positions: each key position and its value's string form (a key prefix, by position)
+        :ptype positions: Sequence[tuple[int, str]]
+        :return: nothing
+        :rtype: None
+        """
+        self._changes += 1
+        for key, activity in self._keys.items():
+            if all(index < len(key) and key[index] == value for index, value in positions):
                 activity.changes += 1
 
     def changed_all(self) -> None:
@@ -3759,7 +3773,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: bool
         """
         return (
-            self._table_drops > 0
+            (self._table_drops > 0 or self._under_dropped_prefix(self._fence_key(entity_id)))
             and self.l2_first is None
             and self.l3_pool is not None
             and not self._declares_deferred_l3_writes
@@ -3840,6 +3854,68 @@ class BaseCollection(ABC, Generic[EntityT]):
         drops.add(task)
         task.add_done_callback(drops.discard)
         return None
+
+    def drop_cached_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> int:
+        """drop from this process's caches every row under each of ``prefixes``, and no other: the keyed form of
+        :meth:`drop_cached_table` for a change that names the key slices it reached (a load from files, a key-prefix
+        delete, decision 23 of ``design-pod-delta-files.md``).
+
+        Why not the whole table: a load of one state's slice dropped every state's cached rows in every process, so
+        each read after it went to L3 for rows no write touched. Now the keys L1 holds under each prefix are read from
+        L1 by the prefix (an index range when the prefix leads the key, as a delta file's always do) and evicted as
+        any eviction is (:meth:`_evict_l1_many`: fenced, deleted in one write, each listener told). A read in flight of
+        a key under the prefix that L1 does not hold yet is fenced by the prefix (:meth:`_L1Fence.changed_under`), and
+        this process's L2 entries under it are distrusted until each is read through from L3 once, as after a table
+        drop (:meth:`_distrusts_l2`). Nothing is broadcast: the rows did not change here.
+
+        :param prefixes: each prefix, its columns (the table's own) and their values as text (``key_text``)
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: how many rows left L1
+        :rtype: int
+        :raises ValueError: when a prefix names a column the table does not have in its key
+        """
+        columns = list(self.primary_key_columns)
+        fence = self._l1_fence
+        remembered = self._l2_read_through
+        positioned: list[tuple[tuple[int, str], ...]] = []
+        for prefix in prefixes:
+            unknown = sorted(set(prefix) - set(columns))
+            if unknown or not prefix:
+                raise ValueError(f"{self.table_name}: a prefix names its key's columns {columns}, got {dict(prefix)}")
+            at = tuple(sorted((columns.index(column), str(value)) for column, value in prefix.items()))
+            positioned.append(at)
+            fence.changed_under(at)
+            for key in [key for key in remembered if all(key[i] == value for i, value in at)]:
+                del remembered[key]
+        # a set of the prefixes dropped (a table's slices: its states, its offices), not a list of every drop
+        distrusted: dict[tuple[tuple[int, str], ...], None] = self.__dict__.setdefault("_l2_distrusted_prefixes", {})
+        distrusted.update(dict.fromkeys(positioned))
+        l1 = self._l1_holding_table()
+        if l1 is None:
+            return 0
+        db = inline_l1(l1)
+        order = [Sort(column, cast=None) for column in columns]
+        keys: list[Any] = []
+        for prefix in prefixes:
+            rows = run_inline(
+                keyed.keyset_rows(db, self.table_name, columns=columns, by=dict(prefix), order=order, page=L1_KEY_PAGE)
+            )
+            keys.extend(
+                key if len(key) > 1 else key[0] for key in (tuple(row[column] for column in columns) for row in rows)
+            )
+        self._evict_l1_many(keys)
+        return len(keys)
+
+    def _under_dropped_prefix(self, key: tuple[str, ...]) -> bool:
+        """whether ``key`` lies under a prefix :meth:`drop_cached_prefixes` dropped in this process.
+
+        :param key: the key, as the pk values' string forms
+        :ptype key: tuple[str, ...]
+        :return: whether it does
+        :rtype: bool
+        """
+        distrusted: dict[tuple[tuple[int, str], ...], None] = self.__dict__.get("_l2_distrusted_prefixes", {})
+        return any(all(i < len(key) and key[i] == value for i, value in at) for at in distrusted)
 
     @property
     def _l1_drops_running(self) -> int:

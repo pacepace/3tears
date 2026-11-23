@@ -1750,7 +1750,8 @@ class CollectionRegistry:
         wanted: WantedFile | None = None,
         cleared: tuple[list[dict[str, str]], str] | None = None,
     ) -> None:
-        """drop the table's own caches once and tell each derived cache each prefix (or drop it, when it takes none).
+        """drop the table's own cached rows under each prefix and tell each derived cache each prefix (or drop it, when
+        it takes none).
 
         :param table_name: the table
         :ptype table_name: str
@@ -1770,7 +1771,8 @@ class CollectionRegistry:
         """
         self.drop_local_scans(table_name)
         collection = self._collections.get(table_name)
-        rows = collection.drop_cached_table() if collection is not None else 0
+        # only the rows under the reach leave this process's L1, never the table's other slices
+        rows = collection.drop_cached_prefixes(prefixes) if collection is not None else 0
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
             if wanted is not None and registration.on_file_wanted is not None:
@@ -1784,7 +1786,7 @@ class CollectionRegistry:
             else:
                 registration.on_table_dropped()
         log.info(
-            "a load's partition reached this process: derived copies read it again, every other cache dropped the table",
+            "a load's partition reached this process: its rows under the reach left L1, derived copies read it again",
             extra={
                 "extra_data": {
                     "table": table_name,
