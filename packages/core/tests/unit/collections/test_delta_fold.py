@@ -33,7 +33,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     read_delta_file,
     write_delta_file,
 )
-from threetears.core.collections import delta_fold  # noqa: E402
+from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
@@ -1579,4 +1579,49 @@ async def test_straight_failed_rounds_hand_their_queue_to_a_recovery_by_key(
     assert _recoveries("rounds_failed") == before + 1
     assert folds.published == published + 1
     assert _held(tmp_path, "votes") == l3.held(), "the recovered full holds every queued change"
+    await folds.close()
+
+
+async def test_a_recovery_builds_its_delta_in_a_worker_and_writes_l3_s_pages_beside_the_fulls(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a recovery (decision 28) builds, compresses or writes its recovery delta in the serving process (its
+    own file writer refuses here), or holds L3's pages in memory rather than writing each beside the fulls as it is
+    read (a pages file is open beside every keyed read), or leaves its scratch files; the recovered full is what L3
+    holds."""
+    _no_whole_read(monkeypatch)
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    held: dict[tuple[str, int], dict[str, Any]] = {}
+    for chunk in (_votes("TX", range(400), 1) + _votes("GA", range(300), 1), _votes("NC", range(200), 1)):
+        await writer.commit(chunk)
+        held.update({(row["state"], row["geo_id"]): row for row in chunk})
+    # left on the volume, never told: an update of TX, a delete of GA, and a commit that never landed
+    leftovers = [writer.save(_votes("TX", range(100, 150), 7)), writer.save(deletes=[("GA", 5)])]
+    held.update({(row["state"], row["geo_id"]): row for row in _votes("TX", range(100, 150), 7)})
+    held.pop(("GA", 5))
+    leftovers.append(writer.save(_votes("NC", range(900, 905), 9)))
+    await writer.folds.close()
+
+    def refused(*_: Any, **__: Any) -> None:
+        raise AssertionError("a delta file was written in the serving process")
+
+    monkeypatch.setattr(delta_files, "write_volume_file", refused)
+    spilled: list[bool] = []
+    keyed = delta_fold.read_keyed_arrow
+
+    async def beside(*args: Any, **kwargs: Any) -> Any:
+        spilled.append(any((tmp_path / ".fulls" / "rebuild" / "votes").glob("*.pages.arrow")))
+        return await keyed(*args, **kwargs)
+
+    monkeypatch.setattr(delta_fold, "read_keyed_arrow", beside)
+    reader = _KeyedL3(list(held.values()))
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    token = f"inc:{len(writer.files)}"
+    assert await folds.start(reader, _Generations({"votes": token}), changes=_Log(), version=6) == ("votes",)
+
+    assert spilled and all(spilled), "every keyed read's pages go to a file beside the fulls"
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow")), "the recovery's own files are removed"
+    assert not any((tmp_path / file).exists() for file in leftovers)
     await folds.close()

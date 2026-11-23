@@ -125,19 +125,21 @@ from threetears.core.collections.delta_files import (
     _PREFIXES_METADATA,
     _WRITTEN_COLUMN,
     _WRITTEN_METADATA,
+    _key_texts,
+    _text_column,
     read_volume_file,
     DeltaChange,
-    TableDelta,
     apply_delta_row,
     OWN_DELTA_SAVES,
+    build_file_table,
     sweep_orphan_delta_files,
     under_prefix,
-    write_delta_file,
+    write_table_file,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, key_text
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
@@ -160,6 +162,7 @@ from threetears.core.collections.volume_fulls import (
 from threetears.core.process_workers import ProcessWorkers
 
 try:
+    import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
@@ -1250,40 +1253,14 @@ class DeltaFolds:
             )
             return
         leftovers = await asyncio.to_thread(_leftover_delta_files, self.root, name)
-        # a lost file is not read: it is gone, or its bytes are damaged (decision 29)
-        reach = await asyncio.to_thread(
-            _leftover_reach, self.root, table, [file for file, _ in leftovers if file not in lost]
-        )
-        types = _table_types(table)
-        kinds = dict(table.kinds)
-        # what only the lost files named, from their records (decision 31): keys from the notes, else whole states
-        named = [await self._lost_commit_reach(table, epoch) for epoch in lost.values()]
-        reach = _with_noted_keys(table, reach, [key for lost_reach in named for key in lost_reach.keys])
-        pages: list[Any] = []
-        if reach.keys:
-            pages += await read_keyed_arrow(
-                reader.l3,
-                name,
-                keys=KeyBatch(table.key, list(reach.keys), tuple(sql_cast(kinds[column]) for column in table.key)),
-                types=types,
+        # the recovery's own files beside the fulls: the keys reached, the notes' keys, the rows read; never held whole
+        work = f"{_REBUILD_DIR}/{name}/{uuid.uuid4().hex}"
+        try:
+            file, rows, markers, named, replaced, keyed = await self._recovery_delta(
+                reader, table, work, [file for file, _ in leftovers if file not in lost], lost
             )
-        for width, values in _prefixes_by_width(table.key, reach.prefixes).items():
-            # every row under a prefix a leftover file cleared, by a key-led read of the prefix: the load's own size
-            pages += await read_keyed_arrow(
-                reader.l3,
-                name,
-                keys=KeyBatch(
-                    table.key[:width], values, tuple(sql_cast(kinds[column]) for column in table.key[:width])
-                ),
-                types=types,
-            )
-        named, unstated = _unstated_gone_by_states(table, reach, pages, named)
-        replaced = tuple(sorted({scope for lost_reach in named for scope in lost_reach.scopes}))
-        if replaced:
-            pages += await _state_rows(reader, table, types, replaced)
-        file, rows, markers = await asyncio.to_thread(
-            _save_recovery_delta, self.root, table, types, pages, reach, replaced, unstated
-        )
+        finally:
+            await asyncio.to_thread(_unlink_work, self.root, work)
         doomable = tuple(
             sorted(
                 {
@@ -1341,7 +1318,7 @@ class DeltaFolds:
                         "table": name,
                         "epoch": lost_reach.epoch,
                         "why": lost_reach.why,
-                        "keys": len(lost_reach.keys),
+                        "keys": lost_reach.noted,
                         "states": list(lost_reach.scopes),
                         "detail": lost_reach.detail,
                     }
@@ -1358,8 +1335,8 @@ class DeltaFolds:
                     "generation": token,
                     "manifest": manifest,
                     "leftover_files": len(leftovers),
-                    "keys": len(reach.keys),
-                    "prefixes": len(reach.prefixes),
+                    "keys": keyed[0],
+                    "prefixes": keyed[1],
                     "states_replaced": len(replaced),
                     "rows": rows,
                     "delete_markers": markers,
@@ -1369,54 +1346,195 @@ class DeltaFolds:
             },
         )
 
-    async def _lost_commit_reach(self, table: FoldedTable, epoch: str) -> _LostReach:
+    async def _recovery_delta(
+        self, reader: _Reader, table: FoldedTable, work: str, files: Sequence[str], lost: Mapping[str, str]
+    ) -> tuple[str, int, int, list[_LostReach], tuple[str, ...], tuple[int, int]]:
+        """the recovery delta (decision 28) of ``table``: the keys and prefixes its leftover ``files`` name and the keys
+        the lost files' notes name, gathered in a worker process into a file of Arrow (:func:`recovery_reach_job`);
+        their rows read from L3 by key a page of keys at a time, each page written beside the fulls as it comes
+        (:class:`_RowsFile`), never held whole; then the delta built, compressed and saved in the worker
+        (:func:`recovery_delta_job`). Plain paths in, a file name and counts out.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :param table: the table
+        :ptype table: FoldedTable
+        :param work: the recovery's own files' stem, under the root
+        :ptype work: str
+        :param files: the leftover delta files to read the keys of
+        :ptype files: Sequence[str]
+        :param lost: each lost file onto its epoch: its keys come from its record (decision 31)
+        :ptype lost: Mapping[str, str]
+        :return: the recovery delta's file, its rows and markers, each lost file's reach, the states replaced whole, and
+            the keys and prefixes read by key
+        :rtype: tuple
+        """
+        types = _table_types(table)
+        kinds = dict(table.kinds)
+        # what only the lost files named, from their records (decision 31): keys from the notes, else whole states
+        named: list[_LostReach] = []
+        noted_files: list[str] = []
+        for index, epoch in enumerate(lost.values()):
+            noted_file = f"{work}.noted{index}.arrow"
+            lost_reach = await self._lost_commit_reach(table, epoch, noted_file)
+            named.append(lost_reach)
+            if lost_reach.why == "notes":
+                noted_files.append(noted_file)
+        reach_file = f"{work}.reach.arrow"
+        prefixes, count = await self._workers.run(
+            recovery_reach_job,
+            str(self.root),
+            table.plain(),
+            table.kinds,
+            table.delta_scope,
+            tuple(files),
+            tuple(noted_files),
+            reach_file,
+            reader.page_size,
+        )
+        held = [dict(prefix) for prefix in prefixes]
+        pages_file = f"{work}.pages.arrow"
+        pages = await asyncio.to_thread(_RowsFile, self.root / pages_file, pa.schema(list(types.items())))
+        try:
+            casts = tuple(sql_cast(kinds[column]) for column in table.key)
+            # one page of keys at a time, the keyed read's own form (KeyBatch takes each key's values)
+            async for chunk in _reach_pages(self.root / reach_file, table.key):
+                for page in await read_keyed_arrow(
+                    reader.l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types
+                ):
+                    await asyncio.to_thread(pages.write, page)
+            for width, values in _prefixes_by_width(table.key, held).items():
+                # every row under a prefix a leftover file cleared, by a key-led read of the prefix: the load's own size
+                for page in await read_keyed_arrow(
+                    reader.l3,
+                    table.name,
+                    keys=KeyBatch(
+                        table.key[:width], values, tuple(sql_cast(kinds[column]) for column in table.key[:width])
+                    ),
+                    types=types,
+                ):
+                    await asyncio.to_thread(pages.write, page)
+        finally:
+            await asyncio.to_thread(pages.close)
+        noting = [lost_reach for lost_reach in named if lost_reach.why == "notes"]
+        unstated = False
+        if table.delta_scope is not None and noting:
+            unstated = await self._workers.run(
+                recovery_unstated_job, str(self.root), table.key, table.kinds, reach_file, pages_file
+            )
+            if unstated and all(lost_reach.fallback for lost_reach in noting):
+                named = [
+                    replace(
+                        lost_reach,
+                        why="states",
+                        scopes=lost_reach.fallback,
+                        detail="a key its notes name is gone from L3 and no file names its state",
+                    )
+                    if lost_reach.why == "notes"
+                    else lost_reach
+                    for lost_reach in named
+                ]
+            else:
+                # none gone of an unknown state; or one commit names no states, and its marker is refused (retried)
+                unstated = False
+        replaced = tuple(sorted({scope for lost_reach in named for scope in lost_reach.scopes}))
+        state_files: tuple[str, ...] = ()
+        if replaced:
+            states_file = f"{work}.states.arrow"
+            states = await asyncio.to_thread(_RowsFile, self.root / states_file, pa.schema(list(types.items())))
+            try:
+                async for page in _state_rows(reader, table, types, replaced):
+                    await asyncio.to_thread(states.write, page)
+            finally:
+                await asyncio.to_thread(states.close)
+            state_files = (states_file,)
+        file, rows, markers = await self._workers.run(
+            recovery_delta_job,
+            str(self.root),
+            table.plain(),
+            table.kinds,
+            table.delta_scope,
+            reach_file,
+            (pages_file, *state_files),
+            prefixes,
+            replaced,
+            unstated,
+        )
+        return file, rows, markers, named, replaced, (count, len(held))
+
+    async def _lost_commit_reach(self, table: FoldedTable, epoch: str, noted_file: str) -> _LostReach:
         """what a lost file's commit reached, from its epoch's record (decision 31): the keys the change notes name in
-        its bracket while the ring covers it; else the states it names; else nothing.
+        its bracket while the ring covers it (written to ``noted_file`` a page at a time, kept only when every page
+        was read); else the states it names; else nothing.
 
         :param table: the table
         :ptype table: FoldedTable
         :param epoch: the epoch whose file was lost
         :ptype epoch: str
-        :return: the keys (as text, in key order) or the states (as the table's scopes name them), and why
+        :param noted_file: where its noted keys are written, under the root: a text column a key column
+        :ptype noted_file: str
+        :return: how many keys the notes named, or the states, and why
         :rtype: _LostReach
         :raises GenerationUnavailableError: when the epoch log cannot be read (the recovery is tried again)
         """
         record = await self._changes.change(table.name, epoch) if self._changes is not None else None
         if record is None:
             return _LostReach(epoch=epoch, why="unnamed", detail="the epoch log holds no record of it")
-        noted = await self._noted_keys(table.name, record)
+        sink = await asyncio.to_thread(
+            _RowsFile, self.root / noted_file, pa.schema([(column, pa.string()) for column in table.key])
+        )
+        try:
+            noted = await self._noted_keys(table, record, sink)
+        finally:
+            await asyncio.to_thread(sink.close)
+        if not isinstance(noted, int):
+            # the notes could not name every key: none of the pages read stands for the commit's reach
+            await asyncio.to_thread(_unlink_all, self.root, [noted_file])
         scopes = _table_scopes(table, record)
-        if isinstance(noted, tuple):
-            return _LostReach(epoch=epoch, why="notes", keys=noted, fallback=scopes)
+        if isinstance(noted, int):
+            return _LostReach(epoch=epoch, why="notes", noted=noted, fallback=scopes)
         if scopes:
             return _LostReach(epoch=epoch, why="states", scopes=scopes, detail=noted)
         return _LostReach(epoch=epoch, why="unnamed", detail=f"{noted}; the record names none of the table's states")
 
-    async def _noted_keys(self, table: str, record: EpochChange) -> tuple[tuple[str, ...], ...] | str:
-        """every key the change notes name in ``record``'s bracket, a page at a time; or why they cannot.
+    async def _noted_keys(self, table: FoldedTable, record: EpochChange, sink: _RowsFile) -> int | str:
+        """write every key the change notes name in ``record``'s bracket to ``sink``, a page at a time as Arrow; how
+        many, or why they cannot (the caller then drops what was written).
 
         :param table: the table
-        :ptype table: str
+        :ptype table: FoldedTable
         :param record: the lost file's record
         :ptype record: EpochChange
-        :return: the keys, each its values as text in key order; or why not (``no_bracket``, ``no_notes_reader``,
-            ``whole_table``, or the reader's word: ``not_covered`` once the ring no longer holds the bracket)
-        :rtype: tuple[tuple[str, ...], ...] | str
+        :param sink: the noted keys' file
+        :ptype sink: _RowsFile
+        :return: the keys written; or why not (``no_bracket``, ``no_notes_reader``, ``whole_table``, or the reader's
+            word: ``not_covered`` once the ring no longer holds the bracket)
+        :rtype: int | str
         """
         if record.noted_between is None:
             return "no_bracket"
         if self._notes is None:
             return "no_notes_reader"
-        keys: dict[tuple[str, ...], None] = {}
-        async with aclosing(noted_key_pages(self._notes, table, record.noted_between)) as pages:
+        count = 0
+        async with aclosing(noted_key_pages(self._notes, table.name, record.noted_between)) as pages:
             async for page in pages:
                 if not isinstance(page, NotedKeysPage):
                     return page
                 if page.whole_table:
                     # another commit's load or truncate in the bracket: the keys are not the reach
                     return "whole_table"
-                keys.update(dict.fromkeys(tuple(key) for key in page.keys))
-        return tuple(keys)
+                if page.keys:
+                    # the reader's page as Arrow, a text column a key column: the page's own size
+                    columns = list(zip(*page.keys, strict=True))
+                    keys = pa.table(
+                        {
+                            column: pa.array(values, pa.string())
+                            for column, values in zip(table.key, columns, strict=True)
+                        }
+                    )
+                    await asyncio.to_thread(sink.write, keys)
+                    count += keys.num_rows
+        return count
 
     def _drop_covered(self, table: str, token: str, known: set[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
@@ -1458,7 +1576,7 @@ class _LostReach:
 
     :ivar epoch: the epoch whose file was lost
     :ivar why: ``notes``, ``states`` or ``unnamed``
-    :ivar keys: for ``notes``, every key its notes name, as text in key order
+    :ivar noted: for ``notes``, how many keys its notes name (written to the recovery's noted keys' file)
     :ivar scopes: for ``states``, the table's states the record names, as its scopes name them (``state:CA``)
     :ivar detail: why the notes could not name the keys, for the log line
     :ivar fallback: for ``notes``, the states the record names: read instead when a key the notes name is gone from L3
@@ -1467,63 +1585,10 @@ class _LostReach:
 
     epoch: str
     why: _LostWhy
-    keys: tuple[tuple[str, ...], ...] = ()
+    noted: int = 0
     scopes: tuple[str, ...] = ()
     detail: str = ""
     fallback: tuple[str, ...] = ()
-
-
-def _unstated_gone_by_states(
-    table: FoldedTable, reach: _Leftovers, pages: Sequence[Any], named: Sequence[_LostReach]
-) -> tuple[list[_LostReach], bool]:
-    """for a table keyed without its state, a key the notes named that L3 no longer holds and no leftover file names
-    the state of has no part to file its delete marker under: its commit's states are read instead (decision 31), when
-    every such commit's record names them, and those keys need no marker (their states' parts are replaced whole).
-
-    :param table: the table
-    :ptype table: FoldedTable
-    :param reach: what the leftover files and the notes name
-    :ptype reach: _Leftovers
-    :param pages: the rows read from L3 by key and prefix
-    :ptype pages: Sequence[pyarrow.Table]
-    :param named: each lost file's reach
-    :ptype named: Sequence[_LostReach]
-    :return: the reaches, the notes' ones turned to states when needed; and whether keys gone of no known state are
-        covered by states read whole
-    :rtype: tuple[list[_LostReach], bool]
-    """
-    noting = [lost_reach for lost_reach in named if lost_reach.why == "notes"]
-    if table.delta_scope is None or not noting:
-        return list(named), False
-    kinds = dict(table.kinds)
-    found = {
-        tuple(key_text(value) for value in key)
-        for page in pages
-        for key in zip(*(page.column(column).to_pylist() for column in table.key), strict=True)
-    }
-    unstated = any(
-        text not in found and text not in reach.states
-        for lost_reach in noting
-        for text in (
-            tuple(key_text(typed_text(kinds[column], value)) for column, value in zip(table.key, key, strict=True))
-            for key in lost_reach.keys
-        )
-    )
-    if not unstated or not all(lost_reach.fallback for lost_reach in noting):
-        # none gone of an unknown state; or one commit names no states, and its marker is refused (retried, logged)
-        return list(named), False
-    turned = [
-        replace(
-            lost_reach,
-            why="states",
-            scopes=lost_reach.fallback,
-            detail="a key its notes name is gone from L3 and no file names its state",
-        )
-        if lost_reach.why == "notes"
-        else lost_reach
-        for lost_reach in named
-    ]
-    return turned, True
 
 
 def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...]:
@@ -1542,36 +1607,9 @@ def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...]:
     return tuple(scope for scope in record.scopes if scope.startswith(table.scope[1]))
 
 
-def _with_noted_keys(table: FoldedTable, reach: _Leftovers, noted: Sequence[tuple[str, ...]]) -> _Leftovers:
-    """``reach`` with the keys the notes named added, each typed as its column binds (a delete marker is written of
-    them), in the one text the files' keys are compared in.
-
-    :param table: the table
-    :ptype table: FoldedTable
-    :param reach: what the leftover files name
-    :ptype reach: _Leftovers
-    :param noted: the keys the notes named, as text in key order
-    :ptype noted: Sequence[tuple[str, ...]]
-    :return: the reach with them
-    :rtype: _Leftovers
-    """
-    if not noted:
-        return reach
-    kinds = dict(table.kinds)
-    typed = dict(reach.typed)
-    keys = dict.fromkeys(reach.keys)
-    for texts in noted:
-        values = tuple(typed_text(kinds[column], text) for column, text in zip(table.key, texts, strict=True))
-        text = tuple(key_text(value) for value in values)
-        typed.setdefault(text, values)
-        if not (reach.prefixes and under_prefix(dict(zip(table.key, values, strict=True)), reach.prefixes)):
-            keys[text] = None
-    return _Leftovers(keys=tuple(keys), typed=typed, states=reach.states, prefixes=reach.prefixes)
-
-
 async def _state_rows(
     reader: _Reader, table: FoldedTable, types: Mapping[str, Any], scopes: Sequence[str]
-) -> list[Any]:
+) -> AsyncIterator[Any]:
     """every row L3 holds of the states ``scopes`` name (decision 31): one keyset read led by the state column, the
     states a set filter on it, so each page seeks the states' index range (the key when it leads with the state, the
     table's state index otherwise), never the table.
@@ -1584,8 +1622,8 @@ async def _state_rows(
     :ptype types: Mapping[str, Any]
     :param scopes: the states, as its scopes name them
     :ptype scopes: Sequence[str]
-    :return: the pages
-    :rtype: list[pyarrow.Table]
+    :return: the pages, as read (the caller writes each beside the fulls)
+    :rtype: AsyncIterator[pyarrow.Table]
     """
     assert table.scope is not None  # noqa: S101 -- _table_scopes names states only of a scoped table
     column, prefix = table.scope
@@ -1593,7 +1631,6 @@ async def _state_rows(
     cast = f"{sql_cast(kind)}[]"
     values = [typed_text(kind, scope.removeprefix(prefix)) for scope in scopes]
     selected = ", ".join(quote_identifier(name) for name in types)
-    pages: list[Any] = []
     async for page in keyset_arrow_pages(
         reader.l3,
         f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
@@ -1603,8 +1640,7 @@ async def _state_rows(
         page_size=reader.page_size,
         lead_array=cast,
     ):
-        pages.append(page)
-    return pages
+        yield page
 
 
 @dataclass(frozen=True, slots=True)
@@ -1877,24 +1913,6 @@ def rebuild_round(
     return ("rebuilt", published.name, rebuilt, deleted)
 
 
-@dataclass(frozen=True, slots=True)
-class _Leftovers:
-    """what a table's delta files left on the volume name (decision 28): each key once, by its text, and the prefixes
-    they clear.
-
-    :ivar keys: each key not under a prefix, its values as text (``key_text``), in key order
-    :ivar typed: each of those keys' values as the files hold them, by its text: a delete marker is written of them
-    :ivar states: each key's state as its row or marker carries it, by its text, for a table keyed without its state
-        (:attr:`FoldedTable.delta_scope`); empty otherwise
-    :ivar prefixes: every key prefix the files clear, each once, as text
-    """
-
-    keys: tuple[tuple[str, ...], ...]
-    typed: Mapping[tuple[str, ...], tuple[Any, ...]]
-    states: Mapping[tuple[str, ...], Any]
-    prefixes: tuple[dict[str, str], ...]
-
-
 def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
     """every delta file of ``table`` on the volume no full in use names, and when each was saved; blocking. The one
     listing of the volume a writer makes: only a recovery (decision 28), when no epoch log names the files.
@@ -1924,46 +1942,196 @@ def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
     return found
 
 
-def _leftover_reach(root: Path, table: FoldedTable, files: Sequence[str]) -> _Leftovers:
-    """the keys and prefixes ``files`` name: their key columns (and the state column a table keyed without its state
-    carries) and their metadata alone are read; blocking.
+#: the recovery's reach file's own columns beside the key's (:func:`recovery_reach_job`): each key's one text, its
+#: state as a file carried it, whether a cleared prefix holds it, and whether the notes named it
+_TEXT: Final = "_3tears_text"
+_STATE: Final = "_3tears_state"
+_UNDER: Final = "_3tears_under"
+_NOTED: Final = "_3tears_noted"
+
+
+def _typed_texts(column: Any, kind: str, arrow_type: Any) -> Any:
+    """a key column given as text (a note's) as its column binds (:func:`~threetears.core.collections.copy_follower.
+    typed_text`), each distinct text converted once, then taken a row at a time in Arrow.
+
+    :param column: the texts
+    :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :param kind: the column's type tag
+    :ptype kind: str
+    :param arrow_type: the column's Arrow type
+    :ptype arrow_type: pyarrow.DataType
+    :return: the values
+    :rtype: pyarrow.Array
+    """
+    encoded = pc.dictionary_encode(column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column)
+    values = pa.array([typed_text(kind, text) for text in encoded.dictionary.to_pylist()], arrow_type)
+    return values.take(encoded.indices)
+
+
+def _under_prefixes(texts: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]]) -> Any:
+    """which rows lie under one of ``prefixes`` (:func:`~threetears.core.collections.delta_files.under_prefix`,
+    compared as text), in Arrow.
+
+    :param texts: each key column's values as text
+    :ptype texts: Mapping[str, pyarrow.Array]
+    :param count: the rows
+    :ptype count: int
+    :param prefixes: the prefixes, as a delta file names them
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :return: one flag a row
+    :rtype: pyarrow.Array
+    """
+    under = np.zeros(count, dtype=bool)
+    for prefix in prefixes:
+        within = np.ones(count, dtype=bool)
+        for column, value in prefix.items():
+            equal = pc.equal(texts[column], pa.scalar(value, pa.string()))
+            within &= np.asarray(pc.fill_null(equal, False).to_numpy(zero_copy_only=False), dtype=bool)
+        under |= within
+    return pa.array(under)
+
+
+def _first_each(rows: Any, scope: str | None) -> Any:
+    """each key of ``rows`` once, in the order first held, by its text (:data:`_TEXT`): its first row's values, and
+    the last state a row of it carried (``scope``), as the leftover files' reach was read in file order.
+
+    :param rows: rows holding :data:`_TEXT` and the key columns, and ``scope`` when given
+    :ptype rows: pyarrow.Table
+    :param scope: the state column a file's markers carry; None for none
+    :ptype scope: str | None
+    :return: the keys, each once
+    :rtype: pyarrow.Table
+    """
+    at = rows.append_column("_3tears_at", pa.array(np.arange(rows.num_rows, dtype=np.int64)))
+    aggregates: list[tuple[str, str]] = [("_3tears_at", "min")]
+    if scope is not None:
+        aggregates.append((scope, "last"))
+    grouped = at.group_by(_TEXT, use_threads=False).aggregate(aggregates)
+    order = pc.sort_indices(grouped.column("_3tears_at_min"))
+    grouped = grouped.take(order)
+    first = rows.take(grouped.column("_3tears_at_min"))
+    if scope is not None:
+        first = first.set_column(first.schema.get_field_index(scope), scope, grouped.column(f"{scope}_last"))
+    return first
+
+
+def recovery_reach_job(
+    root: str,
+    plain: tuple[Any, ...],
+    kinds: tuple[tuple[str, str], ...],
+    delta_scope: str | None,
+    files: tuple[str, ...],
+    noted_files: tuple[str, ...],
+    reach_file: str,
+    page: int,
+) -> tuple[tuple[tuple[tuple[str, str], ...], ...], int]:
+    """what a recovery reaches (decision 28), in a worker process, as Arrow end to end: the keys and prefixes the
+    leftover ``files`` name (their key columns, and the state a table keyed without it carries, read alone; each
+    file's checksum verified first) and the keys the lost files' notes name, each key once by its text, written to
+    ``reach_file`` (``page`` keys a batch): its key columns as typed, :data:`_TEXT`, :data:`_STATE`, :data:`_UNDER`
+    (a cleared prefix holds it: its rows come with the prefix's read) and :data:`_NOTED`.
 
     :param root: the delta files' root
-    :ptype root: Path
-    :param table: the table
-    :ptype table: FoldedTable
-    :param files: its leftover delta files
-    :ptype files: Sequence[str]
-    :return: what they name
-    :rtype: _Leftovers
+    :ptype root: str
+    :param plain: the table, :meth:`FoldedTable.plain`
+    :ptype plain: tuple
+    :param kinds: its columns' type tags, :attr:`FoldedTable.kinds`
+    :ptype kinds: tuple
+    :param delta_scope: the state column its markers carry; None when its key names it
+    :ptype delta_scope: str | None
+    :param files: its leftover delta files, under the root
+    :ptype files: tuple[str, ...]
+    :param noted_files: the noted keys' files, under the root: a text column a key column
+    :ptype noted_files: tuple[str, ...]
+    :param reach_file: where the reach is written, under the root
+    :ptype reach_file: str
+    :param page: keys a batch of the reach file: one keyed read's worth
+    :ptype page: int
+    :return: the prefixes the files clear (each its ``(column, text)`` pairs, in order first named), and how many keys
+        no prefix holds (read by key)
+    :rtype: tuple
     :raises ValueError: when a file is not of the delta files' format
     """
-    read = (*table.key, *((table.delta_scope,) if table.delta_scope is not None else ()))
-    typed: dict[tuple[str, ...], tuple[Any, ...]] = {}
-    states: dict[tuple[str, ...], Any] = {}
+    base = Path(root)
+    table = _Folding.of(plain)
+    types = rail_arrow_types([Column(name, kind) for name, kind in kinds])
+    kind_of = dict(kinds)
+    read = [*table.key, *((delta_scope,) if delta_scope is not None else ())]
+    schema = pa.schema([(column, types[column]) for column in read])
     prefixes: list[dict[str, str]] = []
+    held: list[Any] = []
     for file in files:
         # its checksum verified before a key is read: a damaged file raises, never names other keys
-        held = read_volume_file(root / file, columns=read)
-        metadata = held.schema.metadata or {}
+        rows = read_volume_file(base / file, columns=read)
+        rows.validate(full=True)
+        metadata = rows.schema.metadata or {}
         if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
             raise ValueError(f"{file}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}")
         for prefix in json.loads(metadata[_PREFIXES_METADATA]):
             if dict(prefix) not in prefixes:
                 prefixes.append(dict(prefix))
-        values = list(zip(*(held.column(column).to_pylist() for column in table.key), strict=True))
-        scoped = held.column(table.delta_scope).to_pylist() if table.delta_scope is not None else None
-        for index, key in enumerate(values):
-            text = tuple(key_text(value) for value in key)
-            typed.setdefault(text, key)
-            if scoped is not None and scoped[index] is not None:
-                states[text] = scoped[index]
-    keys = tuple(
-        text
-        for text, key in typed.items()
-        if not (prefixes and under_prefix(dict(zip(table.key, key, strict=True)), prefixes))
-    )
-    return _Leftovers(keys=keys, typed=typed, states=states, prefixes=tuple(prefixes))
+        held.append(rows.select(read).replace_schema_metadata(None).cast(schema))
+    from_files = pa.concat_tables(held) if held else schema.empty_table()
+    file_texts = _key_texts([_text_column(from_files.column(column)) for column in table.key])
+    reach = _first_each(from_files.append_column(_TEXT, file_texts), delta_scope)
+    if delta_scope is not None:
+        reach = reach.rename_columns([_STATE if name == delta_scope else name for name in reach.column_names])
+    else:
+        reach = reach.append_column(_STATE, pa.nulls(reach.num_rows, pa.string()))
+    noted_parts = [_read_rows_file(base / file) for file in noted_files]
+    noted_texts = pa.concat_tables(noted_parts) if noted_parts else None
+    if noted_texts is not None and noted_texts.num_rows:
+        typed = pa.table(
+            {column: _typed_texts(noted_texts.column(column), kind_of[column], types[column]) for column in table.key}
+        )
+        texts = _key_texts([_text_column(typed.column(column)) for column in table.key])
+        noted = _first_each(typed.append_column(_TEXT, texts), None)
+        named = pc.is_in(reach.column(_TEXT), value_set=noted.column(_TEXT))
+        reach = reach.append_column(_NOTED, pc.fill_null(named, False))
+        extra = noted.filter(pc.invert(pc.is_in(noted.column(_TEXT), value_set=reach.column(_TEXT))))
+        extra = extra.append_column(_STATE, pa.nulls(extra.num_rows, reach.schema.field(_STATE).type))
+        extra = extra.append_column(_NOTED, pa.repeat(True, extra.num_rows))
+        reach = pa.concat_tables([reach, extra.select(reach.column_names)])
+    else:
+        reach = reach.append_column(_NOTED, pa.repeat(False, reach.num_rows))
+    key_texts = {column: _text_column(reach.column(column)) for column in table.key}
+    reach = reach.append_column(_UNDER, _under_prefixes(key_texts, reach.num_rows, prefixes))
+    path = base / reach_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with pa.OSFile(str(path), "wb") as sink, pa_ipc.new_file(sink, reach.schema) as writer:
+        # one batch a page of keys: a keyed read's worth each (the reach's pieces joined first)
+        for batch in reach.combine_chunks().to_batches(max_chunksize=max(page, 1)):
+            writer.write_batch(batch)
+    keyed = int(pc.sum(pc.invert(reach.column(_UNDER))).as_py() or 0) if reach.num_rows else 0
+    return tuple(tuple(prefix.items()) for prefix in prefixes), keyed
+
+
+def recovery_unstated_job(
+    root: str, key: tuple[str, ...], kinds: tuple[tuple[str, str], ...], reach_file: str, pages_file: str
+) -> bool:
+    """whether a key the notes named is gone from L3 (no row of it among the rows read) and no leftover file names its
+    state (decision 31: its delete marker could be filed under no state's part), in a worker process, in Arrow.
+
+    :param root: the delta files' root
+    :ptype root: str
+    :param key: the table's key columns
+    :ptype key: tuple[str, ...]
+    :param kinds: its columns' type tags
+    :ptype kinds: tuple
+    :param reach_file: the reach (:func:`recovery_reach_job`), under the root
+    :ptype reach_file: str
+    :param pages_file: the rows read from L3 by key and prefix, under the root
+    :ptype pages_file: str
+    :return: whether one is
+    :rtype: bool
+    """
+    base = Path(root)
+    reach = _read_rows_file(base / reach_file)
+    rows = _read_rows_file(base / pages_file)
+    found = _key_texts([_text_column(rows.column(column)) for column in key])
+    gone = pc.invert(pc.is_in(reach.column(_TEXT), value_set=found))
+    unstated = pc.and_(pc.and_(reach.column(_NOTED), gone), pc.is_null(reach.column(_STATE)))
+    return bool(pc.any(unstated).as_py())
 
 
 def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]) -> dict[int, list[tuple[str, ...]]]:
@@ -1984,70 +2152,154 @@ def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]
     return grouped
 
 
-def _save_recovery_delta(
-    root: Path,
-    table: FoldedTable,
-    types: Mapping[str, Any],
-    pages: Sequence[Any],
-    reach: _Leftovers,
-    replaced: Sequence[str] = (),
-    unstated: bool = False,
+def recovery_delta_job(
+    root: str,
+    plain: tuple[Any, ...],
+    kinds: tuple[tuple[str, str], ...],
+    delta_scope: str | None,
+    reach_file: str,
+    pages_files: tuple[str, ...],
+    prefixes: tuple[tuple[tuple[str, str], ...], ...],
+    replaced: tuple[str, ...],
+    unstated: bool,
 ) -> tuple[str, int, int]:
-    """save the recovery delta (decision 28): the prefixes the leftover files cleared, then every row L3 holds under
-    them or of their keys (every column set, so a held row takes L3's whole), then a delete marker for each key L3 no
-    longer holds, carrying its state; blocking.
+    """save the recovery delta (decision 28), in a worker process, in Arrow: the prefixes the leftover files cleared,
+    then every row L3 holds under them or of their keys (every column set, so a held row takes L3's whole), then a
+    delete marker for each key reached (by key) that L3 no longer holds, carrying its state.
 
     :param root: the delta files' root
-    :ptype root: Path
-    :param table: the table
-    :ptype table: FoldedTable
-    :param types: its columns' Arrow types, in order
-    :ptype types: Mapping[str, Any]
-    :param pages: the rows read from L3, by key and by prefix
-    :ptype pages: Sequence[pyarrow.Table]
-    :param reach: what the leftover files name
-    :ptype reach: _Leftovers
-    :param replaced: the states whose every row ``pages`` hold (decision 31): their parts are replaced whole, so a key
+    :ptype root: str
+    :param plain: the table, :meth:`FoldedTable.plain`
+    :ptype plain: tuple
+    :param kinds: its columns' type tags
+    :ptype kinds: tuple
+    :param delta_scope: the state column its markers carry; None when its key names it
+    :ptype delta_scope: str | None
+    :param reach_file: the reach (:func:`recovery_reach_job`), under the root
+    :ptype reach_file: str
+    :param pages_files: the rows read from L3 (by key and prefix; the replaced states'), under the root
+    :ptype pages_files: tuple[str, ...]
+    :param prefixes: the prefixes the leftover files cleared
+    :ptype prefixes: tuple
+    :param replaced: the states whose every row the pages hold (decision 31): their parts are replaced whole, so a key
         of one L3 no longer holds needs no marker
-    :ptype replaced: Sequence[str]
-    :param unstated: a key gone of no known state is in a replaced state (:func:`_unstated_gone_by_states`): no marker
+    :ptype replaced: tuple[str, ...]
+    :param unstated: a key gone of no known state is in a replaced state: no marker
     :ptype unstated: bool
     :return: the file, under the root; the rows it holds; the delete markers
     :rtype: tuple[str, int, int]
     :raises ValueError: when a key L3 no longer holds carries no state, for a table keyed without its state: its
-        marker could be filed under no state's part
+        delete marker could be filed under no state's part
     """
-    delta = TableDelta(name=table.name, types=types, key=table.key, scope_column=table.delta_scope)
-    delta.clears(list(reach.prefixes))
-    rows = pa.concat_tables([page.select(list(types)) for page in pages]) if pages else None
-    found: set[tuple[str, ...]] = set()
-    if rows is not None and rows.num_rows:
-        delta.arrow(rows, list(types))
-        found = {
-            tuple(key_text(value) for value in key)
-            for key in zip(*(rows.column(column).to_pylist() for column in table.key), strict=True)
-        }
-    gone: dict[Any, list[tuple[Any, ...]]] = {}
-    for text in reach.keys:
-        if text in found:
-            continue
-        state = reach.states.get(text) if table.delta_scope is not None else None
-        if replaced and table.scope is not None:
-            known = state if table.delta_scope is not None else reach.typed[text][table.key.index(table.scope[0])]
-            if known is not None and table.scope[1] + str(known) in replaced:
-                continue  # its state's part is replaced whole by L3's rows: gone from them already
-        if table.delta_scope is not None and state is None and unstated:
-            continue  # a noted key of no known state: its commit's states are replaced whole, so it is gone with them
-        if table.delta_scope is not None and state is None:
+    base = Path(root)
+    table = _Folding.of(plain)
+    types = rail_arrow_types([Column(name, kind) for name, kind in kinds])
+    schema = pa.schema(list(types.items()))
+    read = [_read_rows_file(base / file).select(list(types)).cast(schema) for file in pages_files]
+    rows = pa.concat_tables(read) if read else schema.empty_table()
+    reach = _read_rows_file(base / reach_file)
+    found = _key_texts([_text_column(rows.column(column)) for column in table.key])
+    gone = pc.and_(pc.invert(reach.column(_UNDER)), pc.invert(pc.is_in(reach.column(_TEXT), value_set=found)))
+    state = reach.column(_STATE)
+    if replaced and table.scope_column is not None:
+        known = state if delta_scope is not None else reach.column(table.scope_column)
+        scope_text = pc.binary_join_element_wise(pa.scalar(table.scope_prefix or ""), pc.cast(known, pa.string()), "")
+        # its state's part is replaced whole by L3's rows: gone from them already
+        gone = pc.and_(gone, pc.invert(pc.fill_null(pc.is_in(scope_text, value_set=pa.array(replaced)), False)))
+    if delta_scope is not None:
+        stateless = pc.and_(gone, pc.is_null(state))
+        if unstated:
+            # a noted key of no known state: its commit's states are replaced whole, so it is gone with them
+            gone = pc.and_(gone, pc.invert(stateless))
+        elif pc.any(stateless).as_py():
+            first = reach.filter(stateless).slice(0, 1).column(_TEXT)[0].as_py()
             raise ValueError(
-                f"{table.name}: key {text} is gone from L3 and no leftover file names its state: its delete marker "
+                f"{table.name}: key {first!r} is gone from L3 and no leftover file names its state: its delete marker "
                 f"could be filed under no state's part"
             )
-        gone.setdefault(state, []).append(reach.typed[text])
-    for state, keys in gone.items():
-        delta.deletes(keys, scope=state)
-    file = write_delta_file(root, delta, f"{_RECOVERY_WRITE}-{uuid.uuid4().hex}")
-    return file, 0 if rows is None else int(rows.num_rows), sum(len(keys) for keys in gone.values())
+    markers = reach.filter(gone)
+    count = markers.num_rows
+    columns = []
+    for name, kind in types.items():
+        if name in table.key:
+            columns.append(markers.column(name).cast(kind))
+        elif delta_scope is not None and name == delta_scope:
+            columns.append(markers.column(_STATE).cast(kind))
+        else:
+            columns.append(pa.nulls(count, kind))
+    marked = pa.Table.from_arrays(columns, schema=schema)
+    segments: list[tuple[Any, ...]] = []
+    if rows.num_rows:
+        segments.append(("typed", rows, list(types)))
+    segments.append(("deleted", marked))
+    write_id = f"{_RECOVERY_WRITE}-{uuid.uuid4().hex}"
+    built = build_file_table(
+        table.name, types, table.key, {}, [dict(prefix) for prefix in prefixes], segments, write_id
+    )
+    file = write_table_file(base, table.name, write_id, built)
+    return file, int(rows.num_rows), int(count)
+
+
+async def _reach_pages(path: Path, key: Sequence[str]) -> AsyncIterator[list[tuple[Any, ...]]]:
+    """the reach's keys no cleared prefix holds, a batch of the reach file at a time, each key its values: the
+    keyed read's own form (:class:`~threetears.core.keyed.KeyBatch`), one page of keys made at a time and let go.
+
+    :param path: the reach file
+    :ptype path: Path
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :return: each page's keys
+    :rtype: AsyncIterator[list[tuple]]
+    """
+    reader = await asyncio.to_thread(_opened_ipc, path)
+    for index in range(reader.num_record_batches):
+        batch = await asyncio.to_thread(reader.get_batch, index)
+        keyed = batch.filter(pc.invert(batch.column(_UNDER)))
+        if keyed.num_rows:
+            yield await asyncio.to_thread(_key_values, keyed, key)
+
+
+def _opened_ipc(path: Path) -> Any:
+    """an Arrow IPC file opened over its memory map, its batches read one at a time. Blocking.
+
+    :param path: the file
+    :ptype path: Path
+    :return: its reader
+    :rtype: pyarrow.ipc.RecordBatchFileReader
+    """
+    return pa_ipc.open_file(pa.memory_map(str(path)))
+
+
+def _key_values(rows: Any, key: Sequence[str]) -> list[tuple[Any, ...]]:
+    """one page of keys as the keyed read binds them: each key's values (a page, bounded by the reach file's batch).
+    Blocking.
+
+    :param rows: the page's keys, a column each
+    :ptype rows: pyarrow.RecordBatch
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :return: each key's values
+    :rtype: list[tuple]
+    """
+    return list(zip(*(rows.column(column).to_pylist() for column in key), strict=True))
+
+
+def _unlink_work(root: Path, work: str) -> None:
+    """remove a recovery's own files (its stem's): its reach, noted keys and rows read. Blocking.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param work: their stem, under the root
+    :ptype work: str
+    :return: nothing
+    :rtype: None
+    """
+    directory = (root / work).parent
+    stem = (root / work).name
+    if not directory.is_dir():
+        return
+    for path in directory.glob(f"{stem}.*"):
+        path.unlink(missing_ok=True)
 
 
 def recovery_round(
