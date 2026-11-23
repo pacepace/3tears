@@ -11,6 +11,8 @@ contract this pins:
 - one corrupted copy row sets the gauge to 1 for exactly that table and state, and a later equal check sets it back;
 - a state the copy holds at another version than its part's is skipped (``copy_follower_drift_checks_total``
   ``outcome="skipped"``), and once the full holds it at the copy's version it is compared again;
+- a row the copy holds of a state and the part does not is found, for a state read by its key's prefix or by its
+  scope column (a table keyed without its state);
 - no check issues an L3 statement.
 """
 
@@ -48,9 +50,9 @@ from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 _RESULTS = "results"
 _TALLIES = "tallies"
 _OPTED = (_RESULTS, _TALLIES)
-#: the key with its state leading (a state is read from the copy by that prefix of the key), and with it second (read
-#: by the keys its part holds)
-_KEYS = {"state_led": ("state", "geo_id"), "state_not_led": ("geo_id", "state")}
+#: the key with its state leading (a state is read from the copy by that prefix of the key), with it second (read by
+#: the keys its part holds), and without it (an AP results table, its state a row column: read by that column)
+_KEYS = {"state_led": ("state", "geo_id"), "state_not_led": ("geo_id", "state"), "state_not_in_key": ("geo_id",)}
 _COLUMNS = (
     Column(name="state", column_type=STRING_TYPE),
     Column(name="geo_id", column_type=BIGINT_TYPE),
@@ -58,7 +60,8 @@ _COLUMNS = (
 )
 _NAMES = tuple(column.name for column in _COLUMNS)
 _TYPES = rail_arrow_types(_COLUMNS)
-_ROWS = [("VA", i, 10 + i) for i in range(4)] + [("IL", i, 20 + i) for i in range(4)]
+#: each geo_id of one state only, so a key without the state names one row
+_ROWS = [("VA", i, 10 + i) for i in range(4)] + [("IL", 10 + i, 20 + i) for i in range(4)]
 
 _OPENED: list[Callable[[], None]] = []
 
@@ -89,7 +92,8 @@ async def workers() -> AsyncIterator[ProcessWorkers]:
 
 @pytest.fixture(params=sorted(_KEYS))
 def key(request: pytest.FixtureRequest) -> tuple[str, ...]:
-    """each test runs over both ways a state reaches the copy's rows: its key's prefix, or its part's keys."""
+    """each test runs over every way a state reaches the copy's rows: its key's prefix, its part's keys, or its
+    scope column."""
     return _KEYS[request.param]
 
 
@@ -105,6 +109,7 @@ def _metadata(key: tuple[str, ...]) -> MetaData:
             name,
             metadata,
             *(SaColumn(column, kinds[column], primary_key=True) for column in key),
+            *(SaColumn(column, kinds[column]) for column in ("state",) if column not in key),
             SaColumn("votes", BigInteger),
             info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
@@ -330,4 +335,22 @@ async def test_a_state_held_at_another_version_than_its_part_is_skipped_until_th
     outcomes = await world.follower.check_drift()
     assert outcomes[(_RESULTS, "state:VA")] == "equal"
     assert _parts(_RESULTS, "VA") == 0
+    assert world.l3.statements == 0
+
+
+@pytest.mark.parametrize("shape", ["state_led", "state_not_in_key"])
+async def test_an_extra_copy_row_of_a_state_flips_the_gauge(_volume: Path, workers: ProcessWorkers, shape: str) -> None:
+    """Flips if a row the copy holds of a state and the full's part does not (VA geo 99, never written) is not seen
+    for a table whose state is read from the copy by its key's leading state or, keyed without its state (AP results),
+    by its scope column: read by the part's keys instead, the copy's extra row is missed and the state reads equal.
+    Also flips if the check reads L3."""
+    world = _World(_volume, workers, _KEYS[shape])
+    await world.started()
+    world.backend.execute_query("INSERT INTO results (state, geo_id, votes) VALUES ('VA', 99, 5) RETURNING geo_id")
+    outcomes = await world.follower.check_drift()
+    assert {key: outcome for key, outcome in outcomes.items() if outcome != "equal"} == {
+        (_RESULTS, "state:VA"): "drift"
+    }
+    assert _parts(_RESULTS, "VA") == 1
+    assert _parts(_RESULTS, "IL") == 0
     assert world.l3.statements == 0

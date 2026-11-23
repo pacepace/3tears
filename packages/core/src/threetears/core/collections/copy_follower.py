@@ -62,9 +62,9 @@ everything else.
 check at once), a copy that starts from the volume fingerprints its own rows of each (table, state) it holds at exactly
 the version of the current full's part of that state, and compares with the fingerprint the part's manifest entry
 carries (:func:`~threetears.core.collections.volume_fulls.rows_fingerprint`, one definition both sides use): a local
-read of the copy by key and a worker process's hash, never L3. A state whose scope column leads the key is read by that
-prefix, every row the copy holds of it; any other by the keys its part holds, so a row the copy holds there and the
-part does not is not seen. A state the copy holds at another version is not comparable and is skipped.
+read of the copy and a worker process's hash, never L3. A state whose scope column leads the key is read by that
+prefix, and one of a table keyed without its state by its scope column: every row the copy holds of it, so an extra
+row is seen. Any other by the keys its part holds. A state the copy holds at another version is not comparable and is skipped.
 A mismatch sets ``copy_follower_drift_parts{table,state}`` to 1 until a check finds the state equal again, and is
 logged at WARNING; every check is counted by outcome (``copy_follower_drift_checks_total``). The version a copy holds a
 state at is the newest epoch it applied of that state, from the full it loaded and each key's epochs since
@@ -93,7 +93,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
-from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
+from threetears.interfaces.keyed.rows import DeclaredKey, DeclaredScope, KeyColumns
 from threetears.observe import PeriodicTask, contain, get_logger, retry_until_done
 from threetears.observe.metrics import counter, gauge
 
@@ -138,7 +138,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
-from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
+from threetears.core.keyed import InlineDuckDB, KeyBatch, WholeReads, read_keyed_arrow, read_state_arrow, run_inline
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
 from threetears.core.sql_fragments import quote_identifier
@@ -771,8 +771,9 @@ class FollowedTable:
     #: the scope each row belongs to, as the writer's seqlock names scopes: ``(column, prefix)``, a row's scope being
     #: ``prefix + str(row[column])`` (``("join_state_code", "state:")``). A write touches the scope of every row it
     #: writes, so while a write is in progress the follower still applies every scope it does not hold. None: the
-    #: table's changes apply only at a settled stamp (a write in progress holds all of them back)
-    scope: tuple[str, str] | None = None
+    #: table's changes apply only at a settled stamp (a write in progress holds all of them back). Its column is the
+    #: table's declared state column (DeclaredScope): a state's rows of the copy are read pinned by it
+    scope: Annotated[tuple[str, str] | None, DeclaredScope] = None
     #: the table opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`):
     #: each epoch's changes are applied from the file its record names, read off the shared volume, merged onto the
     #: row the copy holds, never read from L3 (``design-pod-delta-files.md``, decisions 3, 4 and 19). A missing or
@@ -4108,9 +4109,10 @@ class CopyFollower:
         return "drift"
 
     def _part_keys(self, table: FollowedTable, part: FullPart) -> list[list[str]] | None:
-        """the keys a part holds, each key column's values as text, for a state the copy cannot read by a prefix of
-        its key; None for one it can (its scope column leads the key). Read off the volume (an immutable file), never
-        L3. Blocking: run it on a thread.
+        """the keys a part holds, each key column's values as text, for a part the copy cannot read by its state (a
+        table with no scope, or one whose scope column sits in the key but does not lead it); None for one it can (its
+        scope column leads the key, or is not in the key: read by the column). Read off the volume (an immutable file),
+        never L3. Blocking: run it on a thread.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -4119,7 +4121,7 @@ class CopyFollower:
         :return: one list a key column, one entry a key; None when the state is read by its key prefix
         :rtype: list[list[str]] | None
         """
-        if part.scope is not None and table.scope is not None and table.scope_in_key == 0:
+        if part.scope is not None and table.scope is not None and table.scope_in_key in (0, None):
             return None
         assert self._fulls is not None  # noqa: S101 -- a drift check runs only for a follower started from the volume
         keys = read_full_part(self._fulls.root, part).select(list(table.key))
@@ -4127,10 +4129,10 @@ class CopyFollower:
 
     def _state_ipc(self, table: FollowedTable, part: FullPart, keys: list[list[str]] | None) -> bytes:
         """the copy's rows of one state, as an Arrow IPC stream for the worker that fingerprints them: a local read
-        of the copy by key, never L3 and never a scan. A state whose scope column leads the key is read by that prefix
-        (every row the copy holds of it); any other (a table keyed without its state, or one with no scope) by the keys
-        its part holds, so a row the copy holds of the state and the part does not is not seen. Blocking: run it on a
-        thread.
+        of the copy, never L3. A state whose scope column leads the key is read by that prefix, and one of a table keyed
+        without its state (AP results, its state in a row column) by that column: either way every row the copy holds
+        of the state, so a row the copy holds and the part does not is seen. Any other (a table with no scope, or one
+        whose scope column sits deeper in the key) is read by the keys its part holds. Blocking: run it on a thread.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -4144,14 +4146,42 @@ class CopyFollower:
         selected = ", ".join(f"t.{quote_identifier(column.name)}" for column in table.columns)
         if keys is None:
             assert part.scope is not None and table.scope is not None  # noqa: S101 -- _part_keys said so
-            prefix = [[part.scope[len(table.scope[1]) :]]]
-            rows = self._copy_rows_of_keys(table, table.key[:1], prefix, selected=selected)
+            value = part.scope[len(table.scope[1]) :]
+            if table.scope_in_key == 0:
+                rows = self._copy_rows_of_keys(table, table.key[:1], [[value]], selected=selected)
+            else:
+                rows = self._copy_rows_of_state(table, value)
         else:
             rows = self._copy_rows_of_keys(table, table.key, keys, selected=selected)
         sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, rows.schema) as writer:
             writer.write_table(rows)
         return bytes(sink.getvalue().to_pybytes())
+
+    def _copy_rows_of_state(self, table: FollowedTable, value: str) -> Any:
+        """the copy's rows of one state of a table keyed without its state, pinned by its scope column
+        (``read_state_arrow``, pinned by the table's DeclaredScope column): a local read of the pod's own copy (one
+        state's rows, every one it holds), never L3. Blocking: run it on a thread.
+
+        :param table: a table whose scope column is not in its key
+        :ptype table: FollowedTable
+        :param value: the state's scope column value, as text (the column's type binds it)
+        :ptype value: str
+        :return: the rows, every column the copy holds
+        :rtype: pyarrow.Table
+        """
+        assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
+        with self._backend.read_snapshot() as cursor:
+            # a blocking caller on its own thread: the read runs inline on the snapshot cursor (InlineDuckDB)
+            return run_inline(
+                read_state_arrow(
+                    InlineDuckDB(cursor),
+                    table.name,
+                    scope_column=table.scope[0],
+                    state=value,
+                    columns=[column.name for column in table.columns],
+                )
+            )
 
     def _drift_checks(self) -> PeriodicTask | None:
         """the periodic drift check :meth:`run` keeps, started; None when the copy starts from no full or the check
