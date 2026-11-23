@@ -301,6 +301,49 @@ async def test_the_folded_part_is_every_delta_applied_to_the_old_part(tmp_path: 
     await writer.folds.close()
 
 
+async def test_a_folded_part_after_a_prefix_replace_holds_what_the_copy_holds(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if the fold keeps a row a cleared prefix took out of L3 (and out of every copy), drops one the load put
+    back, takes a row of another state out, or never folds a delete that names a prefix and no row (decision 23): a
+    load that replaced TX's rows deletes them first in a file naming the prefix, then loads the export's rows; a gone
+    run of GA is a key-prefix delete alone. The part is what L3, and a copy applying the same files, hold."""
+    writer = _writer(tmp_path, _votes_schema(), workers)
+    await writer.commit(
+        _votes("TX", range(1, 6), 10, note="old") + _votes("GA", range(1, 3), 7) + _votes("NC", range(1, 2), 1)
+    )
+    types = rail_arrow_types(writer.schema.columns)
+
+    def cleared(prefix: dict[str, Any]) -> str:
+        writer.count += 1
+        delta = TableDelta(name=writer.schema.name, types=types, key=tuple(writer.schema.pk_columns))
+        delta.clears([prefix])
+        file = write_delta_file(tmp_path, delta, f"w{writer.count:04d}")
+        writer.files.append(file)
+        return file
+
+    files = [
+        cleared({"state": "TX"}),
+        # the load's rows: a COPY inserts, setting no column of a row held
+        writer.save(_votes("TX", range(2, 3), 20, note="again") + _votes("TX", range(8, 9), 80), written=[]),
+        cleared({"state": "GA"}),
+    ]
+    for file in files:
+        writer.tell(file)
+    await writer.folds.wait()
+    tx = _part(tmp_path, "votes", "state:TX")
+    assert tx is not None and tx.version == "inc:3", "TX's last share is the load's"
+    assert _part_rows(tmp_path, tx) == [
+        {"state": "TX", "geo_id": 2, "votes": 20, "note": "again"},
+        {"state": "TX", "geo_id": 8, "votes": 80, "note": "n"},
+    ]
+    ga = _part(tmp_path, "votes", "state:GA")
+    assert ga is not None and _part_rows(tmp_path, ga) == [], "the delete of GA's prefix folded"
+    nc = _part(tmp_path, "votes", "state:NC")
+    assert nc is not None and [row["geo_id"] for row in _part_rows(tmp_path, nc)] == [1]
+    await writer.folds.close()
+
+
 async def test_a_left_out_column_keeps_its_value_across_a_fold(tmp_path: Path, workers: ProcessWorkers) -> None:
     """Flips if a write that set only some columns overwrites the others with the file's nulls (decision 19)."""
     writer = _writer(tmp_path, _votes_schema(), workers)

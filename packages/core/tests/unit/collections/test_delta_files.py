@@ -211,8 +211,8 @@ async def test_a_key_written_without_its_rows_recorded_is_refused_and_rolled_bac
 
 async def test_writes_that_cannot_record_their_rows_are_refused_on_an_opted_in_table(root: Path) -> None:
     """Flips if a write path that cannot put its rows in a file (no caller's transaction to save it before, a store
-    that copies files itself, a statement of the caller's own, a key-prefix delete) is let through on an opted-in
-    table."""
+    that copies files itself with no rows given for its file, a statement of the caller's own, a key-prefix delete
+    whose prefixes no write recorded) is let through on an opted-in table."""
     collection = _collection()
     with pytest.raises(DeltaFileRefusedError):
         await collection.save_to_store({"office_key": "sn_NC1", "geo_id": "00000", "votes": 1})
@@ -224,7 +224,7 @@ async def test_writes_that_cannot_record_their_rows_are_refused_on_an_opted_in_t
         async with collection.bypassing_write(("sn_NC1", "00000")):
             pass
     conn = _Conn(root)
-    with pytest.raises(DeltaFileRefusedError, match="key-prefix delete"):
+    with pytest.raises(DeltaFileRefusedError, match="deleted 1 key prefixes .* recorded 0"):
         async with CallerTransaction(conn) as transaction:
             transaction.enroll_prefixes(collection, [{"office_key": "sn_NC1"}])
     assert conn.rolled_back

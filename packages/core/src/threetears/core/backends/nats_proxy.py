@@ -1448,6 +1448,11 @@ class NatsProxyL3Backend:
             payload["key_prefixes"] = [
                 {column: transport_param(value) for column, value in prefix.items()} for prefix in key_prefixes
             ]
+        named = named_delta_files()
+        if named:
+            # saved before this request (a table that opts in to delta files): the broker names it in the epoch record
+            # it writes for the load, as for a commit's (DELTA_FILES_FIELD)
+            payload[DELTA_FILES_FIELD] = named
         subject = Subjects.l3_load_files(namespace=self.ns).path
         wait = load_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
         if wait > LOAD_FILES_MAX_WAIT_SECONDS:

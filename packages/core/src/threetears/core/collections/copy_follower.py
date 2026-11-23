@@ -30,6 +30,10 @@ be had (a lost volume, an older writer's record) is read from L3 by key as for a
 names its file is applied whole from it: the registry names every key the file holds, stamped with the epoch, and
 each is staged from the file as above, so neither the change notes nor L3 is read for it and nothing a restarted copy
 needs expires (decision 21). A commit of several records names one file in each; a key is applied from it once.
+A load's or a clear's record that names its file (a bulk load from files, a key-prefix delete) is applied from it
+too (decisions 17 and 23): each key the file names is heard at the epoch, and each prefix the file clears names every
+key of it the copy holds or has heard, at the epoch, all staged as above, a key under a cleared prefix deleted before
+the file's own change of it applies. L3 is read for none of it.
 
 **Bounded.** What this process holds of a change is a page of rows at a time: each page is staged as it is read.
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
@@ -73,6 +77,7 @@ from threetears.core.collections.delta_files import (
     apply_delta_row,
     delta_files_root,
     read_delta_file,
+    under_prefix,
 )
 from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
@@ -262,6 +267,41 @@ def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
     :rtype: list[tuple[str, ...]]
     """
     return [tuple(str(v) for v in values) for values in zip(*(rows.column(c).to_pylist() for c in key), strict=True)]
+
+
+class _FileChanges(dict[tuple[str, ...], list[DeltaChange]]):
+    """a delta file's changes by key (each key's values as text), in the order written, and the key prefixes the file
+    clears before them (decision 23): a key under one is deleted first, so the copy's row of it leaves whether or not
+    the file writes it again, as L3's left before the load or the delete.
+    """
+
+    __slots__ = ("cleared", "key")
+
+    def __init__(self, key: Sequence[str], cleared: Sequence[Mapping[str, str]]) -> None:
+        """name the table's key and the prefixes the file clears.
+
+        :param key: the table's key columns, in key order
+        :ptype key: Sequence[str]
+        :param cleared: the prefixes, as the file names them
+        :ptype cleared: Sequence[Mapping[str, str]]
+        """
+        super().__init__()
+        self.key = tuple(key)
+        self.cleared = tuple(dict(prefix) for prefix in cleared)
+
+    def of_key(self, key: tuple[str, ...]) -> list[DeltaChange] | None:
+        """a key's changes in the file, in order: a delete first when a prefix the file clears holds the key.
+
+        :param key: the key, its values as text
+        :ptype key: tuple[str, ...]
+        :return: the changes; None when the file neither writes the key nor clears a prefix of it
+        :rtype: list[DeltaChange] | None
+        """
+        changes = self.get(key)
+        named = dict(zip(self.key, key, strict=True))
+        if not self.cleared or not under_prefix(named, self.cleared):
+            return changes
+        return [DeltaChange(row=named, deleted=True, written=frozenset()), *(changes or ())]
 
 
 def _rail_python(value: Any, kind: Any) -> Any:
@@ -834,6 +874,11 @@ class CopyFollower:
         }
         #: the epochs each staged key of such a table was staged from: what an apply of the stage holds
         self._staged_epochs: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
+        #: for each table that opts in: the key prefixes a delta file cleared, with the epoch its record names, heard
+        #: and not yet turned into the keys they reach (:meth:`_keys_of_cleared_prefixes`)
+        self._cleared: dict[str, list[tuple[str, list[dict[str, str]]]]] = {
+            table.name: [] for table in tables if table.delta_files
+        }
 
     # --- what the registry tells it -------------------------------------------------------------
 
@@ -909,6 +954,16 @@ class CopyFollower:
 
         return loaded
 
+    def _on_file_prefixes(self, table: str) -> Callable[[Sequence[Mapping[str, str]], str], None]:
+        def cleared(prefixes: Sequence[Mapping[str, str]], epoch: str) -> None:
+            if table in self._whole:
+                return  # the whole read to come covers it
+            # the keys they reach are named at the next pass (a local read of the copy), before its keys are taken
+            self._cleared[table].append((epoch, [dict(prefix) for prefix in prefixes]))
+            self._poked.set()
+
+        return cleared
+
     def _on_reset(self, table: str) -> Callable[[], None]:
         def reset() -> None:
             log.info(
@@ -955,6 +1010,7 @@ class CopyFollower:
                     on_caught_up=self._on_caught_up,
                     on_partition=self._on_partition(name),
                     on_table_reset=self._on_reset(name),
+                    on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
                 )
             )
         if self._stamp_table is not None:
@@ -1255,12 +1311,20 @@ class CopyFollower:
                 ]
             )
             label = self._label(first, held)
-            nothing = not any(self._pending.values()) and not self._whole and not any(self._partitions.values())
+            nothing = (
+                not any(self._pending.values())
+                and not self._whole
+                and not any(self._partitions.values())
+                and not any(self._cleared.values())
+            )
             if nothing and not self._staged and label == self._status.stamp:
                 self._say(FollowerPhase.FOLLOWING, "current" if not writing else "current to every scope not held")
                 return True
             if nothing and not self._staged and self._applied_mark in self._stamps:
                 return await self._relabel(first, label, writing=writing, held=held)
+            # the keys a cleared prefix reaches join the keys heard; none is left queued past this, so the marks below
+            # cover them too
+            await self._keys_of_cleared_prefixes()
             # taken with the keys, no await between: every key of an epoch at or below these marks is among them
             self._staging_marks = self.marks()
             pending, whole, partitions = self._take(held, writing=writing)
@@ -2019,6 +2083,38 @@ class CopyFollower:
                 of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
         return of
 
+    async def _keys_of_cleared_prefixes(self) -> None:
+        """name, at its epoch, every key a cleared prefix reaches (:meth:`_on_file_prefixes`): each key of it the copy
+        holds (a local read by the prefix, never L3) and each key heard and not yet applied that lies under it. Each
+        is then staged from its epochs' files as any key heard (:meth:`_rows_from_files`), deleted at the clearing
+        epoch, so a row L3 deleted under the prefix leaves the copy too. Runs until none is queued, so the caller's
+        marks, taken with no await after, cover every one heard.
+
+        :return: nothing
+        :rtype: None
+        """
+        while any(self._cleared.values()):
+            for name, queued in self._cleared.items():
+                if not queued:
+                    continue
+                taken = list(queued)
+                queued.clear()
+                if name in self._whole:
+                    continue  # the whole read to come covers it
+                table = self._tables[name]
+                heard = self._epochs_of[name]
+                for epoch, prefixes in taken:
+                    reached: set[tuple[str, ...]] = set()
+                    for columns, lead, batch in _prefix_batches(table.key, prefixes):
+                        mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
+                        reached.update(_text_keys(mine, table.key))
+                    reached.update(
+                        key for key in heard if under_prefix(dict(zip(table.key, key, strict=True)), prefixes)
+                    )
+                    for key in reached:
+                        heard.setdefault(key, set()).add(epoch)
+                    self._pending[name] |= reached
+
     async def _stage_keyed(
         self,
         table: FollowedTable,
@@ -2037,7 +2133,7 @@ class CopyFollower:
         """
         at = table.scope_in_key
         #: for a table that opts in to delta files: each epoch's file, read once this pass; the keys read from L3
-        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]] = {}
+        files: dict[str, tuple[_FileChanges | str, str | None]] = {}
         fallbacks: dict[str, dict[str, Any]] = {}
         epochs: dict[tuple[str, ...], frozenset[str | None]] = {}
         staged: set[tuple[str, ...]] = set()
@@ -2129,8 +2225,8 @@ class CopyFollower:
         self,
         table: FollowedTable,
         epoch: str,
-        files: Mapping[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
-    ) -> tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]:
+        files: Mapping[str, tuple[_FileChanges | str, str | None]],
+    ) -> tuple[_FileChanges | str, str | None]:
         """the changes of one epoch's delta file, by key: the file its record names, read off the shared volume, or
         taken from another epoch of this pass that named the same file (each of a commit's records names its one
         file), so a file is read once a pass.
@@ -2140,10 +2236,10 @@ class CopyFollower:
         :param epoch: the epoch, as its advance wrote it
         :ptype epoch: str
         :param files: the files read this pass, by epoch
-        :ptype files: Mapping[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
+        :ptype files: Mapping[str, tuple[_FileChanges | str, str | None]]
         :return: each key's changes in the order written, or why the file cannot be had (a
             :data:`_DELTA_FILE_FALLBACKS` why); and the file's name when the record names one
-        :rtype: tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]
+        :rtype: tuple[_FileChanges | str, str | None]
         :raises GenerationUnavailableError: when the log cannot be read (the pass fails and is tried again)
         """
         record = None if self._changes is None else await self._changes.change(table.name, epoch)
@@ -2162,7 +2258,7 @@ class CopyFollower:
         except FileNotFoundError:
             # NOSILENT: a lost volume; the caller reads the file's keys from L3 by key, counted and logged at WARNING
             return "file_missing", record.delta_file
-        of: dict[tuple[str, ...], list[DeltaChange]] = {}
+        of = _FileChanges(table.key, delta.prefixes)
         for change in delta.changes:
             of.setdefault(tuple(key_text(change.row[column]) for column in table.key), []).append(change)
         return of, record.delta_file
@@ -2196,7 +2292,7 @@ class CopyFollower:
         self,
         table: FollowedTable,
         keys: Sequence[tuple[str, ...]],
-        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
+        files: dict[str, tuple[_FileChanges | str, str | None]],
         fallbacks: dict[str, dict[str, Any]],
     ) -> tuple[Any, dict[tuple[str, ...], frozenset[str | None]]]:
         """some keys' rows of a table that opts in to delta files, from their epochs' files: each key's row the copy
@@ -2209,7 +2305,7 @@ class CopyFollower:
         :param keys: the keys, each its values as text
         :ptype keys: Sequence[tuple[str, ...]]
         :param files: the files read this pass, by epoch (each read once a pass); filled here
-        :ptype files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
+        :ptype files: dict[str, tuple[_FileChanges | str, str | None]]
         :param fallbacks: the keys read from L3 this pass, by why: their count and the files named; filled here
         :ptype fallbacks: dict[str, dict[str, Any]]
         :return: the rows that exist after the change, typed as the rail answers them; and the epochs each key was
@@ -2238,8 +2334,8 @@ class CopyFollower:
             row: dict[str, Any] | None = held.get(key)
             for epoch in order:
                 of = files[epoch][0]
-                assert isinstance(of, dict)  # noqa: S101 -- an epoch whose file could not be had sends its key to L3
-                for change in of[key]:
+                assert isinstance(of, _FileChanges)  # noqa: S101 -- an epoch whose file could not be had: L3
+                for change in of.of_key(key) or ():
                     after = apply_delta_row(row, change)
                     row = None if after is None else {name: after.get(name) for name in names}
             if row is not None:
@@ -2255,7 +2351,7 @@ class CopyFollower:
         table: FollowedTable,
         key: tuple[str, ...],
         epochs: frozenset[str | None],
-        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
+        files: dict[str, tuple[_FileChanges | str, str | None]],
     ) -> tuple[str | None, str | None, list[str]]:
         """the epochs a key's change is applied from, oldest first, each one's file read (once a pass); or why the
         key is read from L3 instead.
@@ -2267,7 +2363,7 @@ class CopyFollower:
         :param epochs: the epochs it was heard at (None: one with no epoch)
         :ptype epochs: frozenset[str | None]
         :param files: the files read this pass, by epoch
-        :ptype files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
+        :ptype files: dict[str, tuple[_FileChanges | str, str | None]]
         :return: None and the epochs in order, one a delta file (a commit of several records is applied once); or
             why, and the file named when one is
         :rtype: tuple[str | None, str | None, list[str]]
@@ -2285,8 +2381,9 @@ class CopyFollower:
             of, named = files[epoch]
             if isinstance(of, str):
                 return of, named, []
-            if key not in of:
-                # the record named this key at this epoch and its file holds no change of it: never guessed
+            if of.of_key(key) is None:
+                # the record named this key at this epoch and its file holds no change of it, nor clears a prefix of
+                # it: never guessed
                 return "key_not_in_file", named, []
             if named in named_files:
                 # another record of the same commit: its file holds the key's every change of the commit, applied

@@ -120,10 +120,12 @@ CHANGED_ROWS_FIELD: Final = "changed_rows"
 
 #: the request field naming, for each table a commit wrote that opts in to delta files, the delta file saved for it
 #: before the commit: ``{table: "<table>/<write id>.arrow"}``, the name under the shared volume's delta files'
-#: directory (:mod:`~threetears.core.collections.delta_files`). Sent on ``l3.tx.commit`` only (a table that opts in
-#: is written on a caller's transaction alone), so the broker that advances each table's generation names the file
-#: in every epoch record it writes for the commit (``EpochChange.delta_file``; ``design-pod-delta-files.md``,
-#: decision 4). A broker built before it ignores it, and its records name no file. The hub imports this name.
+#: directory (:mod:`~threetears.core.collections.delta_files`). Sent on ``l3.tx.commit``, and on ``l3.load_files``
+#: for a load of a table that opts in (each request names its own file, holding that request's rows), so the broker
+#: that advances each table's generation names the file in every epoch record it writes for the commit or the request
+#: (``EpochChange.delta_file``; ``design-pod-delta-files.md``, decisions 4 and 17). A load request that fails after
+#: committing some of its rows must name no file in its record: the file holds rows L3 did not take. A broker built
+#: before it ignores it, and its records name no file. The hub imports this name.
 DELTA_FILES_FIELD: Final = "delta_files"
 
 #: the delta files of the commit being made in this context, by table (:func:`naming_delta_files`)
