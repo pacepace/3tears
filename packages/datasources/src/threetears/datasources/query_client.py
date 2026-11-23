@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
+    "HUB_ROW_CAP",
     "BUSY_BACKOFF_SECONDS",
     "BUSY_RETRIES",
     "DATASOURCE_BUSY",
@@ -1772,7 +1773,7 @@ class DatasourceQueryClient:
 #: failure mode of a hub that LOWERS its cap is therefore a caller passing a size
 #: between the new cap and this value and losing the guard -- so if the hub's
 #: value ever changes, this one moves in the same release.
-_HUB_ROW_CAP: Final[int] = 1000
+HUB_ROW_CAP: Final[int] = 1000
 
 #: Comfortably under the cap, because ON the cap disarms the guard.
 #:
@@ -2346,7 +2347,7 @@ def _row_cap_refusal(page_size: int) -> ValueError:
     :rtype: ValueError
     """
     return ValueError(
-        f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
+        f"page_size must be UNDER the hub's row cap of {HUB_ROW_CAP}, got {page_size}. "
         f"this function reads page_size + 1 rows and uses the extra one as a has-more "
         f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
         f"eat the sentinel and a short read would be returned as a complete one. "
@@ -2633,7 +2634,7 @@ async def _pages(
             )
             continue
 
-        if page.max_reply_bytes is None and size >= _HUB_ROW_CAP:
+        if page.max_reply_bytes is None and size >= HUB_ROW_CAP:
             if remembered is None or size <= page_size:
                 raise _row_cap_refusal(size)
             # the hub cut by bytes before and cuts by rows now: its row cap may have eaten the sentinel, so the page

@@ -29,7 +29,12 @@ from uuid import UUID
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed import Dialect, Fragment, Selected, by_conditions
 from threetears.datasources.entities import DataSourceType
-from threetears.datasources.query_client import DatasourceArrowResult, DatasourceQueryClient, read_scope_pages
+from threetears.datasources.query_client import (
+    HUB_ROW_CAP,
+    DatasourceArrowResult,
+    DatasourceQueryClient,
+    read_scope_pages,
+)
 
 __all__ = ["DatasourceAnswerCut", "DatasourceReader"]
 
@@ -101,6 +106,18 @@ class DatasourceReader:
         self._token = user_identity_token
         self._decode = dict(decode or {})
         self._engine = engine
+
+    @property
+    def rows_per_statement(self) -> int:
+        """the most rows the hub answers one statement with (:data:`~threetears.datasources.query_client.HUB_ROW_CAP`):
+        every 3tears pager over this reader (``threetears.core.keyed``'s ``group_hashes``, ``read_changed``,
+        ``counts_by_relations``) sizes its pages under it. Unstated, ``group_hashes`` paged at its own 10,000 and the
+        hub cut every page at the cap, so a state of more geographies than that was never read (2026-11-22 replay).
+
+        :return: the hub's row cap
+        :rtype: int
+        """
+        return HUB_ROW_CAP
 
     @property
     def sql_dialect(self) -> Dialect | str:

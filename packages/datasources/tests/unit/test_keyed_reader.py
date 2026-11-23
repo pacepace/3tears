@@ -21,6 +21,7 @@ from threetears.core.keyed import (
     Sort,
     counts_by,
     dialect_of,
+    group_hashes,
     read_changed,
     read_keyed,
     read_past_marks,
@@ -284,3 +285,42 @@ async def test_one_key_wider_than_a_reply_is_refused_not_split() -> None:
     reader = DatasourceReader(_Client([{"a": 1}], truncated=True), "redshift")  # type: ignore[arg-type]
     with pytest.raises(DatasourceAnswerCut):
         await read_keyed(reader, "t", keys=KeyBatch(("a",), [(1,)], as_list=True), columns=["a"])
+
+
+class _RowCappedHub:
+    """a stand-in hub over an in-process DuckDB that cuts every reply at ``cap`` rows (saying so, ``truncated``), as
+    the hub's datasource broker does at its row cap."""
+
+    def __init__(self, db: duckdb.DuckDBPyConnection, cap: int) -> None:
+        self._db = db
+        self._cap = cap
+        self.cuts = 0
+
+    async def query(
+        self, datasource: str, query: str, params: list[Any] | None = None, *, user_identity_token: str | None = None
+    ) -> DatasourceQueryResult:
+        cursor = self._db.execute(query, list(params or []))
+        names = [column[0] for column in cursor.description or []]
+        rows = [dict(zip(names, found, strict=True)) for found in cursor.fetchall()]
+        self.cuts += len(rows) > self._cap
+        kept = rows[: self._cap]
+        return DatasourceQueryResult(
+            rows=kept, row_count=len(kept), truncated=len(kept) < len(rows), correlation_id=uuid4()
+        )
+
+
+async def test_a_states_group_hashes_past_the_hubs_row_cap_are_read_whole() -> None:
+    """Flips if the reader states no row cap (``rows_per_statement``): group_hashes then pages at its own 10,000 and
+    the hub cuts every page at 1,000, so a state of more geographies than that is never read (2026-11-22 replay: every
+    AP load failed on the moved states' geography hashes for the rest of the night)."""
+    db = duckdb.connect()
+    db.execute("CREATE TABLE results (state VARCHAR, geo VARCHAR, votes INTEGER)")
+    db.execute("INSERT INTO results SELECT 'AK', 'g' || lpad(i::VARCHAR, 5, '0'), i FROM range(2500) t(i)")
+    hub = _RowCappedHub(db, 1000)
+    reader = _DuckReader(hub, "warehouse")  # type: ignore[arg-type]
+    assert reader.rows_per_statement == 1000
+    answered = await group_hashes(
+        reader, "results", scope="state", scopes=["AK"], group="geo", hash_columns=[HashColumn("votes")]
+    )
+    assert len(answered["AK"]) == 2500
+    assert hub.cuts == 0
