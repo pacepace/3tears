@@ -1769,6 +1769,72 @@ class DuckDBBackend:
             self._db.execute(f"DROP TABLE {chunk}")
         return int(keys.num_rows)
 
+    def unstage_keys(
+        self,
+        stages: Sequence[str],
+        table: str,
+        key: Annotated[Sequence[str], DeclaredKey],
+        keys: Any,
+    ) -> int:
+        """take some keys out of staging tables of ``table``: each stage's rows of those keys (a key stage's keys, a
+        row stage's rows) leave it, and the rest of each stage stays as it was. A follower leaves out of a change the
+        keys of a scope that moved while it read, applies the rest, and reads those keys again
+        (:meth:`~threetears.core.collections.copy_follower.CopyFollower._still`). A stage that does not exist is
+        skipped.
+
+        :param stages: the staging tables, each holding ``table``'s key columns
+        :ptype stages: Sequence[str]
+        :param table: the table the stages are of
+        :ptype table: str
+        :param key: the key columns, in order
+        :ptype key: Annotated[Sequence[str], DeclaredKey]
+        :param keys: the keys, one column per key column, named as they are (as text, or typed)
+        :ptype keys: pyarrow.Table
+        :return: the keys given
+        :rtype: int
+        :raises ValueError: when ``table`` is unknown or a stage is not a staging table's name
+        """
+        quoted = [self._stage_name(stage) for stage in stages]
+        if table not in self._schema_info:
+            raise ValueError(f"unknown table {table!r}")
+        if keys.num_rows == 0 or not quoted:
+            return 0
+        names = ", ".join(quote_identifier(column) for column in key)
+        source = quote_identifier(table)
+        chunk = self._stage_name(f"{stages[0]}__unstage")
+        codes = self._schema_info[table]
+        given = pa.table(
+            {
+                column: self._stored_column(keys.column(column), codes[column])
+                if codes.get(column, "").endswith("_DATETIME")
+                else keys.column(column)
+                for column in key
+            }
+        )
+        with self._db_lock:
+            held = {
+                str(row[0])
+                for row in self._db.execute(
+                    "SELECT table_name FROM duckdb_tables() WHERE starts_with(table_name, ?)", [STAGE_PREFIX]
+                ).fetchall()
+            }
+            self._db.execute(f"CREATE OR REPLACE TABLE {chunk} AS SELECT {names} FROM {source} WHERE FALSE")  # noqa: S608
+            self._db.register("_unstaged_keys", given)
+            try:
+                # typed by the table's own key columns, as stage_keys types them
+                self._db.execute(f"INSERT INTO {chunk} BY NAME SELECT * FROM _unstaged_keys")  # noqa: S608
+            finally:
+                self._db.unregister("_unstaged_keys")
+            try:
+                for stage, name in zip(stages, quoted, strict=True):
+                    if stage not in held:
+                        continue
+                    pk_join = " AND ".join(f"{name}.{quote_identifier(c)} = {chunk}.{quote_identifier(c)}" for c in key)
+                    self._db.execute(f"DELETE FROM {name} USING {chunk} WHERE {pk_join}")  # noqa: S608
+            finally:
+                self._db.execute(f"DROP TABLE {chunk}")
+        return int(keys.num_rows)
+
     def drop_stage(self, *stages: str) -> None:
         """drop staging tables; one that does not exist is no error.
 

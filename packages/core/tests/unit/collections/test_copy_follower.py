@@ -36,7 +36,7 @@ pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
 import threetears.core as core  # noqa: E402
-from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
@@ -1238,6 +1238,76 @@ async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_
     lock.held = None
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
+
+
+@pytest.mark.parametrize("how", ["commits", "takes"])
+async def test_a_scope_the_stamp_moves_under_while_a_pass_reads_is_left_out_and_the_rest_applies(how: str) -> None:
+    """Flips if one moved scope keeps a whole change from applying: a pass that read for minutes while an LSF load
+    committed a state every ~13 s found some staged scope moved on every pass, kept every stage, and the pages froze
+    for the night (reports' burst replay, 2026-11-23). Only the moved scope's keys leave the change, read again by the
+    next pass; the label keeps that scope at the epoch the copy holds it at."""
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 3) + _rows("IL", 3))
+    log.commit([("VA", i) for i in range(3)] + [("IL", i) for i in range(3)])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled_va, copy_va_epoch = _of(backend, "VA"), lock.epochs["state:VA"]
+    l3.put([("VA", 1, 40), ("IL", 2, 50)])
+    log.commit([("VA", 1), ("IL", 2)])
+    lock.commit("state:VA", "state:IL")
+    il_epoch = lock.epochs["state:IL"]
+
+    def moves() -> None:
+        # between the pass's two reads of the record: another load commits VA, or a write takes it
+        if how == "commits":
+            l3.put([("VA", 1, 41)])
+            log.commit([("VA", 1)])
+            lock.commit("state:VA")
+        else:
+            lock.held = frozenset({"state:VA"})
+
+    lock.on_read = (lock.reads + 2, moves)
+    assert await follower.catch_up()
+    assert _of(backend, "IL") == _l3_of(l3, "IL")
+    assert _of(backend, "VA") == settled_va
+    stamp = follower.stamp
+    assert isinstance(stamp, PartialStamp)
+    assert stamp.epoch("state:IL") == il_epoch
+    assert stamp.epoch("state:VA") == copy_va_epoch
+    assert "state:VA" in stamp.held
+    assert follower.status().pending == {_TABLE: 1}
+    assert backend.staged_stages() == []
+    lock.on_read = None
+    if how == "takes":
+        lock.commit("state:VA")
+        lock.held = None
+    l3.rows_read = 0
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert l3.rows_read == 1  # the key left out, alone
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_unstaging_keys_takes_their_rows_and_keys_out_of_each_stage_and_keeps_the_rest() -> None:
+    """Flips if a key left out of a change stays in its stages (it would land beside a stamp that never held its
+    scope still), or if taking it out takes any other key's row with it."""
+    backend = _backend()
+    backend.initialize(_metadata())
+    rows_stage, keys_stage = f"{STAGE_PREFIX}t__rows", f"{STAGE_PREFIX}t__keys"
+    staged = pa.table(
+        {
+            "state": ["VA", "VA", "IL"],
+            "geo_id": pa.array([1, 2, 3], pa.int64()),
+            "votes": pa.array([5, 6, 7], pa.int64()),
+        }
+    )
+    backend.stage_keys(keys_stage, _TABLE, _KEY, staged.select(list(_KEY)), rows_stage=rows_stage)
+    backend.stage_rows(rows_stage, _TABLE, staged, _KEY)
+    leaving = pa.table({"state": ["VA"], "geo_id": ["2"]})
+    assert backend.unstage_keys([keys_stage, rows_stage, f"{STAGE_PREFIX}absent"], _TABLE, _KEY, leaving) == 1
+    backend.apply_staged([StagedChange(table=_TABLE, key=_KEY, keys=keys_stage, rows=rows_stage)])
+    assert _copy(backend) == [("IL", 3, 7), ("VA", 1, 5)]
 
 
 async def test_an_apply_that_fails_keeps_its_stages_and_the_next_pass_reads_nothing(world: Any) -> None:

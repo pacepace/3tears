@@ -566,6 +566,11 @@ class FollowerBackend(Protocol):
         """stage the keys read under ``stage`` (a key not among ``rows_stage``'s rows is deleted); the keys staged."""
         ...
 
+    def unstage_keys(self, stages: Sequence[str], table: str, key: Sequence[str], keys: Any) -> int:
+        """take these keys out of these stages of ``table`` (their keys, their rows), the rest of each kept; the keys
+        given."""
+        ...
+
     def drop_stage(self, *stages: str) -> None:
         """drop these stages."""
         ...
@@ -682,6 +687,15 @@ class CopyFollower:
         self._whole_left_out: dict[str, dict[str, int]] = {}
         #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one)
         self._staged_scopes: dict[str, set[str | None]] = {}
+        #: the scopes of each key a keyed stage was read for, by table: a scope the stamp moved under while a pass
+        #: read (or a write took) leaves the stage by these keys alone, and the rest of the stage is applied
+        #: (:meth:`_still`). Kept for keyed stages only: a whole read's or a partition's stage is not split
+        self._staged_key_scopes: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
+        #: the scopes the last :meth:`_still` left out of the change (their keys put back pending): the label keeps
+        #: each at the epoch the copy holds it at, as it keeps a held one (:meth:`_label`)
+        self._left_scopes: frozenset[str] = frozenset()
+        #: the keys of each table the last :meth:`_still` left out of the change, for :meth:`_leave_out`
+        self._leaving: dict[str, set[tuple[str, ...]]] = {}
         #: the mark of the last change applied, and the stamp of each recent one (a reader's snapshot names its mark)
         self._mark = 0
         #: the mark of the change the copy holds now (the last apply that succeeded); None before the first. A pass
@@ -1035,9 +1049,14 @@ class CopyFollower:
             if behind:
                 self._say(FollowerPhase.BEHIND, f"behind on {sorted(behind)}; serving the copy at {self._status.stamp}")
                 return False
-            # a stage holding a scope the write now holds (or a table of no scope, while any write is) is read again
+            # a stage holding a scope the write now holds (or a table of no scope, while any write is) is read again;
+            # a keyed stage loses only that scope's keys, once this pass has read (_still)
             await self._forget_tables(
-                [name for name, scopes in self._staged_scopes.items() if writing and self._clashes(scopes, held)]
+                [
+                    name
+                    for name, scopes in self._staged_scopes.items()
+                    if writing and self._clashes(scopes, held) and (None in scopes or not self._splittable(name))
+                ]
             )
             label = self._label(first, held)
             nothing = not any(self._pending.values()) and not self._whole and not any(self._partitions.values())
@@ -1077,6 +1096,12 @@ class CopyFollower:
                 )
                 self._say(FollowerPhase.WAITING, "the stamp moved while the change was read; the next pass tops it up")
                 return False
+            try:
+                await self._leave_out()
+            except LookupError as exc:
+                self._stages_lost()
+                raise _StagesLostError(f"the stages were lost leaving scopes out of the change: {exc}") from exc
+            label = self._label(first, held, left=self._left_scopes)
             self._mark += 1
             mark = self._mark
             # a failed apply keeps every stage: the next pass tries only the apply again, never a read -- unless the
@@ -1133,6 +1158,7 @@ class CopyFollower:
             self._staged_whole = {}
             self._whole_left_out = {}
             self._staged_scopes = {}
+            self._staged_key_scopes = {}
             self._partitions_staged = {}
             self._rows_since_mark += rows
             self._status.stamp = label
@@ -1262,27 +1288,47 @@ class CopyFollower:
         """
         return None in scopes or bool(scopes & held)
 
-    def _label(self, first: Any, held: frozenset[str]) -> Any:
-        """the stamp the copy holds once this pass applies: ``first`` itself at a settled stamp; while a write is in
-        progress, a :class:`PartialStamp` keeping each held scope at the epoch the copy holds it at now.
+    def _label(self, first: Any, held: frozenset[str], *, left: frozenset[str] = frozenset()) -> Any:
+        """the stamp the copy holds once this pass applies: ``first`` itself at a settled stamp with nothing left out;
+        otherwise a :class:`PartialStamp` keeping each held scope, and each scope left out of the change
+        (:meth:`_still`), at the epoch the copy holds it at now.
 
         :param first: what ``settled`` answered first
         :ptype first: Any
         :param held: the scopes the write holds
         :ptype held: frozenset[str]
+        :param left: the scopes left out of this change, their keys read again by the next pass
+        :ptype left: frozenset[str]
         :return: the label
         :rtype: Any
         """
-        if not isinstance(first, Unsettled):
+        if not isinstance(first, Unsettled) and not left:
             return first
-        epochs = dict(first.epochs or {})
+        scoped = _scoped(first)
+        epochs = dict(scoped[0]) if scoped is not None else dict(first.epochs or {})
         before = _scoped(self._status.stamp)
         kept = before[0] if before is not None else {}
-        for scope in held:
+        older = held | left
+        for scope in older:
             epochs.pop(scope, None)
             if scope in kept:
                 epochs[scope] = kept[scope]
-        return PartialStamp(epochs=epochs, held=held, version=first.version)
+        return PartialStamp(epochs=epochs, held=older, version=getattr(first, "version", None))
+
+    def _splittable(self, name: str) -> bool:
+        """whether a table's stage may lose some keys and keep the rest: a keyed stage, never a whole read's or a
+        partition's.
+
+        :param name: the table
+        :ptype name: str
+        :return: whether it may
+        :rtype: bool
+        """
+        return (
+            bool(self._staged_key_scopes.get(name))
+            and name not in self._staged_whole
+            and not self._partitions_staged.get(name)
+        )
 
     def _take(
         self, held: frozenset[str], *, writing: bool
@@ -1338,12 +1384,20 @@ class CopyFollower:
         return pending, whole, partitions
 
     def _still(self, first: Any, second: Any) -> bool:
-        """whether every stage may be applied at ``first``: the stamp held still for each scope staged.
+        """whether a change is left to apply at ``first``: every stage, less the keys of each scope the stamp did not
+        hold still for.
 
-        A stamp that names no scope must be the same whole. Otherwise each staged scope must be untouched by a write
-        in progress and at the same epoch in both, and a table of no scope needs the whole record unmoved. A stage
-        holding a scope a write took meanwhile is forgotten here (its keys read again once the write commits); one
-        whose scope only moved is kept, its keys heard again topping it up.
+        A stamp that names no scope must be the same whole. Otherwise a staged scope that moved between the two reads,
+        or that a write in progress now holds, is left out of this change: a keyed stage loses those scopes' keys alone
+        (put back pending, read again by the next pass; :meth:`_leave_out` takes them out of the stage), the rest of it
+        is applied, and the label keeps each scope left out at the epoch the copy holds it at (:meth:`_label`). A stage
+        that cannot be split by key (a whole read's, a partition's), or that every key of would leave, is forgotten
+        whole. A table of no scope needs the whole record unmoved and no write in progress: otherwise nothing is
+        applied, and a write holding it forgets its stage (its keys read again once the write commits).
+
+        Why per scope: a pass that read for minutes while an LSF load committed a state every ~13 s found some staged
+        scope moved on every pass, and kept every stage for the next; the pages froze for the rest of the night
+        (reports' burst replay, 2026-11-23: 21 passes in a row kept their stages, none applied after 10:42).
 
         :param first: what ``settled`` answered before the pass read
         :ptype first: Any
@@ -1352,19 +1406,86 @@ class CopyFollower:
         :return: whether to apply
         :rtype: bool
         """
+        self._leaving = {}
+        self._left_scopes = frozenset()
         a, b = _scoped(first), _scoped(second)
         if a is None or b is None:
             return bool(second == first)
         (epochs_a, _), (epochs_b, held_b) = a, b
+        unsettled = isinstance(second, Unsettled)
         moved = {scope for scope in set(epochs_a) | set(epochs_b) if epochs_a.get(scope) != epochs_b.get(scope)}
-        taken = [name for name, scopes in self._staged_scopes.items() if self._clashes(scopes, held_b)]
-        if taken and isinstance(second, Unsettled):
-            self._forget_tables_now(taken)
-        whole_moved = moved or (isinstance(second, Unsettled) != isinstance(first, Unsettled))
-        for scopes in self._staged_scopes.values():
-            if scopes & moved or (None in scopes and whole_moved):
-                return False
-        return not (taken and isinstance(second, Unsettled))
+        whole_moved = bool(moved) or (unsettled != isinstance(first, Unsettled))
+        blocked = moved | (held_b if unsettled else frozenset())
+        forget: list[str] = []
+        left: set[str] = set()
+        whole_rule = False
+        for name, scopes in self._staged_scopes.items():
+            if None in scopes:
+                whole_rule = whole_rule or unsettled or whole_moved
+                continue
+            hit = {scope for scope in scopes if scope in blocked}
+            if not hit:
+                continue
+            key_scopes = self._staged_key_scopes.get(name)
+            if not key_scopes or not self._splittable(name):
+                # a whole read's or a partition's stage is never split: the stamp is judged for it as a whole
+                whole_rule = True
+                continue
+            left.update(scope for scope in hit if scope is not None)
+            leaving = {key for key, of in key_scopes.items() if of & hit}
+            if leaving >= self._staged_keys.get(name, set()):
+                forget.append(name)
+            elif leaving:
+                self._leaving[name] = leaving
+        if whole_rule:
+            # nothing applies this pass: a stage holding a scope a write took is forgotten (its keys read again once
+            # the write commits); one whose scope only moved is kept, its keys heard again topping it up
+            self._leaving = {}
+            if unsettled:
+                self._forget_tables_now(
+                    [name for name, scopes in self._staged_scopes.items() if self._clashes(scopes, held_b)]
+                )
+            return False
+        self._forget_tables_now(forget)
+        self._left_scopes = frozenset(left)
+        # a pass whose every stage was forgotten has nothing to apply; one that staged nothing (a relabel) may
+        return not forget or bool(self._staged)
+
+    async def _leave_out(self) -> None:
+        """take out of each stage the keys :meth:`_still` left out of the change, and put them back pending: the next
+        pass reads them again, at a stamp that holds their scope still.
+
+        :return: nothing
+        :rtype: None
+        """
+        leaving, self._leaving = self._leaving, {}
+        for name, keys in leaving.items():
+            change = self._staged.get(name)
+            if change is None:
+                continue
+            table = self._tables[name]
+            ordered = sorted(keys)
+            arrow_keys = pa.table(
+                {column: pa.array([key[i] for key in ordered], pa.string()) for i, column in enumerate(table.key)}
+            )
+            stages = [stage for stage in (change.keys, change.rows) if stage is not None]
+            await asyncio.to_thread(self._backend.unstage_keys, stages, name, table.key, arrow_keys)
+            self._pending[name] |= keys
+            self._staged_keys[name] -= keys
+            key_scopes = self._staged_key_scopes[name]
+            for key in keys:
+                key_scopes.pop(key, None)
+            self._staged_scopes[name] = {scope for of in key_scopes.values() for scope in of}
+        if leaving:
+            log.info(
+                "copy follower left scopes out of a change: the stamp moved under them while the change was read",
+                extra={
+                    "extra_data": {
+                        "left_keys": {name: len(keys) for name, keys in sorted(leaving.items())},
+                        "left_scopes": len(self._left_scopes),
+                    }
+                },
+            )
 
     def _forget_tables_now(self, names: Sequence[str]) -> None:
         """put back what these tables' stages hold, to be read again; their stages are dropped by the next pass.
@@ -1377,6 +1498,7 @@ class CopyFollower:
         for name in names:
             self._staged.pop(name, None)
             self._staged_scopes.pop(name, None)
+            self._staged_key_scopes.pop(name, None)
             self._pending[name] |= self._staged_keys.pop(name, set())
             self._staged_touched.pop(name, None)
             self._partitions[name].extend(self._partitions_staged.pop(name, []))
@@ -1513,7 +1635,7 @@ class CopyFollower:
                 pending.pop(name, None)
                 continue
             self._reading = name
-            staged, scopes = await self._stage_keyed(table, sorted(keys), keys_stage, rows_stage, held)
+            staged, scopes, key_scopes = await self._stage_keyed(table, sorted(keys), keys_stage, rows_stage, held)
             if staged:
                 was = self._staged.get(name)
                 self._staged[name] = StagedChange(
@@ -1528,6 +1650,7 @@ class CopyFollower:
                 if table.scope is None:
                     self._staged_touched.setdefault(name, set()).update(staged)
                 self._staged_scopes.setdefault(name, set()).update(scopes)
+                self._staged_key_scopes.setdefault(name, {}).update(key_scopes)
             del pending[name]
             self._reading = None
 
@@ -1630,17 +1753,18 @@ class CopyFollower:
         keys_stage: str,
         rows_stage: str,
         held: frozenset[str],
-    ) -> tuple[set[tuple[str, ...]], set[str | None]]:
+    ) -> tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]:
         """stage some keys' rows, read from L3 by key a page at a time; a key whose row (in L3, or in the copy) is of a
         scope a write holds is left pending, unstaged.
 
-        :return: the keys staged, and the scopes their rows are of
-        :rtype: tuple[set[tuple[str, ...]], set[str | None]]
+        :return: the keys staged, the scopes their rows are of, and each staged key's scopes
+        :rtype: tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]
         """
         read = self._reads[table.name]
         at = table.scope_in_key
         staged: set[tuple[str, ...]] = set()
         scopes: set[str | None] = set()
+        key_scopes: dict[tuple[str, ...], frozenset[str | None]] = {}
         for start in range(0, len(keys), self._page_size):
             chunk = keys[start : start + self._page_size]
             of: dict[tuple[str, ...], set[str]] = {}
@@ -1665,8 +1789,12 @@ class CopyFollower:
             kept = list(chunk)
             if table.scope is None:
                 scopes.add(None)
+                key_scopes.update((tuple(key), frozenset({None})) for key in chunk)
             elif at is not None:
-                scopes.update(table.scope_of(key[at]) for key in chunk)
+                for key in chunk:
+                    in_key = table.scope_of(key[at])
+                    scopes.add(in_key)
+                    key_scopes[tuple(key)] = frozenset({in_key})
             else:
                 # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of a
                 # held scope (a row new to the copy, or moved into it) waits too
@@ -1683,7 +1811,9 @@ class CopyFollower:
                         mask = [tuple(str(v) for v in key) not in left for key in l3_keys]
                         rows = rows.filter(pa.array(mask, pa.bool_())) if rows.num_rows else rows
                 for key in kept:
-                    scopes.update(of.get(tuple(key), set()))
+                    of_key = of.get(tuple(key), set())
+                    scopes.update(of_key)
+                    key_scopes[tuple(key)] = frozenset(of_key)
             if not kept:
                 continue
             arrow_keys = pa.table(
@@ -1694,7 +1824,7 @@ class CopyFollower:
             )
             await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, rows, table.key)
             staged.update(kept)
-        return staged, scopes
+        return staged, scopes, {key: key_scopes[key] for key in staged if key in key_scopes}
 
     async def _stage_partitions(self, partitions: dict[str, list[dict[str, str]]], held: frozenset[str]) -> None:
         """stage each partition's change beside the copy as keyed changes: the partition is replaced. The copy's own
