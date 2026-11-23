@@ -1233,6 +1233,12 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.reference_material",
         "threetears.evals.schema.ReferenceKey",
         "threetears.evals.schema.fold_name",
+        # Promoted for Discodon's witnessed-run lease (discodon #3591): its story-set grade holds the run it witnesses
+        # under its JobLeases (RUN_JOB names the record's kind) and writes every ending through JobRecorder.save, which
+        # raises JobFenced where the run already ended elsewhere, so an ended run is never overwritten.
+        "threetears.evals.kernel.JobFenced",
+        "threetears.evals.kernel.RUN_JOB",
+        "threetears.evals.run.JobRecorder",
     }
 )
 

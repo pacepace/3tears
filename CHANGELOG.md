@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a run a host keeps open is held under a lease, and the names that do it are stable
+
+**Changed:** `RUN_JOB` and `JobFenced` (`threetears.evals.kernel`) and `JobRecorder` (`threetears.evals.run`) move
+from provisional to stable. Discodon's story-set grade holds the run it witnesses under its `JobLeases` and writes every
+ending through `JobRecorder.save`, which raises `JobFenced` where the run already ended elsewhere (discodon #3591).
+
+**Fixed:** `record_witnessed_cell`'s docstring said a witnessed run left `running` is written lost by
+`sweep_abandoned_runs`. Every read of a run through the storage writes an open run with no live lease lost at once, from
+any process, so a host saving its witnessed run with no lease saw it written `cancelled` mid-grade. The docstring and
+`docs/serving.md` (with the code) now say how a host holds such a run: a lease on its first write, renewed until its
+ending, and the ending written through `JobRecorder.save`; `docs/adopting-a-host.md` points there.
+
+**For hosts:** nothing to change; a host's exemptions for these three names end with the pin that includes this.
+
 ### evals: what a claims-graded eval's print and pages say, and a runner's own bug named as its code's
 
 **Fixed (#1287):**

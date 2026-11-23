@@ -35,7 +35,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
 
-## The host's contract: 89 names a host implements or hands the engine
+## The host's contract: 90 names a host implements or hands the engine
 
 ### Ports a host implements (18)
 
@@ -58,7 +58,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### What a host builds and hands the engine (71)
+### What a host builds and hands the engine (72)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
 - `schema.EvalBaseModel`: Base model for the eval engine's own Pydantic models.
@@ -88,6 +88,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.host.WorldRegistry`: One host's world declarations, its resolution table, and the algebra over them.
 - `run.ArmPlan`: What one arm of a launch will run, as its kind says before its launcher runs.
 - `run.CallCeiling`: The most one call of an arm's cells can cost, priced before launch: its largest call's ceiling, or a floor.
+- `run.JobRecorder`: A job's own writes of its record while its work runs: each one guarded, and the latest one kept.
 - `run.JudgeService`: Stateless single-dim judge.
 - `run.KindLauncher`: One kind's launcher: builds that kind's collaborators for one arm and hands `launch_run` its run.
 - `run.KindWiring`: What one kind's launcher resolved for its arm — everything `launch_run` cannot know itself.
@@ -413,7 +414,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `actions.ConformanceSample`: One launch a host can run end to end, which the engine's spend actions' happy paths build on.
 - `actions.ConformanceStage`: What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 
-## Shapes: 261 values a reader is handed
+## Shapes: 263 values a reader is handed
 
 ### Protocols the engine implements and hands a host (10)
 
@@ -619,7 +620,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 
 - `storage.CoreReset`: What `RoutedDocumentStore.reset_core` did: the core and regenerable documents deleted, and what moved.
 
-### Errors (29)
+### Errors (30)
 
 - `schema.CompletionProtocolDefect`: A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
 - `schema.StoreCalledOnEventLoop`: A store call was made on a thread that is running an event loop.
@@ -630,6 +631,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `kernel.ConflictError`: State conflict (status 409).
 - `kernel.EvalJobTimeout`: A job outlived the wall-clock budget its timeout context was enforcing.
 - `kernel.EvalServiceError`: Structured error from the eval service layer.
+- `kernel.JobFenced`: A job's write found its record no longer its own (written lost, or taken up again), so it writes nothing more.
 - `kernel.NotFoundError`: Resource not found (status 404).
 - `kernel.ProviderRefusedError`: A paid provider call made on the caller's behalf raised (status 502).
 - `kernel.StorageError`: Storage operation failed (status 503).
@@ -657,7 +659,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `schema.ReferenceKey`: The entities a case's answer is graded against, a required core and the others that also count, and the context entities a reply may state facts about that are never part of the answer.
 - `kernel.NamedEntity`: One entity an output named: what it was called, and any fields that came with it (a host tool's pick).
 
-### Constants (61)
+### Constants (62)
 
 - `__version__`: The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
 - `PUBLIC_ROOTS`: The public roots, as absolute module names.
@@ -696,6 +698,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `kernel.KIND_TEXT`: A seed whose constant is a single string, registered with a shared-prompt registry.
 - `kernel.MATCH_MEASURE`: The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
 - `kernel.METRIC_DESCRIPTORS`: The engine's own measures, each one's descriptor keyed by its name.
+- `kernel.RUN_JOB`: A launched run's record.
 - `kernel.SEED_PROMPTS`: Every prompt the engine ships a default for, in the order a registry seeds them.
 - `kernel.SEED_REMEDY`: What a template's author does when its world seed states world state a goal check's control cannot be built over.
 - `kernel.host.SHARED_CORE`: The registry a host extends.
@@ -797,12 +800,12 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | Kind | Names | Who meets it |
 |---|---|---|
 | `typed` | 12 | a newcomer writes it in an eval file |
-| `bound` | 95 | a host implements it or hands it to the engine |
+| `bound` | 96 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind a catalogue action, which an agent or operator invokes by name |
 | `invoked` | 94 | a function a host's own code calls, to make the engine act or do one step its way |
-| `received` | 261 | a value someone is handed and reads |
+| `received` | 263 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 496 | |
+| all | 499 | |
 
 Of these, 22 await demotion and 4 need a shipped example
 (issue #1199), each listed in its register's section above.

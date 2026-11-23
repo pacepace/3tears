@@ -283,6 +283,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalStorage`** · *host contract* · class · Storage for eval documents over one document store.
 - **`ExternalRateTable`** · dataclass · Operator-declared money per provider unit, resolved once for a whole run.
 - **`Floor`** · *host contract* · model · A line a candidate is warned for crossing on one aspect: a typed clause, read on that aspect's readings.
+- **`JobFenced`** · exception · A job's write found its record no longer its own (written lost, or taken up again), so it writes nothing more.
 - **`JobLeases`** · class · The leases one process holds on its jobs' records, and the task that renews them.
 - **`JobStore`** · *host contract* · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — one of the engine's own, or one a host declares.
@@ -342,6 +343,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`METRIC_DESCRIPTORS`** · constant (dict) · The engine's own measures, each one's descriptor keyed by its name.
+- **`RUN_JOB`** · constant (LeasedJobKind) · A launched run's record.
 - **`SEED_PROMPTS`** · constant (tuple) · Every prompt the engine ships a default for, in the order a registry seeds them.
 - **`SEED_REMEDY`** · *host contract* · constant (str) · What a template's author does when its world seed states world state a goal check's control cannot be built over.
 
@@ -509,6 +511,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`DefinitionReset`** · *host contract* · model · What a reset wrote, and how the corpus reads after it.
 - **`FidelityContract`** · dataclass · One shared construction path and the callers required to reach it.
 - **`GoalCheckUnevaluable`** · exception · A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
+- **`JobRecorder`** · class · A job's own writes of its record while its work runs: each one guarded, and the latest one kept.
 - **`JudgeRepeatReport`** · model · What a repeat did: which results it recorded a repeat on, what it spent, and what it left out.
 - **`JudgeService`** · class · Stateless single-dim judge. See module docstring for the contract.
 - **`KindFactory`** · *host contract* · protocol · Builds the candidate kind for one cell.

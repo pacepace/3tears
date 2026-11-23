@@ -2384,7 +2384,7 @@
     "threetears.evals.kernel.JobFenced": {
       "kind": "exception",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.kernel.JobLeases": {
       "kind": "class",
@@ -2894,7 +2894,7 @@
     "threetears.evals.kernel.RUN_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.kernel.RunIndexEntry": {
       "kind": "model",
@@ -3948,8 +3948,8 @@
     },
     "threetears.evals.run.JobRecorder": {
       "kind": "class",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "JobRecorder(store: JobRecordStore, executor: Executor | None, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None) -> None",
+      "tier": "stable"
     },
     "threetears.evals.run.JobWork": {
       "kind": "dataclass",

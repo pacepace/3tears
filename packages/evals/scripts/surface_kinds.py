@@ -220,6 +220,7 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.kernel.EvalStorage": "bound",
         "threetears.evals.kernel.SetGrader": "bound",
         "threetears.evals.kernel.JobLeases": "bound",
+        "threetears.evals.run.JobRecorder": "bound",
         "threetears.evals.kernel.WorldSession": "bound",
         "threetears.evals.kernel.host.BarRegistry": "bound",
         "threetears.evals.kernel.host.MeasureRegistry": "bound",
