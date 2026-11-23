@@ -645,6 +645,8 @@ module = [
     "threetears.core.collections.delta_fold",
     # and a table's delta files (Arrow IPC) and the rail's Arrow types its columns are typed by
     "threetears.core.collections.delta_files",
+    # and a recreate's check of a file's keys against its record's, matched in Arrow
+    "threetears.core.collections.delta_recreate",
     "threetears.core.collections.schema_backed",
     "threetears.core.backends.arrow_reply",
     # and a copy's rows sent as Arrow
