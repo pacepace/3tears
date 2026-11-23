@@ -242,6 +242,20 @@ _CUTS = counter(
     label_names=("why",),
 )
 
+#: tables whose queued files were handed to a recovery by key after straight failed rounds (:data:`_FAILED_ROUNDS_CAP`)
+_QUEUE_CAPPED = counter(
+    "delta_fold_queue_capped_total",
+    description="tables whose fold queue was handed to a recovery by key after straight failed rounds, so the queue "
+    "never grows without bound; by table",
+    label_names=("table",),
+)
+
+#: the commits queued for the next round, every table: grows only while rounds fail, until the cap hands them over
+_QUEUED = gauge(
+    "delta_fold_queued_files",
+    description="commits' delta files queued for the writer's next fold round, every table together",
+)
+
 #: what the writer holds unfolded, by table, from the fold's own bookkeeping (gap 3): the delta files told and not yet
 #: in a published full, and the bytes of their shares a round has measured (a file told counts in the files at once,
 #: in the bytes once the round its commit starts has measured it). Zero while every delta is folded; a value that keeps
@@ -265,7 +279,12 @@ _FreshWhy = Literal["reset", "schema_change"]
 #: why a table is recovered (decision 28): a record of its epoch log missing, or its log replaced (a new incarnation)
 #: why a table is recovered by key: its log lost (a record missing, or the log replaced), or a commit too big to list
 #: its rows lost its delta file (decision 29: its keys were only in the file)
-_RecoveryWhy = Literal["log_lost", "new_incarnation", "file_lost"]
+_RecoveryWhy = Literal["log_lost", "new_incarnation", "file_lost", "rounds_failed"]
+
+#: straight failed rounds past which the tables whose files they kept queued are recovered by key instead (decision
+#: 28's recovery reads every file the full does not name, so the queue's entries of them are let go): what bounds the
+#: queue when every round fails (a volume refusing writes), never a timer
+_FAILED_ROUNDS_CAP: Final = 3
 
 #: the write id a recovery delta's file is named by, before its unique part: ``<table>/recovery-<hex>.arrow``
 _RECOVERY_WRITE: Final = "recovery"
@@ -399,6 +418,8 @@ class DeltaFolds:
         self._reused: tuple[str, ...] = ()
         self._doomed: tuple[str, ...] = ()
         self._round: asyncio.Task[None] | None = None
+        #: fold rounds failed in a row: past :data:`_FAILED_ROUNDS_CAP` their tables are recovered by key
+        self._failed_rounds = 0
         #: the term the running round folds at: a start of a newer term never waits on it (:meth:`start`)
         self._round_term: int | None = None
         self._unfolded_warned: set[str] = set()
@@ -422,8 +443,10 @@ class DeltaFolds:
         self._recheck = False
         #: whether a table was marked fresh since the last rebuild began
         self._marked = False
-        #: each table a rebuild or a recovery published, in order
-        self._rebuilt: list[str] = []
+        #: how many rebuilds and recoveries published: a count, never a list growing with each
+        self.published = 0
+        #: the tables a rebuild or a recovery published during the :meth:`start` running, in order; None outside one
+        self._starting: list[str] | None = None
 
     @property
     def unfolded(self) -> frozenset[str]:
@@ -452,6 +475,7 @@ class DeltaFolds:
         for table in self.tables:
             _UNFOLDED_FILES.labels(table=table).set(len(files[table]))
             _UNFOLDED_BYTES.labels(table=table).set(sizes[table])
+        _QUEUED.set(len(self._queued))
 
     def committed(
         self,
@@ -563,12 +587,16 @@ class DeltaFolds:
             await self._cut("new_term")
         self._term = version if self._term is None else max(self._term, version)
         self._recheck = True
-        since = len(self._rebuilt)
-        await self.wait()
-        await self._relearn(generations, changes)
-        self._run_rounds()
-        await self.wait()
-        return tuple(self._rebuilt[since:])
+        published: list[str] = []
+        self._starting = published
+        try:
+            await self.wait()
+            await self._relearn(generations, changes)
+            self._run_rounds()
+            await self.wait()
+        finally:
+            self._starting = None
+        return tuple(published)
 
     async def _relearn(self, generations: GenerationSource, changes: EpochChangeReader) -> None:
         """queue, as commits told, each delta file the epoch log names since each table's oldest part (module
@@ -762,6 +790,18 @@ class DeltaFolds:
         if self._round is None or self._round.done():
             self._round = asyncio.get_running_loop().create_task(self._rounds(), name="delta folds")
 
+    def _published_one(self, table: str) -> None:
+        """count a rebuild's or a recovery's publish, and name it to the :meth:`start` running.
+
+        :param table: the table published
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        self.published += 1
+        if self._starting is not None:
+            self._starting.append(table)
+
     async def wait(self) -> None:
         """wait for the round in progress, and any it starts, to end.
 
@@ -873,13 +913,43 @@ class DeltaFolds:
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 _ROUNDS.labels(outcome="failed").inc()
+                self._failed_rounds += 1
                 log.error(
                     "a delta fold round failed; its files are kept for the round the next commit starts",
-                    extra={"extra_data": {"files": len(taken), "error": repr(error)}},
+                    extra={
+                        "extra_data": {"files": len(taken), "failed_in_a_row": self._failed_rounds, "error": repr(error)}
+                    },
                     exc_info=error,
                 )
+                if self._failed_rounds >= _FAILED_ROUNDS_CAP:
+                    self._hand_queue_to_recovery()
+                self._measure()
                 return
+            self._failed_rounds = 0
             self._took(answer)
+
+    def _hand_queue_to_recovery(self) -> None:
+        """after :data:`_FAILED_ROUNDS_CAP` straight failed rounds, hand each queued table to a recovery by key
+        (decision 28) and let its queued entries go: the recovery reads every delta file of the table the full does not
+        name, so each queued file's change is in it, and the queue no longer grows with every failed round. Counted
+        and logged. A fold not started (no L3 reader to recover with) keeps its queue: only a writer's start makes one.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._reader is None:
+            return
+        tables = sorted({table for table, _, _ in self._queued})
+        for table in tables:
+            _QUEUE_CAPPED.labels(table=table).inc()
+            if table not in self._recover and table not in self._fresh:
+                self._owe_recovery(
+                    table,
+                    "rounds_failed",
+                    detail=f"{self._failed_rounds} fold rounds failed in a row: its queued files are recovered by key",
+                )
+        self._queued = [item for item in self._queued if item[0] not in tables]
+        self._failed_rounds = 0
 
     def _took(self, answer: tuple[Any, ...]) -> None:
         """keep what a round answered, and count and log it.
@@ -1036,7 +1106,7 @@ class DeltaFolds:
                 self._fresh.pop(name)
             # a table read whole holds every change its leftover files named: no recovery is owed after it
             self._recover.pop(name, None)
-            self._rebuilt.append(name)
+            self._published_one(name)
             self._drop_covered(name, token, known[name])
             log.info(
                 "a table's full rebuilt from L3 and published",
@@ -1254,7 +1324,7 @@ class DeltaFolds:
                     }
                 },
             )
-        self._rebuilt.append(name)
+        self._published_one(name)
         self._drop_covered(name, token, known)
         log.warning(
             "a folded table's full recovered from its leftover delta files' keys, read from L3 by key, and published",

@@ -1525,3 +1525,54 @@ async def test_a_newer_term_s_start_never_waits_on_this_process_s_round_of_an_ol
     current = current_full_manifest(tmp_path)
     assert current is not None and current.term == 9
     await folds.close()
+
+
+async def test_straight_failed_rounds_hand_their_queue_to_a_recovery_by_key(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the fold's queue keeps every file of rounds that all fail (it grows with every commit while the volume
+    refuses parts), or loses their changes: past three straight failures the queued table is owed a recovery by key,
+    its queue let go (the gauge back to zero), and once the volume takes parts again the recovered full is what L3
+    holds, counted as a publish."""
+    _no_whole_read(monkeypatch)
+    schema = _votes_schema()
+    _first_full(tmp_path, "votes")
+    # two states a commit: no delta can be named as a part, so each round must write one
+    rows = [
+        _votes("TX", range(3), 1) + _votes("GA", range(3), 1),
+        _votes("GA", range(3), 2) + _votes("NC", range(2), 2),
+        _votes("TX", range(2, 5), 3) + _votes("NC", range(1), 3),
+        _votes("NC", range(2), 4) + _votes("TX", range(1), 4),
+    ]
+    held: dict[tuple[str, int], dict[str, Any]] = {}
+    for chunk in rows:
+        held.update({(row["state"], row["geo_id"]): row for row in chunk})
+    l3 = _KeyedL3(list(held.values()))
+    generations = _Generations({"votes": "inc:0"})
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    assert await folds.start(l3, generations, changes=_Log(), version=6) == ()
+    writer = _Writer(tmp_path, schema, folds)
+    writer.version = 6
+    blocked = tmp_path / ".fulls" / "parts" / "votes"
+    blocked.parent.mkdir(parents=True, exist_ok=True)
+    blocked.write_bytes(b"not a directory")  # no part can be written: every round fails
+    capped = REGISTRY.get_sample_value("delta_fold_queue_capped_total", {"table": "votes"}) or 0.0
+    before = _recoveries("rounds_failed")
+    for count, chunk in enumerate(rows[:3], start=1):
+        file = writer.save(chunk)
+        generations.tokens["votes"] = f"inc:{count}"
+        writer.tell(file)
+        await folds.wait()
+        assert REGISTRY.get_sample_value("delta_fold_queued_files") == (count if count < 3 else 0)
+    assert not folds.unfolded, "past three straight failures the queue is let go"
+    assert REGISTRY.get_sample_value("delta_fold_queue_capped_total", {"table": "votes"}) == capped + 1
+    blocked.unlink()
+    published = folds.published
+    file = writer.save(rows[3])
+    generations.tokens["votes"] = "inc:4"
+    writer.tell(file)
+    await folds.wait()
+    assert _recoveries("rounds_failed") == before + 1
+    assert folds.published == published + 1
+    assert _held(tmp_path, "votes") == l3.held(), "the recovered full holds every queued change"
+    await folds.close()
