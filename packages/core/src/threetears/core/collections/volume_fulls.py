@@ -27,6 +27,15 @@ is refused, never replaced: one writer holds a term (the lease), so nothing else
 before the publish may still be loading) are kept with every file they name; :func:`deletable_full_files` lists the
 rest for the writer to delete after its own publish. Nothing calls it on a timer.
 
+**Fingerprinted** (decision 32). Each part's manifest entry carries :func:`rows_fingerprint` of its rows: each row's
+columns, in name order, as one canonical text a column type (:data:`_FINGERPRINT_KINDS`), hashed (BLAKE2b, 16 bytes)
+and the hashes summed modulo 2**128, so the order rows are held in never counts and a row held twice does; with the
+row count and a short hash of the columns and their kinds, so a copy holding other columns is told apart from one
+holding other rows. A pod copy fingerprints its own rows of a state held at the part's version the same way and
+compares (:meth:`~threetears.core.collections.copy_follower.CopyFollower.check_drift`); the writer's sample of L3 by
+key compares rows by the same per-row hash (:mod:`~threetears.core.collections.delta_drift`). One definition, here,
+for both sides.
+
 **Where.** Under the delta files' root (``THREETEARS_DELTA_FILES_DIR``), in ``.fulls/``: ``.fulls/manifests/`` and
 ``.fulls/parts/<table>/``. A table's delta files are ``<table>/<write>.arrow``; a table is an identifier, which never
 begins with a dot, so no table's directory is ``.fulls``, and the delta files' orphan sweep, which looks only at the
@@ -36,10 +45,13 @@ files directly under each directory of the root, never reaches a part or a manif
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,8 +59,10 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import get_logger
 
+from threetears.core.cache.base import stored_instant
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.delta_files import read_volume_file, write_volume_file
+from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
 
 if TYPE_CHECKING:
@@ -57,6 +71,7 @@ if TYPE_CHECKING:
 try:
     import pyarrow as pa
     import pyarrow.compute as pc
+    import pyarrow.ipc as pa_ipc
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a full refuses without it, saying so
@@ -72,8 +87,14 @@ __all__ = [
     "VolumeFulls",
     "current_full_manifest",
     "deletable_full_files",
+    "fingerprint_columns",
+    "fingerprint_ipc",
+    "fingerprint_kinds",
     "full_table_floor",
     "publish_full_manifest",
+    "read_full_part",
+    "row_digests",
+    "rows_fingerprint",
     "write_full_part",
 ]
 
@@ -104,11 +125,140 @@ _SCOPE_METADATA: Final = b"threetears.full.scope"
 _VERSION_METADATA: Final = b"threetears.full.version"
 #: how often a copy with no full to load looks for one again (seconds): one listing of the manifests' directory
 _DEFAULT_POLL_SECONDS: Final = 1.0
+#: the kinds a fingerprint renders a column's value by, one an Arrow type the L3 rail answers
+#: (:func:`~threetears.core.collections.schema_backed.rail_arrow_types`): text, an integer, a boolean, an instant; any
+#: other renders as sorted JSON
+_FINGERPRINT_KINDS: Final = ("text", "int", "bool", "instant", "other")
+#: the bytes of each row's hash, and the modulus the hashes are summed under
+_ROW_HASH_BYTES: Final = 16
+_ROW_HASH_MODULUS: Final = 1 << (8 * _ROW_HASH_BYTES)
+#: what a NULL renders as: never a text a value renders as (every value's text is length-prefixed)
+_NULL_RENDERING: Final = "\x00"
 
 
 class StaleTermError(RuntimeError):
     """a writer would publish a full under a term older than the current manifest's: another writer took the lease
     since, so this one's full is refused before it is written (readers would ignore it anyway)."""
+
+
+def fingerprint_kinds(types: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """each column's fingerprint kind (:data:`_FINGERPRINT_KINDS`), from its Arrow type, in column-name order: what
+    :func:`rows_fingerprint` renders a row by. A copy passes the types the L3 rail answers its columns as, whatever its
+    own backend keeps them as; a part's writer, its rows' own.
+
+    :param types: column -> its Arrow type
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: ``(column, kind)`` pairs, sorted by column
+    :rtype: tuple[tuple[str, str], ...]
+    """
+    kinds: list[tuple[str, str]] = []
+    for name, kind in types.items():
+        if pa.types.is_string(kind) or pa.types.is_large_string(kind):
+            kinds.append((name, "text"))
+        elif pa.types.is_integer(kind):
+            kinds.append((name, "int"))
+        elif pa.types.is_boolean(kind):
+            kinds.append((name, "bool"))
+        elif pa.types.is_timestamp(kind):
+            kinds.append((name, "instant"))
+        else:
+            kinds.append((name, "other"))
+    return tuple(sorted(kinds))
+
+
+def _rendered(value: Any, kind: str) -> str:
+    """one value as the fingerprint renders it, by its column's kind, so a value the rail answers and the same value
+    a copy keeps another way (a ``NUMERIC`` as a ``Decimal``, an instant as its ISO text) render alike.
+
+    :param value: the value
+    :ptype value: Any
+    :param kind: its column's kind
+    :ptype kind: str
+    :return: its text, length-prefixed; :data:`_NULL_RENDERING` for a NULL
+    :rtype: str
+    """
+    if value is None:
+        return _NULL_RENDERING
+    if kind == "text":
+        text = format(value, "f") if isinstance(value, Decimal) else key_text(value)
+    elif kind == "int":
+        text = str(int(value))
+    elif kind == "bool":
+        text = "t" if value else "f"
+    elif kind == "instant":
+        instant = datetime.fromisoformat(value) if isinstance(value, str) else value
+        # a naive instant is the rail's UTC kept without its zone
+        text = stored_instant(instant if instant.utcoffset() is not None else instant.replace(tzinfo=UTC))
+    else:
+        text = json.dumps(value, sort_keys=True, default=str)
+    return f"{len(text)}:{text}"
+
+
+def row_digests(rows: Any, kinds: Sequence[tuple[str, str]]) -> list[int]:
+    """each row's hash, in the rows' order: its columns in ``kinds``' order, each rendered by its kind, hashed with
+    BLAKE2b (16 bytes) as an integer. The one per-row rule a full's fingerprint sums and the writer's sample compares
+    by. CPU: run it in a worker process (or on a handful of rows).
+
+    :param rows: the rows, holding every column ``kinds`` names
+    :ptype rows: pyarrow.Table
+    :param kinds: :func:`fingerprint_kinds` of the rows' columns
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: each row's hash
+    :rtype: list[int]
+    """
+    columns = [(name, kind, rows.column(name).to_pylist()) for name, kind in kinds]
+    digests: list[int] = []
+    for index in range(rows.num_rows):
+        text = "\x1e".join(f"{name}\x1f{_rendered(values[index], kind)}" for name, kind, values in columns)
+        digest = hashlib.blake2b(text.encode(), digest_size=_ROW_HASH_BYTES).digest()
+        digests.append(int.from_bytes(digest, "big"))
+    return digests
+
+
+def rows_fingerprint(rows: Any, kinds: Sequence[tuple[str, str]] | None = None) -> str:
+    """the fingerprint of some rows (module docstring, "Fingerprinted"): ``<columns>-<rows>-<sum>``, the columns' and
+    kinds' hash (8 hex digits), the row count, and the rows' hashes (:func:`row_digests`) summed modulo 2**128 (32 hex
+    digits). The order the rows are held in never changes it; a row held twice, or a column more, does. CPU: run it in
+    a worker process.
+
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :param kinds: :func:`fingerprint_kinds` of the columns to fingerprint; None takes the rows' own columns and types
+    :ptype kinds: Sequence[tuple[str, str]] | None
+    :return: the fingerprint, compared for equality only
+    :rtype: str
+    """
+    if kinds is None:
+        kinds = fingerprint_kinds({field.name: field.type for field in rows.schema})
+    total = sum(row_digests(rows, kinds)) % _ROW_HASH_MODULUS
+    return f"{fingerprint_columns(kinds)}-{rows.num_rows}-{total:032x}"
+
+
+def fingerprint_columns(kinds: Sequence[tuple[str, str]]) -> str:
+    """the hash of some columns and their kinds a fingerprint of their rows opens with: a fingerprint opening with
+    another is of other columns (a copy holding fewer than the full), whose rows are not comparable.
+
+    :param kinds: :func:`fingerprint_kinds` of the columns
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: 8 hex digits
+    :rtype: str
+    """
+    named = ",".join(f"{name}:{kind}" for name, kind in kinds)
+    return hashlib.blake2b(named.encode(), digest_size=4).hexdigest()
+
+
+def fingerprint_ipc(ipc: bytes, kinds: tuple[tuple[str, str], ...]) -> str:
+    """:func:`rows_fingerprint` of rows handed over as an Arrow IPC stream: the worker-process job a copy runs it as
+    (plain data in and out, :mod:`~threetears.core.process_workers`).
+
+    :param ipc: the rows, an Arrow IPC stream
+    :ptype ipc: bytes
+    :param kinds: :func:`fingerprint_kinds` of the columns
+    :ptype kinds: tuple[tuple[str, str], ...]
+    :return: the fingerprint
+    :rtype: str
+    """
+    return rows_fingerprint(pa_ipc.open_stream(ipc).read_all(), kinds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,24 +270,33 @@ class FullPart:
         delta file named as the part (``<table>/<write>.arrow``)
     :ivar version: the table's generation token the part is current to: deltas of this version or older are in it
     :ivar rows: the rows it holds (a delta named as a part: its rows written, delete markers not counted)
+    :ivar fingerprint: :func:`rows_fingerprint` of its rows, the table's columns (decision 32); None for a part an
+        older writer wrote, or one carried to a new version without its rows read: a copy cannot compare it
     """
 
     scope: str | None
     file: str
     version: str
     rows: int
+    fingerprint: str | None = None
 
     def encode(self) -> dict[str, Any]:
-        return {"scope": self.scope, "file": self.file, "version": self.version, "rows": self.rows}
+        body: dict[str, Any] = {"scope": self.scope, "file": self.file, "version": self.version, "rows": self.rows}
+        if self.fingerprint is not None:
+            # left out when unknown: a manifest an older reader takes holds only the fields it knows
+            body["fingerprint"] = self.fingerprint
+        return body
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> FullPart:
         scope = body["scope"]
+        fingerprint = body.get("fingerprint")
         return cls(
             scope=None if scope is None else str(scope),
             file=_relative_file(str(body["file"])),
             version=str(body["version"]),
             rows=int(body["rows"]),
+            fingerprint=None if fingerprint is None else str(fingerprint),
         )
 
 
@@ -306,7 +465,29 @@ def write_full_part(root: Path, table: str, scope: str | None, rows: Any, versio
 
     # closed by its checksum, as a delta file is: a damaged part is refused, never staged as other rows
     _write_renamed(root / file, lambda sink: write_volume_file(sink, held))
-    return FullPart(scope=scope, file=file, version=version, rows=held.num_rows)
+    # its rows' fingerprint, taken here where they are written (the fold's worker process): what a copy compares its
+    # own rows of the state with (decision 32)
+    return FullPart(scope=scope, file=file, version=version, rows=held.num_rows, fingerprint=rows_fingerprint(rows))
+
+
+def read_full_part(root: Path, part: FullPart) -> Any:
+    """a part's rows off the volume, its checksum verified first: a delta file named as the part read without its
+    delete markers. Blocking: run it on a thread.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param part: the part
+    :ptype part: FullPart
+    :return: its rows, every column its file holds but the markers' flag
+    :rtype: pyarrow.Table
+    :raises DeltaFileUnreadableError: when the file is damaged (never read as other rows)
+    :raises FileNotFoundError: when it is not on the volume
+    """
+    rows = read_volume_file(root / part.file)
+    if _DELETED_COLUMN in rows.column_names:
+        # a delta named as the part: its rows written, never its delete markers
+        rows = rows.filter(pc.invert(rows.column(_DELETED_COLUMN))).drop_columns([_DELETED_COLUMN])
+    return rows
 
 
 def _listed_manifests(root: Path) -> list[tuple[int, int, str]]:
@@ -570,11 +751,7 @@ class VolumeFulls:
         :raises ValueError: when the part holds other than the rows its manifest says
         """
         # its checksum verified first: a damaged part raises DeltaFileUnreadableError, never stages other rows
-        rows = read_volume_file(self.root / part.file)
-        if _DELETED_COLUMN in rows.column_names:
-            # a delta named as the part: its rows written, never its delete markers
-            rows = rows.filter(pc.invert(rows.column(_DELETED_COLUMN)))
-        rows = rows.select([column.name for column in table.columns])
+        rows = read_full_part(self.root, part).select([column.name for column in table.columns])
         if rows.num_rows != part.rows:
             raise ValueError(f"part {part.file} holds {rows.num_rows} rows, its manifest says {part.rows}")
         return int(backend.stage_rows(stage, table.name, rows, table.key)) if rows.num_rows else 0

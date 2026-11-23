@@ -139,6 +139,7 @@ from threetears.core.collections.volume_fulls import (
     current_full_manifest,
     deletable_full_files,
     publish_full_manifest,
+    rows_fingerprint,
     write_full_part,
 )
 from threetears.core.process_workers import ProcessWorkers
@@ -2040,7 +2041,11 @@ def _fold_state(
         folded = table.keep.keep(folded)
     if last_only_state and _same_rows(table, folded, last_rows):
         last_file = shares[-1][2]
-        return FullPart(scope=scope, file=last_file, version=version, rows=len(last_rows)), "reused"
+        # the delta named as the part is fingerprinted as a written part is (decision 32): by its rows, here
+        fingerprint = rows_fingerprint(folded.select(list(table.columns)))
+        return FullPart(
+            scope=scope, file=last_file, version=version, rows=len(last_rows), fingerprint=fingerprint
+        ), "reused"
     return write_full_part(root, table.name, scope, folded.select(list(table.columns)), version), "written"
 
 

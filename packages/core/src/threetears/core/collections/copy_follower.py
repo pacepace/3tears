@@ -58,6 +58,18 @@ the log is put back (``ChangeNoteKeeper``) and the catch-up applies it. A record
 truncate, a file load) reads that table again beside the copy and swaps it in whole, in the same one transaction as
 everything else.
 
+**Drift, checked against the full** (decision 32). Every :data:`DRIFT_CHECK_SECONDS` (staggered, so pods do not
+check at once), a copy that starts from the volume fingerprints its own rows of each (table, state) it holds at exactly
+the version of the current full's part of that state, and compares with the fingerprint the part's manifest entry
+carries (:func:`~threetears.core.collections.volume_fulls.rows_fingerprint`, one definition both sides use): a local
+read of the copy by key and a worker process's hash, never L3. A state whose scope column leads the key is read by that
+prefix, every row the copy holds of it; any other by the keys its part holds, so a row the copy holds there and the
+part does not is not seen. A state the copy holds at another version is not comparable and is skipped.
+A mismatch sets ``copy_follower_drift_parts{table,state}`` to 1 until a check finds the state equal again, and is
+logged at WARNING; every check is counted by outcome (``copy_follower_drift_checks_total``). The version a copy holds a
+state at is the newest epoch it applied of that state, from the full it loaded and each key's epochs since
+(:meth:`CopyFollower._hold_state_versions`).
+
 **Start.** :meth:`CopyFollower.start` registers with the registry and takes each table's mark: from a checkpoint
 (:mod:`~threetears.core.collections.copy_checkpoint`), whose marks the registry adopts so the catch-up walks the log
 from them, or, when there is none, from the head, after which every table is read whole once (the first start only).
@@ -69,6 +81,8 @@ and never reads that table whole from L3.
 from __future__ import annotations
 
 import asyncio
+import os
+import secrets
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -79,7 +93,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
-from threetears.observe import contain, get_logger, retry_until_done
+from threetears.observe import PeriodicTask, contain, get_logger, retry_until_done
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
@@ -100,10 +114,15 @@ from threetears.core.collections.scope_epochs import ScopeEpochs
 from threetears.core.collections.volume_fulls import (
     FullAbsent,
     FullManifest,
+    FullPart,
     StagedFull,
     VolumeFulls,
     current_full_manifest,
+    fingerprint_columns,
+    fingerprint_ipc,
+    fingerprint_kinds,
     full_table_floor,
+    read_full_part,
 )
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -119,6 +138,7 @@ from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
+from threetears.core.process_workers import ProcessWorkers
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
@@ -266,6 +286,90 @@ FILE_POLL_SECONDS: Final = 5.0
 
 #: the most file names one fallback's log line lists
 _FILES_NAMED: Final = 10
+
+#: how often a copy that starts from the volume checks its states against the full's fingerprints (seconds; decision
+#: 32), unless ``drift_check_seconds`` or :data:`_DRIFT_CHECK_ENV` says otherwise: a quarter hour, a local read of each
+#: comparable state and its hash in a worker process, never L3
+DRIFT_CHECK_SECONDS: Final = 900.0
+
+#: the per-deployment setting of the check's period, in seconds; ``0`` turns it off
+_DRIFT_CHECK_ENV: Final = "THREETEARS_COPY_DRIFT_CHECK_SECONDS"
+
+#: (table, state) parts whose copy rows differ from the full's fingerprint at the same version: 1 while the last check
+#: of the state found it so, 0 once one finds it equal (decision 32). The dashboard's; alerts are Grafana's
+_DRIFT_PARTS = gauge(
+    "copy_follower_drift_parts",
+    description="1 while a copy's rows of a (table, state) differ from the full's fingerprint of the part at the same "
+    "version, 0 once a check finds them equal; a local check, never L3",
+    label_names=("table", "state"),
+)
+
+#: the drift checks of each part, by table and outcome: ``equal``, ``drift``, ``skipped`` (the copy holds the state at
+#: another version than the part's: not comparable), ``not_current`` (the table has a change pending, staged, waiting
+#: or behind), ``version_unknown`` (a change of the state was applied with no epoch), ``no_fingerprint`` (an older
+#: writer's part, or one a recovery carried to a new version), ``other_columns`` (the copy holds other columns)
+_DRIFT_CHECKS = counter(
+    "copy_follower_drift_checks_total",
+    description="a copy's checks of its states against the full's fingerprints, by table and outcome (equal, drift, "
+    "skipped: held at another version, not_current, version_unknown, no_fingerprint, other_columns)",
+    label_names=("table", "outcome"),
+)
+
+#: a state's held version once a change of it was applied with no epoch: never a part's version
+_VERSION_UNKNOWN: Final = ""
+
+
+def _drift_check_seconds(given: float | None) -> float:
+    """the drift check's period: ``given``, else :data:`_DRIFT_CHECK_ENV`, else :data:`DRIFT_CHECK_SECONDS`.
+
+    :param given: the follower's argument
+    :ptype given: float | None
+    :return: seconds; 0 turns the check off
+    :rtype: float
+    :raises ValueError: when the period is negative or the setting is not a number (a start refuses it)
+    """
+    if given is None:
+        named = os.environ.get(_DRIFT_CHECK_ENV)
+        given = DRIFT_CHECK_SECONDS if not named else float(named)
+    if given < 0:
+        raise ValueError(f"the drift check's period is not negative, got {given}")
+    return given
+
+
+def _newest_epoch(epochs: Iterable[str | None]) -> str | None:
+    """the newest of a key's epochs; None when one is missing or two are of different incarnations (no order).
+
+    :param epochs: the epochs
+    :ptype epochs: Iterable[str | None]
+    :return: the newest, or None
+    :rtype: str | None
+    """
+    parsed = [split_generation_token(epoch) if epoch is not None else None for epoch in epochs]
+    if not parsed or None in parsed or len({p[0] for p in parsed if p is not None}) != 1:
+        return None
+    incarnation, count = max(p for p in parsed if p is not None)
+    return f"{incarnation}:{count}"
+
+
+def _later_epoch(held: str | None, epoch: str) -> str:
+    """a state's held version after a change of it at ``epoch`` applies: the later of the two, or ``epoch`` when they
+    are of different incarnations (a table reset is reloaded from the volume, so the older one is gone).
+
+    :param held: the state's held version; None when it held none
+    :ptype held: str | None
+    :param epoch: the change's
+    :ptype epoch: str
+    :return: the held version
+    :rtype: str
+    """
+    if held is None:
+        return epoch
+    if held == _VERSION_UNKNOWN:
+        return held
+    old, new = split_generation_token(held), split_generation_token(epoch)
+    if old is None or new is None or old[0] != new[0]:
+        return epoch
+    return held if old[1] >= new[1] else epoch
 
 
 def _warms() -> Any:
@@ -1016,6 +1120,13 @@ class CopyFollower:
     :param file_poll_seconds: how often a table waiting for a delta file looks for it again, besides when the writer
         answers; None takes :data:`FILE_POLL_SECONDS` as it is when the follower is built
     :ptype file_poll_seconds: float | None
+    :param drift_check_seconds: how often :meth:`run` checks the copy's states against the full's fingerprints
+        (:meth:`check_drift`), the first check at a random point within one period; None reads
+        ``THREETEARS_COPY_DRIFT_CHECK_SECONDS``, else :data:`DRIFT_CHECK_SECONDS`; 0 turns it off. Only with ``fulls``
+    :ptype drift_check_seconds: float | None
+    :param drift_workers: the worker processes a state's fingerprint is taken in; None makes one worker of the
+        follower's own, closed when :meth:`run` ends
+    :ptype drift_workers: ProcessWorkers | None
     :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable, or a table is both
         in ``fulls`` and in ``checkpoints``, or ``fulls`` holds a table the follower does not follow
     """
@@ -1037,6 +1148,8 @@ class CopyFollower:
         fulls: VolumeFulls | None = None,
         recreate: FileRecreate | None = None,
         file_poll_seconds: float | None = None,
+        drift_check_seconds: float | None = None,
+        drift_workers: ProcessWorkers | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -1167,6 +1280,15 @@ class CopyFollower:
         self._file_waits: dict[str, dict[str, _FileWait]] = {}
         #: the task looking for each such table's files and asking the writer for them
         self._file_tasks: dict[str, asyncio.Task[None]] = {}
+        self._drift_seconds = _drift_check_seconds(drift_check_seconds)
+        self._owns_drift_workers = drift_workers is None
+        self._drift_workers = (
+            drift_workers if drift_workers is not None else ProcessWorkers(workers=1, name="copy drift")
+        )
+        #: for each opted-in table, the version the copy holds each state at (decision 32): the full's part's at the
+        #: load, then the newest epoch applied of the state; :data:`_VERSION_UNKNOWN` once a change of it applied with
+        #: no epoch. A table read whole or by partition since its load holds none (:meth:`_hold_state_versions`)
+        self._state_versions: dict[str, dict[str | None, str]] = {}
 
     # --- what the registry tells it -------------------------------------------------------------
 
@@ -1509,6 +1631,7 @@ class CopyFollower:
             floor = found.marks[table]
             self._registry.generation_marks.adopt_generation(table, floor)
             self._current_marks[table] = floor
+            self._state_versions[table] = dict(found.versions[table])
             label = self._status.stamp
             self._stamps[mark] = (label, dict(self._current_marks))
             while len(self._stamps) > _STAMPS_KEPT:
@@ -1887,6 +2010,7 @@ class CopyFollower:
         self._applied_mark = self._mark
         self._stamps[self._mark] = (None, dict(marks))
         self._current_marks = dict(marks)
+        self._state_versions = {name: dict(held) for name, held in full.versions.items()}
         for name, mark in marks.items():
             self._registry.generation_marks.adopt_generation(name, mark)
         if missing:
@@ -2155,6 +2279,7 @@ class CopyFollower:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
             self._applied_mark = mark
+            self._hold_state_versions()
             self._epochs_applied()
             if self._staged_whole or any(self._partitions_staged.values()):
                 log.info(
@@ -2631,6 +2756,31 @@ class CopyFollower:
                     }
                 },
             )
+
+    def _hold_state_versions(self) -> None:
+        """after an apply, before :meth:`_epochs_applied` takes the staged epochs: each state a staged key's row is of
+        is held at the newest epoch the key was staged from, if later than the state's; a key staged with no epoch
+        that orders it leaves its states' versions unknown. A table read whole or by partition (rows from L3, at no
+        epoch a state names) holds no version at all until it is loaded from the volume again. What
+        :meth:`check_drift` compares with a part's version (decision 32).
+
+        :return: nothing
+        :rtype: None
+        """
+        for name in self._staged_whole:
+            self._state_versions.pop(name, None)
+        for name, partitions in self._partitions_staged.items():
+            if partitions:
+                self._state_versions.pop(name, None)
+        for name, of in self._staged_epochs.items():
+            held = self._state_versions.get(name)
+            if held is None:
+                continue
+            scopes_of = self._staged_key_scopes.get(name, {})
+            for key, epochs in of.items():
+                newest = _newest_epoch(epochs)
+                for scope in scopes_of.get(key, frozenset({None})):
+                    held[scope] = _VERSION_UNKNOWN if newest is None else _later_epoch(held.get(scope), newest)
 
     def _epochs_applied(self) -> None:
         """after an apply: each staged key's epochs it was staged from are held by the copy, so they are no longer
@@ -3595,11 +3745,197 @@ class CopyFollower:
 
     # --- running ---------------------------------------------------------------------------------
 
+    # --- drift, against the full (decision 32) ------------------------------------------------------
+
+    async def check_drift(self) -> dict[tuple[str, str | None], str]:
+        """check each state of each opted-in table against the current full: a state the copy holds at exactly its
+        part's version is read from the copy (a local read, never L3), fingerprinted in a worker process
+        (:func:`~threetears.core.collections.volume_fulls.rows_fingerprint`) and compared with the fingerprint the
+        part's manifest entry carries. Sets ``copy_follower_drift_parts{table,state}`` (1 drifted, 0 equal), counts
+        each part's outcome (``copy_follower_drift_checks_total``) and logs a drift at WARNING. :meth:`run` calls it
+        every ``drift_check_seconds``.
+
+        :return: each part's outcome, by (table, state)
+        :rtype: dict[tuple[str, str | None], str]
+        """
+        if self._fulls is None:
+            return {}
+        manifest = await asyncio.to_thread(current_full_manifest, self._fulls.root)
+        if manifest is None:
+            return {}
+        outcomes: dict[tuple[str, str | None], str] = {}
+        for name in sorted(self._fulls.tables):
+            entry = manifest.tables.get(name)
+            if entry is None:
+                continue
+            kinds = fingerprint_kinds(self._reads[name].types)
+            for part in entry.parts:
+                outcome = await self._check_part(self._tables[name], part, kinds, manifest.name)
+                _DRIFT_CHECKS.labels(table=name, outcome=outcome).inc()
+                outcomes[(name, part.scope)] = outcome
+        return outcomes
+
+    def _drift_current(self, name: str) -> bool:
+        """whether a table holds no change it has heard and not applied: nothing pending, staged, queued, waiting or
+        behind, so each state is exactly at the version :meth:`_hold_state_versions` says.
+
+        :param name: the table
+        :ptype name: str
+        :return: whether it is current
+        :rtype: bool
+        """
+        return (
+            not self._pending[name]
+            and not self._epochs_of.get(name)
+            and name not in self._whole
+            and not self._partitions[name]
+            and not self._cleared.get(name)
+            and name not in self._staged
+            and name not in self._full_after
+            and name not in self._file_waits
+            and name not in self._status.behind
+        )
+
+    async def _check_part(
+        self, table: FollowedTable, part: FullPart, kinds: tuple[tuple[str, str], ...], manifest: str
+    ) -> str:
+        """one part's drift check (:meth:`check_drift`).
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param part: the current full's part
+        :ptype part: FullPart
+        :param kinds: the copy's columns' fingerprint kinds, by the types the rail answers them as
+        :ptype kinds: tuple[tuple[str, str], ...]
+        :param manifest: the full's name, for the log line
+        :ptype manifest: str
+        :return: the outcome (``copy_follower_drift_checks_total``)
+        :rtype: str
+        """
+        if part.fingerprint is None:
+            return "no_fingerprint"
+        if not part.fingerprint.startswith(f"{fingerprint_columns(kinds)}-"):
+            return "other_columns"
+        keys = await asyncio.to_thread(self._part_keys, table, part)
+        # under the pass lock: no apply moves the state between its version's check and the snapshot read
+        async with self._lock:
+            if not self._drift_current(table.name):
+                return "not_current"
+            held = self._state_versions.get(table.name, {}).get(part.scope)
+            if held == _VERSION_UNKNOWN:
+                return "version_unknown"
+            if held != part.version:
+                return "skipped"
+            ipc = await asyncio.to_thread(self._state_ipc, table, part, keys)
+        mine = await self._drift_workers.run(fingerprint_ipc, ipc, kinds)
+        state = part.scope if part.scope is not None else ""
+        if mine == part.fingerprint:
+            _DRIFT_PARTS.labels(table=table.name, state=state).set(0)
+            return "equal"
+        _DRIFT_PARTS.labels(table=table.name, state=state).set(1)
+        log.warning(
+            "a copy's rows of a state differ from the full's at the same version",
+            extra={
+                "extra_data": {
+                    "table": table.name,
+                    "state": part.scope,
+                    "version": part.version,
+                    "manifest": manifest,
+                    "full": part.fingerprint,
+                    "copy": mine,
+                }
+            },
+        )
+        return "drift"
+
+    def _part_keys(self, table: FollowedTable, part: FullPart) -> list[list[str]] | None:
+        """the keys a part holds, each key column's values as text, for a state the copy cannot read by a prefix of
+        its key; None for one it can (its scope column leads the key). Read off the volume (an immutable file), never
+        L3. Blocking: run it on a thread.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param part: the part
+        :ptype part: FullPart
+        :return: one list a key column, one entry a key; None when the state is read by its key prefix
+        :rtype: list[list[str]] | None
+        """
+        if part.scope is not None and table.scope is not None and table.scope_in_key == 0:
+            return None
+        assert self._fulls is not None  # noqa: S101 -- a drift check runs only for a follower started from the volume
+        keys = read_full_part(self._fulls.root, part).select(list(table.key))
+        return [[key_text(value) for value in keys.column(column).to_pylist()] for column in table.key]
+
+    def _state_ipc(self, table: FollowedTable, part: FullPart, keys: list[list[str]] | None) -> bytes:
+        """the copy's rows of one state, as an Arrow IPC stream for the worker that fingerprints them: a local read
+        of the copy by key, never L3 and never a scan. A state whose scope column leads the key is read by that prefix
+        (every row the copy holds of it); any other (a table keyed without its state, or one with no scope) by the keys
+        its part holds, so a row the copy holds of the state and the part does not is not seen. Blocking: run it on a
+        thread.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param part: the part
+        :ptype part: FullPart
+        :param keys: :meth:`_part_keys`
+        :ptype keys: list[list[str]] | None
+        :return: the rows
+        :rtype: bytes
+        """
+        selected = ", ".join(f"t.{quote_identifier(column.name)}" for column in table.columns)
+        if keys is None:
+            assert part.scope is not None and table.scope is not None  # noqa: S101 -- _part_keys said so
+            prefix = [[part.scope[len(table.scope[1]) :]]]
+            rows = self._copy_rows_of_keys(table, table.key[:1], prefix, selected=selected)
+        else:
+            rows = self._copy_rows_of_keys(table, table.key, keys, selected=selected)
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, rows.schema) as writer:
+            writer.write_table(rows)
+        return bytes(sink.getvalue().to_pybytes())
+
+    def _drift_checks(self) -> PeriodicTask | None:
+        """the periodic drift check :meth:`run` keeps, started; None when the copy starts from no full or the check
+        is off. Its first check falls at a random point within one period, so the pods of a deployment, started
+        together, do not all read and hash at once.
+
+        :return: the task
+        :rtype: PeriodicTask | None
+        """
+        if self._fulls is None or self._drift_seconds <= 0:
+            return None
+        task = PeriodicTask(
+            self.check_drift,
+            interval=self._drift_seconds,
+            name="copy drift check",
+            logger=log,
+            first_delay=secrets.SystemRandom().uniform(0, self._drift_seconds),
+            failure_message="a copy's drift check failed; the next period checks again",
+        )
+        task.start()
+        return task
+
     async def run(self) -> None:
         """apply each change as it is heard, until cancelled: a pass whenever the registry hears a key, catches up, or
         :meth:`poke` is called (the writer's stamp moved). Never on a timer while passes succeed; after a failed pass,
         the next is tried after a wait doubling from the first of ``retry_waits`` to the longest (or sooner when
-        poked), FAILING in the status after :data:`FAILING_AFTER` in a row, until one succeeds.
+        poked), FAILING in the status after :data:`FAILING_AFTER` in a row, until one succeeds. Beside it, the drift
+        check every ``drift_check_seconds`` (:meth:`check_drift`), ended with it.
+
+        :return: nothing
+        :rtype: None
+        """
+        drift = self._drift_checks()
+        try:
+            await self._passes()
+        finally:
+            if drift is not None:
+                await drift.stop()
+            if self._owns_drift_workers:
+                await self._drift_workers.close()
+
+    async def _passes(self) -> None:
+        """:meth:`run`'s passes, until cancelled.
 
         :return: nothing
         :rtype: None
