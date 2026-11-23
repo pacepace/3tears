@@ -52,10 +52,19 @@ table's directory, flushed to disk, then renamed to its own name, and the direct
 name sees the whole file or nothing, never part of one. A crash before the commit leaves a file no committed record
 names (an orphan, which :func:`sweep_orphan_delta_files` removes); a crash after it leaves the file in place, so every
 committed version has its file.
+
+**A checksum closes every file** (decision 29 depends on it). The IPC bytes are followed by their sha256 and a mark
+(:data:`_CHECKSUM_MARK`); every reader of the volume's files (this module's, the fold's, a full's parts) verifies it
+before Arrow decodes a byte (:func:`_checked_ipc`), and a file whose bytes do not match is
+:class:`DeltaFileUnreadableError`, which a copy waits on and the writer recreates. Why: without it about two in five
+single-byte flips still read as a valid file holding other values (measured 2026-11-23, a 2,000-row file, a flip every
+23 bytes), which a copy would apply as the change. The hash costs about 4 ms for a 12.7 MB file (3 GB/s, measured
+2026-11-23 on the builder's machine), small beside the zstd decode that follows.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -63,7 +72,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, BinaryIO, Final
 
 from threetears.core.backends.arrow_reply import _rail_arrow_table, _rail_value
 from threetears.core.collections.epoch_change import key_text
@@ -126,11 +135,17 @@ _PREFIXES_METADATA: Final = b"threetears.delta.prefixes"
 _FORMAT_METADATA: Final = b"threetears.delta.format"
 #: this format's version: rows and delete markers in one table, as :data:`_DELETED_COLUMN` tells them apart, each
 #: row naming the columns its write set (:data:`_WRITTEN_COLUMN`), the key prefixes it clears first
-#: (:data:`_PREFIXES_METADATA`), zstd inside. Version 1 was plain IPC with no written columns, version 2 named no
-#: prefixes; neither was released
-_DELTA_FORMAT: Final = b"3"
+#: (:data:`_PREFIXES_METADATA`), zstd inside, the IPC bytes closed by their checksum (:data:`_CHECKSUM_MARK`).
+#: Version 1 was plain IPC with no written columns, version 2 named no prefixes, version 3 carried no checksum; none was
+#: released
+_DELTA_FORMAT: Final = b"4"
 #: the codec inside the file's IPC buffers
 _COMPRESSION: Final = "zstd"
+
+#: the mark that ends every file on the volume, after the sha256 of the IPC bytes before it (:func:`_write_checked_ipc`)
+_CHECKSUM_MARK: Final = b"3tsha256"
+#: the trailer's length: the digest, then the mark
+_CHECKSUM_TRAILER: Final = 32 + len(_CHECKSUM_MARK)
 
 #: a delta file's suffix
 _SUFFIX: Final = ".arrow"
@@ -190,8 +205,9 @@ class DeltaFileUnreadableError(ValueError):
     validation 15 of 509 reads killed the process (a segfault in ``to_pylist`` over a broken offset), the rest raised
     ``MemoryError``, ``UnicodeDecodeError``, ``KeyError`` or ``OSError``; with ``validate(full=True)`` before any row
     is decoded none crashed, and every failure was ``pyarrow.ArrowInvalid`` or an errno-less ``OSError`` (zstd, the
-    footer's flatbuffer, a read past the end). About two in five flips still read as a file holding other values:
-    the format carries no checksum, so such a file is not detected here.
+    footer's flatbuffer, a read past the end). About two in five flips still read as a file holding other values,
+    so format 4 closes each file with a checksum of its bytes (:func:`_checked_ipc`), verified before Arrow decodes
+    one: a flipped byte anywhere is this error.
     """
 
 
@@ -533,6 +549,102 @@ def _checked_metadata(path: Path, metadata: Mapping[bytes, bytes], table: str | 
     return named, write
 
 
+class _HashingSink:
+    """a binary file Arrow writes IPC bytes to, hashing each as it passes: the checksum costs no second read.
+
+    :param sink: the open file
+    :ptype sink: BinaryIO
+    """
+
+    def __init__(self, sink: BinaryIO) -> None:
+        self._sink = sink
+        self._hash = hashlib.sha256()
+        self._written = 0
+        self.closed = False
+
+    def write(self, data: Any) -> int:
+        self._hash.update(data)
+        self._written += len(memoryview(data))
+        self._sink.write(data)
+        return len(memoryview(data))
+
+    def flush(self) -> None:
+        self._sink.flush()
+
+    def tell(self) -> int:
+        return self._written
+
+    def writable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self.closed = True  # the caller's file stays open for the trailer
+
+    def digest(self) -> bytes:
+        return self._hash.digest()
+
+
+def _write_checked_ipc(sink: BinaryIO, table: Any) -> None:
+    """write ``table`` to ``sink`` as Arrow IPC with zstd inside, then its checksum trailer: the sha256 of every IPC
+    byte, then :data:`_CHECKSUM_MARK`. Blocking. Every file on the delta-files volume is written so (module docstring).
+
+    :param sink: the open binary file, at its start
+    :ptype sink: BinaryIO
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :return: nothing
+    :rtype: None
+    """
+    hashing = _HashingSink(sink)
+    with pa_ipc.new_file(
+        pa.PythonFile(hashing, mode="w"), table.schema, options=pa_ipc.IpcWriteOptions(compression=_COMPRESSION)
+    ) as writer:
+        writer.write_table(table)
+    sink.write(hashing.digest() + _CHECKSUM_MARK)
+
+
+def _checked_ipc(path: Path) -> Any:
+    """a volume file's IPC bytes, its checksum verified before any is decoded. Blocking.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the IPC bytes, mapped (``pa.memory_map``: the map outlives the file's handle), for ``pa_ipc.open_file``
+    :rtype: pyarrow.Buffer
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it carries no trailer, or its bytes do not match the checksum
+    """
+    with pa.memory_map(str(path)) as source:
+        whole = source.read_buffer()
+    size = whole.size
+    if size < _CHECKSUM_TRAILER or whole.slice(size - len(_CHECKSUM_MARK)).to_pybytes() != _CHECKSUM_MARK:
+        raise DeltaFileUnreadableError(f"{path}: no checksum trailer: not a file of this format, or cut short")
+    body = whole.slice(0, size - _CHECKSUM_TRAILER)
+    if hashlib.sha256(memoryview(body)).digest() != whole.slice(size - _CHECKSUM_TRAILER, 32).to_pybytes():
+        raise DeltaFileUnreadableError(f"{path}: its bytes do not match its checksum: the file is damaged")
+    return body
+
+
+def _read_checked_ipc(path: Path, *, columns: Sequence[str] | None = None) -> Any:
+    """a volume file's table, its checksum verified first (:func:`_checked_ipc`); Arrow's own decode failures raised
+    as Arrow raises them (a caller in :func:`_decoding` gets them as unreadable). Blocking.
+
+    :param path: the file
+    :ptype path: Path
+    :param columns: only these columns; None reads every one
+    :ptype columns: Sequence[str] | None
+    :return: its table, its schema's metadata with it
+    :rtype: pyarrow.Table
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when its checksum does not hold
+    """
+    body = _checked_ipc(path)
+    if columns is None:
+        return pa_ipc.open_file(pa.BufferReader(body)).read_all()
+    schema = pa_ipc.open_file(pa.BufferReader(body)).schema
+    options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in columns])
+    return pa_ipc.open_file(pa.BufferReader(body), options=options).read_all()
+
+
 def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
     """read a delta file saved by :func:`write_delta_file`. Blocking: run it on a thread.
 
@@ -554,8 +666,7 @@ def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
     with _decoding(path):
-        with pa.memory_map(str(path)) as source:
-            read = pa_ipc.open_file(source).read_all()
+        read = _read_checked_ipc(path)
         read.validate(full=True)
         metadata = read.schema.metadata or {}
         named, write = _checked_metadata(path, metadata, table)
@@ -594,15 +705,14 @@ def read_delta_file_reach(path: Path, *, table: str | None = None) -> DeltaReach
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
     with _decoding(path):
-        with pa.memory_map(str(path)) as source:
-            schema = pa_ipc.open_file(source).schema
-            metadata = schema.metadata or {}
-            named, _write = _checked_metadata(path, metadata, table)
-            key = tuple(json.loads(metadata[_KEY_METADATA]))
-            prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
-            source.seek(0)
-            options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
-            keys = pa_ipc.open_file(source, options=options).read_all()
+        body = _checked_ipc(path)
+        schema = pa_ipc.open_file(pa.BufferReader(body)).schema
+        metadata = schema.metadata or {}
+        named, _write = _checked_metadata(path, metadata, table)
+        key = tuple(json.loads(metadata[_KEY_METADATA]))
+        prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
+        options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
+        keys = pa_ipc.open_file(pa.BufferReader(body), options=options).read_all()
         keys.validate(full=True)
         values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
         held = list(dict.fromkeys(values))
@@ -733,10 +843,7 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     renamed = False
     try:
         with partial.open("wb") as sink:
-            with pa_ipc.new_file(
-                sink, table.schema, options=pa_ipc.IpcWriteOptions(compression=_COMPRESSION)
-            ) as writer:
-                writer.write_table(table)
+            _write_checked_ipc(sink, table)
             sink.flush()
             os.fsync(sink.fileno())
         os.replace(partial, final)

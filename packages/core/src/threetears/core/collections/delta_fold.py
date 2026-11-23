@@ -113,6 +113,7 @@ from threetears.core.collections.delta_files import (
     _PREFIXES_METADATA,
     _WRITTEN_COLUMN,
     _WRITTEN_METADATA,
+    _read_checked_ipc,
     DeltaChange,
     TableDelta,
     apply_delta_row,
@@ -1303,7 +1304,7 @@ def rebuild_round(
             return ("stale", current.name, rebuilt, 0)
         tables_now = dict(current.tables) if current is not None else {}
         for name, file, token, _ in staged:
-            parts = _parts_of_rows(base, config[name], _read_ipc(base / file), token)
+            parts = _parts_of_rows(base, config[name], _read_rows_file(base / file), token)
             written.extend(part.file for part in parts)
             tables_now[name] = FullTable(version=token, parts=parts)
         try:
@@ -1410,14 +1411,11 @@ def _leftover_reach(root: Path, table: FoldedTable, files: Sequence[str]) -> _Le
     states: dict[tuple[str, ...], Any] = {}
     prefixes: list[dict[str, str]] = []
     for file in files:
-        with pa.memory_map(str(root / file)) as source:
-            schema = pa_ipc.open_file(source).schema
-            metadata = schema.metadata or {}
-            if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
-                raise ValueError(f"{file}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}")
-            source.seek(0)
-            options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in read])
-            held = pa_ipc.open_file(source, options=options).read_all()
+        # its checksum verified before a key is read: a damaged file raises, never names other keys
+        held = _read_checked_ipc(root / file, columns=read)
+        metadata = held.schema.metadata or {}
+        if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
+            raise ValueError(f"{file}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}")
         for prefix in json.loads(metadata[_PREFIXES_METADATA]):
             if dict(prefix) not in prefixes:
                 prefixes.append(dict(prefix))
@@ -1808,7 +1806,21 @@ class _Folding:
 
 
 def _read_ipc(path: Path) -> Any:
-    """an Arrow IPC file's table, read whole.
+    """a volume file's table (a delta file, a part), read whole, its checksum verified first.
+
+    :param path: the file
+    :ptype path: Path
+    :return: its table
+    :rtype: pyarrow.Table
+    :raises DeltaFileUnreadableError: when its bytes do not match its checksum
+    """
+    return _read_checked_ipc(path)
+
+
+def _read_rows_file(path: Path) -> Any:
+    """a rebuild's rows file (:class:`_RowsFile`), read whole: written moments before by this writer beside its
+    rebuild, never named by a record or a manifest, so it carries no checksum (its rows are hashed as the parts they
+    become).
 
     :param path: the file
     :ptype path: Path

@@ -59,7 +59,7 @@ from threetears.core.backends.broker_generation import named_delta_files  # noqa
 from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult  # noqa: E402
 from threetears.core.collections import WRITE_GENERATION  # noqa: E402
 from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
-from threetears.core.collections.delta_files import LoadDelta, read_delta_file  # noqa: E402
+from threetears.core.collections.delta_files import LoadDelta, _read_checked_ipc, read_delta_file  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -899,8 +899,7 @@ async def test_a_load_from_files_hands_each_committed_request_its_file_and_gener
     manifest = current_full_manifest(_volume)
     assert manifest is not None
     (part,) = [part for part in manifest.tables[_TABLE].parts if part.scope == "state:VA"]
-    with pa.memory_map(str(_volume / part.file)) as source:
-        folded = pa.ipc.open_file(source).read_all()
+    folded = _read_checked_ipc(_volume / part.file)
     assert sorted(folded.column("geo_id").to_pylist()) == [100, 101, 102]
 
 

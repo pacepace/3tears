@@ -21,6 +21,7 @@ to one subscriber and its reply back. The contract this pins:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -51,6 +52,8 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
+    _CHECKSUM_MARK,
+    _CHECKSUM_TRAILER,
     DeltaFileUnreadableError,
     TableDelta,
     read_delta_file,
@@ -400,30 +403,49 @@ def _garbage(good: bytes, _volume: Path) -> bytes:
     return bytes((index * 151 + 7) % 256 for index in range(len(good)))
 
 
+def _ipc(good: bytes) -> bytes:
+    """a file's IPC bytes, its checksum trailer taken off."""
+    return good[:-_CHECKSUM_TRAILER]
+
+
+def _sealed(ipc: bytes) -> bytes:
+    """IPC bytes closed by a checksum that matches them: damage the checksum alone would not catch."""
+    return ipc + hashlib.sha256(ipc).digest() + _CHECKSUM_MARK
+
+
 def _wrong_format(good: bytes, _volume: Path) -> bytes:
-    read = pa_ipc.open_file(pa.BufferReader(good)).read_all()
+    read = pa_ipc.open_file(pa.BufferReader(_ipc(good))).read_all()
     metadata = dict(read.schema.metadata)
     metadata[b"threetears.delta.format"] = b"2"
     sink = pa.BufferOutputStream()
     with pa_ipc.new_file(sink, read.schema.with_metadata(metadata)) as writer:
         writer.write_table(read.replace_schema_metadata(metadata))
-    return bytes(sink.getvalue().to_pybytes())
+    return _sealed(bytes(sink.getvalue().to_pybytes()))
+
+
+def _bad_checksum(good: bytes, _volume: Path) -> bytes:
+    """one byte flipped in the middle of the IPC bytes, the checksum left as written."""
+    flipped = bytearray(good)
+    flipped[len(_ipc(good)) // 2] ^= 0x5A
+    return bytes(flipped)
 
 
 def _bad_zstd(good: bytes, volume: Path) -> bytes:
-    """a byte flipped inside the first zstd frame, where the codec itself fails (never a byte it reads past)."""
-    start = good.index(b"\x28\xb5\x2f\xfd")  # the zstd frame magic
+    """a byte flipped inside the first zstd frame, where the codec itself fails (never a byte it reads past), and the
+    file sealed again, so the codec is what meets it."""
+    ipc = _ipc(good)
+    start = ipc.index(b"\x28\xb5\x2f\xfd")  # the zstd frame magic
     probe = volume / "probe.arrow"
     for offset in range(start + 4, start + 128):
-        flipped = bytearray(good)
+        flipped = bytearray(ipc)
         flipped[offset] ^= 0x5A
-        probe.write_bytes(bytes(flipped))
+        probe.write_bytes(_sealed(bytes(flipped)))
         try:
             read_delta_file(probe)
         except DeltaFileUnreadableError as exc:
             if "ZSTD" in str(exc):
                 probe.unlink()
-                return bytes(flipped)
+                return _sealed(bytes(flipped))
     raise AssertionError("no byte of the first zstd frame fails the codec")
 
 
@@ -439,6 +461,7 @@ _UNREADABLE: dict[str, Callable[[bytes, Path], bytes]] = {
     "garbage": _garbage,
     "wrong_format": _wrong_format,
     "bad_zstd": _bad_zstd,
+    "bad_checksum": _bad_checksum,
     "another_tables": _another_tables,
 }
 

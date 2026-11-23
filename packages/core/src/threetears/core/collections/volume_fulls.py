@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import get_logger
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
+from threetears.core.collections.delta_files import _read_checked_ipc, _write_checked_ipc
 from threetears.core.collections.generation import split_generation_token
 
 if TYPE_CHECKING:
@@ -56,7 +57,6 @@ if TYPE_CHECKING:
 try:
     import pyarrow as pa
     import pyarrow.compute as pc
-    import pyarrow.ipc as pa_ipc
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a full refuses without it, saying so
@@ -304,12 +304,8 @@ def write_full_part(root: Path, table: str, scope: str | None, rows: Any, versio
         metadata[_SCOPE_METADATA] = scope.encode()
     held = rows.replace_schema_metadata(metadata)
 
-    def write(sink: Any) -> None:
-        options = pa_ipc.IpcWriteOptions(compression="zstd")
-        with pa_ipc.new_file(sink, held.schema, options=options) as writer:
-            writer.write_table(held)
-
-    _write_renamed(root / file, write)
+    # closed by its checksum, as a delta file is: a damaged part is refused, never staged as other rows
+    _write_renamed(root / file, lambda sink: _write_checked_ipc(sink, held))
     return FullPart(scope=scope, file=file, version=version, rows=held.num_rows)
 
 
@@ -573,8 +569,8 @@ class VolumeFulls:
         :return: the rows staged
         :raises ValueError: when the part holds other than the rows its manifest says
         """
-        with pa.OSFile(str(self.root / part.file), "rb") as source:
-            rows = pa_ipc.open_file(source).read_all()
+        # its checksum verified first: a damaged part raises DeltaFileUnreadableError, never stages other rows
+        rows = _read_checked_ipc(self.root / part.file)
         if _DELETED_COLUMN in rows.column_names:
             # a delta named as the part: its rows written, never its delete markers
             rows = rows.filter(pc.invert(rows.column(_DELETED_COLUMN)))

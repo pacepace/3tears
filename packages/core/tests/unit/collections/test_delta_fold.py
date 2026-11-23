@@ -25,6 +25,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
+    _read_checked_ipc,
     apply_delta_row,
     read_delta_file,
     write_delta_file,
@@ -228,8 +229,7 @@ def _part(root: Path, table: str, scope: str) -> FullPart | None:
 
 
 def _part_rows(root: Path, part: FullPart) -> list[dict[str, Any]]:
-    with pa.memory_map(str(root / part.file)) as source:
-        rows = pa_ipc.open_file(source).read_all()
+    rows = _read_checked_ipc(root / part.file)
     if "_3tears_deleted" in rows.column_names:
         rows = rows.filter(pc.invert(rows.column("_3tears_deleted")))
         rows = rows.drop_columns(["_3tears_deleted", "_3tears_written"])

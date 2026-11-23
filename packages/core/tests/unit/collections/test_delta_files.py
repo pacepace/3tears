@@ -28,9 +28,12 @@ from threetears.core.backends.schema_sql import (  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaChange,
     DeltaFileRefusedError,
+    DeltaFileUnreadableError,
     TableDelta,
+    _read_checked_ipc,
     apply_delta_row,
     read_delta_file,
+    read_delta_file_reach,
     sweep_orphan_delta_files,
     write_delta_file,
 )
@@ -436,6 +439,37 @@ def test_a_delta_row_applies_to_the_held_row_as_l3_merged_the_upsert() -> None:
         "date_created": stamp,
         "date_updated": stamp,
     }
+
+
+def test_every_byte_flipped_in_a_delta_file_is_read_as_unreadable_never_as_other_rows(tmp_path: Path) -> None:
+    """Flips if one byte flipped anywhere in a delta file reads as a valid file (decision 29 waits for and recreates
+    only a file it can tell is damaged). The scan the decision-29 build ran (2026-11-23: a 2,000-row file, a byte
+    flipped every 23 bytes) found about two in five flips read as a file of other values before the checksum; now each
+    flip, in the IPC bytes or the trailer, is DeltaFileUnreadableError for the whole read, the keys' read and a part's
+    read alike."""
+    delta = TableDelta(
+        name="results", types={"geo_id": pa.string(), "votes": pa.int64(), "note": pa.string()}, key=("geo_id",)
+    )
+    delta.rows([{"geo_id": f"{i:05d}", "votes": i * 37, "note": f"n{i % 13}"} for i in range(2_000)], ["votes", "note"])
+    name = write_delta_file(tmp_path, delta, "w1")
+    good = (tmp_path / name).read_bytes()
+    probe = tmp_path / "results" / "w1.arrow"
+    flips = valid = 0
+    for offset in range(0, len(good), 23):
+        flipped = bytearray(good)
+        flipped[offset] ^= 0x5A
+        probe.write_bytes(bytes(flipped))
+        flips += 1
+        for read in (read_delta_file, read_delta_file_reach, _read_checked_ipc):
+            try:
+                read(probe)
+            except DeltaFileUnreadableError:
+                continue
+            valid += 1
+    assert flips > 100
+    assert valid == 0, f"{valid} reads of {flips} flipped files read as valid"
+    probe.write_bytes(good)
+    assert len(read_delta_file(probe).changes) == 2_000
 
 
 def test_a_reader_refuses_a_file_of_another_format(tmp_path: Path) -> None:
