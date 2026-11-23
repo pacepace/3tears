@@ -3776,7 +3776,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # (_advance_then_apply_file); without one it drops what the change reached here
         if registry is not None and not from_file:
             if reach is not None and reach.prefixes:
-                registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
+                await registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
             else:
                 why = "reset" if reach is not None and reach.reason == RESET_REASON else "local"
                 registry.drop_table(self.table_name, reason=reason, why=why)
@@ -3832,7 +3832,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 )
             )
         else:
-            registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
+            await registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
         log.info(
             "table changed by key prefixes with its delta file; generation advanced, the file applied here",
             extra={

@@ -20,6 +20,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.calibrate import budget_problem
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.core.testing.loop_lateness import turn_holds
@@ -177,3 +178,59 @@ def test_delete_all_of_100k_rows_is_the_bare_delete() -> None:
         assert l1.delete_all("drop_rows") == 100_000
         took.append(time.perf_counter() - started)
     assert budget_problem("SQLiteBackend.delete_all of 100k rows", min(took), min(baseline)) is None
+
+
+# --- a key prefix's drop (a load's or a clear's reach) runs off the loop too (0.95.0 copy audit, loop item) ---------
+
+#: the longest one turn of the loop may run while a prefix holding 100k of L1's 200k rows is dropped. Measured
+#: 2026-11-23 (macOS arm64, Python 3.14): the keys read by the prefix and evicted on the loop, 334.7 ms (a prefix not
+#: leading the key, every key walked, 197.4 ms); on threads, 2.8 ms (a prefix not leading the key, its walk on a thread, 0.2 ms)
+_PREFIX_TURN_MAX_SECONDS = 0.05
+
+
+class _PrefixRow(BaseEntity):
+    """a row whose own id is ``id``, within the state its key leads with."""
+
+    primary_key_field: str = "id"
+
+
+def _prefixed_collection() -> tuple[Any, SQLiteBackend]:
+    schema = TableSchema(
+        name="prefix_rows",
+        primary_key=("state", "id"),
+        columns=[Column("state", STRING_TYPE), Column("id", STRING_TYPE), Column("payload", STRING_TYPE)],
+        l1_eviction=TEST_L1_TABLE,
+    )
+    metadata = MetaData()
+    schema.to_sqlalchemy_table(metadata)
+    l1 = SQLiteBackend(db_name=f"prefix_off_loop_{uuid.uuid4().hex[:8]}", budget=L1Ledger(1 << 34, thread=False))
+    l1.initialize(metadata)
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, kv_key_scope="test-principal")
+    return collection_for_schema(schema, entity_class=_PrefixRow)(registry, DefaultCoreConfig(), None), l1
+
+
+def _cache_states(l1: SQLiteBackend, per_state: int) -> None:
+    rows = [
+        {"state": state, "id": f"k{index:07d}", "payload": "x" * 200}
+        for state in ("VA", "IL")
+        for index in range(per_state)
+    ]
+    l1.upsert_many("prefix_rows", rows, ("state", "id"))
+
+
+class TestAPrefixDropHoldsNoTurnOfTheLoop:
+    async def test_dropping_a_100k_row_prefix_holds_no_turn_long_and_leaves_the_other_state(self) -> None:
+        """Flips if a prefix drop reads L1's keys under it, or evicts them, on the event loop (the loop answered
+        nothing else for that long), or drops a row outside the prefix."""
+        collection, l1 = _prefixed_collection()
+        _cache_states(l1, 100_000)
+        heard: list[Any] = []
+        collection.add_l1_change_listener(heard.append)
+        with turn_holds() as holds:
+            assert await collection.drop_cached_prefixes([{"state": "VA"}]) == 100_000
+        longest = max(seconds for seconds, _ in holds)
+        assert longest < _PREFIX_TURN_MAX_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the drop"
+        assert len(heard) == 100_000
+        counted = l1.execute_query("SELECT state, count(*) AS n FROM prefix_rows GROUP BY state")
+        assert {row["state"]: row["n"] for row in counted} == {"IL": 100_000}

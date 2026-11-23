@@ -3640,9 +3640,9 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
                 record_tier_read(self.table_name, ReadTier.L1)
                 return None
-        # a table dropped in this process leaves its own L2 entries untrusted until each is read
-        # through from L3 again; the drop count says whether another drop landed during this read.
-        drops_before = self._table_drops
+        # a table or a key prefix dropped in this process leaves its own L2 entries untrusted until each is
+        # read through from L3 again; the drop sequence says whether another drop landed during this read.
+        drops_before = self._l2_drop_seq
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
         if self._nats_client is not None:
             # the cache family's L2 hit or miss (threetears.core.eviction), under the one bucket every collection
@@ -3679,8 +3679,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             # no live row, or the entry has moved on -- this read's own replacement of it, or a
             # writer's since.
             replaced = not lookup.untrusted_row or await self._l2_moved_since(entity_id, lookup.revision)
-            if replaced and drops_before == self._table_drops:
-                self._remember_read_through(self._fence_key(entity_id))
+            if replaced and drops_before == self._l2_drop_seq:
+                self._remember_read_through(self._fence_key(entity_id), drops_before)
         return pg_data
 
     async def _l2_moved_since(self, entity_id: Any, revision: int) -> bool:
@@ -3722,33 +3722,56 @@ class BaseCollection(ABC, Generic[EntityT]):
         return count
 
     @property
-    def _l2_read_through(self) -> dict[tuple[str, ...], None]:
-        """the keys read through from L3 since this table was last dropped in this process, oldest first.
+    def _l2_drop_seq(self) -> int:
+        """how many drops (of the table, or of key prefixes) this process has made of this table: each one's sequence.
 
-        An insertion-ordered set, bounded by :attr:`L2_READ_THROUGH_LIMIT`
+        :return: the latest drop's sequence; 0 before any
+        :rtype: int
+        """
+        seq: int = self.__dict__.get("_l2_drop_seq_value", 0)
+        return seq
+
+    def _next_l2_drop(self) -> int:
+        """a new drop's sequence.
+
+        :return: it
+        :rtype: int
+        """
+        seq = self._l2_drop_seq + 1
+        self.__dict__["_l2_drop_seq_value"] = seq
+        return seq
+
+    @property
+    def _l2_read_through(self) -> dict[tuple[str, ...], int]:
+        """the keys read through from L3 since this table was last dropped in this process, oldest first, each with
+        the drop sequence it was read through at (a key under a prefix dropped later is distrusted again).
+
+        An insertion-ordered mapping, bounded by :attr:`L2_READ_THROUGH_LIMIT`
         (:meth:`_remember_read_through`). Made on first use, as :attr:`_l1_fence` is, for an
         instance a harness assembled without running ``__init__``.
 
-        :return: the keys, as the pk values' string forms
-        :rtype: dict[tuple[str, ...], None]
+        :return: the keys, as the pk values' string forms, each onto its sequence
+        :rtype: dict[tuple[str, ...], int]
         """
-        keys: dict[tuple[str, ...], None] = self.__dict__.setdefault("_l2_read_through_keys", {})
+        keys: dict[tuple[str, ...], int] = self.__dict__.setdefault("_l2_read_through_keys", {})
         return keys
 
-    def _remember_read_through(self, key: tuple[str, ...]) -> None:
-        """trust ``key``'s L2 entry again, forgetting the oldest such key once the limit is reached.
+    def _remember_read_through(self, key: tuple[str, ...], seq: int) -> None:
+        """trust ``key``'s L2 entry again, as of drop ``seq``, forgetting the oldest such key once the limit is reached.
 
         A forgotten key is distrusted again, which costs it one more read through L3 and nothing
         else: the safe direction, so a bound costs no correctness.
 
         :param key: the key, as the pk values' string forms
         :ptype key: tuple[str, ...]
+        :param seq: the drop sequence the read through began at, no drop landing during it
+        :ptype seq: int
         :return: nothing
         :rtype: None
         """
         remembered = self._l2_read_through
         remembered.pop(key, None)
-        remembered[key] = None
+        remembered[key] = seq
         while len(remembered) > self.L2_READ_THROUGH_LIMIT:
             del remembered[next(iter(remembered))]
 
@@ -3772,14 +3795,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: ``True`` when a live L2 row for the key must be read past
         :rtype: bool
         """
-        return (
-            (self._table_drops > 0 or self._under_dropped_prefix(self._fence_key(entity_id)))
-            and self.l2_first is None
-            and self.l3_pool is not None
-            and not self._declares_deferred_l3_writes
-            and not self.persists_l2_order
-            and self._fence_key(entity_id) not in self._l2_read_through
-        )
+        if (
+            self.l2_first is not None
+            or self.l3_pool is None
+            or self._declares_deferred_l3_writes
+            or self.persists_l2_order
+        ):
+            return False
+        key = self._fence_key(entity_id)
+        seen = self._l2_read_through.get(key)
+        if self._table_drops > 0 and seen is None:
+            return True
+        dropped = self._dropped_prefix_at(key)
+        return dropped > 0 and (seen is None or seen < dropped)
 
     async def _delete_l2_at(self, entity_id: Any, revision: int) -> None:
         """delete this pod's L2 entry for ``entity_id`` only if nothing has happened to the key since ``revision``.
@@ -3834,7 +3862,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: int | None
         """
         self.__dict__["_table_drop_count"] = self._table_drops + 1
+        self._next_l2_drop()
         self._l2_read_through.clear()
+        # the table's drop distrusts every key: the prefixes dropped before it are covered, and forgotten
+        self.__dict__.pop("_l2_distrusted_prefixes", None)
         self._l1_fence.changed_all()
         l1 = self.l1_backend
         if l1 is None or (hasattr(l1, "has_table") and not l1.has_table(self.table_name)):
@@ -3855,18 +3886,26 @@ class BaseCollection(ABC, Generic[EntityT]):
         task.add_done_callback(drops.discard)
         return None
 
-    def drop_cached_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> int:
+    async def drop_cached_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> int:
         """drop from this process's caches every row under each of ``prefixes``, and no other: the keyed form of
         :meth:`drop_cached_table` for a change that names the key slices it reached (a load from files, a key-prefix
         delete, decision 23 of ``design-pod-delta-files.md``).
 
         Why not the whole table: a load of one state's slice dropped every state's cached rows in every process, so
         each read after it went to L3 for rows no write touched. Now the keys L1 holds under each prefix are read from
-        L1 by the prefix (an index range when the prefix leads the key, as a delta file's always do) and evicted as
-        any eviction is (:meth:`_evict_l1_many`: fenced, deleted in one write, each listener told). A read in flight of
-        a key under the prefix that L1 does not hold yet is fenced by the prefix (:meth:`_L1Fence.changed_under`), and
-        this process's L2 entries under it are distrusted until each is read through from L3 once, as after a table
-        drop (:meth:`_distrusts_l2`). Nothing is broadcast: the rows did not change here.
+        L1 by the prefix, along the key's index, on a thread, and evicted as any eviction is
+        (:meth:`_evict_l1_many_off_loop`: fenced, deleted in one write on a thread, each listener told). A read in
+        flight of a key under the prefix is fenced by the prefix before anything awaits (:meth:`_L1Fence
+        .changed_under`), and this process's L2 entries under it are distrusted until each is read through from L3
+        once (:meth:`_distrusts_l2`), the prefixes indexed by their shape so a read asks one lookup a shape. Nothing is
+        broadcast: the rows did not change here.
+
+        **Off the loop** (0.95.0 copy audit): the L1 key reads and the eviction ran on the loop (334.7 ms for a
+        100,000-row prefix of 200,000, 2026-11-23); now 2.8 ms the longest turn. A prefix that does not lead the key
+        (an older writer's partition, mid-roll: 0.95.0 writers name only prefixes that lead, ``_load_reach``) has no
+        index to read by: L1's keys are still walked for it, on the thread now. OPEN (audit item 4, stopped for a
+        ruling): that walk is a whole read of this process's L1 no declaration covers; dropping the table's L1
+        instead is a whole drop the epoch discipline refuses without a waiver.
 
         :param prefixes: each prefix, its columns (the table's own) and their values as text (``key_text``)
         :ptype prefixes: Sequence[Mapping[str, str]]
@@ -3876,7 +3915,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         columns = list(self.primary_key_columns)
         fence = self._l1_fence
-        remembered = self._l2_read_through
         positioned: list[tuple[tuple[int, str], ...]] = []
         for prefix in prefixes:
             unknown = sorted(set(prefix) - set(columns))
@@ -3885,48 +3923,68 @@ class BaseCollection(ABC, Generic[EntityT]):
             at = tuple(sorted((columns.index(column), str(value)) for column, value in prefix.items()))
             positioned.append(at)
             fence.changed_under(at)
-            for key in [key for key in remembered if all(key[i] == value for i, value in at)]:
-                del remembered[key]
-        # a set of the prefixes dropped (a table's slices: its states, its offices), not a list of every drop
-        distrusted: dict[tuple[tuple[int, str], ...], None] = self.__dict__.setdefault("_l2_distrusted_prefixes", {})
-        distrusted.update(dict.fromkeys(positioned))
+        if not positioned:
+            return 0
+        seq = self._next_l2_drop()
+        # each prefix's shape (its key positions) onto its values, each onto the drop that distrusted it last
+        distrusted: dict[tuple[int, ...], dict[tuple[str, ...], int]] = self.__dict__.setdefault(
+            "_l2_distrusted_prefixes", {}
+        )
+        for at in positioned:
+            distrusted.setdefault(tuple(index for index, _ in at), {})[tuple(value for _, value in at)] = seq
         l1 = self._l1_holding_table()
         if l1 is None:
             return 0
+        keys = await asyncio.to_thread(self._l1_keys_under, l1, prefixes, positioned)
+        await self._evict_l1_many_off_loop(keys)
+        return len(keys)
+
+    def _l1_keys_under(
+        self, l1: Any, prefixes: Sequence[Mapping[str, str]], positioned: Sequence[tuple[tuple[int, str], ...]]
+    ) -> list[Any]:
+        """the keys L1 holds under each prefix: one leading the key read along the key's index by the prefix, one that
+        does not (an older writer's partition) found by walking L1's keys once. Blocking: run it on a thread.
+
+        :param l1: the L1 holding the table
+        :ptype l1: Any
+        :param prefixes: the prefixes
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :param positioned: each prefix's key positions and values
+        :ptype positioned: Sequence[tuple[tuple[int, str], ...]]
+        :return: the keys, each once (a value single-pk, a tuple else)
+        :rtype: list[Any]
+        """
+        columns = list(self.primary_key_columns)
         db = inline_l1(l1)
         order = [Sort(column, cast=None) for column in columns]
         found: list[tuple[Any, ...]] = []
         walked: list[dict[str, Any]] | None = None
         for prefix, at in zip(prefixes, positioned, strict=True):
-            lead = self._leading_key(len(at))
-            if [index for index, _ in at] == list(range(len(at))):
-                # a prefix that leads the key (a delta file's always does): read along the key's index, by the prefix
-                values = [prefix[column] for column in lead]
-                found.extend(
-                    tuple(row[column] for column in columns)
-                    for row in run_inline(
-                        keyed.keyset_rows(
-                            db,
-                            self.table_name,
-                            columns=columns,
-                            by=dict(zip(lead, values, strict=True)),
-                            order=order,
-                            page=L1_KEY_PAGE,
-                        )
-                    )
-                )
-            else:
-                # a load's constants that do not lead the key (an older writer's partition): L1's keys walked once,
-                # along the key, and those under it taken; this process's cache, never L3, and never the whole drop
+            if [index for index, _ in at] != list(range(len(at))):
+                # OPEN (see drop_cached_prefixes): this process's cache, never L3, walked once for every such prefix
                 walked = self._l1_keys(l1, self.primary_key_columns) if walked is None else walked
                 found.extend(
                     key
                     for key in (tuple(row[column] for column in columns) for row in walked)
                     if all(key_text(key[index]) == value for index, value in at)
                 )
-        keys = list(dict.fromkeys(key if len(key) > 1 else key[0] for key in found))
-        self._evict_l1_many(keys)
-        return len(keys)
+                continue
+            lead = self._leading_key(len(at))
+            values = [prefix[column] for column in lead]
+            found.extend(
+                tuple(row[column] for column in columns)
+                for row in run_inline(
+                    keyed.keyset_rows(
+                        db,
+                        self.table_name,
+                        columns=columns,
+                        by=dict(zip(lead, values, strict=True)),
+                        order=order,
+                        page=L1_KEY_PAGE,
+                    )
+                )
+            )
+        return list(dict.fromkeys(key if len(key) > 1 else key[0] for key in found))
 
     def _leading_key(self, width: int) -> KeyColumns:
         """the key's first ``width`` columns: the columns a key prefix of that width names.
@@ -3938,16 +3996,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return tuple(self.primary_key_columns[:width])
 
-    def _under_dropped_prefix(self, key: tuple[str, ...]) -> bool:
-        """whether ``key`` lies under a prefix :meth:`drop_cached_prefixes` dropped in this process.
+    def _dropped_prefix_at(self, key: tuple[str, ...]) -> int:
+        """the latest drop of a prefix :meth:`drop_cached_prefixes` dropped in this process that ``key`` lies under: one
+        lookup a prefix shape (a table's loads name one or two), never one a prefix.
 
         :param key: the key, as the pk values' string forms
         :ptype key: tuple[str, ...]
-        :return: whether it does
-        :rtype: bool
+        :return: that drop's sequence; 0 when none holds it
+        :rtype: int
         """
-        distrusted: dict[tuple[tuple[int, str], ...], None] = self.__dict__.get("_l2_distrusted_prefixes", {})
-        return any(all(i < len(key) and key[i] == value for i, value in at) for at in distrusted)
+        distrusted: dict[tuple[int, ...], dict[tuple[str, ...], int]] = self.__dict__.get("_l2_distrusted_prefixes", {})
+        latest = 0
+        for shape, values in distrusted.items():
+            if shape[-1] < len(key):
+                latest = max(latest, values.get(tuple(key[index] for index in shape), 0))
+        return latest
 
     @property
     def _l1_drops_running(self) -> int:

@@ -547,7 +547,7 @@ class TestAPrefixClearDropsOnlyTheRowsUnderIt:
         assert all(reader.members.exists_in_cache_sync(key) for key in rows)
         rows["m2"]["member_id"] = "loaded"
 
-        reader.registry.drop_partitions(_TABLE, [{"id": "m2"}], reason="test")
+        await reader.registry.drop_partitions(_TABLE, [{"id": "m2"}], reason="test")
 
         assert reader.members.exists_in_cache_sync("m1") and reader.members.exists_in_cache_sync("m3")
         assert not reader.members.exists_in_cache_sync("m2")
@@ -567,7 +567,7 @@ class TestAPrefixClearDropsOnlyTheRowsUnderIt:
 
         async def fetch_then_clear(entity_id: Any) -> dict[str, Any] | None:
             row = await inner(entity_id)
-            reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+            await reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
             return row
 
         reader.members.fetch_from_store = fetch_then_clear  # type: ignore[method-assign]
@@ -585,7 +585,7 @@ class TestAPrefixClearDropsOnlyTheRowsUnderIt:
         await reader.members.get("m1")
         rows["m1"]["member_id"] = "loaded"
 
-        reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+        await reader.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
 
         fetches = reader.members.fetches
         assert await _member_id(reader, "m1") == "loaded"
@@ -653,6 +653,47 @@ class TestWhenAKeyIsTrustedAgainAfterADrop:
         pod.members.evict_from_cache_sync("m1")
         assert await _member_id(pod, "m1") == "ada"
         assert pod.members.fetches == fetches + 1, "read through once, the key is trusted again"
+
+    async def test_a_key_under_a_dropped_prefix_read_through_once_is_answered_by_l2_again(
+        self, bus: _Lossy, source: _Source
+    ) -> None:
+        """Flips if a key under a dropped prefix stays distrusted after it was read through from L3 (every read of it
+        went to L3 for ever: the read-through was remembered only after a table drop), or if a later drop of the same
+        prefix leaves it trusted."""
+        rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
+        pod = _Pod(bus, rows, source, scope="reader")
+        assert await _member_id(pod, "m1") == "ada"
+        await pod.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+        fetches = pod.members.fetches
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 1
+        pod.members.evict_from_cache_sync("m1")
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 1, "read through once, the key is trusted again"
+        await pod.registry.drop_partitions(_TABLE, [{"id": "m1"}], reason="test")
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 2, "dropped again, it is distrusted again"
+
+    async def test_many_dropped_prefixes_cost_a_read_one_lookup_a_shape(self, bus: _Lossy, source: _Source) -> None:
+        """Flips if whether a key is distrusted is asked of every prefix ever dropped (each read paid for every load's
+        prefix: a scan a read), or if a table drop does not forget them (they grew with every distinct prefix)."""
+        rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
+        pod = _Pod(bus, rows, source, scope="reader")
+        await pod.registry.drop_partitions(_TABLE, [{"id": f"x{i}"} for i in range(20_000)], reason="test")
+        asked: list[Any] = []
+        dict_get = dict.get
+
+        class Counting(dict):  # type: ignore[type-arg]
+            def get(self, key: Any, default: Any = None) -> Any:
+                asked.append(key)
+                return dict_get(self, key, default)
+
+        index = pod.members.__dict__["_l2_distrusted_prefixes"]
+        index.update({shape: Counting(values) for shape, values in index.items()})
+        assert await _member_id(pod, "m1") == "ada"
+        assert len(asked) <= 2, f"a read asked {len(asked)} prefixes"
+        pod.registry.drop_table(_TABLE, reason="test")
+        assert "_l2_distrusted_prefixes" not in pod.members.__dict__, "a table drop forgets the prefixes it covers"
 
     async def test_a_drop_during_the_read_through_leaves_the_key_distrusted(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}

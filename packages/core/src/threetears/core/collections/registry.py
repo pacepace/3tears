@@ -1235,11 +1235,11 @@ class CollectionRegistry:
             elif change.prefixes and change.delta_file is not None and await self._apply_file_prefixes(change):
                 pass
             elif change.prefixes:
-                self.drop_partitions(
+                await self.drop_partitions(
                     change.table, change.prefixes, reason=f"epoch {change.token} loaded or cleared key prefixes"
                 )
             elif change.partition:
-                self.drop_partition(change.table, change.partition, reason=f"epoch {change.token} loaded a partition")
+                await self.drop_partition(change.table, change.partition, reason=f"epoch {change.token} loaded a partition")
             else:
                 self.drop_table(
                     change.table, reason=f"epoch {change.token} changed the whole table", why="whole_record"
@@ -1279,7 +1279,7 @@ class CollectionRegistry:
         assert change.delta_file is not None and change.prefixes  # noqa: S101 -- the caller's condition
         reach = await self._file_reach(change)
         if isinstance(reach, str):
-            if self._file_wanted(change, reach, keys_unknown=False):
+            if await self._file_wanted(change, reach, keys_unknown=False):
                 return True
             log.warning(
                 "a load's or a clear's delta file cannot be had: its key prefixes are read again",
@@ -1294,7 +1294,7 @@ class CollectionRegistry:
             )
             return False
         # the table's own caches drop the load's reach; a copy is told the prefixes the file clears, then its keys
-        self._drop_reach(
+        await self._drop_reach(
             change.table,
             change.prefixes,
             reason=f"epoch {change.token} loaded or cleared key prefixes, applied from its delta file",
@@ -1346,7 +1346,7 @@ class CollectionRegistry:
             return False
         reach = await self._file_reach(change)
         if isinstance(reach, str):
-            if self._file_wanted(change, reach, keys_unknown=True):
+            if await self._file_wanted(change, reach, keys_unknown=True):
                 return True
             log.warning(
                 "a keys-unknown epoch's delta file cannot be had: its keys are named from the change notes",
@@ -1408,7 +1408,7 @@ class CollectionRegistry:
             )
             return "file_unreadable"
 
-    def _file_wanted(self, change: EpochChange, why: str, *, keys_unknown: bool) -> bool:
+    async def _file_wanted(self, change: EpochChange, why: str, *, keys_unknown: bool) -> bool:
         """an epoch's file cannot be had: when a derived cache waits for files (``on_file_wanted``, a copy), the epoch
         is applied here by telling it so; nothing is read from L3 or the change notes (decision 29).
 
@@ -1442,7 +1442,7 @@ class CollectionRegistry:
             "nothing from L3",
             extra={"extra_data": {"table": change.table, "epoch": change.token, "file": change.delta_file, "why": why}},
         )
-        self._drop_reach(
+        await self._drop_reach(
             change.table,
             change.prefixes or [],
             reason=f"epoch {change.token}'s delta file cannot be had ({why})",
@@ -1706,7 +1706,7 @@ class CollectionRegistry:
             },
         )
 
-    def drop_partitions(self, table_name: str, prefixes: Sequence[Mapping[str, str]], *, reason: str) -> None:
+    async def drop_partitions(self, table_name: str, prefixes: Sequence[Mapping[str, str]], *, reason: str) -> None:
         """:meth:`drop_partition` for a load or a clear that reached several key prefixes: the table's own caches drop
         it once, and each derived cache that takes a partition is told each prefix.
 
@@ -1719,9 +1719,9 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        self._drop_reach(table_name, prefixes, reason=reason)
+        await self._drop_reach(table_name, prefixes, reason=reason)
 
-    def drop_partition(self, table_name: str, partition: Mapping[str, str], *, reason: str) -> None:
+    async def drop_partition(self, table_name: str, partition: Mapping[str, str], *, reason: str) -> None:
         """what a load from files whose reach is known does here: the table's own caches drop it whole, and each
         derived cache that takes a partition is told it in place of dropping everything.
 
@@ -1739,9 +1739,9 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        self._drop_reach(table_name, [partition], reason=reason)
+        await self._drop_reach(table_name, [partition], reason=reason)
 
-    def _drop_reach(
+    async def _drop_reach(
         self,
         table_name: str,
         prefixes: Sequence[Mapping[str, str]],
@@ -1772,7 +1772,8 @@ class CollectionRegistry:
         self.drop_local_scans(table_name)
         collection = self._collections.get(table_name)
         # only the rows under the reach leave this process's L1, never the table's other slices
-        rows = collection.drop_cached_prefixes(prefixes) if collection is not None else 0
+        # the derived caches are told after the drop, as before: its L1 work runs on a thread meanwhile
+        rows = await collection.drop_cached_prefixes(prefixes) if collection is not None else 0
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
             if wanted is not None and registration.on_file_wanted is not None:
