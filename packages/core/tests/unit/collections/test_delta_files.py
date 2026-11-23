@@ -17,7 +17,10 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 pa_ipc = pytest.importorskip("pyarrow.ipc")
 
-from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
+from prometheus_client import REGISTRY  # noqa: E402
+
+from threetears.core.collections import delta_files  # noqa: E402
+from threetears.core.collections.caller_transaction import CallerTransaction, save_delta_files  # noqa: E402
 from threetears.core.backends.schema_sql import (  # noqa: E402
     build_bulk_insert_sql,
     build_insert_sql,
@@ -33,9 +36,9 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
     read_volume_file,
     apply_delta_row,
-    load_delta_rows,
     read_delta_file,
     read_delta_file_keys,
+    OWN_DELTA_SAVES,
     sweep_orphan_delta_files,
     write_delta_file,
 )
@@ -176,6 +179,67 @@ async def test_an_opted_in_write_saves_one_file_a_table_with_its_rows_and_delete
     assert len(read_delta_file(root / files["totals"]).changes) == 1
 
 
+def _saves(where: str) -> float:
+    return REGISTRY.get_sample_value("delta_file_saves_total", {"where": where}) or 0.0
+
+
+async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
+    root: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a write's delta file is built, compressed, hashed or written in the serving process (on its thread, as
+    it was: the serving process's own file writer refuses here), or reads back other than what was written: a
+    transaction's small file crosses to the worker as Arrow IPC bytes, and a load's large part (past the inline bound)
+    through the shared-memory hand-off, released after."""
+
+    def refused(*_: Any, **__: Any) -> None:
+        raise AssertionError("a delta file was written in the serving process")
+
+    monkeypatch.setattr(delta_files, "write_volume_file", refused)
+    handoff = tmp_path_factory.mktemp("handoff")
+    monkeypatch.setenv("THREETEARS_DELTA_HANDOFF_DIR", str(handoff))
+    collection, conn = _collection(), _Conn(root)
+    before = _saves("worker")
+    async with CallerTransaction(conn) as transaction:
+        await collection.save_rows(_rows(3), conn=conn)
+    small = read_delta_file(root / transaction.delta_files["results"], table="results")
+    assert [change.row["geo_id"] for change in small.changes] == ["00000", "00001", "00002"]
+    # a load's rows past the inline bound: 200,000 rows of a 60-character text, about 13 MiB
+    count = 200_000
+    rows = pa.table(
+        {
+            "office_key": pa.array(["sn_NC1"] * count),
+            "geo_id": pa.array([f"{i:060d}" for i in range(count)]),
+            "votes": pa.array(range(count), pa.int32()),
+        }
+    )
+    assert rows.nbytes > 8 << 20, "past the inline bound (8 MiB)"
+    load = collection.table_delta()
+    load.load([rows], [count], {})
+    files = await save_delta_files({"results": load})
+    held = read_volume_file(root / files["results"])
+    assert held.num_rows == count and held.column("geo_id")[count - 1].as_py() == f"{count - 1:060d}"
+    assert _saves("worker") == before + 2
+    assert not any(handoff.rglob("*.arrow")), "the hand-off is released once the worker is done"
+
+
+async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_counted(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a save with a part too large to cross inline is refused (or silently saved elsewhere) when no
+    shared-memory hand-off directory is named: it is saved on a thread of the serving process as before, counted."""
+    monkeypatch.delenv("THREETEARS_DELTA_HANDOFF_DIR", raising=False)
+    count = 200_000
+    rows = pa.table(
+        {"office_key": pa.array(["sn_NC1"] * count), "geo_id": pa.array([f"{i:060d}" for i in range(count)])}
+    )
+    load = _collection().table_delta()
+    load.load([rows], [count], {})
+    before = _saves("thread")
+    files = await save_delta_files({"results": load})
+    assert read_volume_file(root / files["results"]).num_rows == count
+    assert _saves("thread") == before + 1
+
+
 async def test_a_table_not_opted_in_saves_no_file(root: Path) -> None:
     """Flips if a table that does not opt in gets a delta file, or its write changes at all for the opt-in."""
     collection, conn = _collection(opted_in=False), _Conn(root)
@@ -239,7 +303,9 @@ async def test_a_crash_before_the_commit_leaves_an_orphan_the_sweep_removes_and_
     root: Path,
 ) -> None:
     """Flips if a file saved for a commit that never happened survives the sweep, if a committed version's file does
-    not survive it, or if the sweep removes a file of the writer's work still in flight."""
+    not survive it, or if the sweep removes a file of the writer's work still in flight or a file another process
+    saved: it goes by the names this process saved and how each commit ended, never by a file's time on the volume
+    (whose clock is not the writer's)."""
     collection = _collection()
     lost = _Conn(root, lost=True)
     with pytest.raises(ConnectionError):
@@ -250,11 +316,21 @@ async def test_a_crash_before_the_commit_leaves_an_orphan_the_sweep_removes_and_
     async with CallerTransaction(committed) as transaction:
         await collection.save_rows(_rows(1), conn=committed)
     kept = transaction.delta_files["results"]
-    # the writer's work in flight began before both: nothing is swept yet
-    assert sweep_orphan_delta_files(root, named={kept}, before=0.0) == []
-    assert sweep_orphan_delta_files(root, named={kept}, before=time.time() + 1) == [orphan]
-    assert not (root / orphan).exists()
-    assert (root / kept).exists()
+    assert orphan in OWN_DELTA_SAVES.orphans and kept not in OWN_DELTA_SAVES.orphans
+    assert kept not in OWN_DELTA_SAVES.in_flight, "a commit that landed leaves the registry"
+    # this process's commit still open, its file saved; and another process's file, which this process never saved
+    [in_flight] = OWN_DELTA_SAVES.saving(["results"], "inflight")
+    (root / in_flight).write_bytes(b"saved, its commit open")
+    (root / "results" / "other.arrow").write_bytes(b"another writer's")
+    past = time.time() - 3600  # files the volume stamps long ago: a clock compare would take every one
+    for name in (in_flight, "results/other.arrow", orphan, kept):
+        os.utime(root / name, (past, past))
+    swept = sweep_orphan_delta_files(root, orphans=OWN_DELTA_SAVES.orphans, named={kept})
+    OWN_DELTA_SAVES.swept(swept)
+    OWN_DELTA_SAVES.settled([in_flight], landed=True)
+    assert orphan in swept and not (root / orphan).exists()
+    assert (root / kept).exists() and (root / in_flight).exists() and (root / "results" / "other.arrow").exists()
+    assert orphan not in OWN_DELTA_SAVES.orphans
 
 
 def test_the_rename_keeps_a_partly_written_file_invisible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,9 +359,14 @@ def test_the_rename_keeps_a_partly_written_file_invisible(tmp_path: Path, monkey
         write_delta_file(tmp_path, delta, "w2")
     assert not (tmp_path / "results" / "w2.arrow").exists()
     assert sorted(p.name for p in (tmp_path / "results").iterdir()) == ["w1.arrow"]
-    # a writer that died mid-write leaves its temporary name, which no record holds; the sweep removes it
+    # a write that died mid-write (its worker killed) leaves its temporary name, which no record holds; once its
+    # commit is known not to have landed the sweep removes it by name
     (tmp_path / "results" / ".w3.partial").write_bytes(b"ARROW1 half")
-    assert sweep_orphan_delta_files(tmp_path, named={name}, before=time.time() + 1) == ["results/.w3.partial"]
+    [w3] = OWN_DELTA_SAVES.saving(["results"], "w3")
+    OWN_DELTA_SAVES.settled([w3], landed=False)
+    assert sweep_orphan_delta_files(tmp_path, orphans=[w3], named={name}) == ["results/w3.arrow"]
+    OWN_DELTA_SAVES.swept([w3])
+    assert sorted(p.name for p in (tmp_path / "results").iterdir()) == ["w1.arrow"]
 
 
 def test_rows_handed_as_arrow_are_typed_as_the_rail_answers_them(tmp_path: Path) -> None:
@@ -632,8 +713,10 @@ def test_a_load_delta_from_one_read_cuts_it_into_each_files_rows_by_the_manifest
 
     assert [table.to_pydict()["id"] for table in delta.rows] == [[0, 1], [], [2, 3, 4, 5]]
     assert delta.replaces == [{"state": "VA"}]
-    # the load checks each file's rows against its count: the cut passes that check as is
-    assert load_delta_rows(delta.rows, [2, 0, 4], {"state": "VA"}).num_rows == 6
+    # the load checks each file's rows against its count where its file is made: the cut passes that check as is
+    load = TableDelta(name="votes", types={"id": pa.int64(), "votes": pa.int64(), "state": pa.string()}, key=("id",))
+    load.load(delta.rows, [2, 0, 4], {"state": "VA"})
+    assert load.table("w1").num_rows == 6
 
 
 @pytest.mark.parametrize(

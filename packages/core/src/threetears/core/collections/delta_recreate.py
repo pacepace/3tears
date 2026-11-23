@@ -55,9 +55,10 @@ from threetears.core.collections.copy_follower import FollowedTable, typed_text
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
     TableDelta,
+    _key_texts,
+    _text_column,
     delta_files_root,
     read_delta_table,
-    under_prefix,
     write_delta_file,
 )
 from threetears.core.collections.epoch_change import key_text
@@ -65,6 +66,13 @@ from threetears.core.collections.schema_backed import rail_arrow_types, sql_cast
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
+
+try:
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file is read only with it (read_delta_table)
+    pass
 
 if TYPE_CHECKING:
     from threetears.nats.capabilities import RawRequester
@@ -419,11 +427,14 @@ class DeltaRecreator:
 
 
 def _keys_lacking(path: Path, table: FollowedTable, record: EpochChange) -> int:
-    """how many of the keys a record names its file holds no change of, nor clears a prefix of: the file read whole and
-    validated as Arrow, its key columns as text. Blocking: run it on a thread.
+    """how many of the keys a record names its file holds no change of, nor clears a prefix of: the file's checksum
+    verified and every array validated in full (:func:`~threetears.core.collections.delta_files.read_delta_table`),
+    then its keys matched against the record's in Arrow, never a row of the file decoded to Python. Blocking: run it on
+    a thread.
 
     Why: a copy that finds a key its record named missing from the file waits and asks (decision 29); a file that only
-    reads whole would be answered ``present`` and the copy would ask for ever.
+    reads whole would be answered ``present`` and the copy would ask for ever. Why Arrow: the old check built every
+    key of the file as Python text (``to_pylist``), a per-row loop on the writer's serving process for a large file.
 
     :param path: the file
     :ptype path: Path
@@ -439,13 +450,23 @@ def _keys_lacking(path: Path, table: FollowedTable, record: EpochChange) -> int:
     delta = read_delta_table(path, table=table.name)
     if not record.rows:
         return 0
-    held = set(zip(*(map(key_text, delta.rows.column(column).to_pylist()) for column in table.key), strict=True))
-    named = [tuple(row.ids) for row in record.rows]
-    return sum(
-        1
-        for key in named
-        if key not in held and not under_prefix(dict(zip(table.key, key, strict=True)), delta.prefixes)
+    held = _key_texts([_text_column(delta.rows.column(column)) for column in table.key])
+    # the record's keys are its text already (``key_text``), the spelling a file's key columns are matched in
+    named = {
+        column: pa.array([row.ids[index] for row in record.rows], pa.string()) for index, column in enumerate(table.key)
+    }
+    lacking = np.asarray(
+        pc.invert(pc.is_in(_key_texts(list(named.values())), value_set=held)).to_numpy(zero_copy_only=False),
+        dtype=bool,
     )
+    for prefix in delta.prefixes:
+        under = np.ones(len(lacking), dtype=bool)
+        for column, value in prefix.items():
+            under &= np.asarray(
+                pc.equal(named[column], pa.scalar(value, pa.string())).to_numpy(zero_copy_only=False), dtype=bool
+            )
+        lacking &= ~under
+    return int(lacking.sum())
 
 
 @asynccontextmanager

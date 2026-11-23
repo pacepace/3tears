@@ -54,7 +54,6 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import repeat
 from contextvars import ContextVar, Token
-from pathlib import Path
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -67,11 +66,12 @@ from threetears.core.backends.broker_generation import (
     reply_generations_since,
 )
 from threetears.core.collections.delta_files import (
+    OWN_DELTA_SAVES,
     DeltaFileRefusedError,
     TableDelta,
     delta_files_root,
-    write_delta_file,
 )
+from threetears.core.collections.delta_save import save_in_worker
 from threetears.core.collections.epoch_change import ChangedRow, recordable_scopes
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
@@ -725,6 +725,9 @@ class CallerTransaction:
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
             landed = True
         finally:
+            if self._saved_delta_files:
+                # a commit that did not land leaves its files orphans, the only files the fold's sweep removes
+                OWN_DELTA_SAVES.settled(list(self._saved_delta_files.values()), landed=landed and exc_type is None)
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None
@@ -884,7 +887,8 @@ def _owed_deltas(
 
 
 async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
-    """save each table's delta file before the commit that wrote it, one write id for them all, on a worker thread.
+    """save each table's delta file before the commit that wrote it, one write id for them all, in a worker process
+    (:func:`~threetears.core.collections.delta_save.save_in_worker`).
 
     The one way a write saves its files: a caller's transaction (:class:`CallerTransaction`) and a load from files
     (:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`) alike.
@@ -905,19 +909,12 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
             f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
         )
     write_id = uuid.uuid4().hex
-    return await asyncio.to_thread(_save_all, root, dict(deltas), write_id)
-
-
-def _save_all(root: Path, deltas: Mapping[str, TableDelta], write_id: str) -> dict[str, str]:
-    """save every delta file, one a table; blocking, for a thread.
-
-    :param root: the delta files' directory
-    :ptype root: Path
-    :param deltas: table -> its delta
-    :ptype deltas: Mapping[str, TableDelta]
-    :param write_id: the write's unique id, every file's name
-    :ptype write_id: str
-    :return: table -> its file's name
-    :rtype: dict[str, str]
-    """
-    return {table: write_delta_file(root, delta, write_id) for table, delta in deltas.items()}
+    # in flight from here until the commit settles (:data:`~threetears.core.collections.delta_files.OWN_DELTA_SAVES`): what the orphan sweep goes by
+    names = OWN_DELTA_SAVES.saving(list(deltas), write_id)
+    try:
+        # built and saved in a worker process; the commit waits for the files (decision 11)
+        return await save_in_worker(root, dict(deltas), write_id)
+    except BaseException:
+        # the commit is refused: a file saved before the one that failed is an orphan
+        OWN_DELTA_SAVES.settled(names, landed=False)
+        raise

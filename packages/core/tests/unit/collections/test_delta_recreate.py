@@ -62,7 +62,13 @@ from threetears.core.collections.delta_recreate import (  # noqa: E402
     DeltaRecreator,
     serving_recreates,
 )
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
+from threetears.core.collections.epoch_change import (  # noqa: E402
+    ChangedRow,
+    EpochChange,
+    EpochWalk,
+    key_text,
+    walk_by_count,
+)
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -639,6 +645,31 @@ async def test_the_writer_reads_only_the_changes_keys_by_key_and_recreates_once_
     # asked again once it reads: present, nothing written or read
     assert await world.recreator.recreate(_RESULTS, name, epoch) == "present"
     assert written == ["lost"] and world.writer_l3.statements == 1
+
+
+async def test_the_presence_check_matches_a_large_file_s_keys_in_arrow_never_as_python_rows(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer's check that a file holds every key its record names decodes the file's keys to Python
+    (``to_pylist`` and a ``key_text`` a row, on the writer's serving process), or miscounts: a 5,000-row file whose
+    record names every key reads ``present``, and one key short is recreated."""
+    world = _world()
+    rows = [_row("VA", geo_id, geo_id) for geo_id in range(5000)]
+    world.db.insert(_RESULTS, rows)
+    name = _save(_volume, _RESULTS, "large", rows)
+    epoch = world.log.commit(_RESULTS, [("VA", geo_id) for geo_id in range(5000)], name)
+    decoded: list[Any] = []
+
+    def counted(value: Any) -> str:
+        decoded.append(value)
+        return key_text(value)
+
+    monkeypatch.setattr(delta_recreate, "key_text", counted)
+    assert await world.recreator.recreate(_RESULTS, name, epoch) == "present"
+    assert decoded == [], f"{len(decoded)} keys decoded to Python text"
+    short = _save(_volume, _RESULTS, "short5k", rows[:-1])
+    epoch = world.log.commit(_RESULTS, [("VA", geo_id) for geo_id in range(5000)], short)
+    assert await world.recreator.recreate(_RESULTS, short, epoch) == "recreated"
 
 
 async def test_a_file_lacking_a_key_its_record_names_is_recreated_and_the_copy_reads_no_l3(_volume: Path) -> None:

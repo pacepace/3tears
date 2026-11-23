@@ -74,7 +74,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Final
 
-from threetears.core.backends.arrow_reply import _rail_arrow_table, _rail_value
+from threetears.core.backends.arrow_reply import _rail_value
 from threetears.core.collections.epoch_change import key_text
 from threetears.observe import get_logger
 
@@ -97,11 +97,12 @@ __all__ = [
     "DeltaTable",
     "HeldDeltaRows",
     "LoadDelta",
+    "OWN_DELTA_SAVES",
     "TableDelta",
     "apply_delta_row",
+    "build_file_table",
     "check_delta_scope",
     "delta_files_root",
-    "load_delta_rows",
     "joined_key_texts",
     "key_text_table",
     "read_delta_file_keys",
@@ -111,6 +112,7 @@ __all__ = [
     "sweep_orphan_delta_files",
     "under_prefix",
     "write_delta_file",
+    "write_table_file",
     "write_volume_file",
 ]
 
@@ -281,8 +283,10 @@ Written = Sequence[str] | Sequence[Sequence[str]]
 class TableDelta:
     """what one transaction wrote to one table that opts in, in the order written, until its file is saved.
 
-    Each part is kept as the write handed it (rows, an Arrow table, or keys deleted), with the columns its write set,
-    and typed only when the file is made (:meth:`table`), on a worker thread.
+    Each part is kept as the write handed it (rows, an Arrow table, keys deleted, or a load's files' rows), with the
+    columns its write set, and typed only when the file is made: dict rows into Arrow where the dicts are
+    (:meth:`segments`), everything else in the worker process that builds and saves the file
+    (:mod:`~threetears.core.collections.delta_save`).
 
     :ivar name: the table
     :ivar types: each column's Arrow type, in the table's column order (``rail_arrow_types``)
@@ -383,6 +387,51 @@ class TableDelta:
             self.parts.append(("deletes", keys, (), scope))
             self.entries += len(keys)
 
+    def load(self, given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> None:
+        """add one request of a load from files: each file's rows the caller gave (:attr:`LoadDelta.rows`: an Arrow
+        table or record batch, or a parquet file's path), the rows each file holds, and the load's constants. A copy
+        inserts and sets no column of a row already held (it fails the load instead), so its rows name no column
+        written. Joined and checked against the counts where the file is made (:func:`_load_delta_rows`).
+
+        :param given: the request's files' rows, one entry a file
+        :ptype given: Sequence[Any]
+        :param counts: the rows each file holds, in the same order
+        :ptype counts: Sequence[int]
+        :param constants: column -> the value every row takes for it
+        :ptype constants: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        if given:
+            self.parts.append(("load", list(given), list(counts), dict(constants)))
+            self.entries += sum(counts)
+
+    def segments(self) -> list[tuple[Any, ...]]:
+        """each part as the file is made from it, in the order written: rows a write handed as dicts typed here (the
+        one step that must run where the dicts are: Arrow's own conversion, :func:`_rows_table`), every other part as
+        it was handed. Blocking: run it on a thread.
+
+        :return: each segment: ``("typed", table, written)``, ``("arrow", table, written)``, ``("deleted", table)``
+            or ``("load", given, counts, constants)``
+        :rtype: list[tuple]
+        :raises ImportError: without pyarrow
+        """
+        if not _PYARROW:
+            raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+        segments: list[tuple[Any, ...]] = []
+        for kind, part, *rest in self.parts:
+            if kind == "rows":
+                segments.append(("typed", _rows_table(part, self.types, self.defaults), rest[0]))
+            elif kind == "arrow":
+                segments.append(("arrow", part, rest[0]))
+            elif kind == "load":
+                segments.append(("load", part, *rest))
+            else:
+                # a marker of a table keyed without its state carries the state the delete named (decision 27)
+                state = {} if self.scope_column is None else {self.scope_column: rest[1]}
+                segments.append(("deleted", _marker_table(part, self.key, state, self.types)))
+        return segments
+
     def table(self, write_id: str) -> Any:
         """every part as one Arrow table, rows and delete markers in the order written, each row naming the columns
         its write set, with the file's metadata. Blocking: run it on a thread.
@@ -394,60 +443,174 @@ class TableDelta:
         :raises ImportError: without pyarrow
         :raises ValueError: when a write names a column the table does not have
         """
-        if not _PYARROW:
-            raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
-        order = {name: position for position, name in enumerate(self.types)}
-        sets: dict[tuple[str, ...], int] = {}
-
-        def index(columns: Sequence[str]) -> int:
-            unknown = [name for name in columns if name not in order]
-            if unknown:
-                raise ValueError(f"{self.name}: a write set {unknown[0]!r}, not a column of the table")
-            # in the table's column order, so one set written in two orders is one set
-            named = tuple(sorted(set(columns), key=order.__getitem__))
-            return sets.setdefault(named, len(sets))
-
-        segments = []
-        for kind, part, written, *scoped in self.parts:
-            if kind == "rows":
-                segment = _rail_arrow_table(_defaulted(part, self.defaults), self.types)
-            elif kind == "arrow":
-                segment = _typed(part, self.types, self.defaults)
-            else:
-                # a marker of a table keyed without its state carries the state the delete named (decision 27)
-                state = {} if self.scope_column is None else {self.scope_column: scoped[0]}
-                segment = _rail_arrow_table(
-                    [{**dict(zip(self.key, key, strict=True)), **state} for key in part], self.types
-                )
-            if kind == "rows" and written and not isinstance(written[0], str):
-                indices = [index(columns) for columns in written]
-            else:
-                indices = [index(written)] * segment.num_rows
-            marker = pa.array([kind == "deletes"] * segment.num_rows, pa.bool_())
-            segment = segment.append_column(pa.field(_DELETED_COLUMN, pa.bool_(), nullable=False), marker)
-            segments.append(
-                segment.append_column(
-                    pa.field(_WRITTEN_COLUMN, pa.int32(), nullable=False), pa.array(indices, pa.int32())
-                )
-            )
-        schema = pa.schema(
-            [
-                *(pa.field(name, kind) for name, kind in self.types.items()),
-                pa.field(_DELETED_COLUMN, pa.bool_(), False),
-                pa.field(_WRITTEN_COLUMN, pa.int32(), False),
-            ]
+        return build_file_table(
+            self.name, self.types, self.key, self.defaults, self.prefixes, self.segments(), write_id
         )
-        joined = pa.concat_tables(segments) if segments else schema.empty_table()
-        return joined.replace_schema_metadata(
-            {
-                _TABLE_METADATA: self.name.encode(),
-                _WRITE_METADATA: write_id.encode(),
-                _KEY_METADATA: json.dumps(list(self.key)).encode(),
-                _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
-                _PREFIXES_METADATA: json.dumps(self.prefixes).encode(),
-                _FORMAT_METADATA: _DELTA_FORMAT,
-            }
-        )
+
+
+def _rows_table(rows: Sequence[Mapping[str, Any]], types: Mapping[str, Any], defaults: Mapping[str, Any]) -> Any:
+    """rows a write handed as dicts, as the table's columns typed as the rail answers them, each column a write left
+    out of a row holding its fixed database default (:attr:`TableDelta.defaults`): Arrow's own conversion with the
+    declared schema (no type inferred), each value converted in C, never a Python object made a row. A value Arrow will
+    not take as its column's type (a ``Decimal`` or a UUID in a text column, which the rail's JSON carries as its text)
+    sends that column through the rail's value-by-value conversion
+    (:func:`~threetears.core.backends.arrow_reply._rail_value`).
+
+    Why: the rows were typed a value at a time in Python (and copied a row at a time where a default was left out),
+    on the serving process (2026-11-23 audit).
+
+    :param rows: the rows, by column name
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param types: column name -> its Arrow type, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param defaults: column -> its fixed default, as the rail answers it
+    :ptype defaults: Mapping[str, Any]
+    :return: the rows
+    :rtype: pyarrow.Table
+    """
+    listed = rows if isinstance(rows, list) else list(rows)
+    schema = pa.schema([pa.field(name, kind) for name, kind in types.items()])
+    try:
+        typed = pa.Table.from_pylist(listed, schema=schema)
+    except pa.ArrowInvalid, pa.ArrowTypeError, TypeError:  # NOSILENT: a value Arrow will not take as its type
+        columns = []
+        for name, kind in types.items():
+            values = [row.get(name) for row in listed]
+            try:
+                columns.append(pa.array(values, kind))
+            except pa.ArrowInvalid, pa.ArrowTypeError, TypeError:  # NOSILENT: the rail's text of the value
+                columns.append(pa.array([_rail_value(value, kind) for value in values], kind))
+        typed = pa.Table.from_arrays(columns, schema=schema)
+    for name, value in defaults.items():
+        if name not in types:
+            continue
+        # a row that names the column, None included, keeps what it named: the INSERT sent it
+        absent = np.fromiter((name not in row for row in listed), dtype=bool, count=len(listed))
+        if absent.any():
+            at = typed.schema.get_field_index(name)
+            filled = pc.if_else(pa.array(absent), pa.scalar(value, types[name]), typed.column(name))
+            typed = typed.set_column(at, schema.field(name), filled)
+    return typed
+
+
+def _marker_table(
+    keys: Sequence[Sequence[Any]], key: Sequence[str], state: Mapping[str, Any], types: Mapping[str, Any]
+) -> Any:
+    """delete markers as the table's columns: the key columns set, the state a table keyed without it carries
+    (decision 27), every other column null; a column at a time, never a row made.
+
+    :param keys: the keys deleted, each its values in key order
+    :ptype keys: Sequence[Sequence[Any]]
+    :param key: the key columns, in key order
+    :ptype key: Sequence[str]
+    :param state: the state column and the value every marker carries; empty for a table whose key names it
+    :ptype state: Mapping[str, Any]
+    :param types: column name -> its Arrow type, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: the markers
+    :rtype: pyarrow.Table
+    """
+    count = len(keys)
+    columns = []
+    for name, kind in types.items():
+        if name in key:
+            at = list(key).index(name)
+            values = [values[at] for values in keys]
+            try:
+                columns.append(pa.array(values, kind))
+            except pa.ArrowInvalid, pa.ArrowTypeError, TypeError:  # NOSILENT: the rail's text of the value
+                columns.append(pa.array([_rail_value(value, kind) for value in values], kind))
+        elif name in state:
+            columns.append(pa.array([_rail_value(state[name], kind)] * count, kind))
+        else:
+            columns.append(pa.nulls(count, kind))
+    return pa.Table.from_arrays(columns, schema=pa.schema([pa.field(name, kind) for name, kind in types.items()]))
+
+
+def build_file_table(
+    name: str,
+    types: Mapping[str, Any],
+    key: Sequence[str],
+    defaults: Mapping[str, Any],
+    prefixes: Sequence[Mapping[str, str]],
+    segments: Sequence[tuple[Any, ...]],
+    write_id: str,
+) -> Any:
+    """a delta file's table from its segments (:meth:`TableDelta.segments`): each typed as the table's columns, its
+    rows marked deleted or not and each naming the columns its write set, joined in order, with the file's metadata.
+    Blocking; where a write saves its files, in a worker process (:mod:`~threetears.core.collections.delta_save`).
+
+    :param name: the table
+    :ptype name: str
+    :param types: each column's Arrow type, in the table's column order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param key: the key columns, in key order
+    :ptype key: Sequence[str]
+    :param defaults: each column's fixed database default (:attr:`TableDelta.defaults`)
+    :ptype defaults: Mapping[str, Any]
+    :param prefixes: the key prefixes the write cleared, as text
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :param segments: the segments, in the order written
+    :ptype segments: Sequence[tuple]
+    :param write_id: the write's unique id
+    :ptype write_id: str
+    :return: the file's table
+    :rtype: pyarrow.Table
+    :raises ImportError: without pyarrow
+    :raises ValueError: when a write names a column the table does not have, or a load's rows are not as many as its
+        files hold
+    """
+    if not _PYARROW:
+        raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+    order = {column: position for position, column in enumerate(types)}
+    sets: dict[tuple[str, ...], int] = {}
+
+    def index(columns: Sequence[str]) -> int:
+        unknown = [column for column in columns if column not in order]
+        if unknown:
+            raise ValueError(f"{name}: a write set {unknown[0]!r}, not a column of the table")
+        # in the table's column order, so one set written in two orders is one set
+        named = tuple(sorted(set(columns), key=order.__getitem__))
+        return sets.setdefault(named, len(sets))
+
+    joined_segments = []
+    for kind, part, *rest in segments:
+        written: Any = ()
+        if kind == "typed":
+            segment, written = part, rest[0]
+        elif kind == "arrow":
+            segment, written = _typed(part, types, defaults), rest[0]
+        elif kind == "load":
+            # a COPY inserts and sets no column of a row already held: none written
+            segment = _typed(_load_delta_rows(part, rest[0], rest[1]), types, defaults)
+        else:
+            segment = part
+        if written and not isinstance(written[0], str):
+            # single-row upserts, each naming its own columns: one index a row (a handful of distinct sets)
+            indices = pa.array([index(columns) for columns in written], pa.int32())
+        else:
+            indices = pa.array(np.full(segment.num_rows, index(written), dtype=np.int32))
+        marker = pa.array(np.full(segment.num_rows, kind == "deleted", dtype=bool))
+        segment = segment.append_column(pa.field(_DELETED_COLUMN, pa.bool_(), nullable=False), marker)
+        joined_segments.append(segment.append_column(pa.field(_WRITTEN_COLUMN, pa.int32(), nullable=False), indices))
+    schema = pa.schema(
+        [
+            *(pa.field(column, kind) for column, kind in types.items()),
+            pa.field(_DELETED_COLUMN, pa.bool_(), False),
+            pa.field(_WRITTEN_COLUMN, pa.int32(), False),
+        ]
+    )
+    joined = pa.concat_tables(joined_segments) if joined_segments else schema.empty_table()
+    return joined.replace_schema_metadata(
+        {
+            _TABLE_METADATA: name.encode(),
+            _WRITE_METADATA: write_id.encode(),
+            _KEY_METADATA: json.dumps(list(key)).encode(),
+            _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
+            _PREFIXES_METADATA: json.dumps(list(prefixes)).encode(),
+            _FORMAT_METADATA: _DELTA_FORMAT,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1143,26 +1306,6 @@ class HeldDeltaRows:
         return pa.table([self._columns[name].take(index) for name in self._types], schema=schema), positions
 
 
-def _defaulted(rows: Sequence[Mapping[str, Any]], defaults: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
-    """rows a write handed, each with the fixed database default of every column it leaves out: the value its
-    ``INSERT`` (which leaves the column out) gave a new row. A column a row names, ``None`` included, is as named:
-    the ``INSERT`` sent it. Only the rows that lack one are copied.
-
-    :param rows: the rows, as written
-    :ptype rows: Sequence[Mapping[str, Any]]
-    :param defaults: column -> its fixed default, as the rail answers it
-    :ptype defaults: Mapping[str, Any]
-    :return: the rows, defaulted
-    :rtype: Sequence[Mapping[str, Any]]
-    """
-    if not defaults:
-        return rows
-    return [
-        row if all(name in row for name in defaults) else {**{n: v for n, v in defaults.items() if n not in row}, **row}
-        for row in rows
-    ]
-
-
 def _typed(rows: Any, types: Mapping[str, Any], defaults: Mapping[str, Any]) -> Any:
     """rows a write handed as Arrow, as the table's columns typed as the rail answers them: a column already of its
     type kept, one Arrow casts exactly (integers, instants, text) cast, any other made value by value as the rail's
@@ -1182,7 +1325,9 @@ def _typed(rows: Any, types: Mapping[str, Any], defaults: Mapping[str, Any]) -> 
     for name, kind in types.items():
         if name not in rows.column_names:
             fill = defaults.get(name)
-            columns.append(pa.nulls(rows.num_rows, kind) if fill is None else pa.array([fill] * rows.num_rows, kind))
+            columns.append(
+                pa.nulls(rows.num_rows, kind) if fill is None else pa.repeat(pa.scalar(fill, kind), rows.num_rows)
+            )
             continue
         column = rows.column(name)
         given = column.type
@@ -1196,7 +1341,11 @@ def _typed(rows: Any, types: Mapping[str, Any], defaults: Mapping[str, Any]) -> 
         ):
             columns.append(pc.cast(column, kind))
         else:
-            columns.append(pa.array([_rail_value(value, kind) for value in column.to_pylist()], kind))
+            # the rail's text of each distinct value (a Decimal, a UUID), then taken a row at a time in Arrow: never a
+            # Python object a row
+            encoded = pc.dictionary_encode(column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column)
+            texts = pa.array([_rail_value(value, kind) for value in encoded.dictionary.to_pylist()], kind)
+            columns.append(texts.take(encoded.indices))
     return pa.Table.from_arrays(columns, schema=pa.schema([pa.field(name, kind) for name, kind in types.items()]))
 
 
@@ -1217,7 +1366,9 @@ def _fsync_directory(directory: Path) -> None:
 
 def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     """save ``delta`` as its file under ``root``: written under a temporary name, flushed, renamed to its own name,
-    the directory flushed. Blocking: run it on a thread.
+    the directory flushed. Blocking: where it runs is CPU (the rows typed, joined, compressed and hashed), so a serving
+    process's write saves its files in a worker process (:func:`~threetears.core.collections.delta_save.save_in_worker`);
+    this is the step itself, for a worker and a test.
 
     A reader opening the file's name sees the whole file or no file: a write that fails or a process that dies
     before the rename leaves only the temporary name, which no record holds (:func:`sweep_orphan_delta_files`).
@@ -1233,11 +1384,30 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     :raises ValueError: when the table or write id cannot name a file
     :raises OSError: when the file cannot be written
     """
-    name = _delta_file_name(delta.name, write_id)
+    return write_table_file(root, delta.name, write_id, delta.table(write_id))
+
+
+def write_table_file(root: Path, table_name: str, write_id: str, table: Any) -> str:
+    """save a delta file's table (:func:`build_file_table`) under its name: a temporary name, flushed, renamed, the
+    directory flushed. Blocking.
+
+    :param root: the delta files' directory
+    :ptype root: Path
+    :param table_name: the table
+    :ptype table_name: str
+    :param write_id: the write's unique id
+    :ptype write_id: str
+    :param table: the file's table
+    :ptype table: pyarrow.Table
+    :return: the file's name under ``root``
+    :rtype: str
+    :raises ValueError: when the table or write id cannot name a file
+    :raises OSError: when the file cannot be written
+    """
+    name = _delta_file_name(table_name, write_id)
     final = root / name
     final.parent.mkdir(parents=True, exist_ok=True)
     partial = final.parent / f".{write_id}{_PARTIAL_SUFFIX}"
-    table = delta.table(write_id)
     renamed = False
     try:
         with partial.open("wb") as sink:
@@ -1254,7 +1424,7 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     _fsync_directory(final.parent)
     log.debug(
         "delta file saved before its commit",
-        extra={"extra_data": {"table": delta.name, "file": name, "rows": table.num_rows}},
+        extra={"extra_data": {"table": table_name, "file": name, "rows": table.num_rows}},
     )
     return name
 
@@ -1314,7 +1484,7 @@ class LoadDelta:
         return cls(rows=cut, replaces=replaces)
 
 
-def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
+def _load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
     """one request's rows of a load, as one Arrow table: each file's rows the caller gave (:attr:`LoadDelta.rows`),
     each with the load's constants as columns, checked against the rows the file holds. Blocking: run it on a thread.
 
@@ -1345,62 +1515,154 @@ def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapp
             )
         for column, value in constants.items():
             if column not in table.column_names:
-                table = table.append_column(column, pa.array([value] * table.num_rows))
+                table = table.append_column(column, pa.repeat(value, table.num_rows))
         tables.append(table)
     return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
 
-def sweep_orphan_delta_files(
-    root: Path,
-    *,
-    named: Collection[str],
-    before: float,
-    since: float | None = None,
-    tables: Collection[str] | None = None,
-) -> list[str]:
-    """remove every delta file under ``root`` that no committed record names and that was saved before ``before``,
-    and every temporary file left by a write that died before its rename.
+class _OwnDeltaSaves:
+    """the delta files this process saved before a commit, from the save until the commit settles, and those whose
+    commit did not land: the only files the orphan sweep removes (:func:`sweep_orphan_delta_files`).
 
-    A file is saved before its commit, so one no record names is either an orphan (its commit never happened) or a
-    write still in flight: ``before`` is the start of the writer's oldest work in flight, and nothing saved since is
-    touched. The caller says what is named and when its work began; this removes only what both clear.
+    Why names, not times: the sweep once removed every file of a folded table's directory saved (by its modification
+    time) between the fold's start and the writer's oldest work in flight. That compared the volume's clock (the time
+    an NFS server stamps) with the writer's, so a skew between them could take a file of a commit still in flight; and
+    it listed every folded table's directory every round. A process knows the names it saved and how each commit
+    ended, so the sweep opens only those: no listing, no clock, and never another process's file.
 
-    A writer knows the commits it made itself, not a predecessor's: ``since`` (its own start) leaves every file saved
-    before it, which a commit the writer never heard of may name, and ``tables`` keeps the sweep to the tables whose
-    commits it hears, so a table it does not fold never loses a committed file.
+    Called on the event loop only (each save and each commit's end), so no lock. Bounded: a name leaves when its
+    commit lands, or once the sweep has removed it; an orphan the sweep never reaches (a process that folds nothing)
+    is let go past :data:`_OWN_ORPHANS_HELD`, its file left as any file of a crash is.
+    """
+
+    def __init__(self) -> None:
+        #: read-only snapshots, each change a new one: never a set another call changes in place
+        self._in_flight: frozenset[str] = frozenset()
+        self._orphans: tuple[str, ...] = ()
+
+    def saving(self, tables: Collection[str], write_id: str) -> list[str]:
+        """note the files a write is about to save, one a table: in flight until its commit settles.
+
+        :param tables: the tables
+        :ptype tables: Collection[str]
+        :param write_id: the write's unique id
+        :ptype write_id: str
+        :return: the files' names under the root
+        :rtype: list[str]
+        :raises ValueError: when a table or the write id cannot name a file
+        """
+        names = [_delta_file_name(table, write_id) for table in tables]
+        self._in_flight = self._in_flight | frozenset(names)
+        return names
+
+    def settled(self, names: Collection[str], *, landed: bool) -> None:
+        """the commit of ``names`` ended: landed, they are named by its records and leave; not, they are orphans.
+
+        A commit whose outcome is unknown (its reply lost) is settled as not landed, as the sweep always took it: a
+        record naming a file swept so is the lost-file path's (decision 29), which recreates it.
+
+        :param names: the files
+        :ptype names: Collection[str]
+        :param landed: whether the commit landed
+        :ptype landed: bool
+        :return: nothing
+        :rtype: None
+        """
+        self._in_flight = self._in_flight - frozenset(names)
+        if landed:
+            return
+        orphans = (*self._orphans, *(name for name in names if name not in self._orphans))
+        dropped = orphans[: max(0, len(orphans) - _OWN_ORPHANS_HELD)]
+        self._orphans = orphans[len(dropped) :]
+        for name in dropped:
+            log.warning(
+                "an orphan delta file no sweep reached is let go; its file stays on the volume",
+                extra={"extra_data": {"file": name, "held": _OWN_ORPHANS_HELD}},
+            )
+
+    @property
+    def in_flight(self) -> frozenset[str]:
+        """the files saved whose commit has not ended: never deleted by anything.
+
+        :return: their names
+        :rtype: frozenset[str]
+        """
+        return self._in_flight
+
+    @property
+    def orphans(self) -> tuple[str, ...]:
+        """the files saved whose commit did not land, oldest first: the sweep's to remove.
+
+        :return: their names
+        :rtype: tuple[str, ...]
+        """
+        return self._orphans
+
+    def swept(self, names: Collection[str]) -> None:
+        """forget orphans the sweep removed (or found gone).
+
+        :param names: the files
+        :ptype names: Collection[str]
+        :return: nothing
+        :rtype: None
+        """
+        gone = frozenset(names)
+        self._orphans = tuple(name for name in self._orphans if name not in gone)
+
+
+#: the most orphans this process holds for a sweep: each is a commit that failed, and a writer's fold sweeps them at
+#: its next round, so only a process that saves files and folds none ever reaches it
+_OWN_ORPHANS_HELD: Final = 10_000
+
+#: this process's own saves (:class:`_OwnDeltaSaves`)
+OWN_DELTA_SAVES: Final = _OwnDeltaSaves()
+
+
+def _partial_name(name: str) -> str:
+    """the temporary name a file is written under before its rename (:func:`write_delta_file`), under the root.
+
+    :param name: the file's name under the root
+    :ptype name: str
+    :return: its temporary name
+    :rtype: str
+    """
+    table, _, file = name.partition("/")
+    return f"{table}/.{file.removesuffix(_SUFFIX)}{_PARTIAL_SUFFIX}"
+
+
+def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Collection[str]) -> list[str]:
+    """remove each of ``orphans`` (files this process saved whose commit did not land, :class:`_OwnDeltaSaves`) that
+    ``named`` (every file a committed record or a full in use names) does not hold, and the temporary file of each,
+    left when its write died before its rename. Blocking.
+
+    Each is opened by its name: no directory is listed and no file's time read, so the sweep cannot take a file of
+    work still in flight, this process's or another's.
 
     :param root: the delta files' directory
     :ptype root: Path
-    :param named: every file name (:func:`_delta_file_name`) a committed record names
+    :param orphans: the files to remove, relative to ``root``
+    :ptype orphans: Collection[str]
+    :param named: every file name a committed record or a full in use names: never removed
     :ptype named: Collection[str]
-    :param before: the start of the writer's oldest work in flight, seconds since the epoch (``time.time()``)
-    :ptype before: float
-    :param since: leave every file saved before it, seconds since the epoch; None sweeps from the first
-    :ptype since: float | None
-    :param tables: the tables whose directories are swept; None sweeps every one
-    :ptype tables: Collection[str] | None
-    :return: the names removed, relative to ``root``
+    :return: the orphans handled (removed, or already gone), relative to ``root``: forget them
     :rtype: list[str]
     """
-    removed: list[str] = []
-    if not root.is_dir():
-        return removed
-    for directory in sorted(path for path in root.iterdir() if path.is_dir()):
-        if tables is not None and directory.name not in tables:
+    handled: list[str] = []
+    removed = 0
+    for name in orphans:
+        if name in named:
+            handled.append(name)  # named after all: no orphan
             continue
-        for path in sorted(directory.iterdir()):
-            relative = f"{directory.name}/{path.name}"
-            ours = path.name.endswith(_SUFFIX) or path.name.endswith(_PARTIAL_SUFFIX)
-            if not ours or relative in named or not path.is_file():
-                continue
-            saved = path.stat().st_mtime
-            if saved >= before or (since is not None and saved < since):
-                continue
-            path.unlink(missing_ok=True)
-            removed.append(relative)
+        for path in (root / name, root / _partial_name(name)):
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:  # NOSILENT: gone already (never renamed, or removed before): nothing to do
+                pass
+        handled.append(name)
     if removed:
         log.info(
             "orphan delta files swept",
-            extra={"extra_data": {"files": len(removed), "first": removed[0]}},
+            extra={"extra_data": {"files": removed, "first": handled[0] if handled else None}},
         )
-    return removed
+    return handled

@@ -227,13 +227,24 @@ class ProcessWorkers:
             pool = self._pool
             return [pool.submit(_plain_call, job, args) for args in argument_sets]
 
-    async def close(self) -> None:
-        """shut the workers down, waiting for them; the next job starts a fresh pool.
+    async def close(self, *, wait: bool = True) -> None:
+        """shut the workers down; the next job starts a fresh pool.
 
+        ``wait=False`` is the stop bound's: a serving process stopping within a deadline cannot wait for a job that
+        may run for minutes, so every job not started is cancelled and every worker terminated at once (``SIGTERM``,
+        :meth:`~concurrent.futures.ProcessPoolExecutor.terminate_workers`); a job running fails its caller with
+        ``BrokenProcessPool``. A job's work is left as a killed process leaves it, so a job that writes must leave
+        nothing a reader takes until its last rename (every job of this kind does).
+
+        :param wait: wait for the jobs running to end; False cancels and terminates them
+        :ptype wait: bool
         :return: nothing
         :rtype: None
         """
-        await asyncio.to_thread(self._close)
+        if wait:
+            await asyncio.to_thread(self._close)
+        else:
+            self._terminate()
 
     def _close(self) -> None:
         """:meth:`close`, on a thread.
@@ -245,3 +256,23 @@ class ProcessWorkers:
             pool, self._pool = self._pool, None
         if pool is not None:
             pool.shutdown(wait=True)
+
+    def _terminate(self) -> None:
+        """:meth:`close` without waiting: the pool taken, its queued jobs cancelled, its workers terminated. Never
+        blocks: ``terminate_workers`` signals each process and shuts the pool down without joining it.
+
+        The pool is taken without the lock (a thread making the pool holds it for as long as the fork server takes to
+        start): one swap, on the event loop; a job submitted to the old pool meanwhile fails as broken, which is what a
+        stopping process's job does.
+
+        :return: nothing
+        :rtype: None
+        """
+        pool, self._pool = self._pool, None
+        if pool is None:
+            return
+        # shuts the pool down without waiting and cancels its queued jobs, then signals each live worker
+        pool.terminate_workers()
+        log.info(
+            "process workers terminated without waiting (a bounded stop)", extra={"extra_data": {"pool": self._name}}
+        )
