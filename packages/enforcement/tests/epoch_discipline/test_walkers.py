@@ -127,6 +127,14 @@ _VIOLATIONS: dict[str, list[str]] = {
         "    async def touch(self, key):\n        await _fenced(self.pool, 't', key)\n",
         # a private writer its module never calls keeps its hit
         "async def _orphan(pool, key):\n    await update_keyed(pool, 'wake_fires', values={'n': 1}, by={'id': key})\n",
+        # a store's raw prefix delete: on a receiver other than self, even inside the collection that defines it
+        "async def purge(store, conn):\n    await store.delete_prefixes('t', [{'a': 1}], conn=conn)\n",
+        "class WidgetCollection:\n    async def delete_prefixes(self, prefixes, *, conn):\n        return 0\n\n"
+        "    async def purge(self, store, conn):\n        await store.delete_prefixes('t', [{'a': 1}], conn=conn)\n",
+        # self.delete_prefixes in a class that does not define it, or in a class that is not a collection
+        "class WidgetCollection:\n    async def purge(self, conn):\n        await self.delete_prefixes([{'a': 1}], conn=conn)\n",
+        "class PrefixStore:\n    async def delete_prefixes(self, table, prefixes, *, conn):\n        return 0\n\n"
+        "    async def purge(self, conn):\n        await self.delete_prefixes('t', [{'a': 1}], conn=conn)\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def all_roles(pool):\n    return await pool.fetch('SELECT id, name FROM roles')\n",
@@ -179,6 +187,9 @@ _COMPLIANT: dict[str, list[str]] = {
         "class WakeCollection:\n    async def save_to_store(self, key):\n        return await _fenced(self.pool, 't', key)\n",
         "async def _fenced(pool, table, key):\n    await update_keyed(pool, table, values={'n': 1}, by={'id': key})\n\n"
         "async def bump(pool, key):\n    await _fenced(pool, 't', key)\n    await announce_change('t', [key])\n",
+        # the collection calling its own delete_prefixes is the epoch-advancing primitive the advice names
+        "class WidgetCollection:\n    async def delete_prefixes(self, prefixes, *, conn):\n        return 0\n\n"
+        "    async def _delete_replaced(self, replaces, conn):\n        await self.delete_prefixes(replaces, conn=conn)\n",
     ],
     RULE_WHOLE_REREAD: [
         "async def one(pool, key):\n    return await pool.fetchrow('SELECT * FROM roles WHERE id = $1', key)\n",

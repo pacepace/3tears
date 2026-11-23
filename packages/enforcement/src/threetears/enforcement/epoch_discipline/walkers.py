@@ -89,6 +89,13 @@ _BACKEND_BULK_WRITES: Final[frozenset[str]] = frozenset(
     {"truncate", "load_files", "copy_many", "upsert_many", "delete_many", "delete_prefixes", "upsert_ordered"}
 )
 
+#: the bulk writes a collection itself offers as its epoch-advancing primitive, the call the epoch-bypass advice sends
+#: callers to: ``SchemaBackedCollection.delete_prefixes`` settles the prefixes it deletes when the caller's
+#: transaction ends. A call of one is that primitive, not a bypass, only as ``self.<name>(...)`` written inside a
+#: collection class (its name ends ``Collection``) whose own body defines ``<name>``; on any other receiver, or in any
+#: other class, the same name is a store's raw bulk write and still fires
+_COLLECTION_OWN_BULK_WRITES: Final[frozenset[str]] = frozenset({"delete_prefixes"})
+
 #: backend row writes, counted only on a receiver that names a backend or L3.
 _BACKEND_ROW_WRITES: Final[frozenset[str]] = frozenset({"upsert", "delete", "insert", "update"})
 
@@ -543,6 +550,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._announcing: list[bool] = [False]
         self._bypassing: int = 0
         self._attributes: dict[str, str] = {}
+        #: per enclosing class, innermost last: (its name, the methods its own body defines)
+        self._classes: list[tuple[str, frozenset[str]]] = []
         #: the ``whole_read`` declarations whose wrapped read the walk is inside, innermost last
         self._declared: list[DeclaredWhole] = []
         #: the module's private top-level functions, judged at their callers for epoch-bypass
@@ -626,7 +635,12 @@ class _ModuleWalk(ast.NodeVisitor):
                 and not _is_unset(value)
             ):
                 self._hit(RULE_TTL_SAFETY_NET, statement, f"{target.id}=")
+        methods = frozenset(
+            each.name for each in node.body if isinstance(each, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        self._classes.append((node.name, methods))
         self.generic_visit(node)
+        self._classes.pop()
         self._stack.pop()
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -855,6 +869,8 @@ class _ModuleWalk(ast.NodeVisitor):
             and any(part.endswith("Collection") for part in self._stack)
         ):
             self._hit(RULE_EPOCH_BYPASS, node, f"kv.{name}")
+        elif self._calls_own_primitive(node, name):
+            return
         elif isinstance(node.func, ast.Attribute) and (
             name in _BACKEND_BULK_WRITES or (name in _BACKEND_ROW_WRITES and backend)
         ):
@@ -871,6 +887,29 @@ class _ModuleWalk(ast.NodeVisitor):
                 argument = next((each.value for each in node.keywords if each.arg == keyword), None)
             table = _text(argument, self._envs[-1], self._attributes) if argument is not None else None
             self._hit(RULE_EPOCH_BYPASS, node, f"{verb} {table or '{}'}")
+
+    def _calls_own_primitive(self, node: ast.Call, name: str) -> bool:
+        """whether ``node`` is a collection calling its own epoch-advancing bulk write.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :param name: its final callee name
+        :ptype name: str
+        :return: whether it is ``self.<name>(...)``, ``name`` one of :data:`_COLLECTION_OWN_BULK_WRITES`, inside a
+            collection class whose own body defines ``name``
+        :rtype: bool
+        """
+        if name not in _COLLECTION_OWN_BULK_WRITES or not self._classes:
+            return False
+        func = node.func
+        class_name, methods = self._classes[-1]
+        return (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+            and class_name.endswith("Collection")
+            and name in methods
+        )
 
     def _sql_call(self, node: ast.Call, name: str) -> None:
         """SQL text a call runs: a raw write, a whole-table delete, a whole-table read.
