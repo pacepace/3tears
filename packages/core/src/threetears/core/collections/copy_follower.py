@@ -141,7 +141,7 @@ from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
-from threetears.core.sql_fragments import quote_identifier, unnest_key_join
+from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
     from threetears.core.cache.duckdb import DuckDBBackend
@@ -3232,8 +3232,8 @@ class CopyFollower:
         *,
         selected: str | None = None,
     ) -> Any:
-        """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read joined on
-        a leading part of the key (the whole key, or a load's prefix), never L3.
+        """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read
+        semi-joined on a leading part of the key (the whole key, or a load's prefix), never L3; each row once.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -3247,12 +3247,17 @@ class CopyFollower:
         :rtype: pyarrow.Table
         """
         selected = self._copy_columns(table) if selected is None else selected
-        keys, pk_join = unnest_key_join(columns, [table.key_cast(column) for column in columns])
+        named = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
+        cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(columns))
+        statement = (
+            f"SELECT {selected} FROM {quote_identifier(table.name)} AS t "  # noqa: S608 - trusted identifiers
+            f"WHERE ({named}) IN (SELECT {cast} FROM ({KEYS}))"
+        )
         with self._backend.read_snapshot() as cursor:
-            return cursor.execute(
-                f"SELECT {selected} FROM {quote_identifier(table.name)} AS t JOIN (SELECT {keys}) AS k ON {pk_join}",  # noqa: S608 - trusted identifiers
-                [list(column) for column in values],
-            ).fetch_arrow_table()
+            # the keys one Arrow table the statement semi-joins (run_joined), as the held rows' read does: bound as
+            # Python lists, DuckDB 1.5 looks for pandas once a value, 21.8 s for 50,000 keys of a 200,000-row copy
+            # (2026-11-23); 5 ms so
+            return run_joined(cursor, statement, [list(column) for column in values], lambda r: r.fetch_arrow_table())
 
     def _copy_rows_of_prefixes(
         self, table: FollowedTable, columns: Sequence[str], lead: Sequence[str], last: Sequence[str]
