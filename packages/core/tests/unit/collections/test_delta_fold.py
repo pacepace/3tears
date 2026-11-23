@@ -6,6 +6,7 @@ manifest at the writer's term; covered deltas and files no manifest in use names
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import time
@@ -28,7 +29,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     write_delta_file,
 )
 from threetears.core.collections import delta_fold  # noqa: E402
-from threetears.core.collections.delta_fold import DeltaFolds, DeltaScopeRule, FoldedTable  # noqa: E402
+from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
     ChangedRow,
@@ -167,18 +168,22 @@ class _Writer:
         *,
         written: Sequence[str] | None = None,
         deletes: Sequence[Sequence[Any]] = (),
+        delete_scope: Any = None,
     ) -> str:
         """a commit's delta file, saved before the commit; not yet told to the fold."""
         self.count += 1
         delta = TableDelta(
-            name=self.schema.name, types=rail_arrow_types(self.schema.columns), key=tuple(self.schema.pk_columns)
+            name=self.schema.name,
+            types=rail_arrow_types(self.schema.columns),
+            key=tuple(self.schema.pk_columns),
+            scope_column=self.schema.delta_scope,
         )
         key = set(self.schema.pk_columns)
         delta.rows(
             list(rows),
             list(written) if written is not None else [c.name for c in self.schema.columns if c.name not in key],
         )
-        delta.deletes(list(deletes))
+        delta.deletes(list(deletes), scope=delete_scope)
         file = write_delta_file(self.root, delta, f"w{self.count:04d}")
         self.files.append(file)
         return file
@@ -861,47 +866,46 @@ async def test_a_restarted_writer_relearns_its_unfolded_deltas_from_the_epoch_lo
     await writer.folds.close()
 
 
-# --- a folded table keyed without its state (scope from a key column) ----------------------------------------------
-
-
-class _StateOfRace(DeltaScopeRule):
-    """a race's state, as its office key names it: ``VA-S`` is Virginia's."""
-
-    @classmethod
-    def state_of(cls, value: Any) -> Any:
-        return str(value).split("-", 1)[0]
+# --- a folded table keyed without its state (decision 27: the state in a row column its markers carry) ----------
 
 
 def _results_schema() -> TableSchema:
+    """AP results as reports keeps them: keyed by the race, whose codes have no single shape a state can be read from;
+    the state in a row column outside the key, which every delete marker carries (``delta_scope``)."""
     return TableSchema(
         name="results",
         primary_key=("office_key", "candidate"),
         columns=[
             Column("office_key", STRING_TYPE),
             Column("candidate", STRING_TYPE),
+            Column("join_state_code", STRING_TYPE),
             Column("votes", BIGINT_TYPE, nullable=True),
         ],
         l1_eviction=TEST_L1_TABLE,
         delta_files=True,
+        delta_scope="join_state_code",
     )
 
 
-def _results(race: str, candidates: range, votes: int) -> list[dict[str, Any]]:
-    return [{"office_key": race, "candidate": f"c{c}", "votes": votes} for c in candidates]
+def _results(state: str, race: str, candidates: range, votes: int) -> list[dict[str, Any]]:
+    return [{"office_key": race, "candidate": f"c{c}", "join_state_code": state, "votes": votes} for c in candidates]
 
 
-async def test_a_table_keyed_by_race_folds_by_the_state_its_key_names(tmp_path: Path, workers: ProcessWorkers) -> None:
-    """Flips if a table keyed without its state (AP results, keyed by office_key) cannot be folded per state through a
-    rule (DeltaScopeRule) of a key column: each state one part holding every race of it (from deltas and from the rebuild's rows),
-    and a delete marker (its key alone) folded into its race's state's part; or if a scope that no key column names, or
-    a rule a worker process cannot import by name, is accepted."""
+async def test_a_table_keyed_without_its_state_files_a_delete_marker_under_the_state_it_carries(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a table keyed without its state (AP results, keyed by office_key, the state in join_state_code) cannot
+    be folded per state by that row column: each state one part holding every race of it (from deltas and from the
+    rebuild's rows), and a delete marker (its key and the state the writer named) folded into that state's part and
+    no other (decision 27); or if a scope column outside the key that the markers do not carry is accepted."""
     schema = _results_schema()
-    scope = ("office_key", "state:")
+    scope = ("join_state_code", "state:")
+    races = {"VA-S": "VA", "X12": "VA", "GA-S": "GA"}  # race codes of no one shape: the state is the row's
     l3 = _L3(
-        {"results": _results("VA-S", range(2), 1) + _results("VA-G", range(2), 1) + _results("GA-S", range(1), 1)},
+        {"results": [row for race, state in races.items() for row in _results(state, race, range(2), 1)]},
         {"results": ("office_key", "candidate")},
     )
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=scope, scope_from=_StateOfRace)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=scope)], workers=workers)
     assert await folds.start(l3, _Generations({"results": "inc:0"}), changes=_Log(), version=5) == ("results",)
     manifest = current_full_manifest(tmp_path)
     assert manifest is not None
@@ -909,25 +913,21 @@ async def test_a_table_keyed_by_race_folds_by_the_state_its_key_names(tmp_path: 
     va = _part(tmp_path, "results", "state:VA")
     assert va is not None and va.rows == 4, "both of Virginia's races in its one part"
     writer = _Writer(tmp_path, schema, folds)
-    await writer.commit(_results("VA-S", range(2, 40), 3) + _results("VA-G", range(2, 40), 3))
-    await writer.commit(deletes=[("VA-S", "c0")])
-    await writer.commit(_results("VA-G", range(40, 200), 4))
+    await writer.commit(_results("VA", "VA-S", range(2, 40), 3) + _results("VA", "X12", range(2, 40), 3))
+    ga_before = _part(tmp_path, "results", "state:GA")
+    await writer.commit(deletes=[("VA-S", "c0"), ("X12", "c1")], delete_scope="VA")
+    await writer.commit(_results("VA", "X12", range(40, 200), 4))
     va = _part(tmp_path, "results", "state:VA")
     assert va is not None
     held = {(row["office_key"], row["candidate"]) for row in _part_rows(tmp_path, va)}
-    assert ("VA-S", "c0") not in held, "the delete marker named its state through its race"
-    assert ("VA-S", "c1") in held and ("VA-G", "c199") in held
-    assert all(key.startswith("VA-") for key, _ in held)
-    assert [p.rows for p in manifest.tables["results"].parts if p.scope == "state:GA"] == [1]
+    assert ("VA-S", "c0") not in held and ("X12", "c1") not in held, "each marker folded under the state it carries"
+    assert ("VA-S", "c1") in held and ("X12", "c199") in held
+    assert all(races[race] == "VA" for race, _ in held)
+    assert _part(tmp_path, "results", "state:GA") == ga_before, "no other state's part is touched"
     await folds.close()
+    unmarked = dataclasses.replace(schema, delta_scope=None)
     with pytest.raises(ValueError, match="must be a key column"):
-        FoldedTable.of(schema, scope=("votes", "state:"), scope_from=_StateOfRace)
-
-    class _Local(DeltaScopeRule):
-        pass
-
-    with pytest.raises(ValueError, match="declared at module level"):
-        FoldedTable.of(schema, scope=scope, scope_from=_Local)
+        FoldedTable.of(unmarked, scope=scope)
 
 
 # --- a new incarnation of a table's generation (its log lost) ----------------------------------------------------

@@ -388,7 +388,9 @@ class CallerTransaction:
         if collection.writes_delta_files:
             self._delta_of(collection).arrow(rows, written)
 
-    def record_deletes(self, collection: BaseCollection[Any], keys: Sequence[Sequence[Any]]) -> None:
+    def record_deletes(
+        self, collection: BaseCollection[Any], keys: Sequence[Sequence[Any]], *, scope: Any = None
+    ) -> None:
         """record keys ``collection`` deleted in this transaction, each its values in key order, as its table's delete
         markers; nothing for a table that does not opt in. One key a key the delete enrolled.
 
@@ -396,11 +398,15 @@ class CallerTransaction:
         :ptype collection: BaseCollection
         :param keys: the keys
         :ptype keys: Sequence[Sequence[Any]]
+        :param scope: for a table whose key does not name a row's state, the keys' state, which each marker carries
+            (:meth:`~threetears.core.collections.delta_files.TableDelta.deletes`, decision 27); None otherwise
+        :ptype scope: Any
         :return: nothing
         :rtype: None
+        :raises DeltaFileRefusedError: when the table's markers carry a state and none is given
         """
         if collection.writes_delta_files:
-            self._delta_of(collection).deletes(keys)
+            self._delta_of(collection).deletes(keys, scope=scope)
 
     def record_prefixes(self, collection: BaseCollection[Any], prefixes: Sequence[Mapping[str, Any]]) -> None:
         """record key prefixes ``collection`` deleted whole in this transaction, as its table's delta file names them

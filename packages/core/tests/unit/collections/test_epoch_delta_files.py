@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -28,6 +30,7 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.delta_files import DeltaFileRefusedError, read_delta_file
 from threetears.core.collections.epoch_change import (
     ChangedRow,
     advance_recording,
@@ -51,7 +54,7 @@ from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 from packages.core.tests.durable_support import ConnOnlyPool
 
-pytest.importorskip("pyarrow")
+pa = pytest.importorskip("pyarrow")
 
 _FILE = "results/0123456789abcdef0123456789abcdef.arrow"
 
@@ -258,6 +261,91 @@ async def test_a_commit_that_did_not_land_names_no_file(tmp_path: Path, monkeypa
         async with CallerTransaction(conn):
             await results.save_rows(_ROWS, conn=conn)
     assert [file for _, file in source.files] == [None] * len(source.files)
+
+
+def _ap_schema() -> TableSchema:
+    """AP results as reports keeps them: keyed by the race (``office_key``), whose codes have no single shape a state can
+    be read from; the state in a row column outside the key."""
+    return TableSchema(
+        name="ap_results",
+        primary_key=("office_key", "candidate"),
+        columns=[
+            Column("office_key", STRING_TYPE),
+            Column("candidate", STRING_TYPE),
+            Column("join_state_code", STRING_TYPE),
+            Column("votes", INT_TYPE, nullable=True),
+        ],
+        l1_eviction=TEST_L1_TABLE,
+        delta_files=True,
+        delta_scope="join_state_code",
+    )
+
+
+class _CountingConn(_Conn):
+    """a caller's connection that keeps every statement it is sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.statements: list[str] = []
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        self.statements.append(sql)
+        return "DELETE 1"
+
+
+async def test_a_delete_of_a_table_keyed_without_its_state_carries_the_state_or_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a delete marker of a table whose key does not name its state (AP results, keyed by the race) is saved
+    without the state the writer named for the delete (decision 27: the fold files the marker under that state's
+    part), or if such a delete naming no state reaches L3 instead of being refused before any statement: a marker of no
+    state would be folded under no state's part, and the deleted row would stay in the full."""
+    monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
+    source, registry = _Source(), CollectionRegistry()
+    registry.set_generation_source(source)
+    base = collection_for_schema(_ap_schema(), entity_class=_Row)
+    results = type("_ApResults", (base,), {"write_generation": WRITE_GENERATION})(registry, DefaultCoreConfig(), None)
+    results.l3_pool = ConnOnlyPool()
+    conn = _CountingConn()
+    async with CallerTransaction(conn) as transaction:
+        await results.delete_rows([("VA-S", "c0"), ("VA-G", "c1")], conn=conn, delta_scope="VA")
+    markers = read_delta_file(tmp_path / transaction.delta_files["ap_results"]).changes
+    assert [(c.deleted, c.row["office_key"], c.row["candidate"], c.row["join_state_code"]) for c in markers] == [
+        (True, "VA-S", "c0", "VA"),
+        (True, "VA-G", "c1", "VA"),
+    ]
+    for delete in (results.delete_rows, results.delete_arrow):
+        refused = _CountingConn()
+        keys: Any = [("GA-S", "c0")]
+        if delete == results.delete_arrow:
+            keys = pa.table({"office_key": ["GA-S"], "candidate": ["c0"]})
+        with pytest.raises(DeltaFileRefusedError, match="join_state_code"):
+            async with CallerTransaction(refused):
+                await delete(keys, conn=refused)
+        assert refused.statements == [], "refused before any statement reached L3"
+    # a state named for a table whose key names it, or that declares none, is refused too: it would be dropped
+    with pytest.raises(ValueError, match="delta_scope"):
+        async with CallerTransaction(_CountingConn()) as other:
+            await _collection(registry, "results", opted_in=True).delete_rows(
+                [("sn_NC1", "00001")], conn=other.conn, delta_scope="NC"
+            )
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"delta_scope": "office_key"}, "names it already"),
+        ({"delta_scope": "nowhere"}, "not a column"),
+        ({"delta_files": False}, "opts in to delta files"),
+    ],
+)
+def test_a_delta_scope_is_a_row_column_outside_the_key_of_an_opted_in_table(
+    changes: dict[str, Any], match: str
+) -> None:
+    """Flips if a table declares as its delete markers' state a column its key already names (no marker needs it), a
+    column it does not have, or declares one without opting in to delta files (no marker is ever written)."""
+    with pytest.raises(ValueError, match=match):
+        dataclasses.replace(_ap_schema(), **changes)
 
 
 _TX_ID = str(uuid.UUID("00000000-0000-4000-8000-000000000903"))

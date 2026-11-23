@@ -139,7 +139,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; a fold refuses without it, saying so
     _PYARROW = False
 
-__all__ = ["DeltaFolds", "DeltaScopeRule", "FoldedTable"]
+__all__ = ["DeltaFolds", "FoldedTable"]
 
 log = get_logger(__name__)
 
@@ -200,30 +200,6 @@ _FULLS_PREFIX: Final = ".fulls/"
 _Share = tuple[str, str | None, str, str, int]
 
 
-class DeltaScopeRule:
-    """the state a key column's value names, for a table keyed without its state (AP results, keyed by the race,
-    ``office_key``); subclass it and override :meth:`state_of`.
-
-    A class, not a function, as :class:`~threetears.core.collections.delta_keep.DeltaKeepRule` is: a round runs in a
-    worker process, which is handed plain data and classes (by name), never a function or an object. Declared at
-    module level, so the worker can import it.
-    """
-
-    @classmethod
-    def state_of(cls, value: Any) -> Any:
-        """the state the key column's ``value`` names, as its scope's suffix (``VA`` for the scope ``state:VA``).
-
-        Runs in the fold's worker process. Pure: the same value in, the same state out, for every row and every delete
-        marker of the key.
-
-        :param value: the key column's value
-        :ptype value: Any
-        :return: the state
-        :rtype: Any
-        """
-        return value
-
-
 @dataclass(frozen=True, slots=True)
 class FoldedTable:
     """one table the writer folds, as its schema declares it.
@@ -232,11 +208,13 @@ class FoldedTable:
     :ivar key: its key columns, in key order
     :ivar columns: its columns, in the order its delta files and parts hold them
     :ivar scope: the scope each row belongs to, ``(column, prefix)`` as the writer's seqlock names it (a row's state is
-        ``prefix + str(row[column])``, or ``prefix + str(scope_from.state_of(row[column]))``); one part a state. The column is
-        a key column, so a delete marker (its key alone) still names its state. None: one part for the whole table
-    :ivar scope_from: for a table keyed without its state (AP results, keyed by the race, ``office_key``), the rule
-        from the scope column's value to the state (:class:`DeltaScopeRule`): ``scope=("office_key", "state:")`` with
-        the race's state. None: the column's value is the state
+        ``prefix + str(row[column])``); one part a state. The column is a key column, or the row column every delete
+        marker of the table carries its state in (:attr:`delta_scope`), so each marker names its state. None: one part
+        for the whole table
+    :ivar delta_scope: the row column a delete marker carries its state in, for a table keyed without its state (AP
+        results, keyed by the race, the state in ``join_state_code``;
+        :attr:`~threetears.core.collections.schema_backed.TableSchema.delta_scope`, decision 27); None when the key
+        names it
     :ivar keep: the rows a part keeps (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_keep`); None
         keeps every row
     :ivar kinds: each column's type tag, ``(column, column_type)`` in :attr:`columns`' order: how the writer's rebuild
@@ -249,36 +227,22 @@ class FoldedTable:
     scope: tuple[str, str] | None = None
     keep: type[DeltaKeepRule] | None = None
     kinds: tuple[tuple[str, str], ...] = ()
-    scope_from: type[DeltaScopeRule] | None = None
+    delta_scope: str | None = None
 
     def __post_init__(self) -> None:
         missing = [column for column in self.key if column not in self.columns]
         if missing:
             raise ValueError(f"{self.name}: key columns {missing} are not among its columns")
-        if self.scope is not None and self.scope[0] not in self.key:
-            # a delete marker carries the key alone: a scope derived from no key column leaves a delete's state
-            # unknown, so no one state's part could be folded past it
+        if self.scope is not None and self.scope[0] not in self.key and self.scope[0] != self.delta_scope:
+            # a delete marker carries the key, and the state only in the table's delta_scope: a scope from any other
+            # column leaves a delete's state unknown, so no one state's part could be folded past it
             raise ValueError(
                 f"{self.name}: its scope column {self.scope[0]!r} must be a key column, so each delete marker names "
-                f"its state (a state outside the key is derived from a key column with scope_from)"
+                f"its state, or the row column the table's markers carry the state in (TableSchema.delta_scope)"
             )
-        if self.scope_from is not None:
-            if self.scope is None:
-                raise ValueError(f"{self.name}: scope_from derives a state from the scope column; name scope too")
-            if not (isinstance(self.scope_from, type) and issubclass(self.scope_from, DeltaScopeRule)):
-                raise ValueError(f"{self.name}: scope_from is a DeltaScopeRule subclass")
-            if "<" in self.scope_from.__qualname__:
-                # a round runs in a worker process, which imports the class by its module and name
-                raise ValueError(f"{self.name}: scope_from must be declared at module level, not in a function")
 
     @classmethod
-    def of(
-        cls,
-        schema: TableSchema,
-        *,
-        scope: tuple[str, str] | None = None,
-        scope_from: type[DeltaScopeRule] | None = None,
-    ) -> FoldedTable:
+    def of(cls, schema: TableSchema, *, scope: tuple[str, str] | None = None) -> FoldedTable:
         """a table as its schema declares it: its key, its columns as its delta files type them, its keep rule.
 
         :param schema: the table's schema; it must opt in to delta files
@@ -286,9 +250,6 @@ class FoldedTable:
         :param scope: the scope each row belongs to, ``(column, prefix)``, as its copy follows it
             (:attr:`~threetears.core.collections.copy_follower.FollowedTable.scope`); None folds the table whole
         :ptype scope: tuple[str, str] | None
-        :param scope_from: the rule from the scope column's value to the state, for a table keyed without its state
-            (:attr:`scope_from`); None: the column's value is the state
-        :ptype scope_from: type[DeltaScopeRule] | None
         :return: the table
         :rtype: FoldedTable
         :raises ValueError: when the table does not opt in to delta files
@@ -302,17 +263,17 @@ class FoldedTable:
             scope=scope,
             keep=schema.delta_keep,
             kinds=tuple((column.name, column.column_type) for column in schema.columns),
-            scope_from=scope_from,
+            delta_scope=schema.delta_scope,
         )
 
     def plain(self) -> tuple[Any, ...]:
         """the table as a worker process is handed it: plain data, and its keep rule's class by name.
 
-        :return: ``(name, key, columns, scope column, scope prefix, keep, scope_from)``
+        :return: ``(name, key, columns, scope column, scope prefix, keep)``
         :rtype: tuple
         """
         column, prefix = self.scope if self.scope is not None else (None, None)
-        return (self.name, self.key, self.columns, column, prefix, self.keep, self.scope_from)
+        return (self.name, self.key, self.columns, column, prefix, self.keep)
 
 
 class DeltaFolds:
@@ -1153,8 +1114,7 @@ def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[
         states.append((None, rows))
     else:
         values = rows.column(table.scope_column)
-        # several values may name one state (a table keyed by the race: each race's rows are its state's), so the
-        # values are grouped by the state they name: one part a state
+        # the values grouped by the state they name (each value's text, under the scope's prefix): one part a state
         by_state: dict[str, list[Any]] = {}
         for value in pc.unique(values).to_pylist():
             by_state.setdefault(table.scope_of(value), []).append(value)
@@ -1347,17 +1307,16 @@ class _Folding:
     scope_column: str | None
     scope_prefix: str | None
     keep: type[DeltaKeepRule] | None
-    scope_from: type[DeltaScopeRule] | None = None
 
     @classmethod
     def of(cls, plain: tuple[Any, ...]) -> _Folding:
-        name, key, columns, column, prefix, keep, scope_from = plain
-        return cls(name, tuple(key), tuple(columns), column, prefix, keep, scope_from)
+        name, key, columns, column, prefix, keep = plain
+        return cls(name, tuple(key), tuple(columns), column, prefix, keep)
 
     def scope_of(self, value: Any) -> str:
-        """a row's state from its scope column's value (through :attr:`FoldedTable.scope_from` when the column names
-        the state only by way of another key, a race), as the writer's seqlock names it."""
-        return f"{self.scope_prefix}{value if self.scope_from is None else self.scope_from.state_of(value)}"
+        """a row's state from its scope column's value (a delete marker's included: the key's, or the state the
+        table's markers carry), as the writer's seqlock names it."""
+        return f"{self.scope_prefix}{value}"
 
 
 def _read_ipc(path: Path) -> Any:

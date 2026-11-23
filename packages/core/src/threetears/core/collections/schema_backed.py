@@ -110,6 +110,7 @@ from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     LoadDelta,
     TableDelta,
+    check_delta_scope,
     load_delta_rows,
 )
 from threetears.core.collections.delta_keep import DeltaKeepRule
@@ -1273,6 +1274,13 @@ class TableSchema:
         process as its name); None keeps every row. Read only for a table that opts in (:attr:`delta_files`): the
         same rule the table's copy keeps by, so a full holds what a copy holds (``design-pod-delta-files.md``,
         decision 13)
+    :cvar delta_scope: for a table that opts in to delta files and whose key does not name a row's state (AP results,
+        keyed by the race, ``office_key``, with the state in ``join_state_code``), the row column holding the state: a
+        delete marker carries the key alone otherwise, and fulls are cut per state, so each of the table's deletes
+        names the state of the keys it deletes (``delete_rows(..., delta_scope=...)``), the marker carries it in this
+        column, and the fold files the delete under that state's part (``design-pod-delta-files.md``, decision 27). A
+        delete naming no state is refused before it reaches L3. None: the key names the state, or the table is not cut
+        per state
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -1363,6 +1371,8 @@ class TableSchema:
     # the rows of each state a full of the table keeps at a fold (threetears.core.collections.delta_fold); a class,
     # compared and hashed by its name like every other field, so the schema stays a value
     delta_keep: type[DeltaKeepRule] | None = None
+    # the row column a delete marker carries the row's state in, for a table whose key does not name it (decision 27)
+    delta_scope: str | None = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -1394,6 +1404,8 @@ class TableSchema:
         object.__setattr__(self, "_delta_defaults", self._refuse_undecided() if self.delta_files else {})
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
+        if self.delta_scope is not None:
+            self._check_delta_scope(pk_cols)
         # coerce partition columns to immutable so callers do not have
         # to declare both flags. partition columns identify the slot a
         # row belongs to; mutating the value would corrupt the partition
@@ -1638,6 +1650,30 @@ class TableSchema:
                 f"TableSchema(name={self.name!r}): a table carrying the compare-and-swap order "
                 f"needs on_conflict='update' and no cas_null_safe fence -- its persist is the "
                 f"ordered ON CONFLICT DO UPDATE, fenced on the order and nothing else",
+            )
+
+    def _check_delta_scope(self, pk_cols: tuple[str, ...]) -> None:
+        """refuse a :attr:`delta_scope` no delete marker could carry, or none needs.
+
+        :param pk_cols: the key columns
+        :ptype pk_cols: tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table does not opt in to delta files, the column is not one of its columns, or
+            its key names the column already
+        """
+        name = self.delta_scope
+        if not self.delta_files:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): delta_scope={name!r} names the state a delete marker carries; only "
+                f"a table that opts in to delta files writes one (delta_files=True)"
+            )
+        if name not in {column.name for column in self.columns}:
+            raise ValueError(f"TableSchema(name={self.name!r}): delta_scope={name!r} is not a column of the table")
+        if name in pk_cols:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): delta_scope={name!r} is a key column: the key names it already, "
+                f"so every delete marker carries it"
             )
 
     def _refuse_undecided(self) -> dict[str, Any]:
@@ -2545,6 +2581,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             types=rail_arrow_types(self.schema.columns),
             key=self.schema.pk_columns,
             defaults=self.schema.delta_file_defaults,
+            scope_column=self.schema.delta_scope,
         )
 
     def _refuse_unfiled(self, writer: str) -> None:
@@ -3890,6 +3927,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         *,
         conn: Any,
         max_rows: int | None = None,
+        delta_scope: Any = None,
     ) -> int:
         """delete many rows by key on a caller's transaction, through the collection's durable store.
 
@@ -3911,13 +3949,22 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param max_rows: the most keys one statement names, at least one; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
+        :param delta_scope: for a table whose key does not name a row's state
+            (:attr:`TableSchema.delta_scope`), the state of every key deleted: each delete marker of the table's delta
+            file carries it, and the fold files the delete under that state's part (decision 27). A writer deletes
+            within one state's load, so it knows it. None for any other table
+        :ptype delta_scope: Any
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection
             has no durable store, caches absences or defers its L3 writes; when ``max_rows`` is under
-            one; when a key is not as wide as the table's key
+            one; when a key is not as wide as the table's key; when ``delta_scope`` is given for a table that declares
+            none
+        :raises DeltaFileRefusedError: when the table declares a :attr:`TableSchema.delta_scope` and no
+            ``delta_scope`` is given, before any statement
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_rows")
+        self._check_delta_scope(delta_scope)
         store = self._durable_store()
         if store is None:
             raise ValueError(
@@ -3940,7 +3987,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             else self._delete_keys_named(keys)
         )
         # each key named is a delete marker in the table's delta file, whichever way it is enrolled below
-        transaction.record_deletes(self, named)
+        transaction.record_deletes(self, named, scope=delta_scope)
         if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
             return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         # a collection whose row messages carry columns reads each row before it goes, on the caller's
@@ -3984,6 +4031,20 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    def _check_delta_scope(self, delta_scope: Any) -> None:
+        """refuse a bulk delete whose delete markers could not name their state, before anything is sent
+        (:func:`~threetears.core.collections.delta_files.check_delta_scope`): the table declares a
+        :attr:`TableSchema.delta_scope` and the delete names no state, or it declares none and the delete names one.
+
+        :param delta_scope: the state the delete named, or None
+        :ptype delta_scope: Any
+        :return: nothing
+        :rtype: None
+        :raises DeltaFileRefusedError: when the table's markers carry a state and none is named
+        :raises ValueError: when a state is named for a table whose markers carry none
+        """
+        check_delta_scope(self.table_name, self.schema.delta_scope, delta_scope)
 
     def _delete_keys_named(
         self, keys: Sequence[Sequence[Any]], loop: asyncio.AbstractEventLoop | None = None
@@ -4039,7 +4100,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return entity_keys, CallerTransaction.enrollments(self, entity_keys, seen, turns)
 
-    async def delete_arrow(self, keys: Any, *, conn: Any, max_rows: int | None = None) -> int:
+    async def delete_arrow(self, keys: Any, *, conn: Any, max_rows: int | None = None, delta_scope: Any = None) -> int:
         """:meth:`delete_rows` for keys already in an Arrow table: deleted through the store's Arrow write door, the
         keys sent as Arrow and merged by one ``DELETE ... USING`` a request, at most ``max_rows`` keys a request
         (:attr:`BULK_MAX_ROWS` when None), as :meth:`delete_rows` names them a statement: the request is one
@@ -4057,13 +4118,18 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param max_rows: the most keys one request names, at least one; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
+        :param delta_scope: the state of every key deleted, for a table whose key does not name it (as
+            :meth:`delete_rows`)
+        :ptype delta_scope: Any
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: as :meth:`delete_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store,
             a collection that caches absences or defers its L3 writes; when the keys lack a key column; when
-            ``max_rows`` is under one
+            ``max_rows`` is under one; a ``delta_scope`` for a table that declares none
+        :raises DeltaFileRefusedError: as :meth:`delete_rows`, when the table's markers carry a state and none is given
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_arrow")
+        self._check_delta_scope(delta_scope)
         if max_rows is not None and max_rows < 1:
             raise ValueError(f"{self.table_name}.delete_arrow: max_rows must be at least 1, got {max_rows}")
         store = self._durable_store()
@@ -4096,10 +4162,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         if arrow_store is None or plan is None:
             # no door for these keys, or messages that carry each row's columns: today's delete
-            return await self.delete_rows(named, conn=conn, max_rows=max_rows)
+            return await self.delete_rows(named, conn=conn, max_rows=max_rows, delta_scope=delta_scope)
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
-        transaction.record_deletes(self, named)
+        transaction.record_deletes(self, named, scope=delta_scope)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         await arrow_store.write_arrow(

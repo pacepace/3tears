@@ -8,7 +8,8 @@ nothing expires on a timer (``design-pod-delta-files.md``, decisions 5, 6, 9, 11
 
 **One file per table per commit.** A commit is one epoch of each table it wrote (the broker advances each table once
 for it), so the file holds every row the commit wrote to the table, in the order written, and a delete marker
-(:data:`_DELETED_COLUMN` true, the key columns set, every other column null) for each key it deleted. The columns are
+(:data:`_DELETED_COLUMN` true, the key columns set, every other column null but, for a table keyed without its
+state, the state the delete named in its ``delta_scope`` column, decision 27) for each key it deleted. The columns are
 the table's own, typed as the L3 rail answers them (:func:`~threetears.core.collections.schema_backed.rail_arrow_types`):
 the same table a copy reads from L3 today, so applying a file and reading the keys from L3 stage the same rows. The
 schema's metadata names the table, the write (a unique id: the commit's version is the broker's, known only after the
@@ -85,6 +86,7 @@ __all__ = [
     "LoadDelta",
     "TableDelta",
     "apply_delta_row",
+    "check_delta_scope",
     "delta_files_root",
     "load_delta_rows",
     "read_delta_file",
@@ -144,6 +146,35 @@ class DeltaFileRefusedError(RuntimeError):
 
     Raised before the commit: the transaction rolls back, and nothing of the write reaches L3.
     """
+
+
+def check_delta_scope(table: str, scope_column: str | None, scope: Any) -> None:
+    """refuse a delete whose markers could not name their state: a table whose key does not name a row's state
+    (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_scope`) deletes naming the state, and a table
+    whose key names it names none (decision 27).
+
+    :param table: the table
+    :ptype table: str
+    :param scope_column: the row column its markers carry the state in; None when its key names it
+    :ptype scope_column: str | None
+    :param scope: the state the delete named; None when it named none
+    :ptype scope: Any
+    :return: nothing
+    :rtype: None
+    :raises DeltaFileRefusedError: when the markers carry a state and none was named
+    :raises ValueError: when a state was named for a table whose markers carry none
+    """
+    if scope_column is not None and scope is None:
+        raise DeltaFileRefusedError(
+            f"{table}: its key does not name a row's state, so each delete names the state of the keys it deletes "
+            f"(delta_scope=, the value of {scope_column!r} in their rows): its delete markers carry it, and the fold "
+            f"files each under that state's part (design-pod-delta-files.md, decision 27)"
+        )
+    if scope_column is None and scope is not None:
+        raise ValueError(
+            f"{table}: a delete named the state {scope!r}, but the table declares no delta_scope (its key names the "
+            f"state, or it does not opt in to delta files): no marker would carry it"
+        )
 
 
 def _prefix_text(prefix: Mapping[str, Any]) -> dict[str, str]:
@@ -223,15 +254,19 @@ class TableDelta:
         row holds it rather than null
     :ivar prefixes: the key prefixes the write cleared before its rows, as text (:func:`_prefix_text`), each once: a
         key-prefix delete's, or a load's that replaces them (decision 23)
+    :ivar scope_column: the row column a delete marker carries its row's state in, for a table whose key does not name
+        it (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_scope`, decision 27); None when the key
+        names it
     """
 
     name: str
     types: Mapping[str, Any]
     key: tuple[str, ...]
-    parts: list[tuple[str, Any, Any]] = field(default_factory=list)
+    parts: list[tuple[Any, ...]] = field(default_factory=list)
     entries: int = 0
     defaults: Mapping[str, Any] = field(default_factory=dict)
     prefixes: list[dict[str, str]] = field(default_factory=list)
+    scope_column: str | None = None
 
     def clears(self, prefixes: Sequence[Mapping[str, Any]]) -> None:
         """add key prefixes the write cleared: every row under each left L3 before the rows the delta holds went in.
@@ -286,16 +321,25 @@ class TableDelta:
             self.parts.append(("arrow", rows, written))
             self.entries += int(rows.num_rows)
 
-    def deletes(self, keys: Sequence[Sequence[Any]]) -> None:
-        """add keys deleted, each its values in key order.
+    def deletes(self, keys: Sequence[Sequence[Any]], *, scope: Any = None) -> None:
+        """add keys deleted, each its values in key order, and, for a table whose key does not name a row's state,
+        the state of them all: each marker carries it in :attr:`scope_column`, so the fold files the delete under that
+        state's part (decision 27).
 
         :param keys: the keys
         :ptype keys: Sequence[Sequence[Any]]
+        :param scope: the keys' state, the value of :attr:`scope_column` in each of their rows; None for a table whose
+            key names it
+        :ptype scope: Any
         :return: nothing
         :rtype: None
+        :raises DeltaFileRefusedError: when the table's markers carry a state and none is given: the marker would be
+            filed under no state's part, and the deleted row would stay in the full
+        :raises ValueError: when a state is given for a table whose markers carry none
         """
         if keys:
-            self.parts.append(("deletes", keys, ()))
+            check_delta_scope(self.name, self.scope_column, scope)
+            self.parts.append(("deletes", keys, (), scope))
             self.entries += len(keys)
 
     def table(self, write_id: str) -> Any:
@@ -323,13 +367,17 @@ class TableDelta:
             return sets.setdefault(named, len(sets))
 
         segments = []
-        for kind, part, written in self.parts:
+        for kind, part, written, *scoped in self.parts:
             if kind == "rows":
                 segment = _rail_arrow_table(_defaulted(part, self.defaults), self.types)
             elif kind == "arrow":
                 segment = _typed(part, self.types, self.defaults)
             else:
-                segment = _rail_arrow_table([dict(zip(self.key, key, strict=True)) for key in part], self.types)
+                # a marker of a table keyed without its state carries the state the delete named (decision 27)
+                state = {} if self.scope_column is None else {self.scope_column: scoped[0]}
+                segment = _rail_arrow_table(
+                    [{**dict(zip(self.key, key, strict=True)), **state} for key in part], self.types
+                )
             if kind == "rows" and written and not isinstance(written[0], str):
                 indices = [index(columns) for columns in written]
             else:
