@@ -104,7 +104,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.delta_files import (
     _DELETED_COLUMN,
@@ -201,6 +201,23 @@ _RECOVERIES = counter(
     description="writer recoveries of a table's full after its epoch log was lost: the keys its leftover delta files "
     "name read from L3 by key, folded as one recovery delta; by table, why and outcome",
     label_names=("table", "why", "outcome"),
+)
+
+#: what the writer holds unfolded, by table, from the fold's own bookkeeping (gap 3): the delta files told and not yet
+#: in a published full, and the bytes of their shares a round has measured (a file told counts in the files at once,
+#: in the bytes once the round its commit starts has measured it). Zero while every delta is folded; a value that keeps
+#: growing is a fold falling behind, or a state never due, before any copy's start grows slow
+_UNFOLDED_FILES = gauge(
+    "delta_fold_unfolded_files",
+    description="delta files the writer's fold holds unfolded (told, not yet in a published full), by table; zero "
+    "while every delta is folded",
+    label_names=("table",),
+)
+_UNFOLDED_BYTES = gauge(
+    "delta_fold_unfolded_bytes",
+    description="bytes of the delta files the writer's fold holds unfolded, as its rounds measured each state's share, "
+    "by table; zero while every delta is folded",
+    label_names=("table",),
 )
 
 #: why a table starts fresh: it was reset, or recreated by a migration (:meth:`DeltaFolds.start_fresh`)
@@ -330,6 +347,8 @@ class DeltaFolds:
         self._since = time.time()
         #: (table, file, token) of each commit not yet handed to a round that finished, in commit order
         self._queued: list[tuple[str, str, str]] = []
+        #: the commits the round running now took off the queue: still unfolded, for the gauges
+        self._taken: tuple[tuple[str, str, str], ...] = ()
         #: the moment the newest queued commit was told, or its writer's oldest work in flight: nothing saved after
         #: it is swept as an orphan
         self._before = self._since
@@ -361,6 +380,25 @@ class DeltaFolds:
         :rtype: frozenset[str]
         """
         return frozenset(file for _, file, _ in self._queued) | frozenset(share[2] for share in self._pending)
+
+    def _measure(self) -> None:
+        """set the unfolded gauges of every folded table from the fold's bookkeeping: the files queued, in the round
+        running and held in shares not folded yet, and the bytes of those shares. Called wherever that bookkeeping
+        changes; a dict walk of what the fold already holds, no file read.
+
+        :return: nothing
+        :rtype: None
+        """
+        files: dict[str, set[str]] = {name: set() for name in self.tables}
+        sizes: dict[str, int] = dict.fromkeys(self.tables, 0)
+        for table, file, _ in (*self._queued, *self._taken):
+            files.setdefault(table, set()).add(file)
+        for table, _, file, _, size in self._pending:
+            files.setdefault(table, set()).add(file)
+            sizes[table] = sizes.get(table, 0) + size
+        for table in self.tables:
+            _UNFOLDED_FILES.labels(table=table).set(len(files[table]))
+            _UNFOLDED_BYTES.labels(table=table).set(sizes[table])
 
     def committed(
         self,
@@ -411,6 +449,7 @@ class DeltaFolds:
             self._queued.append((table, file, token))
         self._term = version if self._term is None else max(self._term, version)
         self._before = now if in_flight_since is None else min(now, in_flight_since)
+        self._measure()
         if self._queued:
             self._run_rounds()
 
@@ -526,6 +565,7 @@ class DeltaFolds:
             # a file gone was covered by a published full and deleted (nothing else deletes a committed delta)
             learned = [(name, file, files[file]) for file in present if file not in told]
             self._queued.extend(learned)
+            self._measure()
             _RELEARNED.labels(table=name).inc(len(learned))
             log.info(
                 "a restarted writer re-learned its unfolded delta files from the epoch log",
@@ -654,6 +694,7 @@ class DeltaFolds:
                     continue  # a table marked fresh during that rebuild is rebuilt now, not at the next commit
                 return
             taken, self._queued = self._queued, []
+            self._taken = tuple(taken)
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
             try:
@@ -672,6 +713,7 @@ class DeltaFolds:
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
                 self._queued = taken + self._queued
+                self._taken = ()
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 _ROUNDS.labels(outcome="failed").inc()
@@ -693,6 +735,8 @@ class DeltaFolds:
         """
         pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed = answer
         self._pending, self._reused, self._doomed = pending, reused, doomed
+        self._taken = ()
+        self._measure()
         _ROUNDS.labels(outcome=outcome).inc()
         for table in renewed:
             # a commit of another incarnation than the table's full: never folded across, recovered by key instead
@@ -1051,6 +1095,7 @@ class DeltaFolds:
         self._pending = tuple(share for share in self._pending if not covered(share[0], share[2], share[3]))
         left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
         self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
+        self._measure()
 
 
 @dataclass(frozen=True, slots=True)

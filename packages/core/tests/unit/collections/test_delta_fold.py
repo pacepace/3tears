@@ -273,6 +273,42 @@ async def test_a_state_folds_once_its_deltas_reach_half_its_part_and_not_before(
     await writer.folds.close()
 
 
+def _unfolded(metric: str, table: str = "votes") -> float | None:
+    return REGISTRY.get_sample_value(f"delta_fold_unfolded_{metric}", {"table": table})
+
+
+async def test_the_unfolded_gauges_rise_with_each_commit_and_fall_to_zero_once_folded(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if the writer stops saying, per table, how many delta files and bytes its fold holds unfolded (gap 3:
+    a fold that falls behind, or a state never due, shows here before a copy's start grows slow): the gauges must
+    rise with each commit the fold keeps, by exactly the bytes it measured, and read zero once every one is folded."""
+    writer = _writer(tmp_path, _votes_schema(), workers)
+    await writer.commit(
+        [{"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)]
+    )
+    assert _unfolded("files") == 0 and _unfolded("bytes") == 0, "a state with no part folds at once"
+    part = _part(tmp_path, "votes", "state:TX")
+    assert part is not None
+    held = (tmp_path / part.file).stat().st_size
+    since = 0
+    for step in range(40):
+        file = writer.save(_votes("TX", range(1000 + step * 8, 1008 + step * 8), 2))
+        size = (tmp_path / file).stat().st_size
+        writer.tell(file)
+        await writer.folds.wait()
+        if (since + size) * 2 >= held:
+            break
+        since += size
+        assert _unfolded("files") == step + 1
+        assert _unfolded("bytes") == since
+    else:
+        pytest.fail("the deltas never reached half the part")
+    assert step >= 2, "the deltas were meant to take several commits to reach half the part"
+    assert _unfolded("files") == 0 and _unfolded("bytes") == 0, "every delta folded"
+    await writer.folds.close()
+
+
 async def test_the_folded_part_is_every_delta_applied_to_the_old_part(tmp_path: Path, workers: ProcessWorkers) -> None:
     """Flips if the fold stops merging as L3 merged (decisions 9 and 19): a column a write left out losing its value, a
     delete marker leaving its row, a delta applied out of order, or one state's rows reaching another's part."""
