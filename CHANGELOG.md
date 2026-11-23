@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a copy follower applies an opted-in table's changes from its delta files
+
+**Added:** `FollowedTable.delta_files` (`FollowedTable.of` takes it from `TableSchema.delta_files`). A `CopyFollower`
+keeps the epoch each key of such a table was heard at, reads the epoch's record for the delta file it names, and
+stages the key's row as the copy holds it with each of its epochs' changes applied in order (`apply_delta_row`): no
+statement reaches L3. A key left out of a change (its scope moved while the pass read) keeps its epochs and is staged
+again from its files. A key whose file cannot be had is read from L3 by key as before, counted in
+`copy_follower_delta_file_fallback_keys_total{table, why}` (`file_missing`, `key_not_in_file` and `record_missing`
+logged at WARNING; `no_file_named` and `no_epoch` at INFO). A table that does not opt in is unchanged.
+
 ### core: an epoch record names its commit's delta file
 
 **Added:** `EpochChange.delta_file` (optional; `epoch_change_body(delta_file=)`) names the commit's delta file of the
