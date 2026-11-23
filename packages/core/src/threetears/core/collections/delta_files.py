@@ -102,9 +102,11 @@ __all__ = [
     "load_delta_rows",
     "read_delta_file",
     "read_delta_file_reach",
+    "read_volume_file",
     "sweep_orphan_delta_files",
     "under_prefix",
     "write_delta_file",
+    "write_volume_file",
 ]
 
 log = get_logger(__name__)
@@ -142,7 +144,7 @@ _DELTA_FORMAT: Final = b"4"
 #: the codec inside the file's IPC buffers
 _COMPRESSION: Final = "zstd"
 
-#: the mark that ends every file on the volume, after the sha256 of the IPC bytes before it (:func:`_write_checked_ipc`)
+#: the mark that ends every file on the volume, after the sha256 of the IPC bytes before it (:func:`write_volume_file`)
 _CHECKSUM_MARK: Final = b"3tsha256"
 #: the trailer's length: the digest, then the mark
 _CHECKSUM_TRAILER: Final = 32 + len(_CHECKSUM_MARK)
@@ -584,7 +586,7 @@ class _HashingSink:
         return self._hash.digest()
 
 
-def _write_checked_ipc(sink: BinaryIO, table: Any) -> None:
+def write_volume_file(sink: BinaryIO, table: Any) -> None:
     """write ``table`` to ``sink`` as Arrow IPC with zstd inside, then its checksum trailer: the sha256 of every IPC
     byte, then :data:`_CHECKSUM_MARK`. Blocking. Every file on the delta-files volume is written so (module docstring).
 
@@ -624,7 +626,7 @@ def _checked_ipc(path: Path) -> Any:
     return body
 
 
-def _read_checked_ipc(path: Path, *, columns: Sequence[str] | None = None) -> Any:
+def read_volume_file(path: Path, *, columns: Sequence[str] | None = None) -> Any:
     """a volume file's table, its checksum verified first (:func:`_checked_ipc`); Arrow's own decode failures raised
     as Arrow raises them (a caller in :func:`_decoding` gets them as unreadable). Blocking.
 
@@ -666,7 +668,7 @@ def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
     with _decoding(path):
-        read = _read_checked_ipc(path)
+        read = read_volume_file(path)
         read.validate(full=True)
         metadata = read.schema.metadata or {}
         named, write = _checked_metadata(path, metadata, table)
@@ -843,7 +845,7 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     renamed = False
     try:
         with partial.open("wb") as sink:
-            _write_checked_ipc(sink, table)
+            write_volume_file(sink, table)
             sink.flush()
             os.fsync(sink.fileno())
         os.replace(partial, final)

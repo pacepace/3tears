@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import get_logger
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
-from threetears.core.collections.delta_files import _read_checked_ipc, _write_checked_ipc
+from threetears.core.collections.delta_files import read_volume_file, write_volume_file
 from threetears.core.collections.generation import split_generation_token
 
 if TYPE_CHECKING:
@@ -305,7 +305,7 @@ def write_full_part(root: Path, table: str, scope: str | None, rows: Any, versio
     held = rows.replace_schema_metadata(metadata)
 
     # closed by its checksum, as a delta file is: a damaged part is refused, never staged as other rows
-    _write_renamed(root / file, lambda sink: _write_checked_ipc(sink, held))
+    _write_renamed(root / file, lambda sink: write_volume_file(sink, held))
     return FullPart(scope=scope, file=file, version=version, rows=held.num_rows)
 
 
@@ -570,7 +570,7 @@ class VolumeFulls:
         :raises ValueError: when the part holds other than the rows its manifest says
         """
         # its checksum verified first: a damaged part raises DeltaFileUnreadableError, never stages other rows
-        rows = _read_checked_ipc(self.root / part.file)
+        rows = read_volume_file(self.root / part.file)
         if _DELETED_COLUMN in rows.column_names:
             # a delta named as the part: its rows written, never its delete markers
             rows = rows.filter(pc.invert(rows.column(_DELETED_COLUMN)))

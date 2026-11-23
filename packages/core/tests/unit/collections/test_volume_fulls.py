@@ -31,7 +31,7 @@ pa_ipc = pytest.importorskip("pyarrow.ipc")
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
-from threetears.core.collections.delta_files import _checked_ipc, _write_checked_ipc  # noqa: E402
+from threetears.core.collections.delta_files import read_volume_file, write_volume_file  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
@@ -184,9 +184,9 @@ async def test_a_start_loads_every_part_and_reports_each_parts_version(tmp_path:
     assert staged.marks == {_TABLE: "inc:4"}
     assert staged.rows == 5
     # a part is Arrow IPC with zstd inside, closed by its checksum
-    reader = pa_ipc.open_file(pa.BufferReader(_checked_ipc(tmp_path / va.file)))
-    assert reader.schema.metadata[b"threetears.full.version"] == b"inc:7"
-    assert reader.get_batch(0).num_rows == 3
+    part = read_volume_file(tmp_path / va.file)
+    assert part.schema.metadata[b"threetears.full.version"] == b"inc:7"
+    assert part.num_rows == 3
 
 
 async def test_a_delta_named_as_a_part_loads_its_rows_never_its_delete_markers(tmp_path: Path) -> None:
@@ -195,7 +195,7 @@ async def test_a_delta_named_as_a_part_loads_its_rows_never_its_delete_markers(t
     delta.parent.mkdir(parents=True)
     rows = _rows("TX", 3).append_column("_3tears_deleted", pa.array([False, False, True]))
     with delta.open("wb") as sink:
-        _write_checked_ipc(sink, rows)
+        write_volume_file(sink, rows)
     part = FullPart(scope="state:TX", file=f"{_TABLE}/w1.arrow", version="inc:8", rows=2)
     publish_full_manifest(tmp_path, term=1, tables={_TABLE: FullTable(version="inc:8", parts=(part,))})
     backend = _backend()
@@ -235,7 +235,7 @@ async def test_deletable_excludes_the_current_and_previous_manifests_files_and_a
     reused = tmp_path / _TABLE / "w2.arrow"
     reused.parent.mkdir(parents=True)
     with reused.open("wb") as sink:
-        _write_checked_ipc(sink, _rows("VA", 3))
+        write_volume_file(sink, _rows("VA", 3))
     part = FullPart(scope="state:VA", file=f"{_TABLE}/w2.arrow", version="inc:9", rows=3)
     third = publish_full_manifest(tmp_path, term=1, tables={_TABLE: FullTable(version="inc:9", parts=(part,))})
     assert third.previous == second.name

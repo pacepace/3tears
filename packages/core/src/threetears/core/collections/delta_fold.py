@@ -113,7 +113,7 @@ from threetears.core.collections.delta_files import (
     _PREFIXES_METADATA,
     _WRITTEN_COLUMN,
     _WRITTEN_METADATA,
-    _read_checked_ipc,
+    read_volume_file,
     DeltaChange,
     TableDelta,
     apply_delta_row,
@@ -1479,7 +1479,7 @@ def _leftover_reach(root: Path, table: FoldedTable, files: Sequence[str]) -> _Le
     prefixes: list[dict[str, str]] = []
     for file in files:
         # its checksum verified before a key is read: a damaged file raises, never names other keys
-        held = _read_checked_ipc(root / file, columns=read)
+        held = read_volume_file(root / file, columns=read)
         metadata = held.schema.metadata or {}
         if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
             raise ValueError(f"{file}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}")
@@ -1881,7 +1881,7 @@ def _read_ipc(path: Path) -> Any:
     :rtype: pyarrow.Table
     :raises DeltaFileUnreadableError: when its bytes do not match its checksum
     """
-    return _read_checked_ipc(path)
+    return read_volume_file(path)
 
 
 def _read_rows_file(path: Path) -> Any:

@@ -52,8 +52,6 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
-    _CHECKSUM_MARK,
-    _CHECKSUM_TRAILER,
     DeltaFileUnreadableError,
     TableDelta,
     read_delta_file,
@@ -404,13 +402,14 @@ def _garbage(good: bytes, _volume: Path) -> bytes:
 
 
 def _ipc(good: bytes) -> bytes:
-    """a file's IPC bytes, its checksum trailer taken off."""
-    return good[:-_CHECKSUM_TRAILER]
+    """a file's IPC bytes, its checksum trailer taken off: everything up to the IPC file's closing magic."""
+    return good[: good.rindex(b"ARROW1") + len(b"ARROW1")]
 
 
-def _sealed(ipc: bytes) -> bytes:
-    """IPC bytes closed by a checksum that matches them: damage the checksum alone would not catch."""
-    return ipc + hashlib.sha256(ipc).digest() + _CHECKSUM_MARK
+def _sealed(ipc: bytes, good: bytes) -> bytes:
+    """IPC bytes closed by a checksum that matches them, with the mark ``good`` (a file as written) ends with: damage
+    the checksum alone would not catch."""
+    return ipc + hashlib.sha256(ipc).digest() + good[len(_ipc(good)) + 32 :]
 
 
 def _wrong_format(good: bytes, _volume: Path) -> bytes:
@@ -420,7 +419,7 @@ def _wrong_format(good: bytes, _volume: Path) -> bytes:
     sink = pa.BufferOutputStream()
     with pa_ipc.new_file(sink, read.schema.with_metadata(metadata)) as writer:
         writer.write_table(read.replace_schema_metadata(metadata))
-    return _sealed(bytes(sink.getvalue().to_pybytes()))
+    return _sealed(bytes(sink.getvalue().to_pybytes()), good)
 
 
 def _bad_checksum(good: bytes, _volume: Path) -> bytes:
@@ -439,13 +438,13 @@ def _bad_zstd(good: bytes, volume: Path) -> bytes:
     for offset in range(start + 4, start + 128):
         flipped = bytearray(ipc)
         flipped[offset] ^= 0x5A
-        probe.write_bytes(_sealed(bytes(flipped)))
+        probe.write_bytes(_sealed(bytes(flipped), good))
         try:
             read_delta_file(probe)
         except DeltaFileUnreadableError as exc:
             if "ZSTD" in str(exc):
                 probe.unlink()
-                return _sealed(bytes(flipped))
+                return _sealed(bytes(flipped), good)
     raise AssertionError("no byte of the first zstd frame fails the codec")
 
 
