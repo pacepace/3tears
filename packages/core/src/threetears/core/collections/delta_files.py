@@ -457,7 +457,14 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     return name
 
 
-def sweep_orphan_delta_files(root: Path, *, named: Collection[str], before: float) -> list[str]:
+def sweep_orphan_delta_files(
+    root: Path,
+    *,
+    named: Collection[str],
+    before: float,
+    since: float | None = None,
+    tables: Collection[str] | None = None,
+) -> list[str]:
     """remove every delta file under ``root`` that no committed record names and that was saved before ``before``,
     and every temporary file left by a write that died before its rename.
 
@@ -465,12 +472,20 @@ def sweep_orphan_delta_files(root: Path, *, named: Collection[str], before: floa
     write still in flight: ``before`` is the start of the writer's oldest work in flight, and nothing saved since is
     touched. The caller says what is named and when its work began; this removes only what both clear.
 
+    A writer knows the commits it made itself, not a predecessor's: ``since`` (its own start) leaves every file saved
+    before it, which a commit the writer never heard of may name, and ``tables`` keeps the sweep to the tables whose
+    commits it hears, so a table it does not fold never loses a committed file.
+
     :param root: the delta files' directory
     :ptype root: Path
     :param named: every file name (:func:`_delta_file_name`) a committed record names
     :ptype named: Collection[str]
     :param before: the start of the writer's oldest work in flight, seconds since the epoch (``time.time()``)
     :ptype before: float
+    :param since: leave every file saved before it, seconds since the epoch; None sweeps from the first
+    :ptype since: float | None
+    :param tables: the tables whose directories are swept; None sweeps every one
+    :ptype tables: Collection[str] | None
     :return: the names removed, relative to ``root``
     :rtype: list[str]
     """
@@ -478,12 +493,15 @@ def sweep_orphan_delta_files(root: Path, *, named: Collection[str], before: floa
     if not root.is_dir():
         return removed
     for directory in sorted(path for path in root.iterdir() if path.is_dir()):
+        if tables is not None and directory.name not in tables:
+            continue
         for path in sorted(directory.iterdir()):
             relative = f"{directory.name}/{path.name}"
             ours = path.name.endswith(_SUFFIX) or path.name.endswith(_PARTIAL_SUFFIX)
             if not ours or relative in named or not path.is_file():
                 continue
-            if path.stat().st_mtime >= before:
+            saved = path.stat().st_mtime
+            if saved >= before or (since is not None and saved < since):
                 continue
             path.unlink(missing_ok=True)
             removed.append(relative)

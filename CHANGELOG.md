@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the writer folds each state's delta files into the full
+
+**Added:** `DeltaFolds(root, [FoldedTable.of(schema, scope=...)])` (`threetears.core.collections.delta_fold`). The
+writing load calls `committed(tx.delta_files, generations, version=)` after each commit of its opted-in tables; it
+never waits and never raises for a fold. A round runs in a worker process (`ProcessWorkers`): each delta file's bytes
+are shared among its states by rows, and a state whose bytes since its last fold reach half its part's size (at its
+first delta, with no part) gets a new part: the old part plus each delta's rows of the state merged as L3 merged them
+(`apply_delta_row`), newest per key, then the table's keep rule. A delta holding only the state that the fold keeps
+exactly is named as the part, no row copied. The round publishes a manifest at the write's version (`ScopeEpochs.begin`'s,
+the writer's term), deletes covered deltas and the files `deletable_full_files` lists, and sweeps orphans of its tables
+saved since it started. A round that fails is logged and counted (`delta_fold_rounds_total{outcome}`) and its files
+are folded by the next commit's round; a table no full holds yet is left for the writer's rebuild. `TableSchema.delta_keep`
+declares the keep rule, a `DeltaKeepRule` subclass (`threetears.core.collections.delta_keep`). `sweep_orphan_delta_files`
+takes `since=` and `tables=`.
+
 ### core: a copy follower applies an opted-in table's changes from its delta files
 
 **Added:** `FollowedTable.delta_files` (`FollowedTable.of` takes it from `TableSchema.delta_files`). A `CopyFollower`

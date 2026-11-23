@@ -641,6 +641,8 @@ module = [
     "threetears.core.collections.copy_checkpoint",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
+    # and the writer's fold of a table's delta files into the full's parts (Arrow IPC)
+    "threetears.core.collections.delta_fold",
     # and a table's delta files (Arrow IPC) and the rail's Arrow types its columns are typed by
     "threetears.core.collections.delta_files",
     "threetears.core.collections.schema_backed",
@@ -684,6 +686,7 @@ module = [
     "packages.core.tests.unit.backends.test_load_files",
     "packages.core.tests.unit.collections.test_bulk_write_off_loop",
     "packages.core.tests.unit.collections.test_delta_files",
+    "packages.core.tests.unit.collections.test_delta_fold",
     "packages.core.tests.unit.collections.test_save_arrow",
     "packages.core.tests.unit.collections.test_volume_fulls",
     "packages.core.tests.unit.shared_arrow.jobs",
