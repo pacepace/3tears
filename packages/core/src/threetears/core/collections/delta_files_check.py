@@ -22,6 +22,7 @@ This check proves what one process can on its own.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import Iterable, Mapping
@@ -34,7 +35,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import TableSchema
 
-__all__ = ["DeltaFilesDirectoryError", "require_delta_files_root"]
+__all__ = ["DeltaFilesDirectoryError", "require_delta_files_root", "require_delta_files_root_off_loop"]
 
 log = get_logger(__name__)
 
@@ -164,7 +165,10 @@ def require_delta_files_root(
 ) -> Path | None:
     """refuse to start without the delta files' directory when any of ``schemas`` opts in to delta files.
 
-    Blocking (a file is written and flushed): call it at the process's start, before it serves or takes a lease.
+    Blocking: a file is written, flushed and renamed, the directory flushed twice (each ``fsync`` waits on the volume:
+    on EFS a round trip each, tens of milliseconds). Safe only where no event loop runs on this thread: a process's
+    start before its loop does (``main`` before ``asyncio.run``), a script, a test. From a coroutine call
+    :func:`require_delta_files_root_off_loop`, which runs this on a thread.
 
     :param schemas: every table the process writes or copies
     :ptype schemas: Iterable[TableSchema]
@@ -192,3 +196,28 @@ def require_delta_files_root(
             extra={"extra_data": {"directory": str(root), "tables": len(tables)}},
         )
     return root
+
+
+async def require_delta_files_root_off_loop(
+    schemas: Iterable[TableSchema],
+    *,
+    fixes: Mapping[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """:func:`require_delta_files_root` from a coroutine: the probe's write and flushes run on a thread.
+
+    Why: the probe's ``fsync`` calls wait on the volume (on EFS a network round trip each), and a process that checks
+    from its async start would hold its event loop that long, answering nothing else.
+
+    :param schemas: every table the process writes or copies
+    :ptype schemas: Iterable[TableSchema]
+    :param fixes: where the process runs -> how to give it the directory there (:func:`require_delta_files_root`)
+    :ptype fixes: Mapping[str, str] | None
+    :param environ: the environment to read ``THREETEARS_DELTA_FILES_DIR`` from; None reads the process's
+    :ptype environ: Mapping[str, str] | None
+    :return: the directory, checked; None when no table opts in (nothing is checked)
+    :rtype: Path | None
+    :raises DeltaFilesDirectoryError: as :func:`require_delta_files_root` raises it
+    """
+    tables = list(schemas)
+    return await asyncio.to_thread(require_delta_files_root, tables, fixes=fixes, environ=environ)

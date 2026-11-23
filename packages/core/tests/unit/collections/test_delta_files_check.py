@@ -4,11 +4,16 @@ a directory it can write, and says how to fix it (threetears.core.collections.de
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
 
-from threetears.core.collections.delta_files_check import DeltaFilesDirectoryError, require_delta_files_root
+from threetears.core.collections.delta_files_check import (
+    DeltaFilesDirectoryError,
+    require_delta_files_root,
+    require_delta_files_root_off_loop,
+)
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -94,3 +99,23 @@ def test_a_read_only_directory_is_refused(tmp_path: Path) -> None:
         tmp_path.chmod(0o755)
     assert found.startswith(f"{ENV}={tmp_path} is not writable by this process")
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_the_off_loop_form_probes_on_a_thread_and_answers_as_the_sync_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the async form flushes its probe on the event loop's thread (each fsync waits on the volume: an EFS
+    round trip, the loop answering nothing meanwhile), or answers otherwise than the sync form."""
+    loop_thread = threading.get_ident()
+    flushed_on: list[int] = []
+    fsync = os.fsync
+
+    def watched(fd: int) -> None:
+        flushed_on.append(threading.get_ident())
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", watched)
+    assert await require_delta_files_root_off_loop(OPTED, environ={ENV: str(tmp_path)}) == tmp_path
+    assert flushed_on and loop_thread not in flushed_on
+    with pytest.raises(DeltaFilesDirectoryError):
+        await require_delta_files_root_off_loop(OPTED, environ={})
