@@ -38,7 +38,7 @@ refused (:class:`~threetears.core.collections.volume_fulls.StaleTermError`) and 
 
 **Deleted after the publish.** Each delta the new full covers (every state it held is folded past it), every part
 and manifest no current or previous manifest names, and every orphan delta file this process saved for a commit that
-did not land (:class:`~threetears.core.collections.delta_files.OwnDeltaSaves`,
+did not land (:data:`~threetears.core.collections.delta_files.OWN_DELTA_SAVES`,
 :func:`~threetears.core.collections.delta_files.sweep_orphan_delta_files`), opened by its name: no directory is listed
 and no file's time compared with the writer's clock, so a file of work in flight, this writer's or another's, is never
 taken. A file of a process that died before its commit is left (a rebuild or a recovery of its table drops it).
@@ -2482,8 +2482,8 @@ def fold_round(
     :ptype reused: tuple[str, ...]
     :param doomed: covered delta files a round before could not delete
     :ptype doomed: tuple[str, ...]
-    :param orphans: the files the writer saved whose commit did not land (:class:`~threetears.core.collections.
-        delta_files.OwnDeltaSaves`): swept by name unless a record or a full names them, nothing else
+    :param orphans: the files the writer saved whose commit did not land (:data:`~threetears.core.collections.
+        delta_files.OWN_DELTA_SAVES`): swept by name unless a record or a full names them, nothing else
     :ptype orphans: tuple[str, ...]
     :param fresh: tables owed a rebuild (reset or recreated): their files are kept, never folded onto the old parts
     :ptype fresh: tuple[str, ...]

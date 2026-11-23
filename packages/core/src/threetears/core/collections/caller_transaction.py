@@ -909,7 +909,7 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
             f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
         )
     write_id = uuid.uuid4().hex
-    # in flight from here until the commit settles (:class:`OwnDeltaSaves`): what the orphan sweep goes by
+    # in flight from here until the commit settles (:data:`~threetears.core.collections.delta_files.OWN_DELTA_SAVES`): what the orphan sweep goes by
     names = OWN_DELTA_SAVES.saving(list(deltas), write_id)
     try:
         # built and saved in a worker process; the commit waits for the files (decision 11)

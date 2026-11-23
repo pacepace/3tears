@@ -36,7 +36,6 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
     read_volume_file,
     apply_delta_row,
-    load_delta_rows,
     read_delta_file,
     read_delta_file_reach,
     OWN_DELTA_SAVES,
@@ -714,8 +713,10 @@ def test_a_load_delta_from_one_read_cuts_it_into_each_files_rows_by_the_manifest
 
     assert [table.to_pydict()["id"] for table in delta.rows] == [[0, 1], [], [2, 3, 4, 5]]
     assert delta.replaces == [{"state": "VA"}]
-    # the load checks each file's rows against its count: the cut passes that check as is
-    assert load_delta_rows(delta.rows, [2, 0, 4], {"state": "VA"}).num_rows == 6
+    # the load checks each file's rows against its count where its file is made: the cut passes that check as is
+    load = TableDelta(name="votes", types={"id": pa.int64(), "votes": pa.int64(), "state": pa.string()}, key=("id",))
+    load.load(delta.rows, [2, 0, 4], {"state": "VA"})
+    assert load.table("w1").num_rows == 6
 
 
 @pytest.mark.parametrize(

@@ -98,13 +98,11 @@ __all__ = [
     "HeldDeltaRows",
     "LoadDelta",
     "OWN_DELTA_SAVES",
-    "OwnDeltaSaves",
     "TableDelta",
     "apply_delta_row",
     "build_file_table",
     "check_delta_scope",
     "delta_files_root",
-    "load_delta_rows",
     "read_delta_file_reach",
     "read_delta_table",
     "read_volume_file",
@@ -390,7 +388,7 @@ class TableDelta:
         """add one request of a load from files: each file's rows the caller gave (:attr:`LoadDelta.rows`: an Arrow
         table or record batch, or a parquet file's path), the rows each file holds, and the load's constants. A copy
         inserts and sets no column of a row already held (it fails the load instead), so its rows name no column
-        written. Joined and checked against the counts where the file is made (:func:`load_delta_rows`).
+        written. Joined and checked against the counts where the file is made (:func:`_load_delta_rows`).
 
         :param given: the request's files' rows, one entry a file
         :ptype given: Sequence[Any]
@@ -581,7 +579,7 @@ def build_file_table(
             segment, written = _typed(part, types, defaults), rest[0]
         elif kind == "load":
             # a COPY inserts and sets no column of a row already held: none written
-            segment = _typed(load_delta_rows(part, rest[0], rest[1]), types, defaults)
+            segment = _typed(_load_delta_rows(part, rest[0], rest[1]), types, defaults)
         else:
             segment = part
         if written and not isinstance(written[0], str):
@@ -1414,7 +1412,7 @@ class LoadDelta:
         return cls(rows=cut, replaces=replaces)
 
 
-def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
+def _load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
     """one request's rows of a load, as one Arrow table: each file's rows the caller gave (:attr:`LoadDelta.rows`),
     each with the load's constants as columns, checked against the rows the file holds. Blocking: run it on a thread.
 
@@ -1450,7 +1448,7 @@ def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapp
     return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
 
-class OwnDeltaSaves:
+class _OwnDeltaSaves:
     """the delta files this process saved before a commit, from the save until the commit settles, and those whose
     commit did not land: the only files the orphan sweep removes (:func:`sweep_orphan_delta_files`).
 
@@ -1544,8 +1542,8 @@ class OwnDeltaSaves:
 #: its next round, so only a process that saves files and folds none ever reaches it
 _OWN_ORPHANS_HELD: Final = 10_000
 
-#: this process's own saves (:class:`OwnDeltaSaves`)
-OWN_DELTA_SAVES: Final = OwnDeltaSaves()
+#: this process's own saves (:class:`_OwnDeltaSaves`)
+OWN_DELTA_SAVES: Final = _OwnDeltaSaves()
 
 
 def _partial_name(name: str) -> str:
@@ -1561,7 +1559,7 @@ def _partial_name(name: str) -> str:
 
 
 def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Collection[str]) -> list[str]:
-    """remove each of ``orphans`` (files this process saved whose commit did not land, :class:`OwnDeltaSaves`) that
+    """remove each of ``orphans`` (files this process saved whose commit did not land, :class:`_OwnDeltaSaves`) that
     ``named`` (every file a committed record or a full in use names) does not hold, and the temporary file of each,
     left when its write died before its rename. Blocking.
 
