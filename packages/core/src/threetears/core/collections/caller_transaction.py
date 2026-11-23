@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from threetears.core.backends.broker_generation import naming_delta_files
 from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     TableDelta,
@@ -648,14 +649,22 @@ class CallerTransaction:
         :rtype: tuple[bool, GenerationUnavailableError | None]
         """
         generation_failure: GenerationUnavailableError | None = None
+        # a commit names its delta files: its l3.tx.commit carries them to the broker that writes its epoch records,
+        # and an advance this process records itself names them. Only a commit that landed: a record naming the file
+        # of a commit that failed would hand every copy rows L3 never took
+        files = self._saved_delta_files if exc_type is None else {}
+        landed = False
         try:
-            suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
+            with naming_delta_files(files):
+                suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
+            landed = True
         finally:
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
+                with naming_delta_files(files if landed else {}):
+                    generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
         return bool(suppressed), generation_failure
 
     async def _save_delta_files(self) -> dict[str, str]:

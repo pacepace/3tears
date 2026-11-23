@@ -33,6 +33,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
+from threetears.core.backends.broker_generation import named_delta_files
 from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
@@ -915,6 +916,7 @@ async def advance_for_write(
     noted_between: tuple[datetime, datetime] | None = None,
     prefixes: Sequence[Mapping[str, str]] | None = None,
     reason: str | None = None,
+    delta_file: str | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -950,6 +952,10 @@ async def advance_for_write(
     :param reason: for a whole-table change, ``"reset"`` for an operator's reset; a follower reads the table again as
         on a first start
     :ptype reason: str | None
+    :param delta_file: the commit's delta file of the table (``EpochChange.delta_file``), which every record of the
+        advance names: the broker passes the one its commit request named (``DELTA_FILES_FIELD``); ``None`` takes the
+        one the commit being settled in this context named (``naming_delta_files``), none when it named none
+    :ptype delta_file: str | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -978,6 +984,7 @@ async def advance_for_write(
         noted_between=noted_between if keys_unknown else None,
         prefixes=prefixes if rows is None else None,
         reason=reason if rows is None else None,
+        delta_file=delta_file if delta_file is not None else named_delta_files().get(table_name),
     )
 
 

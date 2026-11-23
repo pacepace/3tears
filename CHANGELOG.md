@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an epoch record names its commit's delta file
+
+**Added:** `EpochChange.delta_file` (optional; `epoch_change_body(delta_file=)`) names the commit's delta file of the
+table, `<table>/<write id>.arrow` under the delta files' directory; a name of any other shape is refused. Every record
+of the commit names it, the runs of a commit too large for one record included. A `CallerTransaction` whose commit
+landed names its files (`broker_generation.naming_delta_files`): a pod's `l3.tx.commit` carries them as
+`DELTA_FILES_FIELD` (`{table: name}`), for the hub's broker to write into the records, and an advance a process records
+itself (`advance_for_write`, the epoch log's `advance_with_change(delta_file=)`) names them. A commit that did not land
+names none. Expand-then-contract: an older reader ignores the field, an older broker ignores the request field, and
+a record naming none is stored byte for byte as before.
+
 ### core: a table can opt in to delta files, saved before each commit that writes it
 
 **Added:** `TableSchema(delta_files=True)` opts a table in: every `CallerTransaction` commit that writes it saves the
