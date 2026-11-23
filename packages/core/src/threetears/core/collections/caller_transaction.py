@@ -67,6 +67,7 @@ from threetears.core.backends.broker_generation import (
     reply_generations_since,
 )
 from threetears.core.collections.delta_files import (
+    OWN_DELTA_SAVES,
     DeltaFileRefusedError,
     TableDelta,
     delta_files_root,
@@ -725,6 +726,9 @@ class CallerTransaction:
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
             landed = True
         finally:
+            if self._saved_delta_files:
+                # a commit that did not land leaves its files orphans, the only files the fold's sweep removes
+                OWN_DELTA_SAVES.settled(list(self._saved_delta_files.values()), landed=landed and exc_type is None)
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None
@@ -905,7 +909,14 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
             f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
         )
     write_id = uuid.uuid4().hex
-    return await asyncio.to_thread(_save_all, root, dict(deltas), write_id)
+    # in flight from here until the commit settles (:class:`OwnDeltaSaves`): what the orphan sweep goes by
+    names = OWN_DELTA_SAVES.saving(list(deltas), write_id)
+    try:
+        return await asyncio.to_thread(_save_all, root, dict(deltas), write_id)
+    except BaseException:
+        # the commit is refused: a file saved before the one that failed is an orphan
+        OWN_DELTA_SAVES.settled(names, landed=False)
+        raise
 
 
 def _save_all(root: Path, deltas: Mapping[str, TableDelta], write_id: str) -> dict[str, str]:

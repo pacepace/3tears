@@ -26,6 +26,7 @@ pc = pytest.importorskip("pyarrow.compute")
 duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.collections.delta_files import (  # noqa: E402
+    OWN_DELTA_SAVES,
     TableDelta,
     read_volume_file,
     apply_delta_row,
@@ -481,9 +482,11 @@ async def test_covered_deltas_and_unnamed_files_are_deleted_and_the_previous_ful
     tx1 = _part(tmp_path, "votes", "state:TX")
     assert tx1 is not None and _part(tmp_path, "votes", "state:GA") == ga
     assert (tmp_path / shared).exists(), "GA has not folded past it"
-    # an orphan: saved after the fold started, never committed; and one older than the fold, which it never heard of
+    # an orphan: saved by this process for a commit that did not land; and a file another process saved, which this
+    # one never named (stamped long ago by the volume: no clock compare may take it)
     orphan = writer.save(_votes("TX", range(5), 5))
     writer.files.remove(orphan)
+    OWN_DELTA_SAVES.settled([orphan], landed=False)
     older = writer.save(_votes("TX", range(5), 6))
     writer.files.remove(older)
     os.utime(tmp_path / older, (time.time() - 3600, time.time() - 3600))
@@ -494,8 +497,9 @@ async def test_covered_deltas_and_unnamed_files_are_deleted_and_the_previous_ful
     assert not (tmp_path / first).exists(), "a delta the full covers is deleted"
     assert (tmp_path / shared).exists(), "GA still holds it"
     assert (tmp_path / tx1.file).exists(), "the previous manifest's part is kept"
-    assert not (tmp_path / orphan).exists(), "an orphan saved since the fold started is swept"
-    assert (tmp_path / older).exists(), "a file older than the fold is left"
+    assert not (tmp_path / orphan).exists(), "this process's orphan is swept"
+    assert orphan not in OWN_DELTA_SAVES.orphans, "and forgotten"
+    assert (tmp_path / older).exists(), "a file this process never saved is left"
     await writer.commit(_votes("TX", range(3), 4))
     tx3 = _part(tmp_path, "votes", "state:TX")
     assert tx3 is not None

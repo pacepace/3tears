@@ -37,10 +37,11 @@ lease; a writer that lost its lease publishes an older term than the next writer
 refused (:class:`~threetears.core.collections.volume_fulls.StaleTermError`) and changes nothing.
 
 **Deleted after the publish.** Each delta the new full covers (every state it held is folded past it), every part
-and manifest no current or previous manifest names, and every orphan delta file (saved before a commit that never
-happened, :func:`~threetears.core.collections.delta_files.sweep_orphan_delta_files`) of the tables folded, saved since
-the fold started and before the writer's oldest work in flight: a file older than the fold may be a commit it never
-heard of, so it is left.
+and manifest no current or previous manifest names, and every orphan delta file this process saved for a commit that
+did not land (:class:`~threetears.core.collections.delta_files.OwnDeltaSaves`,
+:func:`~threetears.core.collections.delta_files.sweep_orphan_delta_files`), opened by its name: no directory is listed
+and no file's time compared with the writer's clock, so a file of work in flight, this writer's or another's, is never
+taken. A file of a process that died before its commit is left (a rebuild or a recovery of its table drops it).
 
 **Never on the commit path.** :meth:`DeltaFolds.committed` only notes the files and starts a round in the background,
 off the commit; each round runs in a worker process (:class:`~threetears.core.process_workers.ProcessWorkers`), since
@@ -128,6 +129,7 @@ from threetears.core.collections.delta_files import (
     DeltaChange,
     TableDelta,
     apply_delta_row,
+    OWN_DELTA_SAVES,
     sweep_orphan_delta_files,
     under_prefix,
     write_delta_file,
@@ -403,15 +405,13 @@ class DeltaFolds:
         self._plain_tables = tuple(table.plain() for table in tables)
         self._owns_workers = workers is None
         self._workers = workers if workers is not None else ProcessWorkers(workers=1, name="delta folds")
-        #: delta files older than this the fold never heard named, so its orphan sweep leaves them
-        self._since = time.time()
         #: (table, file, token) of each commit not yet handed to a round that finished, in commit order
         self._queued: list[tuple[str, str, str]] = []
         #: the commits the round running now took off the queue: still unfolded, for the gauges
         self._taken: tuple[tuple[str, str, str], ...] = ()
-        #: the moment the newest queued commit was told, or its writer's oldest work in flight: nothing saved after
-        #: it is swept as an orphan
-        self._before = self._since
+        #: the moment the newest queued commit was told, or its writer's oldest work in flight: a rebuild or a recovery
+        #: drops no file saved after it
+        self._before = time.time()
         self._term: int | None = None
         #: each (delta file, state) share not folded yet, the deltas named as parts, the covered deltas not deleted
         self._pending: tuple[_Share, ...] = ()
@@ -790,6 +790,20 @@ class DeltaFolds:
         if self._round is None or self._round.done():
             self._round = asyncio.get_running_loop().create_task(self._rounds(), name="delta folds")
 
+    def _kept_files(self, *, covered: set[str]) -> tuple[str, ...]:
+        """the delta files a rebuild never drops, whatever their time on the volume (whose clock is not the
+        writer's): each this process saved whose commit has not ended, and each commit's file queued or held unfolded
+        but those the rebuild covers (told before its generation was read), which a commit newer than the rebuild's
+        generation is folded from after it.
+
+        :param covered: the files told before the rebuild's generations were read
+        :ptype covered: set[str]
+        :return: their names under the root
+        :rtype: tuple[str, ...]
+        """
+        told = {file for _, file, _ in self._queued} | {share[2] for share in self._pending}
+        return tuple(sorted(OWN_DELTA_SAVES.in_flight | (told - covered)))
+
     def _published_one(self, table: str) -> None:
         """count a rebuild's or a recovery's publish, and name it to the :meth:`start` running.
 
@@ -903,8 +917,7 @@ class DeltaFolds:
                     self._pending,
                     self._reused,
                     self._doomed,
-                    self._since,
-                    self._before,
+                    OWN_DELTA_SAVES.orphans,
                     tuple(sorted(set(self._fresh) | set(self._recover))),
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
@@ -917,7 +930,11 @@ class DeltaFolds:
                 log.error(
                     "a delta fold round failed; its files are kept for the round the next commit starts",
                     extra={
-                        "extra_data": {"files": len(taken), "failed_in_a_row": self._failed_rounds, "error": repr(error)}
+                        "extra_data": {
+                            "files": len(taken),
+                            "failed_in_a_row": self._failed_rounds,
+                            "error": repr(error),
+                        }
                     },
                     exc_info=error,
                 )
@@ -961,6 +978,7 @@ class DeltaFolds:
         """
         pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed = answer
         self._pending, self._reused, self._doomed = pending, reused, doomed
+        OWN_DELTA_SAVES.swept(swept)
         self._taken = ()
         self._measure()
         _ROUNDS.labels(outcome=outcome).inc()
@@ -987,7 +1005,7 @@ class DeltaFolds:
                         "states": len(folded),
                         "reused": sum(1 for _, _, how, _ in folded if how == "reused"),
                         "deleted": deleted,
-                        "swept": swept,
+                        "swept": len(swept),
                         "pending": len(pending),
                         "worker": pid,
                     }
@@ -1082,6 +1100,7 @@ class DeltaFolds:
                 tuple(self.tables[name].plain() for name, _, _, _ in staged),
                 tuple(staged),
                 cutoff,
+                self._kept_files(covered=set().union(*known.values())),
             )
         except BaseException as error:  # prawduct:allow prawduct/broad-except -- a rebuild never fails a write: logged, counted, retried before the next round
             self._recheck = True
@@ -1267,7 +1286,11 @@ class DeltaFolds:
         )
         doomable = tuple(
             sorted(
-                {left for left, saved in leftovers if saved < cutoff and left not in known and left != file}
+                {
+                    left
+                    for left, saved in leftovers
+                    if saved < cutoff and left not in known and left not in OWN_DELTA_SAVES.in_flight and left != file
+                }
                 | {left for left, _ in leftovers if left in lost}
             )
         )
@@ -1778,6 +1801,7 @@ def rebuild_round(
     tables: tuple[tuple[Any, ...], ...],
     staged: tuple[tuple[str, str, str, int], ...],
     cutoff: float,
+    kept: tuple[str, ...] = (),
 ) -> tuple[Any, ...]:
     """a rebuild, in a worker process: each table's rows read from L3 split into its parts by state, the keep rule
     applied, the parts written and the manifest published at the writer's term; then the tables' old files dropped.
@@ -1795,6 +1819,9 @@ def rebuild_round(
     :param cutoff: when the first table's read began, or the writer's oldest work in flight if older: each of the
         tables' delta files saved before it that no manifest in use names is dropped
     :ptype cutoff: float
+    :param kept: delta files never dropped, whatever their time (:meth:`DeltaFolds._kept_files`): the volume's clock
+        is not the writer's
+    :ptype kept: tuple[str, ...]
     :return: ``(outcome, manifest, rebuilt, deleted)``: ``"rebuilt"`` or ``"stale"``, the manifest published (or
         the current one), each table as ``(table, generation, rows)``, and the files deleted
     :rtype: tuple
@@ -1824,9 +1851,9 @@ def rebuild_round(
         raise
     finally:
         _unlink_all(base, [file for _, file, _, _ in staged])
-    kept = published.files()
+    named = published.files() | set(kept)
     if published.previous is not None and (base / ".fulls" / "manifests" / published.previous).is_file():
-        kept |= FullManifest.decode((base / ".fulls" / "manifests" / published.previous).read_bytes()).files()
+        named |= FullManifest.decode((base / ".fulls" / "manifests" / published.previous).read_bytes()).files()
     old: list[str] = []
     for name in config:
         directory = base / name
@@ -1834,7 +1861,7 @@ def rebuild_round(
             continue
         for path in directory.iterdir():
             file = f"{name}/{path.name}"
-            if path.is_file() and file not in kept and path.stat().st_mtime < cutoff:
+            if path.is_file() and file not in named and path.stat().st_mtime < cutoff:
                 old.append(file)
     deleted = 0
     for file in deletable_full_files(base, covered_deltas=sorted(old)):
@@ -2153,8 +2180,7 @@ def fold_round(
     pending: tuple[_Share, ...],
     reused: tuple[str, ...],
     doomed: tuple[str, ...],
-    since: float,
-    before: float,
+    orphans: tuple[str, ...] = (),
     fresh: tuple[str, ...] = (),
 ) -> tuple[Any, ...]:
     """one round of folds, in a worker process: note the commits' files, fold each state due, publish, delete.
@@ -2175,15 +2201,14 @@ def fold_round(
     :ptype reused: tuple[str, ...]
     :param doomed: covered delta files a round before could not delete
     :ptype doomed: tuple[str, ...]
-    :param since: when the fold started: older files are left by the orphan sweep
-    :ptype since: float
-    :param before: the writer's oldest work in flight: newer files are left by the orphan sweep
-    :ptype before: float
+    :param orphans: the files the writer saved whose commit did not land (:class:`~threetears.core.collections.
+        delta_files.OwnDeltaSaves`): swept by name unless a record or a full names them, nothing else
+    :ptype orphans: tuple[str, ...]
     :param fresh: tables owed a rebuild (reset or recreated): their files are kept, never folded onto the old parts
     :ptype fresh: tuple[str, ...]
     :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed)``: the state for
         the next round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how, rows)``, the
-        files deleted and swept, the manifest published (or the current one), this worker's process id, and each
+        files deleted, the orphans swept (by name), the manifest published (or the current one), this worker's process id, and each
         table a commit of another incarnation than its full's was told of (its log lost: rebuilt, never folded)
     :rtype: tuple
     """
@@ -2199,9 +2224,20 @@ def fold_round(
     renewed: tuple[str, ...] = ()
 
     def answer(
-        outcome: str, manifest: str, *, folded: Sequence[Any] = (), deleted: int = 0, swept: int = 0
+        outcome: str, manifest: str, *, folded: Sequence[Any] = (), deleted: int = 0, swept: Sequence[str] = ()
     ) -> tuple[Any, ...]:
-        return (tuple(shares), reused, doomed, outcome, tuple(folded), deleted, swept, manifest, os.getpid(), renewed)
+        return (
+            tuple(shares),
+            reused,
+            doomed,
+            outcome,
+            tuple(folded),
+            deleted,
+            tuple(swept),
+            manifest,
+            os.getpid(),
+            renewed,
+        )
 
     if current is None:
         return answer("no_full", "")
@@ -2250,7 +2286,9 @@ def fold_round(
         folded.append((table, scope, how, new_part.rows))
         folded_shares.update(state_shares)
     if not folded:
-        return answer("nothing_due", current.name)
+        # an orphan is no file a share, a part or the full names: swept by name, as after a publish
+        unnamed = {share[2] for share in shares} | set(reused) | set(doomed) | current.files()
+        return answer("nothing_due", current.name, swept=sweep_orphan_delta_files(base, orphans=orphans, named=unnamed))
     try:
         published = publish_full_manifest(base, term=term, tables=tables_now)
     except StaleTermError:
@@ -2276,8 +2314,8 @@ def fold_round(
     reused = tuple(sorted(kept_reused - deleted))
     doomed = tuple(sorted((covered | set(doomed)) - deleted - kept_reused))
     named = left | set(reused) | set(doomed) | published.files()
-    swept = sweep_orphan_delta_files(base, named=named, before=before, since=since, tables=list(config))
-    return answer("folded", published.name, folded=folded, deleted=len(deleted), swept=len(swept))
+    swept = sweep_orphan_delta_files(base, orphans=orphans, named=named)
+    return answer("folded", published.name, folded=folded, deleted=len(deleted), swept=swept)
 
 
 def _one_incarnation(token: str, other: str) -> bool:

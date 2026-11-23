@@ -97,6 +97,8 @@ __all__ = [
     "DeltaTable",
     "HeldDeltaRows",
     "LoadDelta",
+    "OWN_DELTA_SAVES",
+    "OwnDeltaSaves",
     "TableDelta",
     "apply_delta_row",
     "check_delta_scope",
@@ -1278,57 +1280,148 @@ def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapp
     return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
 
-def sweep_orphan_delta_files(
-    root: Path,
-    *,
-    named: Collection[str],
-    before: float,
-    since: float | None = None,
-    tables: Collection[str] | None = None,
-) -> list[str]:
-    """remove every delta file under ``root`` that no committed record names and that was saved before ``before``,
-    and every temporary file left by a write that died before its rename.
+class OwnDeltaSaves:
+    """the delta files this process saved before a commit, from the save until the commit settles, and those whose
+    commit did not land: the only files the orphan sweep removes (:func:`sweep_orphan_delta_files`).
 
-    A file is saved before its commit, so one no record names is either an orphan (its commit never happened) or a
-    write still in flight: ``before`` is the start of the writer's oldest work in flight, and nothing saved since is
-    touched. The caller says what is named and when its work began; this removes only what both clear.
+    Why names, not times: the sweep once removed every file of a folded table's directory saved (by its modification
+    time) between the fold's start and the writer's oldest work in flight. That compared the volume's clock (the time
+    an NFS server stamps) with the writer's, so a skew between them could take a file of a commit still in flight; and
+    it listed every folded table's directory every round. A process knows the names it saved and how each commit
+    ended, so the sweep opens only those: no listing, no clock, and never another process's file.
 
-    A writer knows the commits it made itself, not a predecessor's: ``since`` (its own start) leaves every file saved
-    before it, which a commit the writer never heard of may name, and ``tables`` keeps the sweep to the tables whose
-    commits it hears, so a table it does not fold never loses a committed file.
+    Called on the event loop only (each save and each commit's end), so no lock. Bounded: a name leaves when its
+    commit lands, or once the sweep has removed it; an orphan the sweep never reaches (a process that folds nothing)
+    is let go past :data:`_OWN_ORPHANS_HELD`, its file left as any file of a crash is.
+    """
+
+    def __init__(self) -> None:
+        self._in_flight: dict[str, None] = {}
+        self._orphans: dict[str, None] = {}
+
+    def saving(self, tables: Collection[str], write_id: str) -> list[str]:
+        """note the files a write is about to save, one a table: in flight until its commit settles.
+
+        :param tables: the tables
+        :ptype tables: Collection[str]
+        :param write_id: the write's unique id
+        :ptype write_id: str
+        :return: the files' names under the root
+        :rtype: list[str]
+        :raises ValueError: when a table or the write id cannot name a file
+        """
+        names = [_delta_file_name(table, write_id) for table in tables]
+        self._in_flight.update(dict.fromkeys(names))
+        return names
+
+    def settled(self, names: Collection[str], *, landed: bool) -> None:
+        """the commit of ``names`` ended: landed, they are named by its records and leave; not, they are orphans.
+
+        A commit whose outcome is unknown (its reply lost) is settled as not landed, as the sweep always took it: a
+        record naming a file swept so is the lost-file path's (decision 29), which recreates it.
+
+        :param names: the files
+        :ptype names: Collection[str]
+        :param landed: whether the commit landed
+        :ptype landed: bool
+        :return: nothing
+        :rtype: None
+        """
+        for name in names:
+            self._in_flight.pop(name, None)
+            if not landed:
+                self._orphans[name] = None
+        while len(self._orphans) > _OWN_ORPHANS_HELD:
+            dropped = next(iter(self._orphans))
+            del self._orphans[dropped]
+            log.warning(
+                "an orphan delta file no sweep reached is let go; its file stays on the volume",
+                extra={"extra_data": {"file": dropped, "held": _OWN_ORPHANS_HELD}},
+            )
+
+    @property
+    def in_flight(self) -> frozenset[str]:
+        """the files saved whose commit has not ended: never deleted by anything.
+
+        :return: their names
+        :rtype: frozenset[str]
+        """
+        return frozenset(self._in_flight)
+
+    @property
+    def orphans(self) -> tuple[str, ...]:
+        """the files saved whose commit did not land, oldest first: the sweep's to remove.
+
+        :return: their names
+        :rtype: tuple[str, ...]
+        """
+        return tuple(self._orphans)
+
+    def swept(self, names: Collection[str]) -> None:
+        """forget orphans the sweep removed (or found gone).
+
+        :param names: the files
+        :ptype names: Collection[str]
+        :return: nothing
+        :rtype: None
+        """
+        for name in names:
+            self._orphans.pop(name, None)
+
+
+#: the most orphans this process holds for a sweep: each is a commit that failed, and a writer's fold sweeps them at
+#: its next round, so only a process that saves files and folds none ever reaches it
+_OWN_ORPHANS_HELD: Final = 10_000
+
+#: this process's own saves (:class:`OwnDeltaSaves`)
+OWN_DELTA_SAVES: Final = OwnDeltaSaves()
+
+
+def _partial_name(name: str) -> str:
+    """the temporary name a file is written under before its rename (:func:`write_delta_file`), under the root.
+
+    :param name: the file's name under the root
+    :ptype name: str
+    :return: its temporary name
+    :rtype: str
+    """
+    table, _, file = name.partition("/")
+    return f"{table}/.{file.removesuffix(_SUFFIX)}{_PARTIAL_SUFFIX}"
+
+
+def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Collection[str]) -> list[str]:
+    """remove each of ``orphans`` (files this process saved whose commit did not land, :class:`OwnDeltaSaves`) that
+    ``named`` (every file a committed record or a full in use names) does not hold, and the temporary file of each,
+    left when its write died before its rename. Blocking.
+
+    Each is opened by its name: no directory is listed and no file's time read, so the sweep cannot take a file of
+    work still in flight, this process's or another's.
 
     :param root: the delta files' directory
     :ptype root: Path
-    :param named: every file name (:func:`_delta_file_name`) a committed record names
+    :param orphans: the files to remove, relative to ``root``
+    :ptype orphans: Collection[str]
+    :param named: every file name a committed record or a full in use names: never removed
     :ptype named: Collection[str]
-    :param before: the start of the writer's oldest work in flight, seconds since the epoch (``time.time()``)
-    :ptype before: float
-    :param since: leave every file saved before it, seconds since the epoch; None sweeps from the first
-    :ptype since: float | None
-    :param tables: the tables whose directories are swept; None sweeps every one
-    :ptype tables: Collection[str] | None
-    :return: the names removed, relative to ``root``
+    :return: the orphans handled (removed, or already gone), relative to ``root``: forget them
     :rtype: list[str]
     """
-    removed: list[str] = []
-    if not root.is_dir():
-        return removed
-    for directory in sorted(path for path in root.iterdir() if path.is_dir()):
-        if tables is not None and directory.name not in tables:
+    handled: list[str] = []
+    removed = 0
+    for name in orphans:
+        if name in named:
+            handled.append(name)  # named after all: no orphan
             continue
-        for path in sorted(directory.iterdir()):
-            relative = f"{directory.name}/{path.name}"
-            ours = path.name.endswith(_SUFFIX) or path.name.endswith(_PARTIAL_SUFFIX)
-            if not ours or relative in named or not path.is_file():
-                continue
-            saved = path.stat().st_mtime
-            if saved >= before or (since is not None and saved < since):
-                continue
-            path.unlink(missing_ok=True)
-            removed.append(relative)
+        for path in (root / name, root / _partial_name(name)):
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:  # NOSILENT: gone already (never renamed, or removed before): nothing to do
+                pass
+        handled.append(name)
     if removed:
         log.info(
             "orphan delta files swept",
-            extra={"extra_data": {"files": len(removed), "first": removed[0]}},
+            extra={"extra_data": {"files": removed, "first": handled[0] if handled else None}},
         )
-    return removed
+    return handled

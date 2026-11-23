@@ -114,6 +114,7 @@ from threetears.core.backends.broker_generation import (
 )
 from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
+    OWN_DELTA_SAVES,
     LoadDelta,
     TableDelta,
     check_delta_scope,
@@ -3547,22 +3548,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 advanced: dict[str, str] = {}
                 # the request names its file: the broker's epoch record of it does, and so does this process's own
                 # advance on a direct pool (decision 11: saved before the request's commits)
-                with naming_delta_files(named), collecting_advanced_generations(advanced):
-                    result = await store.load_files(
-                        self.table_name,
-                        request,
-                        columns=columns,
-                        constants=dict(constants or {}),
-                        rows_per_transaction=per_transaction,
-                        timeout_ms=bound,
-                        key_prefixes=[dict(prefix) for prefix in reach.prefixes],
-                    )
-                    if delta is not None:
-                        # one epoch a request, each naming its own file: a file holding a later request's rows would
-                        # hand a copy rows L3 does not hold yet, or never will once that request fails
-                        await self._drop_and_advance(
-                            "loaded from files", reach=reach, rows=result.row_count, requests=1
+                landed = False
+                try:
+                    with naming_delta_files(named), collecting_advanced_generations(advanced):
+                        result = await store.load_files(
+                            self.table_name,
+                            request,
+                            columns=columns,
+                            constants=dict(constants or {}),
+                            rows_per_transaction=per_transaction,
+                            timeout_ms=bound,
+                            key_prefixes=[dict(prefix) for prefix in reach.prefixes],
                         )
+                        if delta is not None:
+                            # one epoch a request, each naming its own file: a file holding a later request's rows
+                            # would hand a copy rows L3 does not hold yet, or never will once that request fails
+                            await self._drop_and_advance(
+                                "loaded from files", reach=reach, rows=result.row_count, requests=1
+                            )
+                    landed = True
+                finally:
+                    if named:
+                        # a request that failed is named with no delta file (below): its file is an orphan
+                        OWN_DELTA_SAVES.settled(list(named.values()), landed=landed)
                 if on_commit is not None and named:
                     # only here, after the request and its advance landed: a request that raised hands nothing
                     _hand_commit(on_commit, named, {**reply_generations_since(before), **advanced})
