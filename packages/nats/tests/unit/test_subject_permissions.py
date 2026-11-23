@@ -16,6 +16,7 @@ user JWT from :func:`build_permissions`:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 from typing import TypedDict
@@ -27,6 +28,7 @@ from threetears.nats.subject_permissions import (
     retired_subscriptions,
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    DELTA_FILES_FORWARD_FAMILY,
     SERVER_USER_INFO_SUBJECT,
     TOOL_POD_OBJECTS_BUCKET_SUFFIX,
     TOOL_POD_POINTERS_BUCKET_SUFFIX,
@@ -2817,6 +2819,55 @@ class TestToolPodObjectStore:
             assert subject not in pod.subscribe
             assert subject in hub.subscribe
             assert subject not in agent.publish
+
+
+class TestToolPodDeltaFileRecreates:
+    """a tool pod whose row opts in asks and serves delta-file recreates (design-pod-delta-files.md decisions 29, 30).
+
+    The grant is the ``delta-files`` forward family on publish and subscribe, its family token exact and only the key
+    wildcarded, in this namespace; a pod not opted in, and every other principal, holds none of it.
+    """
+
+    _FAMILY = f"{_NS}.forward.{hashlib.sha256(b'delta-files').hexdigest()}.*"
+
+    def test_the_family_is_the_one_delta_recreate_rides(self) -> None:
+        assert DELTA_FILES_FORWARD_FAMILY == "delta-files"
+        assert str(Subjects.forward_scoped_wildcard(DELTA_FILES_FORWARD_FAMILY)) == self._FAMILY
+
+    def test_an_opted_in_pod_holds_the_family_on_publish_and_subscribe_and_no_other_forward(self) -> None:
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, delta_files=True)
+        assert self._FAMILY in pod.publish
+        assert self._FAMILY in pod.subscribe
+        assert {s for s in (*pod.publish, *pod.subscribe) if ".forward." in s} == {self._FAMILY}
+
+    def test_the_grant_adds_only_the_family(self) -> None:
+        plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, delta_files=True)
+        assert set(pod.publish) - set(plain.publish) == {self._FAMILY}
+        assert set(pod.subscribe) - set(plain.subscribe) == {self._FAMILY}
+        assert pod.js_resources == plain.js_resources
+
+    def test_a_pod_that_has_not_opted_in_holds_no_forward_family(self) -> None:
+        plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True)
+        assert not [s for s in (*plain.publish, *plain.subscribe) if ".forward." in s]
+
+    def test_the_grant_follows_the_bound_namespace(self) -> None:
+        set_default_namespace("prod7")
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, delta_files=True)
+        family = f"prod7.forward.{hashlib.sha256(b'delta-files').hexdigest()}.*"
+        assert family in pod.publish
+        assert family in pod.subscribe
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.TOOL_POD])
+    def test_only_a_tool_pod_may_opt_in(self, principal: Principal) -> None:
+        with pytest.raises(ValueError):
+            build_permissions(principal, delta_files=True, **_IDS[principal])
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.TOOL_POD])
+    def test_no_other_principal_holds_the_family(self, principal: Principal) -> None:
+        perm = build_permissions(principal, **_IDS[principal])
+        assert self._FAMILY not in perm.publish
+        assert self._FAMILY not in perm.subscribe
 
 
 class TestCollectionKeysPurgeRequest:
