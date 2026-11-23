@@ -19,7 +19,9 @@ statement reached L3" are both checked. The contract this pins:
   request and names it in the request's record; a copy applies it with no L3 statement;
 - a load that replaces a key prefix clears the copy's rows under it first (a row no longer in the export leaves), and
   a key-prefix delete (``delete_prefixes``) deletes the copy's rows under its prefixes, both with no L3 statement
-  (decision 23).
+  (decision 23);
+- a load on a direct pool that fails after committing some rows names no file in the record it advances (the file holds
+  rows L3 never took).
 """
 
 from __future__ import annotations
@@ -770,3 +772,43 @@ async def test_a_key_prefix_delete_deletes_the_copys_rows_under_it_with_no_l3_st
     assert [row for row in _copy(backend) if row[0] == "IL"] == []
     assert _same(backend, l3)
     assert l3.statements == 0
+
+
+class _FailingAfterAFileStore(_Store):
+    """a direct pool's load that commits its first file's rows and then fails, as the store's ``COPY`` of a later file
+    does: the request's rows are partly in L3."""
+
+    async def load_files(self, table: str, files: Sequence[LoadFile], **kwargs: Any) -> LoadResult:
+        named = named_delta_files().get(table)
+        self.loads.append((named, named is not None and (self.volume / named).is_file()))
+        self.l3.insert([{**row, **kwargs["constants"]} for row in self.contents[files[0].url]])
+        raise RuntimeError("the second file's copy failed; the first file's rows stay committed")
+
+
+async def test_a_direct_pool_load_failing_after_some_rows_names_no_delta_file(_volume: Path) -> None:
+    """Flips if a load from files on a direct pool that fails after committing some of its rows names its request's
+    delta file in the record it advances: the file holds rows L3 never took (the failed file's), so a copy applying
+    it would hold rows L3 does not; with no file named, a copy reads the load's prefixes from L3 instead. The hub's
+    broker keeps the same rule for a pod's load (a file named only when the load had no error)."""
+    world = _world()
+    l3, log, _lock, _backend, _follower = world
+    await _warmed(world)
+    results, _ = _writer(l3, log, _volume)
+    store = _FailingAfterAFileStore(l3, _volume)
+    results.l3_pool = store
+    first, first_rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    second, second_rows = _export(store, "https://bucket/va-1.parquet", [_row("VA", 101, 2, "new", _LATER)])
+    before = log.count
+    with pytest.raises(RuntimeError, match="second file"):
+        await results.load_files(
+            [first, second],
+            columns=[name for name in _NAMES if name != "state"],
+            constants={"state": "VA"},
+            delta=LoadDelta(rows=[first_rows, second_rows]),
+        )
+    (sent,) = store.loads
+    assert sent[0] is not None and sent[1], "the request's file was saved and named before the load"
+    advanced = [log.records[f"inc:{count}"] for count in range(before + 1, log.count + 1)]
+    assert advanced, "the failed load still advanced the table"
+    assert all(record.delta_file is None for record in advanced), "a file of rows L3 never took was named"
+    assert all(record.prefixes == [{"state": "VA"}] for record in advanced)
