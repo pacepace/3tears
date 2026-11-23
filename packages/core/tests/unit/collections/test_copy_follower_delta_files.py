@@ -709,6 +709,52 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(
     assert _same(backend, l3)
 
 
+#: the longest one turn of the loop may run (CPU time) while a table waiting for a 200,000-key commit too big to list
+#: hears its file's keys. Measured 2026-11-23 (macOS arm64, Python 3.14): the file read whole and every key heard in
+#: one turn, 255 ms; the reach read on a thread and the keys heard in runs of 2,000, 32 ms, all of it one collection
+#: of the collector the keys' new tuples set off (2-4 ms a turn with it held off)
+_WAIT_TURN_SECONDS = 0.05
+
+
+async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a table waiting for a commit too big to list hears its file's keys in one turn of the loop once it
+    reads (the audit's 337,000 keys, the copy answering nothing else meanwhile), or reads the file's rows on the loop:
+    the reach is read on a thread and the keys heard in runs. The change then applies whole, with no L3 statement."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    world = _world()
+    l3, log, lock, backend, follower = world
+    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.statements = 0
+    lost = f"{_TABLE}/big.arrow"
+    log.too_large(lost)
+    lock.commit("state:VA")
+    await follower.catch_up()
+    assert lost in follower.status().waiting_for_file[_TABLE]
+    rows = [_row("VA", i, i + 1, None, _LATER) for i in range(_LOOP_ROWS)]
+    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+    staging = _volume / "staging"
+    staging.mkdir()
+    assert _save(staging, "big", ("rows", rows, ["state", "geo_id", "votes"])) == lost
+    (_volume / lost).parent.mkdir(exist_ok=True)
+    with turn_holds() as holds:
+        # the writer's file lands whole under its name, as its rename lands it
+        (staging / lost).replace(_volume / lost)
+        await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=60)
+    longest = max(seconds for seconds, _ in holds)
+    assert longest < _WAIT_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms hearing the file's keys"
+    assert await follower.catch_up()
+    assert _same(backend, l3)
+    assert l3.statements == 0
+
+
 async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from_the_notes() -> None:
     """Flips if a keys-unknown record that names no file (a writer before delta files) stops being named from the
     change notes: its keys come from them, with no epoch, and are read from L3 by key, counted ``no_epoch``."""

@@ -87,12 +87,11 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.delta_files import (
-    DeltaFile,
     DeltaFileUnreadableError,
     DeltaTable,
     HeldDeltaRows,
     delta_files_root,
-    read_delta_file,
+    read_delta_file_reach,
     read_delta_table,
     under_prefix,
 )
@@ -334,6 +333,34 @@ def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
 
 #: keys a run of the loop's work names before it lets the loop run again (a pass's snapshot of each key's epochs)
 _KEYS_PER_TURN: Final = 2000
+
+
+@dataclass(frozen=True, slots=True)
+class _WaitedReach:
+    """what a waited-for delta file reaches: the prefixes it clears and its keys, each as text, once, in order.
+
+    :ivar prefixes: the key prefixes it clears, as text
+    :ivar keys: each key's values as text (``key_text``)
+    """
+
+    prefixes: tuple[dict[str, str], ...]
+    keys: list[tuple[str, ...]]
+
+
+def _waited_reach(path: Any, table: str) -> _WaitedReach:
+    """a waited-for file's reach, its keys as text. Blocking: the read and a loop over every key, run on a thread.
+
+    :param path: the file
+    :ptype path: Path
+    :param table: the table whose file it must be
+    :ptype table: str
+    :return: its reach
+    :rtype: _WaitedReach
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it is not the table's delta file, or does not decode
+    """
+    reach = read_delta_file_reach(path, table=table)
+    return _WaitedReach(prefixes=reach.prefixes, keys=[tuple(key_text(value) for value in key) for key in reach.keys])
 
 
 @dataclass(frozen=True, slots=True)
@@ -1577,7 +1604,7 @@ class CopyFollower:
             held = split_generation_token(floor)
             for name, wait in list(self._file_waits.get(table, {}).items()):
                 if _held_by_full(wait.epoch, held, after):
-                    self._file_read(table, name, None, why=f"the full at {floor} holds epoch {wait.epoch}")
+                    self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
             del self._full_after[table]
             self._status.waiting_for_full.pop(table, None)
             self._pending[table] |= set(keys)
@@ -1682,9 +1709,10 @@ class CopyFollower:
                 answered = False
                 for name, wait in list(self._file_waits.get(table, {}).items()):
                     if wait.watch:
-                        delta = await self._look_for(table, wait)
-                        if delta is not None:
-                            self._file_read(table, name, delta, why="the file reads")
+                        reach = await self._look_for(table, wait)
+                        if reach is not None:
+                            await self._hear_file(table, name, wait, reach)
+                            self._file_read(table, name, why="the file reads")
                             continue
                     if self._recreate is not None and wait.answer not in _ANSWERED:
                         wait.answer = await self._ask(table, wait)
@@ -1703,21 +1731,26 @@ class CopyFollower:
         # the platform's never-give-up loop (threetears.observe), at the file poll's own pace
         await retry_until_done(looked, first_delay=self._file_poll_seconds, max_delay=self._file_poll_seconds)
 
-    async def _look_for(self, table: str, wait: _FileWait) -> DeltaFile | None:
-        """read a waited-for file off the volume, whole: every change of it is checked to decode before it is applied.
+    async def _look_for(self, table: str, wait: _FileWait) -> _WaitedReach | None:
+        """read a waited-for file off the volume on a thread: its checksum over every byte, its key columns decoded, and
+        the keys it names as text, each once in the order first written.
+
+        Why not the whole file: the wait needs only what the file reaches (its keys and the prefixes it clears); the
+        pass that applies it reads it whole, validated, as Arrow (:meth:`_merge_from_files`). Turning its rows into
+        Python here cost the loop a key at a time (337,000 keys for a commit too big to list, 2026-11-23 audit).
 
         :param table: the table
         :ptype table: str
         :param wait: the wait
         :ptype wait: _FileWait
-        :return: the file, or None while it is still missing or unreadable (the wait's why says which)
-        :rtype: DeltaFile | None
+        :return: what the file reaches, or None while it is still missing or unreadable (the wait's why says which)
+        :rtype: _WaitedReach | None
         """
         root = delta_files_root()
         if root is None:
             return None
         try:
-            return await asyncio.to_thread(read_delta_file, root / wait.file, table=table)
+            return await asyncio.to_thread(_waited_reach, root / wait.file, table)
         except FileNotFoundError:
             wait.why = "file_missing"  # NOSILENT: the wait goes on, said in the status
         except DeltaFileUnreadableError:
@@ -1752,18 +1785,48 @@ class CopyFollower:
         )
         return answer
 
-    def _file_read(self, table: str, name: str, delta: DeltaFile | None, *, why: str) -> None:
-        """a waited-for file reads (or a full now holds its epoch): it is no longer waited for. A load's, a clear's or a
-        commit too big to list has its prefixes and keys heard from the file, at its epoch, as the registry would have
-        told them; a keyed epoch's keys were held pending already. Once the table waits for no file, its held changes
-        are applied in order by the next pass.
+    async def _hear_file(self, table: str, name: str, wait: _FileWait, reach: _WaitedReach) -> None:
+        """a waited-for load's, clear's or commit too big to list's file reads: its prefixes and keys are heard at its
+        epoch, as the registry would have told them, while the table still waits (no pass stages any of it until all
+        are heard). A keyed epoch's keys were held pending already.
+
+        Why in runs: a commit too big to list names hundreds of thousands of keys (337,000 in the 2026-11-23 audit),
+        each heard on the loop; a run of :data:`_KEYS_PER_TURN`, then the loop answers everything else. A wait ended
+        meanwhile (a reset's full replaced the table) stops the hearing: what replaced the table holds the file.
 
         :param table: the table
         :ptype table: str
         :param name: the file
         :ptype name: str
-        :param delta: the file as read; None when a full holds its epoch (nothing to hear)
-        :ptype delta: DeltaFile | None
+        :param wait: its wait
+        :ptype wait: _FileWait
+        :param reach: what the file reaches (:meth:`_look_for`)
+        :ptype reach: _WaitedReach
+        :return: nothing
+        :rtype: None
+        """
+        if wait.reach not in ("prefixes", "keys_unknown"):
+            return
+        if reach.prefixes:
+            self._on_file_prefixes(table)([dict(prefix) for prefix in reach.prefixes], wait.epoch)
+        heard = self._on_row(table)
+        count = len(reach.keys)
+        for start in range(0, count, _KEYS_PER_TURN):
+            if start:
+                await asyncio.sleep(0)
+                if self._file_waits.get(table, {}).get(name) is not wait:
+                    return
+            for key in reach.keys[start : start + _KEYS_PER_TURN]:
+                heard(CacheInvalidationMessage(table=table, ids=list(key), generation=wait.epoch, bump_rows=count))
+
+    def _file_read(self, table: str, name: str, *, why: str) -> None:
+        """a waited-for file reads (its reach heard first, :meth:`_hear_file`), or a full now holds its epoch: it is no
+        longer waited for. Once the table waits for no file, its held changes are applied in order by the next pass.
+
+        :param table: the table
+        :ptype table: str
+        :param name: the file
+        :ptype name: str
         :param why: why the wait ends, for the log
         :ptype why: str
         :return: nothing
@@ -1780,14 +1843,6 @@ class CopyFollower:
             "a copy follower's table no longer waits for a delta file; its held changes apply",
             extra={"extra_data": {"table": table, "file": name, "epoch": wait.epoch, "why": why}},
         )
-        if delta is not None and wait.reach in ("prefixes", "keys_unknown"):
-            if delta.prefixes:
-                self._on_file_prefixes(table)([dict(prefix) for prefix in delta.prefixes], wait.epoch)
-            keyed = self._tables[table].key
-            keys = dict.fromkeys(tuple(key_text(change.row[column]) for column in keyed) for change in delta.changes)
-            heard = self._on_row(table)
-            for key in keys:
-                heard(CacheInvalidationMessage(table=table, ids=list(key), generation=wait.epoch, bump_rows=len(keys)))
         self._poked.set()
 
     def _end_file_waits(self, table: str, why: str) -> None:
@@ -1801,7 +1856,7 @@ class CopyFollower:
         :rtype: None
         """
         for name in list(self._file_waits.get(table, {})):
-            self._file_read(table, name, None, why=why)
+            self._file_read(table, name, why=why)
 
     def _on_caught_up(self) -> None:
         self._poked.set()
