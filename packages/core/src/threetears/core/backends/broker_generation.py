@@ -76,6 +76,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "CHANGED_ROWS_FIELD",
+    "DELTA_FILES_FIELD",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
     "GENERATION_BY_TRIGGER",
@@ -85,7 +86,9 @@ __all__ = [
     "GenerationReader",
     "forget_reply_generations",
     "named_changed_rows",
+    "named_delta_files",
     "naming_changed_rows",
+    "naming_delta_files",
     "record_reply_generations",
 ]
 
@@ -110,6 +113,46 @@ GENERATION_BY_TRIGGER: Final = "generation_by_trigger"
 #: stores exactly those rows as the epoch's change record. A write that names none sends no field;
 #: the broker then records the epoch's keys as unknown. The hub imports this name.
 CHANGED_ROWS_FIELD: Final = "changed_rows"
+
+#: the request field naming, for each table a commit wrote that opts in to delta files, the delta file saved for it
+#: before the commit: ``{table: "<table>/<write id>.arrow"}``, the name under the shared volume's delta files'
+#: directory (:mod:`~threetears.core.collections.delta_files`). Sent on ``l3.tx.commit`` only (a table that opts in
+#: is written on a caller's transaction alone), so the broker that advances each table's generation names the file
+#: in every epoch record it writes for the commit (``EpochChange.delta_file``; ``design-pod-delta-files.md``,
+#: decision 4). A broker built before it ignores it, and its records name no file. The hub imports this name.
+DELTA_FILES_FIELD: Final = "delta_files"
+
+#: the delta files of the commit being made in this context, by table (:func:`naming_delta_files`)
+_DELTA_FILES: ContextVar[Mapping[str, str]] = ContextVar("threetears_commit_delta_files", default={})
+
+
+@contextmanager
+def naming_delta_files(files: Mapping[str, str]) -> Iterator[None]:
+    """name the delta files of the commit made inside this block, by table: its ``l3.tx.commit`` carries them
+    (:data:`DELTA_FILES_FIELD`), and an advance a process writes its own record for names them
+    (:func:`~threetears.core.collections.generation.advance_for_write`). Replaces, never adds to, what an enclosing
+    block named: a commit is named by its own files alone.
+
+    :param files: table -> its delta file's name; empty names none
+    :ptype files: Mapping[str, str]
+    :return: a context in which the commit names them
+    :rtype: Iterator[None]
+    """
+    token = _DELTA_FILES.set(dict(files))
+    try:
+        yield
+    finally:
+        _DELTA_FILES.reset(token)
+
+
+def named_delta_files() -> dict[str, str]:
+    """the delta files of the commit being made in this context, by table, as :data:`DELTA_FILES_FIELD` carries them.
+
+    :return: table -> its delta file's name; empty when the commit names none
+    :rtype: dict[str, str]
+    """
+    return dict(_DELTA_FILES.get())
+
 
 #: the rows the writes in flight in this context change, as ``(table, row)`` pairs, innermost last
 _NAMED_ROWS: ContextVar[tuple[tuple[str, Mapping[str, Any]], ...]] = ContextVar(

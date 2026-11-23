@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -17,15 +18,20 @@ pa = pytest.importorskip("pyarrow")
 pa_ipc = pytest.importorskip("pyarrow.ipc")
 
 from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
+from threetears.core.backends.schema_sql import (  # noqa: E402
+    build_bulk_insert_sql,
+    build_insert_sql,
+    bulk_update_columns,
+    insert_columns_for_data,
+    upsert_set_columns,
+)
 from threetears.core.collections.delta_files import (  # noqa: E402
-    _DELETED_COLUMN,
-    _DELTA_FILES_DIR_ENV,
-    _KEY_METADATA,
-    _TABLE_METADATA,
-    _WRITE_METADATA,
+    DeltaChange,
     DeltaFileRefusedError,
     TableDelta,
-    _sweep_orphan_delta_files,
+    apply_delta_row,
+    read_delta_file,
+    sweep_orphan_delta_files,
     write_delta_file,
 )
 from threetears.core.collections.registry import CollectionRegistry  # noqa: E402
@@ -46,7 +52,10 @@ from threetears.core.testing.l1_tables import TEST_L1_TABLE  # noqa: E402
 from packages.core.tests.durable_support import ConnOnlyPool  # noqa: E402
 
 
-def _schema(name: str, *, opted_in: bool) -> TableSchema:
+_OnConflict = Literal["raise", "ignore", "update"]
+
+
+def _schema(name: str, *, opted_in: bool, on_conflict: _OnConflict = "update") -> TableSchema:
     return TableSchema(
         name=name,
         primary_key=("office_key", "geo_id"),
@@ -59,6 +68,7 @@ def _schema(name: str, *, opted_in: bool) -> TableSchema:
         ],
         l1_eviction=TEST_L1_TABLE,
         delta_files=opted_in,
+        on_conflict=on_conflict,
     )
 
 
@@ -101,10 +111,10 @@ class _Conn:
         return "INSERT 0 1"
 
 
-def _collection(name: str = "results", *, opted_in: bool = True) -> Any:
-    collection = collection_for_schema(_schema(name, opted_in=opted_in), entity_class=_ResultRow)(
-        CollectionRegistry(), DefaultCoreConfig(), None
-    )
+def _collection(name: str = "results", *, opted_in: bool = True, on_conflict: _OnConflict = "update") -> Any:
+    collection = collection_for_schema(
+        _schema(name, opted_in=opted_in, on_conflict=on_conflict), entity_class=_ResultRow
+    )(CollectionRegistry(), DefaultCoreConfig(), None)
     collection.l3_pool = ConnOnlyPool()
     return collection
 
@@ -113,14 +123,13 @@ def _rows(count: int) -> list[dict[str, Any]]:
     return [{"office_key": "sn_NC1", "geo_id": f"{i:05d}", "votes": i} for i in range(count)]
 
 
-def _read(root: Path, name: str) -> Any:
-    with pa.memory_map(str(root / name)) as source:
-        return pa_ipc.open_file(source).read_all()
+#: the variable naming the delta files' directory, a pod's deploy config
+_DIR_ENV = "THREETEARS_DELTA_FILES_DIR"
 
 
 @pytest.fixture
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv(_DELTA_FILES_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv(_DIR_ENV, str(tmp_path))
     return tmp_path
 
 
@@ -142,21 +151,19 @@ async def test_an_opted_in_write_saves_one_file_a_table_with_its_rows_and_delete
     # saved before the commit, under the name the epoch record will hold
     assert conn.files_at_commit == sorted(files.values())
     assert conn.committed
-    table = _read(root, files["results"])
-    assert table.column_names == ["office_key", "geo_id", "votes", "date_created", "date_updated", _DELETED_COLUMN]
-    rows = table.to_pylist()
-    assert [(r["geo_id"], r["votes"], r[_DELETED_COLUMN]) for r in rows] == [
+    saved = read_delta_file(root / files["results"])
+    assert [list(change.row) for change in saved.changes] == [
+        ["office_key", "geo_id", "votes", "date_created", "date_updated"]
+    ] * 4
+    assert [(c.row["geo_id"], c.row["votes"], c.deleted) for c in saved.changes] == [
         ("00000", 0, False),
         ("00001", 1, False),
         ("00002", 2, False),
         ("00009", None, True),
     ]
-    assert rows[0]["date_updated"] is not None and rows[3]["date_updated"] is None
-    metadata = table.schema.metadata
-    assert metadata[_TABLE_METADATA] == b"results"
-    assert metadata[_WRITE_METADATA] == write_id.encode()
-    assert metadata[_KEY_METADATA] == b'["office_key", "geo_id"]'
-    assert _read(root, files["totals"]).num_rows == 1
+    assert saved.changes[0].row["date_updated"] is not None and saved.changes[3].row["date_updated"] is None
+    assert (saved.table, saved.write, saved.key) == ("results", write_id, ("office_key", "geo_id"))
+    assert len(read_delta_file(root / files["totals"]).changes) == 1
 
 
 async def test_a_table_not_opted_in_saves_no_file(root: Path) -> None:
@@ -174,7 +181,7 @@ async def test_a_write_with_no_delta_files_directory_is_refused_and_rolled_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Flips if a table that opts in commits while no file can be saved for it (no directory configured)."""
-    monkeypatch.delenv(_DELTA_FILES_DIR_ENV, raising=False)
+    monkeypatch.delenv(_DIR_ENV, raising=False)
     collection, conn = _collection(), _Conn()
     with pytest.raises(DeltaFileRefusedError, match="no delta files directory"):
         async with CallerTransaction(conn):
@@ -234,8 +241,8 @@ async def test_a_crash_before_the_commit_leaves_an_orphan_the_sweep_removes_and_
         await collection.save_rows(_rows(1), conn=committed)
     kept = transaction.delta_files["results"]
     # the writer's work in flight began before both: nothing is swept yet
-    assert _sweep_orphan_delta_files(root, named={kept}, before=0.0) == []
-    assert _sweep_orphan_delta_files(root, named={kept}, before=time.time() + 1) == [orphan]
+    assert sweep_orphan_delta_files(root, named={kept}, before=0.0) == []
+    assert sweep_orphan_delta_files(root, named={kept}, before=time.time() + 1) == [orphan]
     assert not (root / orphan).exists()
     assert (root / kept).exists()
 
@@ -244,7 +251,7 @@ def test_the_rename_keeps_a_partly_written_file_invisible(tmp_path: Path, monkey
     """Flips if a file can be seen under its own name before it is whole, if a write that fails leaves anything under
     that name, or if the sweep leaves the temporary file of a writer that died before its rename."""
     delta = TableDelta(name="results", types={"geo_id": pa.string()}, key=("geo_id",))
-    delta.rows([{"geo_id": "00001"}])
+    delta.rows([{"geo_id": "00001"}], [])
     seen: list[tuple[bool, bool]] = []
     real_replace = os.replace
 
@@ -268,10 +275,10 @@ def test_the_rename_keeps_a_partly_written_file_invisible(tmp_path: Path, monkey
     assert sorted(p.name for p in (tmp_path / "results").iterdir()) == ["w1.arrow"]
     # a writer that died mid-write leaves its temporary name, which no record holds; the sweep removes it
     (tmp_path / "results" / ".w3.partial").write_bytes(b"ARROW1 half")
-    assert _sweep_orphan_delta_files(tmp_path, named={name}, before=time.time() + 1) == ["results/.w3.partial"]
+    assert sweep_orphan_delta_files(tmp_path, named={name}, before=time.time() + 1) == ["results/.w3.partial"]
 
 
-def test_rows_handed_as_arrow_are_typed_as_the_rail_answers_them() -> None:
+def test_rows_handed_as_arrow_are_typed_as_the_rail_answers_them(tmp_path: Path) -> None:
     """Flips if an Arrow write's columns reach the file in the caller's types rather than the table's (a copy reading
     the file would stage other types than it reads from L3), or a column the write lacks is not null."""
     delta = TableDelta(
@@ -286,11 +293,17 @@ def test_rows_handed_as_arrow_are_typed_as_the_rail_answers_them() -> None:
                 "votes": pa.array([7], pa.int32()),
                 "share": pa.array([Decimal("0.25")], pa.decimal128(4, 2)),
             }
-        )
+        ),
+        ["votes", "share"],
     )
     table = delta.table("w")
     assert table.schema.field("votes").type == pa.int64()
-    assert table.to_pylist() == [{"geo_id": "a", "votes": 7, "share": "0.25", "note": None, _DELETED_COLUMN: False}]
+    [change] = read_delta_file(tmp_path / write_delta_file(tmp_path, delta, "w")).changes
+    assert change == DeltaChange(
+        row={"geo_id": "a", "votes": 7, "share": "0.25", "note": None},
+        deleted=False,
+        written=frozenset({"votes", "share"}),
+    )
 
 
 def test_a_table_opting_in_with_a_column_no_file_can_type_is_refused_where_declared() -> None:
@@ -312,3 +325,120 @@ def test_a_table_opting_in_with_a_column_no_file_can_type_is_refused_where_decla
         l1_eviction=TEST_L1_TABLE,
         delta_files=True,
     )
+
+
+#: the zstd frame's magic number, which starts every compressed buffer of an IPC file written with zstd inside
+_ZSTD_MAGIC = bytes.fromhex("28b52ffd")
+
+
+def test_a_file_is_arrow_ipc_with_zstd_inside_and_reads_back_the_same_rows(tmp_path: Path) -> None:
+    """Flips if a delta file is written plain rather than with zstd inside its IPC buffers (decision 18), if it stops
+    reading back as the rows written."""
+    delta = TableDelta(name="results", types={"geo_id": pa.string(), "votes": pa.int64()}, key=("geo_id",))
+    rows = [{"geo_id": f"{i:05d}", "votes": i % 7} for i in range(2_000)]
+    delta.rows(rows, ["votes"])
+    name = write_delta_file(tmp_path, delta, "w1")
+    raw = (tmp_path / name).read_bytes()
+    assert raw.startswith(b"ARROW1")
+    assert _ZSTD_MAGIC in raw
+    plain = pa.BufferOutputStream()
+    with pa_ipc.new_file(plain, delta.table("w1").schema) as writer:
+        writer.write_table(delta.table("w1"))
+    assert len(raw) < plain.getvalue().size / 2
+    assert [change.row for change in read_delta_file(tmp_path / name).changes] == rows
+
+
+def _set_list(sql: str) -> list[str]:
+    """the columns an upsert statement's ``DO UPDATE SET`` takes from the write (``c = EXCLUDED.c``); a column set to
+    its own held value (the clause a row naming no mutable column gets) changes nothing, so it is not one."""
+    if "DO UPDATE SET" not in sql:
+        return []
+    parts = [part.split(" = ") for part in sql.split("DO UPDATE SET ", 1)[1].split(", ")]
+    return [column.strip() for column, value in parts if value.strip().startswith("EXCLUDED.")]
+
+
+async def test_each_row_records_the_columns_its_statement_set_as_the_statement_names_them(root: Path) -> None:
+    """Flips if a row's recorded columns differ from the ``DO UPDATE SET`` list L3 ran for it: a single-row upsert
+    names only the columns its row names (a nullable column left out is not set, ``date_created`` never is), a bulk
+    statement every mutable column it emits, a delete marker none."""
+    collection, conn = _collection(), _Conn(root)
+    stamp = datetime(2026, 11, 23, tzinfo=UTC)
+    single = {"office_key": "sn_NC1", "geo_id": "00001", "date_created": stamp, "date_updated": stamp}
+    async with CallerTransaction(conn) as transaction:
+        await collection.save_to_store(single, conn=conn)
+        transaction.enroll(collection, ("sn_NC1", "00001"))
+        await collection.save_rows(_rows(2), conn=conn)
+        await collection.delete_rows([("sn_NC1", "00009")], conn=conn)
+    changes = read_delta_file(root / transaction.delta_files["results"]).changes
+    recorded = [change.written for change in changes]
+    [single_sql, bulk_sql, *_] = [sql for sql, _ in conn.committed]
+    assert recorded[0] == frozenset(_set_list(single_sql)) == frozenset({"date_updated"})
+    assert recorded[1] == recorded[2] == frozenset(_set_list(bulk_sql)) == frozenset({"votes", "date_updated"})
+    assert recorded[3] == frozenset()
+    # the nullable column the single row left out shows null in the file; the set says it was not written
+    assert changes[0].row["votes"] is None
+
+
+def test_the_recorded_sets_are_the_statements_own() -> None:
+    """Flips if the columns a delta records for a write stop being the ones the statement 3tears generates sets: the
+    single-row upsert, the bulk statement, a table that ignores conflicts (none) and one that raises on them (none)."""
+    schema = _schema("results", opted_in=True)
+    for data in (
+        {"office_key": "a", "geo_id": "b"},
+        {"office_key": "a", "geo_id": "b", "votes": 1},
+        {"office_key": "a", "geo_id": "b", "votes": None, "date_created": "x", "date_updated": "y"},
+    ):
+        assert upsert_set_columns(schema, data) == _set_list(build_insert_sql(schema, data))
+    emitted = insert_columns_for_data(schema, {"office_key": "a", "geo_id": "b"})
+    assert bulk_update_columns(schema, emitted) == _set_list(build_bulk_insert_sql(schema, rows=1, columns=emitted))
+    conflicts: tuple[_OnConflict, ...] = ("ignore", "raise")
+    for on_conflict in conflicts:
+        assert upsert_set_columns(_schema("results", opted_in=True, on_conflict=on_conflict), {"votes": 1}) == []
+
+
+_HELD = {
+    "office_key": "sn_NC1",
+    "geo_id": "00001",
+    "votes": 10,
+    "date_created": "2026-11-01T00:00:00+00:00",
+    "date_updated": "2026-11-01T00:00:00+00:00",
+}
+
+
+def _change(written: set[str], *, deleted: bool = False, **values: Any) -> DeltaChange:
+    row = {"office_key": "sn_NC1", "geo_id": "00001", "votes": None, "date_created": None, "date_updated": None}
+    return DeltaChange(row={**row, **values}, deleted=deleted, written=frozenset(written))
+
+
+def test_a_delta_row_applies_to_the_held_row_as_l3_merged_the_upsert() -> None:
+    """Flips if applying a delta row differs from the row L3 holds after the upsert: a column the write left out
+    keeps its held value, ``date_created`` keeps the held row's, a column set takes the file's (null included), a
+    write that set nothing leaves the row, a delete leaves no row, and a row L3 did not hold is the row inserted."""
+    stamp = "2026-11-23T00:00:00+00:00"
+    # a single-row upsert naming no votes: votes and date_created kept, date_updated taken
+    left_out = _change({"date_updated"}, date_created=stamp, date_updated=stamp)
+    assert apply_delta_row(_HELD, left_out) == {**_HELD, "date_updated": stamp}
+    # a bulk upsert sets votes even to null, as its statement did
+    bulk = _change({"votes", "date_updated"}, votes=None, date_created=stamp, date_updated=stamp)
+    assert apply_delta_row(_HELD, bulk) == {**_HELD, "votes": None, "date_updated": stamp}
+    # a table ignoring conflicts: the held row stands
+    assert apply_delta_row(_HELD, _change(set(), votes=3, date_updated=stamp)) == _HELD
+    assert apply_delta_row(_HELD, _change(set(), deleted=True)) is None
+    assert apply_delta_row(None, left_out) == {
+        "office_key": "sn_NC1",
+        "geo_id": "00001",
+        "votes": None,
+        "date_created": stamp,
+        "date_updated": stamp,
+    }
+
+
+def test_a_reader_refuses_a_file_of_another_format(tmp_path: Path) -> None:
+    """Flips if a file of another format version (the plain one with no written columns) is read as this one's, its
+    written columns guessed."""
+    path = tmp_path / "results.arrow"
+    table = pa.table({"geo_id": ["a"]}).replace_schema_metadata({b"threetears.delta.format": b"1"})
+    with pa_ipc.new_file(str(path), table.schema) as writer:
+        writer.write_table(table)
+    with pytest.raises(ValueError, match="format"):
+        read_delta_file(path)

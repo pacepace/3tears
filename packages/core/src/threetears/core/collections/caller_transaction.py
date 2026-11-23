@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from threetears.core.backends.broker_generation import naming_delta_files
 from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     TableDelta,
@@ -326,32 +327,43 @@ class CallerTransaction:
             self._deltas[collection.table_name] = delta
         return delta
 
-    def record_rows(self, collection: BaseCollection[Any], rows: Sequence[Mapping[str, Any]]) -> None:
-        """record rows ``collection`` wrote in this transaction, as written, for its table's delta file; nothing for
-        a table that does not opt in. One row a key the write enrolled.
+    def record_rows(
+        self,
+        collection: BaseCollection[Any],
+        rows: Sequence[Mapping[str, Any]],
+        written: Sequence[str] | Sequence[Sequence[str]],
+    ) -> None:
+        """record rows ``collection`` wrote in this transaction, as written, and the columns their statements set in a
+        row L3 already held, for its table's delta file; nothing for a table that does not opt in. One row a key the
+        write enrolled.
 
         :param collection: the collection that wrote them
         :ptype collection: BaseCollection
         :param rows: the rows, each keyed by column
         :ptype rows: Sequence[Mapping[str, Any]]
+        :param written: the columns set (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`): one list
+            for every row (a bulk statement's), or one a row
+        :ptype written: Sequence[str] | Sequence[Sequence[str]]
         :return: nothing
         :rtype: None
         """
         if collection.writes_delta_files:
-            self._delta_of(collection).rows(rows)
+            self._delta_of(collection).rows(rows, written)
 
-    def record_arrow(self, collection: BaseCollection[Any], rows: Any) -> None:
-        """:meth:`record_rows` for rows written as an Arrow table.
+    def record_arrow(self, collection: BaseCollection[Any], rows: Any, written: Sequence[str]) -> None:
+        """:meth:`record_rows` for rows written as an Arrow table, one statement's ``SET`` list for them all.
 
         :param collection: the collection that wrote them
         :ptype collection: BaseCollection
         :param rows: the rows, a column each
         :ptype rows: pyarrow.Table
+        :param written: the columns the statement sets in a row already held
+        :ptype written: Sequence[str]
         :return: nothing
         :rtype: None
         """
         if collection.writes_delta_files:
-            self._delta_of(collection).arrow(rows)
+            self._delta_of(collection).arrow(rows, written)
 
     def record_deletes(self, collection: BaseCollection[Any], keys: Sequence[Sequence[Any]]) -> None:
         """record keys ``collection`` deleted in this transaction, each its values in key order, as its table's delete
@@ -637,14 +649,22 @@ class CallerTransaction:
         :rtype: tuple[bool, GenerationUnavailableError | None]
         """
         generation_failure: GenerationUnavailableError | None = None
+        # a commit names its delta files: its l3.tx.commit carries them to the broker that writes its epoch records,
+        # and an advance this process records itself names them. Only a commit that landed: a record naming the file
+        # of a commit that failed would hand every copy rows L3 never took
+        files = self._saved_delta_files if exc_type is None else {}
+        landed = False
         try:
-            suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
+            with naming_delta_files(files):
+                suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
+            landed = True
         finally:
             if self._token is not None:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
+                with naming_delta_files(files if landed else {}):
+                    generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
         return bool(suppressed), generation_failure
 
     async def _save_delta_files(self) -> dict[str, str]:

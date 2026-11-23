@@ -6,10 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an epoch record names its commit's delta file
+
+**Added:** `EpochChange.delta_file` (optional; `epoch_change_body(delta_file=)`) names the commit's delta file of the
+table, `<table>/<write id>.arrow` under the delta files' directory; a name of any other shape is refused. Every record
+of the commit names it, the runs of a commit too large for one record included. A `CallerTransaction` whose commit
+landed names its files (`broker_generation.naming_delta_files`): a pod's `l3.tx.commit` carries them as
+`DELTA_FILES_FIELD` (`{table: name}`), for the hub's broker to write into the records, and an advance a process records
+itself (`advance_for_write`, the epoch log's `advance_with_change(delta_file=)`) names them. A commit that did not land
+names none. Expand-then-contract: an older reader ignores the field, an older broker ignores the request field, and
+a record naming none is stored byte for byte as before.
+
 ### core: a table can opt in to delta files, saved before each commit that writes it
 
 **Added:** `TableSchema(delta_files=True)` opts a table in: every `CallerTransaction` commit that writes it saves the
-rows written and a delete marker per key deleted as one plain Arrow IPC file per table, under
+rows written and a delete marker per key deleted as one Arrow IPC file per table (zstd inside), under
 `THREETEARS_DELTA_FILES_DIR` (the shared volume), BEFORE the commit, written under a temporary name, flushed and renamed
 (`threetears.core.collections.delta_files`). The commit refuses (`DeltaFileRefusedError`, rolled back) when a key it
 enrolled has no row or marker recorded, when it deletes key prefixes of the table, or when no directory is configured;
@@ -17,6 +28,10 @@ writes that cannot record their rows (`load_files`, `bypassing_write`, a store w
 are refused on an opted-in table. `CallerTransaction.delta_files` names the files saved, for the commit's epoch record.
 Off by default: a table not opted in writes as before. `rail_arrow_types` now lives in `schema_backed` (still imported
 from `complete_copy`).
+Each row of a file names the columns its write set (`_3tears_written`, an index into the column sets the file's
+metadata lists), the `DO UPDATE SET` list 3tears generated for it (`schema_sql.upsert_set_columns`, the bulk statement's
+`bulk_update_columns`); `delta_files.apply_delta_row` merges a file's row into the row held as L3 merged the upsert: a
+column the write left out keeps its value, `date_created` keeps the held row's.
 
 ### core: a full on the delta-files volume, and a copy that starts from it
 

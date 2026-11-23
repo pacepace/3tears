@@ -1001,6 +1001,7 @@ class EpochGenerationSource(_ChangeLogReading):
         noted_between: tuple[datetime, datetime] | None = None,
         prefixes: Sequence[Mapping[str, str]] | None = None,
         reason: str | None = None,
+        delta_file: str | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -1032,6 +1033,10 @@ class EpochGenerationSource(_ChangeLogReading):
         :param reason: a whole-table change's reason, ``"reset"`` only
             (:attr:`~threetears.core.collections.epoch_change.EpochChange.reason`); requires ``rows=None``
         :ptype reason: str | None
+        :param delta_file: the write's delta file of the table
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.delta_file`), named by every record the write
+            appends, so a follower that reaches any of them has the whole commit
+        :ptype delta_file: str | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -1055,12 +1060,13 @@ class EpochGenerationSource(_ChangeLogReading):
                         prefixes=prefixes,
                         reason=reason,
                         database=self._database,
+                        delta_file=delta_file,
                     ),
                 )
             ]
         else:
             bodies = [
-                (tenant, epoch_change_body(table_name, run, database=self._database))
+                (tenant, epoch_change_body(table_name, run, database=self._database, delta_file=delta_file))
                 for tenant, group in _by_tenant(rows)
                 for run in changed_row_runs(table_name, group)
             ]

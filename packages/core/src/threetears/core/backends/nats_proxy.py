@@ -54,12 +54,14 @@ from threetears.core.backends.arrow_copy import (
 from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.backends.broker_generation import (
     CHANGED_ROWS_FIELD,
+    DELTA_FILES_FIELD,
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
     GENERATIONS_REPLY_FIELD,
     HUB_CAPABILITIES_FIELD,
     forget_reply_generations,
     named_changed_rows,
+    named_delta_files,
     record_reply_generations,
 )
 from threetears.core.backends.protocol import (
@@ -3012,6 +3014,10 @@ class _ProxyTransaction:
         self._connection.tx_changed_rows = {}
         if action == "commit" and named:
             payload[CHANGED_ROWS_FIELD] = named
+        files = named_delta_files() if action == "commit" else {}
+        if files:
+            # saved before this commit; the broker names each in the epoch records it writes for the commit
+            payload[DELTA_FILES_FIELD] = files
         subject = Subjects.l3_tx(action, namespace=self._backend.ns).path
         if action == "rollback":
             # nothing the session wrote lands, so no collection settling it may be handed a token

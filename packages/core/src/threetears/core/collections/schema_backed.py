@@ -89,11 +89,14 @@ from threetears.core.backends.protocol import (
 from threetears.core.backends.schema_sql import (
     PGVECTOR_TYPES,
     build_select_column_list,
+    bulk_update_columns,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
+    insert_columns_for_data,
     json_default as _json_default,
+    upsert_set_columns,
 )
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.l1_lru import L1_EVICTION_INFO, declare_l1_table
@@ -2403,9 +2406,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"delete_rows, delete_arrow, save_entity(conn=...))"
             )
 
-    def _record_one(self, data: dict[str, Any], conn: Any, writer: str) -> None:
-        """record one row a store write sends, for the delta file of a table that opts in: on the caller's
-        transaction, or refused when there is none to save the file before.
+    def _record_one(self, data: dict[str, Any], conn: Any, writer: str, *, fenced: bool = False) -> None:
+        """record one row a store write sends, and the columns its statement sets in a row already held
+        (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`), for the delta file of a table that opts
+        in: on the caller's transaction, or refused when there is none to save the file before.
 
         :param data: the row as sent
         :ptype data: dict[str, Any]
@@ -2413,6 +2417,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype conn: Any
         :param writer: the call writing it
         :ptype writer: str
+        :param fenced: the store writes the fenced ``UPDATE`` of a row the caller read
+        :ptype fenced: bool
         :return: nothing
         :rtype: None
         :raises DeltaFileRefusedError: when the table opts in and the write joins no CallerTransaction
@@ -2423,7 +2429,30 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if transaction is None:
             self._refuse_unfiled(writer)
         else:
-            transaction.record_rows(self, [data])
+            transaction.record_rows(self, [data], upsert_set_columns(self.schema, data, fenced=fenced))
+
+    def _bulk_written(
+        self, rows: Sequence[Mapping[str, Any]], store: Any, *, copy: bool
+    ) -> list[str] | list[list[str]]:
+        """the columns :meth:`save_rows`' statements set in a row already held, for a table that opts in to delta
+        files: a bulk statement's one ``SET`` list (every mutable column its first row's columns emit,
+        :func:`~threetears.core.backends.schema_sql.bulk_update_columns`), none for a copy (it inserts and never
+        updates), or each row's own when the store upserts a row at a time.
+
+        :param rows: the rows, stamped
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param store: the durable store writing them
+        :ptype store: Any
+        :param copy: the rows are copied, never upserted
+        :ptype copy: bool
+        :return: one list for every row, or one a row
+        :rtype: list[str] | list[list[str]]
+        """
+        if not self.writes_delta_files or not rows or copy:
+            return []
+        if isinstance(store, BulkDurableStore):
+            return bulk_update_columns(self.schema, insert_columns_for_data(self.schema, dict(rows[0]))) or []
+        return [upsert_set_columns(self.schema, row) for row in rows]
 
     async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
         """save ``entity`` through the three-tier write path, refusing a vector its column cannot hold.
@@ -2838,7 +2867,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
-        transaction.record_rows(self, stamped)
+        transaction.record_rows(self, stamped, self._bulk_written(stamped, store, copy=copy))
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         written = 0
@@ -2995,7 +3024,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         keys, enrollments = await asyncio.to_thread(self._arrow_enrollments, stamped, asyncio.get_running_loop())
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
-        transaction.record_arrow(self, stamped)
+        transaction.record_arrow(self, stamped, plan.update_columns)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         bound = max_rows if max_rows is not None or copy else self.BULK_MAX_ROWS
@@ -3996,7 +4025,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         store = self._durable_store()
         if store is None:
             return 0
-        self._record_one(data, conn, "save_to_store")
+        fenced = (
+            self.schema.cas_column is not None
+            and self.schema.on_conflict == "update"
+            and original_timestamp is not None
+        )
+        self._record_one(data, conn, "save_to_store", fenced=fenced)
         pk = list(self.schema.pk_columns)
         return await store.upsert(
             self.schema.name,
