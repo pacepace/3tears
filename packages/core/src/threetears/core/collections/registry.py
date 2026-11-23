@@ -16,9 +16,9 @@ from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
 from threetears.core.keyed import WholeReads
 from threetears.core.collections.delta_files import (
+    DeltaFileUnreadableError,
     DeltaReach,
     delta_files_root,
-    read_delta_file_keys,
     read_delta_file_reach,
 )
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
@@ -60,6 +60,7 @@ __all__ = [
     "CacheInvalidationMessage",
     "CollectionRegistry",
     "DerivedCacheRegistration",
+    "WantedFile",
 ]
 
 log = get_logger(__name__)
@@ -421,6 +422,11 @@ class DerivedCacheRegistration:
         delta file (a table that opts in): the key prefixes the file clears (none for a load that replaced none) and
         the epoch, before each key the file names is told as a row message stamped with the epoch. A copy clears its
         own rows under them and applies the file's rows, reading no L3 (decision 23). ``None`` takes ``on_partition``
+    :ivar on_file_wanted: called, in place of everything above, when an epoch the registry applies from its delta file
+        (a load's or a clear's, :attr:`on_file_prefixes`; a commit too big to list its rows, decision 21) finds the
+        file missing or unreadable (:class:`WantedFile`). A copy then waits for the writer to recreate it and reads
+        nothing from L3 (decision 29). ``None`` keeps the paths before it: the record's prefixes for a load or a
+        clear, the change notes for a commit too big to list
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
@@ -430,6 +436,28 @@ class DerivedCacheRegistration:
     on_partition: Callable[[Mapping[str, str]], None] | None = None
     on_table_reset: Callable[[str | None], None] | None = None
     on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None
+    on_file_wanted: Callable[[WantedFile], None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WantedFile:
+    """an epoch's delta file the registry could not apply, told to each derived cache that waits for files.
+
+    :ivar table: the table
+    :ivar epoch: the epoch whose record names the file
+    :ivar file: the file's name under the delta files' directory, as the record names it
+    :ivar why: ``file_missing`` (not on the volume, or no volume mounted) or ``file_unreadable`` (there, and not a
+        delta file of the table: :class:`~threetears.core.collections.delta_files.DeltaFileUnreadableError`)
+    :ivar keys_unknown: the record lists no rows (a commit too big to list, decision 21): its keys are only in the file,
+        so the writer cannot recreate it by key and recovers the table instead (decision 28); otherwise the record
+        names its key prefixes (a load's or a clear's) and the file is recreated under its name
+    """
+
+    table: str
+    epoch: str
+    file: str
+    why: str
+    keys_unknown: bool
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1242,18 +1270,17 @@ class CollectionRegistry:
 
         :param change: a whole-table record naming its key prefixes and its delta file
         :ptype change: EpochChange
-        :return: ``True`` once applied; ``False`` when the file cannot be had (no volume mounted, or the volume lost
-            it), for the prefixes to be read again as before
+        :return: ``True`` once applied, or once each copy waiting for files is told the file cannot be had
+            (:meth:`_file_wanted`); ``False`` when it cannot be had (missing or unreadable) and no copy waits for files,
+            for the prefixes to be read again as before
         :rtype: bool
+        :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
         """
         assert change.delta_file is not None and change.prefixes  # noqa: S101 -- the caller's condition
-        root = delta_files_root()
-        try:
-            if root is None:
-                raise FileNotFoundError("no delta files' directory is mounted")
-            reach: DeltaReach = await asyncio.to_thread(read_delta_file_reach, root / change.delta_file)
-        except FileNotFoundError as exc:
-            # NOSILENT: a lost or unmounted volume; the record's prefixes are read again, as before delta files
+        reach = await self._file_reach(change)
+        if isinstance(reach, str):
+            if self._file_wanted(change, reach, keys_unknown=False):
+                return True
             log.warning(
                 "a load's or a clear's delta file cannot be had: its key prefixes are read again",
                 extra={
@@ -1261,24 +1288,18 @@ class CollectionRegistry:
                         "table": change.table,
                         "epoch": change.token,
                         "file": change.delta_file,
-                        "error": str(exc),
+                        "why": reach,
                     }
                 },
             )
             return False
-        self.drop_local_scans(change.table)
-        collection = self._collections.get(change.table)
-        if collection is not None:
-            collection.drop_cached_table()
-        for registration in tuple(self._derived_caches.get(change.table, ())):
-            if registration.on_file_prefixes is not None:
-                if reach.prefixes:
-                    registration.on_file_prefixes([dict(prefix) for prefix in reach.prefixes], change.token)
-            elif registration.on_partition is not None:
-                for prefix in change.prefixes:
-                    registration.on_partition(dict(prefix))
-            else:
-                registration.on_table_dropped()
+        # the table's own caches drop the load's reach; a copy is told the prefixes the file clears, then its keys
+        self._drop_reach(
+            change.table,
+            change.prefixes,
+            reason=f"epoch {change.token} loaded or cleared key prefixes, applied from its delta file",
+            cleared=([dict(prefix) for prefix in reach.prefixes], change.token),
+        )
         for index, values in enumerate(reach.keys):
             if index and not index % _NOTED_ROWS_PER_YIELD:
                 # a large load yields between runs of its keys, so the loop answers everything else between
@@ -1315,19 +1336,18 @@ class CollectionRegistry:
 
         :param change: a keys-unknown record
         :ptype change: EpochChange
-        :return: ``True`` once every key the file names is applied; ``False`` when the record names no file, or the
-            file cannot be had (no volume mounted, or the volume lost it), for the notes to name the keys instead
+        :return: ``True`` once every key the file names is applied, or once each copy waiting for files is told the
+            file cannot be had (:meth:`_file_wanted`: never the notes, never L3); ``False`` when the record names no
+            file, or the file cannot be had and no copy waits for files, for the notes to name the keys instead
         :rtype: bool
+        :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
         """
         if change.delta_file is None:
             return False
-        root = delta_files_root()
-        try:
-            if root is None:
-                raise FileNotFoundError("no delta files' directory is mounted")
-            _, keys = await asyncio.to_thread(read_delta_file_keys, root / change.delta_file)
-        except FileNotFoundError as exc:
-            # NOSILENT: a lost or unmounted volume; the change notes name the keys, as before delta files
+        reach = await self._file_reach(change)
+        if isinstance(reach, str):
+            if self._file_wanted(change, reach, keys_unknown=True):
+                return True
             log.warning(
                 "a keys-unknown epoch's delta file cannot be had: its keys are named from the change notes",
                 extra={
@@ -1335,11 +1355,12 @@ class CollectionRegistry:
                         "table": change.table,
                         "epoch": change.token,
                         "file": change.delta_file,
-                        "error": str(exc),
+                        "why": reach,
                     }
                 },
             )
             return False
+        keys = reach.keys
         for index, values in enumerate(keys):
             if index and not index % _NOTED_ROWS_PER_YIELD:
                 # a large commit yields between runs of its keys, so the loop answers everything else between
@@ -1352,6 +1373,81 @@ class CollectionRegistry:
                     bump_rows=len(keys),
                 )
             )
+        return True
+
+    async def _file_reach(self, change: EpochChange) -> DeltaReach | str:
+        """what the delta file an epoch's record names reaches, read off the volume (its key columns and metadata).
+
+        :param change: a record naming its delta file
+        :ptype change: EpochChange
+        :return: the reach; or why it cannot be had: ``file_missing`` (no volume mounted, or not on it) or
+            ``file_unreadable`` (on it, and not a delta file of the table: truncated, garbage, another format, another
+            table's or write's)
+        :rtype: DeltaReach | str
+        :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
+        """
+        assert change.delta_file is not None  # noqa: S101 -- the callers' condition
+        root = delta_files_root()
+        if root is None:
+            return "file_missing"
+        try:
+            return await asyncio.to_thread(read_delta_file_reach, root / change.delta_file, table=change.table)
+        except FileNotFoundError:
+            return "file_missing"  # NOSILENT: returned as why; the caller counts and logs it, or waits for the file
+        except DeltaFileUnreadableError as exc:
+            log.warning(
+                "an epoch's delta file is on the volume and cannot be read",
+                extra={
+                    "extra_data": {
+                        "table": change.table,
+                        "epoch": change.token,
+                        "file": change.delta_file,
+                        "error": str(exc),
+                    }
+                },
+            )
+            return "file_unreadable"
+
+    def _file_wanted(self, change: EpochChange, why: str, *, keys_unknown: bool) -> bool:
+        """an epoch's file cannot be had: when a derived cache waits for files (``on_file_wanted``, a copy), the epoch
+        is applied here by telling it so; nothing is read from L3 or the change notes (decision 29).
+
+        The table's own caches drop it as a load's reach drops them (:meth:`_drop_reach`): which rows the file held is
+        not known here. Each derived cache that waits is told the file; one that does not is told the record's prefixes
+        as :meth:`drop_partitions` tells them. A commit too big to list is applied so only when every derived cache
+        waits for files: one that does not needs its keys, which only the change notes can still name.
+
+        :param change: the record
+        :ptype change: EpochChange
+        :param why: ``file_missing`` or ``file_unreadable``
+        :ptype why: str
+        :param keys_unknown: the record lists no rows (a commit too big to list)
+        :ptype keys_unknown: bool
+        :return: whether it was told (False: no derived cache waits for files, or a commit too big to list has one that
+            does not; the caller takes the path before them)
+        :rtype: bool
+        """
+        derived = tuple(self._derived_caches.get(change.table, ()))
+        waiting = [registration for registration in derived if registration.on_file_wanted is not None]
+        if not waiting or (keys_unknown and len(waiting) != len(derived)):
+            # a copy then hears the commit's keys from the notes at the epoch, and waits for the file when it stages
+            # them (it reads nothing from L3 either way)
+            return False
+        assert change.delta_file is not None  # noqa: S101 -- the callers' condition
+        wanted = WantedFile(
+            table=change.table, epoch=change.token, file=change.delta_file, why=why, keys_unknown=keys_unknown
+        )
+        log.warning(
+            "an epoch's delta file cannot be had: each copy of the table waits for the writer to recreate it, reading "
+            "nothing from L3",
+            extra={"extra_data": {"table": change.table, "epoch": change.token, "file": change.delta_file, "why": why}},
+        )
+        self._drop_reach(
+            change.table,
+            change.prefixes or [],
+            reason=f"epoch {change.token}'s delta file cannot be had ({why})",
+            wanted=wanted,
+        )
         return True
 
     async def _apply_noted_keys(self, change: EpochChange) -> str | None:
@@ -1645,7 +1741,15 @@ class CollectionRegistry:
         """
         self._drop_reach(table_name, [partition], reason=reason)
 
-    def _drop_reach(self, table_name: str, prefixes: Sequence[Mapping[str, str]], *, reason: str) -> None:
+    def _drop_reach(
+        self,
+        table_name: str,
+        prefixes: Sequence[Mapping[str, str]],
+        *,
+        reason: str,
+        wanted: WantedFile | None = None,
+        cleared: tuple[list[dict[str, str]], str] | None = None,
+    ) -> None:
         """drop the table's own caches once and tell each derived cache each prefix (or drop it, when it takes none).
 
         :param table_name: the table
@@ -1654,6 +1758,13 @@ class CollectionRegistry:
         :ptype prefixes: Sequence[Mapping[str, str]]
         :param reason: why, for the log
         :ptype reason: str
+        :param wanted: the delta file the reach's epoch names and that cannot be had: each derived cache that waits for
+            files (``on_file_wanted``) is told it in place of the prefixes (:meth:`_file_wanted`)
+        :ptype wanted: WantedFile | None
+        :param cleared: the prefixes the reach's delta file clears and its epoch, when it was read: each derived cache
+            that takes files (``on_file_prefixes``) is told them in place of the record's prefixes (none when the file
+            clears none) (:meth:`_apply_file_prefixes`)
+        :ptype cleared: tuple[list[dict[str, str]], str] | None
         :return: nothing
         :rtype: None
         """
@@ -1662,7 +1773,12 @@ class CollectionRegistry:
         rows = collection.drop_cached_table() if collection is not None else 0
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
-            if registration.on_partition is not None:
+            if wanted is not None and registration.on_file_wanted is not None:
+                registration.on_file_wanted(wanted)
+            elif cleared is not None and registration.on_file_prefixes is not None:
+                if cleared[0]:
+                    registration.on_file_prefixes(cleared[0], cleared[1])
+            elif registration.on_partition is not None:
                 for prefix in prefixes:
                     registration.on_partition(dict(prefix))
             else:
@@ -1692,6 +1808,7 @@ class CollectionRegistry:
         on_partition: Callable[[Mapping[str, str]], None] | None = None,
         on_table_reset: Callable[[str | None], None] | None = None,
         on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None,
+        on_file_wanted: Callable[[WantedFile], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1735,6 +1852,10 @@ class CollectionRegistry:
         :param on_file_prefixes: told, in place of ``on_partition``, the key prefixes a load's or a clear's delta file
             clears and the epoch (:class:`DerivedCacheRegistration`); ``None`` takes ``on_partition``
         :ptype on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None
+        :param on_file_wanted: told, in place of the rest, an epoch's delta file the registry could not apply (missing
+            or unreadable), so a copy waits for the writer to recreate it (:class:`DerivedCacheRegistration`); ``None``
+            keeps the paths before it
+        :ptype on_file_wanted: Callable[[WantedFile], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
@@ -1746,6 +1867,7 @@ class CollectionRegistry:
             on_partition=on_partition,
             on_table_reset=on_table_reset,
             on_file_prefixes=on_file_prefixes,
+            on_file_wanted=on_file_wanted,
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)

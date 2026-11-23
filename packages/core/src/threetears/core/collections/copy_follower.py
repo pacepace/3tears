@@ -24,8 +24,8 @@ it was heard at; the epoch's record names the commit's delta file (``EpochChange
 volume (``THREETEARS_DELTA_FILES_DIR``), and the key's row is the row the copy holds with each of its epochs' changes
 applied in order, merged as L3 merged them (:func:`~threetears.core.collections.delta_files.apply_delta_row`): no
 statement reaches L3, however many pods follow (``design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
-are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose file cannot
-be had (a lost volume, an older writer's record) is read from L3 by key as for any table, counted by why
+are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose epoch names
+no file (an older writer's record) is read from L3 by key as for any table, counted by why
 (``copy_follower_delta_file_fallback_keys_total``). A commit too big to list its rows (a keys-unknown record) that
 names its file is applied whole from it: the registry names every key the file holds, stamped with the epoch, and
 each is staged from the file as above, so neither the change notes nor L3 is read for it and nothing a restarted copy
@@ -34,6 +34,19 @@ A load's or a clear's record that names its file (a bulk load from files, a key-
 too (decisions 17 and 23): each key the file names is heard at the epoch, and each prefix the file clears names every
 key of it the copy holds or has heard, at the epoch, all staged as above, a key under a cleared prefix deleted before
 the file's own change of it applies. L3 is read for none of it.
+
+**A missing or unreadable file is waited for, never read from L3** (decision 29, which amends decision 3). A pass
+that finds an epoch's file not on the volume, or there and not a delta file of the table
+(:class:`~threetears.core.collections.delta_files.DeltaFileUnreadableError`), reads nothing from L3: the table waits for
+that file (:attr:`FollowerStatus.waiting_for_file` names it), every change heard of it meanwhile is held, in order, as
+the reset wait holds what it hears, and every other table is followed as before. The copy asks the writer once to
+recreate the file (``recreate``, a NATS request the lease holder alone answers:
+:mod:`~threetears.core.collections.delta_recreate`), reads it again when the writer answers or every
+``file_poll_seconds``, and once it reads, applies the held changes in order. A load's or a clear's file, and a commit
+too big to list, are found missing by the registry (:class:`~threetears.core.collections.registry.WantedFile`) and
+waited for the same way; a commit too big to list cannot be recreated by key (its keys were only in the file), so its
+table waits for the writer's recovery full (decision 28) when it starts from the volume. Counted by why
+(``copy_follower_delta_file_waits_total``) and logged at WARNING; L3 is read once, by the writer, never by every pod.
 
 **Bounded.** What this process holds of a change is a page of rows at a time: each page is staged as it is read.
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
@@ -74,6 +87,7 @@ from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettl
 from threetears.core.collections.delta_files import (
     DeltaChange,
     DeltaFile,
+    DeltaFileUnreadableError,
     apply_delta_row,
     delta_files_root,
     read_delta_file,
@@ -81,7 +95,7 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
-from threetears.core.collections.registry import CacheInvalidationMessage
+from threetears.core.collections.registry import CacheInvalidationMessage, WantedFile
 from threetears.core.collections.scope_epochs import ScopeEpochs
 from threetears.core.collections.volume_fulls import (
     FullAbsent,
@@ -126,9 +140,11 @@ __all__ = [
     "FollowedTable",
     "FollowerBackend",
     "FollowerPhase",
+    "FileRecreate",
     "FollowerStatus",
     "PartialStamp",
     "require_generation_by_trigger",
+    "typed_text",
 ]
 
 log = get_logger(__name__)
@@ -195,7 +211,6 @@ _RELABELS = counter(
 
 
 #: keys of a table that opts in to delta files read from L3 by key instead of from their files, by table and why:
-#: ``file_missing`` (the record names a file the volume does not hold: a lost volume, or none mounted),
 #: ``key_not_in_file`` (the file of an epoch that named the key holds no change of it), ``record_missing`` (the log
 #: holds no record of the epoch the key was heard at), ``no_file_named`` (the record names no file: a writer before
 #: delta files, or a write before the table opted in) and ``no_epoch`` (the key was heard with no epoch that orders it:
@@ -203,13 +218,43 @@ _RELABELS = counter(
 _DELTA_FILE_FALLBACKS = counter(
     "copy_follower_delta_file_fallback_keys_total",
     description="keys of a table that opts in to delta files read from L3 by key instead of from their files, by "
-    "table and why; zero while every epoch's file is on the volume",
+    "table and why; a missing or unreadable file is never one (copy_follower_delta_file_waits_total)",
     label_names=("table", "why"),
 )
 
-#: the fallbacks that mean something is lost or wrong (a file, a record, a row a file should hold): logged at WARNING.
+#: the fallbacks that mean something is lost or wrong (a record, a row a file should hold): logged at WARNING.
 #: The others (an older writer mid-roll, a change note's keys) are expected and logged at INFO, counted alike
-_DELTA_FILE_LOST: Final = frozenset({"file_missing", "key_not_in_file", "record_missing"})
+_DELTA_FILE_LOST: Final = frozenset({"key_not_in_file", "record_missing"})
+
+#: why a table that opts in waits for an epoch's delta file instead of reading anything from L3 (decision 29)
+_FILE_WAIT_WHYS: Final = frozenset({"file_missing", "file_unreadable"})
+
+#: waits for a delta file, by table and why: ``file_missing`` (the record names a file the volume does not hold, or no
+#: volume is mounted) or ``file_unreadable`` (it holds one under the name that is not the table's delta file:
+#: truncated, garbage, another format, a damaged zstd buffer, another table's or write's). Each is a file the writer
+#: recreated, or must; the copy read nothing from L3 for it
+_FILE_WAITS = counter(
+    "copy_follower_delta_file_waits_total",
+    description="times a copy follower's table began waiting for a missing or unreadable delta file, by table and why; "
+    "the copy asks the writer to recreate it and reads nothing from L3 meanwhile",
+    label_names=("table", "why"),
+)
+
+#: the copy's requests to the writer to recreate a delta file, by table and outcome: ``recreated``, ``present`` (the
+#: writer found it whole), ``recovering`` (a commit too big to list: the writer recovers the table, decision 28),
+#: ``no_writer`` (no lease holder answered: asked again), ``failed`` (the writer's recreation raised: asked again)
+_RECREATE_ASKS = counter(
+    "copy_follower_delta_file_recreate_requests_total",
+    description="a copy follower's requests to the writer to recreate a missing or unreadable delta file, by table and "
+    "outcome",
+    label_names=("table", "outcome"),
+)
+
+#: the writer's answers after which the copy does not ask again for the same file: it reads it, or waits for the full
+_ANSWERED: Final = frozenset({"recreated", "present", "recovering"})
+
+#: how often a table waiting for a delta file looks for it again, besides when the writer answers (seconds)
+FILE_POLL_SECONDS: Final = 5.0
 
 #: the most file names one fallback's log line lists
 _FILES_NAMED: Final = 10
@@ -350,8 +395,11 @@ def _key_prefix(table: FollowedTable, partition: Mapping[str, str]) -> bool:
     return bool(partition) and set(partition) == set(table.key[: len(partition)])
 
 
-def _typed(kind: str, text: str) -> Any:
-    """a value given as text (a record's partition) as the L3 rail binds its column's type.
+def typed_text(kind: str, text: str) -> Any:
+    """a value given as text (a record's partition, a key an epoch record names) as the L3 rail binds its column's type.
+
+    Shared with the writer's recreation of a delta file (:mod:`~threetears.core.collections.delta_recreate`), which binds
+    a record's keys and prefixes the same way.
 
     :param kind: the column's type tag
     :ptype kind: str
@@ -396,6 +444,89 @@ def _prefix_batches(
     ]
 
 
+class FileRecreate(Protocol):
+    """asks the writer to recreate one epoch's delta file, and answers how it went: the copy's side of
+    :class:`~threetears.core.collections.delta_recreate.DeltaRecreateRequester` (a NATS request the lease holder alone
+    answers), kept a protocol so the follower carries no NATS client.
+    """
+
+    async def __call__(self, table: str, file: str, epoch: str) -> str:
+        """ask once; never raises for an answer the copy can wait out.
+
+        :param table: the table
+        :ptype table: str
+        :param file: the file's name under the delta files' directory, as the epoch's record names it
+        :ptype file: str
+        :param epoch: the epoch whose record names it
+        :ptype epoch: str
+        :return: ``recreated``, ``present``, ``recovering``, ``no_writer`` or ``failed``
+        :rtype: str
+        """
+        ...
+
+
+@dataclass(slots=True)
+class _FileWait:
+    """one delta file a table waits for (decision 29): every change of the table is held until it reads.
+
+    :ivar epoch: the epoch whose record names it
+    :ivar file: its name under the delta files' directory
+    :ivar why: ``file_missing`` or ``file_unreadable``
+    :ivar reach: what the file brings once it reads: ``keys`` (the keys the copy heard at the epoch, held pending),
+        ``prefixes`` (a load's or a clear's: its prefixes and keys are heard from the file, as the registry would have
+        told them) or ``keys_unknown`` (a commit too big to list: its keys are heard from the file)
+    :ivar watch: whether the file is looked for; False for a commit too big to list whose table waits for the writer's
+        recovery full instead (its file cannot be recreated by key)
+    :ivar answer: the writer's last answer; None before it is asked
+    """
+
+    epoch: str
+    file: str
+    why: str
+    reach: str
+    watch: bool = True
+    answer: str | None = None
+
+    def say(self) -> str:
+        """the wait, for the status.
+
+        :return: a line
+        :rtype: str
+        """
+        asked = "not yet asked the writer" if self.answer is None else f"the writer answered {self.answer}"
+        return f"{self.file} of epoch {self.epoch}: {self.why}; {asked}"
+
+
+class _FileWaitError(RuntimeError):
+    """a pass found a key's epoch file missing or unreadable: the table waits for it, its keys held (decision 29).
+
+    Not a ``LookupError``: a pass reads that as its stages lost with the apply worker.
+    """
+
+    def __init__(self, table: str, file: str, epoch: str, why: str) -> None:
+        super().__init__(f"{table}: delta file {file} of epoch {epoch}: {why}")
+        self.table = table
+        self.file = file
+        self.epoch = epoch
+        self.why = why
+
+
+def _not_after(epoch: str | None, floor: str) -> bool:
+    """whether ``epoch`` is at or before ``floor`` in one incarnation of the log: a full current to ``floor`` holds it.
+
+    :param epoch: an epoch (None: heard with no epoch, never covered)
+    :ptype epoch: str | None
+    :param floor: a full's version of the table
+    :ptype floor: str
+    :return: whether it is covered
+    :rtype: bool
+    """
+    if epoch is None:
+        return False
+    at, held = split_generation_token(epoch), split_generation_token(floor)
+    return at is not None and held is not None and at[0] == held[0] and at[1] <= held[1]
+
+
 @dataclass(frozen=True, slots=True)
 class FollowedTable:
     """one table a :class:`CopyFollower` keeps whole.
@@ -423,8 +554,8 @@ class FollowedTable:
     scope: tuple[str, str] | None = None
     #: the table opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`):
     #: each epoch's changes are applied from the file its record names, read off the shared volume, merged onto the
-    #: row the copy holds, never read from L3 (``design-pod-delta-files.md``, decisions 3, 4 and 19). A key whose
-    #: file cannot be had is read from L3 by key, counted (``copy_follower_delta_file_fallback_keys_total``)
+    #: row the copy holds, never read from L3 (``design-pod-delta-files.md``, decisions 3, 4 and 19). A missing or
+    #: unreadable file is waited for while the writer recreates it, never read from L3 (decision 29)
     delta_files: bool = False
 
     def __post_init__(self) -> None:
@@ -664,6 +795,8 @@ class FollowerStatus:
     :ivar waiting_for_full: each opted-in table reset or recreated while the follower ran, waiting for the writer to
         publish its full on the delta-files volume (never read from L3), onto why it is still waiting; every other
         table keeps being followed meanwhile
+    :ivar waiting_for_file: each opted-in table waiting for a missing or unreadable delta file the writer recreates
+        (decision 29), onto which file and why; its changes are held meanwhile, every other table followed
     :ivar detail: a line for an operator
     """
 
@@ -678,6 +811,7 @@ class FollowerStatus:
     failures: int = 0
     behind_since: datetime | None = None
     waiting_for_full: dict[str, str] = field(default_factory=dict)
+    waiting_for_file: dict[str, str] = field(default_factory=dict)
     detail: str = ""
 
 
@@ -809,6 +943,12 @@ class CopyFollower:
         that opt in to delta files: a start loads them from it, waiting for one when none is published, and never
         reads them whole from L3; ``checkpoints`` then holds only the other tables. None: every table starts as before
     :ptype fulls: VolumeFulls | None
+    :param recreate: asks the writer to recreate a missing or unreadable delta file (decision 29); None asks no one,
+        and a table waiting for a file looks for it every ``file_poll_seconds`` until it reads
+    :ptype recreate: FileRecreate | None
+    :param file_poll_seconds: how often a table waiting for a delta file looks for it again, besides when the writer
+        answers; None takes :data:`FILE_POLL_SECONDS` as it is when the follower is built
+    :ptype file_poll_seconds: float | None
     :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable, or a table is both
         in ``fulls`` and in ``checkpoints``, or ``fulls`` holds a table the follower does not follow
     """
@@ -828,6 +968,8 @@ class CopyFollower:
         stamp_table: str | None = None,
         retry_waits: tuple[float, float] = RETRY_WAITS,
         fulls: VolumeFulls | None = None,
+        recreate: FileRecreate | None = None,
+        file_poll_seconds: float | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -951,6 +1093,13 @@ class CopyFollower:
         self._cleared: dict[str, list[tuple[str, list[dict[str, str]]]]] = {
             table.name: [] for table in tables if table.delta_files
         }
+        self._recreate = recreate
+        self._file_poll_seconds = FILE_POLL_SECONDS if file_poll_seconds is None else file_poll_seconds
+        #: each opted-in table waiting for delta files (decision 29), onto each file it waits for by name: nothing of the
+        #: table is staged or applied until every one reads (its keys, partitions and prefixes stay held, in order)
+        self._file_waits: dict[str, dict[str, _FileWait]] = {}
+        #: the task looking for each such table's files and asking the writer for them
+        self._file_tasks: dict[str, asyncio.Task[None]] = {}
 
     # --- what the registry tells it -------------------------------------------------------------
 
@@ -1074,7 +1223,7 @@ class CopyFollower:
 
         return reset
 
-    def _wait_for_reload(self, table: str, why: str, token: str | None) -> None:
+    def _wait_for_reload(self, table: str, why: str, token: str | None, *, keep: bool = False) -> None:
         """an opted-in table was reset or recreated: never read it from L3 (decisions 12 and 14 of the delta-files
         design: the writer rebuilds it from L3 once and publishes its full). Forget everything the copy heard or staged
         of the table the reset replaced, hold what is heard of it from now on, say in the status that it waits, and look
@@ -1087,6 +1236,10 @@ class CopyFollower:
         :ptype why: str
         :param token: the reset's generation token, when the record named it
         :ptype token: str | None
+        :param keep: keep what the copy heard of the table and has not applied, to apply over the full (``file_lost``:
+            the table was not replaced, a commit too big to list lost its file and the writer recovers the table,
+            decision 28); a reset or a schema change replaced the table, so what was heard of the old one is forgotten
+        :ptype keep: bool
         :return: nothing
         :rtype: None
         """
@@ -1095,20 +1248,40 @@ class CopyFollower:
             if token is not None
             else _FullAfter(why=why, token=self._registry.generation_marks.highest_heard(table), inclusive=False)
         )
+        waiting = self._full_after.get(table)
+        if keep and waiting is not None and waiting.token is not None and after.token is not None:
+            have, new = split_generation_token(waiting.token), split_generation_token(after.token)
+            if have is not None and new is not None and have[0] == new[0] and have[1] >= new[1]:
+                after = waiting  # the full it waits for already holds the newer epoch: the bar is never lowered
         log.warning(
             "a followed table that opts in to delta files was reset or recreated: it is reloaded from the writer's "
             "full on the volume once published, never read from L3; the copy serves it as it held it meanwhile",
             extra={"extra_data": {"table": table, "why": why, "token": token, "full_after": after.token}},
         )
         self._full_after[table] = after
-        # a stage of the table from before the reset holds the table it replaced: never applied
+        # a stage of the table from before the reset holds the table it replaced: never applied (kept: its keys are
+        # put back pending, to be held below)
         self._forget_tables_now([table])
         self._whole.pop(table, None)
+        if keep:
+            keys, partitions, clears = self._heard_waiting.get(table, ({}, [], []))
+            epochs = self._epochs_of.get(table, {})
+            for key in self._pending[table]:
+                # a key heard with no epoch has no change to apply from a file; its epochs say what it waits for
+                if epochs.get(key):
+                    keys.setdefault(key, set()).update(epochs[key])
+            partitions += [part for part in self._partitions[table] if part not in partitions]
+            clears += self._cleared.get(table, [])
+            held = (keys, partitions, clears)
+        else:
+            held = ({}, [], [])
+            # the waits were for files of the table the reset replaced
+            self._end_file_waits(table, "the table was reset or recreated: its full replaces it")
         self._pending[table].clear()
         self._epochs_of.get(table, {}).clear()
         self._partitions[table].clear()
         self._cleared.get(table, []).clear()
-        self._heard_waiting[table] = ({}, [], [])
+        self._heard_waiting[table] = held
         self._status.waiting_for_full[table] = f"{why}: looking for the writer's full of the table"
         task = self._reloads.get(table)
         if task is None or task.done():
@@ -1186,6 +1359,13 @@ class CopyFollower:
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
             keys, partitions, clears = self._heard_waiting.pop(table)
+            # an epoch at or before the full's floor is in every part of it: applied again from its file it would set
+            # its keys back over a later change the full holds, and a folded file is deleted anyway
+            keys = {key: kept for key, of in keys.items() if (kept := {e for e in of if not _not_after(e, floor)})}
+            clears = [(epoch, prefixes) for epoch, prefixes in clears if not _not_after(epoch, floor)]
+            for name, wait in list(self._file_waits.get(table, {}).items()):
+                if _not_after(wait.epoch, floor):
+                    self._file_read(table, name, None, why=f"the full at {floor} holds epoch {wait.epoch}")
             del self._full_after[table]
             self._status.waiting_for_full.pop(table, None)
             self._pending[table] |= set(keys)
@@ -1216,6 +1396,194 @@ class CopyFollower:
                     listener(label)
         self._poked.set()
         return True
+
+    def _on_file_wanted(self, table: str) -> Callable[[WantedFile], None]:
+        def wanted(file: WantedFile) -> None:
+            if file.keys_unknown and self._fulls is not None and table in self._fulls.tables:
+                # its keys were only in the file, so the writer recovers the table (decision 28) and publishes a full
+                # holding it; the copy waits for that full, keeping what it heard, and asks the writer once
+                self._wait_for_reload(table, "file_lost", file.epoch, keep=True)
+                self._wait_for_file(table, file.file, file.epoch, file.why, reach="keys_unknown", watch=False)
+                return
+            self._wait_for_file(
+                table, file.file, file.epoch, file.why, reach="keys_unknown" if file.keys_unknown else "prefixes"
+            )
+
+        return wanted
+
+    def _wait_for_file(self, table: str, file: str, epoch: str, why: str, *, reach: str, watch: bool = True) -> None:
+        """hold ``table`` until ``file`` reads: nothing of it is staged or applied meanwhile, and nothing read from L3
+        (decision 29). The writer is asked once to recreate it, and it is looked for again when the writer answers and
+        every ``file_poll_seconds`` (:meth:`_await_files`); every other table is followed as before.
+
+        :param table: the table
+        :ptype table: str
+        :param file: the file's name, as the epoch's record names it
+        :ptype file: str
+        :param epoch: the epoch
+        :ptype epoch: str
+        :param why: ``file_missing`` or ``file_unreadable``
+        :ptype why: str
+        :param reach: what the file brings once read (:class:`_FileWait`)
+        :ptype reach: str
+        :param watch: whether the file is looked for (False: the table waits for the writer's recovery full)
+        :ptype watch: bool
+        :return: nothing
+        :rtype: None
+        """
+        waits = self._file_waits.setdefault(table, {})
+        if file in waits:
+            return
+        waits[file] = _FileWait(epoch=epoch, file=file, why=why, reach=reach, watch=watch)
+        _FILE_WAITS.labels(table=table, why=why).inc()
+        log.warning(
+            "a copy follower's table waits for a delta file: its changes are held, nothing is read from L3, and the "
+            "writer is asked to recreate it; every other table is followed meanwhile",
+            extra={"extra_data": {"table": table, "file": file, "epoch": epoch, "why": why, "reach": reach}},
+        )
+        self._say_file_waits(table)
+        task = self._file_tasks.get(table)
+        if task is None or task.done():
+            self._file_tasks[table] = asyncio.get_running_loop().create_task(
+                self._await_files(table), name=f"copy follower wait for {table}'s delta file"
+            )
+
+    def _say_file_waits(self, table: str) -> None:
+        waits = self._file_waits.get(table)
+        if waits:
+            self._status.waiting_for_file[table] = "; ".join(wait.say() for wait in waits.values())
+        else:
+            self._status.waiting_for_file.pop(table, None)
+
+    async def _await_files(self, table: str) -> None:
+        """look for each file ``table`` waits for until every one reads, asking the writer once for each.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        while self._file_waits.get(table) and self._status.phase is not FollowerPhase.STOPPED:
+            answered = False
+            for name, wait in list(self._file_waits.get(table, {}).items()):
+                if wait.watch:
+                    delta = await self._look_for(table, wait)
+                    if delta is not None:
+                        self._file_read(table, name, delta, why="the file reads")
+                        continue
+                if self._recreate is not None and wait.answer not in _ANSWERED:
+                    wait.answer = await self._ask(table, wait)
+                    answered = answered or (wait.watch and wait.answer in _ANSWERED)
+                    if wait.watch and wait.answer == "recovering" and self._fulls is not None:
+                        if table in self._fulls.tables:
+                            # the writer recovers the table (decision 28: a commit too big to list, its keys only in
+                            # the file): the file never comes back, the recovery's full does
+                            wait.watch = False
+                            self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
+            self._say_file_waits(table)
+            if not answered:
+                await asyncio.sleep(self._file_poll_seconds)
+            # else: the writer answered; the file is read again at once
+
+    async def _look_for(self, table: str, wait: _FileWait) -> DeltaFile | None:
+        """read a waited-for file off the volume, whole: every change of it is checked to decode before it is applied.
+
+        :param table: the table
+        :ptype table: str
+        :param wait: the wait
+        :ptype wait: _FileWait
+        :return: the file, or None while it is still missing or unreadable (the wait's why says which)
+        :rtype: DeltaFile | None
+        """
+        root = delta_files_root()
+        if root is None:
+            return None
+        try:
+            return await asyncio.to_thread(read_delta_file, root / wait.file, table=table)
+        except FileNotFoundError:
+            wait.why = "file_missing"  # NOSILENT: the wait goes on, said in the status
+        except DeltaFileUnreadableError:
+            wait.why = "file_unreadable"  # NOSILENT: the wait goes on, said in the status
+        except OSError as exc:
+            # the volume itself failed the read (an errno): looked for again at the next poll
+            contain(exc, log=log, what="a copy follower could not read a delta file it waits for; it looks again")
+        return None
+
+    async def _ask(self, table: str, wait: _FileWait) -> str:
+        """ask the writer once to recreate a waited-for file; counted by outcome.
+
+        :param table: the table
+        :ptype table: str
+        :param wait: the wait
+        :ptype wait: _FileWait
+        :return: the writer's answer (:class:`FileRecreate`)
+        :rtype: str
+        """
+        assert self._recreate is not None  # noqa: S101 -- the caller's condition
+        try:
+            answer = await self._recreate(table, wait.file, wait.epoch)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a requester that raised is asked again at the next poll, said
+            contain(exc, log=log, what="a copy follower's request to recreate a delta file failed; it asks again")
+            answer = "failed"
+        _RECREATE_ASKS.labels(table=table, outcome=answer).inc()
+        log.warning(
+            "a copy follower asked the writer to recreate a delta file",
+            extra={"extra_data": {"table": table, "file": wait.file, "epoch": wait.epoch, "answer": answer}},
+        )
+        return answer
+
+    def _file_read(self, table: str, name: str, delta: DeltaFile | None, *, why: str) -> None:
+        """a waited-for file reads (or a full now holds its epoch): it is no longer waited for. A load's, a clear's or a
+        commit too big to list has its prefixes and keys heard from the file, at its epoch, as the registry would have
+        told them; a keyed epoch's keys were held pending already. Once the table waits for no file, its held changes
+        are applied in order by the next pass.
+
+        :param table: the table
+        :ptype table: str
+        :param name: the file
+        :ptype name: str
+        :param delta: the file as read; None when a full holds its epoch (nothing to hear)
+        :ptype delta: DeltaFile | None
+        :param why: why the wait ends, for the log
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        waits = self._file_waits.get(table, {})
+        wait = waits.pop(name, None)
+        if wait is None:
+            return
+        if not waits:
+            self._file_waits.pop(table, None)
+        self._say_file_waits(table)
+        log.warning(
+            "a copy follower's table no longer waits for a delta file; its held changes apply",
+            extra={"extra_data": {"table": table, "file": name, "epoch": wait.epoch, "why": why}},
+        )
+        if delta is not None and wait.reach in ("prefixes", "keys_unknown"):
+            if delta.prefixes:
+                self._on_file_prefixes(table)([dict(prefix) for prefix in delta.prefixes], wait.epoch)
+            keyed = self._tables[table].key
+            keys = dict.fromkeys(tuple(key_text(change.row[column]) for column in keyed) for change in delta.changes)
+            heard = self._on_row(table)
+            for key in keys:
+                heard(CacheInvalidationMessage(table=table, ids=list(key), generation=wait.epoch, bump_rows=len(keys)))
+        self._poked.set()
+
+    def _end_file_waits(self, table: str, why: str) -> None:
+        """stop waiting for every file of ``table``: what replaces the table holds them (a reset's full, a whole read).
+
+        :param table: the table
+        :ptype table: str
+        :param why: for the log
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        for name in list(self._file_waits.get(table, {})):
+            self._file_read(table, name, None, why=why)
 
     def _on_caught_up(self) -> None:
         self._poked.set()
@@ -1253,6 +1621,7 @@ class CopyFollower:
                     on_partition=self._on_partition(name),
                     on_table_reset=self._on_reset(name),
                     on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
+                    on_file_wanted=self._on_file_wanted(name) if name in self._cleared else None,
                 )
             )
         if self._stamp_table is not None:
@@ -1553,11 +1922,13 @@ class CopyFollower:
                 ]
             )
             label = self._label(first, held)
+            # a table waiting for a delta file holds what was heard of it: it is not this pass's to apply
+            waits = self._file_waits
             nothing = (
-                not any(self._pending.values())
+                not any(keys for name, keys in self._pending.items() if name not in waits)
                 and not self._whole
-                and not any(self._partitions.values())
-                and not any(self._cleared.values())
+                and not any(parts for name, parts in self._partitions.items() if name not in waits)
+                and not any(queued for name, queued in self._cleared.items() if name not in waits)
             )
             if nothing and not self._staged and label == self._status.stamp:
                 self._say(FollowerPhase.FOLLOWING, "current" if not writing else "current to every scope not held")
@@ -1641,6 +2012,7 @@ class CopyFollower:
                 and name not in self._whole
                 and not self._partitions[name]
                 and name not in self._full_after
+                and name not in self._file_waits
             ]
             for name in current:
                 self._current_marks[name] = self._staging_marks.get(name)
@@ -1720,7 +2092,8 @@ class CopyFollower:
             self._say(FollowerPhase.WAITING, "the stamp moved while the change was read; the next pass tops it up")
             return False
         assert self._applied_mark is not None  # noqa: S101 -- narrowed by the caller (a mark in self._stamps)
-        self._current_marks.update({name: marks.get(name) for name in self._tables})
+        # a table waiting for a delta file keeps the mark it was last current at: its held changes are not in the copy
+        self._current_marks.update({name: marks.get(name) for name in self._tables if name not in self._file_waits})
         # one assignment: a reader on another thread reads the old entry or the new, never half of one
         self._stamps[self._applied_mark] = (label, dict(self._current_marks))
         self._status.stamp = label
@@ -1911,6 +2284,11 @@ class CopyFollower:
                 whole[name] = self._whole.pop(name)
                 self._pending[name] = set()
                 self._partitions[name] = []
+                # the whole read holds every file the table waited for
+                self._end_file_waits(name, f"the table is read whole ({why})")
+                continue
+            if name in self._file_waits:
+                # waiting for a delta file: its keys and partitions stay held, in order, until it reads
                 continue
             at = table.scope_in_key
             if held and at is not None:
@@ -2210,7 +2588,17 @@ class CopyFollower:
                 pending.pop(name, None)
                 continue
             self._reading = name
-            staged, scopes, key_scopes = await self._stage_keyed(table, sorted(keys), keys_stage, rows_stage, held)
+            try:
+                staged, scopes, key_scopes = await self._stage_keyed(table, sorted(keys), keys_stage, rows_stage, held)
+            except _FileWaitError as wait:
+                # nothing of the table is applied while it waits: its keys are put back, its stage (this pass's pages
+                # and any earlier pass's) forgotten, every one of them held with its epochs until the file reads
+                self._pending[name] |= keys
+                self._forget_tables_now([name])
+                del pending[name]
+                self._reading = None
+                self._wait_for_file(name, wait.file, wait.epoch, wait.why, reach="keys")
+                continue
             if staged:
                 was = self._staged.get(name)
                 self._staged[name] = StagedChange(
@@ -2338,9 +2726,10 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        while any(self._cleared.values()):
+        while any(queued for name, queued in self._cleared.items() if name not in self._file_waits):
             for name, queued in self._cleared.items():
-                if not queued:
+                if not queued or name in self._file_waits:
+                    # a table waiting for a delta file keeps its prefixes queued, in order, until it reads
                     continue
                 taken = list(queued)
                 queued.clear()
@@ -2370,11 +2759,12 @@ class CopyFollower:
     ) -> tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]:
         """stage some keys' rows, read from L3 by key a page at a time -- or, for a table that opts in to delta files,
         merged from their epochs' files onto the copy's rows (:meth:`_rows_from_files`), L3 read only for a key whose
-        file cannot be had; a key whose row (in L3 or its file, or in the copy) is of a scope a write holds is left
+        epoch names no file (a missing or unreadable file raises, and the table waits for it); a key whose row (in L3 or its file, or in the copy) is of a scope a write holds is left
         pending, unstaged.
 
         :return: the keys staged, the scopes their rows are of, and each staged key's scopes
         :rtype: tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]
+        :raises _FileWaitError: when a key's epoch file is missing or unreadable (the caller holds the table)
         """
         at = table.scope_in_key
         #: for a table that opts in to delta files: each epoch's file, read once this pass; the keys read from L3
@@ -2483,7 +2873,8 @@ class CopyFollower:
         :param files: the files read this pass, by epoch
         :ptype files: Mapping[str, tuple[_FileChanges | str, str | None]]
         :return: each key's changes in the order written, or why the file cannot be had (a
-            :data:`_DELTA_FILE_FALLBACKS` why); and the file's name when the record names one
+            :data:`_DELTA_FILE_FALLBACKS` why, or a :data:`_FILE_WAIT_WHYS` one); and the file's name when the record
+            names one
         :rtype: tuple[_FileChanges | str, str | None]
         :raises GenerationUnavailableError: when the log cannot be read (the pass fails and is tried again)
         """
@@ -2499,10 +2890,18 @@ class CopyFollower:
         if root is None:
             return "file_missing", record.delta_file
         try:
-            delta: DeltaFile = await asyncio.to_thread(read_delta_file, root / record.delta_file)
+            delta: DeltaFile = await asyncio.to_thread(read_delta_file, root / record.delta_file, table=table.name)
         except FileNotFoundError:
-            # NOSILENT: a lost volume; the caller reads the file's keys from L3 by key, counted and logged at WARNING
+            # NOSILENT: the table waits for the writer to recreate it (_FileWaitError), counted and logged at WARNING
             return "file_missing", record.delta_file
+        except DeltaFileUnreadableError as exc:
+            log.warning(
+                "an epoch's delta file is on the volume and cannot be read",
+                extra={
+                    "extra_data": {"table": table.name, "epoch": epoch, "file": record.delta_file, "error": str(exc)}
+                },
+            )
+            return "file_unreadable", record.delta_file
         of = _FileChanges(table.key, delta.prefixes)
         for change in delta.changes:
             of.setdefault(tuple(key_text(change.row[column]) for column in table.key), []).append(change)
@@ -2542,8 +2941,9 @@ class CopyFollower:
     ) -> tuple[Any, dict[tuple[str, ...], frozenset[str | None]]]:
         """some keys' rows of a table that opts in to delta files, from their epochs' files: each key's row the copy
         holds, with every change of it in each epoch it was heard at applied in order, as L3 merged them
-        (:func:`~threetears.core.collections.delta_files.apply_delta_row`). A key some file of which cannot be had is
-        read from L3 by key instead, and counted in ``fallbacks``.
+        (:func:`~threetears.core.collections.delta_files.apply_delta_row`). A key one of whose epochs names no file (an
+        older writer's), or whose record is gone, is read from L3 by key instead, and counted in ``fallbacks``; a
+        missing or unreadable file is never read around (decision 29): it raises, and the table waits for it.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -2556,6 +2956,7 @@ class CopyFollower:
         :return: the rows that exist after the change, typed as the rail answers them; and the epochs each key was
             staged from (an apply holds those)
         :rtype: tuple[pyarrow.Table, dict[tuple[str, ...], frozenset[str | None]]]
+        :raises _FileWaitError: when an epoch's file is missing or unreadable
         """
         heard = self._epochs_of[table.name]
         epochs = {key: frozenset(heard.get(key, ())) for key in keys}
@@ -2612,6 +3013,7 @@ class CopyFollower:
         :return: None and the epochs in order, one a delta file (a commit of several records is applied once); or
             why, and the file named when one is
         :rtype: tuple[str | None, str | None, list[str]]
+        :raises _FileWaitError: when an epoch's file is missing or unreadable: the table waits for it
         """
         parts = [split_generation_token(epoch) if epoch is not None else None for epoch in epochs]
         if not parts or None in parts or len({part[0] for part in parts if part is not None}) != 1:
@@ -2625,6 +3027,10 @@ class CopyFollower:
                 files[epoch] = await self._delta_file_of(table, epoch, files)
             of, named = files[epoch]
             if isinstance(of, str):
+                if of in _FILE_WAIT_WHYS:
+                    assert named is not None  # noqa: S101 -- a file is missing or unreadable only when a record names it
+                    # never read from L3 (decision 29): the table waits for the writer to recreate it
+                    raise _FileWaitError(table.name, named, epoch, of)
                 return of, named, []
             if of.of_key(key) is None:
                 # the record named this key at this epoch and its file holds no change of it, nor clears a prefix of
@@ -2767,11 +3173,11 @@ class CopyFollower:
                     f"SELECT {selected} FROM {quote_identifier(name)}",  # noqa: S608 - trusted identifiers
                     table.key,
                     types=types,
-                    where={c: _typed(table.kind(c), v) for c, v in zip(columns[:-1], lead, strict=True)} or None,
+                    where={c: typed_text(table.kind(c), v) for c, v in zip(columns[:-1], lead, strict=True)} or None,
                     where_any={
                         last: (
                             f"{sql_cast(table.kind(last))}[]",
-                            [_typed(table.kind(last), v) for v in batch],
+                            [typed_text(table.kind(last), v) for v in batch],
                         )
                     },
                     page_size=self._page_size,
@@ -3041,6 +3447,9 @@ class CopyFollower:
         for task in self._reloads.values():
             task.cancel()
         self._reloads = {}
+        for task in self._file_tasks.values():
+            task.cancel()
+        self._file_tasks = {}
         self._status.phase = FollowerPhase.STOPPED
 
     # --- reading ---------------------------------------------------------------------------------
