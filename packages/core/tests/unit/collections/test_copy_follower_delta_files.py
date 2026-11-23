@@ -67,7 +67,10 @@ from threetears.core.collections.schema_backed import (  # noqa: E402
     collection_for_schema,
     rail_arrow_types,
 )
+from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
+from threetears.core.collections.volume_fulls import FullTable, current_full_manifest, publish_full_manifest  # noqa: E402
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.entities.base import BaseEntity  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE as _TEST_L1_TABLE  # noqa: E402
 
@@ -812,3 +815,115 @@ async def test_a_direct_pool_load_failing_after_some_rows_names_no_delta_file(_v
     assert advanced, "the failed load still advanced the table"
     assert all(record.delta_file is None for record in advanced), "a file of rows L3 never took was named"
     assert all(record.prefixes == [{"state": "VA"}] for record in advanced)
+
+
+class _Told:
+    """what a load hands its caller for each request that committed: the files and the generations, as a commit's
+    CallerTransaction names them (delta_files, committed_generations)."""
+
+    def __init__(self) -> None:
+        self.commits: list[tuple[dict[str, str], dict[str, str]]] = []
+
+    def __call__(self, files: Mapping[str, str], generations: Mapping[str, str]) -> None:
+        self.commits.append((dict(files), dict(generations)))
+
+
+def _token_of(log: _Log, file: str) -> str:
+    (token,) = [token for token, record in log.records.items() if record.delta_file == file]
+    return token
+
+
+async def test_a_load_from_files_hands_each_committed_request_its_file_and_generation_and_a_fold_fed_them_holds_its_rows(
+    _volume: Path,
+) -> None:
+    """Flips if a load of an opted-in table does not hand its caller each committed request's delta file and the
+    generation its advance wrote, in the shapes a CallerTransaction names them: the writer's fold never hears of the
+    load (nearly every LSF write), folds a state past it, and publishes a full missing its rows. Fed what the load
+    handed, the fold's full holds the loaded rows."""
+    world = _world()
+    l3, log, _lock, _backend, _follower = world
+    await _warmed(world)
+    results, store = _writer(l3, log, _volume)
+    before = f"inc:{log.count}"
+    first, first_rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    second, second_rows = _export(
+        store, "https://bucket/va-1.parquet", [_row("VA", 101, 2, "new", _LATER), _row("VA", 102, 3, None, _LATER)]
+    )
+    told = _Told()
+    await results.load_files(
+        [first, second],
+        columns=[name for name in _NAMES if name != "state"],
+        constants={"state": "VA"},
+        connections=2,
+        delta=LoadDelta(rows=[first_rows, second_rows]),
+        on_commit=told,
+    )
+    named = sorted(str(name) for name, _ in store.loads)
+    assert sorted(files[_TABLE] for files, _ in told.commits) == named
+    for files, generations in told.commits:
+        assert set(files) == set(generations) == {_TABLE}
+        assert generations[_TABLE] == _token_of(log, files[_TABLE])
+    workers = ProcessWorkers(workers=1, name="test load folds")
+    try:
+        publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version=before)})
+        folds = DeltaFolds(_volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], workers=workers)
+        for files, generations in told.commits:
+            folds.committed(files, generations, version=2)
+        await folds.wait()
+        await folds.close()
+    finally:
+        await workers.close()
+    manifest = current_full_manifest(_volume)
+    assert manifest is not None
+    (part,) = [part for part in manifest.tables[_TABLE].parts if part.scope == "state:VA"]
+    with pa.memory_map(str(_volume / part.file)) as source:
+        folded = pa.ipc.open_file(source).read_all()
+    assert sorted(folded.column("geo_id").to_pylist()) == [100, 101, 102]
+
+
+async def test_a_load_that_replaces_a_prefix_hands_the_delete_s_commit_first(_volume: Path) -> None:
+    """Flips if the delete of the prefixes a load replaces, a commit of its own with its own delta file, is not handed
+    to the caller before the load's: the fold would never clear the prefix's old rows from its part."""
+    world = _world()
+    l3, log, _lock, _backend, _follower = world
+    await _warmed(world)
+    results, store = _writer(l3, log, _volume)
+    file, rows = _export(store, "https://bucket/va.parquet", [_row("VA", 9, 90, "new", _LATER)])
+    told = _Told()
+    await results.load_files(
+        [file],
+        columns=[name for name in _NAMES if name != "state"],
+        constants={"state": "VA"},
+        delta=LoadDelta(rows=[rows], replaces=[{"state": "VA"}]),
+        on_commit=told,
+    )
+    (load_file,) = [str(name) for name, _ in store.loads]
+    (deleted, _), (loaded, _) = told.commits
+    assert read_delta_file(_volume / deleted[_TABLE]).prefixes == ({"state": "VA"},)
+    assert loaded[_TABLE] == load_file
+    assert [generations[_TABLE] for _, generations in told.commits] == [
+        _token_of(log, deleted[_TABLE]),
+        _token_of(log, load_file),
+    ]
+
+
+async def test_a_load_request_that_fails_hands_its_caller_no_file(_volume: Path) -> None:
+    """Flips if a request that failed part way is handed to the caller: its file holds rows L3 never took, and its
+    record names no file, so the fold must never hear of it."""
+    world = _world()
+    l3, log, _lock, _backend, _follower = world
+    await _warmed(world)
+    results, _ = _writer(l3, log, _volume)
+    store = _FailingAfterAFileStore(l3, _volume)
+    results.l3_pool = store
+    first, first_rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    told = _Told()
+    with pytest.raises(RuntimeError, match="second file"):
+        await results.load_files(
+            [first],
+            columns=[name for name in _NAMES if name != "state"],
+            constants={"state": "VA"},
+            delta=LoadDelta(rows=[first_rows]),
+            on_commit=told,
+        )
+    assert told.commits == []

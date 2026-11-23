@@ -105,7 +105,13 @@ from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction, save_delta_files
-from threetears.core.backends.broker_generation import named_delta_files, naming_delta_files
+from threetears.core.backends.broker_generation import (
+    collecting_advanced_generations,
+    committed_generations_record,
+    named_delta_files,
+    naming_delta_files,
+    reply_generations_since,
+)
 from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     LoadDelta,
@@ -3397,6 +3403,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         prefixes: Sequence[Mapping[str, Any]] | None = None,
         reload: bool = False,
         delta: LoadDelta | None = None,
+        on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None = None,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -3463,16 +3470,32 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             load replaces: what a table that opts in to delta files is loaded with (see **A table that opts in**);
             None for any other table
         :ptype delta: LoadDelta | None
+        :param on_commit: with a ``delta``, called on the event loop once for each commit the load made, as it lands,
+            with that commit's delta files and the generation tokens its advance wrote, by table: the shapes a
+            :class:`CallerTransaction` names them (``delta_files``, ``committed_generations``), for the writer's
+            :meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`. The delete of the prefixes the load
+            replaces comes first, then each request that committed, in the order each landed. A request that failed
+            is never handed (its file may hold rows L3 never took, and its record names none); the requests that
+            committed before it were. A callback, not the return value: a load that fails after some requests
+            committed raises, and the fold must still hear the ones that did. It must not raise
+            (``DeltaFolds.committed`` never does)
+        :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
             it defers its L3 writes (a buffered row would land among the loaded ones), a bound is
-            under one, ``connections`` is under one, or one file alone needs a longer wait than the cap
+            under one, ``connections`` is under one, or one file alone needs a longer wait than the cap; when
+            ``on_commit`` is given with no ``delta`` (a load that saves no file has none to hand)
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
         :raises DeltaFileRefusedError: when the table opts in to delta files and no ``delta`` is given: the store
             copies the files itself, so no row passes through this process to be saved in one
         """
+        if delta is None and on_commit is not None:
+            raise ValueError(
+                f"{type(self).__name__}.load_files: on_commit is given with no delta; a load that saves no delta "
+                f"file has none to hand"
+            )
         if delta is None:
             self._refuse_unfiled("load_files")
         elif not self.writes_delta_files:
@@ -3496,7 +3519,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"would land among the loaded ones"
             )
         if delta is not None and delta.replaces:
-            await self._delete_replaced(store, delta.replaces)
+            await self._delete_replaced(store, delta.replaces, on_commit)
         if not files:
             return 0
         reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
@@ -3518,9 +3541,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 named: dict[str, str] = {}
                 if delta is not None:
                     named = await self._save_load_delta(request, given, constants or {})
+                # the generations the request's commit wrote, learned as a CallerTransaction learns its own: from the
+                # broker's reply on a pod, from this process's advance on a direct pool
+                before = committed_generations_record()
+                advanced: dict[str, str] = {}
                 # the request names its file: the broker's epoch record of it does, and so does this process's own
                 # advance on a direct pool (decision 11: saved before the request's commits)
-                with naming_delta_files(named):
+                with naming_delta_files(named), collecting_advanced_generations(advanced):
                     result = await store.load_files(
                         self.table_name,
                         request,
@@ -3536,6 +3563,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                         await self._drop_and_advance(
                             "loaded from files", reach=reach, rows=result.row_count, requests=1
                         )
+                if on_commit is not None and named:
+                    # only here, after the request and its advance landed: a request that raised hands nothing
+                    _hand_commit(on_commit, named, {**reply_generations_since(before), **advanced})
             return result.row_count
 
         try:
@@ -3578,7 +3608,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         return written
 
-    async def _delete_replaced(self, store: Any, replaces: Sequence[Mapping[str, Any]]) -> None:
+    async def _delete_replaced(
+        self,
+        store: Any,
+        replaces: Sequence[Mapping[str, Any]],
+        on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None = None,
+    ) -> None:
         """delete every row of the key prefixes a load replaces, in a transaction of its own committed before the
         load: a load is insert-only, so the rows it replaces leave L3 first. Its delta file names the prefixes
         (:meth:`delete_prefixes`), so a copy and the fold clear their own rows under them, with no L3 read
@@ -3588,6 +3623,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype store: Any
         :param replaces: the prefixes, each the leading key columns and their values
         :ptype replaces: Sequence[Mapping[str, Any]]
+        :param on_commit: told the delete's delta file and generation once it committed (:meth:`load_files`)
+        :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
         :return: nothing
         :rtype: None
         :raises ValueError: when the store opens no connection of its own, or as :meth:`delete_prefixes`
@@ -3598,8 +3635,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.load_files: the store of {self.table_name} opens no connection to delete the "
                 f"prefixes the load replaces on"
             )
-        async with acquire() as conn, CallerTransaction(conn):
+        async with acquire() as conn, CallerTransaction(conn) as transaction:
             await self.delete_prefixes(replaces, conn=conn)
+        if on_commit is not None and transaction.delta_files:
+            _hand_commit(on_commit, transaction.delta_files, transaction.committed_generations)
 
     async def _save_load_delta(
         self, request: Sequence[LoadFile], given: Mapping[int, Any], constants: Mapping[str, Any]
@@ -4527,6 +4566,25 @@ async def _all_or_first_failure(calls: Sequence[Coroutine[Any, Any, int]]) -> li
     except* BaseException as failed:
         raise failed.exceptions[0] from None
     return [task.result() for task in tasks]
+
+
+def _hand_commit(
+    on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None],
+    files: Mapping[str, str],
+    generations: Mapping[str, str],
+) -> None:
+    """tell a load's caller one commit it made: its delta files, and the generations its advance wrote for those tables.
+
+    :param on_commit: the caller's callback (:meth:`SchemaBackedCollection.load_files`)
+    :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None]
+    :param files: table -> the commit's delta file
+    :ptype files: Mapping[str, str]
+    :param generations: table -> the token written, any table; only the files' tables are handed
+    :ptype generations: Mapping[str, str]
+    :return: nothing
+    :rtype: None
+    """
+    on_commit(dict(files), {table: token for table, token in generations.items() if table in files})
 
 
 def _text_vector_width(text: str) -> int | None:
