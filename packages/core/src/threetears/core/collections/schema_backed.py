@@ -3732,16 +3732,24 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         """
         registry = self.registry
         delta_file = named_delta_files().get(self.table_name)
-        if registry is not None and reach is not None and reach.prefixes and delta_file is not None:
+        from_file = registry is not None and reach is not None and bool(reach.prefixes) and delta_file is not None
+        # with a delta file the registry applies the epoch from it once the generation advances
+        # (_advance_then_apply_file); without one it drops what the change reached here
+        if registry is not None and not from_file:
+            if reach is not None and reach.prefixes:
+                registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
+            else:
+                why = "reset" if reach is not None and reach.reason == RESET_REASON else "local"
+                registry.drop_table(self.table_name, reason=reason, why=why)
+        if registry is None or registry.get_collection(self.table_name) is not self:
+            # an instance the registry does not hold hears no epoch it applies, so it drops its own L1 here, after the
+            # commit (a read from now on is of L3 as the change left it): one site for both paths, the whole-table
+            # change the record names (announced by the advance below)
+            self.drop_cached_table()
+        if from_file:
+            assert registry is not None and reach is not None and delta_file is not None  # noqa: S101 -- from_file
             await self._advance_then_apply_file(registry, reason, reach, delta_file, **detail)
             return
-        if registry is not None and reach is not None and reach.prefixes:
-            registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
-        elif registry is not None:
-            why = "reset" if reach is not None and reach.reason == RESET_REASON else "local"
-            registry.drop_table(self.table_name, reason=reason, why=why)
-        if registry is None or registry.get_collection(self.table_name) is not self:
-            self.drop_cached_table()
         bump = await self._bump_after_commit(None, reach=reach)
         log.info(
             "table changed with no row write mark; caches dropped and generation advanced",
@@ -3786,8 +3794,6 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         else:
             registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
-        if registry.get_collection(self.table_name) is not self:
-            self.drop_cached_table()
         log.info(
             "table changed by key prefixes with its delta file; generation advanced, the file applied here",
             extra={
