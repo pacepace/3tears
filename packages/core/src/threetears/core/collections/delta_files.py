@@ -79,6 +79,7 @@ from threetears.core.collections.epoch_change import key_text
 from threetears.observe import get_logger
 
 try:
+    import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
@@ -94,6 +95,8 @@ __all__ = [
     "DeltaFileRefusedError",
     "DeltaFileUnreadableError",
     "DeltaReach",
+    "DeltaTable",
+    "HeldDeltaRows",
     "LoadDelta",
     "TableDelta",
     "apply_delta_row",
@@ -102,6 +105,7 @@ __all__ = [
     "load_delta_rows",
     "read_delta_file",
     "read_delta_file_reach",
+    "read_delta_table",
     "read_volume_file",
     "sweep_orphan_delta_files",
     "under_prefix",
@@ -478,6 +482,36 @@ class DeltaFile:
 
 
 @dataclass(frozen=True, slots=True)
+class DeltaTable:
+    """a delta file read back as Arrow, never a Python row of it built: what a copy applies a file from
+    (:class:`HeldDeltaRows`).
+
+    Why not :class:`DeltaFile`: its rows as Python dicts cost about ten times their Arrow (291 MB for a 200,000-row file
+    of 15 text columns, 2026-11-23 audit), and a copy holding every epoch's file that way through a pass ran out of
+    memory before it was CPU bound.
+
+    :ivar table: the table
+    :ivar write: the write's unique id
+    :ivar key: the table's key columns, in key order
+    :ivar rows: every row and delete marker, in the order written: the table's columns as the file holds them (a
+        delete marker's key columns alone set), the file's two marker columns left out
+    :ivar deleted: per row, whether the write deleted the key
+    :ivar written: per row, an index into ``sets``: the columns its write set in a row L3 already held
+    :ivar sets: the distinct column sets the rows' writes set
+    :ivar prefixes: the key prefixes the write cleared before them, as text (:func:`_prefix_text`)
+    """
+
+    table: str
+    write: str
+    key: tuple[str, ...]
+    rows: Any
+    deleted: Any
+    written: Any
+    sets: tuple[frozenset[str], ...]
+    prefixes: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class DeltaReach:
     """what a delta file reaches, its other columns unread: the keys it names and the prefixes it clears.
 
@@ -671,18 +705,19 @@ def read_volume_file(path: Path, *, columns: Sequence[str] | None = None) -> Any
     return pa_ipc.open_file(pa.BufferReader(body), options=options).read_all()
 
 
-def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
-    """read a delta file saved by :func:`write_delta_file`. Blocking: run it on a thread.
+def read_delta_table(path: Path, *, table: str | None = None) -> DeltaTable:
+    """read a delta file saved by :func:`write_delta_file` as Arrow. Blocking: run it on a thread.
 
-    Every array is validated in full before a row is decoded: a damaged file raises, never crashes the process
-    (:class:`DeltaFileUnreadableError`).
+    Every array is validated in full, and every row's written set checked to be one the file lists, before anything is
+    applied from it: a damaged file raises, never crashes the process (:class:`DeltaFileUnreadableError`). No Python
+    row of it is built: the file's IPC buffers are its memory (zero-copy off the checked bytes).
 
     :param path: the file
     :ptype path: Path
     :param table: the table whose file it must be; None checks none
     :ptype table: str | None
-    :return: the file's table, write, key and changes
-    :rtype: DeltaFile
+    :return: the file's table, write, key, rows and markers
+    :rtype: DeltaTable
     :raises FileNotFoundError: when it is not there
     :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
         write its name says
@@ -696,14 +731,47 @@ def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
         read.validate(full=True)
         metadata = read.schema.metadata or {}
         named, write = _checked_metadata(path, metadata, table)
-        sets = [frozenset(columns) for columns in json.loads(metadata[_WRITTEN_METADATA])]
+        sets = tuple(frozenset(columns) for columns in json.loads(metadata[_WRITTEN_METADATA]))
         prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
         key = tuple(json.loads(metadata[_KEY_METADATA]))
-        changes = []
-        for row in read.to_pylist():
-            deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
-            changes.append(DeltaChange(row=row, deleted=deleted, written=sets[written]))
-    return DeltaFile(table=named, write=write, key=key, changes=changes, prefixes=prefixes)
+        written = read.column(_WRITTEN_COLUMN)
+        deleted = read.column(_DELETED_COLUMN)
+        if read.num_rows:
+            low, high = pc.min_max(written).values()
+            if low.as_py() < 0 or high.as_py() >= len(sets):
+                raise IndexError(f"a row names written set {high.as_py()} of the file's {len(sets)}")
+        rows = read.drop_columns([_DELETED_COLUMN, _WRITTEN_COLUMN])
+    return DeltaTable(
+        table=named, write=write, key=key, rows=rows, deleted=deleted, written=written, sets=sets, prefixes=prefixes
+    )
+
+
+def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
+    """read a delta file saved by :func:`write_delta_file` as Python changes. Blocking: run it on a thread.
+
+    Every row becomes a Python dict (about ten times its Arrow): for a test, a tool or a small file. A copy applies a
+    file from its Arrow (:func:`read_delta_table`, :class:`HeldDeltaRows`).
+
+    :param path: the file
+    :ptype path: Path
+    :param table: the table whose file it must be; None checks none
+    :ptype table: str | None
+    :return: the file's table, write, key and changes
+    :rtype: DeltaFile
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
+        write its name says
+    :raises OSError: when the volume cannot read it (an errno)
+    :raises ImportError: without pyarrow
+    """
+    read = read_delta_table(path, table=table)
+    changes = [
+        DeltaChange(row=row, deleted=deleted, written=read.sets[written])
+        for row, deleted, written in zip(
+            read.rows.to_pylist(), read.deleted.to_pylist(), read.written.to_pylist(), strict=True
+        )
+    ]
+    return DeltaFile(table=read.table, write=read.write, key=read.key, changes=changes, prefixes=read.prefixes)
 
 
 def read_delta_file_reach(path: Path, *, table: str | None = None) -> DeltaReach:
@@ -769,6 +837,238 @@ def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict
     for name in change.written:
         merged[name] = change.row[name]
     return merged
+
+
+#: the separator between a key's parts in its one text (:func:`_key_texts`): a control character no key value holds
+_KEY_SEPARATOR: Final = "\x1e"
+
+
+def _text_column(column: Any) -> Any:
+    """a key column's values as :func:`~threetears.core.collections.epoch_change.key_text` names each (a change
+    record's, a row message's spelling): text kept, an integer's digits cast in Arrow, any other type one distinct value
+    at a time.
+
+    :param column: the column
+    :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :return: its texts
+    :rtype: pyarrow.Array
+    """
+    if isinstance(column, pa.ChunkedArray):
+        column = column.combine_chunks()
+    kind = column.type
+    if pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_integer(kind):
+        return column.cast(pa.string())
+    encoded = pc.dictionary_encode(column)
+    texts = pa.array([key_text(value) for value in encoded.dictionary.to_pylist()], pa.string())
+    return texts.take(encoded.indices)
+
+
+def _key_texts(columns: Sequence[Any]) -> Any:
+    """each row's key as one text, its columns' texts joined (:data:`_KEY_SEPARATOR`): what keys are matched by.
+
+    :param columns: the key columns' texts, in key order
+    :ptype columns: Sequence[pyarrow.Array]
+    :return: one text a row
+    :rtype: pyarrow.Array
+    """
+    return columns[0] if len(columns) == 1 else pc.binary_join_element_wise(*columns, _KEY_SEPARATOR)
+
+
+class HeldDeltaRows:
+    """some keys' rows as Arrow, each held or not, with delta files' changes applied in order exactly as
+    :func:`apply_delta_row` applies one, a column at a time over every key a file changes: never a Python row built.
+
+    Why: a copy applied a file by turning it into Python rows (``to_pylist``, about ten times its Arrow: 291 MB for a
+    200,000-row file of 15 text columns) and merging each key's row in a Python loop, every epoch's file held so through
+    the pass (2026-11-23 audit, P0). Here a file stays the Arrow it was read as, and the copy holds one at a time.
+
+    The rule, per change (decision 19 of ``design-pod-delta-files.md``): a delete leaves no row; a key not held takes
+    the file's row whole (a column the file lacks is null); a held key takes the file's value of each column its write
+    set and keeps every other (its ``date_created`` among them). A key under a prefix the file clears is not held
+    before the file's own changes of it. A key's several changes in one file apply in the order written.
+
+    :ivar key: the table's key columns, in key order
+    :ivar applied: how many changes were applied, each once
+    """
+
+    def __init__(self, key: Sequence[str], keys: Sequence[Sequence[str]], types: Mapping[str, Any]) -> None:
+        """the keys, none held yet.
+
+        :param key: the table's key columns, in key order
+        :ptype key: Sequence[str]
+        :param keys: the keys, each its values as text (``key_text``), unique; a key's position is its index here
+        :ptype keys: Sequence[Sequence[str]]
+        :param types: each column the rows hold, onto its Arrow type, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        """
+        self.key = tuple(key)
+        self._types = dict(types)
+        self._count = len(keys)
+        texts = [pa.array([values[at] for values in keys], pa.string()) for at in range(len(self.key))]
+        self._key_columns = dict(zip(self.key, texts, strict=True))
+        self._texts = _key_texts(texts)
+        self._columns = {name: pa.nulls(self._count, kind) for name, kind in self._types.items()}
+        self._held = np.zeros(self._count, dtype=bool)
+        self.applied = 0
+
+    def _positions(self, rows: Any) -> Any:
+        """each row's key's position among the keys; -1 for a key not among them.
+
+        :param rows: rows holding the key columns
+        :ptype rows: pyarrow.Table
+        :return: one position a row
+        :rtype: numpy.ndarray
+        """
+        found = pc.index_in(_key_texts([_text_column(rows.column(name)) for name in self.key]), value_set=self._texts)
+        return np.asarray(pc.fill_null(found, -1).to_numpy(zero_copy_only=False), dtype=np.int64)
+
+    def _placed(self, column: Any, positions: Any, values: Any) -> Any:
+        """``column`` with ``values`` at ``positions``, every other value kept.
+
+        :param column: one value a key
+        :ptype column: pyarrow.Array
+        :param positions: the keys' positions, each once
+        :ptype positions: numpy.ndarray
+        :param values: one value a position, of the column's type
+        :ptype values: pyarrow.Array
+        :return: the column
+        :rtype: pyarrow.Array
+        """
+        index = np.arange(self._count, dtype=np.int64)
+        index[positions] = self._count + np.arange(len(positions), dtype=np.int64)
+        return pa.concat_arrays([column, values]).take(pa.array(index))
+
+    def _typed(self, column: Any, name: str) -> Any:
+        """a column's values as its type here.
+
+        :param column: the values
+        :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+        :param name: the column
+        :ptype name: str
+        :return: the values, typed
+        :rtype: pyarrow.Array
+        """
+        if isinstance(column, pa.ChunkedArray):
+            column = column.combine_chunks()
+        kind = self._types[name]
+        return column if column.type == kind else column.cast(kind)
+
+    def hold(self, rows: Any) -> None:
+        """the rows held before any change (the copy's own), each at its key; a row of a key not among the keys is
+        left out.
+
+        :param rows: the rows, every column of ``types`` typed as it is
+        :ptype rows: pyarrow.Table
+        :return: nothing
+        :rtype: None
+        """
+        if not rows.num_rows:
+            return
+        positions = self._positions(rows)
+        taken = np.flatnonzero(positions >= 0)
+        positions = positions[taken]
+        index = pa.array(taken)
+        for name in self._types:
+            self._columns[name] = self._placed(
+                self._columns[name], positions, self._typed(rows.column(name).take(index), name)
+            )
+        self._held[positions] = True
+
+    def _under(self, prefixes: Sequence[Mapping[str, str]]) -> Any:
+        """which keys lie under one of ``prefixes`` (:func:`under_prefix`, compared as text).
+
+        :param prefixes: the prefixes, as a delta file names them
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: one flag a key
+        :rtype: numpy.ndarray
+        """
+        under = np.zeros(self._count, dtype=bool)
+        for prefix in prefixes:
+            within = np.ones(self._count, dtype=bool)
+            for column, value in prefix.items():
+                equal = pc.equal(self._key_columns[column], pa.scalar(value, pa.string()))
+                within &= np.asarray(equal.to_numpy(zero_copy_only=False), dtype=bool)
+            under |= within
+        return under
+
+    def apply(self, delta: DeltaTable, positions: Any) -> Any:
+        """apply one file to the keys at ``positions`` (those that reach it at its epoch): each under a prefix it clears
+        is no longer held, then its changes of them apply in the order written.
+
+        :param delta: the file
+        :ptype delta: DeltaTable
+        :param positions: the keys' positions, each once
+        :ptype positions: numpy.ndarray
+        :return: the positions of those the file neither changes nor clears (the caller says what that means)
+        :rtype: numpy.ndarray
+        """
+        reach = np.zeros(self._count, dtype=bool)
+        reach[positions] = True
+        cleared = np.zeros(self._count, dtype=bool)
+        if delta.prefixes:
+            cleared = self._under(delta.prefixes) & reach
+            self._held[cleared] = False
+        at = self._positions(delta.rows.select(list(self.key)))
+        rows = np.flatnonzero(at >= 0)
+        rows = rows[reach[at[rows]]]
+        keys = at[rows]
+        changed = np.zeros(self._count, dtype=bool)
+        changed[keys] = True
+        # each key's changes in the order written: every key's first change at once, then every second, ...
+        order = np.lexsort((rows, keys))
+        rows, keys = rows[order], keys[order]
+        if len(keys):
+            first = np.ones(len(keys), dtype=bool)
+            first[1:] = keys[1:] != keys[:-1]
+            starts = np.flatnonzero(first)
+            rank = np.arange(len(keys)) - np.repeat(starts, np.diff(np.append(starts, len(keys))))
+            for nth in range(int(rank.max()) + 1):
+                this = rank == nth
+                self._changes(delta, keys[this], rows[this])
+        return positions[~(changed[positions] | cleared[positions])]
+
+    def _changes(self, delta: DeltaTable, keys: Any, rows: Any) -> None:
+        """apply one change to each of ``keys``: the file's row at the same index of ``rows``.
+
+        :param delta: the file
+        :ptype delta: DeltaTable
+        :param keys: the keys' positions, each once
+        :ptype keys: numpy.ndarray
+        :param rows: each one's change, as the file's row index
+        :ptype rows: numpy.ndarray
+        :return: nothing
+        :rtype: None
+        """
+        index = pa.array(rows)
+        deleted = np.asarray(delta.deleted.take(index).to_numpy(zero_copy_only=False), dtype=bool)
+        written = np.asarray(delta.written.take(index).to_numpy(zero_copy_only=False), dtype=np.int64)
+        held = self._held[keys]
+        named = set(delta.rows.column_names)
+        for name, kind in self._types.items():
+            sets = np.fromiter((name in columns for columns in delta.sets), dtype=bool, count=len(delta.sets))
+            # a key not held takes the file's row whole; a held one the columns its write set
+            from_file = ~held | sets[written]
+            if not from_file.any():
+                continue
+            values = (
+                self._typed(delta.rows.column(name).take(index), name) if name in named else pa.nulls(len(rows), kind)
+            )
+            if not from_file.all():
+                values = pc.if_else(pa.array(from_file), values, self._columns[name].take(pa.array(keys)))
+            self._columns[name] = self._placed(self._columns[name], keys, values)
+        self._held[keys] = ~deleted
+        self.applied += len(keys)
+
+    def rows(self) -> tuple[Any, Any]:
+        """the rows held now, in key position order, and each one's position.
+
+        :return: the rows, typed as ``types``; their keys' positions, ascending
+        :rtype: tuple[pyarrow.Table, numpy.ndarray]
+        """
+        positions = np.flatnonzero(self._held)
+        index = pa.array(positions)
+        schema = pa.schema(list(self._types.items()))
+        return pa.table([self._columns[name].take(index) for name in self._types], schema=schema), positions
 
 
 def _defaulted(rows: Sequence[Mapping[str, Any]], defaults: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:

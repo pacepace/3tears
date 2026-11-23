@@ -29,6 +29,7 @@ statement reached L3" are both checked. The contract this pins:
 from __future__ import annotations
 
 import asyncio
+import tracemalloc
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Mapping
 from sqlalchemy import BigInteger, Column as SaColumn, DateTime, MetaData, String, Table
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.testing.loop_lateness import turn_holds
 
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
@@ -565,26 +567,146 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
     log.commit([("VA", 1), ("VA", 2)], delta_file=name)
     lock.commit("state:VA")
     reads: list[Path] = []
-    applies: list[Any] = []
-    read, apply = delta_files.read_delta_file, delta_files.apply_delta_row
+    merges: list[Any] = []
+    read = delta_files.read_delta_table
 
     def counted_read(path: Path, **checks: Any) -> Any:
         reads.append(path)
         return read(path, **checks)
 
-    def counted_apply(held: Any, change: Any) -> Any:
-        applies.append(change)
-        return apply(held, change)
+    class CountedRows(delta_files.HeldDeltaRows):
+        def __init__(self, *args: Any) -> None:
+            super().__init__(*args)
+            merges.append(self)
 
-    monkeypatch.setattr(copy_follower, "read_delta_file", counted_read)
-    monkeypatch.setattr(copy_follower, "apply_delta_row", counted_apply)
+    monkeypatch.setattr(copy_follower, "read_delta_table", counted_read)
+    monkeypatch.setattr(copy_follower, "HeldDeltaRows", CountedRows)
 
     assert await follower.catch_up()
 
     assert _same(backend, l3)
     assert l3.statements == 0
     assert len(reads) == 1
-    assert len(applies) == 3, "VA 1's two changes and VA 2's one, each once"
+    assert sum(merge.applied for merge in merges) == 3, "VA 1's two changes and VA 2's one, each once"
+
+
+#: the rows of the bounded-memory pass below: a tenth of the audit's 200,000, enough that a Python object a row stands
+#: well clear of everything else a stage allocates
+_BIG_ROWS = 20_000
+
+#: the most Python memory (tracemalloc, numpy's arrays counted, Arrow's buffers not) staging a 20,000-row file's
+#: change may allocate at its peak, per row: the stage alone, the keys already heard. Measured 2026-11-23 (macOS arm64,
+#: Python 3.14): the old apply (the file's rows as dicts, its changes grouped by key, the copy's rows as dicts, each
+#: key's row merged into a dict) 1,447 bytes a row; the Arrow apply 561 bytes a row, all of it the stage's own
+#: bookkeeping a key whatever the apply (the staged set, each key's scopes and epochs). The bound sits between: the
+#: old dicts a row (886 bytes a row more) trip it.
+_STAGE_BYTES_PER_ROW = 900
+
+
+async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy applies a delta file by turning its rows into Python objects (the old to_pylist, a dict a key:
+    1,447 bytes of Python a row here against 561 now; 450 MB at 200,000 rows of 15 text columns), or if the applied
+    rows differ from L3's: half the rows updated with every column set, half with votes alone (note and date_created
+    kept), every hundredth key deleted."""
+
+    world = _world()
+    l3, log, lock, backend, follower = world
+    born = pa.table({"state": ["VA"] * _BIG_ROWS, "geo_id": list(range(_BIG_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    log.commit([("VA", i) for i in range(_BIG_ROWS)])
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.statements = 0
+    half = _BIG_ROWS // 2
+    full = [_row("VA", i, i + 1, "second", _LATER) for i in range(half)]
+    votes = [_row("VA", i, i + 2, None, _LATER) for i in range(half, _BIG_ROWS)]
+    gone = [("VA", i) for i in range(0, _BIG_ROWS, 100)]
+    name = _save(
+        _volume,
+        "big",
+        ("rows", full, list(_NAMES)),
+        ("rows", votes, ["state", "geo_id", "votes"]),
+        ("deletes", gone, ()),
+    )
+    l3.db.execute(
+        f"UPDATE {_TABLE} SET votes = geo_id + 1, note = 'second', date_created = ? WHERE geo_id < ?", [_LATER, half]
+    )  # noqa: S608
+    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 2 WHERE geo_id >= ?", [half])  # noqa: S608
+    l3.db.execute(f"DELETE FROM {_TABLE} WHERE geo_id % 100 = 0")  # noqa: S608
+    log.commit([("VA", i) for i in range(_BIG_ROWS)], delta_file=name)
+    lock.commit("state:VA")
+    del full, votes, gone
+    peaks: list[int] = []
+    stage = CopyFollower._stage_keyed  # noqa: SLF001 - the stage alone is measured, the keys heard before it
+
+    async def measured(self: CopyFollower, *args: Any, **kwargs: Any) -> Any:
+        # the stage alone: the keys are heard before it, as every pass hears them whatever the apply
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            staged = await stage(self, *args, **kwargs)
+            peaks.append(tracemalloc.get_traced_memory()[1])
+        finally:
+            tracemalloc.stop()
+        return staged
+
+    monkeypatch.setattr(CopyFollower, "_stage_keyed", measured)
+    assert await follower.catch_up()
+    peak = max(peaks)
+    assert peak / _BIG_ROWS < _STAGE_BYTES_PER_ROW, f"the stage allocated {peak / _BIG_ROWS:.0f} bytes of Python a row"
+    assert l3.statements == 0
+    assert _same(backend, l3)
+
+
+#: the audit's real size for a loop bound: a 200,000-row commit applied from its file
+_LOOP_ROWS = 200_000
+
+#: the longest one turn of the loop may run (CPU time, turn_holds) while a pass stages a 200,000-row commit from its
+#: file. Measured 2026-11-23 (macOS arm64, Python 3.14): with the file's changes grouped and each key merged on the
+#: loop, 125.6 ms; with the merge on a thread, 1.5 ms
+_LOOP_TURN_SECONDS = 0.05
+
+
+async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a pass groups a 200,000-row file's changes by key, or merges each key's row, on the event loop (the
+    copy then answered nothing else for that long): the merge runs on a thread, the loop's own part in runs."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await follower.warm()
+    assert await follower.catch_up()
+    name = _save(
+        _volume,
+        "loop",
+        ("rows", [_row("VA", i, i + 1, None, _LATER) for i in range(_LOOP_ROWS)], ["state", "geo_id", "votes"]),
+    )
+    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+    log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
+    lock.commit("state:VA")
+    turns: list[float] = []
+    stage = CopyFollower._stage_keyed  # noqa: SLF001 - the stage alone is timed, the keys heard before it
+
+    async def timed(self: CopyFollower, *args: Any, **kwargs: Any) -> Any:
+        with turn_holds() as holds:
+            staged = await stage(self, *args, **kwargs)
+        turns.extend(seconds for seconds, _ in holds)
+        return staged
+
+    monkeypatch.setattr(CopyFollower, "_stage_keyed", timed)
+    assert await follower.catch_up()
+    longest = max(turns)
+    assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
+    assert _same(backend, l3)
 
 
 async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from_the_notes() -> None:
