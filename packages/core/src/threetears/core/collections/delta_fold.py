@@ -75,12 +75,19 @@ are walked (``changes_after``), each file named is noted as a commit is, and a r
 is already current to (folded before the restart); a file left with no share is deleted with the round's covered
 files. So folding resumes where it stopped, at the same half-size point.
 
-**A lost log starts the table fresh.** A table whose generation is of a new incarnation (its store replaced: the
-memory-only log lost) has parts current to versions no record of the new log orders, and a walk that misses a record
-cannot say which deltas the parts lack. Either way only L3 can say what the table holds: the table starts fresh
-(``why="log_lost"``), rebuilt from L3 once under the writer's term, declared a cold start (decision 14: only L3 is
-left), logged and counted; its deltas of the old log are dropped with the rebuild. A round that finds a commit of
-another incarnation than the table's full marks it the same way rather than folding across it.
+**A lost log is recovered with one recovery delta, never a whole read** (decision 28). A table whose generation is of
+a new incarnation (its store replaced: the memory-only log lost), or whose walk misses a record, has parts current to
+versions no record orders, so the writer cannot tell the order of the delta files left on the volume nor whether each
+one's commit landed. The full is still right up to its version, so it is kept: the writer lists the table's own delta
+folder (here, and only here, the volume is listed), gathers every key the files left there name and every key prefix
+they clear, and reads those keys' current rows from L3 by key (:func:`~threetears.core.keyed.read_keyed_arrow`), and
+each prefix's rows by a key-led read of the prefix: a read the size of the changes, never of the table. A key L3 no
+longer holds becomes a delete marker (carrying its state, decision 27); a file whose commit never landed simply reads
+back as L3 has it. The rows are written as one recovery delta file (the prefixes cleared first, then the rows, every
+column set, then the markers), folded in a worker process into every state it reaches, the other parts kept as they
+are, every part current to the generation read before the keys; published at the writer's term, and the leftover
+files deleted. Logged at WARNING and counted (``delta_fold_recoveries_total``). The same for a round that finds a
+commit of another incarnation than the table's full. A whole read stays only for no full at all (decision 14).
 """
 
 from __future__ import annotations
@@ -101,21 +108,26 @@ from threetears.observe.metrics import counter
 
 from threetears.core.collections.delta_files import (
     _DELETED_COLUMN,
+    _DELTA_FORMAT,
+    _FORMAT_METADATA,
     _PREFIXES_METADATA,
     _WRITTEN_COLUMN,
     _WRITTEN_METADATA,
     DeltaChange,
+    TableDelta,
     apply_delta_row,
     sweep_orphan_delta_files,
     under_prefix,
+    write_delta_file,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import EpochChangeReader
+from threetears.core.collections.epoch_change import EpochChangeReader, key_text
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.volume_fulls import (
@@ -162,8 +174,7 @@ _STATES = counter(
     label_names=("table", "how"),
 )
 
-#: rebuilds of a table's full from L3, by table, why (``cold_start``: no full holds it; ``reset``; ``schema_change``;
-#: ``log_lost``: the epoch log that ordered its deltas was replaced, a new incarnation, or lost a record)
+#: rebuilds of a table's full from L3, by table, why (``cold_start``: no full holds it; ``reset``; ``schema_change``)
 #: and outcome: ``rebuilt`` (published), ``stale`` (a later writer's term is current: nothing read or published),
 #: ``no_generation`` (the table has none yet: rebuilt before its first commit's round), ``failed`` (retried before
 #: the next round)
@@ -180,9 +191,26 @@ _RELEARNED = counter(
     label_names=("table",),
 )
 
-#: why a table starts fresh: it was reset, or recreated by a migration (:meth:`DeltaFolds.start_fresh`), or the epoch
-#: log that ordered its deltas was lost (a new incarnation of its generation, or a record missing)
-_FreshWhy = Literal["reset", "schema_change", "log_lost"]
+#: recoveries of a table's full from the keys its leftover delta files name, read from L3 by key (decision 28), by
+#: table, why (``log_lost``: a record of the epoch log is missing; ``new_incarnation``: the log was replaced, its
+#: generation of a new incarnation) and outcome: ``recovered`` (published), ``stale`` (a later writer's term is
+#: current), ``no_generation`` (none to version it by yet: tried again before the next round), ``failed`` (tried again
+#: before the next round)
+_RECOVERIES = counter(
+    "delta_fold_recoveries_total",
+    description="writer recoveries of a table's full after its epoch log was lost: the keys its leftover delta files "
+    "name read from L3 by key, folded as one recovery delta; by table, why and outcome",
+    label_names=("table", "why", "outcome"),
+)
+
+#: why a table starts fresh: it was reset, or recreated by a migration (:meth:`DeltaFolds.start_fresh`)
+_FreshWhy = Literal["reset", "schema_change"]
+
+#: why a table is recovered (decision 28): a record of its epoch log missing, or its log replaced (a new incarnation)
+_RecoveryWhy = Literal["log_lost", "new_incarnation"]
+
+#: the write id a recovery delta's file is named by, before its unique part: ``<table>/recovery-<hex>.arrow``
+_RECOVERY_WRITE: Final = "recovery"
 
 #: where a rebuild's rows are written as they are read, under the fulls' directory: one file a table, removed once its
 #: parts are published (or the rebuild fails)
@@ -316,11 +344,13 @@ class DeltaFolds:
         self._reader: _Reader | None = None
         #: tables reset or recreated (:meth:`start_fresh`), by why: rebuilt before any round folds them
         self._fresh: dict[str, _FreshWhy] = {}
+        #: tables whose epoch log was lost, by why: recovered by key (decision 28) before any round folds them
+        self._recover: dict[str, _RecoveryWhy] = {}
         #: whether a rebuild may be owed: the next round looks before it folds
         self._recheck = False
         #: whether a table was marked fresh since the last rebuild began
         self._marked = False
-        #: each table a rebuild published, in order
+        #: each table a rebuild or a recovery published, in order
         self._rebuilt: list[str] = []
 
     @property
@@ -395,8 +425,9 @@ class DeltaFolds:
     ) -> tuple[str, ...]:
         """the writer's start: re-learn from the epoch log the delta files not yet folded (module docstring, "A
         restarted writer re-learns"), then rebuild from L3, once, each folded table the current full on the volume
-        lacks (no full at all: a lost volume or a new environment; or one without the table) or whose log was lost,
-        and publish them at ``version`` (module docstring, "The rebuild from L3"); then fold each state already due.
+        lacks (no full at all: a lost volume or a new environment; or one without the table), and recover by key each
+        whose log was lost (module docstring, "A lost log"), publishing them at ``version``; then fold each state
+        already due.
         Call it after taking the write lease and beginning the first write, before that write's commit is told to
         :meth:`committed`. Kept for the rebuilds a later round owes (:meth:`start_fresh`, a table with no generation
         yet).
@@ -414,8 +445,9 @@ class DeltaFolds:
         :ptype version: int
         :param page_size: rows a page of the read holds
         :ptype page_size: int
-        :return: the tables rebuilt and published, in order; empty when the full held every one (or this writer's
-            term is no longer the highest, or a read failed: logged and counted, retried before the next round)
+        :return: the tables rebuilt or recovered and published, in order; empty when the full held every one and every
+            log was whole (or this writer's term is no longer the highest, or a read failed: logged and counted,
+            retried before the next round)
         :rtype: tuple[str, ...]
         :raises ValueError: when ``page_size`` is under one, or a table names no column types (``FoldedTable.of``)
         :raises GenerationUnavailableError: when the epoch log cannot be read: a fold without the deltas it would
@@ -437,7 +469,7 @@ class DeltaFolds:
 
     async def _relearn(self, generations: GenerationSource, changes: EpochChangeReader) -> None:
         """queue, as commits told, each delta file the epoch log names since each table's oldest part (module
-        docstring, "A restarted writer re-learns"); a table whose log was lost is owed a fresh start instead.
+        docstring, "A restarted writer re-learns"); a table whose log was lost is owed a recovery instead.
 
         :param generations: the writer's generation source: how far each table's log reaches
         :ptype generations: GenerationSource
@@ -453,8 +485,8 @@ class DeltaFolds:
         told = {file for _, file, _ in self._queued} | {share[2] for share in self._pending}
         for name in sorted(self.tables):
             entry = current.tables.get(name)
-            if entry is None or name in self._fresh:
-                continue  # rebuilt from L3 before any round: the rebuild's parts are current to L3, no delta owed
+            if entry is None or name in self._fresh or name in self._recover:
+                continue  # rebuilt or recovered before any round: its parts are then current to L3, no delta owed
             try:
                 now = await generations.current(name)
             except (
@@ -465,7 +497,9 @@ class DeltaFolds:
             if held is None or at is None:
                 continue
             if held[0] != at[0]:
-                self._owe_fresh(name, "log_lost", detail=f"the full is of incarnation {held[0]}, the log of {at[0]}")
+                self._owe_recovery(
+                    name, "new_incarnation", detail=f"the full is of incarnation {held[0]}, the log of {at[0]}"
+                )
                 continue
             low = min(
                 (
@@ -480,10 +514,8 @@ class DeltaFolds:
             walk = await changes.changes_after(name, f"{held[0]}:{low}", now)
             unnamed = [change.token for change in walk.changes if change.delta_file is None]
             if not walk.complete or unnamed:
-                self._owe_fresh(
-                    name,
-                    "log_lost",
-                    detail=f"first missing {walk.first_missing}, records naming no file {unnamed[:5]}",
+                self._owe_recovery(
+                    name, "log_lost", detail=f"first missing {walk.first_missing}, records naming no file {unnamed[:5]}"
                 )
                 continue
             files: dict[str, str] = {}
@@ -552,6 +584,30 @@ class DeltaFolds:
         if self._reader is not None:
             self._run_rounds()
 
+    def _owe_recovery(self, table: str, why: _RecoveryWhy, *, detail: str) -> None:
+        """mark ``table`` owed a recovery by key (decision 28) before any round folds it again: its epoch log was lost,
+        so the order of its delta files left on the volume, and whether each one's commit landed, is unknown.
+
+        :param table: the table
+        :ptype table: str
+        :param why: ``"log_lost"`` (a record missing) or ``"new_incarnation"`` (the log replaced)
+        :ptype why: str
+        :param detail: what was found, for the log line
+        :ptype detail: str
+        :return: nothing
+        :rtype: None
+        """
+        log.warning(
+            "a folded table's epoch log was lost: its full is kept and recovered from the keys its leftover delta "
+            "files name, read from L3 by key",
+            extra={"extra_data": {"table": table, "why": why, "detail": detail}},
+        )
+        self._recover[table] = why
+        self._recheck = True
+        self._marked = True
+        if self._reader is not None:
+            self._run_rounds()
+
     def _run_rounds(self) -> None:
         """start the background rounds unless they are running.
 
@@ -592,6 +648,7 @@ class DeltaFolds:
                 self._recheck = False
                 self._marked = False
                 await self._fresh_fulls(self._reader)
+                await self._recoveries(self._reader)
             if not self._queued:
                 if self._marked and self._reader is not None:
                     continue  # a table marked fresh during that rebuild is rebuilt now, not at the next commit
@@ -611,7 +668,7 @@ class DeltaFolds:
                     self._doomed,
                     self._since,
                     self._before,
-                    tuple(sorted(self._fresh)),
+                    tuple(sorted(set(self._fresh) | set(self._recover))),
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
                 self._queued = taken + self._queued
@@ -638,9 +695,9 @@ class DeltaFolds:
         self._pending, self._reused, self._doomed = pending, reused, doomed
         _ROUNDS.labels(outcome=outcome).inc()
         for table in renewed:
-            # a commit of another incarnation than the table's full: never folded across, rebuilt from L3 instead
-            if table not in self._fresh:
-                self._owe_fresh(table, "log_lost", detail="a commit's generation is of another incarnation")
+            # a commit of another incarnation than the table's full: never folded across, recovered by key instead
+            if table not in self._fresh and table not in self._recover:
+                self._owe_recovery(table, "new_incarnation", detail="a commit's generation is of another incarnation")
         if outcome == "no_full":
             # no full on the volume (lost since the writer's start): rebuilt before the next round
             self._recheck = True
@@ -736,8 +793,8 @@ class DeltaFolds:
                     pages = whole_read(
                         _cold_start_pages(reader, table),
                         kind="cold_start",
-                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), it was reset, or the epoch log "
-                        "ordering its deltas was lost: the writer reads it once and publishes its full; copies wait for that, never reading L3 whole",
+                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
+                        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
                         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
                         "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
                         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
@@ -777,6 +834,8 @@ class DeltaFolds:
                 continue
             if self._fresh.get(name) == why:
                 self._fresh.pop(name)
+            # a table read whole holds every change its leftover files named: no recovery is owed after it
+            self._recover.pop(name, None)
             self._rebuilt.append(name)
             self._drop_covered(name, token, known[name])
             log.info(
@@ -813,6 +872,153 @@ class DeltaFolds:
         finally:
             await asyncio.to_thread(sink.close)
         return file, sink.rows
+
+    async def _recoveries(self, reader: _Reader) -> None:
+        """recover each table owed one (its epoch log lost, decision 28) from the keys its leftover delta files name,
+        read from L3 by key; a table the current full lacks is the rebuild's, read whole (decision 14). Never raises but
+        on cancellation: a failure is logged, counted and retried before the next round.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :return: nothing
+        :rtype: None
+        """
+        if not self._recover:
+            return
+        term = self._term
+        assert term is not None  # noqa: S101 -- set by start() before any round looks
+        for name, why in sorted(self._recover.items()):
+            if name in self._fresh:
+                continue  # owed a rebuild from L3 (a reset): it holds every change, and drops the recovery
+            current = await asyncio.to_thread(current_full_manifest, self.root)
+            if current is None or name not in current.tables:
+                # no full holds the table: the rebuild reads it whole, the one cold start, before the next round
+                self._recover.pop(name)
+                self._recheck = True
+                continue
+            if current.term > term:
+                _RECOVERIES.labels(table=name, why=why, outcome="stale").inc()
+                log.warning(
+                    "a later writer's full is current: this writer's lease was taken, so it recovers nothing",
+                    extra={"extra_data": {"term": term, "manifest": current.name, "table": name}},
+                )
+                return
+            try:
+                await self._recover_table(reader, name, why, term)
+            except BaseException as error:  # prawduct:allow prawduct/broad-except -- a recovery never fails a write: logged, counted, retried before the next round
+                self._recheck = True
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                _RECOVERIES.labels(table=name, why=why, outcome="failed").inc()
+                log.error(
+                    "a recovery of a table's full by key failed; it is tried again before the next round",
+                    extra={"extra_data": {"table": name, "why": why, "error": repr(error)}},
+                    exc_info=error,
+                )
+
+    async def _recover_table(self, reader: _Reader, name: str, why: _RecoveryWhy, term: int) -> None:
+        """one table's recovery (decision 28): its generation read first, then the keys and prefixes its leftover delta
+        files name (its own delta folder listed, the one listing of the volume), their rows read from L3 by key, written
+        as one recovery delta, folded into the kept full and published in a worker process; the leftover files saved
+        before it began deleted.
+
+        A commit landing during the reads is in the rows and its delta is folded again over them later, which ends
+        where L3 does (decision 19's merge), as for the rebuild.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :param name: the table
+        :ptype name: str
+        :param why: why it is recovered
+        :ptype why: str
+        :param term: the writer's term
+        :ptype term: int
+        :return: nothing
+        :rtype: None
+        :raises Exception: any failure of a read or a write; the caller logs, counts and retries it
+        """
+        table = self.tables[name]
+        began = time.time()
+        known = {file for table_name, file, _ in self._queued if table_name == name} | {
+            share[2] for share in self._pending if share[0] == name
+        }
+        cutoff = min(self._before, began)
+        try:
+            # the generation before the keys' rows: every part is current to it once the recovery is folded
+            token = await reader.generations.current(name)
+        except GenerationUnavailableError as error:
+            self._recheck = True
+            _RECOVERIES.labels(table=name, why=why, outcome="no_generation").inc()
+            log.warning(
+                "a table to recover has no generation yet: recovered before the round its first commit starts",
+                extra={"extra_data": {"table": name, "why": why, "error": str(error)}},
+            )
+            return
+        leftovers = await asyncio.to_thread(_leftover_delta_files, self.root, name)
+        reach = await asyncio.to_thread(_leftover_reach, self.root, table, [file for file, _ in leftovers])
+        types = _table_types(table)
+        kinds = dict(table.kinds)
+        pages: list[Any] = []
+        if reach.keys:
+            pages += await read_keyed_arrow(
+                reader.l3,
+                name,
+                keys=KeyBatch(table.key, list(reach.keys), tuple(sql_cast(kinds[column]) for column in table.key)),
+                types=types,
+            )
+        for width, values in _prefixes_by_width(table.key, reach.prefixes).items():
+            # every row under a prefix a leftover file cleared, by a key-led read of the prefix: the load's own size
+            pages += await read_keyed_arrow(
+                reader.l3,
+                name,
+                keys=KeyBatch(
+                    table.key[:width], values, tuple(sql_cast(kinds[column]) for column in table.key[:width])
+                ),
+                types=types,
+            )
+        file, rows, markers = await asyncio.to_thread(_save_recovery_delta, self.root, table, types, pages, reach)
+        doomable = tuple(
+            sorted(left for left, saved in leftovers if saved < cutoff and left not in known and left != file)
+        )
+        try:
+            answer = await self._workers.run(recovery_round, str(self.root), term, table.plain(), file, token, doomable)
+        except BaseException:
+            await asyncio.to_thread(_unlink_all, self.root, [file])
+            raise
+        outcome, manifest, states, deleted = answer
+        _RECOVERIES.labels(table=name, why=why, outcome=outcome).inc()
+        if outcome != "recovered":
+            await asyncio.to_thread(_unlink_all, self.root, [file])
+            if outcome == "no_full":
+                self._recover.pop(name, None)
+                self._recheck = True
+            else:
+                log.warning(
+                    "a later writer's full is current: this writer's recovery publishes nothing",
+                    extra={"extra_data": {"term": term, "manifest": manifest, "table": name}},
+                )
+            return
+        self._recover.pop(name, None)
+        self._rebuilt.append(name)
+        self._drop_covered(name, token, known)
+        log.warning(
+            "a folded table's full recovered from its leftover delta files' keys, read from L3 by key, and published",
+            extra={
+                "extra_data": {
+                    "table": name,
+                    "why": why,
+                    "generation": token,
+                    "manifest": manifest,
+                    "leftover_files": len(leftovers),
+                    "keys": len(reach.keys),
+                    "prefixes": len(reach.prefixes),
+                    "rows": rows,
+                    "delete_markers": markers,
+                    "states": states,
+                    "deleted": deleted,
+                }
+            },
+        )
 
     def _drop_covered(self, table: str, token: str, known: set[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
@@ -904,8 +1110,8 @@ def _cold_start_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]
             lead_array=_lead_array(table),
         ),
         kind="cold_start",
-        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), it was reset, or the epoch log "
-        "ordering its deltas was lost: the writer reads it once and publishes its full; copies wait for that, never reading L3 whole",
+        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
+        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
         "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
@@ -1091,6 +1297,243 @@ def rebuild_round(
             continue
         deleted += 1
     return ("rebuilt", published.name, rebuilt, deleted)
+
+
+@dataclass(frozen=True, slots=True)
+class _Leftovers:
+    """what a table's delta files left on the volume name (decision 28): each key once, by its text, and the prefixes
+    they clear.
+
+    :ivar keys: each key not under a prefix, its values as text (``key_text``), in key order
+    :ivar typed: each of those keys' values as the files hold them, by its text: a delete marker is written of them
+    :ivar states: each key's state as its row or marker carries it, by its text, for a table keyed without its state
+        (:attr:`FoldedTable.delta_scope`); empty otherwise
+    :ivar prefixes: every key prefix the files clear, each once, as text
+    """
+
+    keys: tuple[tuple[str, ...], ...]
+    typed: Mapping[tuple[str, ...], tuple[Any, ...]]
+    states: Mapping[tuple[str, ...], Any]
+    prefixes: tuple[dict[str, str], ...]
+
+
+def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
+    """every delta file of ``table`` on the volume no full in use names, and when each was saved; blocking. The one
+    listing of the volume a writer makes: only a recovery (decision 28), when no epoch log names the files.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table
+    :ptype table: str
+    :return: each file, under the root, and its modification time
+    :rtype: list[tuple[str, float]]
+    """
+    directory = root / table
+    if not directory.is_dir():
+        return []
+    current = current_full_manifest(root)
+    named = current.files() if current is not None else set()
+    if current is not None and current.previous is not None:
+        previous = root / ".fulls" / "manifests" / current.previous
+        if previous.is_file():
+            named |= FullManifest.decode(previous.read_bytes()).files()
+    found: list[tuple[str, float]] = []
+    for path in sorted(directory.iterdir()):
+        file = f"{table}/{path.name}"
+        # a name starting with a dot is a file being written (``.partial``), never a delta a commit named
+        if path.is_file() and path.suffix == ".arrow" and not path.name.startswith(".") and file not in named:
+            found.append((file, path.stat().st_mtime))
+    return found
+
+
+def _leftover_reach(root: Path, table: FoldedTable, files: Sequence[str]) -> _Leftovers:
+    """the keys and prefixes ``files`` name: their key columns (and the state column a table keyed without its state
+    carries) and their metadata alone are read; blocking.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table
+    :ptype table: FoldedTable
+    :param files: its leftover delta files
+    :ptype files: Sequence[str]
+    :return: what they name
+    :rtype: _Leftovers
+    :raises ValueError: when a file is not of the delta files' format
+    """
+    read = (*table.key, *((table.delta_scope,) if table.delta_scope is not None else ()))
+    typed: dict[tuple[str, ...], tuple[Any, ...]] = {}
+    states: dict[tuple[str, ...], Any] = {}
+    prefixes: list[dict[str, str]] = []
+    for file in files:
+        with pa.memory_map(str(root / file)) as source:
+            schema = pa_ipc.open_file(source).schema
+            metadata = schema.metadata or {}
+            if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
+                raise ValueError(f"{file}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}")
+            source.seek(0)
+            options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in read])
+            held = pa_ipc.open_file(source, options=options).read_all()
+        for prefix in json.loads(metadata[_PREFIXES_METADATA]):
+            if dict(prefix) not in prefixes:
+                prefixes.append(dict(prefix))
+        values = list(zip(*(held.column(column).to_pylist() for column in table.key), strict=True))
+        scoped = held.column(table.delta_scope).to_pylist() if table.delta_scope is not None else None
+        for index, key in enumerate(values):
+            text = tuple(key_text(value) for value in key)
+            typed.setdefault(text, key)
+            if scoped is not None and scoped[index] is not None:
+                states[text] = scoped[index]
+    keys = tuple(
+        text
+        for text, key in typed.items()
+        if not (prefixes and under_prefix(dict(zip(table.key, key, strict=True)), prefixes))
+    )
+    return _Leftovers(keys=keys, typed=typed, states=states, prefixes=tuple(prefixes))
+
+
+def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]) -> dict[int, list[tuple[str, ...]]]:
+    """prefixes grouped by how many of the key's leading columns they name (a delta file's prefixes lead the key,
+    :meth:`~threetears.core.collections.delta_files.TableDelta.clears`), each prefix's values in key order: one keyed
+    read a width.
+
+    :param key: the table's key columns, in key order
+    :ptype key: Sequence[str]
+    :param prefixes: the prefixes, as text
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :return: width -> each prefix's values
+    :rtype: dict[int, list[tuple[str, ...]]]
+    """
+    grouped: dict[int, list[tuple[str, ...]]] = {}
+    for prefix in prefixes:
+        grouped.setdefault(len(prefix), []).append(tuple(prefix[column] for column in key[: len(prefix)]))
+    return grouped
+
+
+def _save_recovery_delta(
+    root: Path, table: FoldedTable, types: Mapping[str, Any], pages: Sequence[Any], reach: _Leftovers
+) -> tuple[str, int, int]:
+    """save the recovery delta (decision 28): the prefixes the leftover files cleared, then every row L3 holds under
+    them or of their keys (every column set, so a held row takes L3's whole), then a delete marker for each key L3 no
+    longer holds, carrying its state; blocking.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table
+    :ptype table: FoldedTable
+    :param types: its columns' Arrow types, in order
+    :ptype types: Mapping[str, Any]
+    :param pages: the rows read from L3, by key and by prefix
+    :ptype pages: Sequence[pyarrow.Table]
+    :param reach: what the leftover files name
+    :ptype reach: _Leftovers
+    :return: the file, under the root; the rows it holds; the delete markers
+    :rtype: tuple[str, int, int]
+    :raises ValueError: when a key L3 no longer holds carries no state, for a table keyed without its state: its
+        marker could be filed under no state's part
+    """
+    delta = TableDelta(name=table.name, types=types, key=table.key, scope_column=table.delta_scope)
+    delta.clears(list(reach.prefixes))
+    rows = pa.concat_tables([page.select(list(types)) for page in pages]) if pages else None
+    found: set[tuple[str, ...]] = set()
+    if rows is not None and rows.num_rows:
+        delta.arrow(rows, list(types))
+        found = {
+            tuple(key_text(value) for value in key)
+            for key in zip(*(rows.column(column).to_pylist() for column in table.key), strict=True)
+        }
+    gone: dict[Any, list[tuple[Any, ...]]] = {}
+    for text in reach.keys:
+        if text in found:
+            continue
+        state = reach.states.get(text) if table.delta_scope is not None else None
+        if table.delta_scope is not None and state is None:
+            raise ValueError(
+                f"{table.name}: key {text} is gone from L3 and no leftover file names its state: its delete marker "
+                f"could be filed under no state's part"
+            )
+        gone.setdefault(state, []).append(reach.typed[text])
+    for state, keys in gone.items():
+        delta.deletes(keys, scope=state)
+    file = write_delta_file(root, delta, f"{_RECOVERY_WRITE}-{uuid.uuid4().hex}")
+    return file, 0 if rows is None else int(rows.num_rows), sum(len(keys) for keys in gone.values())
+
+
+def recovery_round(
+    root: str, term: int, plain: tuple[Any, ...], file: str, token: str, doomable: tuple[str, ...]
+) -> tuple[Any, ...]:
+    """a recovery's fold, in a worker process (decision 28): the recovery delta folded into every state it reaches
+    (its rows' and markers' states, and those its cleared prefixes reach), every other part kept as it is; every part
+    current to ``token``, the generation read before the keys; the manifest published at the writer's term, then the
+    leftover files it replaces deleted.
+
+    The kept parts may be of an older incarnation of the table's generation (its log replaced): the full is right up
+    to its version and the recovery holds every change since, so the whole table is current to ``token``.
+
+    Plain data in and out (:mod:`~threetears.core.process_workers`): names, versions and counts, never rows.
+
+    :param root: the delta files' root
+    :ptype root: str
+    :param term: the writer's term
+    :ptype term: int
+    :param plain: the table, :meth:`FoldedTable.plain`
+    :ptype plain: tuple
+    :param file: the recovery delta file, under the root
+    :ptype file: str
+    :param token: the generation every part is current to after it
+    :ptype token: str
+    :param doomable: the leftover files the recovery replaces, deleted once it is published (unless a manifest in use
+        names one)
+    :ptype doomable: tuple[str, ...]
+    :return: ``(outcome, manifest, states, deleted)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the manifest
+        published (or the current one); the states folded; the files deleted
+    :rtype: tuple
+    """
+    base = Path(root)
+    table = _Folding.of(plain)
+    current = current_full_manifest(base)
+    if current is None or table.name not in current.tables:
+        return ("no_full", current.name if current is not None else "", 0, 0)
+    if current.term > term:
+        return ("stale", current.name, 0, 0)
+    entry = current.tables[table.name]
+    sizes = {part.scope: (base / part.file).stat().st_size for part in entry.parts}
+    by_scope: dict[str | None, list[_Share]] = {}
+    for share in _shares(base, table, file, token, sizes):
+        by_scope.setdefault(share[1], []).append(share)
+    parts: list[FullPart] = []
+    written: list[str] = []
+    for scope, shares in sorted(by_scope.items(), key=lambda item: str(item[0])):
+        held = next((part for part in entry.parts if part.scope == scope), None)
+        new_part, how = _fold_state(base, table, scope, held, shares, across=True)
+        if how == "written":
+            written.append(new_part.file)
+        parts.append(new_part)
+    # the parts the recovery does not reach hold no change since their version: current to the recovery's
+    parts.extend(
+        FullPart(scope=part.scope, file=part.file, version=token, rows=part.rows)
+        for part in entry.parts
+        if part.scope not in by_scope
+    )
+    tables_now = dict(current.tables)
+    tables_now[table.name] = FullTable(version=token, parts=tuple(parts))
+    try:
+        published = publish_full_manifest(base, term=term, tables=tables_now)
+    except StaleTermError:
+        _unlink_all(base, written)
+        stale = current_full_manifest(base)
+        return ("stale", stale.name if stale is not None else "", 0, 0)
+    deleted = 0
+    for doomed in deletable_full_files(base, covered_deltas=sorted({*doomable, file})):
+        try:
+            (base / doomed).unlink(missing_ok=True)
+        except OSError as error:  # NOSILENT: logged; a later round lists it again
+            log.warning(
+                "a file the recovered full replaces could not be deleted",
+                extra={"extra_data": {"file": doomed, "error": repr(error)}},
+            )
+            continue
+        deleted += 1
+    return ("recovered", published.name, len(by_scope), deleted)
 
 
 def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[FullPart, ...]:
@@ -1406,7 +1849,13 @@ def _held_rows(path: Path, columns: Sequence[str]) -> Any:
 
 
 def _fold_state(
-    root: Path, table: _Folding, scope: str | None, part: FullPart | None, shares: Sequence[_Share]
+    root: Path,
+    table: _Folding,
+    scope: str | None,
+    part: FullPart | None,
+    shares: Sequence[_Share],
+    *,
+    across: bool = False,
 ) -> tuple[FullPart, str]:
     """one state's new part: the old part, each delta's rows of the state applied in order, then the keep rule;
     the last delta named as the part when it is exactly what the fold keeps (decision 16), else a new part file.
@@ -1421,6 +1870,9 @@ def _fold_state(
     :ptype part: FullPart | None
     :param shares: the state's shares since its last fold, in commit order
     :ptype shares: Sequence
+    :param across: a recovery's fold (:func:`recovery_round`): the delta may be of a newer incarnation than the part
+        (the log replaced), which it brings current to L3
+    :ptype across: bool
     :return: the new part, and ``"reused"`` or ``"written"``
     :rtype: tuple[FullPart, str]
     :raises ValueError: when a delta's generation is of another incarnation than the part's (a reset: the rebuild's)
@@ -1456,7 +1908,7 @@ def _fold_state(
                 last_rows.append(change.row)
     held = schema.empty_table() if part is None else _held_rows(root / part.file, table.columns).cast(schema)
     version = shares[-1][3]
-    if part is not None:
+    if part is not None and not across:
         # refused across a reset: the part and the delta must be of one incarnation
         _newest(table.name, [part.version, version])
     folded = _applied(table, schema, held, changes)

@@ -21,6 +21,7 @@ from prometheus_client import REGISTRY
 pa = pytest.importorskip("pyarrow")
 pa_ipc = pytest.importorskip("pyarrow.ipc")
 pc = pytest.importorskip("pyarrow.compute")
+duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
@@ -53,6 +54,7 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
     write_full_part,
 )
 from threetears.core.exceptions import GenerationUnavailableError  # noqa: E402
+from threetears.core.keyed import ThreadedDuckDB  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE  # noqa: E402
 
@@ -930,59 +932,230 @@ async def test_a_table_keyed_without_its_state_files_a_delete_marker_under_the_s
         FoldedTable.of(unmarked, scope=scope)
 
 
-# --- a new incarnation of a table's generation (its log lost) ----------------------------------------------------
+# --- a lost epoch log is recovered by key, never read whole (decision 28) ----------------------------------------
 
 
-def _log_lost_rebuilds() -> float:
-    labels = {"table": "votes", "why": "log_lost", "outcome": "rebuilt"}
+class _KeyedL3(ThreadedDuckDB):
+    """L3 as a DuckDB, keeping every statement it answers and the rows each answered: a recovery's reads are keyed by
+    the leftover files' keys and prefixes, never the table whole."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        conn = duckdb.connect()
+        conn.execute(
+            "CREATE TABLE votes (state VARCHAR, geo_id BIGINT, votes BIGINT, note VARCHAR, PRIMARY KEY (state, geo_id))"
+        )
+        held = pa.Table.from_pylist(
+            [{column: row.get(column) for column in ("state", "geo_id", "votes", "note")} for row in rows],
+            schema=pa.schema(
+                [("state", pa.string()), ("geo_id", pa.int64()), ("votes", pa.int64()), ("note", pa.string())]
+            ),
+        )
+        conn.register("held", held)
+        conn.execute("INSERT INTO votes SELECT * FROM held")
+        conn.unregister("held")
+        super().__init__(conn)
+        self.db = conn
+        self.statements: list[tuple[str, tuple[Any, ...], int]] = []
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        rows = await super().fetch(query, *params)
+        self.statements.append((query, params, len(rows)))
+        return rows
+
+    async def fetch_arrow(
+        self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
+    ) -> Any:
+        rows = await super().fetch_arrow(query, *params, types=types, size=size)
+        self.statements.append((query, params, rows.num_rows))
+        return rows
+
+    def held(self) -> list[dict[str, Any]]:
+        columns = ("state", "geo_id", "votes", "note")
+        held = self.db.execute("SELECT state, geo_id, votes, note FROM votes").fetchall()
+        return _sorted([dict(zip(columns, row, strict=True)) for row in held])
+
+
+def _recoveries(why: str) -> float:
+    labels = {"table": "votes", "why": why, "outcome": "recovered"}
+    return REGISTRY.get_sample_value("delta_fold_recoveries_total", labels) or 0.0
+
+
+def _rebuilds(why: str) -> float:
+    labels = {"table": "votes", "why": why, "outcome": "rebuilt"}
     return REGISTRY.get_sample_value("delta_fold_rebuilds_total", labels) or 0.0
 
 
-async def test_a_new_incarnation_starts_the_table_fresh_from_l3_once(tmp_path: Path, workers: ProcessWorkers) -> None:
-    """Flips if a commit of a new incarnation of a table's generation (its store replaced) is refused by every round
-    instead of starting the table fresh: one read of it from L3 (counted as log_lost), published at the new
-    incarnation, the old incarnation's deltas dropped, and later commits folded onto it; and the same for a writer
-    restarting onto a new incarnation."""
-    l3, generations = _l3(), _Generations({"votes": "inc:0", "runs": "inc:3"})
-    folds = _folds(tmp_path, workers)
-    await folds.start(l3, generations, changes=_Log(), version=5)
-    writer = _Writer(tmp_path, _votes_schema(), folds)
-    await writer.commit(
-        [
-            {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"}
-            for g in range(100, 5000)
-        ]
+def _no_whole_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fail the test at the writer's whole read of a table (declared cold start or schema change), wherever made."""
+
+    def refused(value: Any, *, kind: str, **_: Any) -> Any:
+        raise AssertionError(f"a whole read of L3 ({kind}) where only keyed reads belong")
+
+    monkeypatch.setattr(delta_fold, "whole_read", refused)
+
+
+async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3_by_key(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a writer restarting with its epoch log lost (decision 28) reads L3 whole, drops its full, or reads any
+    row from L3 but those the delta files left on the volume name; or if the recovered full is not what L3 holds. The
+    leftovers: unfolded updates and a delete of TX, a load that replaced GA's rows (a file clearing the prefix, read by
+    a key-led read of it), and a file whose commit never landed (its rows read back as L3 has them, its new key a
+    delete marker). The full is kept (NC, which no leftover names, keeps its part file), every key and prefix read in
+    one keyed statement each, the result equals L3, the leftovers are deleted, and the recovery is counted."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    l3: dict[tuple[str, int], dict[str, Any]] = {}
+
+    async def commit(rows: list[dict[str, Any]] = [], **kwargs: Any) -> str:  # noqa: B006 -- never mutated
+        file = await writer.commit(rows, **kwargs)
+        for row in rows:
+            l3[(row["state"], row["geo_id"])] = {**l3.get((row["state"], row["geo_id"]), {}), **row}
+        for state, geo_id in kwargs.get("deletes", ()):
+            l3.pop((state, geo_id), None)
+        return file
+
+    await commit(
+        [{"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)]
     )
-    pending = await writer.commit(_votes("TX", range(3), 3))
-    assert folds.unfolded == {pending}
-    before = _log_lost_rebuilds()
-    # the generation's store is replaced: the next commit's generation is of a new incarnation
-    l3.tables["votes"] = _votes("NC", range(3), 8)
-    generations.tokens["votes"] = "new:1"
-    first = writer.save(_votes("NC", range(3), 8))
-    folds.committed({"votes": first}, {"votes": "new:1"}, version=5)
+    await commit(_votes("GA", range(1, 400), 7))
+    await commit(_votes("NC", range(1, 400), 1))
+    nc = _part(tmp_path, "votes", "state:NC")
+    assert nc is not None
+    leftovers = [
+        await commit(_votes("TX", range(1000, 1008), 2)),
+        await commit(deletes=[("TX", 5)]),
+    ]
+    # a load that replaced GA's rows, its prefix cleared then the export's rows, committed as the writer died: its
+    # files are on the volume, never told to the fold
+    writer.count += 1
+    cleared = TableDelta(name="votes", types=rail_arrow_types(schema.columns), key=("state", "geo_id"))
+    cleared.clears([{"state": "GA"}])
+    leftovers.append(write_delta_file(tmp_path, cleared, f"w{writer.count:04d}"))
+    writer.files.append(leftovers[-1])
+    leftovers.append(writer.save(_votes("GA", range(500, 503), 9)))
+    for key in [key for key in l3 if key[0] == "GA"]:
+        l3.pop(key)
+    l3.update({(row["state"], row["geo_id"]): row for row in _votes("GA", range(500, 503), 9)})
+    # saved before a commit that never landed: L3 never took its rows
+    leftovers.append(
+        writer.save([{"state": "TX", "geo_id": 7, "votes": -1, "note": "never"}, *_votes("TX", range(9999, 10000), 5)])
+    )
+    assert all((tmp_path / file).exists() for file in leftovers), "none folded yet"
+    await writer.folds.close()
+
+    named = {
+        (change.row["state"], change.row["geo_id"])
+        for file in leftovers
+        for change in read_delta_file(tmp_path / file).changes
+    }
+    # the writer restarts with the epoch log gone: nothing names the files left on the volume
+    _no_whole_read(monkeypatch)
+    before, rebuilt_before = _recoveries("log_lost"), _rebuilds("cold_start")
+    reader = _KeyedL3(list(l3.values()))
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    token = f"inc:{len(writer.files)}"
+    assert await folds.start(reader, _Generations({"votes": token}), changes=_Log(), version=6) == ("votes",)
+
+    assert _recoveries("log_lost") == before + 1 and _rebuilds("cold_start") == rebuilt_before
+    keyed = sorted(named - {key for key in named if key[0] == "GA"})
+    (by_key, by_prefix) = reader.statements
+    # each key column's values bound as an array (twice: the key's index is read by them)
+    assert sorted(zip(by_key[1][0], by_key[1][1], strict=True)) == sorted((s, str(g)) for s, g in keyed), (
+        "one statement naming exactly the leftover files' keys outside a cleared prefix"
+    )
+    assert by_key[2] == sum(1 for key in keyed if key in l3), "it answered the keys L3 holds, no other row"
+    assert by_prefix[1][0] == ["GA"] and by_prefix[2] == 3, "the cleared prefix read by a key-led read of it alone"
+    assert all('"votes"' in sql and "WHERE" in sql for sql, _, _ in reader.statements)
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.term == 6
+    assert all(part.version == token for part in current.tables["votes"].parts)
+    assert _part(tmp_path, "votes", "state:NC") == FullPart("state:NC", nc.file, token, nc.rows), "NC's part is kept"
+    assert not any((tmp_path / file).exists() for file in leftovers), "the leftover files are deleted"
+    assert not folds.unfolded
+    # folding resumes on the recovered full
+    folds.committed(
+        {"votes": writer.save(_votes("TX", range(1000, 1004), 3))}, {"votes": f"inc:{len(writer.files)}"}, version=6
+    )
     await folds.wait()
-    assert l3.statements["votes"] == 2, "one read of the table from L3"
-    assert _log_lost_rebuilds() == before + 1
+    assert len(reader.statements) == 2, "a commit after the recovery reads nothing"
+    await folds.close()
+
+
+async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a commit of a new incarnation of a table's generation (its store replaced: the log lost) is refused by
+    every round, or recovered other than by key (decision 28): the full kept, the unfolded delta of the old log read
+    back by its keys, the parts current to the new incarnation, later commits folded onto them; and the same for a
+    writer restarting onto a new incarnation."""
+    _no_whole_read(monkeypatch)
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    rows = [
+        {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)
+    ]
+    await writer.commit(rows)
+    pending = await writer.commit(_votes("TX", range(3), 3))
+    assert writer.folds.unfolded == {pending}
+    held = {(row["state"], row["geo_id"]): row for row in rows + _votes("TX", range(3), 3)}
+    reader = _KeyedL3(list(held.values()))
+    generations = _Generations({"votes": "new:1"})
+    await writer.folds.close()
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    log = _Log()
+    for index, file in enumerate(writer.files):
+        log.append("votes", f"inc:{index + 1}", file)
+    before = _recoveries("new_incarnation")
+    # a writer restarting onto the new incarnation: the full's version names a log no record orders
+    assert await folds.start(reader, generations, changes=log, version=6) == ("votes",)
+    assert _recoveries("new_incarnation") == before + 1
+    ((_, params, answered),) = reader.statements
+    assert sorted(params[1]) == ["0", "1", "2"] and answered == 3, "the leftover delta's three keys, read by key"
     current = current_full_manifest(tmp_path)
     assert current is not None and current.tables["votes"].version == "new:1"
-    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8))
-    assert not folds.unfolded, "the old incarnation's deltas are dropped"
-    # a later commit of the new incarnation folds onto the rebuilt parts
-    later = writer.save(_votes("NC", range(3, 400), 9))
-    folds.committed({"votes": later}, {"votes": "new:2"}, version=5)
+    assert all(part.version == "new:1" for part in current.tables["votes"].parts)
+    assert _held(tmp_path, "votes") == reader.held()
+    assert not (tmp_path / pending).exists()
+    # a commit of yet another incarnation during the run: recovered the same way, before it is folded
+    reader.db.execute("UPDATE votes SET votes = 77 WHERE geo_id = 4")
+    generations.tokens["votes"] = "again:1"
+    later = writer.save([{"state": "TX", "geo_id": 4, "votes": 77}], written=["votes"])
+    folds.committed({"votes": later}, {"votes": "again:1"}, version=6)
     await folds.wait()
-    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8) + _votes("NC", range(3, 400), 9))
-    assert not (tmp_path / pending).exists() and not (tmp_path / first).exists()
-    assert l3.statements["votes"] == 2
-    await folds.close()
-    # a writer restarting onto another incarnation starts the table fresh at its start
-    restarted = _folds(tmp_path, workers)
-    l3.tables["votes"] = _votes("NV", range(2), 1)
-    generations.tokens["votes"] = "again:4"
-    assert await restarted.start(l3, generations, changes=_Log(), version=6) == ("votes",)
-    assert _log_lost_rebuilds() == before + 2 and l3.statements["votes"] == 3
+    assert _recoveries("new_incarnation") == before + 2
+    assert reader.statements[-1][1][:2] == (["TX"], ["4"]), "the new incarnation's delta read back by its one key"
     current = current_full_manifest(tmp_path)
-    assert current is not None and current.tables["votes"].version == "again:4"
-    assert _held(tmp_path, "votes") == _sorted(_votes("NV", range(2), 1))
-    await restarted.close()
+    assert current is not None and current.tables["votes"].version == "again:1"
+    assert _held(tmp_path, "votes") == reader.held()
+    # a later commit of that incarnation folds onto the recovered parts with no read
+    reads = len(reader.statements)
+    folds.committed({"votes": writer.save(_votes("NC", range(3, 400), 9))}, {"votes": "again:2"}, version=6)
+    await folds.wait()
+    assert len(reader.statements) == reads
+    assert {(row["state"], row["geo_id"]) for row in _held(tmp_path, "votes") if row["state"] == "NC"} == {
+        ("NC", g) for g in range(3, 400)
+    }
+    await folds.close()
+
+
+async def test_no_full_at_all_with_the_log_lost_is_still_the_one_cold_start_whole_read(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer that finds no full on the volume (decision 14: only L3 is left) recovers by key instead of
+    reading each table whole once: with no full, no leftover file can say what the table holds."""
+    l3, folds = _l3(), _folds(tmp_path, workers)
+    (tmp_path / "votes").mkdir()
+    orphan = TableDelta(name="votes", types=rail_arrow_types(_votes_schema().columns), key=("state", "geo_id"))
+    orphan.rows(_votes("TX", range(2), 1), ["votes", "note"])
+    write_delta_file(tmp_path, orphan, "left")
+    before, rebuilt = _recoveries("log_lost"), _rebuilds("cold_start")
+    assert await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), changes=_Log(), version=12) == (
+        "runs",
+        "votes",
+    )
+    assert l3.statements == Counter({"votes": 1, "runs": 1}), "one whole read of each table"
+    assert _recoveries("log_lost") == before and _rebuilds("cold_start") == rebuilt + 1
+    assert _held(tmp_path, "votes") == _sorted(_VOTES_ROWS)
+    await folds.close()
