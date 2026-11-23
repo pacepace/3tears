@@ -51,6 +51,7 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullPart,
     FullTable,
     current_full_manifest,
+    full_table_floor,
     publish_full_manifest,
     write_full_part,
 )
@@ -1173,6 +1174,82 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     assert {(row["state"], row["geo_id"]) for row in _held(tmp_path, "votes") if row["state"] == "NC"} == {
         ("NC", g) for g in range(3, 400)
     }
+    await folds.close()
+
+
+async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_every_part_current_past_its_epoch(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer's fold does not take decision 29's hand-off (DeltaFolds.recover_table, the
+    LostDeltaRecovery the recreator calls for a commit too big to list whose file was lost): if two asks recover the
+    table twice, if the recovery reads the damaged file or L3 whole, or if any part of the table (GA's too, which no
+    change since its fold touched) ends below the lost file's epoch, which a copy waiting for that file needs before
+    it takes the full; or if the damaged file is left on the volume."""
+    _no_whole_read(monkeypatch)
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    rows = [{"state": "TX", "geo_id": g, "votes": g % 97, "note": "n"} for g in range(5000)]
+    await writer.commit(rows)
+    await writer.commit(_votes("GA", range(1, 400), 7))
+    await writer.commit([{"state": "NC", "geo_id": g, "votes": g % 89, "note": "n"} for g in range(5000)])
+    ga = _part(tmp_path, "votes", "state:GA")
+    assert ga is not None
+    lost = await writer.commit(_votes("TX", range(1000, 1003), 2))
+    other = await writer.commit(_votes("NC", range(5000, 5002), 3))
+    assert writer.folds.unfolded == {lost, other}
+    await writer.folds.close()
+    damaged = bytearray((tmp_path / lost).read_bytes())
+    damaged[len(damaged) // 2] ^= 0x5A
+    (tmp_path / lost).write_bytes(bytes(damaged))
+    held = {(row["state"], row["geo_id"]): row for row in [*rows, *_votes("GA", range(1, 400), 7)]}
+    held.update(
+        {
+            (r["state"], r["geo_id"]): r
+            for r in [
+                *[{"state": "NC", "geo_id": g, "votes": g % 89, "note": "n"} for g in range(5000)],
+                *_votes("NC", range(5000, 5002), 3),
+            ]
+        }
+    )
+    held.update({(r["state"], r["geo_id"]): r for r in _votes("TX", range(1000, 1003), 2)})
+    reader = _KeyedL3(list(held.values()))
+    log = _Log()
+    for index, file in enumerate(writer.files):
+        log.append("votes", f"inc:{index + 1}", file)
+    epoch = f"inc:{writer.files.index(lost) + 1}"
+    token = f"inc:{len(writer.files)}"  # a commit since the lost one: the generation read is past its epoch
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
+    await folds.wait()
+    before = (
+        REGISTRY.get_sample_value(
+            "delta_fold_recoveries_total", {"table": "votes", "why": "file_lost", "outcome": "recovered"}
+        )
+        or 0.0
+    )
+
+    await folds.recover_table("votes", epoch=epoch, file=lost)
+    await folds.recover_table("votes", epoch=epoch, file=lost)  # a second copy's ask joins the first
+    await folds.wait()
+
+    after = REGISTRY.get_sample_value(
+        "delta_fold_recoveries_total", {"table": "votes", "why": "file_lost", "outcome": "recovered"}
+    )
+    assert after == before + 1, "two asks, one recovery"
+    current = current_full_manifest(tmp_path)
+    assert current is not None
+    entry = current.tables["votes"]
+    assert {part.scope for part in entry.parts} == {"state:TX", "state:GA", "state:NC"}
+    assert all(part.version == token for part in entry.parts), "every part, GA's untouched one too, is current"
+    assert full_table_floor("votes", entry) == token
+    gaps = [part for part in entry.parts if part.scope == "state:GA"]
+    assert gaps[0].file == ga.file, "GA's rows are kept as they were, only its version moves"
+    ((_, params, _),) = reader.statements
+    assert sorted(zip(params[0], params[1], strict=True)) == [("NC", "5000"), ("NC", "5001")], (
+        "the leftover file's keys alone, never the damaged file's"
+    )
+    assert not (tmp_path / lost).exists(), "the damaged file is deleted once the recovery is published"
+    assert not folds.unfolded
     await folds.close()
 
 

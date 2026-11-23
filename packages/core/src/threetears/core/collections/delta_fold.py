@@ -225,7 +225,9 @@ _UNFOLDED_BYTES = gauge(
 _FreshWhy = Literal["reset", "schema_change"]
 
 #: why a table is recovered (decision 28): a record of its epoch log missing, or its log replaced (a new incarnation)
-_RecoveryWhy = Literal["log_lost", "new_incarnation"]
+#: why a table is recovered by key: its log lost (a record missing, or the log replaced), or a commit too big to list
+#: its rows lost its delta file (decision 29: its keys were only in the file)
+_RecoveryWhy = Literal["log_lost", "new_incarnation", "file_lost"]
 
 #: the write id a recovery delta's file is named by, before its unique part: ``<table>/recovery-<hex>.arrow``
 _RECOVERY_WRITE: Final = "recovery"
@@ -366,6 +368,12 @@ class DeltaFolds:
         self._fresh: dict[str, _FreshWhy] = {}
         #: tables whose epoch log was lost, by why: recovered by key (decision 28) before any round folds them
         self._recover: dict[str, _RecoveryWhy] = {}
+        #: each table's delta files lost (missing or unreadable) that decision 29 handed to a recovery: never read for
+        #: the recovery's keys, deleted once it is published
+        self._lost: dict[str, set[str]] = {}
+        #: each table's recovery asks (:meth:`recover_table`): one asked while a recovery of the table runs is owed
+        #: again once it ends, since the generation that recovery read may be older than the lost file's epoch
+        self._asked: Counter[str] = Counter()
         #: whether a rebuild may be owed: the next round looks before it folds
         self._recheck = False
         #: whether a table was marked fresh since the last rebuild began
@@ -648,6 +656,46 @@ class DeltaFolds:
         self._marked = True
         if self._reader is not None:
             self._run_rounds()
+
+    async def recover_table(self, table: str, *, epoch: str, file: str) -> None:
+        """decision 29's hand-off (:class:`~threetears.core.collections.delta_recreate.LostDeltaRecovery`): a commit
+        too big to list its rows lost its delta file, so its keys were only in the file; the table is recovered by key
+        (decision 28) and a full published whose every part is current to a generation read after the request, so at
+        or past ``epoch``, which a copy waiting for the file reloads from. Coalesced: asks for one table while its
+        recovery is owed join it, and one asked while it runs is owed again after it. Returns once owed, never waits
+        for the publish. Only the writer holding the write lease calls it (the recreator is served under it).
+
+        The lost file is never read for the recovery's keys (it is gone, or its bytes are damaged), and is deleted once
+        the recovery is published. What it alone named is not recovered by key: no record, no notes past their window,
+        names its keys (``design-pod-delta-files.md`` leaves this open; logged here).
+
+        :param table: the table
+        :ptype table: str
+        :param epoch: the epoch whose file was lost
+        :ptype epoch: str
+        :param file: the lost file, under the root
+        :ptype file: str
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when the writer does not fold the table
+        """
+        if table not in self.tables:
+            raise KeyError(table)
+        self._lost.setdefault(table, set()).add(file)
+        self._asked[table] += 1
+        if self._recover.get(table) is not None:
+            # owed already (perhaps failed on this very file): tried again now, without reading it
+            self._recheck = True
+            self._marked = True
+            if self._reader is not None:
+                self._run_rounds()
+            return
+        self._owe_recovery(
+            table,
+            "file_lost",
+            detail=f"{file} of epoch {epoch}: a commit too big to list lost its file; what only it named is not "
+            "recovered by key",
+        )
 
     def _run_rounds(self) -> None:
         """start the background rounds unless they are running.
@@ -984,6 +1032,8 @@ class DeltaFolds:
         """
         table = self.tables[name]
         began = time.time()
+        asked = self._asked[name]
+        lost = set(self._lost.get(name, set()))
         known = {file for table_name, file, _ in self._queued if table_name == name} | {
             share[2] for share in self._pending if share[0] == name
         }
@@ -1000,7 +1050,10 @@ class DeltaFolds:
             )
             return
         leftovers = await asyncio.to_thread(_leftover_delta_files, self.root, name)
-        reach = await asyncio.to_thread(_leftover_reach, self.root, table, [file for file, _ in leftovers])
+        # a lost file is not read: it is gone, or its bytes are damaged (decision 29)
+        reach = await asyncio.to_thread(
+            _leftover_reach, self.root, table, [file for file, _ in leftovers if file not in lost]
+        )
         types = _table_types(table)
         kinds = dict(table.kinds)
         pages: list[Any] = []
@@ -1023,7 +1076,10 @@ class DeltaFolds:
             )
         file, rows, markers = await asyncio.to_thread(_save_recovery_delta, self.root, table, types, pages, reach)
         doomable = tuple(
-            sorted(left for left, saved in leftovers if saved < cutoff and left not in known and left != file)
+            sorted(
+                {left for left, saved in leftovers if saved < cutoff and left not in known and left != file}
+                | {left for left, _ in leftovers if left in lost}
+            )
         )
         try:
             answer = await self._workers.run(recovery_round, str(self.root), term, table.plain(), file, token, doomable)
@@ -1043,7 +1099,18 @@ class DeltaFolds:
                     extra={"extra_data": {"term": term, "manifest": manifest, "table": name}},
                 )
             return
-        self._recover.pop(name, None)
+        if self._asked[name] == asked:
+            self._recover.pop(name, None)
+        else:
+            # asked again while it ran (decision 29): that file's epoch may be past the generation read; owed again
+            self._recheck = True
+            self._marked = True
+        if lost:
+            left = self._lost.get(name, set()) - lost
+            if left:
+                self._lost[name] = left
+            else:
+                self._lost.pop(name, None)
         self._rebuilt.append(name)
         self._drop_covered(name, token, known)
         log.warning(

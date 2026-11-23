@@ -179,7 +179,8 @@ class LostDeltaRecovery(Protocol):
     part (a copy waiting for the file reloads the table from a full whose floor for it is at or past ``epoch``:
     :class:`~threetears.core.collections.copy_follower.CopyFollower`), and deletes the leftover files. It must coalesce:
     copies' requests for several such files of one table may each hand the table over. It runs only under the write
-    lease, as the fold does.
+    lease, as the fold does. :meth:`~threetears.core.collections.delta_fold.DeltaFolds.recover_table` is the one the
+    writing load hands over.
     """
 
     async def recover_table(self, table: str, *, epoch: str, file: str) -> None:
