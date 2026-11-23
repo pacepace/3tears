@@ -232,6 +232,16 @@ _LOST_FILE_RECOVERIES = counter(
 #: how a lost file's commit was recovered (decision 31)
 _LostWhy = Literal["notes", "states", "unnamed"]
 
+#: rounds cut short (:meth:`DeltaFolds.close` past its bound, or :meth:`DeltaFolds.start` of a newer term finding
+#: this process's round of an older one): ``stop`` or ``new_term``. A cut round's files go back to the queue (the next
+#: writer re-learns them from the epoch log), its half-written rebuild file is deleted, and its worker terminated
+_CUTS = counter(
+    "delta_fold_rounds_cut_total",
+    description="writer fold rounds cut short, by why: stop (close past its bound) or new_term (a newer holding's "
+    "start found this process's round of an older term); their files are kept for the next round",
+    label_names=("why",),
+)
+
 #: what the writer holds unfolded, by table, from the fold's own bookkeeping (gap 3): the delta files told and not yet
 #: in a published full, and the bytes of their shares a round has measured (a file told counts in the files at once,
 #: in the bytes once the round its commit starts has measured it). Zero while every delta is folded; a value that keeps
@@ -389,6 +399,8 @@ class DeltaFolds:
         self._reused: tuple[str, ...] = ()
         self._doomed: tuple[str, ...] = ()
         self._round: asyncio.Task[None] | None = None
+        #: the term the running round folds at: a start of a newer term never waits on it (:meth:`start`)
+        self._round_term: int | None = None
         self._unfolded_warned: set[str] = set()
         #: how the writer reads L3 for a rebuild, from :meth:`start`: None until the writer's start calls it
         self._reader: _Reader | None = None
@@ -754,15 +766,64 @@ class DeltaFolds:
         while self._round is not None and not self._round.done():
             await asyncio.shield(self._round)
 
-    async def close(self) -> None:
-        """wait for the round in progress, then shut the worker this fold made.
+    async def close(self, *, within: float | None = None) -> None:
+        """end the fold: wait for the round in progress, then shut the worker this fold made.
 
+        ``within`` bounds the wait (a serving process stopping inside its grace period): past it the round is cut
+        (:meth:`_cut`): its files go back to the queue, so nothing is lost (the next writer re-learns them from the
+        epoch log), its half-written rebuild file is deleted, and the worker running it is terminated, never waited
+        for.
+
+        :param within: the most seconds to wait for the round; None waits for it to end
+        :ptype within: float | None
         :return: nothing
         :rtype: None
         """
-        await self.wait()
+        cut = False
+        if within is None:
+            await self.wait()
+        else:
+            try:
+                await asyncio.wait_for(self.wait(), timeout=max(within, 0.0))
+            except TimeoutError:
+                cut = await self._cut("stop", within=within)
         if self._owns_workers:
-            await self._workers.close()
+            await self._workers.close(wait=not cut)
+
+    async def _cut(self, why: Literal["stop", "new_term"], *, within: float | None = None) -> bool:
+        """cut the round running short: the task cancelled (its own handling puts its files back in the queue and
+        deletes a rebuild's half-written rows), and the worker this fold made terminated, never waited for (a worker
+        handed in is its owner's: its job runs on). Counted and logged.
+
+        :param why: ``stop`` (:meth:`close` past its bound) or ``new_term`` (:meth:`start` of a newer holding)
+        :ptype why: str
+        :param within: the bound that passed, for the log line
+        :ptype within: float | None
+        :return: whether a round was cut
+        :rtype: bool
+        """
+        running = self._round
+        if running is None or running.done():
+            return False
+        running.cancel()
+        if self._owns_workers:
+            await self._workers.close(wait=False)
+        # its cancel handling: the queue restored, a rebuild's rows file unlinked (a thread's one unlink each)
+        await asyncio.wait({running})
+        _CUTS.labels(why=why).inc()
+        log.warning(
+            "a delta fold round was cut short: its files are kept for the next round, its worker terminated",
+            extra={
+                "extra_data": {
+                    "why": why,
+                    "within": within,
+                    "term": self._round_term,
+                    "queued": len(self._queued),
+                    "worker_terminated": self._owns_workers,
+                }
+            },
+        )
+        return True
 
     async def _rounds(self) -> None:
         """run rounds while commits are queued, each after any rebuild owed; a failed round keeps its files and waits
@@ -772,6 +833,7 @@ class DeltaFolds:
         :rtype: None
         """
         while True:
+            self._round_term = self._term
             if self._reader is not None and self._recheck:
                 self._recheck = False
                 self._marked = False
@@ -785,6 +847,7 @@ class DeltaFolds:
             self._taken = tuple(taken)
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
+            self._round_term = term
             try:
                 answer = await self._workers.run(
                     fold_round,
@@ -1001,8 +1064,12 @@ class DeltaFolds:
         try:
             async for page in pages:
                 await asyncio.to_thread(sink.write, page)
-        finally:
-            await asyncio.to_thread(sink.close)
+        except BaseException:
+            # a read that failed or was cut (:meth:`close` past its bound): its half-written rows go with it, never
+            # left for the next writer's start to clear
+            await asyncio.to_thread(_closed_and_unlinked, sink)
+            raise
+        await asyncio.to_thread(sink.close)
         return file, sink.rows
 
     async def _recoveries(self, reader: _Reader) -> None:
@@ -1571,6 +1638,20 @@ class _RowsFile:
             self._writer.close()
         finally:
             self._sink.close()
+
+
+def _closed_and_unlinked(sink: _RowsFile) -> None:
+    """close a rows file and remove it; blocking.
+
+    :param sink: the rows file
+    :ptype sink: _RowsFile
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        sink.close()
+    finally:
+        sink.path.unlink(missing_ok=True)
 
 
 def _unlink_all(root: Path, files: Sequence[str]) -> None:

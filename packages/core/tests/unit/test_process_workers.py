@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 import subprocess
@@ -51,6 +52,17 @@ def _dies() -> None:
     :rtype: None
     """
     os._exit(1)
+
+
+def _sleeps(seconds: float) -> int:
+    """
+    :param seconds: how long the job runs
+    :ptype seconds: float
+    :return: the process that ran it
+    :rtype: int
+    """
+    time.sleep(seconds)
+    return os.getpid()
 
 
 def _raises(message: str) -> None:
@@ -158,6 +170,26 @@ class TestTheWorkersLifetime:
         second, _ = await workers.run(_pid_and, b"a")
 
         assert second != first
+
+    async def test_close_without_waiting_returns_at_once_and_ends_the_running_job_s_worker(
+        self, workers: ProcessWorkers
+    ) -> None:
+        """Flips if ``close(wait=False)`` waits for a running job (a stop bound waiting minutes on a fold), or leaves
+        its worker running, or fails to start a fresh pool for the next job."""
+        worker = await workers.run(os.getpid)
+        running = asyncio.ensure_future(workers.run(_sleeps, 30.0))
+        await asyncio.sleep(0.2)  # the job is in its worker
+        began = time.monotonic()
+        await workers.close(wait=False)
+        took = time.monotonic() - began
+        with pytest.raises(BrokenProcessPool):
+            await asyncio.wait_for(running, 5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _alive(worker):
+            await asyncio.sleep(0.05)
+        assert took < 0.5, f"close(wait=False) took {took:.2f} s"
+        assert not _alive(worker), "the worker outlived close(wait=False)"
+        assert await workers.run(os.getpid) != worker, "the next job starts a fresh pool"
 
     def test_a_worker_exits_within_5_seconds_of_the_serving_process_s_sigkill(self, tmp_path: Any) -> None:
         """Flips if a worker outlives its SIGKILLed serving process by 5 s: its parent, the fork server, lives while

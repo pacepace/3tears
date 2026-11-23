@@ -6,6 +6,7 @@ manifest at the writer's term; covered deltas and files no manifest in use names
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import os
 import re
@@ -1438,3 +1439,60 @@ async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_onl
     assert _part(tmp_path, "votes", "state:GA") == FullPart("state:GA", ga.file, token, ga.rows), "GA's part kept"
     assert not (tmp_path / lost).exists()
     await folds.close()
+
+
+# --- the fold's bounds: a stop within its grace, a new term's start, a queue that never grows without end --------
+
+
+class _SlowOnce(DeltaKeepRule):
+    """keeps every row; the first round it runs in (no mark yet at the path its rows' note names) marks it, then runs
+    for 30 s: a round long enough that waiting on it is what a test sees."""
+
+    @classmethod
+    def keep(cls, rows: Any) -> Any:
+        mark = Path(rows.column("note")[0].as_py())
+        if not mark.exists():
+            mark.touch()
+            time.sleep(30)
+        return rows
+
+
+async def _in_its_worker(mark: Path) -> None:
+    """wait until the slow round is inside its worker's keep rule."""
+    deadline = time.monotonic() + 30
+    while not mark.exists():
+        assert time.monotonic() < deadline, "the round never reached its worker"
+        await asyncio.sleep(0.05)
+
+
+async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_the_next_writer(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if ``close(within=)`` waits past its bound for a round in progress (a pod's stop held for as long as a
+    fold runs), loses the round's files instead of keeping them queued and on the volume, leaves its own worker
+    running, or publishes the cut round's part; and if the next writer cannot fold what the cut round held."""
+    schema = _votes_schema(_SlowOnce)
+    _first_full(tmp_path, "votes")
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)])  # its own worker
+    writer = _Writer(tmp_path, schema, folds)
+    mark = tmp_path / "slow.mark"
+    file = writer.save(_votes("TX", range(3), 1, note=str(mark)))
+    writer.tell(file)
+    await _in_its_worker(mark)
+    cut = REGISTRY.get_sample_value("delta_fold_rounds_cut_total", {"why": "stop"}) or 0.0
+
+    began = time.monotonic()
+    await folds.close(within=0.5)
+    took = time.monotonic() - began
+
+    assert took < 1.5, f"close(within=0.5) took {took:.2f} s"
+    assert REGISTRY.get_sample_value("delta_fold_rounds_cut_total", {"why": "stop"}) == cut + 1
+    assert folds.unfolded == {file} and (tmp_path / file).exists(), "the cut round's file is kept, queued"
+    assert _part(tmp_path, "votes", "state:TX") is None, "the cut round published nothing"
+    # the next writer folds it (the mark is there: its keep rule runs at once)
+    after = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    after.committed({"votes": file}, {"votes": "inc:1"}, version=6)
+    await after.wait()
+    part = _part(tmp_path, "votes", "state:TX")
+    assert part is not None and part.rows == 3
+    await after.close()
