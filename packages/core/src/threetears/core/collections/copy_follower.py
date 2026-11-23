@@ -78,7 +78,14 @@ from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage
 from threetears.core.collections.scope_epochs import ScopeEpochs
-from threetears.core.collections.volume_fulls import FullAbsent, StagedFull
+from threetears.core.collections.volume_fulls import (
+    FullAbsent,
+    FullManifest,
+    StagedFull,
+    VolumeFulls,
+    current_full_manifest,
+    full_table_floor,
+)
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
@@ -100,7 +107,6 @@ if TYPE_CHECKING:
     from threetears.core.collections.copy_checkpoint import CopyCheckpoints
     from threetears.core.collections.epoch_change import EpochChangeReader
     from threetears.core.collections.registry import CollectionRegistry
-    from threetears.core.collections.volume_fulls import VolumeFulls
 
 try:
     import pyarrow as pa
@@ -615,6 +621,9 @@ class FollowerStatus:
     :ivar failures: passes failed in a row since the last good one; at :data:`FAILING_AFTER` the phase is FAILING
     :ivar behind_since: when the first of those failed (None while passes succeed): the copy serves the change it held
         then
+    :ivar waiting_for_full: each opted-in table reset or recreated while the follower ran, waiting for the writer to
+        publish its full on the delta-files volume (never read from L3), onto why it is still waiting; every other
+        table keeps being followed meanwhile
     :ivar detail: a line for an operator
     """
 
@@ -628,7 +637,54 @@ class FollowerStatus:
     last_apply_seconds: float | None = None
     failures: int = 0
     behind_since: datetime | None = None
+    waiting_for_full: dict[str, str] = field(default_factory=dict)
     detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _FullAfter:
+    """the full an opted-in table reset or recreated while the follower ran must be reloaded from: one that holds the
+    table at or past the reset (decisions 12 and 14 of the delta-files design: the writer rebuilds the table from L3
+    once and publishes it; a copy never reads it from L3). A full from before the reset holds the table the reset
+    replaced, so it is never taken.
+
+    :ivar why: ``reset`` or ``schema_change``
+    :ivar token: the reset's generation token when the record named it; else the newest generation the copy had heard
+        of the table, which the reset came after (a reset in this process is told before its advance is written);
+        None when the copy had heard none
+    :ivar inclusive: whether ``token`` is the reset's own (a full at it holds the reset table) or one it came after
+    """
+
+    why: str
+    token: str | None
+    inclusive: bool
+
+    def short_of(self, table: str, manifest: FullManifest | None) -> str | None:
+        """why ``manifest`` cannot be reloaded from; None when it can.
+
+        :param table: the table
+        :ptype table: str
+        :param manifest: the current manifest, None when none is published
+        :ptype manifest: FullManifest | None
+        :return: why not, for the status
+        :rtype: str | None
+        :raises ValueError: when the table's versions in it are not generation tokens of one incarnation
+        """
+        if manifest is None:
+            return "no full on the volume; the writer publishes one"
+        entry = manifest.tables.get(table)
+        if entry is None:
+            return f"full {manifest.name} does not hold the table; the writer publishes one that does"
+        if self.token is None:
+            return None
+        floor = full_table_floor(table, entry)
+        held, after = split_generation_token(floor), split_generation_token(self.token)
+        if held is None or after is None or held[0] != after[0]:
+            # a count under one incarnation is never compared with one under another: the reset's own full is awaited
+            return f"full {manifest.name} holds the table at {floor}, of another incarnation than the {self.why} at {self.token}"
+        if held[1] > after[1] or (self.inclusive and held[1] == after[1]):
+            return None
+        return f"full {manifest.name} holds the table at {floor}, from before the {self.why} at {self.token}"
 
 
 class _StagesLostError(LookupError):
@@ -834,6 +890,14 @@ class CopyFollower:
         }
         #: the epochs each staged key of such a table was staged from: what an apply of the stage holds
         self._staged_epochs: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
+        #: each opted-in table reset or recreated while the follower runs, onto the full it waits for: it is reloaded
+        #: from the volume alone, never read from L3 (:meth:`_wait_for_reload`); every other table is followed meanwhile
+        self._full_after: dict[str, _FullAfter] = {}
+        #: what is heard of each such table while it waits (its keys with their epochs, and its partitions): changes
+        #: to the table the reset left, applied over the full once it is reloaded, never over the table it replaced
+        self._heard_waiting: dict[str, tuple[dict[tuple[str, ...], set[str | None]], list[dict[str, str]]]] = {}
+        #: the task looking for each such table's full
+        self._reloads: dict[str, asyncio.Task[None]] = {}
 
     # --- what the registry tells it -------------------------------------------------------------
 
@@ -842,6 +906,11 @@ class CopyFollower:
 
         def heard(message: CacheInvalidationMessage) -> None:
             key = tuple(message.ids)
+            waiting = self._heard_waiting.get(table)
+            if waiting is not None:
+                # a change to the table a reset left: applied over its full once reloaded (:meth:`_reload_from_volume`)
+                waiting[0].setdefault(key, set()).add(message.generation)
+                return
             self._pending[table].add(key)
             if epochs is not None:
                 # the epoch names the record, and the record the file the key's change is applied from
@@ -878,18 +947,26 @@ class CopyFollower:
         self._partitions[table].clear()
         self._poked.set()
 
-    def schema_changed(self, table: str) -> None:
+    def schema_changed(self, table: str, token: str | None = None) -> None:
         """a table was dropped or recreated (a migration): read it again whole, once, beside the copy. The one change
-        a follower reads a table whole for, counted (``copy_follower_whole_reads_total{why="schema_change"}``).
+        a follower reads a table whole for, counted (``copy_follower_whole_reads_total{why="schema_change"}``). A table
+        that opts in to delta files and starts from the volume is never read from L3: it waits for the writer's
+        rebuild of it (:meth:`_wait_for_reload`).
 
         :param table: the table
         :ptype table: str
+        :param token: the table's generation token once recreated, when known: an opted-in table's full is taken only
+            at or past it
+        :ptype token: str | None
         :return: nothing
         :rtype: None
         :raises KeyError: when the follower does not keep it
         """
         if table not in self._tables:
             raise KeyError(table)
+        if self._fulls is not None and table in self._fulls.tables:
+            self._wait_for_reload(table, "schema_change", token)
+            return
         log.warning(
             "a followed table's schema changed; it alone is read again whole", extra={"extra_data": {"table": table}}
         )
@@ -897,6 +974,12 @@ class CopyFollower:
 
     def _on_partition(self, table: str) -> Callable[[Mapping[str, str]], None]:
         def loaded(partition: Mapping[str, str]) -> None:
+            waiting = self._heard_waiting.get(table)
+            if waiting is not None:
+                # a load into the table a reset left: read once its full is reloaded
+                if dict(partition) not in waiting[1]:
+                    waiting[1].append(dict(partition))
+                return
             if not _key_prefix(self._tables[table], partition):
                 # an older writer's partition on columns no key leads: no index reads it exactly, so it is the table's
                 self._on_dropped(table)()
@@ -909,8 +992,11 @@ class CopyFollower:
 
         return loaded
 
-    def _on_reset(self, table: str) -> Callable[[], None]:
-        def reset() -> None:
+    def _on_reset(self, table: str) -> Callable[[str | None], None]:
+        def reset(token: str | None) -> None:
+            if self._fulls is not None and table in self._fulls.tables:
+                self._wait_for_reload(table, "reset", token)
+                return
             log.info(
                 "a followed table was reset by an operator; it alone is read again whole, as on a first start",
                 extra={"extra_data": {"table": table, "why": "reset"}},
@@ -919,6 +1005,147 @@ class CopyFollower:
             self._read_whole(table, "reset")
 
         return reset
+
+    def _wait_for_reload(self, table: str, why: str, token: str | None) -> None:
+        """an opted-in table was reset or recreated: never read it from L3 (decisions 12 and 14 of the delta-files
+        design: the writer rebuilds it from L3 once and publishes its full). Forget everything the copy heard or staged
+        of the table the reset replaced, hold what is heard of it from now on, say in the status that it waits, and look
+        for a full holding it at or past the reset (:meth:`_reload_when_published`). The copy keeps serving the table as
+        it held it, and keeps following every other table. A second reset while it waits raises the bar to the newer.
+
+        :param table: the table
+        :ptype table: str
+        :param why: ``reset`` or ``schema_change``
+        :ptype why: str
+        :param token: the reset's generation token, when the record named it
+        :ptype token: str | None
+        :return: nothing
+        :rtype: None
+        """
+        after = (
+            _FullAfter(why=why, token=token, inclusive=True)
+            if token is not None
+            else _FullAfter(why=why, token=self._registry.generation_marks.highest_heard(table), inclusive=False)
+        )
+        log.warning(
+            "a followed table that opts in to delta files was reset or recreated: it is reloaded from the writer's "
+            "full on the volume once published, never read from L3; the copy serves it as it held it meanwhile",
+            extra={"extra_data": {"table": table, "why": why, "token": token, "full_after": after.token}},
+        )
+        self._full_after[table] = after
+        # a stage of the table from before the reset holds the table it replaced: never applied
+        self._forget_tables_now([table])
+        self._whole.pop(table, None)
+        self._pending[table].clear()
+        self._epochs_of.get(table, {}).clear()
+        self._partitions[table].clear()
+        self._heard_waiting[table] = ({}, [])
+        self._status.waiting_for_full[table] = f"{why}: looking for the writer's full of the table"
+        task = self._reloads.get(table)
+        if task is None or task.done():
+            self._reloads[table] = asyncio.get_running_loop().create_task(
+                self._reload_when_published(table), name=f"copy follower reload of {table}"
+            )
+
+    async def _reload_when_published(self, table: str) -> None:
+        """look for a full holding ``table`` at or past its reset every ``poll_seconds`` until one is published, then
+        reload the table from it; the status says why each look found none. Nothing reads L3 meanwhile.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        fulls = self._fulls
+        if fulls is None:
+            return  # only a follower starting from the volume waits for a full
+        while table in self._full_after and self._status.phase is not FollowerPhase.STOPPED:
+            short: str | None
+            try:
+                manifest = await asyncio.to_thread(current_full_manifest, fulls.root)
+                short = self._full_after[table].short_of(table, manifest)
+                if short is None:
+                    if await self._reload_from_volume(table, fulls, manifest):
+                        return
+                    short = "the table was reset again while its full loaded; looking again"
+            except FileNotFoundError as exc:
+                short = f"a part of the current full is not on the volume ({exc.filename}); looking again"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one failed look leaves the copy as it was; the next looks again
+                contain(exc, log=log, what="a copy follower could not reload a reset table from the volume's full")
+                short = f"the reload failed ({type(exc).__name__}: {exc}); looking again"
+            if table in self._full_after:
+                self._status.waiting_for_full[table] = short
+            await asyncio.sleep(fulls.poll_seconds)
+
+    async def _reload_from_volume(self, table: str, fulls: VolumeFulls, manifest: FullManifest | None) -> bool:
+        """reload ``table`` alone from ``manifest`` in its own change, under the pass lock: its parts staged and applied
+        in place of the table the reset replaced, its mark taken as the full's oldest version (the next pass walks the
+        log from there, applying each later epoch from its file), and what was heard of it while it waited put back to
+        be applied over it.
+
+        :param table: the table
+        :ptype table: str
+        :param fulls: the volume's fulls
+        :ptype fulls: VolumeFulls
+        :param manifest: the manifest found
+        :ptype manifest: FullManifest | None
+        :return: whether it was reloaded (False: reset again since the manifest was judged)
+        :rtype: bool
+        :raises FileNotFoundError: when a part the manifest names is gone (a newer full swept it)
+        """
+        async with self._lock:
+            after = self._full_after.get(table)
+            if after is None or after.short_of(table, manifest) is not None:
+                return False
+            await self._forget_tables([])  # the stage the reset forgot, among any others
+            found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
+                self._backend, manifest=manifest
+            )
+            if isinstance(found, FullAbsent):
+                return False
+            self._mark += 1
+            mark = self._mark
+            rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+            self._applied_mark = mark
+            floor = found.marks[table]
+            self._registry.generation_marks.adopt_generation(table, floor)
+            self._current_marks[table] = floor
+            label = self._status.stamp
+            self._stamps[mark] = (label, dict(self._current_marks))
+            while len(self._stamps) > _STAMPS_KEPT:
+                del self._stamps[min(self._stamps)]
+            keys, partitions = self._heard_waiting.pop(table)
+            del self._full_after[table]
+            self._status.waiting_for_full.pop(table, None)
+            self._pending[table] |= set(keys)
+            epochs = self._epochs_of.setdefault(table, {})
+            for key, of in keys.items():
+                epochs.setdefault(key, set()).update(of)
+            for partition in partitions:
+                if partition not in self._partitions[table]:
+                    self._partitions[table].append(partition)
+            self._rows_since_mark += rows
+            self._status.applied += 1
+            log.info(
+                "a reset table was reloaded from the writer's full on the volume",
+                extra={
+                    "extra_data": {
+                        "table": table,
+                        "why": after.why,
+                        "manifest": found.manifest,
+                        "rows": found.rows,
+                        "mark": floor,
+                        "heard_while_waiting": len(keys),
+                    }
+                },
+            )
+            if label is not None:
+                for listener in tuple(self._listeners):
+                    listener(label)
+        self._poked.set()
+        return True
 
     def _on_caught_up(self) -> None:
         self._poked.set()
@@ -1331,7 +1558,10 @@ class CopyFollower:
             current = [
                 name
                 for name in self._tables
-                if not self._pending[name] and name not in self._whole and not self._partitions[name]
+                if not self._pending[name]
+                and name not in self._whole
+                and not self._partitions[name]
+                and name not in self._full_after
             ]
             for name in current:
                 self._current_marks[name] = self._staging_marks.get(name)
@@ -2696,6 +2926,9 @@ class CopyFollower:
         if self._checkpoint_wake is not None:
             self._checkpoint_wake.cancel()
             self._checkpoint_wake = None
+        for task in self._reloads.values():
+            task.cancel()
+        self._reloads = {}
         self._status.phase = FollowerPhase.STOPPED
 
     # --- reading ---------------------------------------------------------------------------------

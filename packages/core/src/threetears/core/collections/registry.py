@@ -409,7 +409,9 @@ class DerivedCacheRegistration:
         the columns its rows hold and their values. ``None`` drops the table as for any whole-table change
     :ivar on_table_reset: called, in place of :attr:`on_table_dropped`, when the table is reset by an operator (a
         record naming :data:`~threetears.core.collections.epoch_change.RESET_REASON`): a copy reads it again as on a
-        first start. ``None`` drops the table
+        first start. It is given the reset's generation token when the record named it, else None (a reset made in
+        this process is told before its advance is written): a copy that loads the table from a full on the
+        delta-files volume takes only a full at or past that token. ``None`` drops the table
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
@@ -417,7 +419,7 @@ class DerivedCacheRegistration:
     on_caught_up: Callable[[], None] | None = None
     on_first_sight: Callable[[], None] | None = None
     on_partition: Callable[[Mapping[str, str]], None] | None = None
-    on_table_reset: Callable[[], None] | None = None
+    on_table_reset: Callable[[str | None], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1189,7 +1191,9 @@ class CollectionRegistry:
         """
         if change.whole_table:
             if change.reason == RESET_REASON:
-                self.drop_table(change.table, reason=f"epoch {change.token} reset the table", why="reset")
+                self.drop_table(
+                    change.table, reason=f"epoch {change.token} reset the table", why="reset", token=change.token
+                )
             elif change.prefixes:
                 self.drop_partitions(
                     change.table, change.prefixes, reason=f"epoch {change.token} loaded or cleared key prefixes"
@@ -1468,7 +1472,7 @@ class CollectionRegistry:
             _tables_behind().set(len(self._behind))
             log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
-    def drop_table(self, table_name: str, *, reason: str, why: str = "local") -> None:
+    def drop_table(self, table_name: str, *, reason: str, why: str = "local", token: str | None = None) -> None:
         """drop everything this process holds of ``table_name``, because a write changed the whole table.
 
         For a write whose reach is the table itself: a truncate, a file load, an announced migration,
@@ -1490,6 +1494,9 @@ class CollectionRegistry:
         :param why: a :data:`WHOLE_TABLE_DROP_WHYS` key, as ``collection_whole_table_drops_total`` counts it. A reset
             tells each derived cache that takes one (``on_table_reset``) in place of dropping it
         :ptype why: str
+        :param token: a reset's generation token, when the record that told it names one: what ``on_table_reset`` is
+            given, so a copy loading the table from the delta-files volume waits for a full at or past it
+        :ptype token: str | None
         :return: nothing
         :rtype: None
         """
@@ -1500,7 +1507,7 @@ class CollectionRegistry:
         derived = tuple(self._derived_caches.get(table_name, ()))
         for registration in derived:
             if why == "reset" and registration.on_table_reset is not None:
-                registration.on_table_reset()
+                registration.on_table_reset(token)
             else:
                 registration.on_table_dropped()
         log.warning(
@@ -1596,7 +1603,7 @@ class CollectionRegistry:
         on_caught_up: Callable[[], None] | None = None,
         on_first_sight: Callable[[], None] | None = None,
         on_partition: Callable[[Mapping[str, str]], None] | None = None,
-        on_table_reset: Callable[[], None] | None = None,
+        on_table_reset: Callable[[str | None], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1634,8 +1641,9 @@ class CollectionRegistry:
             (the columns its rows hold and their values), so the cache drops only those rows; ``None`` drops it all
         :ptype on_partition: Callable[[Mapping[str, str]], None] | None
         :param on_table_reset: told, in place of ``on_table_dropped``, an operator's reset of the table, so a copy
-            reads it again as on a first start; ``None`` drops it all
-        :ptype on_table_reset: Callable[[], None] | None
+            reads it again as on a first start, given the reset's generation token when known (else None); ``None``
+            drops it all
+        :ptype on_table_reset: Callable[[str | None], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
