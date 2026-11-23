@@ -164,20 +164,33 @@ def _written(l1: SQLiteBackend, sql: str, rows: list[tuple[str, str]] | None = N
 
 def test_delete_all_of_100k_rows_is_the_bare_delete() -> None:
     """Flips if SQLiteBackend.delete_all (the l1_table_drop, Pace 2026-11-15) takes over twice a bare DELETE of the
-    same 100k rows in the same database: the declared whole delete must be SQLite's truncate and nothing on top.
-    Measured at 14-17 ms; the keyed walk it replaces took 645-916 ms (scratchpad/sq4/HANDOFF-SQ4.md)."""
+    same 100k rows in the same database, plus the ledger forgetting the table's rows: the declared whole delete must be
+    SQLite's truncate and the ledger's one pop, nothing on top (no keyed walk). Measured at 14-17 ms; the keyed walk it
+    replaces took 645-916 ms (scratchpad/sq4/HANDOFF-SQ4.md).
+
+    Why the ledger's forget is budgeted on its own (``plus=``): delete_all ends with ``budget.emptied``, which pops the
+    table's recency, a 100k-entry dict freed on the drop's thread, a cost of the rows' count in Python and none of
+    SQLite's. The bare DELETE of an untracked table never pays it, so the calibration once compared the drop with a
+    baseline lacking it; it held while the DELETE itself was slow (14-17 ms), and failed once it was not (2026-11-23,
+    macOS arm64, Python 3.14: bare DELETE 1.5-2.7 ms, the ledger's forget alone 3.6-3.8 ms, delete_all 5.1-6.5 ms).
+    The forget is measured here on its own, as the path pays it, and the DELETE keeps its 2x."""
     _collection, l1 = _cached_collection()
     _written(l1, 'CREATE TABLE "bare_rows" (id TEXT PRIMARY KEY, payload TEXT)')
     rows = [(f"k{index:07d}", "x" * 200) for index in range(100_000)]
-    took, baseline = [], []
+    took, baseline, forget = [], [], []
     for _ in range(3):
+        # the ledger forgetting 100k rows' recency, alone: the rows stay, and are noted again for the drop
+        _cache(l1, 100_000)
+        started = time.perf_counter()
+        l1.budget.emptied(l1, "drop_rows")
+        forget.append(time.perf_counter() - started)
         _cache(l1, 100_000)
         _written(l1, 'INSERT INTO "bare_rows" VALUES (?, ?)', rows)
         baseline.append(_written(l1, 'DELETE FROM "bare_rows"'))
         started = time.perf_counter()
         assert l1.delete_all("drop_rows") == 100_000
         took.append(time.perf_counter() - started)
-    assert budget_problem("SQLiteBackend.delete_all of 100k rows", min(took), min(baseline)) is None
+    assert budget_problem("SQLiteBackend.delete_all of 100k rows", min(took), min(baseline), plus=min(forget)) is None
 
 
 # --- a key prefix's drop (a load's or a clear's reach) runs off the loop too (0.95.0 copy audit, loop item) ---------
