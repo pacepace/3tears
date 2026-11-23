@@ -585,6 +585,15 @@ class CopyCheckpoints:
             lambda: checkpoints.notes_age_seconds() if (checkpoints := held()) is not None else 0.0
         )
 
+    @property
+    def table_names(self) -> frozenset[str]:
+        """the tables this checkpoint holds: never one whose full is on the delta-files volume.
+
+        :return: the names
+        :rtype: frozenset[str]
+        """
+        return frozenset(t.name for t in self._tables)
+
     def follow(self, names: Iterable[str]) -> None:
         """name the tables a follower keeps by their epochs; every other table this checkpoint holds is derived from
         them (no epoch mark), loaded only with every followed table from the same checkpoint, since it holds what they

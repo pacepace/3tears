@@ -18,6 +18,19 @@ are refused on an opted-in table. `CallerTransaction.delta_files` names the file
 Off by default: a table not opted in writes as before. `rail_arrow_types` now lives in `schema_backed` (still imported
 from `complete_copy`).
 
+### core: a full on the delta-files volume, and a copy that starts from it
+
+**Added:** `threetears.core.collections.volume_fulls`: a full of the tables that opt in to delta files is one Arrow IPC
+part (zstd) per (table, state) plus a manifest naming each part's file and the version it is current to, under
+`THREETEARS_DELTA_FILES_DIR/.fulls/`. Manifests are named by the writer's term and a sequence
+(`full-<term>-<seq>.json`); readers take the highest term, then the newest sequence, so a stale writer's later manifest
+is ignored. `publish_full_manifest` writes under a temporary name, flushes and renames, never overwriting, and refuses
+a term below the current one (`StaleTermError`); a delta file may be named as a part. `deletable_full_files` lists what
+the writer may delete: never the current or the previous manifest's files. `CopyFollower(fulls=VolumeFulls(...))`
+starts the opted-in tables from the current full (each part's version reported in `StagedFull.versions`); with none
+published it waits, its status `waiting for the full`, and never reads L3. Tables not opted in start from the NATS
+checkpoint as before (`CopyCheckpoints.table_names` may not overlap the fulls').
+
 ### core: a copy follower checkpoints an epoch taken from the change notes before its notes can go
 
 **Fixed:** a reports pod restarted after a busy night stayed behind for good (`notes_not_covered`): a commit too large

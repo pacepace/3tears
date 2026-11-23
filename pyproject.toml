@@ -639,6 +639,8 @@ module = [
     # and a copy follower's keyed reads and its checkpoint's parts (Arrow IPC)
     "threetears.core.collections.copy_follower",
     "threetears.core.collections.copy_checkpoint",
+    # and a full's parts on the delta-files volume (Arrow IPC)
+    "threetears.core.collections.volume_fulls",
     # and a table's delta files (Arrow IPC) and the rail's Arrow types its columns are typed by
     "threetears.core.collections.delta_files",
     "threetears.core.collections.schema_backed",
@@ -683,6 +685,7 @@ module = [
     "packages.core.tests.unit.collections.test_bulk_write_off_loop",
     "packages.core.tests.unit.collections.test_delta_files",
     "packages.core.tests.unit.collections.test_save_arrow",
+    "packages.core.tests.unit.collections.test_volume_fulls",
     "packages.core.tests.unit.shared_arrow.jobs",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_claim_cost",
