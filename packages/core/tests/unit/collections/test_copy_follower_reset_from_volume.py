@@ -176,6 +176,14 @@ class _Log:
         )
         return token
 
+    def clear(self, table: str, prefixes: list[dict[str, str]], delta_file: str) -> str:
+        """a key-prefix delete's record, naming its delta file (decision 23)."""
+        token = self._next(table)
+        self.records[(table, token)] = EpochChange(
+            table=table, token=token, whole_table=True, prefixes=prefixes, delta_file=delta_file
+        )
+        return token
+
     def reset(self, table: str) -> str:
         token = self._next(table)
         self.records[(table, token)] = EpochChange(table=table, token=token, whole_table=True, reason=RESET_REASON)
@@ -189,13 +197,19 @@ class _Log:
 
 
 class _Scopes:
-    """the writer's record, settled: each scope's epoch."""
+    """the writer's record, settled: each scope's epoch. ``on_read`` (its read's number, a call) runs a call at that
+    read, before it answers: a commit landing between a pass's two reads of the stamp."""
 
     def __init__(self) -> None:
         self.version = 1
         self.epochs = {"state:VA": 1, "state:IL": 1}
+        self.reads = 0
+        self.on_read: tuple[int, Callable[[], None]] | None = None
 
     async def settled(self) -> Any:
+        self.reads += 1
+        if self.on_read is not None and self.on_read[0] == self.reads:
+            self.on_read[1]()
         return SimpleNamespace(version=self.version, epochs=dict(self.epochs), pending=frozenset())
 
     def commit(self, *scopes: str) -> None:
@@ -272,6 +286,18 @@ class _World:
         self.log.commit(table, [(r[0], r[1]) for r in rows], delta_file=delta_file)
         self.lock.commit(*{f"state:{r[0]}" for r in rows})
 
+    def clear(self, table: str, state: str) -> str:
+        """a delete of one state's rows (a key prefix): L3's rows of it gone, its delta file saved before the record
+        names it; the record's epoch."""
+        self.writes += 1
+        delta = TableDelta(name=table, types=_TYPES, key=_KEY)
+        delta.clears([{"state": state}])
+        delta_file = write_delta_file(self.volume, delta, f"w{self.writes}")
+        self.l3.db.execute(f"DELETE FROM {table} WHERE state = ?", [state])  # noqa: S608
+        token = self.log.clear(table, [{"state": state}], delta_file)
+        self.lock.commit(f"state:{state}")
+        return token
+
     def copy(self, table: str) -> list[tuple[Any, ...]]:
         with self.backend.read_snapshot() as cursor:
             return sorted(cursor.execute(f"SELECT {', '.join(_NAMES)} FROM {table}").fetchall())  # noqa: S608
@@ -344,7 +370,6 @@ async def test_a_table_waiting_for_a_file_holds_changes_up_to_its_cap_then_waits
     from L3 rather than waiting for the writer's next full: past the cap it forgets what it held and the file, reloads
     from the full at or past the newest epoch heard, and ends equal to L3."""
     monkeypatch.setattr(copy_follower, "HELD_WHILE_WAITING_CAP", 6)
-    monkeypatch.setattr(copy_follower, "_HELD_GAUGE_EVERY", 1)
     world = _World(_volume)
     await world.started()
     world.write(_RESET, [("VA", 0, 900)])
@@ -463,31 +488,35 @@ async def test_a_table_not_opted_in_still_reads_l3_whole_on_a_reset(_volume: Pat
 
 
 async def test_a_cleared_prefix_heard_while_a_reset_table_waits_is_held_for_its_full(_volume: Path) -> None:
-    """Flips if a cleared prefix of an opted-in table (a slice delete's file, ``on_file_prefixes``) queued before a
-    reset survives it (its keys would be named in the table the reset replaced), or if one heard while the table waits
-    for its full is named against the old copy instead of held and put back once the full is reloaded."""
+    """Flips if a cleared prefix of an opted-in table (a slice delete's file) queued before a reset survives it (its
+    keys would be named over the full, clearing the reset table's rows of that state), or if one heard while the table
+    waits for its full is lost instead of held and applied over the full once it is reloaded: either way the copy then
+    differs from L3."""
     world = _World(_volume)
     await world.started()
-    cleared = world.follower._on_file_prefixes(_RESET)  # noqa: SLF001 - the registry's callback, as it is told
-    cleared([{"state": "IL"}], "inc:1")
-    world.l3.reset(_RESET, _AFTER_RESET)
+    world.clear(_RESET, "IL")
+    reset_rows = [("VA", 0, 100), ("VA", 1, 101), ("IL", 7, 700)]
+    world.l3.reset(_RESET, reset_rows)
     reset_at = world.log.reset(_RESET)
-    world.lock.commit("state:VA", "state:IL", "state:TX")
+    world.lock.commit("state:VA", "state:IL")
     await world.follower.catch_up()
     assert _RESET in world.follower.status().waiting_for_full
-    assert world.follower._cleared[_RESET] == []  # noqa: SLF001 - the clear from before the reset is forgotten
-    cleared([{"state": "VA"}], "inc:9")
-    assert world.follower._cleared[_RESET] == []  # noqa: SLF001 - held, never named against the old copy
+    # a delete of VA while the table waits: held, never named against the old copy
+    world.clear(_RESET, "VA")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
     publish_full_manifest(
         _volume,
         term=2,
         tables={
-            _RESET: _entry(_volume, _RESET, _AFTER_RESET, reset_at),
-            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), "inc:1"),
+            _RESET: _entry(_volume, _RESET, reset_rows, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
         },
     )
     await world.reloaded(_RESET)
-    assert world.follower._cleared[_RESET] == [("inc:9", [{"state": "VA"}])]  # noqa: SLF001 - put back over the full
+    assert await world.follower.catch_up()
+    assert world.same(_RESET), "a clear from before the reset was applied over the full, or the later one was lost"
+    assert world.l3.statements[_RESET] == 0
 
 
 async def test_a_copy_whose_log_was_replaced_reads_no_l3_and_reloads_the_table_from_the_recovered_full(
@@ -652,3 +681,256 @@ async def test_a_table_waiting_for_the_writers_recovery_of_a_lost_log_keeps_ever
     assert world.same()
     stamp = world.follower.status().stamp
     assert not isinstance(stamp, PartialStamp) and stamp.epochs == world.lock.epochs
+
+
+# --- the owner's races (decision 37) -------------------------------------------------------------------------------
+#
+# Each test below injects a message at an await of the work it names: a reset of the table heard while the owner
+# awaits a thread, a file read or a record. Before decision 37 every such message changed the follower's state there
+# and then, under the work that was still using it; now each is a message the owner judges once its work hands back.
+
+
+def _reset_now(world: _World, rows: list[tuple[str, int, int]]) -> str:
+    """an operator's reset of ``results``, told to the registry as its record tells it (``on_table_reset``)."""
+    world.l3.reset(_RESET, rows)
+    token = world.log.reset(_RESET)
+    world.registry.drop_table(_RESET, reason="the test's reset", why="reset", token=token)
+    return token
+
+
+def _on_the_loop(call: Callable[[], Any]) -> Callable[[], Any]:
+    """``call`` run on the event loop from a worker thread, the thread waiting until it ran: a message heard on the
+    loop while the owner's work runs on a thread. Made on the loop."""
+    loop = asyncio.get_running_loop()
+
+    def run() -> Any:
+        async def on_loop() -> Any:
+            return call()
+
+        return asyncio.run_coroutine_threadsafe(on_loop(), loop).result()
+
+    return run
+
+
+async def test_a_second_reset_heard_while_the_full_stages_raises_the_bar_and_never_leaves_the_older_full(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a waiting table's full stages is lost: the old reload applied the full it had
+    judged, then forgot the newer reset's bar and its held changes, so the table stayed on the full from before the
+    second reset for good. Now the owner judges the second reset before the apply: the staged full is dropped, the
+    table waits for a full at or past the second reset, and reloads from that one, equal to L3."""
+    world = _World(_volume)
+    await world.started()
+    first = [("VA", i, 300 + i) for i in range(3)]
+    second = [("VA", i, 700 + i) for i in range(2)] + [("IL", 5, 55)]
+    world.l3.reset(_RESET, first)
+    first_at = world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    stage = VolumeFulls.stage
+    reset: list[str] = []
+
+    async def staged(self: VolumeFulls, *args: Any, **kwargs: Any) -> Any:
+        found = await stage(self, *args, **kwargs)
+        if not reset:
+            reset.append(_reset_now(world, second))  # heard while the full of the first reset staged
+        return found
+
+    monkeypatch.setattr(VolumeFulls, "stage", staged)
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, first, first_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    for _ in range(500):
+        if reset:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    assert reset, "the full was never staged"
+    assert _RESET in world.follower.status().waiting_for_full, "the second reset's bar was lost"
+    assert world.copy(_RESET) != first, "the full from before the second reset was applied"
+    publish_full_manifest(
+        _volume,
+        term=3,
+        tables={
+            _RESET: _entry(_volume, _RESET, second, reset[0]),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_reset_heard_while_a_pass_leaves_scopes_out_applies_every_other_table(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a pass takes the keys of a moved scope out of a stage fails the pass (the old
+    ``_leave_out`` found the reset table's bookkeeping gone: a KeyError, read as the stages lost, so every table's stage
+    was dropped and read again). Now the reset is judged before the apply: the reset table's stage is forgotten and
+    it waits for its full, and every other table's change applies."""
+    world = _World(_volume)
+    await world.started()
+    old = world.copy(_RESET)
+    world.write(_RESET, [("VA", 0, 900), ("IL", 0, 901)])
+    world.write(_OTHER, [("VA", 1, 902)])
+    # IL commits again between the pass's two reads of the stamp: its keys leave the stage
+    world.lock.on_read = (world.lock.reads + 2, lambda: world.lock.commit("state:IL"))
+    unstage = world.backend.unstage_keys
+    reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
+
+    def unstaged(stages: Any, table: str, key: Any, keys: Any) -> int:
+        left = unstage(stages, table, key, keys)
+        if table == _RESET:
+            reset()
+        return left
+
+    monkeypatch.setattr(world.backend, "unstage_keys", unstaged)
+    await world.follower.catch_up()
+    assert world.same(_OTHER), "the other table's change was not applied"
+    assert _RESET in world.follower.status().waiting_for_full
+    assert world.copy(_RESET) == old, "the reset table was applied from its stage of the table the reset replaced"
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_reset_heard_while_a_pass_stages_the_table_never_applies_its_stage(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a pass stages a table lets the stage be applied (the old pass forgot the table's
+    stage at the reset, then wrote it back once its read returned: rows of the table the reset replaced applied over
+    the copy). Now the reset is judged before the apply: the stage is forgotten, never applied, and the table waits
+    for its full; the other table's change applies."""
+    world = _World(_volume)
+    await world.started()
+    old = world.copy(_RESET)
+    world.write(_RESET, [("VA", 0, 900)])
+    world.write(_OTHER, [("VA", 1, 902)])
+    stage_rows = world.backend.stage_rows
+    reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
+
+    def staged(stage: str, table: str, rows: Any, key: Any) -> int:
+        count = stage_rows(stage, table, rows, key)
+        if table == _RESET:
+            reset()
+        return count
+
+    monkeypatch.setattr(world.backend, "stage_rows", staged)
+    await world.follower.catch_up()
+    assert world.copy(_RESET) == old, "the stage of the table the reset replaced was applied"
+    assert _RESET in world.follower.status().waiting_for_full
+    assert world.same(_OTHER)
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_reset_heard_while_a_pass_reads_a_missing_file_leaves_no_wait_on_the_replaced_table(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a pass looks up a change's record leaves the table waiting for a delta file of the
+    table the reset replaced (the old pass judged the missing file after the reset had ended the table's waits). Now
+    the reset is judged after the pass's look: the reset ends every wait for a file of the replaced table, and the
+    table waits for its full alone."""
+    world = _World(_volume)
+    await world.started()
+    world.write(_RESET, [("VA", 0, 900)])
+    lost = world.log.records[(_RESET, f"inc:{world.log.count[_RESET]}")].delta_file
+    assert lost is not None
+    (_volume / lost).unlink()
+    change = world.log.change
+    told: list[str] = []
+    looked: list[str] = []
+
+    async def looked_up(table_name: str, token: str) -> Any:
+        record = await change(table_name, token)
+        if record is not None and record.delta_file == lost:
+            looked.append(token)
+            # the registry's walk looks the record up first; the follower's own look-up as it stages the table second
+            if len(looked) == 2 and not told:
+                told.append(_reset_now(world, _AFTER_RESET))
+        return record
+
+    monkeypatch.setattr(world.log, "change", looked_up)
+    await world.follower.catch_up()
+    assert told
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _RESET not in world.follower.status().waiting_for_file, "a wait for a file of the replaced table was left"
+    assert world.l3.statements[_RESET] == 0
+
+
+#: keys of one commit past the old snapshot's run (2,000 a turn): its run let the loop answer a reset mid-snapshot
+_PAST_A_RUN = 2_500
+
+
+async def test_a_reset_heard_while_a_pass_takes_its_keys_epochs_reads_nothing_from_l3(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a pass snapshots its keys' epochs leaves the rest of them with no epoch (the old
+    pass read each key's epochs from the live map in runs, letting the loop run between; the reset emptied the map, so
+    every later key was read from L3 by key, ``no_epoch``). Now the pass works on the owner's immutable batches: the
+    reset is judged before the apply, nothing reads L3, and the table waits for its full."""
+    world = _World(_volume)
+    await world.started()
+    old = world.copy(_RESET)
+    world.write(_RESET, [("VA", 100 + i, i) for i in range(_PAST_A_RUN)])
+    real = asyncio
+    told: list[str] = []
+
+    class _Asyncio:
+        """asyncio, but the first yield or thread of the pass's merge first hears the reset."""
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+        async def sleep(self, delay: float, *args: Any) -> Any:
+            if delay == 0 and not told:
+                told.append(_reset_now(world, _AFTER_RESET))
+            return await real.sleep(delay, *args)
+
+        async def to_thread(self, call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            if getattr(call, "__name__", "") == "_epoch_plan" and not told:
+                told.append(_reset_now(world, _AFTER_RESET))
+            return await real.to_thread(call, *args, **kwargs)
+
+    monkeypatch.setattr(copy_follower, "asyncio", _Asyncio())
+    await world.follower.catch_up()
+    assert told
+    assert world.l3.statements[_RESET] == 0, "keys of the reset table were read from L3 by key"
+    assert world.copy(_RESET) == old
+    assert _RESET in world.follower.status().waiting_for_full
+
+
+async def test_a_reset_heard_while_a_cleared_prefix_is_named_puts_no_key_of_the_old_table_back(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reset heard while a pass names the keys a cleared prefix reaches writes the old table's keys back
+    as pending (the old pass held the live map across its read of the copy, and filled it after the reset emptied it),
+    so a table waiting for its full held keys of the table the reset replaced, and the pass applied them to it. Now the
+    reset is judged after the naming, and forgets every key heard of the replaced table: the copy serves the table as
+    it held it until the full is reloaded."""
+    world = _World(_volume)
+    await world.started()
+    old = world.copy(_RESET)
+    world.clear(_RESET, "IL")
+    reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
+    snapshot = world.backend.read_snapshot
+    told: list[str] = []
+
+    def reading() -> Any:
+        # the pass's first read of the copy is the one naming the cleared prefix's keys
+        if not told:
+            told.append(reset())
+        return snapshot()
+
+    monkeypatch.setattr(world.backend, "read_snapshot", reading)
+    await world.follower.catch_up()
+    monkeypatch.setattr(world.backend, "read_snapshot", snapshot)
+    assert told
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _RESET not in world.follower.status().pending, "keys of the replaced table were put back pending"
+    assert world.copy(_RESET) == old, "keys of the replaced table were applied to the copy while it waits"
+    assert world.l3.statements[_RESET] == 0

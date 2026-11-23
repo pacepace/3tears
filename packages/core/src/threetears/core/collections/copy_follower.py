@@ -52,6 +52,15 @@ table waits for the writer's recovery full (decision 28) when it starts from the
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
 (:attr:`FollowedTable.order`).
 
+**One owner** (decision 37). The copy's working state has one owner: the holder of the pass lock (a pass, a reload
+from the volume, a waited-for file's arrival, a drift check; one at a time). What the registry tells (keys heard, a
+partition, a cleared prefix, a reset, a file wanted), a schema change and the watchers' findings are messages on the
+owner's inbox, applied in order at the points the owner judges them (:meth:`CopyFollower._drain`), never while it
+awaits: a reset heard while a pass reads is judged before the apply, so a stage of the table it replaced is forgotten,
+never applied. Keys are never a Python object each (decision 35): the registry hands an epoch's keys as one Arrow batch
+(``on_keys``), each change heard is kept as the immutable batch it came as, a pass takes a snapshot (the batches'
+references) and works on it on a thread, and what it leaves pending goes back as one new batch.
+
 **Never a drop, never a rebuild.** An epoch the log cannot give (lost, aged out, keys unknown) leaves the registry
 behind on the table (``CollectionRegistry.behind_on``): the copy keeps the stamp it has and says it is behind until
 the log is put back (``ChangeNoteKeeper``) and the catch-up applies it. A record that names the whole table (a
@@ -84,12 +93,12 @@ import asyncio
 import os
 import secrets
 import time
-from array import array
+from collections import deque
 from datetime import UTC, datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
 
@@ -105,9 +114,10 @@ from threetears.core.collections.delta_files import (
     DeltaTable,
     HeldDeltaRows,
     delta_files_root,
-    read_delta_file_reach,
+    joined_key_texts,
+    key_text_table,
+    read_delta_file_keys,
     read_delta_table,
-    under_prefix,
 )
 from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
@@ -136,6 +146,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     sql_cast,
 )
+from threetears.core.arrow_keys import distinct_keys, key_codes
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
 from threetears.core.keyed import InlineDuckDB, KeyBatch, WholeReads, read_keyed_arrow, read_state_arrow, run_inline
@@ -152,6 +163,7 @@ if TYPE_CHECKING:
 try:
     import numpy as np
     import pyarrow as pa
+    import pyarrow.compute as pc
 except ImportError:  # NOSILENT: the snapshot extra is optional; a follower says so when built
     pa = None
 
@@ -293,12 +305,8 @@ FILE_POLL_SECONDS: Final = 5.0
 #: tuple, so 500,000 hold about 200 MB at most a table
 HELD_WHILE_WAITING_CAP: Final = 500_000
 
-#: how many held changes apart the held-while-waiting gauge is set (a set a change would cost the hearing a label
-#: lookup each)
-_HELD_GAUGE_EVERY: Final = 1000
-
-#: changes a table waiting for a delta file holds, heard while it waits: set every :data:`_HELD_GAUGE_EVERY`, and at 0
-#: once it no longer waits
+#: changes a table waiting for a delta file holds, heard while it waits: set as each batch of them is heard (one a
+#: batch, never one a key), and at 0 once it no longer waits
 _HELD_WHILE_WAITING = gauge(
     "copy_follower_held_while_waiting_changes",
     description="changes a copy follower's table holds, heard while it waits for a delta file (a key at an epoch "
@@ -441,21 +449,142 @@ async def require_generation_by_trigger(l3: Any) -> None:
         raise HubCapabilityMissingError(GENERATION_BY_TRIGGER)
 
 
-def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
-    """each row's key, its values as text in key order (as a change record names a key).
+#: the column of a batch of keys heard naming the epoch each key was heard at (null: heard with none)
+_EPOCH: Final = "__epoch"
 
-    :param rows: rows holding the key columns
-    :ptype rows: pyarrow.Table
-    :param key: the key columns
+#: the column of a batch of staged keys naming the scope of a row of each (null: a table of no scope)
+_SCOPE: Final = "__scope"
+
+#: the column of a pass's keys at their epochs naming each key's position among the pass's keys
+_AT: Final = "__at"
+
+#: the scope of a table of no scope while scopes are coded (its one state is named None): no scope is this text
+_NO_SCOPE: Final = "\x00no scope"
+
+#: messages the owner applies before it lets the loop run again, when it drains many (:meth:`CopyFollower._drained`)
+_MESSAGES_PER_TURN: Final = 2000
+
+
+def _heard_schema(key: Sequence[str]) -> Any:
+    """the schema of a batch of keys heard: each key column as text, named as the key, and the epoch.
+
+    :param key: the table's key columns
     :ptype key: Sequence[str]
-    :return: the keys
-    :rtype: list[tuple[str, ...]]
+    :return: the schema
+    :rtype: pyarrow.Schema
     """
-    return [tuple(str(v) for v in values) for values in zip(*(rows.column(c).to_pylist() for c in key), strict=True)]
+    return pa.schema([(column, pa.string()) for column in key] + [(_EPOCH, pa.string())])
 
 
-#: keys a run of the loop's work names before it lets the loop run again (a pass's snapshot of each key's epochs)
-_KEYS_PER_TURN: Final = 2000
+def _heard_batch(key: Sequence[str], keys: Any, epoch: str | None) -> Any:
+    """keys heard at one epoch, as one immutable batch (decision 37: one batch a change heard, never edited).
+
+    :param key: the table's key columns, in key order
+    :ptype key: Sequence[str]
+    :param keys: one row a key, its key columns' values as text, in key order (by position)
+    :ptype keys: pyarrow.Table
+    :param epoch: the epoch they were heard at; None when heard with none
+    :ptype epoch: str | None
+    :return: the batch
+    :rtype: pyarrow.Table
+    """
+    count = keys.num_rows
+    columns = [keys.column(at).combine_chunks().cast(pa.string()) for at in range(len(key))]
+    epochs = pa.nulls(count, pa.string()) if epoch is None else pa.repeat(pa.scalar(epoch, pa.string()), count)
+    return pa.Table.from_arrays([*columns, epochs], schema=_heard_schema(key))
+
+
+def _joined(batches: Sequence[Any], schema: Any) -> Any:
+    """some batches as one table (their chunks, not copied); the schema's empty table when there are none.
+
+    :param batches: the batches, each of ``schema``'s columns at least
+    :ptype batches: Sequence[pyarrow.Table]
+    :param schema: what each holds
+    :ptype schema: pyarrow.Schema
+    :return: the table
+    :rtype: pyarrow.Table
+    """
+    if not batches:
+        return schema.empty_table()
+    return pa.concat_tables([batch.select(schema.names).cast(schema) for batch in batches])
+
+
+def _distinct(rows: Any, columns: Sequence[str]) -> Any:
+    """the distinct values of ``columns`` in ``rows``, each once, in the order first held (Arrow's hash kernels,
+    :func:`~threetears.core.arrow_keys.distinct_keys`: never an Acero plan).
+
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :param columns: the columns
+    :ptype columns: Sequence[str]
+    :return: one row a distinct value, the columns in the order named
+    :rtype: pyarrow.Table
+    """
+    return distinct_keys(rows, list(columns))
+
+
+def _texts(column: Any) -> Any:
+    """a column's values as text, a null as ``None`` (``str(value)``'s spelling of each, as a scope is named).
+
+    :param column: the column
+    :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :return: the texts
+    :rtype: pyarrow.Array
+    """
+    if isinstance(column, pa.ChunkedArray):
+        column = column.combine_chunks()
+    texts = column if pa.types.is_string(column.type) else column.cast(pa.string())
+    return pc.fill_null(texts, "None")
+
+
+def _scope_texts(table: FollowedTable, column: Any) -> Any:
+    """each value of ``table``'s scope column as the scope a row holding it belongs to (:meth:`FollowedTable.scope_of`).
+
+    :param table: a table with a scope
+    :ptype table: FollowedTable
+    :param column: the scope column's values
+    :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :return: the scopes
+    :rtype: pyarrow.Array
+    """
+    assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
+    return pc.binary_join_element_wise(pa.scalar(table.scope[1]), _texts(column), "")
+
+
+def _scope_set(column: Any) -> set[str | None]:
+    """the distinct scopes of a column of them (a null: a table of no scope), as a small set: one a state.
+
+    :param column: the scopes
+    :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :return: the scopes
+    :rtype: set[str | None]
+    """
+    return set(pc.unique(column).to_pylist())  # one a distinct scope (a state), never one a key
+
+
+def _in(values: Any, among: Any) -> Any:
+    """whether each value is among ``among``, as numpy flags (a null is not).
+
+    :param values: the values
+    :ptype values: pyarrow.Array | pyarrow.ChunkedArray
+    :param among: the values looked for
+    :ptype among: pyarrow.Array
+    :return: one flag a value
+    :rtype: numpy.ndarray
+    """
+    found = pc.fill_null(pc.is_in(values, value_set=among), False)
+    return np.asarray(found.to_numpy(zero_copy_only=False), dtype=bool)
+
+
+def _scope_array(scopes: Iterable[str]) -> Any:
+    """some scopes as one Arrow array, for :func:`_in`.
+
+    :param scopes: the scopes
+    :ptype scopes: Iterable[str]
+    :return: the array
+    :rtype: pyarrow.Array
+    """
+    return pa.array(sorted(scopes), pa.string())
 
 
 def _no_record(table: str, epoch: str) -> str:
@@ -474,18 +603,18 @@ def _no_record(table: str, epoch: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _WaitedReach:
-    """what a waited-for delta file reaches: the prefixes it clears and its keys, each as text, once, in order.
+    """what a waited-for delta file reaches: the prefixes it clears, and its keys as text (Arrow), once each, in order.
 
     :ivar prefixes: the key prefixes it clears, as text
-    :ivar keys: each key's values as text (``key_text``)
+    :ivar keys: one row a key, its key columns' values as text (``key_text``), named as the key
     """
 
     prefixes: tuple[dict[str, str], ...]
-    keys: list[tuple[str, ...]]
+    keys: Any
 
 
 def _waited_reach(path: Any, table: str) -> _WaitedReach:
-    """a waited-for file's reach, its keys as text. Blocking: the read and a loop over every key, run on a thread.
+    """a waited-for file's reach, its keys as Arrow text. Blocking: the read runs on a thread.
 
     :param path: the file
     :ptype path: Path
@@ -496,8 +625,69 @@ def _waited_reach(path: Any, table: str) -> _WaitedReach:
     :raises FileNotFoundError: when it is not there
     :raises DeltaFileUnreadableError: when it is not the table's delta file, or does not decode
     """
-    reach = read_delta_file_reach(path, table=table)
-    return _WaitedReach(prefixes=reach.prefixes, keys=[tuple(key_text(value) for value in key) for key in reach.keys])
+    reach = read_delta_file_keys(path, table=table)
+    return _WaitedReach(prefixes=reach.prefixes, keys=reach.keys)
+
+
+@dataclass(frozen=True, slots=True)
+class _Take:
+    """what a pass takes of one table's keys heard (on a thread, from the owner's snapshot of its batches).
+
+    :ivar keys: the keys taken, each once, in key order: one row a key, its key columns as text
+    :ivar pairs: each key taken at each epoch it was heard at (a key's stage from earlier passes' epochs included):
+        the key columns, ``__epoch`` and ``__at`` (the key's position among :attr:`keys`), by position
+    :ivar at: ``pairs``' positions, as numpy
+    :ivar left: the keys at their epochs a write in progress holds the scope of (their key names it): left pending;
+        None when none is
+    :ivar left_keys: how many keys ``left`` holds
+    """
+
+    keys: Any
+    pairs: Any
+    at: Any
+    left: Any
+    left_keys: int
+
+
+def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], held: frozenset[str]) -> _Take:
+    """a pass's keys of one table from the batches heard: each key at each epoch once, those of a scope a write holds
+    left pending (when the key names its scope), and for a table that opts in to delta files, every epoch a key was
+    staged from by an earlier pass beside the new ones, so its row is merged again from every change not yet applied.
+    Blocking: run it on a thread.
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param batches: the batches heard, the owner's snapshot
+    :ptype batches: Sequence[pyarrow.Table]
+    :param staged: the keys at their epochs earlier passes staged (a table that opts in to delta files; else empty)
+    :ptype staged: Sequence[pyarrow.Table]
+    :param held: the scopes a write in progress holds
+    :ptype held: frozenset[str]
+    :return: the take
+    :rtype: _Take
+    """
+    key = list(table.key)
+    schema = _heard_schema(key)
+    rows = _distinct(_joined(batches, schema), [*key, _EPOCH])
+    left = None
+    left_keys = 0
+    at = table.scope_in_key
+    if held and at is not None:
+        hold = pa.array(_in(_scope_texts(table, rows.column(key[at])), _scope_array(held)))
+        left = rows.filter(hold)
+        rows = rows.filter(pc.invert(hold))
+        left_keys = _distinct(left, key).num_rows
+        left = left if left.num_rows else None
+    if staged and rows.num_rows:
+        before = _joined(staged, schema)
+        bring = before.filter(pa.array(_in(joined_key_texts(before, key), joined_key_texts(rows, key))))
+        if bring.num_rows:
+            rows = _distinct(pa.concat_tables([rows, bring]), [*key, _EPOCH])
+    keys = _distinct(rows, key).sort_by([(column, "ascending") for column in key])
+    positions = pc.index_in(joined_key_texts(rows, key), value_set=joined_key_texts(keys, key)).cast(pa.int64())
+    pairs = rows.append_column(_AT, positions).sort_by([(_AT, "ascending")])
+    at_positions = np.asarray(pairs.column(_AT).to_numpy(), dtype=np.int64)
+    return _Take(keys=keys, pairs=pairs, at=at_positions, left=left, left_keys=left_keys)
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,45 +695,53 @@ class _EpochPlan:
     """the epochs a pass's keys of one opted-in table were heard at, each epoch's keys, oldest epoch first.
 
     :ivar order: every epoch heard, oldest first (one incarnation's counts order them)
-    :ivar keys_at: each epoch's keys, as their positions in the pass's keys
+    :ivar keys_at: each epoch's keys, as their positions in the pass's keys (built here, read-only after)
     :ivar no_epoch: per key, heard with no epoch that orders it (none, or two incarnations')
     """
 
     order: list[str]
-    keys_at: dict[str, Any]
+    keys_at: Mapping[str, Any]
     no_epoch: Any
 
 
-def _epoch_plan(heard: Sequence[frozenset[str | None]]) -> _EpochPlan:
-    """which keys each epoch names, and which keys no epoch orders. Blocking: a loop over every key, run on a thread.
+def _epoch_plan(take: _Take) -> _EpochPlan:
+    """which keys each epoch names, and which keys no epoch orders: Arrow and numpy over the pass's pairs, never a
+    Python object a key. Blocking: run it on a thread.
 
-    :param heard: each key's epochs, by position
-    :ptype heard: Sequence[frozenset[str | None]]
+    :param take: the pass's keys at their epochs
+    :ptype take: _Take
     :return: the plan
     :rtype: _EpochPlan
     """
-    no_epoch = np.zeros(len(heard), dtype=bool)
-    parsed: dict[str, tuple[str, int] | None] = {}
-    keys_at: dict[str, array[int]] = {}
-    for position, epochs in enumerate(heard):
-        parts = []
-        for epoch in epochs:
-            if epoch is not None and epoch not in parsed:
-                parsed[epoch] = split_generation_token(epoch)
-            parts.append(None if epoch is None else parsed[epoch])
-        if not parts or None in parts or len({part[0] for part in parts if part is not None}) != 1:
-            # heard with no epoch, or under two incarnations of the log, whose counts do not order them
-            no_epoch[position] = True
-            continue
-        for part in parts:
-            assert part is not None  # noqa: S101 -- checked above
-            keys_at.setdefault(f"{part[0]}:{part[1]}", array("q")).append(position)
-    order = sorted(keys_at, key=lambda epoch: split_generation_token(epoch) or ("", 0))
-    return _EpochPlan(
-        order=order,
-        keys_at={epoch: np.frombuffer(keys_at[epoch], dtype=np.int64) for epoch in order},
-        no_epoch=no_epoch,
-    )
+    count = take.keys.num_rows
+    at = take.at
+    epochs = take.pairs.column(_EPOCH).combine_chunks()
+    distinct = pc.unique(pc.drop_null(epochs))
+    names = distinct.to_pylist()  # one a distinct epoch heard this pass (a commit), never one a key
+    parsed = [split_generation_token(name) for name in names]
+    incarnations = {incarnation: n for n, incarnation in enumerate(sorted({p[0] for p in parsed if p is not None}))}
+    inc_of = np.array([incarnations[p[0]] if p is not None else -1 for p in parsed] + [-1], dtype=np.int64)
+    code = np.asarray(pc.fill_null(pc.index_in(epochs, value_set=distinct), -1).to_numpy(), dtype=np.int64)
+    row_inc = inc_of[code]  # a null epoch's code is -1: the trailing -1
+    no_epoch = np.zeros(count, dtype=bool)
+    no_epoch[at[row_inc < 0]] = True
+    low = np.full(count, np.iinfo(np.int64).max, dtype=np.int64)
+    high = np.full(count, -1, dtype=np.int64)
+    np.minimum.at(low, at, row_inc)
+    np.maximum.at(high, at, row_inc)
+    # heard under two incarnations of the log, whose counts do not order them
+    no_epoch |= low != high
+    keep = ~no_epoch[at]
+    codes, positions = code[keep], at[keep]
+    by_code = np.argsort(codes, kind="stable")
+    codes, positions = codes[by_code], positions[by_code]
+    ordered = sorted((p, n) for n, p in enumerate(parsed) if p is not None)
+    keys_at: dict[str, Any] = {}
+    for _parsed, n in ordered:
+        low_at, high_at = (int(edge) for edge in np.searchsorted(codes, [n, n + 1]))
+        if high_at > low_at:
+            keys_at[names[n]] = positions[low_at:high_at]
+    return _EpochPlan(order=list(keys_at), keys_at=keys_at, no_epoch=no_epoch)
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,18 +750,233 @@ class _FromFiles:
 
     :ivar rows: the rows that exist after the change, typed as the rail answers them, in key position order
     :ivar at: each row's key's position in the pass's keys, ascending
-    :ivar heard: each key's epochs it was merged from, by position (an apply holds those)
     :ivar from_l3: per key, read from L3 by key instead (a fallback, counted)
-    :ivar fallbacks: the keys read from L3, by why: their count and the files named
+    :ivar fallbacks: the keys read from L3, by why: their count and the files named (one a file, never one a key)
     :ivar applied: how many changes were applied from the files
     """
 
     rows: Any
     at: Any
-    heard: list[frozenset[str | None]]
     from_l3: Any
-    fallbacks: dict[str, tuple[int, set[str]]]
+    fallbacks: Mapping[str, tuple[int, frozenset[str]]]
     applied: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Staged:
+    """what one table's keyed stage this pass holds: Arrow, built a page at a time.
+
+    :ivar pairs: the keys staged at the epochs they were staged from (key columns, ``__epoch``)
+    :ivar scopes: the keys staged with the scope of each row of them (key columns, ``__scope``)
+    :ivar scope_set: the distinct scopes of :attr:`scopes` (one a state)
+    :ivar late: the keys at their epochs left pending because a row of them is of a scope a write holds; None for none
+    :ivar late_keys: how many keys ``late`` holds
+    """
+
+    pairs: Any
+    scopes: Any
+    scope_set: frozenset[str | None]
+    late: Any
+    late_keys: int
+
+
+def _staged_of(table: FollowedTable, take: _Take, staged: Any, left_out: Any, row_scopes: Sequence[Any]) -> _Staged:
+    """one table's keyed stage this pass, cut from the take by which keys were staged and which left out, each table
+    whole (its chunks combined). Blocking: run it on a thread: a page's table a page joined and let go on the loop cost
+    it milliseconds a pass (4,000 pages of 50 keys, 2026-11-23).
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param take: the pass's keys at their epochs
+    :ptype take: _Take
+    :param staged: per key of the take, whether it was staged
+    :ptype staged: numpy.ndarray
+    :param left_out: per key of the take, whether it was left pending for a held scope a row of it is of
+    :ptype left_out: numpy.ndarray
+    :param row_scopes: for a table whose scope is in its rows, each page's staged keys with their rows' scopes
+    :ptype row_scopes: Sequence[pyarrow.Table]
+    :return: the stage
+    :rtype: _Staged
+    """
+    key = list(table.key)
+    heard = [*key, _EPOCH]
+    pairs = take.pairs.filter(pa.array(staged[take.at])).select(heard).combine_chunks()
+    late = take.pairs.filter(pa.array(left_out[take.at])).select(heard).combine_chunks() if left_out.any() else None
+    keys = take.keys.filter(pa.array(staged))
+    at = table.scope_in_key
+    if table.scope is None:
+        scopes = keys.append_column(_SCOPE, pa.nulls(keys.num_rows, pa.string()))
+    elif at is not None:
+        scopes = keys.append_column(_SCOPE, _scope_texts(table, keys.column(key[at])))
+    else:
+        schema = pa.schema([(column, pa.string()) for column in key] + [(_SCOPE, pa.string())])
+        scopes = _joined(row_scopes, schema)
+    scopes = scopes.select([*key, _SCOPE]).combine_chunks()
+    return _Staged(
+        pairs=pairs,
+        scopes=scopes,
+        scope_set=frozenset(_scope_set(scopes.column(_SCOPE))) if scopes.num_rows else frozenset(),
+        late=late if late is not None and late.num_rows else None,
+        late_keys=int(left_out.sum()),
+    )
+
+
+def _leaving_keys(
+    table: FollowedTable, scopes: Sequence[Any], pairs: Sequence[Any], hit: frozenset[str]
+) -> tuple[Any, bool]:
+    """the keys of a keyed stage with a row of a scope in ``hit`` (the stamp moved under it), and whether that is every
+    key staged. Blocking: run it on a thread.
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param scopes: the stage's keys with their scopes
+    :ptype scopes: Sequence[pyarrow.Table]
+    :param pairs: the stage's keys at their epochs: every key staged
+    :ptype pairs: Sequence[pyarrow.Table]
+    :param hit: the scopes left out
+    :ptype hit: frozenset[str]
+    :return: the keys leaving (key columns as text) and whether they are every key staged
+    :rtype: tuple[pyarrow.Table, bool]
+    """
+    key = list(table.key)
+    rows = pa.concat_tables(scopes)
+    leaving = _distinct(rows.filter(pa.array(_in(rows.column(_SCOPE), _scope_array(hit)))), key)
+    staged = _distinct(pa.concat_tables([pair.select(key) for pair in pairs]), key) if pairs else leaving
+    return leaving, leaving.num_rows >= staged.num_rows
+
+
+@dataclass(frozen=True, slots=True)
+class _Kept:
+    """a keyed stage less some keys (:meth:`CopyFollower._leave_out`).
+
+    :ivar back: the keys taken out at the epochs they were staged from: put back pending
+    :ivar pairs: the keys kept at their epochs
+    :ivar scopes: the keys kept with their scopes
+    :ivar scope_set: the distinct scopes kept
+    """
+
+    back: Any
+    pairs: Any
+    scopes: Any
+    scope_set: frozenset[str | None]
+
+
+def _without_keys(table: FollowedTable, pairs: Sequence[Any], scopes: Sequence[Any], keys: Any) -> _Kept:
+    """a keyed stage's bookkeeping less ``keys``. Blocking: run it on a thread.
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param pairs: the stage's keys at their epochs
+    :ptype pairs: Sequence[pyarrow.Table]
+    :param scopes: the stage's keys with their scopes
+    :ptype scopes: Sequence[pyarrow.Table]
+    :param keys: the keys taken out (key columns as text)
+    :ptype keys: pyarrow.Table
+    :return: what is kept, and what goes back
+    :rtype: _Kept
+    """
+    key = list(table.key)
+    texts = joined_key_texts(keys, key)
+    heard = _joined(pairs, _heard_schema(key))
+    out = pa.array(_in(joined_key_texts(heard, key), texts))
+    held = pa.concat_tables(scopes) if scopes else pa.table({})
+    kept_scopes = held.filter(pc.invert(pa.array(_in(joined_key_texts(held, key), texts)))) if scopes else held
+    return _Kept(
+        back=heard.filter(out),
+        pairs=heard.filter(pc.invert(out)),
+        scopes=kept_scopes,
+        scope_set=frozenset(_scope_set(kept_scopes.column(_SCOPE))) if scopes else frozenset(),
+    )
+
+
+def _newest_by_scope(table: FollowedTable, pairs: Sequence[Any], scopes: Sequence[Any]) -> dict[str | None, str]:
+    """each scope's newest epoch among the staged keys of it (decision 32's held version): :data:`_VERSION_UNKNOWN`
+    when one of them was heard with no epoch that orders it (none, or one of another incarnation than the rest). Keys
+    matched by their codes (:func:`~threetears.core.arrow_keys.key_codes`, never an Acero join). Blocking: run it on a
+    thread.
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param pairs: the staged keys at their epochs
+    :ptype pairs: Sequence[pyarrow.Table]
+    :param scopes: the staged keys with their scopes
+    :ptype scopes: Sequence[pyarrow.Table]
+    :return: one entry a scope (a state), never one a key
+    :rtype: dict[str | None, str]
+    """
+    key = list(table.key)
+    if not pairs or not scopes:
+        return {}
+    heard = _distinct(_joined(pairs, _heard_schema(key)), [*key, _EPOCH])
+    of = _distinct(pa.concat_tables(scopes), [*key, _SCOPE])
+    if not heard.num_rows or not of.num_rows:
+        return {}
+    heard_codes, of_codes = key_codes([heard.select(key), of.select(key)], key)
+    # each (scope, epoch) of a key: the key's epochs, once for each of its scopes
+    order = np.argsort(heard_codes, kind="stable")
+    sorted_codes = heard_codes[order]
+    low = np.searchsorted(sorted_codes, of_codes, side="left")
+    counts = np.searchsorted(sorted_codes, of_codes, side="right") - low
+    total = int(counts.sum())
+    if not total:
+        return {}
+    scope_rows = np.repeat(np.arange(of.num_rows), counts)
+    # each scope row's run of its key's epochs: its start, then one on, a row at a time
+    starts = np.repeat(low, counts)
+    within = np.arange(total) - np.repeat(np.cumsum(counts) - counts, counts)
+    heard_rows = order[starts + within]
+    # a table of no scope names its one state None: a sentinel no scope is, while the scopes are coded
+    named = pc.fill_null(of.column(_SCOPE).combine_chunks(), _NO_SCOPE)
+    coded = pc.dictionary_encode(named)
+    scope_of = np.asarray(coded.indices.to_numpy(zero_copy_only=False), dtype=np.int64)[scope_rows]
+    epochs = heard.column(_EPOCH).combine_chunks()
+    distinct = pc.unique(pc.drop_null(epochs))
+    parsed = [split_generation_token(name) for name in distinct.to_pylist()]  # one a distinct epoch, never a key
+    incarnations = {inc: n for n, inc in enumerate(sorted({p[0] for p in parsed if p is not None}))}
+    inc_of = np.array([incarnations[p[0]] if p is not None else -1 for p in parsed] + [-1], dtype=np.int64)
+    count_of = np.array([p[1] if p is not None else -1 for p in parsed] + [-1], dtype=np.int64)
+    code = np.asarray(pc.fill_null(pc.index_in(epochs, value_set=distinct), -1).to_numpy(), dtype=np.int64)
+    row_inc, row_count = inc_of[code[heard_rows]], count_of[code[heard_rows]]
+    states = len(coded.dictionary)
+    low_inc = np.full(states, np.iinfo(np.int64).max, dtype=np.int64)
+    high_inc = np.full(states, -1, dtype=np.int64)
+    newest = np.full(states, -1, dtype=np.int64)
+    np.minimum.at(low_inc, scope_of, row_inc)
+    np.maximum.at(high_inc, scope_of, row_inc)
+    np.maximum.at(newest, scope_of, row_count)
+    names = sorted(incarnations, key=incarnations.__getitem__)
+    held: dict[str | None, str] = {}
+    for at, scope in enumerate(coded.dictionary.to_pylist()):  # one a scope (a state), never one a key
+        ordered = low_inc[at] >= 0 and low_inc[at] == high_inc[at]
+        held[None if scope == _NO_SCOPE else scope] = (
+            f"{names[int(high_inc[at])]}:{int(newest[at])}" if ordered else _VERSION_UNKNOWN
+        )
+    return held
+
+
+def _under(table: FollowedTable, batches: Sequence[Any], prefixes: Sequence[Mapping[str, str]]) -> Any:
+    """the keys of some batches (keys at epochs) under one of ``prefixes``, each once (:func:`under_prefix`, compared
+    as text). Blocking: run it on a thread.
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param batches: keys heard or staged
+    :ptype batches: Sequence[pyarrow.Table]
+    :param prefixes: the prefixes
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :return: the keys, key columns as text
+    :rtype: pyarrow.Table
+    """
+    key = list(table.key)
+    rows = _joined(batches, _heard_schema(key))
+    under = np.zeros(rows.num_rows, dtype=bool)
+    for prefix in prefixes:
+        within = np.ones(rows.num_rows, dtype=bool)
+        for column, value in prefix.items():
+            equal = pc.fill_null(pc.equal(rows.column(column), pa.scalar(value, pa.string())), False)
+            within &= np.asarray(equal.to_numpy(zero_copy_only=False), dtype=bool)
+        under |= within
+    return _distinct(rows.filter(pa.array(under)), key)
 
 
 def _rail_column(column: Any, kind: Any) -> Any:
@@ -697,9 +1110,11 @@ class FileRecreate(Protocol):
         ...
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _FileWait:
-    """one delta file a table waits for (decision 29): every change of the table is held until it reads.
+    """one delta file a table waits for (decision 29): every change of the table is held until it reads. Immutable:
+    the owner replaces it with what a look found (:meth:`CopyFollower._file_looked`), so a look whose wait was ended
+    or replaced meanwhile is told apart by identity and discarded.
 
     :ivar epoch: the epoch whose record names it
     :ivar file: its name under the delta files' directory
@@ -1098,13 +1513,6 @@ class _FullAfter:
         return f"full {manifest.name} holds the table at {floor}, from before the {self.why} at {self.token}"
 
 
-_Heard = tuple[
-    dict[tuple[str, ...], set[str | None]],
-    list[dict[str, str]],
-    list[tuple[str, list[dict[str, str]]]],
-]
-
-
 def _held_by_full(epoch: str | None, floor: tuple[str, int] | None, after: _FullAfter) -> bool:
     """whether the full reloaded at ``floor`` already holds the change of ``epoch``.
 
@@ -1125,32 +1533,118 @@ def _held_by_full(epoch: str | None, floor: tuple[str, int] | None, after: _Full
     return of[1] <= floor[1]
 
 
-def _past_floor(heard: _Heard, floor: str, after: _FullAfter) -> _Heard:
-    """what was heard of a table while it waited, less the changes the full it reloaded from already holds: applied
-    again over the full, an older change would undo a newer one the full holds (a row changed twice, the second in a
-    record the copy never read).
+def _past_floor(table: FollowedTable, batches: Sequence[Any], floor: str, after: _FullAfter) -> Any:
+    """the keys heard of a table while it waited, at the epochs the full it reloaded from does not hold: applied again
+    over the full, an older change would undo a newer one the full holds (a row changed twice, the second in a record
+    the copy never read). A key heard with no epoch is kept. Blocking: run it on a thread.
 
-    :param heard: the keys with their epochs, the partitions and the cleared prefixes with their epochs
-    :ptype heard: _Heard
+    :param table: the table
+    :ptype table: FollowedTable
+    :param batches: the keys heard at their epochs
+    :ptype batches: Sequence[pyarrow.Table]
     :param floor: the full's version of the table (its oldest)
     :ptype floor: str
     :param after: what the table waited for
     :ptype after: _FullAfter
-    :return: the same, without what the full holds; a key every one of whose epochs it holds is left out
-    :rtype: _Heard
+    :return: the keys at the epochs it does not hold, one batch
+    :rtype: pyarrow.Table
     """
-    keys, partitions, clears = heard
+    rows = _distinct(_joined(batches, _heard_schema(table.key)), [*table.key, _EPOCH])
+    epochs = pc.unique(pc.drop_null(rows.column(_EPOCH)))
     split = split_generation_token(floor)
-    kept: dict[tuple[str, ...], set[str | None]] = {}
-    for key, epochs in keys.items():
-        left = {epoch for epoch in epochs if not _held_by_full(epoch, split, after)}
-        if left or not epochs:
-            kept[key] = left
-    return (
-        kept,
-        partitions,
-        [(epoch, prefixes) for epoch, prefixes in clears if not _held_by_full(epoch, split, after)],
-    )
+    # one judgment a distinct epoch (a commit), never one a key
+    held = [epoch for epoch in epochs.to_pylist() if _held_by_full(epoch, split, after)]
+    if not held:
+        return rows
+    return rows.filter(pc.invert(pa.array(_in(rows.column(_EPOCH), pa.array(held, pa.string())))))
+
+
+@dataclass(frozen=True, slots=True)
+class _KeysHeard:
+    """a message for the owner: keys of a table heard at an epoch (an epoch record's rows, a delta file's keys).
+
+    :ivar table: the table
+    :ivar keys: one row a key, its key columns' values as text, in key order (by position)
+    :ivar epoch: the epoch; None when heard with none
+    :ivar held: whether it counts toward :data:`HELD_WHILE_WAITING_CAP` when the table waits for a file (a waited-for
+        file's own keys do not)
+    """
+
+    table: str
+    keys: Any
+    epoch: str | None
+    held: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _PartitionHeard:
+    """a message for the owner: a load's partition of a table (an older writer's record, or a table that takes no
+    files).
+
+    :ivar table: the table
+    :ivar partition: the columns its rows hold and their values
+    """
+
+    table: str
+    partition: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClearHeard:
+    """a message for the owner: the key prefixes a load's or a clear's delta file clears, at its epoch.
+
+    :ivar table: the table
+    :ivar epoch: the epoch
+    :ivar prefixes: the prefixes, as text
+    """
+
+    table: str
+    epoch: str
+    prefixes: tuple[dict[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _WholeHeard:
+    """a message for the owner: read a table whole at the next apply (an older writer's whole-table record, a schema
+    change of a table not loaded from the volume, an operator's reset of one).
+
+    :ivar table: the table
+    :ivar why: a :data:`WHOLE_READ_WHYS` key
+    :ivar force: the why replaces one already queued (a reset)
+    """
+
+    table: str
+    why: str
+    force: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ReloadHeard:
+    """a message for the owner: a table loaded from the volume was reset or recreated; it waits for the writer's full.
+
+    :ivar table: the table
+    :ivar why: ``reset`` or ``schema_change``
+    :ivar token: the reset's generation token when the record named it
+    :ivar bar: the newest generation heard of the table when the message was sent: a full past it is awaited when the
+        record named no token (read when it was heard, never when it is applied)
+    """
+
+    table: str
+    why: str
+    token: str | None
+    bar: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FileWantedHeard:
+    """a message for the owner: an epoch's delta file the registry could not apply (decision 29).
+
+    :ivar table: the table
+    :ivar file: what the registry said
+    """
+
+    table: str
+    file: WantedFile
 
 
 class _StagesLostError(LookupError):
@@ -1287,12 +1781,26 @@ class CopyFollower:
         self._changes = changes
         self._page_size = page_size
         self._retry_waits = retry_waits
-        #: keys heard and not yet applied, by table, each the key's values as text
-        self._pending: dict[str, set[tuple[str, ...]]] = {name: set() for name in self._tables}
+        # --- the owner's state (decision 37) -----------------------------------------------------------------------
+        # Everything below is the copy's working state. Its owner is the holder of the pass lock (``_lock``): a pass,
+        # a reload from the volume, a waited-for file's arrival, a drift check; one at a time. Nothing else touches it:
+        # what the registry, the writer's answers and a reset tell the follower are messages on ``_inbox``, applied
+        # in order by the owner (:meth:`_drain`) at the points it judges them, never while it awaits. Each entry
+        # keyed by table is per-table bookkeeping, small; every per-key part is an immutable Arrow batch, one a change
+        # heard (never edited: a new change is a new batch), and a pass works on a snapshot of the batches (their
+        # references) and hands back what it left pending as one new batch.
+        #: the messages for the owner, in the order sent (the one thing others touch: they append)
+        self._inbox: deque[Any] = deque()
+        #: each table's keys heard and not yet staged: immutable batches (key columns as text, ``__epoch``)
+        self._heard: dict[str, tuple[Any, ...]] = {name: () for name in self._tables}
+        #: each table's keys heard and not yet staged, counted (a key heard twice since the last pass counts twice
+        #: until the pass takes them): the status's ``pending``
+        self._heard_counts: dict[str, int] = dict.fromkeys(self._tables, 0)
         #: tables to read again whole at the next apply, and why (:data:`WHOLE_READ_WHYS`): a cold start, a schema
         #: change, or an older writer's whole-table record mid-roll; a second drop before the read is the same read
         self._whole: dict[str, str] = {}
         #: the loads' partitions heard and not yet applied, by table: each the columns its rows hold and their values
+        #: (one a load's prefix, never one a key)
         self._partitions: dict[str, list[dict[str, str]]] = {name: [] for name in self._tables}
         #: the loads' partitions staged and not yet applied, by table, put back to be read again if a pass fails
         self._partitions_staged: dict[str, list[dict[str, str]]] = {}
@@ -1303,29 +1811,30 @@ class CopyFollower:
         self._listeners: list[Callable[[Any], None]] = []
         #: rows applied since :meth:`take_rows_since_mark` was last called (the checkpoint's trigger)
         self._rows_since_mark = 0
-        #: what is staged beside the copy and not yet applied, by table, and the keys each stage was read for
+        #: what is staged beside the copy and not yet applied, by table
         self._staged: dict[str, StagedChange] = {}
-        self._staged_keys: dict[str, set[tuple[str, ...]]] = {}
-        #: the keys each stage of a table with no scope replaces (keyed and partition changes alike): what a
-        #: checkpoint patches the table's one part by
-        self._staged_touched: dict[str, set[tuple[str, ...]]] = {}
+        #: each table's keyed stage: its keys at the epochs they were staged from, immutable batches (what an apply
+        #: holds, what is put back pending when the stage is forgotten)
+        self._staged_heard: dict[str, tuple[Any, ...]] = {}
+        #: each table's keyed stage: its keys with the scope of each row of them, immutable batches: a scope the stamp
+        #: moved under while a pass read (or a write took) leaves the stage by these keys alone (:meth:`_still`)
+        self._staged_scope_rows: dict[str, tuple[Any, ...]] = {}
+        #: the keys each partition stage of a table with no scope replaces, immutable batches: with the keyed stage's,
+        #: what a checkpoint patches the table's one part by
+        self._staged_touched: dict[str, tuple[Any, ...]] = {}
         #: the tables staged whole, and why: put back to be read again only when their stage is forgotten
         self._staged_whole: dict[str, str] = {}
         #: the scopes each staged whole read left out because a write held them (their partitions queued, read once
         #: the write commits), with the rows left out of each: a partition of one is never dropped as covered by
         #: that read (:meth:`_stage_partitions`), and each step that reads or keeps them says so
         self._whole_left_out: dict[str, dict[str, int]] = {}
-        #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one)
+        #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one); one a state
         self._staged_scopes: dict[str, set[str | None]] = {}
-        #: the scopes of each key a keyed stage was read for, by table: a scope the stamp moved under while a pass
-        #: read (or a write took) leaves the stage by these keys alone, and the rest of the stage is applied
-        #: (:meth:`_still`). Kept for keyed stages only: a whole read's or a partition's stage is not split
-        self._staged_key_scopes: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
         #: the scopes the last :meth:`_still` left out of the change (their keys put back pending): the label keeps
         #: each at the epoch the copy holds it at, as it keeps a held one (:meth:`_label`)
         self._left_scopes: frozenset[str] = frozenset()
-        #: the keys of each table the last :meth:`_still` left out of the change, for :meth:`_leave_out`
-        self._leaving: dict[str, set[tuple[str, ...]]] = {}
+        #: the keys of each table the last :meth:`_still` left out of the change, for :meth:`_leave_out` (Arrow)
+        self._leaving: dict[str, Any] = {}
         #: the mark of the last change applied, and the stamp of each recent one (a reader's snapshot names its mark)
         self._mark = 0
         #: the mark of the change the copy holds now (the last apply that succeeded); None before the first. A pass
@@ -1365,41 +1874,25 @@ class CopyFollower:
         self._noted: dict[str, datetime] = {}
         #: asks for a checkpoint when an epoch applied from the notes makes one due with no change to apply then
         self._checkpoint_wake: asyncio.TimerHandle | None = None
-        #: for each table that opts in to delta files, the epochs each key was heard at and not yet applied (None: heard
-        #: with no epoch). Kept until an apply holds them, so a key left out of a change, forgotten with its stage or
-        #: named again is staged again from the copy's row and every one of its epochs' files, in order, never from L3
-        self._epochs_of: dict[str, dict[tuple[str, ...], set[str | None]]] = {
-            table.name: {} for table in tables if table.delta_files
-        }
-        #: the epochs each staged key of such a table was staged from: what an apply of the stage holds
-        self._staged_epochs: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
         #: each opted-in table reset or recreated while the follower runs, onto the full it waits for: it is reloaded
-        #: from the volume alone, never read from L3 (:meth:`_wait_for_reload`); every other table is followed meanwhile
+        #: from the volume alone, never read from L3 (:meth:`_wait_for_reload`); every other table is followed meanwhile.
+        #: What is heard of it meanwhile stays in its batches, taken by no pass (:meth:`_take`), and is judged against
+        #: the full once it is reloaded (:meth:`_reload_from_volume`)
         self._full_after: dict[str, _FullAfter] = {}
-        #: what is heard of each such table while it waits (its keys with their epochs, its partitions, and the
-        #: prefixes its files cleared with their epochs): changes to the table the reset left, applied over the full
-        #: once it is reloaded, never over the table it replaced
-        self._heard_waiting: dict[
-            str,
-            tuple[
-                dict[tuple[str, ...], set[str | None]],
-                list[dict[str, str]],
-                list[tuple[str, list[dict[str, str]]]],
-            ],
-        ] = {}
-        #: the task looking for each such table's full
+        #: the task looking for each such table's full (it reads the volume, then hands the owner what it found)
         self._reloads: dict[str, asyncio.Task[None]] = {}
         #: for each table that opts in: the key prefixes a delta file cleared, with the epoch its record names, heard
-        #: and not yet turned into the keys they reach (:meth:`_keys_of_cleared_prefixes`)
-        self._cleared: dict[str, list[tuple[str, list[dict[str, str]]]]] = {
-            table.name: [] for table in tables if table.delta_files
+        #: and not yet turned into the keys they reach (:meth:`_keys_of_cleared_prefixes`); one a clear, never a key
+        self._cleared: dict[str, tuple[tuple[str, tuple[dict[str, str], ...]], ...]] = {
+            table.name: () for table in tables if table.delta_files
         }
         self._recreate = recreate
         self._file_poll_seconds = FILE_POLL_SECONDS if file_poll_seconds is None else file_poll_seconds
         #: each opted-in table waiting for delta files (decision 29), onto each file it waits for by name: nothing of the
         #: table is staged or applied until every one reads (its keys, partitions and prefixes stay held, in order)
         self._file_waits: dict[str, dict[str, _FileWait]] = {}
-        #: the task looking for each such table's files and asking the writer for them
+        #: the task looking for each such table's files and asking the writer for them (it reads the volume and asks,
+        #: then hands the owner what it found)
         self._file_tasks: dict[str, asyncio.Task[None]] = {}
         #: changes each table waiting for files has heard while it waits (:data:`HELD_WHILE_WAITING_CAP`)
         self._held_counts: dict[str, int] = {}
@@ -1413,83 +1906,32 @@ class CopyFollower:
         #: no epoch. A table read whole or by partition since its load holds none (:meth:`_hold_state_versions`)
         self._state_versions: dict[str, dict[str | None, str]] = {}
 
-    # --- what the registry tells it -------------------------------------------------------------
+    # --- what the registry tells it: messages for the owner --------------------------------------------------------
 
-    def _on_row(self, table: str, *, held: bool = True) -> Callable[[CacheInvalidationMessage], None]:
-        epochs = self._epochs_of.get(table)
+    def _post(self, message: Any) -> None:
+        """hand the owner a message and ask for a pass: the one thing anything but the owner does to its state.
 
+        :param message: the message
+        :ptype message: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._inbox.append(message)
+        self._poked.set()
+
+    def _on_row(self, table: str) -> Callable[[CacheInvalidationMessage], None]:
         def heard(message: CacheInvalidationMessage) -> None:
-            key = tuple(message.ids)
-            waiting = self._heard_waiting.get(table)
-            if waiting is not None:
-                # a change to the table a reset left: applied over its full once reloaded (:meth:`_reload_from_volume`)
-                waiting[0].setdefault(key, set()).add(message.generation)
-                return
-            self._pending[table].add(key)
-            if epochs is not None:
-                # the epoch names the record, and the record the file the key's change is applied from
-                epochs.setdefault(key, set()).add(message.generation)
-            if held and table in self._file_waits:
-                self._held_while_waiting(table)
-            self._poked.set()
+            # the owner adds the key, at its epoch, to the table's batches heard (_drain: a run of them one batch)
+            self._post(message)
 
         return heard
 
-    def _held_while_waiting(self, table: str) -> None:
-        """count a change heard while ``table`` waits for a delta file; past :data:`HELD_WHILE_WAITING_CAP` stop
-        holding them (:meth:`_held_past_cap`).
+    def _on_keys(self, table: str) -> Callable[[Any, str | None], None]:
+        def heard(keys: Any, epoch: str | None) -> None:
+            # an epoch's keys as one Arrow batch (an epoch record's rows, a delta file's): kept as they are
+            self._post(_KeysHeard(table=table, keys=keys, epoch=epoch))
 
-        :param table: the table
-        :ptype table: str
-        :return: nothing
-        :rtype: None
-        """
-        count = self._held_counts.get(table, 0) + 1
-        self._held_counts[table] = count
-        if not count % _HELD_GAUGE_EVERY:
-            _HELD_WHILE_WAITING.labels(table=table).set(count)
-        if count > HELD_WHILE_WAITING_CAP:
-            self._held_past_cap(table, count)
-
-    def _held_past_cap(self, table: str, count: int) -> None:
-        """a table waiting for a delta file holds more changes than :data:`HELD_WHILE_WAITING_CAP`: it waits for the
-        writer's next full at or past the newest epoch heard instead (:meth:`_wait_for_reload`), forgetting what it held
-        and the files it waited for, which that full holds. Without fulls for the table there is nothing else to wait
-        for: it keeps holding, said at WARNING once a cap's worth.
-
-        :param table: the table
-        :ptype table: str
-        :param count: the changes it holds
-        :ptype count: int
-        :return: nothing
-        :rtype: None
-        """
-        if self._fulls is None or table not in self._fulls.tables:
-            if not count % HELD_WHILE_WAITING_CAP:
-                log.warning(
-                    "a copy follower's table waiting for a delta file holds past its cap and has no full to wait for "
-                    "instead: it keeps holding",
-                    extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
-                )
-            return
-        log.warning(
-            "a copy follower's table waiting for a delta file held past its cap: it stops holding and waits for the "
-            "writer's next full instead, reading nothing from L3",
-            extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
-        )
-        self._wait_for_reload(table, "held_past_cap", None)
-        self._end_held_count(table)
-
-    def _end_held_count(self, table: str) -> None:
-        """``table`` holds nothing heard while waiting for a file any more: its count and gauge are zero.
-
-        :param table: the table
-        :ptype table: str
-        :return: nothing
-        :rtype: None
-        """
-        if self._held_counts.pop(table, None) is not None:
-            _HELD_WHILE_WAITING.labels(table=table).set(0)
+        return heard
 
     def _on_dropped(self, table: str) -> Callable[[], None]:
         def dropped() -> None:
@@ -1499,31 +1941,15 @@ class CopyFollower:
                 "partition; this one table is read again whole, and counted",
                 extra={"extra_data": {"table": table, "why": "legacy_whole_record", "writer": "3tears < 0.95.0"}},
             )
-            self._read_whole(table, "legacy_whole_record")
+            self._post(_WholeHeard(table=table, why="legacy_whole_record"))
 
         return dropped
-
-    def _read_whole(self, table: str, why: str) -> None:
-        """read ``table`` again whole at the next apply; drops heard before that read are one read.
-
-        :param table: the table
-        :ptype table: str
-        :param why: a :data:`WHOLE_READ_WHYS` key
-        :ptype why: str
-        :return: nothing
-        :rtype: None
-        """
-        self._whole.setdefault(table, why)
-        self._pending[table].clear()
-        self._epochs_of.get(table, {}).clear()
-        self._partitions[table].clear()
-        self._poked.set()
 
     def schema_changed(self, table: str, token: str | None = None) -> None:
         """a table was dropped or recreated (a migration): read it again whole, once, beside the copy. The one change
         a follower reads a table whole for, counted (``copy_follower_whole_reads_total{why="schema_change"}``). A table
         that opts in to delta files and starts from the volume is never read from L3: it waits for the writer's
-        rebuild of it (:meth:`_wait_for_reload`).
+        rebuild of it (:meth:`_wait_for_reload`). Told to the owner as a message, applied by the next pass.
 
         :param table: the table
         :ptype table: str
@@ -1537,63 +1963,338 @@ class CopyFollower:
         if table not in self._tables:
             raise KeyError(table)
         if self._fulls is not None and table in self._fulls.tables:
-            self._wait_for_reload(table, "schema_change", token)
+            bar = self._registry.generation_marks.highest_heard(table) if token is None else None
+            self._post(_ReloadHeard(table=table, why="schema_change", token=token, bar=bar))
             return
         log.warning(
             "a followed table's schema changed; it alone is read again whole", extra={"extra_data": {"table": table}}
         )
-        self._read_whole(table, "schema_change")
+        self._post(_WholeHeard(table=table, why="schema_change"))
 
     def _on_partition(self, table: str) -> Callable[[Mapping[str, str]], None]:
         def loaded(partition: Mapping[str, str]) -> None:
-            waiting = self._heard_waiting.get(table)
-            if waiting is not None:
-                # a load into the table a reset left: read once its full is reloaded
-                if dict(partition) not in waiting[1]:
-                    waiting[1].append(dict(partition))
-                return
-            if not _key_prefix(self._tables[table], partition):
-                # an older writer's partition on columns no key leads: no index reads it exactly, so it is the table's
-                self._on_dropped(table)()
-                return
-            if table in self._whole:
-                return  # the whole read to come covers it
-            if dict(partition) not in self._partitions[table]:
-                self._partitions[table].append(dict(partition))
-            self._poked.set()
+            self._post(_PartitionHeard(table=table, partition=dict(partition)))
 
         return loaded
 
     def _on_file_prefixes(self, table: str) -> Callable[[Sequence[Mapping[str, str]], str], None]:
         def cleared(prefixes: Sequence[Mapping[str, str]], epoch: str) -> None:
-            waiting = self._heard_waiting.get(table)
-            if waiting is not None:
-                # a clear in the table a reset left: its keys are named over the full once reloaded, never the old copy
-                waiting[2].append((epoch, [dict(prefix) for prefix in prefixes]))
-                return
-            if table in self._whole:
-                return  # the whole read to come covers it
-            # the keys they reach are named at the next pass (a local read of the copy), before its keys are taken
-            self._cleared[table].append((epoch, [dict(prefix) for prefix in prefixes]))
-            self._poked.set()
+            self._post(_ClearHeard(table=table, epoch=epoch, prefixes=tuple(dict(prefix) for prefix in prefixes)))
 
         return cleared
 
     def _on_reset(self, table: str) -> Callable[[str | None], None]:
         def reset(token: str | None) -> None:
             if self._fulls is not None and table in self._fulls.tables:
-                self._wait_for_reload(table, "reset", token)
+                # the bar is the newest generation heard NOW, before anything heard after the reset raises it
+                bar = self._registry.generation_marks.highest_heard(table) if token is None else None
+                self._post(_ReloadHeard(table=table, why="reset", token=token, bar=bar))
                 return
             log.info(
                 "a followed table was reset by an operator; it alone is read again whole, as on a first start",
                 extra={"extra_data": {"table": table, "why": "reset"}},
             )
-            self._whole[table] = "reset"
-            self._read_whole(table, "reset")
+            self._post(_WholeHeard(table=table, why="reset", force=True))
 
         return reset
 
-    def _wait_for_reload(self, table: str, why: str, token: str | None, *, keep: bool = False) -> None:
+    def _on_file_wanted(self, table: str) -> Callable[[WantedFile], None]:
+        def wanted(file: WantedFile) -> None:
+            self._post(_FileWantedHeard(table=table, file=file))
+
+        return wanted
+
+    def _on_caught_up(self) -> None:
+        self._poked.set()
+
+    def _on_stamp_moved(self, message: CacheInvalidationMessage) -> None:
+        self._poked.set()
+
+    # --- the owner: applying the messages ---------------------------------------------------------------------------
+
+    def _drain(self) -> None:
+        """apply every message on the inbox, in the order sent. The owner's alone (the pass lock's holder), at the
+        points it judges them; never while it awaits. A run of row messages becomes one batch a table (the only Python
+        a key here: the message the registry built, and a column of it a run, both gone with the drain).
+
+        :return: nothing
+        :rtype: None
+        """
+        self._apply_messages(len(self._inbox))
+
+    async def _drained(self) -> None:
+        """:meth:`_drain` a run of :data:`_MESSAGES_PER_TURN` at a time, letting the loop run between, until the inbox
+        is short; the caller drains the rest with no await before what it takes.
+
+        :return: nothing
+        :rtype: None
+        """
+        while len(self._inbox) > _MESSAGES_PER_TURN:
+            self._apply_messages(_MESSAGES_PER_TURN)
+            await asyncio.sleep(0)
+        self._drain()
+
+    def _apply_messages(self, count: int) -> None:
+        """apply the first ``count`` messages of the inbox, in order (:meth:`_drain`).
+
+        :param count: how many
+        :ptype count: int
+        :return: nothing
+        :rtype: None
+        """
+        # function-local: each table's run of row messages, as columns, flushed as one batch before any other message
+        runs: dict[str, tuple[list[list[str]], list[str | None]]] = {}
+        for _ in range(count):
+            message = self._inbox.popleft()
+            if isinstance(message, CacheInvalidationMessage):
+                if message.table not in self._tables:
+                    continue
+                width = len(self._tables[message.table].key)
+                columns, epochs = runs.setdefault(message.table, ([[] for _ in range(width)], []))
+                for column, value in zip(columns, message.ids, strict=True):
+                    column.append(value)
+                epochs.append(message.generation)
+                continue
+            self._flush_rows(runs)
+            runs = {}
+            self._apply_message(message)
+        self._flush_rows(runs)
+
+    def _flush_rows(self, runs: Mapping[str, tuple[list[list[str]], list[str | None]]]) -> None:
+        """each table's run of row messages heard, as one batch.
+
+        :param runs: each table's keys' columns and epochs
+        :ptype runs: Mapping[str, tuple[list[list[str]], list[str | None]]]
+        :return: nothing
+        :rtype: None
+        """
+        for name, (columns, epochs) in runs.items():
+            key = self._tables[name].key
+            batch = pa.Table.from_arrays(
+                [*(pa.array(column, pa.string()) for column in columns), pa.array(epochs, pa.string())],
+                schema=_heard_schema(key),
+            )
+            self._hear(name, batch, held=True)
+
+    def _apply_message(self, message: Any) -> None:
+        """apply one message that is not a row message (:meth:`_drain`).
+
+        :param message: the message
+        :ptype message: Any
+        :return: nothing
+        :rtype: None
+        """
+        if isinstance(message, _KeysHeard):
+            self._hear(
+                message.table,
+                _heard_batch(self._tables[message.table].key, message.keys, message.epoch),
+                held=message.held,
+            )
+        elif isinstance(message, _PartitionHeard):
+            self._partition_heard(message.table, message.partition)
+        elif isinstance(message, _ClearHeard):
+            self._clear_heard(message.table, message.epoch, message.prefixes)
+        elif isinstance(message, _WholeHeard):
+            if message.force:
+                self._whole[message.table] = message.why
+            self._read_whole(message.table, message.why)
+        elif isinstance(message, _ReloadHeard):
+            self._wait_for_reload(message.table, message.why, message.token, bar=message.bar)
+        elif isinstance(message, _FileWantedHeard):
+            self._file_wanted(message.table, message.file)
+        else:  # pragma: no cover - every message type is listed above
+            raise TypeError(f"a copy follower got a message it does not know: {type(message).__name__}")
+
+    def _hear(self, table: str, batch: Any, *, held: bool) -> None:
+        """add a batch of keys heard to a table's (the owner's): kept as it is, never edited.
+
+        :param table: the table
+        :ptype table: str
+        :param batch: the keys at their epochs (key columns as text, ``__epoch``)
+        :ptype batch: pyarrow.Table
+        :param held: whether it counts toward :data:`HELD_WHILE_WAITING_CAP` when the table waits for a file
+        :ptype held: bool
+        :return: nothing
+        :rtype: None
+        """
+        if not batch.num_rows:
+            return
+        self._heard[table] = (*self._heard[table], batch)
+        self._heard_counts[table] += batch.num_rows
+        if held and table in self._file_waits and table not in self._full_after:
+            self._held_while_waiting(table, batch.num_rows)
+
+    def _put_back(self, table: str, rows: Any, keys: int | None = None) -> None:
+        """put keys at their epochs back pending, ahead of what was heard since (the owner's).
+
+        :param table: the table
+        :ptype table: str
+        :param rows: the keys at their epochs; None or empty for none
+        :ptype rows: pyarrow.Table | None
+        :param keys: how many keys they are, when known (else counted as rows)
+        :ptype keys: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if rows is None or not rows.num_rows:
+            return
+        self._heard[table] = (rows.select([*self._tables[table].key, _EPOCH]), *self._heard[table])
+        self._heard_counts[table] += rows.num_rows if keys is None else keys
+
+    def _held_while_waiting(self, table: str, count: int) -> None:
+        """count changes heard while ``table`` waits for a delta file; past :data:`HELD_WHILE_WAITING_CAP` stop
+        holding them (:meth:`_held_past_cap`).
+
+        :param table: the table
+        :ptype table: str
+        :param count: the changes just heard
+        :ptype count: int
+        :return: nothing
+        :rtype: None
+        """
+        before = self._held_counts.get(table, 0)
+        held = before + count
+        self._held_counts[table] = held
+        _HELD_WHILE_WAITING.labels(table=table).set(held)
+        if held > HELD_WHILE_WAITING_CAP:
+            self._held_past_cap(table, held, crossed=held // HELD_WHILE_WAITING_CAP != before // HELD_WHILE_WAITING_CAP)
+
+    def _held_past_cap(self, table: str, count: int, *, crossed: bool) -> None:
+        """a table waiting for a delta file holds more changes than :data:`HELD_WHILE_WAITING_CAP`: it waits for the
+        writer's next full at or past the newest epoch heard instead (:meth:`_wait_for_reload`), forgetting what it held
+        and the files it waited for, which that full holds. Without fulls for the table there is nothing else to wait
+        for: it keeps holding, said at WARNING once a cap's worth.
+
+        :param table: the table
+        :ptype table: str
+        :param count: the changes it holds
+        :ptype count: int
+        :param crossed: whether this count crossed a multiple of the cap
+        :ptype crossed: bool
+        :return: nothing
+        :rtype: None
+        """
+        if self._fulls is None or table not in self._fulls.tables:
+            if crossed:
+                log.warning(
+                    "a copy follower's table waiting for a delta file holds past its cap and has no full to wait for "
+                    "instead: it keeps holding",
+                    extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
+                )
+            return
+        log.warning(
+            "a copy follower's table waiting for a delta file held past its cap: it stops holding and waits for the "
+            "writer's next full instead, reading nothing from L3",
+            extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
+        )
+        # the full at or past the newest epoch heard holds every change held
+        self._wait_for_reload(table, "held_past_cap", self._registry.generation_marks.highest_heard(table))
+        self._end_held_count(table)
+
+    def _end_held_count(self, table: str) -> None:
+        """``table`` holds nothing heard while waiting for a file any more: its count and gauge are zero.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._held_counts.pop(table, None) is not None:
+            _HELD_WHILE_WAITING.labels(table=table).set(0)
+
+    def _forget_heard(self, table: str) -> None:
+        """forget every key heard of ``table`` (the owner's): a whole read, a reset's full, replaces the table.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        self._heard[table] = ()
+        self._heard_counts[table] = 0
+
+    def _read_whole(self, table: str, why: str) -> None:
+        """read ``table`` again whole at the next apply; drops heard before that read are one read.
+
+        :param table: the table
+        :ptype table: str
+        :param why: a :data:`WHOLE_READ_WHYS` key
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        self._whole.setdefault(table, why)
+        self._forget_heard(table)
+        self._partitions[table].clear()
+        self._poked.set()
+
+    def _partition_heard(self, table: str, partition: Mapping[str, str]) -> None:
+        """a load's partition of ``table`` (the owner's).
+
+        :param table: the table
+        :ptype table: str
+        :param partition: the columns its rows hold and their values
+        :ptype partition: Mapping[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        if table in self._full_after:
+            # a load into the table a reset left: read once its full is reloaded (no pass takes it meanwhile)
+            if dict(partition) not in self._partitions[table]:
+                self._partitions[table].append(dict(partition))
+            return
+        if not _key_prefix(self._tables[table], partition):
+            # an older writer's partition on columns no key leads: no index reads it exactly, so it is the table's
+            self._read_whole(table, "legacy_whole_record")
+            return
+        if table in self._whole:
+            return  # the whole read to come covers it
+        if dict(partition) not in self._partitions[table]:
+            self._partitions[table].append(dict(partition))
+
+    def _clear_heard(self, table: str, epoch: str, prefixes: Sequence[Mapping[str, str]]) -> None:
+        """the key prefixes a delta file of ``table`` clears, at its epoch (the owner's): the keys they reach are named
+        at the next pass (a local read of the copy), before its keys are taken. A table waiting for its full keeps them
+        to name over the full once reloaded, never against the old copy.
+
+        :param table: the table
+        :ptype table: str
+        :param epoch: the epoch
+        :ptype epoch: str
+        :param prefixes: the prefixes
+        :ptype prefixes: Sequence[Mapping[str, str]]
+        :return: nothing
+        :rtype: None
+        """
+        if table not in self._cleared:
+            return
+        if table in self._whole and table not in self._full_after:
+            return  # the whole read to come covers it
+        self._cleared[table] = (*self._cleared[table], (epoch, tuple(dict(prefix) for prefix in prefixes)))
+
+    def _file_wanted(self, table: str, file: WantedFile) -> None:
+        """an epoch's delta file the registry could not apply (the owner's): the table waits for it (decision 29).
+
+        :param table: the table
+        :ptype table: str
+        :param file: what the registry said
+        :ptype file: WantedFile
+        :return: nothing
+        :rtype: None
+        """
+        if file.keys_unknown and self._fulls is not None and table in self._fulls.tables:
+            # its keys were only in the file, so the writer recovers the table (decision 28) and publishes a full
+            # holding it; the copy waits for that full, keeping what it heard, and asks the writer once
+            self._wait_for_reload(table, "file_lost", file.epoch, keep=True)
+            self._wait_for_file(table, file.file, file.epoch, file.why, reach="keys_unknown", watch=False)
+            return
+        self._wait_for_file(
+            table, file.file, file.epoch, file.why, reach="keys_unknown" if file.keys_unknown else "prefixes"
+        )
+
+    def _wait_for_reload(
+        self, table: str, why: str, token: str | None, *, keep: bool = False, bar: str | None = None
+    ) -> None:
         """an opted-in table was reset or recreated: never read it from L3 (decisions 12 and 14 of the delta-files
         design: the writer rebuilds it from L3 once and publishes its full). Forget everything the copy heard or staged
         of the table the reset replaced, hold what is heard of it from now on, say in the status that it waits, and look
@@ -1611,13 +2312,19 @@ class CopyFollower:
             the table was not replaced, a commit too big to list lost its file and the writer recovers the table,
             decision 28); a reset or a schema change replaced the table, so what was heard of the old one is forgotten
         :ptype keep: bool
+        :param bar: the newest generation heard of the table when the reset was heard (its message's); None reads it now
+        :ptype bar: str | None
         :return: nothing
         :rtype: None
         """
         after = (
             _FullAfter(why=why, token=token, inclusive=True)
             if token is not None
-            else _FullAfter(why=why, token=self._registry.generation_marks.highest_heard(table), inclusive=False)
+            else _FullAfter(
+                why=why,
+                token=bar if bar is not None else self._registry.generation_marks.highest_heard(table),
+                inclusive=False,
+            )
         )
         waiting = self._full_after.get(table)
         if keep and waiting is not None and waiting.token is not None and after.token is not None:
@@ -1630,29 +2337,22 @@ class CopyFollower:
             extra={"extra_data": {"table": table, "why": why, "token": token, "full_after": after.token}},
         )
         self._full_after[table] = after
-        # a stage of the table from before the reset holds the table it replaced: never applied (kept: its keys are
-        # put back pending, to be held below)
+        # a stage of the table from before the reset holds the table it replaced: never applied (its keys are put
+        # back heard, then kept or forgotten below)
         self._forget_tables_now([table])
         self._whole.pop(table, None)
         if keep:
-            keys, partitions, clears = self._heard_waiting.get(table, ({}, [], []))
-            epochs = self._epochs_of.get(table, {})
-            for key in self._pending[table]:
-                # a key heard with no epoch has no change to apply from a file; its epochs say what it waits for
-                if epochs.get(key):
-                    keys.setdefault(key, set()).update(epochs[key])
-            partitions += [part for part in self._partitions[table] if part not in partitions]
-            clears += self._cleared.get(table, [])
-            held = (keys, partitions, clears)
+            # a key heard with no epoch has no change to apply from a file; its epochs say what it waits for
+            kept = tuple(batch.filter(pc.is_valid(batch.column(_EPOCH))) for batch in self._heard[table])
+            self._heard[table] = tuple(batch for batch in kept if batch.num_rows)
+            self._heard_counts[table] = sum(batch.num_rows for batch in self._heard[table])
         else:
-            held = ({}, [], [])
+            self._forget_heard(table)
+            self._partitions[table].clear()
+            if table in self._cleared:
+                self._cleared[table] = ()
             # the waits were for files of the table the reset replaced
             self._end_file_waits(table, "the table was reset or recreated: its full replaces it")
-        self._pending[table].clear()
-        self._epochs_of.get(table, {}).clear()
-        self._partitions[table].clear()
-        self._cleared.get(table, []).clear()
-        self._heard_waiting[table] = held
         self._look_for_full(table, why)
 
     def _wait_for_recovery(self, table: str, reason: str, token: str) -> None:
@@ -1691,15 +2391,6 @@ class CopyFollower:
         # a stage is put back as the keys it held, which are held with the rest of what was heard
         self._forget_tables_now([table])
         self._whole.pop(table, None)
-        epochs = self._epochs_of.get(table, {})
-        keys = {key: set(epochs.pop(key, set())) for key in self._pending[table]}
-        self._pending[table].clear()
-        epochs.clear()
-        partitions, self._partitions[table] = list(self._partitions[table]), []
-        cleared = self._cleared.get(table, [])
-        clears = list(cleared)
-        cleared.clear()
-        self._heard_waiting[table] = (keys, partitions, clears)
         self._look_for_full(table, after.why)
 
     def _look_for_full(self, table: str, why: str) -> None:
@@ -1744,7 +2435,8 @@ class CopyFollower:
 
     async def _reload_when_published(self, table: str) -> None:
         """look for a full holding ``table`` at or past its reset every ``poll_seconds`` until one is published, then
-        reload the table from it; the status says why each look found none. Nothing reads L3 meanwhile.
+        hand it to the owner to reload the table from it; the status says why each look found none. Nothing reads L3
+        meanwhile. The look reads the volume alone; every judgment is the owner's (:meth:`_reload_from_volume`).
 
         :param table: the table
         :ptype table: str
@@ -1756,24 +2448,20 @@ class CopyFollower:
             return  # only a follower starting from the volume waits for a full
 
         async def looked() -> bool:
-            if table not in self._full_after or self._status.phase is FollowerPhase.STOPPED:
+            if self._status.phase is FollowerPhase.STOPPED:
                 return True
-            short: str | None
             try:
                 manifest = await asyncio.to_thread(current_full_manifest, fulls.root)
-                short = self._full_after[table].short_of(table, manifest)
-                if short is None:
-                    if await self._reload_from_volume(table, fulls, manifest):
-                        return True
-                    short = "the table was reset again while its full loaded; looking again"
-            except FileNotFoundError as exc:
-                short = f"a part of the current full is not on the volume ({exc.filename}); looking again"
+                return await self._reload_from_volume(table, fulls, manifest)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed look leaves the copy as it was; the next looks again
                 contain(exc, log=log, what="a copy follower could not reload a waiting table from the volume's full")
                 short = f"the reload failed ({type(exc).__name__}: {exc}); looking again"
-            if table in self._full_after:
+            async with self._lock:
+                self._drain()
+                if table not in self._full_after:
+                    return True
                 self._status.waiting_for_full[table] = short
             return False
 
@@ -1781,10 +2469,15 @@ class CopyFollower:
         await retry_until_done(looked, first_delay=fulls.poll_seconds, max_delay=fulls.poll_seconds)
 
     async def _reload_from_volume(self, table: str, fulls: VolumeFulls, manifest: FullManifest | None) -> bool:
-        """reload ``table`` alone from ``manifest`` in its own change, under the pass lock: its parts staged and applied
-        in place of the table the reset replaced, its mark taken as the full's oldest version (the next pass walks the
-        log from there, applying each later epoch from its file), and what was heard of it while it waited put back to
-        be applied over it.
+        """as the owner (under the pass lock), reload ``table`` alone from ``manifest`` in its own change: its parts
+        staged and applied in place of the table the reset replaced, its mark taken as the full's oldest version (the
+        next pass walks the log from there, applying each later epoch from its file), and what was heard of it while it
+        waited judged against the full: only the changes the full does not hold are kept, to be applied over it.
+
+        Every message that arrived while the full staged is judged before the apply: a second reset raises the bar,
+        so this full is no longer the one awaited and its stages are dropped, never applied (decision 37: a stale
+        result is discarded). One arriving during the apply is judged right after, and a reset then sends the table
+        waiting again.
 
         :param table: the table
         :ptype table: str
@@ -1792,25 +2485,52 @@ class CopyFollower:
         :ptype fulls: VolumeFulls
         :param manifest: the manifest found
         :ptype manifest: FullManifest | None
-        :return: whether it was reloaded (False: reset again since the manifest was judged)
+        :return: whether the table no longer waits for a full (False: look again)
         :rtype: bool
-        :raises FileNotFoundError: when a part the manifest names is gone (a newer full swept it)
         """
         async with self._lock:
+            self._drain()
             after = self._full_after.get(table)
-            if after is None or after.short_of(table, manifest) is not None:
+            if after is None:
+                return True
+            short = after.short_of(table, manifest)
+            if short is not None:
+                self._status.waiting_for_full[table] = short
                 return False
             await self._forget_tables([])  # the stage the reset forgot, among any others
-            found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
-                self._backend, manifest=manifest
-            )
-            if isinstance(found, FullAbsent):
+            try:
+                found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
+                    self._backend, manifest=manifest
+                )
+            except FileNotFoundError as exc:
+                # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
+                self._status.waiting_for_full[table] = (
+                    f"a part of the current full is not on the volume ({exc.filename}); looking again"
+                )
                 return False
+            if isinstance(found, FullAbsent):
+                self._status.waiting_for_full[table] = found.reason
+                return False
+            floor = found.marks[table]
+            snapshot = self._heard[table]
+            kept = await asyncio.to_thread(_past_floor, self._tables[table], snapshot, floor, after)
+            # judged with no await before the apply: what arrived while the full staged (a second reset, a newer bar)
+            self._drain()
+            if self._full_after.get(table) is not after:
+                await asyncio.to_thread(
+                    self._backend.drop_stage, *(change.rows for change in found.changes if change.rows)
+                )
+                log.info(
+                    "a full staged for a reset table was dropped, never applied: the table was reset again meanwhile",
+                    extra={"extra_data": {"table": table, "manifest": found.manifest}},
+                )
+                self._status.waiting_for_full.setdefault(table, "the table was reset again while its full loaded")
+                return table not in self._full_after
             self._mark += 1
             mark = self._mark
             rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+            # the reload's own bookkeeping, before anything that arrived during the apply is judged
             self._applied_mark = mark
-            floor = found.marks[table]
             self._registry.generation_marks.adopt_generation(table, floor)
             self._current_marks[table] = floor
             self._state_versions[table] = dict(found.versions[table])
@@ -1818,21 +2538,22 @@ class CopyFollower:
             self._stamps[mark] = (label, dict(self._current_marks))
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
-            keys, partitions, clears = _past_floor(self._heard_waiting.pop(table), floor, after)
+            # what was heard while it waited, past the full; what was heard since the snapshot follows it
+            since = self._heard[table][len(snapshot) :]
+            self._heard[table] = (kept, *since) if kept.num_rows else since
+            self._heard_counts[table] = sum(batch.num_rows for batch in self._heard[table])
             held = split_generation_token(floor)
             for name, wait in list(self._file_waits.get(table, {}).items()):
                 if _held_by_full(wait.epoch, held, after):
                     self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
             del self._full_after[table]
             self._status.waiting_for_full.pop(table, None)
-            self._pending[table] |= set(keys)
-            epochs = self._epochs_of.setdefault(table, {})
-            for key, of in keys.items():
-                epochs.setdefault(key, set()).update(of)
-            for partition in partitions:
-                if partition not in self._partitions[table]:
-                    self._partitions[table].append(partition)
-            self._cleared.setdefault(table, []).extend(clears)
+            if table in self._cleared:
+                self._cleared[table] = tuple(
+                    (epoch, prefixes)
+                    for epoch, prefixes in self._cleared[table]
+                    if not _held_by_full(epoch, held, after)
+                )
             self._rows_since_mark += rows
             self._status.applied += 1
             log.info(
@@ -1844,34 +2565,23 @@ class CopyFollower:
                         "manifest": found.manifest,
                         "rows": found.rows,
                         "mark": floor,
-                        "heard_while_waiting": len(keys),
+                        "heard_while_waiting": kept.num_rows,
                     }
                 },
             )
             if label is not None:
                 for listener in tuple(self._listeners):
                     listener(label)
+            # what arrived during the apply: a reset now sends the table waiting again, for a newer full
+            self._drain()
+            done = table not in self._full_after
         self._poked.set()
-        return True
-
-    def _on_file_wanted(self, table: str) -> Callable[[WantedFile], None]:
-        def wanted(file: WantedFile) -> None:
-            if file.keys_unknown and self._fulls is not None and table in self._fulls.tables:
-                # its keys were only in the file, so the writer recovers the table (decision 28) and publishes a full
-                # holding it; the copy waits for that full, keeping what it heard, and asks the writer once
-                self._wait_for_reload(table, "file_lost", file.epoch, keep=True)
-                self._wait_for_file(table, file.file, file.epoch, file.why, reach="keys_unknown", watch=False)
-                return
-            self._wait_for_file(
-                table, file.file, file.epoch, file.why, reach="keys_unknown" if file.keys_unknown else "prefixes"
-            )
-
-        return wanted
+        return done
 
     def _wait_for_file(self, table: str, file: str, epoch: str, why: str, *, reach: str, watch: bool = True) -> None:
-        """hold ``table`` until ``file`` reads: nothing of it is staged or applied meanwhile, and nothing read from L3
-        (decision 29). The writer is asked once to recreate it, and it is looked for again when the writer answers and
-        every ``file_poll_seconds`` (:meth:`_await_files`); every other table is followed as before.
+        """hold ``table`` until ``file`` reads (the owner's): nothing of it is staged or applied meanwhile, and nothing
+        read from L3 (decision 29). The writer is asked once to recreate it, and it is looked for again when the writer
+        answers and every ``file_poll_seconds`` (:meth:`_await_files`); every other table is followed as before.
 
         :param table: the table
         :ptype table: str
@@ -1913,7 +2623,9 @@ class CopyFollower:
             self._status.waiting_for_file.pop(table, None)
 
     async def _await_files(self, table: str) -> None:
-        """look for each file ``table`` waits for until every one reads, asking the writer once for each.
+        """look for each file ``table`` waits for until every one reads, asking the writer once for each. The look
+        reads the volume and asks the writer from a snapshot of the waits; every judgment of what it found is the
+        owner's (:meth:`_file_looked`), and a wait ended or replaced meanwhile discards it.
 
         :param table: the table
         :ptype table: str
@@ -1923,37 +2635,76 @@ class CopyFollower:
 
         async def looked() -> bool:
             # a look at each file; once the writer answered, the files are read again at once, else at the next poll
-            while self._file_waits.get(table) and self._status.phase is not FollowerPhase.STOPPED:
+            while True:
+                async with self._lock:
+                    self._drain()
+                    waits = tuple(self._file_waits.get(table, {}).values())
+                if not waits or self._status.phase is FollowerPhase.STOPPED:
+                    return True
                 answered = False
-                for name, wait in list(self._file_waits.get(table, {}).items()):
+                for wait in waits:
+                    reach: _WaitedReach | None = None
+                    why = wait.why
                     if wait.watch and (wait.why != "key_not_in_file" or wait.answer in _ANSWERED):
                         # a file that reads and lacks a key is read again only once the writer answered for it
-                        reach = await self._look_for(table, wait)
-                        if reach is not None:
-                            await self._hear_file(table, name, wait, reach)
-                            self._file_read(table, name, why="the file reads")
-                            continue
-                    if self._recreate is not None and wait.answer not in _ANSWERED:
-                        wait.answer = await self._ask(table, wait)
-                        answered = answered or (wait.watch and wait.answer in _ANSWERED)
-                        recovering = wait.watch or wait.why == "record_missing"
-                        if recovering and wait.answer == "recovering" and self._fulls is not None:
-                            if table in self._fulls.tables:
-                                # the writer recovers the table (decision 28: a commit too big to list, its keys only in
-                                # the file, or a record the log lost): the file never comes, the recovery's full does
-                                wait.watch = False
-                                self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
-                self._say_file_waits(table)
+                        reach, why = await self._look_for(table, wait)
+                    answer = wait.answer
+                    if reach is None and self._recreate is not None and wait.answer not in _ANSWERED:
+                        answer = await self._ask(table, wait)
+                    async with self._lock:
+                        self._drain()
+                        answered = self._file_looked(table, wait, reach, why, answer) or answered
                 if not answered:
                     return False
-            return True
 
         # the platform's never-give-up loop (threetears.observe), at the file poll's own pace
         await retry_until_done(looked, first_delay=self._file_poll_seconds, max_delay=self._file_poll_seconds)
 
-    async def _look_for(self, table: str, wait: _FileWait) -> _WaitedReach | None:
+    def _file_looked(
+        self, table: str, wait: _FileWait, reach: _WaitedReach | None, why: str, answer: str | None
+    ) -> bool:
+        """what a look at a waited-for file found, judged by the owner: discarded when the wait was ended or replaced
+        meanwhile (a reset's full replaced the table), else the file's reach heard and the wait ended, or the wait
+        replaced with what was found.
+
+        :param table: the table
+        :ptype table: str
+        :param wait: the wait looked at
+        :ptype wait: _FileWait
+        :param reach: what the file reaches; None while it is missing or unreadable
+        :ptype reach: _WaitedReach | None
+        :param why: why it is waited for now
+        :ptype why: str
+        :param answer: the writer's answer now
+        :ptype answer: str | None
+        :return: whether the writer answered this look so that the files are read again at once
+        :rtype: bool
+        """
+        waits = self._file_waits.get(table, {})
+        if waits.get(wait.file) is not wait:
+            return False  # ended or replaced meanwhile: a stale look, discarded
+        if reach is not None:
+            self._hear_file(table, wait, reach)
+            self._file_read(table, wait.file, why="the file reads")
+            return False
+        asked = answer != wait.answer
+        new = replace(wait, why=why, answer=answer)
+        answered = asked and new.watch and answer in _ANSWERED
+        recovering = new.watch or new.why == "record_missing"
+        if asked and recovering and answer == "recovering" and self._fulls is not None and table in self._fulls.tables:
+            # the writer recovers the table (decision 28: a commit too big to list, its keys only in the file, or a
+            # record the log lost): the file never comes, the recovery's full does
+            new = replace(new, watch=False)
+            waits[wait.file] = new
+            self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
+        else:
+            waits[wait.file] = new
+        self._say_file_waits(table)
+        return answered
+
+    async def _look_for(self, table: str, wait: _FileWait) -> tuple[_WaitedReach | None, str]:
         """read a waited-for file off the volume on a thread: its checksum over every byte, its key columns decoded, and
-        the keys it names as text, each once in the order first written.
+        the keys it names as Arrow text, each once in the order first written.
 
         Why not the whole file: the wait needs only what the file reaches (its keys and the prefixes it clears); the
         pass that applies it reads it whole, validated, as Arrow (:meth:`_merge_from_files`). Turning its rows into
@@ -1963,22 +2714,22 @@ class CopyFollower:
         :ptype table: str
         :param wait: the wait
         :ptype wait: _FileWait
-        :return: what the file reaches, or None while it is still missing or unreadable (the wait's why says which)
-        :rtype: _WaitedReach | None
+        :return: what the file reaches, or None while it is still missing or unreadable; and why it is waited for
+        :rtype: tuple[_WaitedReach | None, str]
         """
         root = delta_files_root()
         if root is None:
-            return None
+            return None, wait.why
         try:
-            return await asyncio.to_thread(_waited_reach, root / wait.file, table)
+            return await asyncio.to_thread(_waited_reach, root / wait.file, table), wait.why
         except FileNotFoundError:
-            wait.why = "file_missing"  # NOSILENT: the wait goes on, said in the status
+            return None, "file_missing"  # NOSILENT: the wait goes on, said in the status
         except DeltaFileUnreadableError:
-            wait.why = "file_unreadable"  # NOSILENT: the wait goes on, said in the status
+            return None, "file_unreadable"  # NOSILENT: the wait goes on, said in the status
         except OSError as exc:
             # the volume itself failed the read (an errno): looked for again at the next poll
             contain(exc, log=log, what="a copy follower could not read a delta file it waits for; it looks again")
-        return None
+        return None, wait.why
 
     async def _ask(self, table: str, wait: _FileWait) -> str:
         """ask the writer once to recreate a waited-for file; counted by outcome.
@@ -2005,19 +2756,17 @@ class CopyFollower:
         )
         return answer
 
-    async def _hear_file(self, table: str, name: str, wait: _FileWait, reach: _WaitedReach) -> None:
-        """a waited-for load's, clear's or commit too big to list's file reads: its prefixes and keys are heard at its
-        epoch, as the registry would have told them, while the table still waits (no pass stages any of it until all
-        are heard). A keyed epoch's keys were held pending already.
+    def _hear_file(self, table: str, wait: _FileWait, reach: _WaitedReach) -> None:
+        """a waited-for load's, clear's or commit too big to list's file reads (the owner's): its prefixes and keys are
+        heard at its epoch, as the registry would have told them, while the table still waits (no pass stages any of
+        it until all are heard). A keyed epoch's keys were held pending already.
 
-        Why in runs: a commit too big to list names hundreds of thousands of keys (337,000 in the 2026-11-23 audit),
-        each heard on the loop; a run of :data:`_KEYS_PER_TURN`, then the loop answers everything else. A wait ended
-        meanwhile (a reset's full replaced the table) stops the hearing: what replaced the table holds the file.
+        Why one batch: a commit too big to list names hundreds of thousands of keys (337,000 in the 2026-11-23 audit);
+        heard a key at a time they cost the loop a key each and left the collector a tuple a key to walk (decision
+        35). The file's keys, read as Arrow on a thread, are kept as the one batch they are.
 
         :param table: the table
         :ptype table: str
-        :param name: the file
-        :ptype name: str
         :param wait: its wait
         :ptype wait: _FileWait
         :param reach: what the file reaches (:meth:`_look_for`)
@@ -2028,17 +2777,9 @@ class CopyFollower:
         if wait.reach not in ("prefixes", "keys_unknown"):
             return
         if reach.prefixes:
-            self._on_file_prefixes(table)([dict(prefix) for prefix in reach.prefixes], wait.epoch)
+            self._clear_heard(table, wait.epoch, reach.prefixes)
         # the file's own keys: what the wait was for, never counted as held past it
-        heard = self._on_row(table, held=False)
-        count = len(reach.keys)
-        for start in range(0, count, _KEYS_PER_TURN):
-            if start:
-                await asyncio.sleep(0)
-                if self._file_waits.get(table, {}).get(name) is not wait:
-                    return
-            for key in reach.keys[start : start + _KEYS_PER_TURN]:
-                heard(CacheInvalidationMessage(table=table, ids=list(key), generation=wait.epoch, bump_rows=count))
+        self._hear(table, _heard_batch(self._tables[table].key, reach.keys, wait.epoch), held=False)
 
     def _file_read(self, table: str, name: str, *, why: str) -> None:
         """a waited-for file reads (its reach heard first, :meth:`_hear_file`), or a full now holds its epoch: it is no
@@ -2080,12 +2821,6 @@ class CopyFollower:
         for name in list(self._file_waits.get(table, {})):
             self._file_read(table, name, why=why)
 
-    def _on_caught_up(self) -> None:
-        self._poked.set()
-
-    def _on_stamp_moved(self, message: CacheInvalidationMessage) -> None:
-        self._poked.set()
-
     # --- start -----------------------------------------------------------------------------------
 
     def register(self) -> None:
@@ -2117,6 +2852,7 @@ class CopyFollower:
                     on_table_reset=self._on_reset(name),
                     on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
                     on_file_wanted=self._on_file_wanted(name) if name in self._cleared else None,
+                    on_keys=self._on_keys(name),
                 )
             )
         if self._stamp_table is not None:
@@ -2166,6 +2902,18 @@ class CopyFollower:
             await self.warm()
             return False
         staged = await self._checkpoints.stage()
+        async with self._lock:
+            self._drain()
+            return await self._start_from_checkpoint(staged)
+
+    async def _start_from_checkpoint(self, staged: Any) -> bool:
+        """:meth:`start` from a checkpoint, as the owner (under the pass lock).
+
+        :param staged: what the checkpoint staged
+        :ptype staged: Any
+        :return: as :meth:`start`
+        :rtype: bool
+        """
         if not staged.loaded:
             await self._warm_tables({name: staged.missing.get(name, "cold_start") for name in self._tables})
             return False
@@ -2208,6 +2956,20 @@ class CopyFollower:
         if full is None:
             return False
         staged = await self._checkpoints.stage() if self._checkpoints is not None else None
+        async with self._lock:
+            self._drain()
+            return await self._load_full(full, staged)
+
+    async def _load_full(self, full: StagedFull, staged: Any) -> bool:
+        """:meth:`_start_from_volume`'s load of the full and the checkpoint, as the owner (under the pass lock).
+
+        :param full: the full staged
+        :ptype full: StagedFull
+        :param staged: what the checkpoint staged; None without checkpoints
+        :ptype staged: Any
+        :return: False (:meth:`_start_from_volume`)
+        :rtype: bool
+        """
         checkpointed = staged is not None and staged.loaded
         marks: dict[str, str | None] = dict(full.marks)
         changes = list(full.changes)
@@ -2283,6 +3045,8 @@ class CopyFollower:
         for name in whys:
             token = await self._generation(name)
             await self._registry.catch_up_generation(name, token, changes=self._changes)
+        # what the catch-up told is covered by the whole read: applied, then forgotten by it
+        await self._drained()
         for name, why in whys.items():
             self._read_whole(name, why)
 
@@ -2294,7 +3058,9 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        await self._warm_tables(dict.fromkeys(self._tables, "cold_start"))
+        async with self._lock:
+            await self._drained()
+            await self._warm_tables(dict.fromkeys(self._tables, "cold_start"))
 
     def marks(self) -> dict[str, str | None]:
         """each table's mark in the registry now: what a checkpoint of the copy at its stamp records.
@@ -2375,6 +3141,10 @@ class CopyFollower:
         holding them died): then every stage is forgotten and its keys, partitions and whole reads are put back, so the
         next pass reads the change again (never more than the change).
 
+        The pass is the owner of the copy's working state (decision 37): it drains the messages heard so far before
+        it takes the keys, and again right before the apply, so a reset (or anything else) heard while it read is
+        judged then: a table reset meanwhile has its stage forgotten and is never applied from it.
+
         :return: whether the copy is now labelled with this pass's stamp (False: a write in progress whose record
             names no scope, the stamp moved while it read, or the registry is behind on a table; the copy is as it was)
         :rtype: bool
@@ -2382,6 +3152,7 @@ class CopyFollower:
         async with self._lock:
             began = time.monotonic()
             self._poked.clear()
+            await self._drained()
             first = await self._settled()
             scoped = _scoped(first)
             writing = isinstance(first, Unsettled)
@@ -2395,6 +3166,8 @@ class CopyFollower:
             for name in self._tables:
                 token = await self._generation(name)
                 await self._registry.catch_up_generation(name, token, changes=self._changes)
+                # what the catch-up told, applied before the table is judged (a recovery keeps what was heard)
+                await self._drained()
                 reason = self._registry.behind_reason(name)
                 if reason in _LOG_LOST and self._recovers_from_volume(name, reason, token):
                     # decision 28: the table waits for the writer's recovered full, and holds no other table back
@@ -2407,6 +3180,7 @@ class CopyFollower:
                 ):
                     # never a warm: the keys the change notes name since the table was last current are read instead
                     resolved = await self._registry.resolve_behind_from_notes(name, self._current_at[name], token)
+                    await self._drained()
                     reason = resolved if resolved is not None else self._registry.behind_reason(name)
                 noted = self._registry.take_notes_resolved(name)
                 if noted is not None:
@@ -2429,23 +3203,20 @@ class CopyFollower:
                     if writing and self._clashes(scopes, held) and (None in scopes or not self._splittable(name))
                 ]
             )
+            self._drain()
             label = self._label(first, held)
-            # a table waiting for a delta file holds what was heard of it: it is not this pass's to apply
-            waits = self._file_waits
-            nothing = (
-                not any(keys for name, keys in self._pending.items() if name not in waits)
-                and not self._whole
-                and not any(parts for name, parts in self._partitions.items() if name not in waits)
-                and not any(queued for name, queued in self._cleared.items() if name not in waits)
-            )
-            if nothing and not self._staged and label == self._status.stamp:
+            if self._nothing_to_read() and not self._staged and label == self._status.stamp:
                 self._say(FollowerPhase.FOLLOWING, "current" if not writing else "current to every scope not held")
                 return True
-            if nothing and not self._staged and self._applied_mark in self._stamps:
+            if self._nothing_to_read() and not self._staged and self._applied_mark in self._stamps:
                 return await self._relabel(first, label, writing=writing, held=held)
-            # the keys a cleared prefix reaches join the keys heard; none is left queued past this, so the marks below
-            # cover them too
-            await self._keys_of_cleared_prefixes()
+            # the keys a cleared prefix reaches join the keys heard; none is left queued past the last drain, so the
+            # marks below cover them too
+            while True:
+                await self._keys_of_cleared_prefixes()
+                await self._drained()
+                if not self._clears_queued():
+                    break
             # taken with the keys, no await between: every key of an epoch at or below these marks is among them
             self._staging_marks = self.marks()
             pending, whole, partitions = self._take(held, writing=writing)
@@ -2463,7 +3234,9 @@ class CopyFollower:
                 await self._unstaged(pending, whole, partitions)
                 raise
             second = await self._settled()
-            if not self._still(first, second):
+            # judged before the stamp is: a table reset while this pass read has its stage forgotten here
+            self._drain()
+            if not await self._still(first, second):
                 log.info(
                     "copy follower kept its stages for the next pass: the stamp moved while the change was read",
                     extra={
@@ -2482,6 +3255,14 @@ class CopyFollower:
             except LookupError as exc:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost leaving scopes out of the change: {exc}") from exc
+            versions = await self._staged_versions()
+            had = bool(self._staged)
+            # the last judgment before the apply, with no await between: anything heard since the stamp was read
+            self._drain()
+            if had and not self._staged:
+                # every stage was forgotten (a reset heard while the pass read): nothing of this pass is applied
+                self._say(FollowerPhase.WAITING, "every stage of the pass was forgotten; the next pass reads again")
+                return False
             label = self._label(first, held, left=self._left_scopes)
             self._mark += 1
             mark = self._mark
@@ -2493,8 +3274,7 @@ class CopyFollower:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
             self._applied_mark = mark
-            self._hold_state_versions()
-            self._epochs_applied()
+            self._hold_state_versions(versions)
             if self._staged_whole or any(self._partitions_staged.values()):
                 log.info(
                     "copy follower applied a change",
@@ -2517,9 +3297,10 @@ class CopyFollower:
             current = [
                 name
                 for name in self._tables
-                if not self._pending[name]
+                if not self._heard[name]
                 and name not in self._whole
                 and not self._partitions[name]
+                and not self._cleared.get(name)
                 and name not in self._full_after
                 and name not in self._file_waits
             ]
@@ -2536,20 +3317,16 @@ class CopyFollower:
             # why each table read whole was: the situation a checkpoint writing it whole again is in
             whole_whys = {name: why for name, why in self._staged_whole.items() if name in touched}
             # a table with no scope: the keys it replaced, which a checkpoint patches its one part by
-            touched_keys = {
-                name: frozenset(self._staged_touched.get(name, set()))
-                for name, scopes in touched.items()
-                if scopes is not None and self._tables[name].scope is None
-            }
+            touched_keys = self._touched_keys(touched) if self._checkpoints is not None else {}
             while len(self._stamps) > _STAMPS_KEPT:
                 del self._stamps[min(self._stamps)]
             self._staged = {}
-            self._staged_keys = {}
+            self._staged_heard = {}
+            self._staged_scope_rows = {}
             self._staged_touched = {}
             self._staged_whole = {}
             self._whole_left_out = {}
             self._staged_scopes = {}
-            self._staged_key_scopes = {}
             self._partitions_staged = {}
             self._rows_since_mark += rows
             self._status.stamp = label
@@ -2562,7 +3339,59 @@ class CopyFollower:
             for listener in tuple(self._listeners):
                 listener(label)
             self._checkpoint_when_due(rows, touched, touched_keys, whole_whys, self._noted_held(current))
+            # what arrived during the apply, judged now (a reset sends its table waiting for its full)
+            self._drain()
             return True
+
+    def _clears_queued(self) -> bool:
+        """whether a cleared prefix of a table not waiting is queued, its keys not yet named.
+
+        :return: whether one is
+        :rtype: bool
+        """
+        waiting = set(self._file_waits) | set(self._full_after)
+        return any(queued for name, queued in self._cleared.items() if name not in waiting)
+
+    def _nothing_to_read(self) -> bool:
+        """whether nothing heard is left for a pass to read: a table waiting for a delta file or its full holds what was
+        heard of it, which is not a pass's to apply.
+
+        :return: whether nothing is
+        :rtype: bool
+        """
+        waiting = set(self._file_waits) | set(self._full_after)
+        return (
+            not any(batches for name, batches in self._heard.items() if name not in waiting)
+            and not self._whole
+            and not any(parts for name, parts in self._partitions.items() if name not in waiting)
+            and not any(queued for name, queued in self._cleared.items() if name not in waiting)
+        )
+
+    def _touched_keys(self, touched: Mapping[str, frozenset[str] | None]) -> dict[str, frozenset[tuple[str, ...]]]:
+        """each table with no scope this apply touched (not whole), and the keys it replaced: what a checkpoint patches
+        its one part by. The checkpoint's interface takes the keys as tuples
+        (:meth:`~threetears.core.collections.copy_checkpoint.CopyCheckpoints.applied`), so they are made here, for
+        those tables alone, only when checkpoints are kept.
+
+        :param touched: each table the apply touched, and its scopes (None: read whole)
+        :ptype touched: Mapping[str, frozenset[str] | None]
+        :return: the keys, by table
+        :rtype: dict[str, frozenset[tuple[str, ...]]]
+        """
+        keys: dict[str, frozenset[tuple[str, ...]]] = {}
+        for name, scopes in touched.items():
+            table = self._tables[name]
+            if scopes is None or table.scope is not None:
+                continue
+            batches = [batch.select(list(table.key)) for batch in self._staged_heard.get(name, ())]
+            batches += [batch.select(list(table.key)) for batch in self._staged_touched.get(name, ())]
+            if not batches:
+                keys[name] = frozenset()
+                continue
+            replaced = _distinct(pa.concat_tables(batches), table.key)
+            # the checkpoint keeps keys as tuples (copy_checkpoint's interface): made only for a table with no scope
+            keys[name] = frozenset(zip(*(replaced.column(c).to_pylist() for c in table.key), strict=True))
+        return keys
 
     async def _relabel(self, first: Any, label: Any, *, writing: bool, held: frozenset[str]) -> bool:
         """a pass with nothing heard, staged, or to read whole, and a new stamp: the change the copy holds is relabelled
@@ -2597,7 +3426,7 @@ class CopyFollower:
         """
         marks = self.marks()
         second = await self._settled()
-        if not self._still(first, second):
+        if not await self._still(first, second):
             self._say(FollowerPhase.WAITING, "the stamp moved while the change was read; the next pass tops it up")
             return False
         assert self._applied_mark is not None  # noqa: S101 -- narrowed by the caller (a mark in self._stamps)
@@ -2782,10 +3611,16 @@ class CopyFollower:
                 return _EVERY_SCOPE
             at = table.scope_in_key
             column = table.scope[0]
-            if self._pending[name] and at is None:
-                return _EVERY_SCOPE
-            scopes.update(table.scope_of(key[at]) for key in self._pending[name] if at is not None)
-            reached = [*self._partitions[name], *(p for _, cleared in self._cleared.get(name, []) for p in cleared)]
+            batches = self._heard[name]
+            if at is None:
+                if batches:
+                    return _EVERY_SCOPE
+            else:
+                for batch in batches:
+                    # one a distinct scope (a state) of the batch, never one a key
+                    of = _scope_set(_scope_texts(table, batch.column(table.key[at])))
+                    scopes.update(str(scope) for scope in of)
+            reached = [*self._partitions[name], *(p for _, cleared in self._cleared.get(name, ()) for p in cleared)]
             if any(column not in prefix for prefix in reached):
                 return _EVERY_SCOPE
             scopes.update(table.scope_of(prefix[column]) for prefix in reached)
@@ -2801,41 +3636,46 @@ class CopyFollower:
         :rtype: bool
         """
         return (
-            bool(self._staged_key_scopes.get(name))
+            bool(self._staged_scope_rows.get(name))
             and name not in self._staged_whole
             and not self._partitions_staged.get(name)
         )
 
     def _take(
         self, held: frozenset[str], *, writing: bool
-    ) -> tuple[dict[str, set[tuple[str, ...]]], dict[str, str], dict[str, list[dict[str, str]]]]:
-        """take what was heard for this pass, leaving pending what a write in progress holds.
+    ) -> tuple[dict[str, tuple[Any, ...]], dict[str, str], dict[str, list[dict[str, str]]]]:
+        """take what was heard for this pass (the owner's snapshot), leaving pending what a write in progress holds.
 
-        A key whose scope its key names is left when the write holds that scope; a key whose scope only its row names
-        is taken, and left after its row is read (:meth:`_stage_keyed`). A table of no scope is left whole while any
-        write is in progress. A table to read whole is taken only at a settled stamp, or on the first start (nothing to
-        keep: its held scopes are read once the write commits).
+        Each table's batches heard are taken whole, as references (nothing copied): the pass splits them on a thread
+        (:func:`_taken`), and puts back as one new batch the keys of a scope the write holds whose key names it. A
+        key whose scope only its row names is taken, and left after its row is read (:meth:`_stage_keyed`). A table of
+        no scope is left whole while any write is in progress. A table to read whole is taken only at a settled stamp,
+        or on the first start (nothing to keep: its held scopes are read once the write commits). A table waiting for
+        a delta file or for its full is never taken: what was heard of it is held, in order, until it reads or is
+        reloaded.
 
         :param held: the scopes the write holds
         :ptype held: frozenset[str]
         :param writing: whether a write is in progress
         :ptype writing: bool
-        :return: the keys, the tables read whole and why, and the partitions taken
-        :rtype: tuple[dict[str, set[tuple[str, ...]]], dict[str, str], dict[str, list[dict[str, str]]]]
+        :return: each table's batches taken, the tables read whole and why, and the partitions taken
+        :rtype: tuple[dict[str, tuple[Any, ...]], dict[str, str], dict[str, list[dict[str, str]]]]
         """
-        pending: dict[str, set[tuple[str, ...]]] = {}
+        pending: dict[str, tuple[Any, ...]] = {}
         partitions: dict[str, list[dict[str, str]]] = {}
         whole: dict[str, str] = {}
         for name, table in self._tables.items():
-            keys = self._pending[name]
             if writing and table.scope is None:
+                continue
+            if name in self._full_after:
+                # waiting for its full: what was heard of it is judged against the full once it is reloaded
                 continue
             if name in self._whole:
                 why = self._whole[name]
                 if writing and why not in ("cold_start", "reset"):
                     continue
                 whole[name] = self._whole.pop(name)
-                self._pending[name] = set()
+                self._forget_heard(name)
                 self._partitions[name] = []
                 # the whole read holds every file the table waited for
                 self._end_file_waits(name, f"the table is read whole ({why})")
@@ -2843,14 +3683,10 @@ class CopyFollower:
             if name in self._file_waits:
                 # waiting for a delta file: its keys and partitions stay held, in order, until it reads
                 continue
-            at = table.scope_in_key
-            if held and at is not None:
-                taken = {key for key in keys if table.scope_of(key[at]) not in held}
-            else:
-                taken = set(keys)
-            if taken:
-                pending[name] = taken
-                self._pending[name] = keys - taken
+            batches = self._heard[name]
+            if batches:
+                pending[name] = batches
+                self._forget_heard(name)
             parts = self._partitions[name]
             column = table.scope[0] if table.scope is not None else None
             if held:
@@ -2864,7 +3700,7 @@ class CopyFollower:
                 self._partitions[name] = [p for p in parts if p not in go]
         return pending, whole, partitions
 
-    def _still(self, first: Any, second: Any) -> bool:
+    async def _still(self, first: Any, second: Any) -> bool:
         """whether a change is left to apply at ``first``: every stage, less the keys of each scope the stamp did not
         hold still for.
 
@@ -2899,42 +3735,48 @@ class CopyFollower:
         blocked = moved | (held_b if unsettled else frozenset())
         forget: list[str] = []
         left: set[str] = set()
+        leaving: dict[str, Any] = {}
         whole_rule = False
-        for name, scopes in self._staged_scopes.items():
+        for name, scopes in list(self._staged_scopes.items()):
             if None in scopes:
                 whole_rule = whole_rule or unsettled or whole_moved
                 continue
-            hit = {scope for scope in scopes if scope in blocked}
+            hit = frozenset(scope for scope in scopes if scope in blocked)
             if not hit:
                 continue
-            key_scopes = self._staged_key_scopes.get(name)
-            if not key_scopes or not self._splittable(name):
+            if not self._splittable(name):
                 # a whole read's or a partition's stage is never split: the stamp is judged for it as a whole
                 whole_rule = True
                 continue
             left.update(scope for scope in hit if scope is not None)
-            leaving = {key for key, of in key_scopes.items() if of & hit}
-            if leaving >= self._staged_keys.get(name, set()):
+            keys, every = await asyncio.to_thread(
+                _leaving_keys,
+                self._tables[name],
+                self._staged_scope_rows[name],
+                self._staged_heard.get(name, ()),
+                frozenset(scope for scope in hit if scope is not None),
+            )
+            if every:
                 forget.append(name)
-            elif leaving:
-                self._leaving[name] = leaving
+            elif keys.num_rows:
+                leaving[name] = keys
         if whole_rule:
             # nothing applies this pass: a stage holding a scope a write took is forgotten (its keys read again once
             # the write commits); one whose scope only moved is kept, its keys heard again topping it up
-            self._leaving = {}
             if unsettled:
                 self._forget_tables_now(
                     [name for name, scopes in self._staged_scopes.items() if self._clashes(scopes, held_b)]
                 )
             return False
         self._forget_tables_now(forget)
+        self._leaving = leaving
         self._left_scopes = frozenset(left)
         # a pass whose every stage was forgotten has nothing to apply; one that staged nothing (a relabel) may
         return not forget or bool(self._staged)
 
     async def _leave_out(self) -> None:
-        """take out of each stage the keys :meth:`_still` left out of the change, and put them back pending: the next
-        pass reads them again, at a stamp that holds their scope still.
+        """take out of each stage the keys :meth:`_still` left out of the change, and put them back pending at the
+        epochs they were staged from: the next pass reads them again, at a stamp that holds their scope still.
 
         :return: nothing
         :rtype: None
@@ -2945,39 +3787,51 @@ class CopyFollower:
             if change is None:
                 continue
             table = self._tables[name]
-            ordered = sorted(keys)
-            arrow_keys = pa.table(
-                {column: pa.array([key[i] for key in ordered], pa.string()) for i, column in enumerate(table.key)}
-            )
             stages = [stage for stage in (change.keys, change.rows) if stage is not None]
-            await asyncio.to_thread(self._backend.unstage_keys, stages, name, table.key, arrow_keys)
-            self._pending[name] |= keys
-            self._staged_keys[name] -= keys
-            key_scopes = self._staged_key_scopes[name]
-            staged_epochs = self._staged_epochs.get(name, {})
-            for key in keys:
-                key_scopes.pop(key, None)
-                # its epochs stay heard: the next pass stages it again from its files, never from L3
-                staged_epochs.pop(key, None)
-            self._staged_scopes[name] = {scope for of in key_scopes.values() for scope in of}
+            await asyncio.to_thread(self._backend.unstage_keys, stages, name, table.key, keys)
+            kept = await asyncio.to_thread(
+                _without_keys, table, self._staged_heard.get(name, ()), self._staged_scope_rows.get(name, ()), keys
+            )
+            # its epochs stay heard: the next pass stages it again from its files, never from L3
+            self._put_back(name, kept.back, keys.num_rows)
+            self._staged_heard[name] = (kept.pairs,)
+            self._staged_scope_rows[name] = (kept.scopes,)
+            self._staged_scopes[name] = set(kept.scope_set)
         if leaving:
             log.info(
                 "copy follower left scopes out of a change: the stamp moved under them while the change was read",
                 extra={
                     "extra_data": {
-                        "left_keys": {name: len(keys) for name, keys in sorted(leaving.items())},
+                        "left_keys": {name: keys.num_rows for name, keys in sorted(leaving.items())},
                         "left_scopes": len(self._left_scopes),
                     }
                 },
             )
 
-    def _hold_state_versions(self) -> None:
-        """after an apply, before :meth:`_epochs_applied` takes the staged epochs: each state a staged key's row is of
-        is held at the newest epoch the key was staged from, if later than the state's; a key staged with no epoch
-        that orders it leaves its states' versions unknown. A table read whole or by partition (rows from L3, at no
-        epoch a state names) holds no version at all until it is loaded from the volume again. What
-        :meth:`check_drift` compares with a part's version (decision 32).
+    async def _staged_versions(self) -> dict[str, dict[str | None, str]]:
+        """before an apply, each staged opted-in table's states at the newest epoch a staged key of each was staged
+        from (:func:`_newest_by_scope`, on a thread): what :meth:`_hold_state_versions` takes once the apply holds them.
 
+        :return: by table, each state's newest epoch or :data:`_VERSION_UNKNOWN`
+        :rtype: dict[str, dict[str | None, str]]
+        """
+        versions: dict[str, dict[str | None, str]] = {}
+        for name, pairs in self._staged_heard.items():
+            if name not in self._state_versions or name in self._staged_whole:
+                continue
+            versions[name] = await asyncio.to_thread(
+                _newest_by_scope, self._tables[name], pairs, self._staged_scope_rows.get(name, ())
+            )
+        return versions
+
+    def _hold_state_versions(self, versions: Mapping[str, Mapping[str | None, str]]) -> None:
+        """after an apply: each state a staged key's row is of is held at the newest epoch a key of it was staged from,
+        if later than the state's; a key staged with no epoch that orders it leaves its states' versions unknown. A
+        table read whole or by partition (rows from L3, at no epoch a state names) holds no version at all until it is
+        loaded from the volume again. What :meth:`check_drift` compares with a part's version (decision 32).
+
+        :param versions: :meth:`_staged_versions`, taken before the apply
+        :ptype versions: Mapping[str, Mapping[str | None, str]]
         :return: nothing
         :rtype: None
         """
@@ -2986,33 +3840,12 @@ class CopyFollower:
         for name, partitions in self._partitions_staged.items():
             if partitions:
                 self._state_versions.pop(name, None)
-        for name, of in self._staged_epochs.items():
+        for name, newest in versions.items():
             held = self._state_versions.get(name)
-            if held is None:
+            if held is None or name not in self._staged:
                 continue
-            scopes_of = self._staged_key_scopes.get(name, {})
-            for key, epochs in of.items():
-                newest = _newest_epoch(epochs)
-                for scope in scopes_of.get(key, frozenset({None})):
-                    held[scope] = _VERSION_UNKNOWN if newest is None else _later_epoch(held.get(scope), newest)
-
-    def _epochs_applied(self) -> None:
-        """after an apply: each staged key's epochs it was staged from are held by the copy, so they are no longer
-        heard. An epoch heard for the key since it was staged stays, to be applied by the next pass.
-
-        :return: nothing
-        :rtype: None
-        """
-        staged, self._staged_epochs = self._staged_epochs, {}
-        for name, of in staged.items():
-            heard = self._epochs_of[name]
-            for key, epochs in of.items():
-                left = heard.get(key)
-                if left is None:
-                    continue
-                left -= epochs
-                if not left:
-                    del heard[key]
+            for scope, epoch in newest.items():
+                held[scope] = _VERSION_UNKNOWN if epoch == _VERSION_UNKNOWN else _later_epoch(held.get(scope), epoch)
 
     def _forget_tables_now(self, names: Sequence[str]) -> None:
         """put back what these tables' stages hold, to be read again; their stages are dropped by the next pass.
@@ -3025,11 +3858,13 @@ class CopyFollower:
         for name in names:
             self._staged.pop(name, None)
             self._staged_scopes.pop(name, None)
-            self._staged_key_scopes.pop(name, None)
-            # its keys' epochs stay heard: each key is staged again from its files
-            self._staged_epochs.pop(name, None)
-            self._pending[name] |= self._staged_keys.pop(name, set())
+            self._staged_scope_rows.pop(name, None)
             self._staged_touched.pop(name, None)
+            # its keys at their epochs go back heard: each key is staged again from its files
+            back = self._staged_heard.pop(name, ())
+            if back:
+                self._heard[name] = (*back, *self._heard[name])
+                self._heard_counts[name] += sum(batch.num_rows for batch in back)
             self._partitions[name].extend(self._partitions_staged.pop(name, []))
             why = self._staged_whole.pop(name, None)
             if why is not None:
@@ -3061,14 +3896,14 @@ class CopyFollower:
 
     async def _unstaged(
         self,
-        pending: Mapping[str, set[tuple[str, ...]]],
+        pending: Mapping[str, tuple[Any, ...]],
         whole: Mapping[str, str],
         partitions: Mapping[str, list[dict[str, str]]],
     ) -> None:
         """after a pass failed while it read: put back what it had not staged, and forget the table it was reading.
 
-        :param pending: the keys not yet staged (each table's entry leaves once its stage is complete)
-        :ptype pending: Mapping[str, set[tuple[str, ...]]]
+        :param pending: each table's batches not yet staged (each table's entry leaves once its stage is complete)
+        :ptype pending: Mapping[str, tuple[Any, ...]]
         :param whole: the tables not yet read whole
         :ptype whole: Mapping[str, str]
         :param partitions: the partitions not yet staged
@@ -3076,8 +3911,9 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        for name, keys in pending.items():
-            self._pending[name] |= keys
+        for name, batches in pending.items():
+            self._heard[name] = (*batches, *self._heard[name])
+            self._heard_counts[name] += sum(batch.num_rows for batch in batches)
         for name, why in whole.items():
             self._whole.setdefault(name, why)
         for name, parts in partitions.items():
@@ -3085,14 +3921,12 @@ class CopyFollower:
         reading, self._reading = self._reading, None
         await self._forget_tables([reading] if reading is not None else [])
 
-    async def _stage(
-        self, pending: dict[str, set[tuple[str, ...]]], whole: dict[str, str], held: frozenset[str]
-    ) -> None:
+    async def _stage(self, pending: dict[str, tuple[Any, ...]], whole: dict[str, str], held: frozenset[str]) -> None:
         """stage each table's change beside the copy, a page at a time, onto what earlier passes staged. Each table's
         entry leaves ``pending`` or ``whole`` once its stage is complete.
 
-        :param pending: the keys taken, by table
-        :ptype pending: dict[str, set[tuple[str, ...]]]
+        :param pending: the batches taken, by table
+        :ptype pending: dict[str, tuple[Any, ...]]
         :param whole: the tables to read whole, and why
         :ptype whole: dict[str, str]
         :param held: the scopes a write in progress holds
@@ -3113,9 +3947,7 @@ class CopyFollower:
             if name in whole:
                 self._reading = name
                 await self._forget_tables([name])
-                self._pending[name] = set()  # a whole read covers every key heard before it
-                self._epochs_of.get(name, {}).clear()
-                self._staged_epochs.pop(name, None)
+                self._forget_heard(name)  # a whole read covers every key heard before it
                 self._whole.pop(name, None)
                 self._partitions[name] = []
                 why = whole[name]
@@ -3161,17 +3993,20 @@ class CopyFollower:
                 del whole[name]
                 self._reading = None
                 continue
-            keys = pending.get(name)
-            if not keys:
+            batches = pending.get(name)
+            if not batches:
                 pending.pop(name, None)
                 continue
             self._reading = name
             try:
-                staged, scopes, key_scopes = await self._stage_keyed(table, sorted(keys), keys_stage, rows_stage, held)
+                staged_before = self._staged_heard.get(name, ()) if table.delta_files else ()
+                take = await asyncio.to_thread(_taken, table, batches, staged_before, held)
+                staged = await self._stage_keyed(table, take, keys_stage, rows_stage, held)
             except _FileWaitError as wait:
                 # nothing of the table is applied while it waits: its keys are put back, its stage (this pass's pages
                 # and any earlier pass's) forgotten, every one of them held with its epochs until the file reads
-                self._pending[name] |= keys
+                self._heard[name] = (*batches, *self._heard[name])
+                self._heard_counts[name] += sum(batch.num_rows for batch in batches)
                 self._forget_tables_now([name])
                 del pending[name]
                 self._reading = None
@@ -3179,7 +4014,10 @@ class CopyFollower:
                     name, wait.file, wait.epoch, wait.why, reach="keys", watch=wait.why != "record_missing"
                 )
                 continue
-            if staged:
+            # the keys a write holds the scope of stay pending, as one new batch
+            self._put_back(name, take.left, take.left_keys)
+            self._put_back(name, staged.late, staged.late_keys)
+            if staged.pairs.num_rows:
                 was = self._staged.get(name)
                 self._staged[name] = StagedChange(
                     table=name,
@@ -3189,27 +4027,25 @@ class CopyFollower:
                     whole=was is not None and was.whole,
                     whole_kind=None if was is None else was.whole_kind,
                 )
-                self._staged_keys.setdefault(name, set()).update(staged)
-                if table.scope is None:
-                    self._staged_touched.setdefault(name, set()).update(staged)
-                self._staged_scopes.setdefault(name, set()).update(scopes)
-                self._staged_key_scopes.setdefault(name, {}).update(key_scopes)
+                self._staged_heard[name] = (*self._staged_heard.get(name, ()), staged.pairs)
+                self._staged_scope_rows[name] = (*self._staged_scope_rows.get(name, ()), staged.scopes)
+                self._staged_scopes.setdefault(name, set()).update(staged.scope_set)
             del pending[name]
             self._reading = None
 
-    def _scopes_of_rows(self, table: FollowedTable, rows: Any) -> list[str | None]:
-        """each row's scope, in order (None for a table of no scope).
+    def _scopes_of_rows(self, table: FollowedTable, rows: Any) -> Any:
+        """each row's scope, in order, as Arrow (null for a table of no scope).
 
         :param table: the table
         :ptype table: FollowedTable
         :param rows: rows holding its scope column
         :ptype rows: pyarrow.Table
         :return: the scopes
-        :rtype: list[str | None]
+        :rtype: pyarrow.Array
         """
         if table.scope is None:
-            return [None] * rows.num_rows
-        return [table.scope_of(value) for value in rows.column(table.scope[0]).to_pylist()]
+            return pa.nulls(rows.num_rows, pa.string())
+        return _scope_texts(table, rows.column(table.scope[0]))
 
     @staticmethod
     def _copy_columns(table: FollowedTable) -> str:
@@ -3229,7 +4065,7 @@ class CopyFollower:
         self,
         table: FollowedTable,
         columns: Annotated[Sequence[str], DeclaredKey],
-        values: Sequence[Sequence[str]],
+        values: Sequence[Any],
         *,
         selected: str | None = None,
     ) -> Any:
@@ -3240,8 +4076,8 @@ class CopyFollower:
         :ptype table: FollowedTable
         :param columns: the key columns named, a leading part of the key in key order
         :ptype columns: Sequence[str]
-        :param values: each named column's values, as text, one list a column and one entry a key
-        :ptype values: Sequence[Sequence[str]]
+        :param values: each named column's values, as text: one Arrow array (or list) a column, one entry a key
+        :ptype values: Sequence[Any]
         :param selected: the select list over ``t``; None selects the key and scope columns
         :ptype selected: str | None
         :return: the rows
@@ -3258,7 +4094,7 @@ class CopyFollower:
             # the keys one Arrow table the statement semi-joins (run_joined), as the held rows' read does: bound as
             # Python lists, DuckDB 1.5 looks for pandas once a value, 21.8 s for 50,000 keys of a 200,000-row copy
             # (2026-11-23); 5 ms so
-            return run_joined(cursor, statement, [list(column) for column in values], lambda r: r.fetch_arrow_table())
+            return run_joined(cursor, statement, list(values), lambda r: r.fetch_arrow_table())
 
     def _copy_rows_of_prefixes(
         self, table: FollowedTable, columns: Sequence[str], lead: Sequence[str], last: Sequence[str]
@@ -3280,170 +4116,167 @@ class CopyFollower:
         distinct = sorted(set(last))
         return self._copy_rows_of_keys(table, columns, [*([value] * len(distinct) for value in lead), distinct])
 
-    async def _copy_scopes(
-        self, table: FollowedTable, keys: Sequence[tuple[str, ...]]
-    ) -> dict[tuple[str, ...], set[str]]:
-        """the scope of each key's row the copy holds: a local read, never L3.
+    def _copy_scope_rows(self, table: FollowedTable, keys: Any) -> Any:
+        """the scope of each row the copy holds of some keys: a local read, never L3. Blocking: run it on a thread.
 
         :param table: a table whose scope is in its rows only
         :ptype table: FollowedTable
-        :param keys: the keys, each its values as text
-        :ptype keys: Sequence[tuple[str, ...]]
-        :return: each held key's scopes
-        :rtype: dict[tuple[str, ...], set[str]]
+        :param keys: the keys, key columns as text
+        :ptype keys: pyarrow.Table
+        :return: one row a held row: its key columns as text and ``__scope``
+        :rtype: pyarrow.Table
         """
-        columns = [[key[i] for key in keys] for i in range(len(table.key))]
-        mine = await asyncio.to_thread(self._copy_rows_of_keys, table, table.key, columns)
-        of: dict[tuple[str, ...], set[str]] = {}
-        if mine.num_rows:
-            copy_keys = zip(*(mine.column(c).to_pylist() for c in table.key), strict=True)
-            for key, scope in zip(copy_keys, self._scopes_of_rows(table, mine), strict=True):
-                of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
-        return of
+        mine = self._copy_rows_of_keys(table, table.key, [keys.column(column) for column in table.key])
+        return key_text_table(mine, table.key).append_column(_SCOPE, self._scopes_of_rows(table, mine))
 
     async def _keys_of_cleared_prefixes(self) -> None:
-        """name, at its epoch, every key a cleared prefix reaches (:meth:`_on_file_prefixes`): each key of it the copy
-        holds (a local read by the prefix, never L3) and each key heard and not yet applied that lies under it. Each
-        is then staged from its epochs' files as any key heard (:meth:`_merge_from_files`), deleted at the clearing
-        epoch, so a row L3 deleted under the prefix leaves the copy too. Runs until none is queued, so the caller's
-        marks, taken with no await after, cover every one heard.
+        """name, at its epoch, every key a cleared prefix reaches (:meth:`_clear_heard`): each key of it the copy
+        holds (a local read by the prefix, never L3) and each key heard or staged and not yet applied that lies under
+        it, as one new batch. Each is then staged from its epochs' files as any key heard (:meth:`_merge_from_files`),
+        deleted at the clearing epoch, so a row L3 deleted under the prefix leaves the copy too. Runs until none is
+        queued (the owner's: nothing is heard meanwhile but into the inbox), so the caller's marks, taken after its
+        last drain, cover every one heard.
 
         :return: nothing
         :rtype: None
         """
-        while any(queued for name, queued in self._cleared.items() if name not in self._file_waits):
-            for name, queued in self._cleared.items():
-                if not queued or name in self._file_waits:
-                    # a table waiting for a delta file keeps its prefixes queued, in order, until it reads
-                    continue
-                taken = list(queued)
-                queued.clear()
-                if name in self._whole:
-                    continue  # the whole read to come covers it
-                table = self._tables[name]
-                heard = self._epochs_of[name]
-                for epoch, prefixes in taken:
-                    reached: set[tuple[str, ...]] = set()
-                    for columns, lead, batch in _prefix_batches(table.key, prefixes):
-                        mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
-                        reached.update(_text_keys(mine, table.key))
-                    reached.update(
-                        key for key in heard if under_prefix(dict(zip(table.key, key, strict=True)), prefixes)
-                    )
-                    for key in reached:
-                        heard.setdefault(key, set()).add(epoch)
-                    self._pending[name] |= reached
+        waiting = set(self._file_waits) | set(self._full_after)
+        for name in list(self._cleared):
+            queued = self._cleared[name]
+            if not queued or name in waiting:
+                # a table waiting for a delta file or its full keeps its prefixes queued, in order, until it reads
+                continue
+            self._cleared[name] = ()
+            if name in self._whole:
+                continue  # the whole read to come covers it
+            table = self._tables[name]
+            for epoch, prefixes in queued:
+                reached: list[Any] = []
+                for columns, lead, batch in _prefix_batches(table.key, prefixes):
+                    mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
+                    reached.append(key_text_table(mine, table.key))
+                known = (*self._heard[name], *self._staged_heard.get(name, ()))
+                reached.append(await asyncio.to_thread(_under, table, known, prefixes))
+                keys = _distinct(pa.concat_tables(reached), table.key)
+                self._hear(name, _heard_batch(table.key, keys, epoch), held=False)
 
     async def _stage_keyed(
         self,
         table: FollowedTable,
-        keys: Sequence[tuple[str, ...]],
+        take: _Take,
         keys_stage: str,
         rows_stage: str,
         held: frozenset[str],
-    ) -> tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]:
+    ) -> _Staged:
         """stage some keys' rows, read from L3 by key a page at a time -- or, for a table that opts in to delta files,
         merged from their epochs' files onto the copy's rows (:meth:`_merge_from_files`), L3 read only for a key whose
-        epoch names no file (a missing or unreadable file raises, and the table waits for it); a key whose row (in L3 or its file, or in the copy) is of a scope a write holds is left
-        pending, unstaged.
+        epoch names no file (a missing or unreadable file raises, and the table waits for it); a key whose row (in L3
+        or its file, or in the copy) is of a scope a write holds is left pending, unstaged. Every key and its scopes
+        stay Arrow: a page's slice of the take, never a Python object a key.
 
-        :return: the keys staged, the scopes their rows are of, and each staged key's scopes
-        :rtype: tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]
+        :param table: the table
+        :ptype table: FollowedTable
+        :param take: the pass's keys at their epochs (:func:`_taken`)
+        :ptype take: _Take
+        :param keys_stage: the keys' stage
+        :ptype keys_stage: str
+        :param rows_stage: the rows' stage
+        :ptype rows_stage: str
+        :param held: the scopes a write in progress holds
+        :ptype held: frozenset[str]
+        :return: what was staged, and what was left pending
+        :rtype: _Staged
         :raises _FileWaitError: when a key's epoch file is missing or unreadable (the caller holds the table)
         """
+        key = list(table.key)
         at = table.scope_in_key
+        held_scopes = _scope_array(held) if held else None
         #: for a table that opts in to delta files: every key's row merged from its epochs' files, once this pass
         fallbacks: dict[str, dict[str, Any]] = {}
-        from_files = await self._merge_from_files(table, keys, fallbacks) if table.delta_files else None
-        epochs: dict[tuple[str, ...], frozenset[str | None]] = {}
-        staged: set[tuple[str, ...]] = set()
-        scopes: set[str | None] = set()
-        key_scopes: dict[tuple[str, ...], frozenset[str | None]] = {}
-        for start in range(0, len(keys), self._page_size):
-            page = keys[start : start + self._page_size]
-            chunk = page
-            of: dict[tuple[str, ...], set[str]] = {}
+        from_files = await self._merge_from_files(table, take, fallbacks) if table.delta_files else None
+        count = take.keys.num_rows
+        # function-local: which keys this pass staged and which it left for a held scope, one flag a key (numpy); the
+        # stage's bookkeeping is cut from the take by them once, on a thread (:func:`_staged_of`). A page's table a page
+        # is kept only for a table whose scope is in its rows (each page's scopes are read with its rows)
+        staged = np.zeros(count, dtype=bool)
+        left_out = np.zeros(count, dtype=bool)
+        row_scopes: list[Any] = []
+        for start in range(0, count, self._page_size):
+            page = take.keys.slice(start, self._page_size)
+            positions = np.arange(start, start + page.num_rows, dtype=np.int64)
+            keep: Any = None
+            mine: Any = None
             if table.scope is not None and at is None:
                 # the scope is in the row only: first the copy's own rows (a local read), so a key whose row is of a
                 # scope a write holds waits for it without an L3 read, and is read once, after the write commits
-                of = await self._copy_scopes(table, chunk)
-                if held:
-                    late = {key for key in chunk if of.get(tuple(key), set()) & held}
-                    if late:
-                        self._pending[table.name] |= late
-                        chunk = [key for key in chunk if key not in late]
-                        if not chunk:
-                            continue
-            if from_files is not None:
-                rows, epochs = await self._rows_of_page(table, from_files, start, page, chunk)
-            else:
-                (rows,) = await self._rows_from_l3(table, chunk)
-            kept = list(chunk)
-            if table.scope is None:
-                scopes.add(None)
-                key_scopes.update((tuple(key), frozenset({None})) for key in chunk)
-            elif at is not None:
-                for key in chunk:
-                    in_key = table.scope_of(key[at])
-                    scopes.add(in_key)
-                    key_scopes[tuple(key)] = frozenset({in_key})
-            else:
-                # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of a
-                # held scope (a row new to the copy, or moved into it) waits too
-                l3_keys = (
-                    list(zip(*(rows.column(c).to_pylist() for c in table.key), strict=True)) if rows.num_rows else []
-                )
-                for key, scope in zip(l3_keys, self._scopes_of_rows(table, rows), strict=True):
-                    of.setdefault(tuple(str(v) for v in key), set()).add(str(scope))
-                if held:
-                    left = {key for key in chunk if of.get(tuple(key), set()) & held}
-                    if left:
-                        self._pending[table.name] |= left
-                        kept = [key for key in chunk if key not in left]
-                        mask = [tuple(str(v) for v in key) not in left for key in l3_keys]
-                        rows = rows.filter(pa.array(mask, pa.bool_())) if rows.num_rows else rows
-                for key in kept:
-                    of_key = of.get(tuple(key), set())
-                    scopes.update(of_key)
-                    key_scopes[tuple(key)] = frozenset(of_key)
-            if not kept:
+                mine = await asyncio.to_thread(self._copy_scope_rows, table, page)
+                if held_scopes is not None and mine.num_rows:
+                    late_keys = mine.filter(pa.array(_in(mine.column(_SCOPE), held_scopes)))
+                    if late_keys.num_rows:
+                        keep = ~_in(joined_key_texts(page, key), joined_key_texts(late_keys, key))
+            chunk = page if keep is None else page.filter(pa.array(keep))
+            chunk_positions = positions if keep is None else positions[keep]
+            if keep is not None:
+                left_out[positions[~keep]] = True
+            if not chunk.num_rows:
                 continue
-            arrow_keys = pa.table(
-                {column: pa.array([key[i] for key in kept], pa.string()) for i, column in enumerate(table.key)}
-            )
+            if from_files is not None:
+                rows = await self._rows_of_page(table, from_files, start, page.num_rows, keep, chunk)
+            else:
+                rows = await self._rows_from_l3(table, chunk)
+            if table.scope is not None and at is None:
+                # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of
+                # a held scope (a row new to the copy, or moved into it) waits too
+                found = key_text_table(rows, key).append_column(_SCOPE, self._scopes_of_rows(table, rows))
+                scopes = _distinct(pa.concat_tables([mine, found]), [*key, _SCOPE])
+                chunk_texts = joined_key_texts(chunk, key)
+                scopes = scopes.filter(pa.array(_in(joined_key_texts(scopes, key), chunk_texts)))
+                if held_scopes is not None:
+                    left = scopes.filter(pa.array(_in(scopes.column(_SCOPE), held_scopes)))
+                    if left.num_rows:
+                        left_texts = joined_key_texts(left, key)
+                        stays = ~_in(chunk_texts, left_texts)
+                        left_out[chunk_positions[~stays]] = True
+                        chunk_positions = chunk_positions[stays]
+                        chunk = chunk.filter(pa.array(stays))
+                        rows = rows.filter(pa.array(~_in(joined_key_texts(key_text_table(rows, key), key), left_texts)))
+                        scopes = scopes.filter(pa.array(~_in(joined_key_texts(scopes, key), left_texts)))
+                row_scopes.append(scopes)
+            if not chunk.num_rows:
+                continue
             await asyncio.to_thread(
-                self._backend.stage_keys, keys_stage, table.name, table.key, arrow_keys, rows_stage=rows_stage
+                self._backend.stage_keys, keys_stage, table.name, table.key, chunk, rows_stage=rows_stage
             )
             await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, rows, table.key)
-            staged.update(kept)
-            if table.delta_files:
-                self._staged_epochs.setdefault(table.name, {}).update((tuple(key), epochs[key]) for key in kept)
+            staged[chunk_positions] = True
         if fallbacks:
             self._fell_back(table, fallbacks)
-        return staged, scopes, {key: key_scopes[key] for key in staged if key in key_scopes}
+        return await asyncio.to_thread(_staged_of, table, take, staged, left_out, row_scopes)
 
-    async def _rows_from_l3(self, table: FollowedTable, keys: Sequence[tuple[str, ...]]) -> list[Any]:
+    async def _rows_from_l3(self, table: FollowedTable, keys: Any) -> Any:
         """some keys' rows as L3 holds them now, read by key in one statement.
 
         :param table: the table
         :ptype table: FollowedTable
-        :param keys: the keys, each its values as text
-        :ptype keys: Sequence[tuple[str, ...]]
+        :param keys: the keys, key columns as text: a page of them
+        :ptype keys: pyarrow.Table
         :return: one Arrow table of the rows that exist, typed as the rail answers them
-        :rtype: list[pyarrow.Table]
+        :rtype: pyarrow.Table
         """
         read = self._reads[table.name]
+        # the rail binds a key batch as Python values (KeyBatch): a page of keys, made here and gone with the read
+        values = list(zip(*(keys.column(column).to_pylist() for column in table.key), strict=True))
         rows: list[Any] = await read_keyed_arrow(
             self._l3,
             table.name,
-            keys=KeyBatch(table.key, keys, read.casts),
+            keys=KeyBatch(table.key, values, read.casts),
             types=read.types,
-            batch=len(keys),
+            batch=len(values),
         )
-        return rows
+        return rows[0]
 
     async def _merge_from_files(
-        self, table: FollowedTable, keys: Sequence[tuple[str, ...]], fallbacks: dict[str, dict[str, Any]]
+        self, table: FollowedTable, take: _Take, fallbacks: dict[str, dict[str, Any]]
     ) -> _FromFiles:
         """every key's row of a table that opts in to delta files, from its epochs' files: the row the copy holds, with
         every change of it in each epoch it was heard at applied in order, as L3 merged them
@@ -3454,12 +4287,13 @@ class CopyFollower:
         Why one merge a pass, on a thread: each file was read into Python rows (``to_pylist``, about ten times its
         Arrow: 291 MB for 200,000 rows of 15 text columns) and every epoch's kept through the pass, and each key's
         changes grouped and merged in a Python loop on the event loop (2026-11-23 audit, P0). Now a file stays Arrow
-        and only one is held at a time; the loop's own part is the epochs' snapshot, in runs, and one record a epoch.
+        and only one is held at a time; the loop's own part is one record an epoch. The keys' epochs are the owner's
+        snapshot (immutable batches), so nothing heard meanwhile can change them under the merge.
 
         :param table: the table
         :ptype table: FollowedTable
-        :param keys: the pass's keys, each its values as text; a key's position is its index here
-        :ptype keys: Sequence[tuple[str, ...]]
+        :param take: the pass's keys at their epochs
+        :ptype take: _Take
         :param fallbacks: the keys read from L3 this pass, by why: their count and the files named; filled here
         :ptype fallbacks: dict[str, dict[str, Any]]
         :return: the merged rows
@@ -3467,17 +4301,7 @@ class CopyFollower:
         :raises _FileWaitError: when an epoch's file is missing or unreadable
         :raises GenerationUnavailableError: when the log cannot be read (the pass fails and is tried again)
         """
-        heard_now = self._epochs_of[table.name]
-        heard: list[frozenset[str | None]] = []
-        alike: dict[frozenset[str | None], frozenset[str | None]] = {}
-        for start in range(0, len(keys), _KEYS_PER_TURN):
-            if start:
-                # a key heard again meanwhile keeps the epoch for the next pass (an apply holds only these)
-                await asyncio.sleep(0)
-            for key in keys[start : start + _KEYS_PER_TURN]:
-                epochs = frozenset(heard_now.get(key, ()))
-                heard.append(alike.setdefault(epochs, epochs))
-        plan = await asyncio.to_thread(_epoch_plan, heard)
+        plan = await asyncio.to_thread(_epoch_plan, take)
         named: dict[str, str] = {}
         whys: dict[str, str] = {}
         for epoch in plan.order:
@@ -3489,7 +4313,7 @@ class CopyFollower:
                 whys[epoch] = "no_file_named"
             else:
                 named[epoch] = record.delta_file
-        merged = await asyncio.to_thread(self._merged, table, keys, heard, plan, named, whys)
+        merged = await asyncio.to_thread(self._merged, table, take, plan, named, whys)
         for why, (count, files) in merged.fallbacks.items():
             fell = fallbacks.setdefault(why, {"keys": 0, "files": set()})
             fell["keys"] += count
@@ -3499,8 +4323,7 @@ class CopyFollower:
     def _merged(
         self,
         table: FollowedTable,
-        keys: Sequence[tuple[str, ...]],
-        heard: list[frozenset[str | None]],
+        take: _Take,
         plan: _EpochPlan,
         named: Mapping[str, str],
         whys: Mapping[str, str],
@@ -3510,10 +4333,8 @@ class CopyFollower:
 
         :param table: the table
         :ptype table: FollowedTable
-        :param keys: the pass's keys
-        :ptype keys: Sequence[tuple[str, ...]]
-        :param heard: each key's epochs, by position
-        :ptype heard: list[frozenset[str | None]]
+        :param take: the pass's keys at their epochs
+        :ptype take: _Take
         :param plan: each epoch's keys
         :ptype plan: _EpochPlan
         :param named: each epoch's file, as its record names it
@@ -3524,23 +4345,24 @@ class CopyFollower:
         :rtype: _FromFiles
         :raises _FileWaitError: when an epoch's file is missing or unreadable
         """
-        from_l3 = np.zeros(len(keys), dtype=bool)
-        fallbacks: dict[str, tuple[int, set[str]]] = {}
+        count = take.keys.num_rows
+        from_l3 = np.zeros(count, dtype=bool)
+        fallbacks: dict[str, tuple[int, frozenset[str]]] = {}
 
         def fell(why: str, positions: Any, file: str | None) -> None:
             new = positions[~from_l3[positions]]
             if len(new):
                 from_l3[new] = True
-                count, files = fallbacks.get(why, (0, set()))
-                fallbacks[why] = (count + int(len(new)), files | ({file} if file is not None else set()))
+                had, files = fallbacks.get(why, (0, frozenset()))
+                fallbacks[why] = (had + int(len(new)), files | ({file} if file is not None else frozenset()))
 
         fell("no_epoch", np.flatnonzero(plan.no_epoch), None)
         for epoch in plan.order:
             if epoch in whys:
                 fell(whys[epoch], plan.keys_at[epoch], None)
         types = self._reads[table.name].types
-        rows = HeldDeltaRows(table.key, keys, types)
-        rows.hold(self._held_arrow(table, [keys[at] for at in np.flatnonzero(~from_l3).tolist()]))
+        rows = HeldDeltaRows(table.key, take.keys, types)
+        rows.hold(self._held_arrow(table, take.keys.filter(pa.array(~from_l3))))
         applied: dict[str, Any] = {}
         held: tuple[str, DeltaTable] | None = None
         for epoch in plan.order:
@@ -3548,7 +4370,7 @@ class CopyFollower:
                 continue
             name = named[epoch]
             # a commit of several records names one file: its changes of a key are applied once, at its first record
-            done = applied.setdefault(name, np.zeros(len(keys), dtype=bool))
+            done = applied.setdefault(name, np.zeros(count, dtype=bool))
             positions = plan.keys_at[epoch]
             positions = positions[~from_l3[positions] & ~done[positions]]
             if not len(positions):
@@ -3566,7 +4388,7 @@ class CopyFollower:
         keep = ~from_l3[at]
         if not keep.all():
             merged, at = merged.filter(pa.array(keep)), at[keep]
-        return _FromFiles(rows=merged, at=at, heard=heard, from_l3=from_l3, fallbacks=fallbacks, applied=rows.applied)
+        return _FromFiles(rows=merged, at=at, from_l3=from_l3, fallbacks=fallbacks, applied=rows.applied)
 
     def _file_of(self, table: FollowedTable, epoch: str, name: str) -> DeltaTable:
         """one epoch's delta file, read off the shared volume as Arrow. Blocking: run it on a thread.
@@ -3596,7 +4418,7 @@ class CopyFollower:
             )
             raise _FileWaitError(table.name, name, epoch, "file_unreadable") from exc
 
-    def _held_arrow(self, table: FollowedTable, keys: Sequence[tuple[str, ...]]) -> Any:
+    def _held_arrow(self, table: FollowedTable, keys: Any) -> Any:
         """the rows the copy holds of some keys, typed as the L3 rail answers them: a local read, never L3. Blocking.
 
         Why the copy's: an upsert keeps every column its write left out, and the row's ``date_created``, from the row
@@ -3604,14 +4426,14 @@ class CopyFollower:
 
         :param table: the table
         :ptype table: FollowedTable
-        :param keys: the keys, each its values as text
-        :ptype keys: Sequence[tuple[str, ...]]
+        :param keys: the keys, key columns as text
+        :ptype keys: pyarrow.Table
         :return: the held rows, every column typed as the rail answers it
         :rtype: pyarrow.Table
         """
         types = self._reads[table.name].types
         schema = pa.schema(list(types.items()))
-        if not keys:
+        if not keys.num_rows:
             return schema.empty_table()
         selected = ", ".join(quote_identifier(column.name) for column in table.columns)
         named = ", ".join(quote_identifier(column) for column in table.key)
@@ -3626,7 +4448,7 @@ class CopyFollower:
             mine = run_joined(
                 cursor,
                 statement,
-                [[key[at] for key in keys] for at in range(len(table.key))],
+                [keys.column(column) for column in table.key],
                 lambda result: result.fetch_arrow_table(),
             )
         return pa.table([_rail_column(mine.column(name), kind) for name, kind in types.items()], schema=schema)
@@ -3636,9 +4458,10 @@ class CopyFollower:
         table: FollowedTable,
         merged: _FromFiles,
         start: int,
-        page: Sequence[tuple[str, ...]],
-        chunk: Sequence[tuple[str, ...]],
-    ) -> tuple[Any, dict[tuple[str, ...], frozenset[str | None]]]:
+        count: int,
+        keep: Any,
+        chunk: Any,
+    ) -> Any:
         """a page's rows of the pass's merge (:meth:`_merge_from_files`), and the keys it reads from L3 read by key.
 
         :param table: the table
@@ -3647,29 +4470,26 @@ class CopyFollower:
         :ptype merged: _FromFiles
         :param start: the page's first key's position
         :ptype start: int
-        :param page: the page's keys
-        :ptype page: Sequence[tuple[str, ...]]
-        :param chunk: those of them staged now (a key of a held scope left out), in order
-        :ptype chunk: Sequence[tuple[str, ...]]
-        :return: the rows that exist after the change, typed as the rail answers them; and the epochs each key was
-            staged from (an apply holds those)
-        :rtype: tuple[pyarrow.Table, dict[tuple[str, ...], frozenset[str | None]]]
+        :param count: how many keys the page holds
+        :ptype count: int
+        :param keep: per key of the page, whether it is staged now (a key of a held scope left out); None: every one
+        :ptype keep: numpy.ndarray | None
+        :param chunk: the page's keys staged now, in order
+        :ptype chunk: pyarrow.Table
+        :return: the rows that exist after the change, typed as the rail answers them
+        :rtype: pyarrow.Table
         """
-        if len(chunk) == len(page):
-            positions = list(range(start, start + len(page)))
-        else:
-            kept = set(chunk)
-            positions = [start + offset for offset, key in enumerate(page) if key in kept]
-        low, high = (int(edge) for edge in np.searchsorted(merged.at, [start, start + len(page)]))
+        low, high = (int(edge) for edge in np.searchsorted(merged.at, [start, start + count]))
         rows = merged.rows.slice(low, high - low)
-        if len(chunk) != len(page):
+        page_l3 = merged.from_l3[start : start + count]
+        if keep is not None:
+            positions = start + np.flatnonzero(keep)
             rows = rows.filter(pa.array(np.isin(merged.at[low:high], positions)))
-        epochs = {key: merged.heard[position] for key, position in zip(chunk, positions, strict=True)}
-        from_l3 = [key for key, position in zip(chunk, positions, strict=True) if merged.from_l3[position]]
-        if from_l3:
-            (read,) = await self._rows_from_l3(table, from_l3)
+            page_l3 = page_l3[keep]
+        if page_l3.any():
+            read = await self._rows_from_l3(table, chunk.filter(pa.array(page_l3)))
             rows = pa.concat_tables([rows, read.select(rows.column_names).cast(rows.schema)])
-        return rows, epochs
+        return rows
 
     def _fell_back(self, table: FollowedTable, fallbacks: Mapping[str, Mapping[str, Any]]) -> None:
         """count and say the keys of a table that opts in to delta files a pass read from L3 instead of their files.
@@ -3709,6 +4529,7 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
+        held_scopes = _scope_array(held) if held else None
         for name in list(partitions):
             parts = partitions[name]
             table = self._tables[name]
@@ -3752,8 +4573,8 @@ class CopyFollower:
             types = rail_arrow_types(table.columns)
             selected = ", ".join(quote_identifier(column) for column in types)
             scopes: set[str | None] = set()
-            #: a table with no scope: the keys its partitions replace, for the checkpoint's patch
-            replaced: set[tuple[str, ...]] = set()
+            #: a table with no scope: the keys its partitions replace, for the checkpoint's patch (Arrow, one a read)
+            replaced: list[Any] = []
             clashed = False
             #: whether this pass handed the backend a page of keys, of rows: a stage is made by its first page, so a
             #: partition that staged none must not name it (the apply failed on the missing table, every pass after)
@@ -3763,10 +4584,12 @@ class CopyFollower:
             for columns, lead, batch in _prefix_batches(table.key, parts):
                 last = columns[-1]
                 mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
-                of = self._scopes_of_rows(table, mine) if mine.num_rows else []
-                if held and set(of) & held:
-                    values = [str(v) for v in mine.column(last).to_pylist()]
-                    late = {value for value, scope in zip(values, of, strict=True) if scope in held}
+                of = self._scopes_of_rows(table, mine)
+                hit = _in(of, held_scopes) if held_scopes is not None and mine.num_rows else None
+                if hit is not None and hit.any():
+                    values = key_text_table(mine, [last]).column(last)
+                    # the prefix values a held scope's rows sit under: one a prefix of the batch, never one a row
+                    late = set(pc.unique(values.filter(pa.array(hit))).to_pylist())
                     waiting += [
                         dict(p)
                         for p in parts
@@ -3775,13 +4598,15 @@ class CopyFollower:
                         and p[last] in late
                     ]
                     batch = [value for value in batch if value not in late]
-                    mine = mine.filter(pa.array([value not in late for value in values], pa.bool_()))
-                    of = [scope for value, scope in zip(values, of, strict=True) if value not in late]
+                    stays = pa.array(~_in(values, pa.array(sorted(late), pa.string())))
+                    mine = mine.filter(stays)
+                    of = of.filter(stays)
                     if not batch:
                         continue
-                scopes.update(of)
+                if mine.num_rows:
+                    scopes.update(_scope_set(of))
                 if mine.num_rows and table.scope is None:
-                    replaced.update(_text_keys(mine, table.key))
+                    replaced.append(key_text_table(mine, table.key))
                 if mine.num_rows:
                     await asyncio.to_thread(
                         self._backend.stage_keys,
@@ -3810,12 +4635,12 @@ class CopyFollower:
                     if page.num_rows == 0:
                         continue
                     of = self._scopes_of_rows(table, page)
-                    if held and set(of) & held:
+                    if held_scopes is not None and _in(of, held_scopes).any():
                         clashed = True
                         break
-                    scopes.update(of)
+                    scopes.update(_scope_set(of))
                     if table.scope is None:
-                        replaced.update(_text_keys(page, table.key))
+                        replaced.append(key_text_table(page, table.key))
                     await asyncio.to_thread(
                         self._backend.stage_keys,
                         keys_stage,
@@ -3842,7 +4667,7 @@ class CopyFollower:
             self._partitions[name].extend(waiting)
             self._staged_scopes.setdefault(name, set()).update(scopes)
             if replaced:
-                self._staged_touched.setdefault(name, set()).update(replaced)
+                self._staged_touched[name] = (*self._staged_touched.get(name, ()), *replaced)
             self._partitions_staged.setdefault(name, []).extend(dict(p) for p in parts if dict(p) not in waiting)
             was = self._staged.get(name)
             # each stage named only once a page made it, here or by an earlier pass's change of the table: partitions
@@ -3966,16 +4791,19 @@ class CopyFollower:
         left_out: dict[str, int] = {}
         staged_rows = 0
         await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, pa.table({}), table.key)
+        held_scopes = _scope_array(held) if held else None
         async for page in pages:
             of = self._scopes_of_rows(table, page)
-            if held and table.scope is not None:
-                for scope in of:
-                    if scope is not None and scope in held:
-                        left_out[scope] = left_out.get(scope, 0) + 1
-                mask = [scope not in held for scope in of]
-                page = page.filter(pa.array(mask, pa.bool_()))
-                of = [scope for scope, keep in zip(of, mask, strict=True) if keep]
-            scopes.update(of)
+            if held_scopes is not None and table.scope is not None:
+                hit = _in(of, held_scopes)
+                if hit.any():
+                    # one count a held scope (a state), never one a row
+                    for found in pc.value_counts(of.filter(pa.array(hit))).to_pylist():
+                        left_out[found["values"]] = left_out.get(found["values"], 0) + found["counts"]
+                    page = page.filter(pa.array(~hit))
+                    of = of.filter(pa.array(~hit))
+            if page.num_rows:
+                scopes.update(_scope_set(of))
             staged_rows += page.num_rows
             await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, page, table.key)
         queued: list[str] = []
@@ -4045,8 +4873,7 @@ class CopyFollower:
         :rtype: bool
         """
         return (
-            not self._pending[name]
-            and not self._epochs_of.get(name)
+            not self._heard[name]
             and name not in self._whole
             and not self._partitions[name]
             and not self._cleared.get(name)
@@ -4077,8 +4904,9 @@ class CopyFollower:
         if not part.fingerprint.startswith(f"{fingerprint_columns(kinds)}-"):
             return "other_columns"
         keys = await asyncio.to_thread(self._part_keys, table, part)
-        # under the pass lock: no apply moves the state between its version's check and the snapshot read
+        # under the pass lock, as the owner: no apply moves the state between its version's check and the snapshot read
         async with self._lock:
+            self._drain()
             if not self._drift_current(table.name):
                 return "not_current"
             held = self._state_versions.get(table.name, {}).get(part.scope)
@@ -4108,7 +4936,7 @@ class CopyFollower:
         )
         return "drift"
 
-    def _part_keys(self, table: FollowedTable, part: FullPart) -> list[list[str]] | None:
+    def _part_keys(self, table: FollowedTable, part: FullPart) -> Any:
         """the keys a part holds, each key column's values as text, for a part the copy cannot read by its state (a
         table with no scope, or one whose scope column sits in the key but does not lead it); None for one it can (its
         scope column leads the key, or is not in the key: read by the column). Read off the volume (an immutable file),
@@ -4118,16 +4946,15 @@ class CopyFollower:
         :ptype table: FollowedTable
         :param part: the part
         :ptype part: FullPart
-        :return: one list a key column, one entry a key; None when the state is read by its key prefix
-        :rtype: list[list[str]] | None
+        :return: one row a key, its key columns as text; None when the state is read by its key prefix
+        :rtype: pyarrow.Table | None
         """
         if part.scope is not None and table.scope is not None and table.scope_in_key in (0, None):
             return None
         assert self._fulls is not None  # noqa: S101 -- a drift check runs only for a follower started from the volume
-        keys = read_full_part(self._fulls.root, part).select(list(table.key))
-        return [[key_text(value) for value in keys.column(column).to_pylist()] for column in table.key]
+        return key_text_table(read_full_part(self._fulls.root, part).select(list(table.key)), table.key)
 
-    def _state_ipc(self, table: FollowedTable, part: FullPart, keys: list[list[str]] | None) -> bytes:
+    def _state_ipc(self, table: FollowedTable, part: FullPart, keys: Any) -> bytes:
         """the copy's rows of one state, as an Arrow IPC stream for the worker that fingerprints them: a local read
         of the copy, never L3. A state whose scope column leads the key is read by that prefix, and one of a table keyed
         without its state (AP results, its state in a row column) by that column: either way every row the copy holds
@@ -4139,7 +4966,7 @@ class CopyFollower:
         :param part: the part
         :ptype part: FullPart
         :param keys: :meth:`_part_keys`
-        :ptype keys: list[list[str]] | None
+        :ptype keys: pyarrow.Table | None
         :return: the rows
         :rtype: bytes
         """
@@ -4152,7 +4979,9 @@ class CopyFollower:
             else:
                 rows = self._copy_rows_of_state(table, value)
         else:
-            rows = self._copy_rows_of_keys(table, table.key, keys, selected=selected)
+            rows = self._copy_rows_of_keys(
+                table, table.key, [keys.column(column) for column in table.key], selected=selected
+            )
         sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, rows.schema) as writer:
             writer.write_table(rows)
@@ -4342,7 +5171,10 @@ class CopyFollower:
         :return: the status
         :rtype: FollowerStatus
         """
-        self._status.pending = {name: len(keys) for name, keys in self._pending.items() if keys}
+        # a read of the owner's counts: a table waiting for its full holds what it heard for the full, not pending
+        self._status.pending = {
+            name: count for name, count in self._heard_counts.items() if count and name not in self._full_after
+        }
         return self._status
 
     def _say(self, phase: FollowerPhase, detail: str) -> None:

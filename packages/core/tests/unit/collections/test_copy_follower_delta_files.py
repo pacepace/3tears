@@ -180,6 +180,13 @@ class _L3:
         return rows
 
 
+#: the most rows one epoch record lists, as the broker's record cap (256 KB) lets one list them: a commit of more is
+#: recorded keys unknown, its keys in its delta file (decision 21). Why the fake keeps the cap: a record listing
+#: 200,000 rows holds 400,000 Python objects (a row and its ids each), which the broker never records, and which made
+#: every full collection of the loop-turn tests walk them (2026-11-23: 211-354 ms turns, decision 35)
+_RECORD_ROWS = 5_000
+
+
 class _Log:
     """the table's write generation and its change records, each naming the commit's delta file when it saved one."""
 
@@ -191,6 +198,9 @@ class _Log:
         return f"inc:{self.count}"
 
     def commit(self, keys: Sequence[tuple[str, int]], delta_file: str | None = None) -> str:
+        if len(keys) > _RECORD_ROWS:
+            # past the record cap the broker records the commit keys unknown, naming its file (decision 21)
+            return self.too_large(delta_file)
         self.count += 1
         token = f"inc:{self.count}"
         self.records[token] = EpochChange(
@@ -330,6 +340,27 @@ def _instants(rows: Iterable[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
 
 def _same(backend: DuckDBBackend, l3: _L3) -> bool:
     return _instants(_copy(backend)) == _instants(l3.held())
+
+
+def _save_arrow(volume: Path, write: str, rows: Any, written: Sequence[str]) -> str:
+    """save a commit's delta file of rows already Arrow, as a bulk writer does: no Python row a key."""
+    delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
+    delta.arrow(rows, written)
+    return write_delta_file(volume, delta, write)
+
+
+def _votes_plus_one(count: int) -> Any:
+    """``count`` rows of VA, each key's votes one past its geo_id, written with votes alone (an upsert of a held row)."""
+    return pa.table(
+        {
+            "state": pa.array(["VA"] * count, pa.string()),
+            "geo_id": pa.array(range(count), pa.int64()),
+            "votes": pa.array(range(1, count + 1), pa.int64()),
+            # left out of the write: a held row keeps its own (decision 19)
+            "note": pa.nulls(count, pa.string()),
+            "date_created": pa.nulls(count, pa.string()),
+        }
+    )
 
 
 def _save(volume: Path, write: str, *parts: tuple[str, Any, Any]) -> str:
@@ -624,20 +655,20 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
 #: well clear of everything else a stage allocates
 _BIG_ROWS = 20_000
 
-#: the most Python memory (tracemalloc, numpy's arrays counted, Arrow's buffers not) staging a 20,000-row file's
-#: change may allocate at its peak, per row: the stage alone, the keys already heard. Measured 2026-11-23 (macOS arm64,
-#: Python 3.14): the old apply (the file's rows as dicts, its changes grouped by key, the copy's rows as dicts, each
-#: key's row merged into a dict) 1,447 bytes a row; the Arrow apply 561 bytes a row, all of it the stage's own
-#: bookkeeping a key whatever the apply (the staged set, each key's scopes and epochs). The bound sits between: the
-#: old dicts a row (886 bytes a row more) trip it.
-_STAGE_BYTES_PER_ROW = 900
+#: the most Python memory (tracemalloc, numpy's arrays counted, Arrow's buffers not) a pass applying a 20,000-row
+#: file's change may allocate at its peak, per row: the whole pass, the keys' hearing with the stage. Measured
+#: 2026-11-23 (macOS arm64, Python 3.14), the stage alone: the old apply (the file's rows as dicts, its changes grouped
+#: by key, the copy's rows as dicts, each key's row merged into a dict) 1,447 bytes a row; the Arrow apply 561 bytes a
+#: row, all of it the stage's bookkeeping a key (the staged set, each key's scopes and epochs). The whole pass with
+#: every key Arrow (decision 35): 210 bytes a row, numpy's position arrays. The bound sits between: a Python object a
+#: key kept anywhere in the pass trips it.
+_STAGE_BYTES_PER_ROW = 400
 
 
-async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(
-    _volume: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(_volume: Path) -> None:
     """Flips if a copy applies a delta file by turning its rows into Python objects (the old to_pylist, a dict a key:
-    1,447 bytes of Python a row here against 561 now; 450 MB at 200,000 rows of 15 text columns), or if the applied
+    1,447 bytes of Python a row here; 450 MB at 200,000 rows of 15 text columns), or keeps a Python object a key heard
+    or staged (a tuple and a set a key: 561 bytes a row; 210 now, the pass's numpy positions), or if the applied
     rows differ from L3's: half the rows updated with every column set, half with votes alone (note and date_created
     kept), every hundredth key deleted."""
 
@@ -670,24 +701,16 @@ async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(
     log.commit([("VA", i) for i in range(_BIG_ROWS)], delta_file=name)
     lock.commit("state:VA")
     del full, votes, gone
-    peaks: list[int] = []
-    stage = CopyFollower._stage_keyed  # noqa: SLF001 - the stage alone is measured, the keys heard before it
-
-    async def measured(self: CopyFollower, *args: Any, **kwargs: Any) -> Any:
-        # the stage alone: the keys are heard before it, as every pass hears them whatever the apply
-        tracemalloc.start()
-        try:
-            tracemalloc.reset_peak()
-            staged = await stage(self, *args, **kwargs)
-            peaks.append(tracemalloc.get_traced_memory()[1])
-        finally:
-            tracemalloc.stop()
-        return staged
-
-    monkeypatch.setattr(CopyFollower, "_stage_keyed", measured)
-    assert await follower.catch_up()
+    # the whole pass: the keys' hearing (one Arrow batch from the registry) with the stage
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        assert await follower.catch_up()
+        peaks = [tracemalloc.get_traced_memory()[1]]
+    finally:
+        tracemalloc.stop()
     peak = max(peaks)
-    assert peak / _BIG_ROWS < _STAGE_BYTES_PER_ROW, f"the stage allocated {peak / _BIG_ROWS:.0f} bytes of Python a row"
+    assert peak / _BIG_ROWS < _STAGE_BYTES_PER_ROW, f"the pass allocated {peak / _BIG_ROWS:.0f} bytes of Python a row"
     assert l3.statements == 0
     assert _same(backend, l3)
 
@@ -695,17 +718,21 @@ async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(
 #: the audit's real size for a loop bound: a 200,000-row commit applied from its file
 _LOOP_ROWS = 200_000
 
-#: the longest one turn of the loop may run (CPU time, turn_holds) while a pass stages a 200,000-row commit from its
-#: file. Measured 2026-11-23 (macOS arm64, Python 3.14): with the file's changes grouped and each key merged on the
-#: loop, 125.6 ms; with the merge on a thread, 1.5 ms
-_LOOP_TURN_SECONDS = 0.05
+#: the longest one turn of the loop may run (CPU time, turn_holds) while a pass applies a 200,000-row commit from its
+#: file, the collector on (decision 35: a few ms, under the SDK watchdog's 50 ms stall alarm). Measured 2026-11-23
+#: (macOS arm64, Python 3.14), the stage alone: with the file's changes grouped and each key merged on the loop, 125.6
+#: ms; with the merge on a thread but a Python tuple and set a key heard (and the fake log's 400,000 record objects),
+#: 211-375 ms turns, every one a full collection walking them. The whole pass, the keys' hearing with it: a row message,
+#: a tuple and a set a key, 135 ms; every key Arrow (registry, follower and fixture), 0.9 ms
+_LOOP_TURN_SECONDS = 0.010
 
 
-async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(
-    _volume: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Flips if a pass groups a 200,000-row file's changes by key, or merges each key's row, on the event loop (the
-    copy then answered nothing else for that long): the merge runs on a thread, the loop's own part in runs."""
+async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) -> None:
+    """Flips if a pass applying a 200,000-row commit from its file holds one turn of the event loop past 10 ms, the
+    collector on (decision 35): the keys heard a Python object each (a row message a key from the registry, a tuple and
+    a set of epochs a key in the follower, each walked by every full collection), or the file's changes grouped and
+    each key merged on the loop. The whole pass is timed, the keys' hearing with it: the registry hands the file's keys
+    as one Arrow batch, the follower keeps them so, and the merge runs on a thread."""
     world = _world()
     l3, log, lock, backend, follower = world
     born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
@@ -715,35 +742,23 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(
     log.commit([("VA", i) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
-    name = _save(
-        _volume,
-        "loop",
-        ("rows", [_row("VA", i, i + 1, None, _LATER) for i in range(_LOOP_ROWS)], ["state", "geo_id", "votes"]),
-    )
+    name = _save_arrow(_volume, "loop", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"])
     l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
     log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
     lock.commit("state:VA")
-    turns: list[float] = []
-    stage = CopyFollower._stage_keyed  # noqa: SLF001 - the stage alone is timed, the keys heard before it
-
-    async def timed(self: CopyFollower, *args: Any, **kwargs: Any) -> Any:
-        with turn_holds() as holds:
-            staged = await stage(self, *args, **kwargs)
-        turns.extend(seconds for seconds, _ in holds)
-        return staged
-
-    monkeypatch.setattr(CopyFollower, "_stage_keyed", timed)
-    assert await follower.catch_up()
-    longest = max(turns)
+    with turn_holds() as holds:
+        assert await follower.catch_up()
+    longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
     assert _same(backend, l3)
 
 
 #: the longest one turn of the loop may run (CPU time) while a table waiting for a 200,000-key commit too big to list
-#: hears its file's keys. Measured 2026-11-23 (macOS arm64, Python 3.14): the file read whole and every key heard in
-#: one turn, 255 ms; the reach read on a thread and the keys heard in runs of 2,000, 32 ms, all of it one collection
-#: of the collector the keys' new tuples set off (2-4 ms a turn with it held off)
-_WAIT_TURN_SECONDS = 0.05
+#: hears its file's keys, the collector on (decision 35). Measured 2026-11-23 (macOS arm64, Python 3.14): the file read
+#: whole and every key heard in one turn, 255 ms; the reach read on a thread and the keys heard in runs of 2,000, 32 ms
+#: (222 ms on the pool), all of it one collection of the collector the keys' new tuples set off; the keys kept as the
+#: file's one Arrow batch, 0.8-0.9 ms at 200,000 keys
+_WAIT_TURN_SECONDS = 0.010
 
 
 async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns(
@@ -768,11 +783,10 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     lock.commit("state:VA")
     await follower.catch_up()
     assert lost in follower.status().waiting_for_file[_TABLE]
-    rows = [_row("VA", i, i + 1, None, _LATER) for i in range(_LOOP_ROWS)]
     l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
     staging = _volume / "staging"
     staging.mkdir()
-    assert _save(staging, "big", ("rows", rows, ["state", "geo_id", "votes"])) == lost
+    assert _save_arrow(staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]) == lost
     (_volume / lost).parent.mkdir(exist_ok=True)
     with turn_holds() as holds:
         # the writer's file lands whole under its name, as its rename lands it

@@ -77,10 +77,16 @@ def _typed(values: Sequence[Any]) -> Any:
     :return: the array, or None
     :rtype: pyarrow.Array | None
     """
-    try:
-        array = pa.array(list(values))
-    except pa.ArrowException, OverflowError, TypeError:
-        return None  # NOSILENT: a list Arrow cannot type is bound value by value, as before (slow but exact)
+    if isinstance(values, pa.ChunkedArray):
+        values = values.combine_chunks()
+    if isinstance(values, pa.Array):
+        # already Arrow (a copy's keys held as text): bound as they are, never a Python object a value
+        array = values
+    else:
+        try:
+            array = pa.array(list(values))
+        except pa.ArrowException, OverflowError, TypeError:
+            return None  # NOSILENT: a list Arrow cannot type is bound value by value, as before (slow but exact)
     kind = array.type
     if pa.types.is_integer(kind):
         bounds = pc.min_max(array)

@@ -93,7 +93,7 @@ __all__ = [
     "DeltaChange",
     "DeltaFileRefusedError",
     "DeltaFileUnreadableError",
-    "DeltaReach",
+    "DeltaKeys",
     "DeltaTable",
     "HeldDeltaRows",
     "LoadDelta",
@@ -102,9 +102,12 @@ __all__ = [
     "check_delta_scope",
     "delta_files_root",
     "load_delta_rows",
-    "read_delta_file_reach",
+    "joined_key_texts",
+    "key_text_table",
+    "read_delta_file_keys",
     "read_delta_table",
     "read_volume_file",
+    "text_key_batch",
     "sweep_orphan_delta_files",
     "under_prefix",
     "write_delta_file",
@@ -511,17 +514,18 @@ class DeltaTable:
 
 
 @dataclass(frozen=True, slots=True)
-class DeltaReach:
-    """what a delta file reaches, its other columns unread: the keys it names and the prefixes it clears.
+class DeltaKeys:
+    """what a delta file reaches, as Arrow: the keys it names, each once in the order first written, and the prefixes
+    it clears. Never a Python object a key.
 
     :ivar key: the table's key columns, in key order
-    :ivar keys: each key's values as the file holds them, once each in the order first written
+    :ivar keys: one row a key, each key column's values as text (``key_text``), named as the key's columns
     :ivar prefixes: the key prefixes it clears before its rows, as text
     :ivar table: the table the file holds rows of
     """
 
     key: tuple[str, ...]
-    keys: list[tuple[Any, ...]]
+    keys: Any
     prefixes: tuple[dict[str, str], ...]
     table: str = ""
 
@@ -774,22 +778,22 @@ def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
     return DeltaFile(table=read.table, write=read.write, key=read.key, changes=changes, prefixes=read.prefixes)
 
 
-def read_delta_file_reach(path: Path, *, table: str | None = None) -> DeltaReach:
-    """the keys a delta file names, rows and delete markers alike, each once in the order first written, and the key
-    prefixes it clears: its key columns and its metadata alone are read. Blocking: run it on a thread.
+def read_delta_file_keys(path: Path, *, table: str | None = None) -> DeltaKeys:
+    """the keys a delta file names, rows and delete markers alike, each once in the order first written, as Arrow
+    text (``key_text``'s spelling), and the key prefixes it clears: its key columns and its metadata alone are read,
+    the key columns validated in full before a key is decoded, as :func:`read_delta_file` validates every column.
+    Blocking: run it on a thread.
 
-    Why: a commit too big to list its rows in its epoch record names its keys here, and a follower evicts each from
-    every cache it holds (``design-pod-delta-files.md``, decision 21); its other columns, the bulk of the file, are
-    left unread. And a commit that cleared key slices (a load that replaces them, a key-prefix delete) is applied by a follower from
-    its file: the prefixes tell it which of its own rows leave, the keys which rows the file brings (decision 23). The
-    key columns read are validated in full before a key is decoded, as :func:`read_delta_file` validates every column.
+    Why: a copy hears a commit too big to list (337,000 keys in the 2026-11-23 audit) and a load's keys from the file;
+    a Python tuple a key, then a row message a key, cost the event loop a key at a time and left the collector a
+    tuple a key to walk (``design-pod-delta-files.md``, decision 35). Here no key becomes a Python object.
 
     :param path: the file
     :ptype path: Path
     :param table: the table whose file it must be; None checks none
     :ptype table: str | None
     :return: its key columns, keys and prefixes
-    :rtype: DeltaReach
+    :rtype: DeltaKeys
     :raises FileNotFoundError: when it is not there
     :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
         write its name says, or its key columns do not decode
@@ -808,9 +812,72 @@ def read_delta_file_reach(path: Path, *, table: str | None = None) -> DeltaReach
         options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
         keys = pa_ipc.open_file(pa.BufferReader(body), options=options).read_all()
         keys.validate(full=True)
-        values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
-        held = list(dict.fromkeys(values))
-    return DeltaReach(key=key, keys=held, prefixes=prefixes, table=named)
+        texts = key_text_table(keys, key)
+    return DeltaKeys(key=key, keys=_first_written(texts, key), prefixes=prefixes, table=named)
+
+
+def key_text_table(rows: Any, key: Sequence[str]) -> Any:
+    """the key columns of ``rows``, each as text in ``key_text``'s spelling (a change record's, a row message's), named
+    as the key's columns, in key order: what a copy holds a key heard as.
+
+    :param rows: rows holding the key columns
+    :ptype rows: pyarrow.Table
+    :param key: the key columns, in key order
+    :ptype key: Sequence[str]
+    :return: one row a row of ``rows``
+    :rtype: pyarrow.Table
+    """
+    return pa.table({column: _text_column(rows.column(column)) for column in key})
+
+
+def joined_key_texts(rows: Any, key: Sequence[str]) -> Any:
+    """each row's key as one text, its key columns' texts joined by a control character no key value holds: what keys
+    held as text (:func:`key_text_table`) are matched by.
+
+    :param rows: rows holding the key columns as text
+    :ptype rows: pyarrow.Table
+    :param key: the key columns, in key order
+    :ptype key: Sequence[str]
+    :return: one text a row
+    :rtype: pyarrow.Array
+    """
+    columns = [rows.column(column).combine_chunks() for column in key]
+    joined = _key_texts(columns)
+    return joined.combine_chunks() if isinstance(joined, pa.ChunkedArray) else joined
+
+
+def text_key_batch(keys: Sequence[Sequence[str]]) -> Any:
+    """keys given as text, one sequence a key (an epoch record's rows' ``ids``), as one Arrow batch: one row a key, its
+    columns named by position (``k0``, ``k1``, ...), each as text. What the registry tells a cache that takes key
+    batches (``on_keys``) in place of a row message a key.
+
+    :param keys: the keys, each its values as text in key order
+    :ptype keys: Sequence[Sequence[str]]
+    :return: the batch
+    :rtype: pyarrow.Table
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a key batch needs pyarrow: install 3tears[snapshot]")
+    width = len(keys[0]) if keys else 0
+    return pa.table({f"k{at}": pa.array([key[at] for key in keys], pa.string()) for at in range(width)})
+
+
+def _first_written(texts: Any, key: Sequence[str]) -> Any:
+    """``texts`` with each key once, at its first row, in the order first written.
+
+    :param texts: key columns as text
+    :ptype texts: pyarrow.Table
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :return: the keys
+    :rtype: pyarrow.Table
+    """
+    if not texts.num_rows:
+        return texts
+    indices = np.asarray(pc.dictionary_encode(joined_key_texts(texts, key)).indices, dtype=np.int64)
+    _unique, first = np.unique(indices, return_index=True)
+    return texts.take(pa.array(np.sort(first)))
 
 
 def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
@@ -891,20 +958,25 @@ class HeldDeltaRows:
     :ivar applied: how many changes were applied, each once
     """
 
-    def __init__(self, key: Sequence[str], keys: Sequence[Sequence[str]], types: Mapping[str, Any]) -> None:
+    def __init__(self, key: Sequence[str], keys: Any, types: Mapping[str, Any]) -> None:
         """the keys, none held yet.
 
         :param key: the table's key columns, in key order
         :ptype key: Sequence[str]
-        :param keys: the keys, each its values as text (``key_text``), unique; a key's position is its index here
-        :ptype keys: Sequence[Sequence[str]]
+        :param keys: the keys, each its values as text (``key_text``), unique; a key's position is its index here.
+            A table of the key columns as text (:func:`key_text_table`), or one tuple a key
+        :ptype keys: pyarrow.Table | Sequence[Sequence[str]]
         :param types: each column the rows hold, onto its Arrow type, in order
         :ptype types: Mapping[str, pyarrow.DataType]
         """
         self.key = tuple(key)
         self._types = dict(types)
-        self._count = len(keys)
-        texts = [pa.array([values[at] for values in keys], pa.string()) for at in range(len(self.key))]
+        if isinstance(keys, pa.Table):
+            self._count = keys.num_rows
+            texts = [keys.column(column).combine_chunks().cast(pa.string()) for column in self.key]
+        else:
+            self._count = len(keys)
+            texts = [pa.array([values[at] for values in keys], pa.string()) for at in range(len(self.key))]
         self._key_columns = dict(zip(self.key, texts, strict=True))
         self._texts = _key_texts(texts)
         self._columns = {name: pa.nulls(self._count, kind) for name, kind in self._types.items()}

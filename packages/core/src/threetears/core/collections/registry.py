@@ -17,9 +17,10 @@ from threetears.nats.errors import PublishError
 from threetears.core.keyed import WholeReads
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
-    DeltaReach,
+    DeltaKeys,
     delta_files_root,
-    read_delta_file_reach,
+    read_delta_file_keys,
+    text_key_batch,
 )
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.epoch_change import (
@@ -408,6 +409,11 @@ class DerivedCacheRegistration:
         file missing or unreadable (:class:`WantedFile`). A copy then waits for the writer to recreate it and reads
         nothing from L3 (decision 29). ``None`` keeps the paths before it: the record's prefixes for a load or a
         clear, the change notes for a commit too big to list
+    :ivar on_keys: called, in place of :attr:`on_row` a key, with an epoch's keys as ONE Arrow batch: an epoch
+        record's rows, a delta file's keys (a commit too big to list, a load's or a clear's). The batch holds one
+        row a key, its key columns' values as text in key order, named ``k0``, ``k1``, ...; the epoch is the one each
+        row message would have carried. A copy keeps it as it is: never a Python object a key (decision 35). ``None``
+        is told each key by ``on_row``
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
@@ -418,6 +424,7 @@ class DerivedCacheRegistration:
     on_table_reset: Callable[[str | None], None] | None = None
     on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None
     on_file_wanted: Callable[[WantedFile], None] | None = None
+    on_keys: Callable[[Any, str | None], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1220,12 +1227,20 @@ class CollectionRegistry:
                     change.table, change.prefixes, reason=f"epoch {change.token} loaded or cleared key prefixes"
                 )
             elif change.partition:
-                await self.drop_partition(change.table, change.partition, reason=f"epoch {change.token} loaded a partition")
+                await self.drop_partition(
+                    change.table, change.partition, reason=f"epoch {change.token} loaded a partition"
+                )
             else:
                 self.drop_table(
                     change.table, reason=f"epoch {change.token} changed the whole table", why="whole_record"
                 )
             return
+        batched = self._key_batch_takers(change.table)
+        if batched:
+            # a cache that takes key batches (a copy) is told the record's keys once, as Arrow
+            keys = text_key_batch([row.ids for row in change.rows])
+            for registration in batched:
+                registration.on_keys(keys, change.token)  # type: ignore[misc]  # narrowed by _key_batch_takers
         for row in change.rows:
             # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
             await self._apply_row_message(
@@ -1236,7 +1251,8 @@ class CollectionRegistry:
                     generation=change.token,
                     bump_rows=len(change.rows),
                     columns=dict(row.columns) if row.columns is not None else None,
-                )
+                ),
+                batched=bool(batched),
             )
 
     async def _apply_file_prefixes(self, change: EpochChange) -> bool:
@@ -1281,18 +1297,7 @@ class CollectionRegistry:
             reason=f"epoch {change.token} loaded or cleared key prefixes, applied from its delta file",
             cleared=([dict(prefix) for prefix in reach.prefixes], change.token),
         )
-        for index, values in enumerate(reach.keys):
-            if index and not index % _NOTED_ROWS_PER_YIELD:
-                # a large load yields between runs of its keys, so the loop answers everything else between
-                await asyncio.sleep(0)
-            await self._apply_row_message(
-                CacheInvalidationMessage(
-                    table=change.table,
-                    ids=[key_text(value) for value in values],
-                    generation=change.token,
-                    bump_rows=len(reach.keys),
-                )
-            )
+        await self._tell_keys(change.table, change.token, reach)
         log.info(
             "a load's or a clear's epoch applied from its delta file",
             extra={
@@ -1301,7 +1306,7 @@ class CollectionRegistry:
                     "epoch": change.token,
                     "file": change.delta_file,
                     "cleared": [dict(prefix) for prefix in reach.prefixes[:20]],
-                    "keys": len(reach.keys),
+                    "keys": reach.keys.num_rows,
                 }
             },
         )
@@ -1341,22 +1346,62 @@ class CollectionRegistry:
                 },
             )
             return False
-        keys = reach.keys
-        for index, values in enumerate(keys):
-            if index and not index % _NOTED_ROWS_PER_YIELD:
-                # a large commit yields between runs of its keys, so the loop answers everything else between
-                await asyncio.sleep(0)
-            await self._apply_row_message(
-                CacheInvalidationMessage(
-                    table=change.table,
-                    ids=[key_text(value) for value in values],
-                    generation=change.token,
-                    bump_rows=len(keys),
-                )
-            )
+        await self._tell_keys(change.table, change.token, reach)
         return True
 
-    async def _file_reach(self, change: EpochChange) -> DeltaReach | str:
+    def _key_batch_takers(self, table_name: str) -> list[DerivedCacheRegistration]:
+        """the caches derived from ``table_name`` told an epoch's keys as one Arrow batch (``on_keys``).
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the registrations
+        :rtype: list[DerivedCacheRegistration]
+        """
+        return [registration for registration in self._derived_caches.get(table_name, ()) if registration.on_keys]
+
+    async def _tell_keys(self, table_name: str, token: str, reach: DeltaKeys) -> None:
+        """apply each key a delta file names, as its row message stamped with the epoch would be applied: a cache that
+        takes key batches (a copy, ``on_keys``) is told them once, as the file's Arrow; every other one, and this
+        process's own caches of the table, a row message a key, as before.
+
+        Why: a commit too big to list names hundreds of thousands of keys (337,000 in the 2026-11-23 audit); a row
+        message a key cost the loop a key at a time, and the copy a Python object a key (decision 35). A row message
+        is built only for a cache that needs one: none when the copy is the table's only cache here.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param token: the epoch
+        :ptype token: str
+        :param reach: what the file names
+        :ptype reach: DeltaKeys
+        :return: nothing
+        :rtype: None
+        """
+        batched = self._key_batch_takers(table_name)
+        keys = reach.keys
+        if batched:
+            positional = keys.rename_columns([f"k{at}" for at in range(keys.num_columns)])
+            for registration in batched:
+                registration.on_keys(positional, token)  # type: ignore[misc]  # narrowed by _key_batch_takers
+        others = len(self._derived_caches.get(table_name, ())) > len(batched)
+        if not others and table_name not in self._collections:
+            # no cache here needs a row message: the scans the table's rows feed still drop, as a row's would
+            self.scan_cache.drop_for_table(table_name)
+            return
+        count = keys.num_rows
+        for start in range(0, count, _NOTED_ROWS_PER_YIELD):
+            if start:
+                # a large commit yields between runs of its keys, so the loop answers everything else between
+                await asyncio.sleep(0)
+            # a run of keys as Python, for the caches that take a row message a key: bounded by the run
+            run = keys.slice(start, _NOTED_ROWS_PER_YIELD)
+            for values in zip(*(run.column(at).to_pylist() for at in range(run.num_columns)), strict=True):
+                await self._apply_row_message(
+                    CacheInvalidationMessage(table=table_name, ids=list(values), generation=token, bump_rows=count),
+                    batched=bool(batched),
+                )
+
+    async def _file_reach(self, change: EpochChange) -> DeltaKeys | str:
         """what the delta file an epoch's record names reaches, read off the volume (its key columns and metadata).
 
         :param change: a record naming its delta file
@@ -1364,7 +1409,7 @@ class CollectionRegistry:
         :return: the reach; or why it cannot be had: ``file_missing`` (no volume mounted, or not on it) or
             ``file_unreadable`` (on it, and not a delta file of the table: truncated, garbage, another format, another
             table's or write's)
-        :rtype: DeltaReach | str
+        :rtype: DeltaKeys | str
         :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
         """
         assert change.delta_file is not None  # noqa: S101 -- the callers' condition
@@ -1372,7 +1417,7 @@ class CollectionRegistry:
         if root is None:
             return "file_missing"
         try:
-            return await asyncio.to_thread(read_delta_file_reach, root / change.delta_file, table=change.table)
+            return await asyncio.to_thread(read_delta_file_keys, root / change.delta_file, table=change.table)
         except FileNotFoundError:
             return "file_missing"  # NOSILENT: returned as why; the caller counts and logs it, or waits for the file
         except DeltaFileUnreadableError as exc:
@@ -1793,6 +1838,7 @@ class CollectionRegistry:
         on_table_reset: Callable[[str | None], None] | None = None,
         on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None,
         on_file_wanted: Callable[[WantedFile], None] | None = None,
+        on_keys: Callable[[Any, str | None], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1840,6 +1886,9 @@ class CollectionRegistry:
             or unreadable), so a copy waits for the writer to recreate it (:class:`DerivedCacheRegistration`); ``None``
             keeps the paths before it
         :ptype on_file_wanted: Callable[[WantedFile], None] | None
+        :param on_keys: told, in place of ``on_row`` a key, an epoch's keys as one Arrow batch (an epoch record's rows,
+            a delta file's keys) and the epoch (:class:`DerivedCacheRegistration`); ``None`` is told each by ``on_row``
+        :ptype on_keys: Callable[[pyarrow.Table, str | None], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
@@ -1852,6 +1901,7 @@ class CollectionRegistry:
             on_table_reset=on_table_reset,
             on_file_prefixes=on_file_prefixes,
             on_file_wanted=on_file_wanted,
+            on_keys=on_keys,
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)
@@ -2025,7 +2075,7 @@ class CollectionRegistry:
         self._nats_client = nats_client
         self._invalidation_subscription = subscription
 
-    async def _apply_row_message(self, message: CacheInvalidationMessage) -> None:
+    async def _apply_row_message(self, message: CacheInvalidationMessage, *, batched: bool = False) -> None:
         """evict one changed row from everything this process holds of it: scans, derived caches, L2, L1.
 
         What hearing a peer's row broadcast does, and what applying an epoch's change record does for
@@ -2033,6 +2083,8 @@ class CollectionRegistry:
 
         :param message: the row message
         :ptype message: CacheInvalidationMessage
+        :param batched: the caches that take key batches (``on_keys``) were told this row with its epoch's batch
+        :ptype batched: bool
         :return: nothing
         :rtype: None
         """
@@ -2048,7 +2100,13 @@ class CollectionRegistry:
         # One that raises must not cost the row its eviction, so the row is evicted either
         # way and the failure then surfaces, leaving the message uncounted.
         try:
-            self.tell_derived_caches(message)
+            if batched:
+                # the caches that take key batches were told this row with its epoch's batch
+                for registration in tuple(self._derived_caches.get(message.table, ())):
+                    if registration.on_keys is None:
+                        registration.on_row(message)
+            else:
+                self.tell_derived_caches(message)
         finally:
             await self._evict_collection_row(message)
 

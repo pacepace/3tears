@@ -35,7 +35,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     apply_delta_row,
     load_delta_rows,
     read_delta_file,
-    read_delta_file_reach,
+    read_delta_file_keys,
     sweep_orphan_delta_files,
     write_delta_file,
 )
@@ -462,7 +462,7 @@ def test_every_byte_flipped_in_a_delta_file_is_read_as_unreadable_never_as_other
         flipped[offset] ^= 0x5A
         probe.write_bytes(bytes(flipped))
         flips += 1
-        for read in (read_delta_file, read_delta_file_reach, read_volume_file):
+        for read in (read_delta_file, read_delta_file_keys, read_volume_file):
             try:
                 read(probe)
             except DeltaFileUnreadableError:
