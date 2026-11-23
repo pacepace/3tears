@@ -91,7 +91,6 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file re
 
 __all__ = [
     "DeltaChange",
-    "DeltaFile",
     "DeltaFileRefusedError",
     "DeltaFileUnreadableError",
     "DeltaReach",
@@ -103,7 +102,6 @@ __all__ = [
     "check_delta_scope",
     "delta_files_root",
     "load_delta_rows",
-    "read_delta_file",
     "read_delta_file_reach",
     "read_delta_table",
     "read_volume_file",
@@ -465,7 +463,8 @@ class DeltaChange:
 
 @dataclass(frozen=True, slots=True)
 class DeltaFile:
-    """a delta file read back: the table it holds rows of, the write that saved it, and its changes in order.
+    """a delta file read back as Python changes (:func:`read_delta_file`, a test's reader, out of ``__all__``): the
+    table it holds rows of, the write that saved it, and its changes in order.
 
     :ivar table: the table
     :ivar write: the write's unique id
@@ -749,8 +748,9 @@ def read_delta_table(path: Path, *, table: str | None = None) -> DeltaTable:
 def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
     """read a delta file saved by :func:`write_delta_file` as Python changes. Blocking: run it on a thread.
 
-    Every row becomes a Python dict (about ten times its Arrow): for a test, a tool or a small file. A copy applies a
-    file from its Arrow (:func:`read_delta_table`, :class:`HeldDeltaRows`).
+    Every row becomes a Python dict (about ten times its Arrow): for a test reading a small file back, and kept out of
+    ``__all__`` for that (no production path reads one so since the copy applies a file from its Arrow,
+    :func:`read_delta_table`, :class:`HeldDeltaRows`).
 
     :param path: the file
     :ptype path: Path
