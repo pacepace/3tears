@@ -75,6 +75,7 @@ __all__ = [
     "apply_delta_row",
     "delta_files_root",
     "read_delta_file",
+    "read_delta_file_keys",
     "sweep_orphan_delta_files",
     "write_delta_file",
 ]
@@ -348,6 +349,40 @@ def read_delta_file(path: Path) -> DeltaFile:
         key=tuple(json.loads(metadata[_KEY_METADATA])),
         changes=changes,
     )
+
+
+def read_delta_file_keys(path: Path) -> tuple[tuple[str, ...], list[tuple[Any, ...]]]:
+    """the keys a delta file names, rows and delete markers alike, each once in the order first written: its key
+    columns alone are read. Blocking: run it on a thread.
+
+    Why: a commit too big to list its rows in its epoch record names its keys here, and a follower evicts each from
+    every cache it holds (``design-pod-delta-files.md``, decision 21); its other columns, the bulk of the file, are
+    left unread.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the table's key columns, in key order; and each key's values as the file holds them
+    :rtype: tuple[tuple[str, ...], list[tuple[Any, ...]]]
+    :raises ValueError: when the file is not of this format
+    :raises OSError: when it cannot be read
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+    with pa.memory_map(str(path)) as source:
+        schema = pa_ipc.open_file(source).schema
+        metadata = schema.metadata or {}
+        if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
+            raise ValueError(
+                f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's "
+                f"{_DELTA_FORMAT!r}"
+            )
+        key = tuple(json.loads(metadata[_KEY_METADATA]))
+        source.seek(0)
+        options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
+        keys = pa_ipc.open_file(source, options=options).read_all()
+    values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
+    return key, list(dict.fromkeys(values))
 
 
 def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:

@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a commit too big to list its rows is applied from its whole delta file
+
+**Changed:** a keys-unknown epoch record that names its delta file has its keys named from the file
+(`read_delta_file_keys`, its key columns alone read), each applied stamped with the epoch, instead of from the change
+notes; a copy follower of the table stages every row and delete marker of the file onto its own rows, reading neither
+the notes nor L3. A follower restarted from a checkpoint older than the notes' coverage now catches up instead of
+staying behind as `notes_not_covered`. A record naming no file, or a file the volume does not hold (logged at
+WARNING), is named from the notes as before. A key heard at several records of one commit (each names its one file)
+is applied from the file once, and a file is read once a pass.
+
 ### core: a delta file never guesses what the database decides
 
 **Added:** a column whose `server_default` is a fixed literal of its own type has that value written into a delta

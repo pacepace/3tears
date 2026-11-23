@@ -26,7 +26,10 @@ applied in order, merged as L3 merged them (:func:`~threetears.core.collections.
 statement reaches L3, however many pods follow (``design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
 are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose file cannot
 be had (a lost volume, an older writer's record) is read from L3 by key as for any table, counted by why
-(``copy_follower_delta_file_fallback_keys_total``).
+(``copy_follower_delta_file_fallback_keys_total``). A commit too big to list its rows (a keys-unknown record) that
+names its file is applied whole from it: the registry names every key the file holds, stamped with the epoch, and
+each is staged from the file as above, so neither the change notes nor L3 is read for it and nothing a restarted copy
+needs expires (decision 21). A commit of several records names one file in each; a key is applied from it once.
 
 **Bounded.** What this process holds of a change is a page of rows at a time: each page is staged as it is read.
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
@@ -2031,14 +2034,21 @@ class CopyFollower:
         return rows
 
     async def _delta_file_of(
-        self, table: FollowedTable, epoch: str
+        self,
+        table: FollowedTable,
+        epoch: str,
+        files: Mapping[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
     ) -> tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]:
-        """the changes of one epoch's delta file, by key: the file its record names, read off the shared volume.
+        """the changes of one epoch's delta file, by key: the file its record names, read off the shared volume, or
+        taken from another epoch of this pass that named the same file (each of a commit's records names its one
+        file), so a file is read once a pass.
 
         :param table: a table that opts in to delta files
         :ptype table: FollowedTable
         :param epoch: the epoch, as its advance wrote it
         :ptype epoch: str
+        :param files: the files read this pass, by epoch
+        :ptype files: Mapping[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
         :return: each key's changes in the order written, or why the file cannot be had (a
             :data:`_DELTA_FILE_FALLBACKS` why); and the file's name when the record names one
         :rtype: tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]
@@ -2049,6 +2059,9 @@ class CopyFollower:
             return "record_missing", None
         if record.delta_file is None:
             return "no_file_named", None
+        for read, named in files.values():
+            if named == record.delta_file and not isinstance(read, str):
+                return read, named
         root = delta_files_root()
         if root is None:
             return "file_missing", record.delta_file
@@ -2163,7 +2176,8 @@ class CopyFollower:
         :ptype epochs: frozenset[str | None]
         :param files: the files read this pass, by epoch
         :ptype files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
-        :return: None and the epochs in order; or why, and the file named when one is
+        :return: None and the epochs in order, one a delta file (a commit of several records is applied once); or
+            why, and the file named when one is
         :rtype: tuple[str | None, str | None, list[str]]
         """
         parts = [split_generation_token(epoch) if epoch is not None else None for epoch in epochs]
@@ -2171,16 +2185,24 @@ class CopyFollower:
             # heard with no epoch, or under two incarnations of the log, whose counts do not order them
             return "no_epoch", None, []
         order = [f"{incarnation}:{count}" for incarnation, count in sorted(part for part in parts if part is not None)]
+        applied: list[str] = []
+        named_files: set[str | None] = set()
         for epoch in order:
             if epoch not in files:
-                files[epoch] = await self._delta_file_of(table, epoch)
+                files[epoch] = await self._delta_file_of(table, epoch, files)
             of, named = files[epoch]
             if isinstance(of, str):
                 return of, named, []
             if key not in of:
                 # the record named this key at this epoch and its file holds no change of it: never guessed
                 return "key_not_in_file", named, []
-        return None, None, order
+            if named in named_files:
+                # another record of the same commit: its file holds the key's every change of the commit, applied
+                # once at the commit's first record; applying it again would replay the commit over itself
+                continue
+            named_files.add(named)
+            applied.append(epoch)
+        return None, None, applied
 
     def _fell_back(self, table: FollowedTable, fallbacks: Mapping[str, Mapping[str, Any]]) -> None:
         """count and say the keys of a table that opts in to delta files a pass read from L3 instead of their files.

@@ -15,6 +15,7 @@ from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, 
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
 from threetears.core.keyed import WholeReads
+from threetears.core.collections.delta_files import delta_files_root, read_delta_file_keys
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
@@ -1131,13 +1132,15 @@ class CollectionRegistry:
         applied_any = False
         for change in walk.changes:
             if change.keys_unknown and not marks.heard_in_full(table_name, change.token):
-                # a commit too large to record names its keys in the change notes: read them, a page at a time
-                why = await self._apply_noted_keys(change)
-                if why is not None:
-                    hole = hole or (change.token, why)
-                    continue
-                assert change.noted_between is not None  # noqa: S101 -- named from notes only within a bracket
-                self._noted(table_name, change.noted_between[0])
+                # a commit too large to record names its keys in its delta file when its record names one, which
+                # never expires; else in the change notes, read a page at a time
+                if not await self._apply_file_keys(change):
+                    why = await self._apply_noted_keys(change)
+                    if why is not None:
+                        hole = hole or (change.token, why)
+                        continue
+                    assert change.noted_between is not None  # noqa: S101 -- named from notes only within a bracket
+                    self._noted(table_name, change.noted_between[0])
                 if hole is None:
                     reached = change.token
                 marks.applied(table_name, change.token)
@@ -1210,6 +1213,55 @@ class CollectionRegistry:
                     columns=dict(row.columns) if row.columns is not None else None,
                 )
             )
+
+    async def _apply_file_keys(self, change: EpochChange) -> bool:
+        """apply a keys-unknown epoch's rows as its delta file names them, each as its row message would be, stamped
+        with the epoch: a copy follower of the table applies the whole file from it, every row and delete marker.
+
+        Why the file and not the change notes: the notes are short-lived, so a follower restarted from a checkpoint
+        older than their coverage could never name the commit's keys and stayed behind; the file is kept as long as
+        any copy may need it, and names exactly the commit's keys (``design-pod-delta-files.md``, decision 21).
+
+        :param change: a keys-unknown record
+        :ptype change: EpochChange
+        :return: ``True`` once every key the file names is applied; ``False`` when the record names no file, or the
+            file cannot be had (no volume mounted, or the volume lost it), for the notes to name the keys instead
+        :rtype: bool
+        """
+        if change.delta_file is None:
+            return False
+        root = delta_files_root()
+        try:
+            if root is None:
+                raise FileNotFoundError("no delta files' directory is mounted")
+            _, keys = await asyncio.to_thread(read_delta_file_keys, root / change.delta_file)
+        except FileNotFoundError as exc:
+            # NOSILENT: a lost or unmounted volume; the change notes name the keys, as before delta files
+            log.warning(
+                "a keys-unknown epoch's delta file cannot be had: its keys are named from the change notes",
+                extra={
+                    "extra_data": {
+                        "table": change.table,
+                        "epoch": change.token,
+                        "file": change.delta_file,
+                        "error": str(exc),
+                    }
+                },
+            )
+            return False
+        for index, values in enumerate(keys):
+            if index and not index % _NOTED_ROWS_PER_YIELD:
+                # a large commit yields between runs of its keys, so the loop answers everything else between
+                await asyncio.sleep(0)
+            await self._apply_row_message(
+                CacheInvalidationMessage(
+                    table=change.table,
+                    ids=[key_text(value) for value in values],
+                    generation=change.token,
+                    bump_rows=len(keys),
+                )
+            )
+        return True
 
     async def _apply_noted_keys(self, change: EpochChange) -> str | None:
         """apply a keys-unknown epoch's rows as the change notes name them, each as its row message would be.

@@ -11,7 +11,10 @@ statement reached L3" are both checked. The contract this pins:
 - a record naming a file the volume does not hold reads that change from L3 by key, counted by why;
 - a table that does not opt in reads L3 as before, counted as no fallback;
 - a key a pass leaves out (its scope moved under the read) is staged again from its files by the next pass, every
-  epoch of it in order, with no L3 read.
+  epoch of it in order, with no L3 read;
+- a commit too big to list its rows (keys unknown) whose record names its file is applied whole from the file, with
+  no L3 statement and no read of the change notes; one whose record names none is named from the notes as before;
+- a commit of several records, each naming its one file, is applied once.
 """
 
 from __future__ import annotations
@@ -35,6 +38,9 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
+import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+import threetears.core.collections.delta_files as delta_files  # noqa: E402
+from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
@@ -161,6 +167,15 @@ class _Log:
         )
         return token
 
+    def too_large(self, delta_file: str | None) -> str:
+        """a commit the broker recorded keys unknown, with its notes bracket, naming its file when it saved one."""
+        self.count += 1
+        token = f"inc:{self.count}"
+        self.records[token] = EpochChange(
+            table=_TABLE, token=token, keys_unknown=True, noted_between=(_LATER, _LATER), delta_file=delta_file
+        )
+        return token
+
     async def change(self, table_name: str, token: str) -> EpochChange | None:
         return self.records.get(token)
 
@@ -192,13 +207,28 @@ class _Scopes:
             self.epochs[scope] = self.version
 
 
-def _world(*, delta_files: bool = True) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
+class _Notes:
+    """the change notes as the broker's l3.noted_keys door answers them: one page of the keys given; counts each ask."""
+
+    def __init__(self, keys: Sequence[tuple[str, ...]] = ()) -> None:
+        self.keys = tuple(keys)
+        self.asked = 0
+
+    async def noted_keys(self, table: str, **_: Any) -> NotedKeysPage:
+        self.asked += 1
+        return NotedKeysPage(keys=self.keys, whole_table=False, next=None)
+
+
+def _world(
+    *, delta_files: bool = True, notes: _Notes | None = None
+) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
     _OPENED.append(backend.reset)
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
+    registry.set_noted_keys_reader(notes)
     follower = CopyFollower(
         registry,
         [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)],
@@ -402,3 +432,102 @@ async def test_a_key_left_out_of_a_change_is_staged_again_from_its_files_next_pa
         ).fetchone() == (40, "late")
     assert l3.statements == 0
     assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_commit_too_big_to_list_is_applied_whole_from_its_file_reading_neither_l3_nor_the_notes(
+    _volume: Path,
+) -> None:
+    """Flips if a keys-unknown commit whose record names its file is named from the change notes, or any of its rows
+    read from L3: the notes expire, which left a restarted copy behind on 2026-11-23, and L3 is what election night
+    could not carry. Every row and delete marker of the file is applied, merged onto the copy's rows (decision 21)."""
+    notes = _Notes()
+    world = _world(notes=notes)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    updated, inserted = _row("VA", 1, 99, None, _LATER), _row("IL", 700, 7, "new", _LATER)
+    name = _save(
+        _volume,
+        "big",
+        ("rows", [updated], ["state", "geo_id", "votes"]),
+        ("rows", [inserted], list(_NAMES)),
+        ("deletes", [("VA", 4), ("IL", 0)], ()),
+    )
+    l3.update(("VA", 1), votes=99)
+    l3.insert([inserted])
+    l3.delete(("VA", 4))
+    l3.delete(("IL", 0))
+    log.too_large(name)
+    lock.commit("state:VA", "state:IL")
+
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert (l3.statements, notes.asked) == (0, 0)
+    assert follower.status().behind == {}
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a key heard at two records of one commit (each record of a commit names its one file) has the file
+    read, or its changes applied, once per record: the commit would be replayed over itself, a pass's work doubled.
+    The file is read once, and each change of it applied once."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    name = _save(
+        _volume,
+        "runs",
+        ("rows", [_row("VA", 1, 51, None, _LATER), _row("VA", 2, 52, None, _LATER)], ["state", "geo_id", "votes"]),
+        ("rows", [_row("VA", 1, 0, "again", _LATER)], ["state", "geo_id", "note"]),
+    )
+    l3.update(("VA", 1), votes=51, note="again")
+    l3.update(("VA", 2), votes=52)
+    # the commit's rows in two runs, each its own record naming the one file; VA 1 is in both
+    log.commit([("VA", 1)], delta_file=name)
+    log.commit([("VA", 1), ("VA", 2)], delta_file=name)
+    lock.commit("state:VA")
+    reads: list[Path] = []
+    applies: list[Any] = []
+    read, apply = delta_files.read_delta_file, delta_files.apply_delta_row
+
+    def counted_read(path: Path) -> Any:
+        reads.append(path)
+        return read(path)
+
+    def counted_apply(held: Any, change: Any) -> Any:
+        applies.append(change)
+        return apply(held, change)
+
+    monkeypatch.setattr(copy_follower, "read_delta_file", counted_read)
+    monkeypatch.setattr(copy_follower, "apply_delta_row", counted_apply)
+
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert l3.statements == 0
+    assert len(reads) == 1
+    assert len(applies) == 3, "VA 1's two changes and VA 2's one, each once"
+
+
+async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from_the_notes() -> None:
+    """Flips if a keys-unknown record that names no file (a writer before delta files) stops being named from the
+    change notes: its keys come from them, with no epoch, and are read from L3 by key, counted ``no_epoch``."""
+    notes = _Notes([("VA", "1"), ("VA", "3")])
+    world = _world(notes=notes)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    before = _fallbacks("no_epoch")
+    l3.update(("VA", 1), votes=31)
+    l3.update(("VA", 3), votes=33)
+    log.too_large(None)
+    lock.commit("state:VA")
+
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert notes.asked == 1
+    assert l3.statements == 1
+    assert _fallbacks("no_epoch") - before == 2
+    assert follower.status().behind == {}

@@ -14,7 +14,8 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 - a reader's stamp is exactly the change its snapshot holds;
 - a commit too large to record (keys unknown, with its notes bracket) reaches the copy exactly from the keys its
   change notes name; notes that cannot name them, or a hub with no door to ask, leave the copy as it was and the
-  follower behind with why, until the log is put back.
+  follower behind with why, until the log is put back; one whose record names its delta file is applied from the
+  file, so a follower restarted from a checkpoint older than the notes still catches up.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import json
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any
@@ -59,7 +61,8 @@ from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysP
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.nats import Subject  # noqa: E402
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
-from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, rail_arrow_types  # noqa: E402
+from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 
@@ -503,11 +506,14 @@ def _replica(
     owner: str,
     part_rows: int = 40,
     notes: Any = None,
+    delta_files: bool = False,
     **stamps: Any,
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
     backend = _backend()
     backend.initialize(_metadata())
-    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
+    tables = [
+        FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)
+    ]
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=tables,
@@ -1021,6 +1027,51 @@ async def test_an_epoch_taken_from_the_notes_makes_a_checkpoint_due_before_they_
     assert await follower.catch_up()
     assert follower.status().behind == {}
     assert _copy(second) == l3.held()
+
+
+async def test_a_restart_from_a_checkpoint_older_than_the_notes_catches_up_from_the_commits_delta_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a keys-unknown commit whose record names its delta file is still named from the change notes: on
+    2026-11-23 a follower restarted from a checkpoint older than the notes' coverage met such an epoch, found its
+    notes gone (``notes_not_covered``) and stayed behind. The file never expires, so the restart applies the whole
+    commit from it, rows and deletes, reading neither the notes nor L3 (``design-pod-delta-files.md``, decision 21).
+    """
+    monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    notes = _Covered([])
+    _, writer, _ = _replica(l3, log, lock, store, pointers, "a", notes=notes, delta_files=True)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert _pointer_seq(pointers) == 1
+    # a commit too big to list: updates, an insert and deletes, its file saved before it, its record keys unknown
+    changed = [("VA", i, 1000 + i) for i in range(50, 120)] + [("VA", 900, 9)]
+    delta = TableDelta(name=_TABLE, types=rail_arrow_types(_COLUMNS), key=_KEY)
+    delta.rows([{"state": s, "geo_id": g, "votes": v} for s, g, v in changed], ["state", "geo_id", "votes"])
+    delta.deletes([("VA", 3), ("VA", 4)])
+    name = write_delta_file(tmp_path, delta, "big")
+    l3.put(changed)
+    l3.delete([("VA", 3), ("VA", 4)])
+    since, until = _too_large(log)
+    log.records[f"inc:{log.count}"] = EpochChange(
+        table=_TABLE, token=f"inc:{log.count}", keys_unknown=True, noted_between=(since, until), delta_file=name
+    )
+    lock.version += 1
+    # the ring switched past the commit's bracket before the restart: the notes can no longer name its keys
+    notes.emptied = True
+    l3.rows_read, l3.statements = 0, 0
+
+    second, follower, _ = _replica(l3, log, lock, store, pointers, "b", notes=notes, delta_files=True)
+    assert await follower.start()
+    assert await follower.catch_up()
+
+    assert follower.status().behind == {}, "never notes_not_covered: the file names the commit"
+    assert _copy(second) == l3.held()
+    assert (l3.statements, notes.pages) == (0, 0), "neither L3 nor the notes read"
+    assert follower.stamp == lock.version
 
 
 async def test_a_quiet_copy_still_checkpoints_an_epoch_taken_from_the_notes_before_they_go() -> None:
