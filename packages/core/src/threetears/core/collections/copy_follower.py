@@ -505,6 +505,11 @@ class _FileWait:
         return f"{self.file} of epoch {self.epoch}: {self.why}; {asked}"
 
 
+#: every scope the stamp names: a waiting table whose held changes' scopes are not known holds them all
+#: (:meth:`CopyFollower._waiting_scopes`); compared by identity
+_EVERY_SCOPE: Final = frozenset({"\x00every scope"})
+
+
 class _FileWaitError(RuntimeError):
     """a pass found a key's epoch file missing or unreadable: the table waits for it, its keys held (decision 29).
 
@@ -2252,7 +2257,13 @@ class CopyFollower:
             return False
         assert self._applied_mark is not None  # noqa: S101 -- narrowed by the caller (a mark in self._stamps)
         # a table waiting for a delta file keeps the mark it was last current at: its held changes are not in the copy
-        self._current_marks.update({name: marks.get(name) for name in self._tables if name not in self._file_waits})
+        self._current_marks.update(
+            {
+                name: marks.get(name)
+                for name in self._tables
+                if name not in self._file_waits and name not in self._full_after
+            }
+        )
         # one assignment: a reader on another thread reads the old entry or the new, never half of one
         self._stamps[self._applied_mark] = (label, dict(self._current_marks))
         self._status.stamp = label
@@ -2384,18 +2395,56 @@ class CopyFollower:
         :return: the label
         :rtype: Any
         """
-        if not isinstance(first, Unsettled) and not left:
-            return first
         scoped = _scoped(first)
+        waiting = self._waiting_scopes() if scoped is not None else frozenset()
+        if not isinstance(first, Unsettled) and not left and not waiting:
+            return first
         epochs = dict(scoped[0]) if scoped is not None else dict(first.epochs or {})
         before = _scoped(self._status.stamp)
         kept = before[0] if before is not None else {}
-        older = held | left
+        if waiting is _EVERY_SCOPE:
+            waiting = frozenset(epochs) | frozenset(kept)
+        older = held | left | waiting
         for scope in older:
             epochs.pop(scope, None)
             if scope in kept:
                 epochs[scope] = kept[scope]
         return PartialStamp(epochs=epochs, held=older, version=getattr(first, "version", None))
+
+    def _waiting_scopes(self) -> frozenset[str]:
+        """the scopes whose rows a waiting table holds back: a table waiting for a delta file (decision 29), for its
+        full after a reset or a schema change, or for the writer's recovery of a lost log (decision 28). Its rows in
+        those scopes are as the copy held them, older than the stamp, so the label keeps each such scope at the epoch
+        the copy holds it at (:meth:`_label`), as a scope a write in progress holds: a reader is never told stale rows
+        are current.
+
+        Which scopes: each a held key, partition or cleared prefix names, for a file wait whose change is keyed. A
+        wait whose reach is not known (a reset, a lost log, a load's or a big commit's file not yet read, a key whose
+        scope is only in its row) holds every scope (:data:`_EVERY_SCOPE`). A table of no scope is labelled by its own
+        mark, which a waiting table never moves (:meth:`_catch_up`, :meth:`_relabel`).
+
+        :return: the scopes, or :data:`_EVERY_SCOPE`
+        :rtype: frozenset[str]
+        """
+        scopes: set[str] = set()
+        for name in sorted(set(self._file_waits) | set(self._full_after)):
+            table = self._tables[name]
+            if table.scope is None:
+                continue
+            if name in self._full_after:
+                return _EVERY_SCOPE
+            if any(wait.reach != "keys" for wait in self._file_waits[name].values()):
+                return _EVERY_SCOPE
+            at = table.scope_in_key
+            column = table.scope[0]
+            if self._pending[name] and at is None:
+                return _EVERY_SCOPE
+            scopes.update(table.scope_of(key[at]) for key in self._pending[name] if at is not None)
+            reached = [*self._partitions[name], *(p for _, cleared in self._cleared.get(name, []) for p in cleared)]
+            if any(column not in prefix for prefix in reached):
+                return _EVERY_SCOPE
+            scopes.update(table.scope_of(prefix[column]) for prefix in reached)
+        return frozenset(scopes)
 
     def _splittable(self, name: str) -> bool:
         """whether a table's stage may lose some keys and keep the rest: a keyed stage, never a whole read's or a

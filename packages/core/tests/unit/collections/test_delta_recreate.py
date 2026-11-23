@@ -50,7 +50,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
-from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
     _CHECKSUM_MARK,
     _CHECKSUM_TRAILER,
@@ -527,6 +527,44 @@ async def test_a_copy_finding_a_changes_file_missing_or_unreadable_reads_no_l3_a
         == 1
     )
     assert world.writer_l3.statements == 1, "the writer read the change's two keys in one keyed statement"
+
+
+async def test_a_table_waiting_for_a_file_keeps_the_scopes_of_its_held_keys_at_the_epoch_the_copy_holds(
+    _volume: Path,
+) -> None:
+    """Flips if, while a table waits for a change's file (decision 29), the copy is labelled at the writer's new stamp
+    for the scope of the change it holds back (Virginia's): a reader would read the old row as current. A scope no
+    held change names (Illinois, moved by the other table) is labelled current; once the file is back and applied, the
+    label is the writer's stamp."""
+    world = _world()
+    await _warmed(world)
+    va_before = world.lock.epochs["state:VA"]
+    updated = _row("VA", 1, 61, "second")
+    world.db.insert(_RESULTS, [updated])
+    name = f"{_RESULTS}/lost.arrow"
+    world.log.commit(_RESULTS, [("VA", 1)], name)
+    world.lock.commit("state:VA")
+    tallied = _row("IL", 2, 72, "tallied")
+    world.db.insert(_TALLIES, [tallied])
+    world.log.commit(_TALLIES, [("IL", 2)], _save(_volume, _TALLIES, "fine", [tallied]))
+    world.lock.commit("state:IL")
+    let = asyncio.Event()
+    async with serving_recreates(world.bus, _KEY_OF, world.recreator):
+        world.bus.registrations[0].cb = _gate(world.bus.registrations[0].cb, let)
+        await world.follower.catch_up()
+        await asyncio.wait_for(_until(lambda: len(world.bus.requests) == 1), timeout=5)
+        assert _same(world, _TALLIES)
+        stamp = world.follower.status().stamp
+        assert isinstance(stamp, PartialStamp), f"labelled {stamp!r} while a table waits"
+        assert stamp.epoch("state:VA") == va_before and "state:VA" in stamp.held
+        assert stamp.epoch("state:IL") == world.lock.epochs["state:IL"] and "state:IL" not in stamp.held
+
+        let.set()
+        await asyncio.wait_for(_until(lambda: not world.follower.status().waiting_for_file), timeout=5)
+        assert await world.follower.catch_up()
+    assert _same(world, _RESULTS)
+    stamp = world.follower.status().stamp
+    assert not isinstance(stamp, PartialStamp) and stamp.epochs == world.lock.epochs
 
 
 def _gate(callback: Any, let: asyncio.Event) -> Any:

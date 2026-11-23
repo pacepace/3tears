@@ -37,7 +37,7 @@ duckdb = pytest.importorskip("duckdb")
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
-from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
     RESET_REASON,
@@ -526,3 +526,78 @@ async def test_a_copy_missing_a_record_waits_for_the_recovered_full_and_applies_
     assert world.same()
     assert ("VA", 1, 112) in world.copy(_RESET)
     assert world.l3.statements[_RESET] == 0
+
+
+# --- a waiting table's scopes are labelled at the epochs the copy holds them at ---------------------------------------
+
+
+def _held_at(world: _World, epochs: dict[str, int]) -> None:
+    """the copy's label keeps every scope at ``epochs``: the rows a waiting table holds are not labelled current."""
+    stamp = world.follower.status().stamp
+    assert isinstance(stamp, PartialStamp), f"labelled {stamp!r} while a table waits"
+    assert {scope: stamp.epoch(scope) for scope in epochs} == epochs
+    assert set(epochs) <= stamp.held
+
+
+async def test_a_table_waiting_for_its_full_after_a_reset_keeps_every_scope_at_the_epoch_the_copy_holds(
+    _volume: Path,
+) -> None:
+    """Flips if, while a reset table waits for its full (its rows as the copy held them before the reset), the copy is
+    labelled at the writer's new stamp: a reader would read the replaced rows as current. Once the full is reloaded the
+    label is the writer's stamp again."""
+    world = _World(_volume)
+    await world.started()
+    epochs = dict(world.lock.epochs)
+    world.l3.reset(_RESET, _AFTER_RESET)
+    reset_at = world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL")
+    await world.follower.catch_up()
+    world.write(_OTHER, [("IL", 9, 9)])
+    assert await world.follower.catch_up()
+    assert world.same(_OTHER, _PLAIN)
+    _held_at(world, epochs)
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, _AFTER_RESET, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    await world.reloaded(_RESET)
+    world.lock.commit("state:IL")
+    assert await world.follower.catch_up()
+    stamp = world.follower.status().stamp
+    assert not isinstance(stamp, PartialStamp) and stamp.epochs == world.lock.epochs
+
+
+async def test_a_table_waiting_for_the_writers_recovery_of_a_lost_log_keeps_every_scope_at_the_epoch_the_copy_holds(
+    _volume: Path,
+) -> None:
+    """Flips if, while a table whose log was lost waits for the writer's recovered full (decision 28), the copy is
+    labelled at the writer's new stamp though the change the lost log named is not in its rows."""
+    world = _World(_volume)
+    await world.started()
+    epochs = dict(world.lock.epochs)
+    world.l3.put(_RESET, [("IL", 2, 222)])
+    world.lock.commit("state:IL")
+    recovered_at = world.log.lose(_RESET, "new")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    world.write(_OTHER, [("VA", 0, 77)])
+    assert await world.follower.catch_up()
+    assert world.same(_OTHER, _PLAIN)
+    _held_at(world, epochs)
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, world.l3.held(_RESET), recovered_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    stamp = world.follower.status().stamp
+    assert not isinstance(stamp, PartialStamp) and stamp.epochs == world.lock.epochs
