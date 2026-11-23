@@ -19,6 +19,15 @@ moved, or a write in progress, keeps every key pending for the next pass and the
 The label is exact when the writer's seqlock commit comes after the generation advances of the data it covers (a
 writer whose last data transaction commits the stamp itself races that transaction's advance).
 
+**From delta files, for a table that opts in** (:attr:`FollowedTable.delta_files`). Each key heard keeps the epoch
+it was heard at; the epoch's record names the commit's delta file (``EpochChange.delta_file``), read off the shared
+volume (``THREETEARS_DELTA_FILES_DIR``), and the key's row is the row the copy holds with each of its epochs' changes
+applied in order, merged as L3 merged them (:func:`~threetears.core.collections.delta_files.apply_delta_row`): no
+statement reaches L3, however many pods follow (``design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
+are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose file cannot
+be had (a lost volume, an older writer's record) is read from L3 by key as for any table, counted by why
+(``copy_follower_delta_file_fallback_keys_total``).
+
 **Bounded.** What this process holds of a change is a page of rows at a time: each page is staged as it is read.
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
 (:attr:`FollowedTable.order`).
@@ -55,6 +64,15 @@ from threetears.observe.metrics import counter, gauge
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
+from threetears.core.collections.delta_files import (
+    DeltaChange,
+    DeltaFile,
+    apply_delta_row,
+    delta_files_root,
+    read_delta_file,
+)
+from threetears.core.collections.epoch_change import key_text
+from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage
 from threetears.core.collections.scope_epochs import ScopeEpochs
 from threetears.core.collections.volume_fulls import FullAbsent, StagedFull
@@ -162,6 +180,27 @@ _RELABELS = counter(
 )
 
 
+#: keys of a table that opts in to delta files read from L3 by key instead of from their files, by table and why:
+#: ``file_missing`` (the record names a file the volume does not hold: a lost volume, or none mounted),
+#: ``key_not_in_file`` (the file of an epoch that named the key holds no change of it), ``record_missing`` (the log
+#: holds no record of the epoch the key was heard at), ``no_file_named`` (the record names no file: a writer before
+#: delta files, or a write before the table opted in) and ``no_epoch`` (the key was heard with no epoch that orders it:
+#: a change note's, a publisher's that names none). Every one is an L3 read the files were meant to save
+_DELTA_FILE_FALLBACKS = counter(
+    "copy_follower_delta_file_fallback_keys_total",
+    description="keys of a table that opts in to delta files read from L3 by key instead of from their files, by "
+    "table and why; zero while every epoch's file is on the volume",
+    label_names=("table", "why"),
+)
+
+#: the fallbacks that mean something is lost or wrong (a file, a record, a row a file should hold): logged at WARNING.
+#: The others (an older writer mid-roll, a change note's keys) are expected and logged at INFO, counted alike
+_DELTA_FILE_LOST: Final = frozenset({"file_missing", "key_not_in_file", "record_missing"})
+
+#: the most file names one fallback's log line lists
+_FILES_NAMED: Final = 10
+
+
 def _warms() -> Any:
     return counter(
         "copy_follower_warms_total",
@@ -220,6 +259,32 @@ def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
     :rtype: list[tuple[str, ...]]
     """
     return [tuple(str(v) for v in values) for values in zip(*(rows.column(c).to_pylist() for c in key), strict=True)]
+
+
+def _rail_python(value: Any, kind: Any) -> Any:
+    """a value the copy holds as the L3 rail answers its column (``rail_arrow_types``): text where the rail answers
+    text (a ``NUMERIC``'s digits, an instant in its key spelling, a UUID), an instant where it answers an instant (the
+    copy may keep one as its ISO text), else as it is.
+
+    Why: a row merged from a delta file takes the file's values, typed as the rail answers them, beside the copy's own
+    of every column its write left out, and the stage takes one type a column, as it takes an L3 read's.
+
+    :param value: the copy's value
+    :ptype value: Any
+    :param kind: the column's Arrow type as the rail answers it
+    :ptype kind: pyarrow.DataType
+    :return: the value as the rail answers it
+    :rtype: Any
+    """
+    if value is None:
+        return value
+    if pa.types.is_timestamp(kind) and isinstance(value, str):
+        return datetime.fromisoformat(value)
+    if not pa.types.is_string(kind) or isinstance(value, str):
+        return value
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return key_text(value)
 
 
 def _key_prefix(table: FollowedTable, partition: Mapping[str, str]) -> bool:
@@ -307,6 +372,11 @@ class FollowedTable:
     #: writes, so while a write is in progress the follower still applies every scope it does not hold. None: the
     #: table's changes apply only at a settled stamp (a write in progress holds all of them back)
     scope: tuple[str, str] | None = None
+    #: the table opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`):
+    #: each epoch's changes are applied from the file its record names, read off the shared volume, merged onto the
+    #: row the copy holds, never read from L3 (``design-pod-delta-files.md``, decisions 3, 4 and 19). A key whose
+    #: file cannot be had is read from L3 by key, counted (``copy_follower_delta_file_fallback_keys_total``)
+    delta_files: bool = False
 
     def __post_init__(self) -> None:
         held = {column.name for column in self.columns}
@@ -367,7 +437,14 @@ class FollowedTable:
         wanted = None if columns is None else set(columns)
         held = tuple(c for c in schema.columns if wanted is None or c.name in wanted)
         kinds = tuple((c.name, c.column_type) for c in schema.columns)
-        return cls(name=schema.name, key=tuple(key), columns=held, order=tuple(order), l3_kinds=kinds)
+        return cls(
+            name=schema.name,
+            key=tuple(key),
+            columns=held,
+            order=tuple(order),
+            l3_kinds=kinds,
+            delta_files=schema.delta_files,
+        )
 
     @property
     def read_order(self) -> tuple[str, ...]:
@@ -746,12 +823,26 @@ class CopyFollower:
         self._noted: dict[str, datetime] = {}
         #: asks for a checkpoint when an epoch applied from the notes makes one due with no change to apply then
         self._checkpoint_wake: asyncio.TimerHandle | None = None
+        #: for each table that opts in to delta files, the epochs each key was heard at and not yet applied (None: heard
+        #: with no epoch). Kept until an apply holds them, so a key left out of a change, forgotten with its stage or
+        #: named again is staged again from the copy's row and every one of its epochs' files, in order, never from L3
+        self._epochs_of: dict[str, dict[tuple[str, ...], set[str | None]]] = {
+            table.name: {} for table in tables if table.delta_files
+        }
+        #: the epochs each staged key of such a table was staged from: what an apply of the stage holds
+        self._staged_epochs: dict[str, dict[tuple[str, ...], frozenset[str | None]]] = {}
 
     # --- what the registry tells it -------------------------------------------------------------
 
     def _on_row(self, table: str) -> Callable[[CacheInvalidationMessage], None]:
+        epochs = self._epochs_of.get(table)
+
         def heard(message: CacheInvalidationMessage) -> None:
-            self._pending[table].add(tuple(message.ids))
+            key = tuple(message.ids)
+            self._pending[table].add(key)
+            if epochs is not None:
+                # the epoch names the record, and the record the file the key's change is applied from
+                epochs.setdefault(key, set()).add(message.generation)
             self._poked.set()
 
         return heard
@@ -780,6 +871,7 @@ class CopyFollower:
         """
         self._whole.setdefault(table, why)
         self._pending[table].clear()
+        self._epochs_of.get(table, {}).clear()
         self._partitions[table].clear()
         self._poked.set()
 
@@ -1213,6 +1305,7 @@ class CopyFollower:
                 self._stages_lost()
                 raise _StagesLostError(f"the stages were lost applying the change: {exc}") from exc
             self._applied_mark = mark
+            self._epochs_applied()
             if self._staged_whole or any(self._partitions_staged.values()):
                 log.info(
                     "copy follower applied a change",
@@ -1618,8 +1711,11 @@ class CopyFollower:
             self._pending[name] |= keys
             self._staged_keys[name] -= keys
             key_scopes = self._staged_key_scopes[name]
+            staged_epochs = self._staged_epochs.get(name, {})
             for key in keys:
                 key_scopes.pop(key, None)
+                # its epochs stay heard: the next pass stages it again from its files, never from L3
+                staged_epochs.pop(key, None)
             self._staged_scopes[name] = {scope for of in key_scopes.values() for scope in of}
         if leaving:
             log.info(
@@ -1631,6 +1727,24 @@ class CopyFollower:
                     }
                 },
             )
+
+    def _epochs_applied(self) -> None:
+        """after an apply: each staged key's epochs it was staged from are held by the copy, so they are no longer
+        heard. An epoch heard for the key since it was staged stays, to be applied by the next pass.
+
+        :return: nothing
+        :rtype: None
+        """
+        staged, self._staged_epochs = self._staged_epochs, {}
+        for name, of in staged.items():
+            heard = self._epochs_of[name]
+            for key, epochs in of.items():
+                left = heard.get(key)
+                if left is None:
+                    continue
+                left -= epochs
+                if not left:
+                    del heard[key]
 
     def _forget_tables_now(self, names: Sequence[str]) -> None:
         """put back what these tables' stages hold, to be read again; their stages are dropped by the next pass.
@@ -1644,6 +1758,8 @@ class CopyFollower:
             self._staged.pop(name, None)
             self._staged_scopes.pop(name, None)
             self._staged_key_scopes.pop(name, None)
+            # its keys' epochs stay heard: each key is staged again from its files
+            self._staged_epochs.pop(name, None)
             self._pending[name] |= self._staged_keys.pop(name, set())
             self._staged_touched.pop(name, None)
             self._partitions[name].extend(self._partitions_staged.pop(name, []))
@@ -1730,6 +1846,8 @@ class CopyFollower:
                 self._reading = name
                 await self._forget_tables([name])
                 self._pending[name] = set()  # a whole read covers every key heard before it
+                self._epochs_of.get(name, {}).clear()
+                self._staged_epochs.pop(name, None)
                 self._whole.pop(name, None)
                 self._partitions[name] = []
                 why = whole[name]
@@ -1828,7 +1946,12 @@ class CopyFollower:
         return ", ".join(f"t.{quote_identifier(c)}" for c in columns)
 
     def _copy_rows_of_keys(
-        self, table: FollowedTable, columns: Annotated[Sequence[str], DeclaredKey], values: Sequence[Sequence[str]]
+        self,
+        table: FollowedTable,
+        columns: Annotated[Sequence[str], DeclaredKey],
+        values: Sequence[Sequence[str]],
+        *,
+        selected: str | None = None,
     ) -> Any:
         """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read joined on
         a leading part of the key (the whole key, or a load's prefix), never L3.
@@ -1839,10 +1962,12 @@ class CopyFollower:
         :ptype columns: Sequence[str]
         :param values: each named column's values, as text, one list a column and one entry a key
         :ptype values: Sequence[Sequence[str]]
+        :param selected: the select list over ``t``; None selects the key and scope columns
+        :ptype selected: str | None
         :return: the rows
         :rtype: pyarrow.Table
         """
-        selected = self._copy_columns(table)
+        selected = self._copy_columns(table) if selected is None else selected
         keys, pk_join = unnest_key_join(columns, [table.key_cast(column) for column in columns])
         with self._backend.read_snapshot() as cursor:
             return cursor.execute(
@@ -1899,14 +2024,19 @@ class CopyFollower:
         rows_stage: str,
         held: frozenset[str],
     ) -> tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]:
-        """stage some keys' rows, read from L3 by key a page at a time; a key whose row (in L3, or in the copy) is of a
-        scope a write holds is left pending, unstaged.
+        """stage some keys' rows, read from L3 by key a page at a time -- or, for a table that opts in to delta files,
+        merged from their epochs' files onto the copy's rows (:meth:`_rows_from_files`), L3 read only for a key whose
+        file cannot be had; a key whose row (in L3 or its file, or in the copy) is of a scope a write holds is left
+        pending, unstaged.
 
         :return: the keys staged, the scopes their rows are of, and each staged key's scopes
         :rtype: tuple[set[tuple[str, ...]], set[str | None], dict[tuple[str, ...], frozenset[str | None]]]
         """
-        read = self._reads[table.name]
         at = table.scope_in_key
+        #: for a table that opts in to delta files: each epoch's file, read once this pass; the keys read from L3
+        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]] = {}
+        fallbacks: dict[str, dict[str, Any]] = {}
+        epochs: dict[tuple[str, ...], frozenset[str | None]] = {}
         staged: set[tuple[str, ...]] = set()
         scopes: set[str | None] = set()
         key_scopes: dict[tuple[str, ...], frozenset[str | None]] = {}
@@ -1924,13 +2054,10 @@ class CopyFollower:
                         chunk = [key for key in chunk if key not in late]
                         if not chunk:
                             continue
-            (rows,) = await read_keyed_arrow(
-                self._l3,
-                table.name,
-                keys=KeyBatch(table.key, chunk, read.casts),
-                types=read.types,
-                batch=len(chunk),
-            )
+            if table.delta_files:
+                rows, epochs = await self._rows_from_files(table, chunk, files, fallbacks)
+            else:
+                (rows,) = await self._rows_from_l3(table, chunk)
             kept = list(chunk)
             if table.scope is None:
                 scopes.add(None)
@@ -1969,7 +2096,208 @@ class CopyFollower:
             )
             await asyncio.to_thread(self._backend.stage_rows, rows_stage, table.name, rows, table.key)
             staged.update(kept)
+            if table.delta_files:
+                self._staged_epochs.setdefault(table.name, {}).update((tuple(key), epochs[key]) for key in kept)
+        if fallbacks:
+            self._fell_back(table, fallbacks)
         return staged, scopes, {key: key_scopes[key] for key in staged if key in key_scopes}
+
+    async def _rows_from_l3(self, table: FollowedTable, keys: Sequence[tuple[str, ...]]) -> list[Any]:
+        """some keys' rows as L3 holds them now, read by key in one statement.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param keys: the keys, each its values as text
+        :ptype keys: Sequence[tuple[str, ...]]
+        :return: one Arrow table of the rows that exist, typed as the rail answers them
+        :rtype: list[pyarrow.Table]
+        """
+        read = self._reads[table.name]
+        rows: list[Any] = await read_keyed_arrow(
+            self._l3,
+            table.name,
+            keys=KeyBatch(table.key, keys, read.casts),
+            types=read.types,
+            batch=len(keys),
+        )
+        return rows
+
+    async def _delta_file_of(
+        self, table: FollowedTable, epoch: str
+    ) -> tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]:
+        """the changes of one epoch's delta file, by key: the file its record names, read off the shared volume.
+
+        :param table: a table that opts in to delta files
+        :ptype table: FollowedTable
+        :param epoch: the epoch, as its advance wrote it
+        :ptype epoch: str
+        :return: each key's changes in the order written, or why the file cannot be had (a
+            :data:`_DELTA_FILE_FALLBACKS` why); and the file's name when the record names one
+        :rtype: tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]
+        :raises GenerationUnavailableError: when the log cannot be read (the pass fails and is tried again)
+        """
+        record = None if self._changes is None else await self._changes.change(table.name, epoch)
+        if record is None:
+            return "record_missing", None
+        if record.delta_file is None:
+            return "no_file_named", None
+        root = delta_files_root()
+        if root is None:
+            return "file_missing", record.delta_file
+        try:
+            delta: DeltaFile = await asyncio.to_thread(read_delta_file, root / record.delta_file)
+        except FileNotFoundError:
+            # NOSILENT: a lost volume; the caller reads the file's keys from L3 by key, counted and logged at WARNING
+            return "file_missing", record.delta_file
+        of: dict[tuple[str, ...], list[DeltaChange]] = {}
+        for change in delta.changes:
+            of.setdefault(tuple(key_text(change.row[column]) for column in table.key), []).append(change)
+        return of, record.delta_file
+
+    def _held_rows(
+        self, table: FollowedTable, keys: Sequence[tuple[str, ...]]
+    ) -> dict[tuple[str, ...], dict[str, Any]]:
+        """the rows the copy holds of some keys, each as the L3 rail answers it: a local read, never L3.
+
+        Why the copy's: an upsert keeps every column its write left out, and the row's ``date_created``, from the row
+        L3 held, which is the row the copy holds before the change (``design-pod-delta-files.md``, decision 19).
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param keys: the keys, each its values as text
+        :ptype keys: Sequence[tuple[str, ...]]
+        :return: each held key's row, keyed by column, typed as the rail answers it
+        :rtype: dict[tuple[str, ...], dict[str, Any]]
+        """
+        types = self._reads[table.name].types
+        selected = ", ".join(f"t.{quote_identifier(column.name)}" for column in table.columns)
+        columns = [[key[i] for key in keys] for i in range(len(table.key))]
+        mine = self._copy_rows_of_keys(table, table.key, columns, selected=selected)
+        held: dict[tuple[str, ...], dict[str, Any]] = {}
+        for row in mine.to_pylist():
+            typed = {name: _rail_python(value, types[name]) for name, value in row.items()}
+            held[tuple(key_text(row[column]) for column in table.key)] = typed
+        return held
+
+    async def _rows_from_files(
+        self,
+        table: FollowedTable,
+        keys: Sequence[tuple[str, ...]],
+        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
+        fallbacks: dict[str, dict[str, Any]],
+    ) -> tuple[Any, dict[tuple[str, ...], frozenset[str | None]]]:
+        """some keys' rows of a table that opts in to delta files, from their epochs' files: each key's row the copy
+        holds, with every change of it in each epoch it was heard at applied in order, as L3 merged them
+        (:func:`~threetears.core.collections.delta_files.apply_delta_row`). A key some file of which cannot be had is
+        read from L3 by key instead, and counted in ``fallbacks``.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param keys: the keys, each its values as text
+        :ptype keys: Sequence[tuple[str, ...]]
+        :param files: the files read this pass, by epoch (each read once a pass); filled here
+        :ptype files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
+        :param fallbacks: the keys read from L3 this pass, by why: their count and the files named; filled here
+        :ptype fallbacks: dict[str, dict[str, Any]]
+        :return: the rows that exist after the change, typed as the rail answers them; and the epochs each key was
+            staged from (an apply holds those)
+        :rtype: tuple[pyarrow.Table, dict[tuple[str, ...], frozenset[str | None]]]
+        """
+        heard = self._epochs_of[table.name]
+        epochs = {key: frozenset(heard.get(key, ())) for key in keys}
+        ordered: dict[tuple[str, ...], list[str]] = {}
+        from_l3: list[tuple[str, ...]] = []
+        for key in keys:
+            why, named, order = await self._epochs_in_order(table, key, epochs[key], files)
+            if why is None:
+                ordered[key] = order
+                continue
+            from_l3.append(key)
+            fell = fallbacks.setdefault(why, {"keys": 0, "files": set()})
+            fell["keys"] += 1
+            if named is not None:
+                fell["files"].add(named)
+        types = self._reads[table.name].types
+        names = [column.name for column in table.columns]
+        held = await asyncio.to_thread(self._held_rows, table, list(ordered)) if ordered else {}
+        merged: list[dict[str, Any]] = []
+        for key, order in ordered.items():
+            row: dict[str, Any] | None = held.get(key)
+            for epoch in order:
+                of = files[epoch][0]
+                assert isinstance(of, dict)  # noqa: S101 -- an epoch whose file could not be had sends its key to L3
+                for change in of[key]:
+                    after = apply_delta_row(row, change)
+                    row = None if after is None else {name: after.get(name) for name in names}
+            if row is not None:
+                merged.append(row)
+        rows = pa.Table.from_pylist(merged, schema=pa.schema(list(types.items())))
+        if from_l3:
+            (read,) = await self._rows_from_l3(table, from_l3)
+            rows = pa.concat_tables([rows, read.select(rows.column_names).cast(rows.schema)])
+        return rows, epochs
+
+    async def _epochs_in_order(
+        self,
+        table: FollowedTable,
+        key: tuple[str, ...],
+        epochs: frozenset[str | None],
+        files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]],
+    ) -> tuple[str | None, str | None, list[str]]:
+        """the epochs a key's change is applied from, oldest first, each one's file read (once a pass); or why the
+        key is read from L3 instead.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param key: the key
+        :ptype key: tuple[str, ...]
+        :param epochs: the epochs it was heard at (None: one with no epoch)
+        :ptype epochs: frozenset[str | None]
+        :param files: the files read this pass, by epoch
+        :ptype files: dict[str, tuple[dict[tuple[str, ...], list[DeltaChange]] | str, str | None]]
+        :return: None and the epochs in order; or why, and the file named when one is
+        :rtype: tuple[str | None, str | None, list[str]]
+        """
+        parts = [split_generation_token(epoch) if epoch is not None else None for epoch in epochs]
+        if not parts or None in parts or len({part[0] for part in parts if part is not None}) != 1:
+            # heard with no epoch, or under two incarnations of the log, whose counts do not order them
+            return "no_epoch", None, []
+        order = [f"{incarnation}:{count}" for incarnation, count in sorted(part for part in parts if part is not None)]
+        for epoch in order:
+            if epoch not in files:
+                files[epoch] = await self._delta_file_of(table, epoch)
+            of, named = files[epoch]
+            if isinstance(of, str):
+                return of, named, []
+            if key not in of:
+                # the record named this key at this epoch and its file holds no change of it: never guessed
+                return "key_not_in_file", named, []
+        return None, None, order
+
+    def _fell_back(self, table: FollowedTable, fallbacks: Mapping[str, Mapping[str, Any]]) -> None:
+        """count and say the keys of a table that opts in to delta files a pass read from L3 instead of their files.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param fallbacks: by why, the keys' count and the files named
+        :ptype fallbacks: Mapping[str, Mapping[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        for why, fell in sorted(fallbacks.items()):
+            _DELTA_FILE_FALLBACKS.labels(table=table.name, why=why).inc(fell["keys"])
+            extra = {
+                "extra_data": {
+                    "table": table.name,
+                    "why": why,
+                    "keys": fell["keys"],
+                    "files": sorted(fell["files"])[:_FILES_NAMED],
+                }
+            }
+            if why in _DELTA_FILE_LOST:
+                log.warning("copy follower read keys from L3 by key: their delta files could not be had", extra=extra)
+            else:
+                log.info("copy follower read keys from L3 by key: their epochs name no delta file", extra=extra)
 
     async def _stage_partitions(self, partitions: dict[str, list[dict[str, str]]], held: frozenset[str]) -> None:
         """stage each partition's change beside the copy as keyed changes: the partition is replaced. The copy's own
