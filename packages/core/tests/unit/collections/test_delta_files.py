@@ -29,9 +29,11 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaChange,
     DeltaFileRefusedError,
     DeltaFileUnreadableError,
+    LoadDelta,
     TableDelta,
     read_volume_file,
     apply_delta_row,
+    load_delta_rows,
     read_delta_file,
     read_delta_file_reach,
     sweep_orphan_delta_files,
@@ -621,3 +623,32 @@ def test_a_table_with_only_fixed_defaults_and_no_guard_opts_in() -> None:
     }
     assert _schema("plain", opted_in=True).delta_file_defaults == {}
     assert _schema("plain_off", opted_in=False).delta_file_defaults == {}
+
+
+def test_a_load_delta_from_one_read_cuts_it_into_each_files_rows_by_the_manifest_counts() -> None:
+    read = pa.table({"id": list(range(6)), "votes": [10, 11, 12, 13, 14, 15]})
+
+    delta = LoadDelta.from_read(read, [2, 0, 4], replaces=[{"state": "VA"}])
+
+    assert [table.to_pydict()["id"] for table in delta.rows] == [[0, 1], [], [2, 3, 4, 5]]
+    assert delta.replaces == [{"state": "VA"}]
+    # the load checks each file's rows against its count: the cut passes that check as is
+    assert load_delta_rows(delta.rows, [2, 0, 4], {"state": "VA"}).num_rows == 6
+
+
+@pytest.mark.parametrize(
+    ("counts", "message"),
+    [
+        ([2, 3], "count 5 rows, where 6 were read"),
+        ([2, 5], "count 7 rows, where 6 were read"),
+        ([2, None, 4], "file 1 has no row count"),
+        ([-1, 7], "file 0 has no row count"),
+    ],
+)
+def test_a_load_delta_from_a_read_its_counts_do_not_cut_exactly_is_refused(
+    counts: list[int | None], message: str
+) -> None:
+    read = pa.table({"id": list(range(6))})
+
+    with pytest.raises(ValueError, match=message):
+        LoadDelta.from_read(read, counts)

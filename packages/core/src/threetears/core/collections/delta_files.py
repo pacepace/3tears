@@ -905,6 +905,42 @@ class LoadDelta:
     rows: Sequence[Any]
     replaces: Sequence[Mapping[str, Any]] = ()
 
+    @classmethod
+    def from_read(
+        cls, rows: Any, file_rows: Sequence[int | None], *, replaces: Sequence[Mapping[str, Any]] = ()
+    ) -> LoadDelta:
+        """the delta of a load whose files the caller read as one table: ``rows`` cut into one table a file by the
+        rows each file's manifest counts, in the files' order (the order the load hands them over in).
+
+        One read of a counted export is the common case (a state's files read together, or a part's divisions read in
+        turn), and its files' rows are told apart only by their counts: every caller cutting it by hand was the same
+        code twice. The cuts are zero-copy slices, so no row is copied until the load saves the delta file on a thread.
+
+        :param rows: the files' rows, read in the files' order, each file's rows together
+        :ptype rows: pyarrow.Table
+        :param file_rows: the rows each file holds, as its manifest counts them (``LoadFile.rows``), in the same order;
+            None for a file the manifest does not count
+        :ptype file_rows: Sequence[int | None]
+        :param replaces: the key prefixes the load replaces (:attr:`replaces`)
+        :ptype replaces: Sequence[Mapping[str, Any]]
+        :return: the delta, one table a file
+        :rtype: LoadDelta
+        :raises ValueError: when a file's count is unknown or negative, or the counts do not add up to the rows read:
+            the cut would hand a file rows that are not its own, and the delta file would not be what L3 loaded
+        """
+        cut: list[Any] = []
+        at = 0
+        for index, count in enumerate(file_rows):
+            if count is None or count < 0:
+                raise ValueError(
+                    f"a load's file {index} has no row count ({count!r}), so its rows cannot be told apart"
+                )
+            cut.append(rows.slice(at, count))
+            at += count
+        if at != rows.num_rows:
+            raise ValueError(f"a load's files count {at} rows, where {rows.num_rows} were read")
+        return cls(rows=cut, replaces=replaces)
+
 
 def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
     """one request's rows of a load, as one Arrow table: each file's rows the caller gave (:attr:`LoadDelta.rows`),
