@@ -314,6 +314,39 @@ too, so `job_cancel` works from any process: the job hears it within one renewal
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
 
+**A run your host records itself is held the same way.** A run the engine did not launch, a witnessed session's say,
+is read and written lost by the same rule, so a host that keeps one open while it records its cells holds it under a
+lease too: the run's first write carries one from the host's `JobLeases`, `JobLeases.hold` renews it until the
+ending, and the ending is written through `JobRecorder.save`. A plain `save_eval_run` of the ending would write over a
+run another reader already wrote lost; `JobRecorder.save` raises `JobFenced` instead, and that ending stands.
+
+```python
+import asyncio
+
+from threetears.evals.kernel import RUN_JOB, JobFenced
+from threetears.evals.run import JobRecorder, run_blocking
+
+
+async def record_open_run(host, leases, executor, run, record_cells, ending):
+    lease = await run_blocking(executor, leases.grant)  # reads the store's clock
+    run = run.model_copy(update={"lease": lease})
+    await run_blocking(executor, host.storage.save_eval_run, run)  # the first write carries the lease
+    job = asyncio.current_task()
+    leases.hold(RUN_JOB, run.id, run.scope_id, cancel=lambda reason: job.cancel(), stop=job.cancel)
+    recorder = JobRecorder(host.storage, executor, RUN_JOB, run, leases=leases)
+    try:
+        cells = await record_cells(run)
+        await recorder.save(ending(run, "completed", cells))
+    except JobFenced:
+        raise  # the run ended elsewhere first; nothing is written over that ending
+    finally:
+        leases.release(run.id)
+        leases.forget(run.id)
+```
+
+Write a cancelled or failed ending through the same `recorder.save` where the cells stop early; each raises `JobFenced`
+where the run has already ended.
+
 **The one way back is a resume.** `job_resume` takes a run's, a sweep's or a launch's job up again as the same job,
 under its lease's next **epoch**. Every lease carries an epoch, and every result row records the epoch it was
 written under, so a holding the job has passed from writes nothing more into it. A run continues as itself: only

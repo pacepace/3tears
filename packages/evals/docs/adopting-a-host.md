@@ -1295,6 +1295,12 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 - a judge identity in `EvalResult.judge_config_ids` is `builtin:<sha12>` or `<config id>@<sha12>`, as the judge
   service writes it; a bare config id is refused.
 
+**A run your host keeps open is held under a lease.** Every read of a run through the storage writes an open run
+with no live lease lost, from any process, while your host is still recording its cells. So a run your host records
+over time, a witnessed session's say, carries a lease from your `JobLeases` on its first write, keeps it renewed until
+its ending, and writes that ending through a `JobRecorder`, which raises `JobFenced` where the run already ended
+elsewhere instead of writing over it. [Operations and jobs](serving.md#operations-and-jobs) shows it in code.
+
 ## Stability tiers
 
 **Every public name has a tier, and the tier is what a release promises about it.** From 0.70.0, the first tagged

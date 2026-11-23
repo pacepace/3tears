@@ -287,8 +287,19 @@ async def record_witnessed_cell(
     ``completed_at`` and ``completeness=summarize_completeness(run, cells)``, ``cells`` being one
     ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, ``persisted`` True where its
     ``host.storage.save_eval_result`` returned and False where it raised ``StorageError`` (all three from
-    :mod:`threetears.evals.kernel`), saved with ``host.storage.save_eval_run``. A run left
-    ``running`` past its process is written lost by :func:`~threetears.evals.run.sweep_abandoned_runs`.
+    :mod:`threetears.evals.kernel`), written through the run's :class:`~threetears.evals.run.JobRecorder` (below).
+
+    **The run is held under a lease while it is open.** Every read of a run through the storage settles it: an open run
+    whose lease has lapsed, or that carries none, is written lost (``cancelled``, its ``cancellation_reason`` saying
+    why) by the first read that meets it, from any process, while the host is still recording its cells. So the run's
+    first write carries a lease from the host's :class:`~threetears.evals.kernel.JobLeases`
+    (``run.model_copy(update={"lease": leases.grant()})``), the lease is renewed from that write until the ending
+    (``leases.hold(RUN_JOB, run.id, run.scope_id, cancel=..., stop=...)``, then ``release`` and ``forget``), and the
+    ending is written with ``JobRecorder(host.storage, executor, RUN_JOB, run, leases=leases).save``, which raises
+    :class:`~threetears.evals.kernel.JobFenced` where the run has already ended elsewhere instead of writing over that
+    ending. A plain ``host.storage.save_eval_run`` of the ending would overwrite a run another reader wrote lost. A
+    run whose process died reads lost once its lease lapses: at its next read, or at the next
+    :func:`~threetears.evals.run.sweep_abandoned_runs`.
 
     :param host: The host the run belongs to — its profile resolves the run's contestant identity.
     :param run: The witnessed run the cell belongs to.
