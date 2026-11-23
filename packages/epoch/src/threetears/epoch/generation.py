@@ -1002,6 +1002,7 @@ class EpochGenerationSource(_ChangeLogReading):
         prefixes: Sequence[Mapping[str, str]] | None = None,
         reason: str | None = None,
         delta_file: str | None = None,
+        scopes: Sequence[str] | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -1037,6 +1038,9 @@ class EpochGenerationSource(_ChangeLogReading):
             (:attr:`~threetears.core.collections.epoch_change.EpochChange.delta_file`), named by every record the write
             appends, so a follower that reaches any of them has the whole commit
         :ptype delta_file: str | None
+        :param scopes: a keys-unknown change's scopes, the states its commit touched
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.scopes`); requires ``keys_unknown``
+        :ptype scopes: Sequence[str] | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -1061,6 +1065,7 @@ class EpochGenerationSource(_ChangeLogReading):
                         reason=reason,
                         database=self._database,
                         delta_file=delta_file,
+                        scopes=scopes,
                     ),
                 )
             ]

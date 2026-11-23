@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from threetears.core.backends.broker_generation import (
     collecting_advanced_generations,
     committed_generations_record,
+    naming_commit_scopes,
     naming_delta_files,
     reply_generations_since,
 )
@@ -71,7 +72,7 @@ from threetears.core.collections.delta_files import (
     delta_files_root,
     write_delta_file,
 )
-from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.epoch_change import ChangedRow, recordable_scopes
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
 from threetears.observe import get_logger
@@ -285,6 +286,7 @@ class CallerTransaction:
         "_outermost",
         "_reaches",
         "_saved_delta_files",
+        "_scopes",
         "_token",
         "_transaction",
         "conn",
@@ -312,6 +314,9 @@ class CallerTransaction:
         self._deltas: dict[str, TableDelta] = {}
         self._saved_delta_files: dict[str, str] = {}
         self._committed_generations: dict[str, str] = {}
+        # the scopes (states) the writer's seqlock touched in this transaction (ScopeEpochs.touch), each once: its
+        # commit names them beside its delta files (decision 31)
+        self._scopes: dict[str, None] = {}
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -528,6 +533,18 @@ class CallerTransaction:
             self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments})
         self._enrolled.extend(enrollments)
 
+    def note_scopes(self, scopes: Sequence[str]) -> None:
+        """record that this transaction's writes touched ``scopes`` (the states, ``state:CA``, as the writer's seqlock
+        names them): a commit that saves a delta file names them (``COMMIT_SCOPES_FIELD``), so a record its broker
+        writes keys unknown names the states to re-read should the file be lost (decision 31).
+
+        :param scopes: the scopes
+        :ptype scopes: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        self._scopes.update(dict.fromkeys(scopes))
+
     def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
         prefixes when it ends: the table's caches dropped and its generation advanced once, its epoch naming the
@@ -697,12 +714,14 @@ class CallerTransaction:
         # and an advance this process records itself names them. Only a commit that landed: a record naming the file
         # of a commit that failed would hand every copy rows L3 never took
         files = self._saved_delta_files if exc_type is None else {}
+        # the states only a commit with a delta file names, bounded: one too wide names none (decision 31)
+        scopes = (recordable_scopes(self._scopes) or []) if files else []
         landed = False
         # the broker's reply to the commit replaces this task's record of its generations; a direct pool's commit
         # leaves it, so a record that did not change since names nothing of this commit's
         before = committed_generations_record()
         try:
-            with naming_delta_files(files):
+            with naming_delta_files(files), naming_commit_scopes(scopes):
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
             landed = True
         finally:
@@ -711,7 +730,11 @@ class CallerTransaction:
                 self._token = None
             if self._outermost is None:
                 advanced: dict[str, str] = {}
-                with naming_delta_files(files if landed else {}), collecting_advanced_generations(advanced):
+                with (
+                    naming_delta_files(files if landed else {}),
+                    naming_commit_scopes(scopes if landed else []),
+                    collecting_advanced_generations(advanced),
+                ):
                     generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
                 if landed and exc_type is None:
                     self._committed_generations = {**reply_generations_since(before), **advanced}

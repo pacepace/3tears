@@ -76,6 +76,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "CHANGED_ROWS_FIELD",
+    "COMMIT_SCOPES_FIELD",
     "DELTA_FILES_FIELD",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
@@ -88,8 +89,10 @@ __all__ = [
     "committed_generations_record",
     "forget_reply_generations",
     "named_changed_rows",
+    "named_commit_scopes",
     "named_delta_files",
     "naming_changed_rows",
+    "naming_commit_scopes",
     "naming_delta_files",
     "note_advanced_generation",
     "record_reply_generations",
@@ -158,6 +161,46 @@ def named_delta_files() -> dict[str, str]:
     :rtype: dict[str, str]
     """
     return dict(_DELTA_FILES.get())
+
+
+#: the request field naming the scopes a commit's transaction touched (the states, ``state:CA``, as the writer's
+#: seqlock names them: ``ScopeEpochs.touch``), sent on ``l3.tx.commit`` beside :data:`DELTA_FILES_FIELD` when the
+#: commit saved a delta file: a list of at most ``_EPOCH_SCOPES_MAX`` strings (``recordable_scopes``), none past it.
+#: A broker that records the commit keys unknown (its rows too many to name) names them on each such table's record
+#: (``EpochChange.scopes``), so the writer can recover the commit's rows by those states should its delta file be lost
+#: past the change notes' window (``design-pod-delta-files.md``, decision 31). A broker built before it ignores it,
+#: and its records name none. The hub imports this name.
+COMMIT_SCOPES_FIELD: Final = "scopes"
+
+#: the scopes the commit being made in this context touched (:func:`naming_commit_scopes`)
+_COMMIT_SCOPES: ContextVar[tuple[str, ...]] = ContextVar("threetears_commit_scopes", default=())
+
+
+@contextmanager
+def naming_commit_scopes(scopes: Sequence[str]) -> Iterator[None]:
+    """name the scopes the commit made inside this block touched: its ``l3.tx.commit`` carries them
+    (:data:`COMMIT_SCOPES_FIELD`), and a keys-unknown advance a process writes its own record for names them
+    (:func:`~threetears.core.collections.generation.advance_for_write`). Replaces what an enclosing block named.
+
+    :param scopes: the scopes, already bounded (``recordable_scopes``); empty names none
+    :ptype scopes: Sequence[str]
+    :return: a context in which the commit names them
+    :rtype: Iterator[None]
+    """
+    token = _COMMIT_SCOPES.set(tuple(scopes))
+    try:
+        yield
+    finally:
+        _COMMIT_SCOPES.reset(token)
+
+
+def named_commit_scopes() -> tuple[str, ...]:
+    """the scopes the commit being made in this context touched, as :data:`COMMIT_SCOPES_FIELD` carries them.
+
+    :return: the scopes; empty when the commit names none
+    :rtype: tuple[str, ...]
+    """
+    return _COMMIT_SCOPES.get()
 
 
 #: where the advances made while a commit settles in this context note the token each wrote, by table

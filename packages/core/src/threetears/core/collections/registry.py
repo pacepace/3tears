@@ -21,7 +21,7 @@ from threetears.core.collections.delta_files import (
     delta_files_root,
     read_delta_file_reach,
 )
-from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
+from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
     EpochChange,
@@ -182,12 +182,6 @@ def _as_l3_backend(l3_pool: L3PoolLike | None) -> L3Backend | DurableStore | Non
     return SqlL3Backend(l3_pool)
 
 
-#: the most notes one page of a keys-unknown epoch's keys reads (:meth:`CollectionRegistry.catch_up_generation`)
-_NOTED_KEYS_PAGE_ROWS: Final = 10_000
-
-#: the most bytes of keys one such page holds; a reader over the bus holds it under the bus's announced payload too
-_NOTED_KEYS_PAGE_BYTES: Final = 4 * 1024 * 1024
-
 #: the rows of a page applied between yields to the event loop
 _NOTED_ROWS_PER_YIELD: Final = 500
 
@@ -212,22 +206,9 @@ async def _noted_pages(
     :return: each page; or, last, the :data:`BEHIND_REASONS` key of why the notes cannot name the keys
     :rtype: AsyncGenerator[NotedKeysPage | str]
     """
-    cursor: NotedKeysCursor | None = None
-    while True:
-        page = await reader.noted_keys(
-            table,
-            noted_between=noted_between,
-            cursor=cursor,
-            limit=_NOTED_KEYS_PAGE_ROWS,
-            max_bytes=_NOTED_KEYS_PAGE_BYTES,
-        )
-        if not isinstance(page, NotedKeysPage):
-            yield _NOTES_BEHIND.get(page, "notes_unavailable")
-            return
-        yield page
-        if page.next is None:
-            return
-        cursor = page.next
+    async with aclosing(noted_key_pages(reader, table, noted_between)) as pages:
+        async for page in pages:
+            yield page if isinstance(page, NotedKeysPage) else _NOTES_BEHIND.get(page, "notes_unavailable")
 
 
 #: the most rows one batched invalidation message names: a few hundred bytes each, far under a NATS payload
