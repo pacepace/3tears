@@ -20,17 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import get_logger
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.collections.schema_backed import (
-    BIGINT_TYPE,
-    BOOL_TYPE,
-    DATETIMETZ_TYPE,
-    ENUM_TYPE,
-    INT_TYPE,
-    NUMERIC_TYPE,
-    STRING_TYPE,
-    TSVECTOR_TYPE,
-    UUID_TYPE,
-)
+from threetears.core.collections.schema_backed import rail_arrow_types
 from threetears.core.keyset import keyset_arrow_pages, keyset_pages, read_keyset_pages
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 
@@ -187,57 +177,6 @@ def l3_row_pages(
     :raises ValueError: when ``page_size`` is under one (at the first page)
     """
     return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size, lead_array=lead_array)
-
-
-#: the L3 column types the rail's JSON answers as text: ``fetch`` answers them as text (a ``NUMERIC`` arrives as
-#: its digits, a timestamp outside ``date_*`` as its ISO text)
-_RAIL_TEXT_TYPES: Final = frozenset({STRING_TYPE, UUID_TYPE, ENUM_TYPE, TSVECTOR_TYPE, NUMERIC_TYPE, DATETIMETZ_TYPE})
-
-#: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy.deserialize_row``)
-_DATED_PREFIX: Final = "date_"
-
-
-def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
-    """each column's Arrow type as the L3 rail's reply carries it: what :meth:`NatsProxyL3Backend.fetch_arrow
-    <threetears.core.backends.nats_proxy.NatsProxyL3Backend.fetch_arrow>` reads the rows as, so they equal ``fetch``'s.
-
-    Text, a UUID, an enum, a ``NUMERIC`` and a timestamp are text (as ``fetch`` answers them); an integer is
-    ``int64``; a boolean is ``bool``; a ``date_*`` timestamp is an instant in UTC (``fetch`` makes those aware
-    datetimes). A column ``fetch`` answers otherwise than the reply's JSON (``jsonb``, bytes, a vector), or a
-    ``date_*`` column that is not a timestamp (``fetch`` parses any ISO text there), has no such type: read it
-    with ``fetch``.
-
-    :param columns: the columns, each with ``name`` and ``column_type`` (a
-        :class:`~threetears.core.collections.schema_backed.Column`), in the order they are selected
-    :ptype columns: Sequence[Column]
-    :return: column name -> its Arrow type, in order
-    :rtype: dict[str, pyarrow.DataType]
-    :raises ValueError: for a column the rail does not answer as one Arrow type exactly
-    :raises ImportError: without pyarrow
-    """
-    if not _PYARROW:
-        raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
-    types: dict[str, Any] = {}
-    for column in columns:
-        name, kind = column.name, column.column_type
-        dated = name.startswith(_DATED_PREFIX)
-        if dated and kind != DATETIMETZ_TYPE:
-            raise ValueError(
-                f"column {name!r}: fetch reads ISO text in a date_ column as a datetime; read it with fetch"
-            )
-        if dated:
-            types[name] = pa.timestamp("us", tz="UTC")
-        elif kind in _RAIL_TEXT_TYPES:
-            types[name] = pa.string()
-        elif kind in (INT_TYPE, BIGINT_TYPE):
-            types[name] = pa.int64()
-        elif kind == BOOL_TYPE:
-            types[name] = pa.bool_()
-        else:
-            raise ValueError(
-                f"column {name!r} ({kind}): the rail answers it otherwise than one Arrow type; read it with fetch"
-            )
-    return types
 
 
 async def read_l3_arrow(

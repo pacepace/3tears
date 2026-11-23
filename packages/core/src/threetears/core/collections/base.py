@@ -42,6 +42,7 @@ from threetears.core.keyed import Fragment, Sort, inline_l1, run_inline
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
+from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
@@ -1964,6 +1965,26 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
             return exc
         return None
+
+    @property
+    def writes_delta_files(self) -> bool:
+        """whether every commit of this collection's rows saves a delta file before it commits
+        (:mod:`~threetears.core.collections.delta_files`); only a table declared so opts in
+        (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`).
+
+        :return: ``False`` here: a collection with no table schema has no columns to type a file by
+        :rtype: bool
+        """
+        return False
+
+    def table_delta(self) -> TableDelta:
+        """an empty delta of this collection's table, for a transaction to record its writes in.
+
+        :return: never: see :attr:`writes_delta_files`
+        :rtype: TableDelta
+        :raises TypeError: always, here
+        """
+        raise TypeError(f"{type(self).__name__}: a collection with no table schema keeps no delta files")
 
     @property
     def advances_write_generation(self) -> bool:
@@ -6480,7 +6501,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             on its own pool evicted the rows and could not advance its write generation
         :raises ValueError: on an L2-first collection (:attr:`l2_first`), whose record is L2: a write
             straight to L3 would be overwritten by the saver from L2
+        :raises DeltaFileRefusedError: on a table that opts in to delta files
+            (:attr:`writes_delta_files`): the caller's own statement writes rows no file could hold
         """
+        if self.writes_delta_files:
+            raise DeltaFileRefusedError(
+                f"{type(self).__name__}.bypassing_write: {self.table_name} opts in to delta files, and a statement of "
+                f"the caller's own writes rows no delta file can hold; write it through the collection by key"
+            )
         if self.writes_l2_first:
             raise ValueError(
                 f"{type(self).__name__} commits L2-first: its record is L2, and a write straight to L3 is undone by "

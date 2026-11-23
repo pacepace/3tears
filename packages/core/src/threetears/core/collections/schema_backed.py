@@ -102,6 +102,7 @@ from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta
 from threetears.core.collections.epoch_change import RESET_REASON, WholeReach
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
@@ -111,6 +112,13 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
+
+try:
+    import pyarrow as pa
+
+    _PYARROW = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; rail_arrow_types refuses without it, saying so
+    _PYARROW = False
 
 __all__ = [
     "register_sa_table_indexes",
@@ -144,6 +152,7 @@ __all__ = [
     "l2_order_columns",
     "schema_datetime_columns",
     "schema_field_types",
+    "rail_arrow_types",
     "spans_partitions",
 ]
 
@@ -289,6 +298,61 @@ def sql_cast(column_type: str) -> str:
     :rtype: str
     """
     return _SQL_CASTS.get(column_type, "text")
+
+
+# the rail's Arrow types live here, beside the type tags, rather than in complete_copy (which re-exports them): a
+# collection names its delta files' column types from them (SchemaBackedCollection.delta_file_types), and
+# complete_copy imports this module, so it cannot be imported from here
+
+#: the L3 column types the rail's JSON answers as text: ``fetch`` answers them as text (a ``NUMERIC`` arrives as
+#: its digits, a timestamp outside ``date_*`` as its ISO text)
+_RAIL_TEXT_TYPES: Final = frozenset({STRING_TYPE, UUID_TYPE, ENUM_TYPE, TSVECTOR_TYPE, NUMERIC_TYPE, DATETIMETZ_TYPE})
+
+#: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy.deserialize_row``)
+_DATED_PREFIX: Final = "date_"
+
+
+def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
+    """each column's Arrow type as the L3 rail's reply carries it: what :meth:`NatsProxyL3Backend.fetch_arrow
+    <threetears.core.backends.nats_proxy.NatsProxyL3Backend.fetch_arrow>` reads the rows as, so they equal ``fetch``'s.
+
+    Text, a UUID, an enum, a ``NUMERIC`` and a timestamp are text (as ``fetch`` answers them); an integer is
+    ``int64``; a boolean is ``bool``; a ``date_*`` timestamp is an instant in UTC (``fetch`` makes those aware
+    datetimes). A column ``fetch`` answers otherwise than the reply's JSON (``jsonb``, bytes, a vector), or a
+    ``date_*`` column that is not a timestamp (``fetch`` parses any ISO text there), has no such type: read it
+    with ``fetch``.
+
+    :param columns: the columns, each with ``name`` and ``column_type`` (a
+        :class:`~threetears.core.collections.schema_backed.Column`), in the order they are selected
+    :ptype columns: Sequence[Column]
+    :return: column name -> its Arrow type, in order
+    :rtype: dict[str, pyarrow.DataType]
+    :raises ValueError: for a column the rail does not answer as one Arrow type exactly
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
+    types: dict[str, Any] = {}
+    for column in columns:
+        name, kind = column.name, column.column_type
+        dated = name.startswith(_DATED_PREFIX)
+        if dated and kind != DATETIMETZ_TYPE:
+            raise ValueError(
+                f"column {name!r}: fetch reads ISO text in a date_ column as a datetime; read it with fetch"
+            )
+        if dated:
+            types[name] = pa.timestamp("us", tz="UTC")
+        elif kind in _RAIL_TEXT_TYPES:
+            types[name] = pa.string()
+        elif kind in (INT_TYPE, BIGINT_TYPE):
+            types[name] = pa.int64()
+        elif kind == BOOL_TYPE:
+            types[name] = pa.bool_()
+        else:
+            raise ValueError(
+                f"column {name!r} ({kind}): the rail answers it otherwise than one Arrow type; read it with fetch"
+            )
+    return types
 
 
 #: the most columns one index may hold on YugabyteDB, its ``INCLUDE`` columns and a primary key's columns counted:
@@ -1109,6 +1173,11 @@ class TableSchema:
     :cvar write_generation: ``WRITE_GENERATION`` switches the table on: every committed write
         advances its write generation, the creating migration gives it its change-note triggers, and
         the collection class reads its ``write_generation`` from here
+    :cvar delta_files: ``True`` opts the table in to delta files: every commit that writes it saves the rows it
+        wrote and the keys it deleted as one file on the shared volume, before the commit, and a write that cannot
+        is refused (:mod:`~threetears.core.collections.delta_files`). Off by default: a table not opted in writes
+        exactly as before. Every column must be one the rail answers as one Arrow type (``rail_arrow_types``), the
+        type the file holds it as
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -1193,6 +1262,9 @@ class TableSchema:
     # miss refills; KEEP, what a reader treats as complete or a write needs), with why. No default: the L1 refuses
     # a table that declares none (threetears.core.cache.l1_lru)
     l1_eviction: Declared | None = None
+    # every commit that writes the table saves its delta file before it commits, enforced on every write path of the
+    # collection (threetears.core.collections.delta_files); the one declaration, read by the collection class
+    delta_files: bool = False
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -1216,6 +1288,9 @@ class TableSchema:
         if self.l1_eviction is not None:
             # declared where the table is declared: every L1 and the cache metrics read it by the table's name
             declare_l1_table(self.name, self.l1_eviction)
+        if self.delta_files:
+            # refused where it is declared, not at the first write: a column no file can type would refuse every one
+            rail_arrow_types(self.columns)
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
         # coerce partition columns to immutable so callers do not have
@@ -2293,6 +2368,63 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         self._reject_deferred_flush_on_cas_null_safe()
         self._register_schema()
 
+    @property
+    def writes_delta_files(self) -> bool:
+        """whether every commit of this table saves a delta file before it commits: its schema opts in
+        (:attr:`TableSchema.delta_files`).
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self.schema.delta_files
+
+    def table_delta(self) -> TableDelta:
+        """an empty delta of this table, its columns typed as the rail answers them, for a transaction to record its
+        writes in.
+
+        :return: the delta
+        :rtype: TableDelta
+        """
+        return TableDelta(name=self.table_name, types=rail_arrow_types(self.schema.columns), key=self.schema.pk_columns)
+
+    def _refuse_unfiled(self, writer: str) -> None:
+        """refuse a write to a table that opts in to delta files on a path that cannot record its rows for the file.
+
+        :param writer: the refusing call
+        :ptype writer: str
+        :return: nothing
+        :rtype: None
+        :raises DeltaFileRefusedError: when the table opts in
+        """
+        if self.writes_delta_files:
+            raise DeltaFileRefusedError(
+                f"{type(self).__name__}.{writer}: {self.table_name} opts in to delta files, and this write cannot "
+                f"record its rows for one; write it by key on a CallerTransaction (save_rows, save_arrow, "
+                f"delete_rows, delete_arrow, save_entity(conn=...))"
+            )
+
+    def _record_one(self, data: dict[str, Any], conn: Any, writer: str) -> None:
+        """record one row a store write sends, for the delta file of a table that opts in: on the caller's
+        transaction, or refused when there is none to save the file before.
+
+        :param data: the row as sent
+        :ptype data: dict[str, Any]
+        :param conn: the connection the write joins, or None
+        :ptype conn: Any
+        :param writer: the call writing it
+        :ptype writer: str
+        :return: nothing
+        :rtype: None
+        :raises DeltaFileRefusedError: when the table opts in and the write joins no CallerTransaction
+        """
+        if not self.writes_delta_files:
+            return
+        transaction = None if conn is None else CallerTransaction.enclosing(conn)
+        if transaction is None:
+            self._refuse_unfiled(writer)
+        else:
+            transaction.record_rows(self, [data])
+
     async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
         """save ``entity`` through the three-tier write path, refusing a vector its column cannot hold.
 
@@ -2434,6 +2566,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"l2_order_columns() in its schema and a durable store implementing OrderedDurableStore, "
                 f"got store {type(store).__name__}"
             )
+        self._record_one(data, conn, "save_ordered_to_store")
         return await store.upsert_ordered(self.schema.name, data, conn=conn)
 
     def _reject_deferred_flush_on_cas_null_safe(self) -> None:
@@ -2705,6 +2838,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
+        transaction.record_rows(self, stamped)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         written = 0
@@ -2861,6 +2995,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         keys, enrollments = await asyncio.to_thread(self._arrow_enrollments, stamped, asyncio.get_running_loop())
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
+        transaction.record_arrow(self, stamped)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         bound = max_rows if max_rows is not None or copy else self.BULK_MAX_ROWS
@@ -3107,7 +3242,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             under one, ``connections`` is under one, or one file alone needs a longer wait than the cap
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
+        :raises DeltaFileRefusedError: when the table opts in to delta files: the store copies the files itself, so
+            no row passes through this process to be saved in one
         """
+        self._refuse_unfiled("load_files")
         store = self._durable_store()
         if store is None:
             raise ValueError(f"{type(self).__name__}.load_files: {self.table_name} has no durable store to load")
@@ -3469,6 +3607,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             if loop is not None
             else self._delete_keys_named(keys)
         )
+        # each key named is a delete marker in the table's delta file, whichever way it is enrolled below
+        transaction.record_deletes(self, named)
         if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
             return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         # a collection whose row messages carry columns reads each row before it goes, on the caller's
@@ -3627,6 +3767,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             return await self.delete_rows(named, conn=conn, max_rows=max_rows)
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
+        transaction.record_deletes(self, named)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         await arrow_store.write_arrow(
@@ -3855,6 +3996,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         store = self._durable_store()
         if store is None:
             return 0
+        self._record_one(data, conn, "save_to_store")
         pk = list(self.schema.pk_columns)
         return await store.upsert(
             self.schema.name,
@@ -3888,6 +4030,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: int
         :raises ValueError: when the collection does not save many rows at once (:attr:`saves_many_to_store`)
         """
+        self._refuse_unfiled("save_many_to_store")
         store = self._durable_store()
         if self.schema.on_conflict != "update" or not isinstance(store, BulkDurableStore):
             raise ValueError(f"{self.table_name}: save_many_to_store needs a bulk store and an upsert on conflict")
@@ -3905,6 +4048,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
+        self._refuse_unfiled("delete_from_store")
         store = self._durable_store()
         if store is None:
             return
