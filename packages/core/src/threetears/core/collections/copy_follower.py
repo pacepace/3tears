@@ -1615,27 +1615,33 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        while self._file_waits.get(table) and self._status.phase is not FollowerPhase.STOPPED:
-            answered = False
-            for name, wait in list(self._file_waits.get(table, {}).items()):
-                if wait.watch:
-                    delta = await self._look_for(table, wait)
-                    if delta is not None:
-                        self._file_read(table, name, delta, why="the file reads")
-                        continue
-                if self._recreate is not None and wait.answer not in _ANSWERED:
-                    wait.answer = await self._ask(table, wait)
-                    answered = answered or (wait.watch and wait.answer in _ANSWERED)
-                    if wait.watch and wait.answer == "recovering" and self._fulls is not None:
-                        if table in self._fulls.tables:
-                            # the writer recovers the table (decision 28: a commit too big to list, its keys only in
-                            # the file): the file never comes back, the recovery's full does
-                            wait.watch = False
-                            self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
-            self._say_file_waits(table)
-            if not answered:
-                await asyncio.sleep(self._file_poll_seconds)
-            # else: the writer answered; the file is read again at once
+
+        async def looked() -> bool:
+            # a look at each file; once the writer answered, the files are read again at once, else at the next poll
+            while self._file_waits.get(table) and self._status.phase is not FollowerPhase.STOPPED:
+                answered = False
+                for name, wait in list(self._file_waits.get(table, {}).items()):
+                    if wait.watch:
+                        delta = await self._look_for(table, wait)
+                        if delta is not None:
+                            self._file_read(table, name, delta, why="the file reads")
+                            continue
+                    if self._recreate is not None and wait.answer not in _ANSWERED:
+                        wait.answer = await self._ask(table, wait)
+                        answered = answered or (wait.watch and wait.answer in _ANSWERED)
+                        if wait.watch and wait.answer == "recovering" and self._fulls is not None:
+                            if table in self._fulls.tables:
+                                # the writer recovers the table (decision 28: a commit too big to list, its keys only in
+                                # the file): the file never comes back, the recovery's full does
+                                wait.watch = False
+                                self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
+                self._say_file_waits(table)
+                if not answered:
+                    return False
+            return True
+
+        # the platform's never-give-up loop (threetears.observe), at the file poll's own pace
+        await retry_until_done(looked, first_delay=self._file_poll_seconds, max_delay=self._file_poll_seconds)
 
     async def _look_for(self, table: str, wait: _FileWait) -> DeltaFile | None:
         """read a waited-for file off the volume, whole: every change of it is checked to decode before it is applied.
