@@ -17,7 +17,10 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 pa_ipc = pytest.importorskip("pyarrow.ipc")
 
-from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
+from prometheus_client import REGISTRY  # noqa: E402
+
+from threetears.core.collections import delta_files  # noqa: E402
+from threetears.core.collections.caller_transaction import CallerTransaction, save_delta_files  # noqa: E402
 from threetears.core.backends.schema_sql import (  # noqa: E402
     build_bulk_insert_sql,
     build_insert_sql,
@@ -175,6 +178,67 @@ async def test_an_opted_in_write_saves_one_file_a_table_with_its_rows_and_delete
     assert saved.changes[0].row["date_updated"] is not None and saved.changes[3].row["date_updated"] is None
     assert (saved.table, saved.write, saved.key) == ("results", write_id, ("office_key", "geo_id"))
     assert len(read_delta_file(root / files["totals"]).changes) == 1
+
+
+def _saves(where: str) -> float:
+    return REGISTRY.get_sample_value("delta_file_saves_total", {"where": where}) or 0.0
+
+
+async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
+    root: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a write's delta file is built, compressed, hashed or written in the serving process (on its thread, as
+    it was: the serving process's own file writer refuses here), or reads back other than what was written: a
+    transaction's small file crosses to the worker as Arrow IPC bytes, and a load's large part (past the inline bound)
+    through the shared-memory hand-off, released after."""
+
+    def refused(*_: Any, **__: Any) -> None:
+        raise AssertionError("a delta file was written in the serving process")
+
+    monkeypatch.setattr(delta_files, "write_volume_file", refused)
+    handoff = tmp_path_factory.mktemp("handoff")
+    monkeypatch.setenv("THREETEARS_DELTA_HANDOFF_DIR", str(handoff))
+    collection, conn = _collection(), _Conn(root)
+    before = _saves("worker")
+    async with CallerTransaction(conn) as transaction:
+        await collection.save_rows(_rows(3), conn=conn)
+    small = read_delta_file(root / transaction.delta_files["results"], table="results")
+    assert [change.row["geo_id"] for change in small.changes] == ["00000", "00001", "00002"]
+    # a load's rows past the inline bound: 200,000 rows of a 60-character text, about 13 MiB
+    count = 200_000
+    rows = pa.table(
+        {
+            "office_key": pa.array(["sn_NC1"] * count),
+            "geo_id": pa.array([f"{i:060d}" for i in range(count)]),
+            "votes": pa.array(range(count), pa.int32()),
+        }
+    )
+    assert rows.nbytes > 8 << 20, "past the inline bound (8 MiB)"
+    load = collection.table_delta()
+    load.load([rows], [count], {})
+    files = await save_delta_files({"results": load})
+    held = read_volume_file(root / files["results"])
+    assert held.num_rows == count and held.column("geo_id")[count - 1].as_py() == f"{count - 1:060d}"
+    assert _saves("worker") == before + 2
+    assert not any(handoff.rglob("*.arrow")), "the hand-off is released once the worker is done"
+
+
+async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_counted(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a save with a part too large to cross inline is refused (or silently saved elsewhere) when no
+    shared-memory hand-off directory is named: it is saved on a thread of the serving process as before, counted."""
+    monkeypatch.delenv("THREETEARS_DELTA_HANDOFF_DIR", raising=False)
+    count = 200_000
+    rows = pa.table(
+        {"office_key": pa.array(["sn_NC1"] * count), "geo_id": pa.array([f"{i:060d}" for i in range(count)])}
+    )
+    load = _collection().table_delta()
+    load.load([rows], [count], {})
+    before = _saves("thread")
+    files = await save_delta_files({"results": load})
+    assert read_volume_file(root / files["results"]).num_rows == count
+    assert _saves("thread") == before + 1
 
 
 async def test_a_table_not_opted_in_saves_no_file(root: Path) -> None:

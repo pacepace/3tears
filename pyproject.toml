@@ -647,6 +647,8 @@ module = [
     "threetears.core.collections.delta_files",
     # and a recreate's check of a file's keys against its record's, matched in Arrow
     "threetears.core.collections.delta_recreate",
+    # and a write's delta files built and saved in a worker process (Arrow IPC across)
+    "threetears.core.collections.delta_save",
     "threetears.core.collections.schema_backed",
     "threetears.core.backends.arrow_reply",
     # and a copy's rows sent as Arrow

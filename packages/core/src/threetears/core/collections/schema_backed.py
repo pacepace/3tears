@@ -118,7 +118,6 @@ from threetears.core.collections.delta_files import (
     LoadDelta,
     TableDelta,
     check_delta_scope,
-    load_delta_rows,
 )
 from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, WholeReach
@@ -3665,12 +3664,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises ValueError: when a file's rows given are not as many as it holds
         :raises DeltaFileRefusedError: when no delta files directory is configured
         """
-        rows = await asyncio.to_thread(
-            load_delta_rows, [given[id(file)] for file in request], [file.rows for file in request], constants
-        )
         table_delta = self.table_delta()
-        # a COPY inserts and sets no column of a row already held (it fails the load instead): none written
-        table_delta.arrow(rows, [])
+        # joined, typed, checked against the files' counts and saved in the worker process the save runs in
+        table_delta.load([given[id(file)] for file in request], [file.rows for file in request], constants)
         return await save_delta_files({self.table_name: table_delta})
 
     def _key_columns(self) -> tuple[str, ...]:
