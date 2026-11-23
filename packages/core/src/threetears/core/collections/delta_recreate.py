@@ -7,7 +7,8 @@ the copy reads nothing from L3, holds the table and asks the writer; the writer 
 key, once, and writes the file back under the same name (``design-pod-delta-files.md``, decision 29, which amends 3).
 
 **The request** rides 3tears' owner-routed forward (:func:`threetears.nats.forward.forward` /
-:func:`~threetears.nats.forward.serve_owner`) in the ``delta-files`` family (:data:`_FAMILY`), keyed by the
+:func:`~threetears.nats.forward.serve_owner`) in the ``delta-files`` family
+(:data:`~threetears.nats.DELTA_FILES_FORWARD_FAMILY`, the one spelling the NATS grant names too), keyed by the
 deployment's own key (the write lease's): ``{ns}.forward.{sha256(delta-files)}.{sha256(key)}``. Its body is JSON
 ``{"table": ..., "file": ..., "epoch": ...}`` (:class:`_Request`); the reply is one word
 (:class:`_Outcome`). Only the lease holder serves the subject (:func:`serving_recreates`, entered under the
@@ -43,6 +44,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from threetears.nats import DELTA_FILES_FORWARD_FAMILY
 from threetears.nats.errors import RequestError
 from threetears.nats.forward import ForwardedHandlerError, NoOwnerError, forward, serve_owner
 from threetears.observe import get_logger
@@ -77,10 +79,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-#: the forward family recreate requests ride, so a NATS grant can name them
-#: (``Subjects.forward_scoped_wildcard("delta-files")``) without granting every forward subject
-_FAMILY: Final = "delta-files"
 
 #: how long a copy waits for the writer's answer: a recreation reads one change's rows from L3 and writes them, seconds
 #: for the largest listed change. A copy that times out hears ``no_writer`` and asks again at its next look, which the
@@ -432,7 +430,7 @@ async def serving_recreates(nats: ForwardTransport, key: str, recreator: DeltaRe
     """
     # sender-posture: trigger-only -- the body only names which epoch's record to read; the file's name and keys are
     # taken from that record in the epoch log, never from the body, so a request can at most recreate a real file
-    async with serve_owner(nats, key, recreator.answer, family=_FAMILY):
+    async with serve_owner(nats, key, recreator.answer, family=DELTA_FILES_FORWARD_FAMILY):
         yield
 
 
@@ -468,7 +466,9 @@ class DeltaRecreateRequester:
         """
         payload = _Request(table=table, file=file, epoch=epoch).encode()
         try:
-            reply = await forward(self._nats, self._key, payload, timeout=self._timeout, family=_FAMILY)
+            reply = await forward(
+                self._nats, self._key, payload, timeout=self._timeout, family=DELTA_FILES_FORWARD_FAMILY
+            )
         except NoOwnerError:
             return _Outcome.NO_WRITER.value  # NOSILENT: the copy counts and logs the answer, and asks again
         except (ForwardedHandlerError, RequestError) as exc:
