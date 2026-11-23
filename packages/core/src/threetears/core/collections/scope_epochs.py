@@ -809,6 +809,9 @@ class ScopeEpochs:
             )
         for scope in scopes:
             transaction.enroll(self._collection, scope)
+        # the transaction's commit names them: a keys-unknown record of a table it wrote names the states it touched,
+        # so a lost delta file of a commit too big to list is recovered by those states (decision 31)
+        transaction.note_scopes(scopes)
 
     async def commit(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
         """record the write as committed and move every scope it changed, or touched before, to its version.

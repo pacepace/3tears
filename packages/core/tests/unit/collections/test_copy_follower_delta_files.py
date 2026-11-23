@@ -198,12 +198,18 @@ class _Log:
         )
         return token
 
-    def too_large(self, delta_file: str | None) -> str:
-        """a commit the broker recorded keys unknown, with its notes bracket, naming its file when it saved one."""
+    def too_large(self, delta_file: str | None, scopes: Sequence[str] | None = None) -> str:
+        """a commit the broker recorded keys unknown, with its notes bracket, naming its file when it saved one, and
+        the states its commit touched when it names them (decision 31)."""
         self.count += 1
         token = f"inc:{self.count}"
         self.records[token] = EpochChange(
-            table=_TABLE, token=token, keys_unknown=True, noted_between=(_LATER, _LATER), delta_file=delta_file
+            table=_TABLE,
+            token=token,
+            keys_unknown=True,
+            noted_between=(_LATER, _LATER),
+            delta_file=delta_file,
+            scopes=list(scopes) if scopes is not None else None,
         )
         return token
 
@@ -543,6 +549,30 @@ async def test_a_commit_too_big_to_list_is_applied_whole_from_its_file_reading_n
     assert (l3.statements, notes.asked) == (0, 0)
     assert follower.status().behind == {}
     assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_lost_file_of_a_commit_too_big_to_list_naming_its_states_reads_neither_l3_nor_the_notes(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy, finding the file of a keys-unknown commit whose record names its states lost, reads those
+    states (or the notes' keys) from L3 itself: only the writer recovers such a commit (decision 31), once; every copy
+    reads nothing, holds the table, and waits for the writer."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    notes = _Notes([("VA", "1")])
+    world = _world(notes=notes)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    held = _copy(backend)
+    l3.update(("VA", 1), votes=71)
+    lost = f"{_TABLE}/lost-big.arrow"
+    log.too_large(lost, scopes=["state:VA"])
+    lock.commit("state:VA")
+
+    await follower.catch_up()
+
+    assert (l3.statements, notes.asked) == (0, 0), "a copy reads neither L3 nor the notes for a lost file"
+    assert _copy(backend) == held
+    assert lost in follower.status().waiting_for_file[_TABLE]
 
 
 async def test_a_commit_of_several_records_naming_one_file_is_applied_once(

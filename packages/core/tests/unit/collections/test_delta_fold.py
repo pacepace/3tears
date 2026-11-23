@@ -12,6 +12,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from threetears.core.collections.epoch_change import (  # noqa: E402
     EpochWalk,
     walk_by_count,
 )
+from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     STRING_TYPE,
@@ -1271,4 +1273,168 @@ async def test_no_full_at_all_with_the_log_lost_is_still_the_one_cold_start_whol
     assert l3.statements == Counter({"votes": 1, "runs": 1}), "one whole read of each table"
     assert _recoveries("log_lost") == before and _rebuilds("cold_start") == rebuilt + 1
     assert _held(tmp_path, "votes") == _sorted(_VOTES_ROWS)
+    await folds.close()
+
+
+# --- a lost file of a commit too big to list (decision 31) ------------------------------------------------------------
+
+_BRACKET = (
+    datetime(2026, 11, 23, 3, 0, tzinfo=UTC),
+    datetime(2026, 11, 23, 3, 0, 2, tzinfo=UTC),
+)
+
+
+class _NotedL3(_KeyedL3):
+    """L3 as the rail's proxy is to the writer: it reads the change notes too (``l3.noted_keys``), naming ``noted``
+    while the ring covers the bracket, and ``not_covered`` once it does not."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]], noted: Sequence[tuple[str, str]], *, covered: bool) -> None:
+        super().__init__(rows)
+        self.noted = tuple(noted)
+        self.covered = covered
+        self.asked: list[tuple[str, tuple[datetime, datetime]]] = []
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        self.asked.append((table, noted_between))
+        if not self.covered:
+            return "not_covered"
+        # two pages, the second past the first's cursor, as the ring answers a bracket's keys
+        half = len(self.noted) // 2
+        if cursor is None:
+            return NotedKeysPage(keys=self.noted[:half], whole_table=False, next=NotedKeysCursor(slot=0, after=_AT))
+        return NotedKeysPage(keys=self.noted[half:], whole_table=False, next=None)
+
+
+_AT = _BRACKET[0]
+
+
+def _lost_file_recoveries(why: str) -> float:
+    labels = {"table": "votes", "why": why}
+    return REGISTRY.get_sample_value("delta_fold_lost_file_recoveries_total", labels) or 0.0
+
+
+async def _big_commit_lost(
+    root: Path, workers: ProcessWorkers
+) -> tuple[_Writer, str, str, dict[tuple[str, int], dict[str, Any]], _Log]:
+    """a writer's history whose one commit too big to list (keys unknown: its record names its notes bracket, its
+    states and its file) lost its file: TX, GA and NC folded; the big commit updated four TX rows, inserted one and
+    deleted one, then NC took two rows in a commit of its own, unfolded. Returns the writer, the lost file and its
+    epoch, what L3 holds, and the epoch log."""
+    schema = _votes_schema()
+    writer = _writer(root, schema, workers)
+    tx = [{"state": "TX", "geo_id": g, "votes": g % 97, "note": "n"} for g in range(5000)]
+    nc = [{"state": "NC", "geo_id": g, "votes": g % 89, "note": "n"} for g in range(5000)]
+    await writer.commit(tx)
+    await writer.commit(_votes("GA", range(1, 400), 7))
+    await writer.commit(nc)
+    big = [*_votes("TX", range(1000, 1004), 2, "big"), *_votes("TX", range(9000, 9001), 5, "new")]
+    lost = await writer.commit(big, deletes=[("TX", 7)])
+    other = await writer.commit(_votes("NC", range(5000, 5002), 3))
+    assert writer.folds.unfolded == {lost, other}
+    await writer.folds.close()
+    damaged = bytearray((root / lost).read_bytes())
+    damaged[len(damaged) // 2] ^= 0x5A
+    (root / lost).write_bytes(bytes(damaged))
+    held = {(row["state"], row["geo_id"]): row for row in [*tx, *_votes("GA", range(1, 400), 7), *nc]}
+    held.update({(row["state"], row["geo_id"]): row for row in [*big, *_votes("NC", range(5000, 5002), 3)]})
+    del held[("TX", 7)]
+    log = _Log()
+    epoch = f"inc:{writer.files.index(lost) + 1}"
+    for index, file in enumerate(writer.files):
+        log.append("votes", f"inc:{index + 1}", file)
+    log.records[("votes", epoch)] = EpochChange(
+        table="votes",
+        token=epoch,
+        keys_unknown=True,
+        noted_between=_BRACKET,
+        delta_file=lost,
+        scopes=["state:TX"],
+    )
+    return writer, lost, epoch, held, log
+
+
+#: the keys the big commit's notes name: its own four updates, its insert and its delete
+_NOTED = (*(("TX", str(g)) for g in range(1000, 1004)), ("TX", "9000"), ("TX", "7"))
+
+
+async def test_a_lost_big_file_within_the_notes_window_is_recovered_from_the_keys_its_notes_name(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer, handed a lost file of a commit too big to list whose notes bracket the ring still covers
+    (decision 31 (a)), does not read that commit's keys from the change notes, reads any row from L3 but those keys and
+    the leftover file's (one keyed statement, never a state or the table), or publishes a full that is not what L3
+    holds (the big commit's updates, its insert and its delete included). On the code before decision 31 the
+    recovery read only the leftover file's keys, and the full kept TX's old rows and the deleted one."""
+    _no_whole_read(monkeypatch)
+    writer, lost, epoch, held, log = await _big_commit_lost(tmp_path, workers)
+    reader = _NotedL3(list(held.values()), _NOTED, covered=True)
+    token = f"inc:{len(writer.files)}"
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], workers=workers)
+    assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
+    before = (_lost_file_recoveries("notes"), _lost_file_recoveries("states"))
+
+    await folds.recover_table("votes", epoch=epoch, file=lost)
+    await folds.wait()
+
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    assert reader.asked == [("votes", _BRACKET)] * 2, "the record's bracket, both pages of its notes"
+    ((sql, params, answered),) = reader.statements
+    expected = sorted([("NC", "5000"), ("NC", "5001"), *_NOTED])
+    assert sorted(zip(params[0], params[1], strict=True)) == expected, (
+        "one keyed statement naming the leftover file's keys and the noted keys, nothing else"
+    )
+    assert answered == len(expected) - 1, "only those rows: the deleted key is not in L3"
+    assert '"votes"' in sql and "WHERE" in sql
+    assert (_lost_file_recoveries("notes"), _lost_file_recoveries("states")) == (before[0] + 1, before[1])
+    current = current_full_manifest(tmp_path)
+    assert current is not None and all(part.version == token for part in current.tables["votes"].parts)
+    assert not (tmp_path / lost).exists()
+    await folds.close()
+
+
+async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_only_its_states(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer, handed a lost file of a commit too big to list whose notes the ring no longer covers
+    (decision 31 (b)), reads anything from L3 but the leftover file's keys and the rows of the one state the record
+    names (a keyset read led by the state, never GA's or NC's, never the table), or publishes a full that is not what
+    L3 holds: TX's part is replaced whole by L3's rows (its deleted key gone, its insert there), GA's kept as it was.
+    On the code before decision 31 the full kept TX's old rows and the deleted one."""
+    _no_whole_read(monkeypatch)
+    writer, lost, epoch, held, log = await _big_commit_lost(tmp_path, workers)
+    ga = _part(tmp_path, "votes", "state:GA")
+    assert ga is not None
+    reader = _NotedL3(list(held.values()), _NOTED, covered=False)
+    token = f"inc:{len(writer.files)}"
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], workers=workers)
+    assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
+    before = (_lost_file_recoveries("notes"), _lost_file_recoveries("states"))
+
+    await folds.recover_table("votes", epoch=epoch, file=lost)
+    await folds.wait()
+
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    # a dialect probe (``SELECT version()``) reads no table
+    (by_key, *by_state) = [statement for statement in reader.statements if '"votes"' in statement[0]]
+    assert sorted(zip(by_key[1][0], by_key[1][1], strict=True)) == [("NC", "5000"), ("NC", "5001")]
+    assert by_state, "the named state is read"
+    for sql, params, _ in by_state:
+        assert "WHERE" in sql and ["TX"] in [list(p) for p in params if isinstance(p, list | tuple)], (
+            f"each page a read of the named state alone, never another: {sql} {params}"
+        )
+        assert re.search(r'ORDER BY "state"', sql), f"led by the state: {sql}"
+    tx_rows = sum(1 for key in held if key[0] == "TX")
+    # each page asks one row past itself, to know whether another follows
+    assert tx_rows <= sum(answered for _, _, answered in by_state) <= tx_rows + len(by_state), "TX's rows alone, once"
+    assert (_lost_file_recoveries("notes"), _lost_file_recoveries("states")) == (before[0], before[1] + 1)
+    assert _part(tmp_path, "votes", "state:GA") == FullPart("state:GA", ga.file, token, ga.rows), "GA's part kept"
+    assert not (tmp_path / lost).exists()
     await folds.close()

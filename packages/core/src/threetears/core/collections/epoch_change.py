@@ -43,6 +43,15 @@ as a file on the pods' shared volume before the commit; the commit's record name
 it and nothing lists the volume. Every record of the commit for the table names it (a commit too large for one record
 is several), so a follower that reaches any of them has the whole commit. Rolled out as :attr:`database` was: the
 field is optional, an older reader ignores it, and a record from an older writer names none.
+
+**A keys-unknown record names the scopes its commit touched** (:attr:`EpochChange.scopes`; ``design-pod-delta-files
+.md``, decision 31). A commit too big to list its rows has its keys only in its delta file (decision 21); should that
+file be lost past the change notes' window, nothing else names them. So the record also names the scopes (the states,
+``state:CA``, as the writer's seqlock names them: :class:`~threetears.core.collections.scope_epochs.ScopeEpochs`) the
+commit's transaction touched, and the writer recovers by re-reading just those states from L3
+(:meth:`~threetears.core.collections.delta_fold.DeltaFolds.recover_table`). Bounded (:data:`_EPOCH_SCOPES_MAX`, each
+:data:`_SCOPE_MAX_CHARS`): a commit touching more names none, and its recovery then has only the notes. Rolled out as
+:attr:`delta_file` was: optional, an older reader ignores it, a record from an older writer names none.
 """
 
 from __future__ import annotations
@@ -52,7 +61,7 @@ import inspect
 import json
 import re
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -83,6 +92,7 @@ __all__ = [
     "keyed_record_form",
     "read_epoch_change_body",
     "read_logged_epoch_change",
+    "recordable_scopes",
     "walk_by_count",
     "advance_recording",
     "records_changes",
@@ -129,6 +139,13 @@ _RECORD_OVERHEAD_BYTES: Final = 1024
 #: (``delta_files._delta_file_name``): relative, one directory deep, so a reader never opens anything outside the
 #: volume
 _DELTA_FILE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*/[A-Za-z0-9_-]+\.arrow$")
+#: the most scopes a keys-unknown record names (:attr:`EpochChange.scopes`), and the longest each: 57 states and
+#: territories and a national scope are far under it, and at the bound a record is about 33 KB, well under
+#: :data:`_EPOCH_CHANGE_MAX_RECORD_BYTES` (a keys-unknown record holds no rows). A commit touching more names none: its
+#: recovery then has only the change notes (decision 31)
+_EPOCH_SCOPES_MAX: Final = 256
+_SCOPE_MAX_CHARS: Final = 128
+
 #: the longest delta file name a record holds, out of the overhead kept free under the bound, so a record of a full
 #: run of rows still fits: a 63-character table name and a 32-character write id come to 102
 _DELTA_FILE_MAX_CHARS: Final = 256
@@ -219,6 +236,10 @@ class EpochChange(BaseModel):
         (module docstring); ``None`` from a writer that names none, or one built before the field
     :ivar delta_file: the commit's delta file of the table, its name under the delta files' directory (module
         docstring); ``None`` for a table that does not opt in, and from a writer built before the field
+    :ivar scopes: for a keys-unknown record of a commit that saved a delta file, the scopes its transaction touched
+        (the states, ``state:CA``, as the writer's seqlock names them; module docstring): what the writer re-reads
+        from L3 should the file be lost past the notes' window. ``None`` when unknown, past :data:`_EPOCH_SCOPES_MAX`,
+        or from a writer built before the field
     """
 
     table: str
@@ -232,6 +253,7 @@ class EpochChange(BaseModel):
     noted_between: tuple[datetime, datetime] | None = None
     database: str | None = None
     delta_file: str | None = None
+    scopes: list[str] | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -254,7 +276,48 @@ class EpochChange(BaseModel):
         check_whole_reach(self.prefixes, self.reason, whole_table=self.whole_table)
         _check_noted_between(self.noted_between, keys_unknown=self.keys_unknown)
         _check_delta_file(self.delta_file)
+        _check_scopes(self.scopes, keys_unknown=self.keys_unknown)
         return self
+
+
+def _check_scopes(scopes: Sequence[str] | None, *, keys_unknown: bool) -> None:
+    """refuse scopes on a record that is not keys unknown, or scopes no record holds (:func:`recordable_scopes`).
+
+    :param scopes: the scopes, or None
+    :ptype scopes: Sequence[str] | None
+    :param keys_unknown: whether the record is keys unknown
+    :ptype keys_unknown: bool
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when they are refused
+    """
+    if scopes is None:
+        return
+    if not keys_unknown:
+        raise ValueError("a change's scopes are named only on a keys-unknown record: a keyed one names its rows")
+    if recordable_scopes(scopes) is None or len(set(scopes)) != len(scopes):
+        raise ValueError(
+            f"a record names 1 to {_EPOCH_SCOPES_MAX} distinct scopes of 1 to {_SCOPE_MAX_CHARS} characters, "
+            f"got {len(scopes)}"
+        )
+
+
+def recordable_scopes(scopes: Iterable[str]) -> list[str] | None:
+    """the scopes a commit touched as a keys-unknown record names them (:attr:`EpochChange.scopes`): each once,
+    sorted; ``None`` when there are none, more than :data:`_EPOCH_SCOPES_MAX`, or one longer than a record holds, so a
+    record never grows past its bound and a commit too wide names none (its recovery then has only the notes).
+
+    :param scopes: the scopes, perhaps with repeats
+    :ptype scopes: Iterable[str]
+    :return: the scopes to name, or None
+    :rtype: list[str] | None
+    """
+    named = sorted(set(scopes))
+    if not named or len(named) > _EPOCH_SCOPES_MAX:
+        return None
+    if any(not isinstance(scope, str) or not scope or len(scope) > _SCOPE_MAX_CHARS for scope in named):
+        return None
+    return named
 
 
 def _check_delta_file(delta_file: str | None) -> None:
@@ -535,6 +598,7 @@ async def advance_recording(
     prefixes: Sequence[Mapping[str, str]] | None = None,
     reason: str | None = None,
     delta_file: str | None = None,
+    scopes: Sequence[str] | None = None,
     repair: bool = True,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
@@ -576,6 +640,9 @@ async def advance_recording(
     :param delta_file: the commit's delta file of the table (:attr:`EpochChange.delta_file`), for a source that
         records it; one that does not records the change without it
     :ptype delta_file: str | None
+    :param scopes: a keys-unknown change's scopes (:attr:`EpochChange.scopes`), for a source that records them;
+        ignored on any other change
+    :ptype scopes: Sequence[str] | None
     :param repair: hand a failed advance to the process's ledger for retry; ``False`` for the retry itself
     :ptype repair: bool
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
@@ -585,6 +652,8 @@ async def advance_recording(
     """
     check_change_form(rows, keys_unknown=keys_unknown)
     _check_delta_file(delta_file)
+    named_scopes = list(scopes) if scopes and keys_unknown else None
+    _check_scopes(named_scopes, keys_unknown=keys_unknown)
     if not repair:
         return await _advance_recording_once(
             source,
@@ -597,6 +666,7 @@ async def advance_recording(
             prefixes=prefixes,
             reason=reason,
             delta_file=delta_file,
+            scopes=named_scopes,
         )
     kept_rows = None if rows is None else list(rows)
 
@@ -612,6 +682,7 @@ async def advance_recording(
             prefixes=prefixes,
             reason=reason,
             delta_file=delta_file,
+            scopes=named_scopes,
         )
 
     try:
@@ -636,6 +707,7 @@ async def _advance_recording_once(
     prefixes: Sequence[Mapping[str, str]] | None,
     reason: str | None,
     delta_file: str | None,
+    scopes: list[str] | None,
 ) -> str | None:
     """one try of :func:`advance_recording`, its change already checked.
 
@@ -659,6 +731,8 @@ async def _advance_recording_once(
     :ptype reason: str | None
     :param delta_file: the commit's delta file of the table
     :ptype delta_file: str | None
+    :param scopes: a keys-unknown change's scopes
+    :ptype scopes: list[str] | None
     :return: the token the advance wrote
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -681,6 +755,8 @@ async def _advance_recording_once(
             extra["noted_between"] = noted_between
         if delta_file is not None and _takes(source, "delta_file"):
             extra["delta_file"] = delta_file
+        if scopes and keys_unknown and _takes(source, "scopes"):
+            extra["scopes"] = scopes
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
@@ -841,6 +917,8 @@ class _EpochBody(BaseModel):
     #: form is cut from a record naming no delta file, which the stored dump leaves out
     database: str | None = None
     delta_file: str | None = None
+    #: after the delta file: named only on a keys-unknown record, which no keyed record's form is cut from
+    scopes: list[str] | None = None
 
 
 def epoch_change_body(
@@ -854,6 +932,7 @@ def epoch_change_body(
     reason: str | None = None,
     database: str | None = None,
     delta_file: str | None = None,
+    scopes: Sequence[str] | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -880,6 +959,9 @@ def epoch_change_body(
     :ptype database: str | None
     :param delta_file: the commit's delta file of the table (:attr:`EpochChange.delta_file`); ``None`` names none
     :ptype delta_file: str | None
+    :param scopes: for a keys-unknown change, the scopes its commit touched (:attr:`EpochChange.scopes`); ``None``
+        names none
+    :ptype scopes: Sequence[str] | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, a partition with either, or a delta file name that is
@@ -891,6 +973,7 @@ def epoch_change_body(
     if partition is not None and (rows is not None or keys_unknown):
         raise ValueError("a partition narrows a whole-table change: pass rows=None without keys_unknown")
     _check_noted_between(noted_between, keys_unknown=keys_unknown)
+    _check_scopes(scopes, keys_unknown=keys_unknown)
     check_whole_reach(prefixes, reason, whole_table=rows is None and not keys_unknown)
     body = _EpochBody(
         table=table_name,
@@ -903,6 +986,7 @@ def epoch_change_body(
         noted_between=noted_between,
         database=database,
         delta_file=delta_file,
+        scopes=list(scopes) if scopes is not None else None,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -995,6 +1079,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             noted_between=body.noted_between,
             database=body.database,
             delta_file=body.delta_file,
+            scopes=body.scopes,
         )
     except ValidationError as exc:
         raise GenerationUnavailableError(

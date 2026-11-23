@@ -88,6 +88,16 @@ column set, then the markers), folded in a worker process into every state it re
 are, every part current to the generation read before the keys; published at the writer's term, and the leftover
 files deleted. Logged at WARNING and counted (``delta_fold_recoveries_total``). The same for a round that finds a
 commit of another incarnation than the table's full. A whole read stays only for no full at all (decision 14).
+
+**A lost file of a commit too big to list is recovered from the notes, else by its states** (decision 31, with 21, 28
+and 29). Such a commit's record lists no rows, so its keys were only in the file the copies could not read
+(:meth:`DeltaFolds.recover_table`). Its recovery adds, beside the leftover files' keys: (a) the keys the change notes
+name in the record's bracket (``noted_between``), read a page at a time while the ring still covers it (the notes
+reader, keyed), and then only those keys' rows from L3 by key; else (b) every row of the states the record names
+(``EpochChange.scopes``), read from L3 a keyset page at a time led by the state, which replace those states' parts
+whole (a key L3 no longer holds simply is not there). Counted (``delta_fold_lost_file_recoveries_total``, why
+``notes``, ``states``, or ``unnamed`` when the record names neither) and logged at WARNING. Never the table whole, and
+never a copy: only the writer reads L3.
 """
 
 from __future__ import annotations
@@ -99,7 +109,8 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from contextlib import aclosing
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -122,8 +133,10 @@ from threetears.core.collections.delta_files import (
     write_delta_file,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
+from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import EpochChangeReader, key_text
+from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader, key_text
+from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
 from threetears.core.declared import whole_read
@@ -203,6 +216,20 @@ _RECOVERIES = counter(
     "name read from L3 by key, folded as one recovery delta; by table, why and outcome",
     label_names=("table", "why", "outcome"),
 )
+
+#: lost files of commits too big to list recovered (decision 31), by table and why: ``notes`` (the record's notes
+#: bracket still covered: its keys read from the notes, their rows from L3 by key), ``states`` (past the notes: the
+#: states the record names read from L3 by state), ``unnamed`` (the record names neither, or is gone: only what the
+#: leftover files name is recovered)
+_LOST_FILE_RECOVERIES = counter(
+    "delta_fold_lost_file_recoveries_total",
+    description="writer recoveries of a lost delta file of a commit too big to list its rows, by table and why: "
+    "notes (keys from the change notes), states (the record's states read from L3), unnamed (neither)",
+    label_names=("table", "why"),
+)
+
+#: how a lost file's commit was recovered (decision 31)
+_LostWhy = Literal["notes", "states", "unnamed"]
 
 #: what the writer holds unfolded, by table, from the fold's own bookkeeping (gap 3): the delta files told and not yet
 #: in a published full, and the bytes of their shares a round has measured (a file told counts in the files at once,
@@ -368,9 +395,13 @@ class DeltaFolds:
         self._fresh: dict[str, _FreshWhy] = {}
         #: tables whose epoch log was lost, by why: recovered by key (decision 28) before any round folds them
         self._recover: dict[str, _RecoveryWhy] = {}
-        #: each table's delta files lost (missing or unreadable) that decision 29 handed to a recovery: never read for
-        #: the recovery's keys, deleted once it is published
-        self._lost: dict[str, set[str]] = {}
+        #: each table's delta files lost (missing or unreadable) that decision 29 handed to a recovery, onto the epoch
+        #: whose record named each: never read for the recovery's keys, deleted once it is published; the record's
+        #: notes bracket or states name the keys instead (decision 31)
+        self._lost: dict[str, dict[str, str]] = {}
+        #: the epoch log and the change notes, from :meth:`start`: what a lost file's record and keys are read from
+        self._changes: EpochChangeReader | None = None
+        self._notes: NotedKeysReader | None = None
         #: each table's recovery asks (:meth:`recover_table`): one asked while a recovery of the table runs is owed
         #: again once it ends, since the generation that recovery read may be older than the lost file's epoch
         self._asked: Counter[str] = Counter()
@@ -470,6 +501,7 @@ class DeltaFolds:
         changes: EpochChangeReader,
         version: int,
         page_size: int = DEFAULT_PAGE_SIZE,
+        notes: NotedKeysReader | None = None,
     ) -> tuple[str, ...]:
         """the writer's start: re-learn from the epoch log the delta files not yet folded (module docstring, "A
         restarted writer re-learns"), then rebuild from L3, once, each folded table the current full on the volume
@@ -493,6 +525,9 @@ class DeltaFolds:
         :ptype version: int
         :param page_size: rows a page of the read holds
         :ptype page_size: int
+        :param notes: the change notes' reader, which names a lost file's keys while its bracket is covered (decision
+            31); None takes ``l3`` when it reads notes (the rail's proxy: the broker's ``l3.noted_keys``)
+        :ptype notes: NotedKeysReader | None
         :return: the tables rebuilt or recovered and published, in order; empty when the full held every one and every
             log was whole (or this writer's term is no longer the highest, or a read failed: logged and counted,
             retried before the next round)
@@ -506,6 +541,8 @@ class DeltaFolds:
         for table in self.tables.values():
             _table_types(table)  # refuses a table it could not read
         self._reader = _Reader(l3=l3, generations=generations, page_size=page_size)
+        self._changes = changes
+        self._notes = notes if notes is not None else l3 if isinstance(l3, NotedKeysReader) else None
         self._term = version if self._term is None else max(self._term, version)
         self._recheck = True
         since = len(self._rebuilt)
@@ -666,8 +703,9 @@ class DeltaFolds:
         for the publish. Only the writer holding the write lease calls it (the recreator is served under it).
 
         The lost file is never read for the recovery's keys (it is gone, or its bytes are damaged), and is deleted once
-        the recovery is published. What it alone named is not recovered by key: no record, no notes past their window,
-        names its keys (``design-pod-delta-files.md`` leaves this open; logged here).
+        the recovery is published. What it alone named is recovered from its epoch's record (decision 31, module
+        docstring): the keys the change notes name in its bracket while the ring covers it, else every row of the
+        states it names, read from L3 by state.
 
         :param table: the table
         :ptype table: str
@@ -681,7 +719,7 @@ class DeltaFolds:
         """
         if table not in self.tables:
             raise KeyError(table)
-        self._lost.setdefault(table, set()).add(file)
+        self._lost.setdefault(table, {})[file] = epoch
         self._asked[table] += 1
         if self._recover.get(table) is not None:
             # owed already (perhaps failed on this very file): tried again now, without reading it
@@ -693,8 +731,8 @@ class DeltaFolds:
         self._owe_recovery(
             table,
             "file_lost",
-            detail=f"{file} of epoch {epoch}: a commit too big to list lost its file; what only it named is not "
-            "recovered by key",
+            detail=f"{file} of epoch {epoch}: a commit too big to list lost its file; what only it named is recovered "
+            "from its record's notes, else its states",
         )
 
     def _run_rounds(self) -> None:
@@ -1033,7 +1071,7 @@ class DeltaFolds:
         table = self.tables[name]
         began = time.time()
         asked = self._asked[name]
-        lost = set(self._lost.get(name, set()))
+        lost = dict(self._lost.get(name, {}))
         known = {file for table_name, file, _ in self._queued if table_name == name} | {
             share[2] for share in self._pending if share[0] == name
         }
@@ -1056,6 +1094,9 @@ class DeltaFolds:
         )
         types = _table_types(table)
         kinds = dict(table.kinds)
+        # what only the lost files named, from their records (decision 31): keys from the notes, else whole states
+        named = [await self._lost_commit_reach(table, epoch) for epoch in lost.values()]
+        reach = _with_noted_keys(table, reach, [key for lost_reach in named for key in lost_reach.keys])
         pages: list[Any] = []
         if reach.keys:
             pages += await read_keyed_arrow(
@@ -1074,7 +1115,13 @@ class DeltaFolds:
                 ),
                 types=types,
             )
-        file, rows, markers = await asyncio.to_thread(_save_recovery_delta, self.root, table, types, pages, reach)
+        named, unstated = _unstated_gone_by_states(table, reach, pages, named)
+        replaced = tuple(sorted({scope for lost_reach in named for scope in lost_reach.scopes}))
+        if replaced:
+            pages += await _state_rows(reader, table, types, replaced)
+        file, rows, markers = await asyncio.to_thread(
+            _save_recovery_delta, self.root, table, types, pages, reach, replaced, unstated
+        )
         doomable = tuple(
             sorted(
                 {left for left, saved in leftovers if saved < cutoff and left not in known and left != file}
@@ -1082,7 +1129,9 @@ class DeltaFolds:
             )
         )
         try:
-            answer = await self._workers.run(recovery_round, str(self.root), term, table.plain(), file, token, doomable)
+            answer = await self._workers.run(
+                recovery_round, str(self.root), term, table.plain(), file, token, doomable, replaced
+            )
         except BaseException:
             await asyncio.to_thread(_unlink_all, self.root, [file])
             raise
@@ -1106,11 +1155,32 @@ class DeltaFolds:
             self._recheck = True
             self._marked = True
         if lost:
-            left = self._lost.get(name, set()) - lost
+            left = {held: epoch for held, epoch in self._lost.get(name, {}).items() if held not in lost}
             if left:
                 self._lost[name] = left
             else:
                 self._lost.pop(name, None)
+        for lost_reach in named:
+            _LOST_FILE_RECOVERIES.labels(table=name, why=lost_reach.why).inc()
+            log.warning(
+                "a lost delta file of a commit too big to list was recovered "
+                + {
+                    "notes": "from the keys its change notes name, read from L3 by key",
+                    "states": "by its states, read from L3 by state: the notes no longer cover it",
+                    "unnamed": "only as far as the leftover files name: its record names no notes bracket the ring "
+                    "covers and no states",
+                }[lost_reach.why],
+                extra={
+                    "extra_data": {
+                        "table": name,
+                        "epoch": lost_reach.epoch,
+                        "why": lost_reach.why,
+                        "keys": len(lost_reach.keys),
+                        "states": list(lost_reach.scopes),
+                        "detail": lost_reach.detail,
+                    }
+                },
+            )
         self._rebuilt.append(name)
         self._drop_covered(name, token, known)
         log.warning(
@@ -1124,6 +1194,7 @@ class DeltaFolds:
                     "leftover_files": len(leftovers),
                     "keys": len(reach.keys),
                     "prefixes": len(reach.prefixes),
+                    "states_replaced": len(replaced),
                     "rows": rows,
                     "delete_markers": markers,
                     "states": states,
@@ -1131,6 +1202,55 @@ class DeltaFolds:
                 }
             },
         )
+
+    async def _lost_commit_reach(self, table: FoldedTable, epoch: str) -> _LostReach:
+        """what a lost file's commit reached, from its epoch's record (decision 31): the keys the change notes name in
+        its bracket while the ring covers it; else the states it names; else nothing.
+
+        :param table: the table
+        :ptype table: FoldedTable
+        :param epoch: the epoch whose file was lost
+        :ptype epoch: str
+        :return: the keys (as text, in key order) or the states (as the table's scopes name them), and why
+        :rtype: _LostReach
+        :raises GenerationUnavailableError: when the epoch log cannot be read (the recovery is tried again)
+        """
+        record = await self._changes.change(table.name, epoch) if self._changes is not None else None
+        if record is None:
+            return _LostReach(epoch=epoch, why="unnamed", detail="the epoch log holds no record of it")
+        noted = await self._noted_keys(table.name, record)
+        scopes = _table_scopes(table, record)
+        if isinstance(noted, tuple):
+            return _LostReach(epoch=epoch, why="notes", keys=noted, fallback=scopes)
+        if scopes:
+            return _LostReach(epoch=epoch, why="states", scopes=scopes, detail=noted)
+        return _LostReach(epoch=epoch, why="unnamed", detail=f"{noted}; the record names none of the table's states")
+
+    async def _noted_keys(self, table: str, record: EpochChange) -> tuple[tuple[str, ...], ...] | str:
+        """every key the change notes name in ``record``'s bracket, a page at a time; or why they cannot.
+
+        :param table: the table
+        :ptype table: str
+        :param record: the lost file's record
+        :ptype record: EpochChange
+        :return: the keys, each its values as text in key order; or why not (``no_bracket``, ``no_notes_reader``,
+            ``whole_table``, or the reader's word: ``not_covered`` once the ring no longer holds the bracket)
+        :rtype: tuple[tuple[str, ...], ...] | str
+        """
+        if record.noted_between is None:
+            return "no_bracket"
+        if self._notes is None:
+            return "no_notes_reader"
+        keys: dict[tuple[str, ...], None] = {}
+        async with aclosing(noted_key_pages(self._notes, table, record.noted_between)) as pages:
+            async for page in pages:
+                if not isinstance(page, NotedKeysPage):
+                    return page
+                if page.whole_table:
+                    # another commit's load or truncate in the bracket: the keys are not the reach
+                    return "whole_table"
+                keys.update(dict.fromkeys(tuple(key) for key in page.keys))
+        return tuple(keys)
 
     def _drop_covered(self, table: str, token: str, known: set[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
@@ -1164,6 +1284,161 @@ class DeltaFolds:
         left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
         self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
         self._measure()
+
+
+@dataclass(frozen=True, slots=True)
+class _LostReach:
+    """what a lost file's commit reached, from its record (decision 31).
+
+    :ivar epoch: the epoch whose file was lost
+    :ivar why: ``notes``, ``states`` or ``unnamed``
+    :ivar keys: for ``notes``, every key its notes name, as text in key order
+    :ivar scopes: for ``states``, the table's states the record names, as its scopes name them (``state:CA``)
+    :ivar detail: why the notes could not name the keys, for the log line
+    :ivar fallback: for ``notes``, the states the record names: read instead when a key the notes name is gone from L3
+        and no file names its state (a table keyed without its state), so no marker of it could be filed
+    """
+
+    epoch: str
+    why: _LostWhy
+    keys: tuple[tuple[str, ...], ...] = ()
+    scopes: tuple[str, ...] = ()
+    detail: str = ""
+    fallback: tuple[str, ...] = ()
+
+
+def _unstated_gone_by_states(
+    table: FoldedTable, reach: _Leftovers, pages: Sequence[Any], named: Sequence[_LostReach]
+) -> tuple[list[_LostReach], bool]:
+    """for a table keyed without its state, a key the notes named that L3 no longer holds and no leftover file names
+    the state of has no part to file its delete marker under: its commit's states are read instead (decision 31), when
+    every such commit's record names them, and those keys need no marker (their states' parts are replaced whole).
+
+    :param table: the table
+    :ptype table: FoldedTable
+    :param reach: what the leftover files and the notes name
+    :ptype reach: _Leftovers
+    :param pages: the rows read from L3 by key and prefix
+    :ptype pages: Sequence[pyarrow.Table]
+    :param named: each lost file's reach
+    :ptype named: Sequence[_LostReach]
+    :return: the reaches, the notes' ones turned to states when needed; and whether keys gone of no known state are
+        covered by states read whole
+    :rtype: tuple[list[_LostReach], bool]
+    """
+    noting = [lost_reach for lost_reach in named if lost_reach.why == "notes"]
+    if table.delta_scope is None or not noting:
+        return list(named), False
+    kinds = dict(table.kinds)
+    found = {
+        tuple(key_text(value) for value in key)
+        for page in pages
+        for key in zip(*(page.column(column).to_pylist() for column in table.key), strict=True)
+    }
+    unstated = any(
+        text not in found and text not in reach.states
+        for lost_reach in noting
+        for text in (
+            tuple(key_text(typed_text(kinds[column], value)) for column, value in zip(table.key, key, strict=True))
+            for key in lost_reach.keys
+        )
+    )
+    if not unstated or not all(lost_reach.fallback for lost_reach in noting):
+        # none gone of an unknown state; or one commit names no states, and its marker is refused (retried, logged)
+        return list(named), False
+    turned = [
+        replace(
+            lost_reach,
+            why="states",
+            scopes=lost_reach.fallback,
+            detail="a key its notes name is gone from L3 and no file names its state",
+        )
+        if lost_reach.why == "notes"
+        else lost_reach
+        for lost_reach in named
+    ]
+    return turned, True
+
+
+def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...]:
+    """the states of ``table`` a record names: its scopes under the table's scope prefix (a scope of another prefix is
+    another table's, since each row's scope is its prefix and its scope column's value).
+
+    :param table: the table
+    :ptype table: FoldedTable
+    :param record: the record
+    :ptype record: EpochChange
+    :return: the states, as the table's scopes name them; empty for a table with no scope, or a record naming none
+    :rtype: tuple[str, ...]
+    """
+    if table.scope is None or not record.scopes:
+        return ()
+    return tuple(scope for scope in record.scopes if scope.startswith(table.scope[1]))
+
+
+def _with_noted_keys(table: FoldedTable, reach: _Leftovers, noted: Sequence[tuple[str, ...]]) -> _Leftovers:
+    """``reach`` with the keys the notes named added, each typed as its column binds (a delete marker is written of
+    them), in the one text the files' keys are compared in.
+
+    :param table: the table
+    :ptype table: FoldedTable
+    :param reach: what the leftover files name
+    :ptype reach: _Leftovers
+    :param noted: the keys the notes named, as text in key order
+    :ptype noted: Sequence[tuple[str, ...]]
+    :return: the reach with them
+    :rtype: _Leftovers
+    """
+    if not noted:
+        return reach
+    kinds = dict(table.kinds)
+    typed = dict(reach.typed)
+    keys = dict.fromkeys(reach.keys)
+    for texts in noted:
+        values = tuple(typed_text(kinds[column], text) for column, text in zip(table.key, texts, strict=True))
+        text = tuple(key_text(value) for value in values)
+        typed.setdefault(text, values)
+        if not (reach.prefixes and under_prefix(dict(zip(table.key, values, strict=True)), reach.prefixes)):
+            keys[text] = None
+    return _Leftovers(keys=tuple(keys), typed=typed, states=reach.states, prefixes=reach.prefixes)
+
+
+async def _state_rows(
+    reader: _Reader, table: FoldedTable, types: Mapping[str, Any], scopes: Sequence[str]
+) -> list[Any]:
+    """every row L3 holds of the states ``scopes`` name (decision 31): one keyset read led by the state column, the
+    states a set filter on it, so each page seeks the states' index range (the key when it leads with the state, the
+    table's state index otherwise), never the table.
+
+    :param reader: how L3 is read
+    :ptype reader: _Reader
+    :param table: the table, which has a scope
+    :ptype table: FoldedTable
+    :param types: its columns' Arrow types, in order
+    :ptype types: Mapping[str, Any]
+    :param scopes: the states, as its scopes name them
+    :ptype scopes: Sequence[str]
+    :return: the pages
+    :rtype: list[pyarrow.Table]
+    """
+    assert table.scope is not None  # noqa: S101 -- _table_scopes names states only of a scoped table
+    column, prefix = table.scope
+    kind = dict(table.kinds)[column]
+    cast = f"{sql_cast(kind)}[]"
+    values = [typed_text(kind, scope.removeprefix(prefix)) for scope in scopes]
+    selected = ", ".join(quote_identifier(name) for name in types)
+    pages: list[Any] = []
+    async for page in keyset_arrow_pages(
+        reader.l3,
+        f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
+        (column, *(name for name in table.key if name != column)),
+        types=types,
+        where_any={column: (cast, values)},
+        page_size=reader.page_size,
+        lead_array=cast,
+    ):
+        pages.append(page)
+    return pages
 
 
 @dataclass(frozen=True, slots=True)
@@ -1526,7 +1801,13 @@ def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]
 
 
 def _save_recovery_delta(
-    root: Path, table: FoldedTable, types: Mapping[str, Any], pages: Sequence[Any], reach: _Leftovers
+    root: Path,
+    table: FoldedTable,
+    types: Mapping[str, Any],
+    pages: Sequence[Any],
+    reach: _Leftovers,
+    replaced: Sequence[str] = (),
+    unstated: bool = False,
 ) -> tuple[str, int, int]:
     """save the recovery delta (decision 28): the prefixes the leftover files cleared, then every row L3 holds under
     them or of their keys (every column set, so a held row takes L3's whole), then a delete marker for each key L3 no
@@ -1542,6 +1823,11 @@ def _save_recovery_delta(
     :ptype pages: Sequence[pyarrow.Table]
     :param reach: what the leftover files name
     :ptype reach: _Leftovers
+    :param replaced: the states whose every row ``pages`` hold (decision 31): their parts are replaced whole, so a key
+        of one L3 no longer holds needs no marker
+    :ptype replaced: Sequence[str]
+    :param unstated: a key gone of no known state is in a replaced state (:func:`_unstated_gone_by_states`): no marker
+    :ptype unstated: bool
     :return: the file, under the root; the rows it holds; the delete markers
     :rtype: tuple[str, int, int]
     :raises ValueError: when a key L3 no longer holds carries no state, for a table keyed without its state: its
@@ -1562,6 +1848,12 @@ def _save_recovery_delta(
         if text in found:
             continue
         state = reach.states.get(text) if table.delta_scope is not None else None
+        if replaced and table.scope is not None:
+            known = state if table.delta_scope is not None else reach.typed[text][table.key.index(table.scope[0])]
+            if known is not None and table.scope[1] + str(known) in replaced:
+                continue  # its state's part is replaced whole by L3's rows: gone from them already
+        if table.delta_scope is not None and state is None and unstated:
+            continue  # a noted key of no known state: its commit's states are replaced whole, so it is gone with them
         if table.delta_scope is not None and state is None:
             raise ValueError(
                 f"{table.name}: key {text} is gone from L3 and no leftover file names its state: its delete marker "
@@ -1575,7 +1867,13 @@ def _save_recovery_delta(
 
 
 def recovery_round(
-    root: str, term: int, plain: tuple[Any, ...], file: str, token: str, doomable: tuple[str, ...]
+    root: str,
+    term: int,
+    plain: tuple[Any, ...],
+    file: str,
+    token: str,
+    doomable: tuple[str, ...],
+    replaced: tuple[str, ...] = (),
 ) -> tuple[Any, ...]:
     """a recovery's fold, in a worker process (decision 28): the recovery delta folded into every state it reaches
     (its rows' and markers' states, and those its cleared prefixes reach), every other part kept as it is; every part
@@ -1600,6 +1898,9 @@ def recovery_round(
     :param doomable: the leftover files the recovery replaces, deleted once it is published (unless a manifest in use
         names one)
     :ptype doomable: tuple[str, ...]
+    :param replaced: the states whose every row L3 holds the recovery delta holds (decision 31): each one's part is
+        those rows alone, the held part dropped; a state L3 holds no row of has no part
+    :ptype replaced: tuple[str, ...]
     :return: ``(outcome, manifest, states, deleted)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the manifest
         published (or the current one); the states folded; the files deleted
     :rtype: tuple
@@ -1619,7 +1920,7 @@ def recovery_round(
     parts: list[FullPart] = []
     written: list[str] = []
     for scope, shares in sorted(by_scope.items(), key=lambda item: str(item[0])):
-        held = next((part for part in entry.parts if part.scope == scope), None)
+        held = None if scope in replaced else next((part for part in entry.parts if part.scope == scope), None)
         new_part, how = _fold_state(base, table, scope, held, shares, across=True)
         if how == "written":
             written.append(new_part.file)
@@ -1628,7 +1929,7 @@ def recovery_round(
     parts.extend(
         FullPart(scope=part.scope, file=part.file, version=token, rows=part.rows)
         for part in entry.parts
-        if part.scope not in by_scope
+        if part.scope not in by_scope and part.scope not in replaced
     )
     tables_now = dict(current.tables)
     tables_now[table.name] = FullTable(version=token, parts=tuple(parts))

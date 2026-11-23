@@ -54,6 +54,7 @@ from threetears.core.backends.arrow_copy import (
 from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.backends.broker_generation import (
     CHANGED_ROWS_FIELD,
+    COMMIT_SCOPES_FIELD,
     DELTA_FILES_FIELD,
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
@@ -61,6 +62,7 @@ from threetears.core.backends.broker_generation import (
     HUB_CAPABILITIES_FIELD,
     forget_reply_generations,
     named_changed_rows,
+    named_commit_scopes,
     named_delta_files,
     record_reply_generations,
 )
@@ -3023,6 +3025,11 @@ class _ProxyTransaction:
         if files:
             # saved before this commit; the broker names each in the epoch records it writes for the commit
             payload[DELTA_FILES_FIELD] = files
+            scopes = named_commit_scopes()
+            if scopes:
+                # the states the commit touched: a record the broker writes keys unknown names them, so a lost
+                # delta file of a commit too big to list is recovered by its states, never the table (decision 31)
+                payload[COMMIT_SCOPES_FIELD] = list(scopes)
         subject = Subjects.l3_tx(action, namespace=self._backend.ns).path
         if action == "rollback":
             # nothing the session wrote lands, so no collection settling it may be handed a token
