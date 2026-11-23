@@ -1385,8 +1385,9 @@ class CollectionRegistry:
                 registration.on_keys(positional, token)  # type: ignore[misc]  # narrowed by _key_batch_takers
         others = len(self._derived_caches.get(table_name, ())) > len(batched)
         if not others and table_name not in self._collections:
-            # no cache here needs a row message: the scans the table's rows feed still drop, as a row's would
-            self.scan_cache.drop_for_table(table_name)
+            # no cache here needs a row message: the scans the table's rows feed still drop, as a row's would, through
+            # the one local scan drop every write path takes (a cached scan names no keys to drop it by)
+            self.drop_local_scans(table_name)
             return
         count = keys.num_rows
         for start in range(0, count, _NOTED_ROWS_PER_YIELD):

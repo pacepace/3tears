@@ -2029,7 +2029,9 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        while len(self._inbox) > _MESSAGES_PER_TURN:
+        # the runs the inbox holds now beyond its last: a bounded count, never a loop on what arrives meanwhile (a
+        # message posted while the loop runs between joins the last run, drained with no await)
+        for _ in range((len(self._inbox) - 1) // _MESSAGES_PER_TURN):
             self._apply_messages(_MESSAGES_PER_TURN)
             await asyncio.sleep(0)
         self._drain()
