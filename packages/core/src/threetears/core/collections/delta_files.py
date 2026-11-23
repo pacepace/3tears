@@ -585,14 +585,13 @@ def build_file_table(
         else:
             segment = part
         if written and not isinstance(written[0], str):
-            indices = [index(columns) for columns in written]
+            # single-row upserts, each naming its own columns: one index a row (a handful of distinct sets)
+            indices = pa.array([index(columns) for columns in written], pa.int32())
         else:
-            indices = [index(written)] * segment.num_rows
-        marker = pa.array([kind == "deleted"] * segment.num_rows, pa.bool_())
+            indices = pa.array(np.full(segment.num_rows, index(written), dtype=np.int32))
+        marker = pa.array(np.full(segment.num_rows, kind == "deleted", dtype=bool))
         segment = segment.append_column(pa.field(_DELETED_COLUMN, pa.bool_(), nullable=False), marker)
-        joined_segments.append(
-            segment.append_column(pa.field(_WRITTEN_COLUMN, pa.int32(), nullable=False), pa.array(indices, pa.int32()))
-        )
+        joined_segments.append(segment.append_column(pa.field(_WRITTEN_COLUMN, pa.int32(), nullable=False), indices))
     schema = pa.schema(
         [
             *(pa.field(column, kind) for column, kind in types.items()),
