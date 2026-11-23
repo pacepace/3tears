@@ -329,7 +329,7 @@ _DRIFT_PARTS = gauge(
 #: the drift checks of each part, by table and outcome: ``equal``, ``drift``, ``skipped`` (the copy holds the state at
 #: another version than the part's: not comparable), ``not_current`` (the table has a change pending, staged, waiting
 #: or behind), ``version_unknown`` (a change of the state was applied with no epoch), ``no_fingerprint`` (an older
-#: writer's part, or one a recovery carried to a new version), ``other_columns`` (the copy holds other columns)
+#: writer's part), ``other_columns`` (the copy holds other columns)
 _DRIFT_CHECKS = counter(
     "copy_follower_drift_checks_total",
     description="a copy's checks of its states against the full's fingerprints, by table and outcome (equal, drift, "

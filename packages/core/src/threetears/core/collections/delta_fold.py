@@ -1926,9 +1926,10 @@ def recovery_round(
         if how == "written":
             written.append(new_part.file)
         parts.append(new_part)
-    # the parts the recovery does not reach hold no change since their version: current to the recovery's
+    # the parts the recovery does not reach hold no change since their version: current to the recovery's, their
+    # rows and so their fingerprint as they were (decision 32: a copy still compares them)
     parts.extend(
-        FullPart(scope=part.scope, file=part.file, version=token, rows=part.rows)
+        FullPart(scope=part.scope, file=part.file, version=token, rows=part.rows, fingerprint=part.fingerprint)
         for part in entry.parts
         if part.scope not in by_scope and part.scope not in replaced
     )

@@ -1110,7 +1110,9 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     current = current_full_manifest(tmp_path)
     assert current is not None and current.term == 6
     assert all(part.version == token for part in current.tables["votes"].parts)
-    assert _part(tmp_path, "votes", "state:NC") == FullPart("state:NC", nc.file, token, nc.rows), "NC's part is kept"
+    assert _part(tmp_path, "votes", "state:NC") == FullPart("state:NC", nc.file, token, nc.rows, nc.fingerprint), (
+        "NC's part is kept, its fingerprint with it"
+    )
     assert not any((tmp_path / file).exists() for file in leftovers), "the leftover files are deleted"
     assert not folds.unfolded
     # folding resumes on the recovered full
@@ -1186,7 +1188,8 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     LostDeltaRecovery the recreator calls for a commit too big to list whose file was lost): if two asks recover the
     table twice, if the recovery reads the damaged file or L3 whole, or if any part of the table (GA's too, which no
     change since its fold touched) ends below the lost file's epoch, which a copy waiting for that file needs before
-    it takes the full; or if the damaged file is left on the volume."""
+    it takes the full; or if GA's untouched part loses its fingerprint on the way (a copy could no longer compare
+    it, decision 32); or if the damaged file is left on the volume."""
     _no_whole_read(monkeypatch)
     schema = _votes_schema()
     writer = _writer(tmp_path, schema, workers)
@@ -1246,6 +1249,8 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     assert full_table_floor("votes", entry) == token
     gaps = [part for part in entry.parts if part.scope == "state:GA"]
     assert gaps[0].file == ga.file, "GA's rows are kept as they were, only its version moves"
+    assert ga.fingerprint is not None
+    assert gaps[0].fingerprint == ga.fingerprint, "GA's rows unchanged: its fingerprint moves with it (decision 32)"
     ((_, params, _),) = reader.statements
     assert sorted(zip(params[0], params[1], strict=True)) == [("NC", "5000"), ("NC", "5001")], (
         "the leftover file's keys alone, never the damaged file's"
@@ -1435,6 +1440,8 @@ async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_onl
     # each page asks one row past itself, to know whether another follows
     assert tx_rows <= sum(answered for _, _, answered in by_state) <= tx_rows + len(by_state), "TX's rows alone, once"
     assert (_lost_file_recoveries("notes"), _lost_file_recoveries("states")) == (before[0], before[1] + 1)
-    assert _part(tmp_path, "votes", "state:GA") == FullPart("state:GA", ga.file, token, ga.rows), "GA's part kept"
+    assert _part(tmp_path, "votes", "state:GA") == FullPart("state:GA", ga.file, token, ga.rows, ga.fingerprint), (
+        "GA's part kept, its fingerprint with it"
+    )
     assert not (tmp_path / lost).exists()
     await folds.close()

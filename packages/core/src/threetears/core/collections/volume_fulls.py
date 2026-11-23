@@ -271,7 +271,7 @@ class FullPart:
     :ivar version: the table's generation token the part is current to: deltas of this version or older are in it
     :ivar rows: the rows it holds (a delta named as a part: its rows written, delete markers not counted)
     :ivar fingerprint: :func:`rows_fingerprint` of its rows, the table's columns (decision 32); None for a part an
-        older writer wrote, or one carried to a new version without its rows read: a copy cannot compare it
+        older writer wrote: a copy cannot compare it. A part carried to a new version unchanged keeps its own
     """
 
     scope: str | None
