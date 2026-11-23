@@ -14,15 +14,24 @@ the same table a copy reads from L3 today, so applying a file and reading the ke
 schema's metadata names the table, the write (a unique id: the commit's version is the broker's, known only after the
 commit, so the epoch record names the file rather than the file the version) and the key columns.
 
-**Plain Arrow IPC, uncompressed.** Not zstd inside: 3tears writes no compressed IPC anywhere today (its IPC streams and
-its shared Arrow are plain), the browser's files have to be plain for DuckDB-WASM and Arrow JS, and the files are
-small (a typical AP delta a few KB, an LSF state's a slice of about 2 MB; the design's sizes), so one format serves
-every reader with no codec to agree on.
+**Arrow IPC with zstd inside** (decision 18). An open Apache standard the pod's Arrow copy loads without decoding,
+each record batch's buffers compressed with zstd, which keeps a file close to Parquet's size on the volume. Plain IPC
+was only ever needed for the browser's per-report files, which these are not.
+
+**Which columns each write set** (decision 19). L3 merges an upsert of a row it already holds: the ``DO UPDATE``
+sets only the columns its statement names (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`), so a
+column the write left out keeps its held value, and an immutable column (``date_created``) and the key always keep
+theirs. The file shows such a column as null (a new row is inserted so), so it also says, for each row, which columns
+its write set: :data:`_WRITTEN_COLUMN` is an index into the distinct column sets the file's metadata lists
+(:data:`_WRITTEN_METADATA`), one per kind of write. A bulk write's rows share one set and a single row's names its
+own, so a file holds a handful of sets however many rows, and an index a row that zstd packs to almost nothing: a
+bitmask or a list a row would cost bytes a row (an LSF table has 179 columns) for what a handful of sets says.
+:func:`apply_delta_row` merges a row as L3 did, so a copy or a fold that applies the file ends exactly as L3 does.
 
 **Saved before the commit, under a unique name, atomically.** The file is written under a temporary name in its
 table's directory, flushed to disk, then renamed to its own name, and the directory flushed: a reader that opens the
 name sees the whole file or nothing, never part of one. A crash before the commit leaves a file no committed record
-names (an orphan, which :func:`_sweep_orphan_delta_files` removes); a crash after it leaves the file in place, so every
+names (an orphan, which :func:`sweep_orphan_delta_files` removes); a crash after it leaves the file in place, so every
 committed version has its file.
 """
 
@@ -49,9 +58,14 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file re
     _PYARROW = False
 
 __all__ = [
+    "DeltaChange",
+    "DeltaFile",
     "DeltaFileRefusedError",
     "TableDelta",
+    "apply_delta_row",
     "delta_files_root",
+    "read_delta_file",
+    "sweep_orphan_delta_files",
     "write_delta_file",
 ]
 
@@ -64,16 +78,26 @@ _DELTA_FILES_DIR_ENV: Final = "THREETEARS_DELTA_FILES_DIR"
 #: the column that marks a row as a deleted key: true for a delete marker, false for a row written
 _DELETED_COLUMN: Final = "_3tears_deleted"
 
+#: the column that names which columns a row's write set: an index into the sets :data:`_WRITTEN_METADATA` lists
+_WRITTEN_COLUMN: Final = "_3tears_written"
+
 #: the file's schema metadata: the table it holds rows of
 _TABLE_METADATA: Final = b"threetears.delta.table"
 #: the file's schema metadata: the write that saved it, its unique id (the file's name without its suffix)
 _WRITE_METADATA: Final = b"threetears.delta.write"
 #: the file's schema metadata: the table's key columns, a JSON list in key order
 _KEY_METADATA: Final = b"threetears.delta.key"
+#: the file's schema metadata: the distinct sets of columns its writes set, a JSON list of lists of column names,
+#: each in the table's column order; :data:`_WRITTEN_COLUMN` indexes it
+_WRITTEN_METADATA: Final = b"threetears.delta.written"
 #: the file's schema metadata: the format's version
 _FORMAT_METADATA: Final = b"threetears.delta.format"
-#: this format's version: rows and delete markers in one table, as :data:`_DELETED_COLUMN` tells them apart
-_DELTA_FORMAT: Final = b"1"
+#: this format's version: rows and delete markers in one table, as :data:`_DELETED_COLUMN` tells them apart, each
+#: row naming the columns its write set (:data:`_WRITTEN_COLUMN`), zstd inside. Version 1 was plain IPC with no
+#: written columns, never released
+_DELTA_FORMAT: Final = b"2"
+#: the codec inside the file's IPC buffers
+_COMPRESSION: Final = "zstd"
 
 #: a delta file's suffix
 _SUFFIX: Final = ".arrow"
@@ -120,48 +144,59 @@ def _delta_file_name(table: str, write_id: str) -> str:
     return f"{table}/{write_id}{_SUFFIX}"
 
 
+#: the columns a write set: one set for every row of a write (a bulk statement's), or one a row (single-row upserts,
+#: each naming its own)
+Written = Sequence[str] | Sequence[Sequence[str]]
+
+
 @dataclass(slots=True)
 class TableDelta:
     """what one transaction wrote to one table that opts in, in the order written, until its file is saved.
 
-    Each part is kept as the write handed it (rows, an Arrow table, or keys deleted) and typed only when the file is
-    made (:meth:`table`), on a worker thread.
+    Each part is kept as the write handed it (rows, an Arrow table, or keys deleted), with the columns its write set,
+    and typed only when the file is made (:meth:`table`), on a worker thread.
 
     :ivar name: the table
     :ivar types: each column's Arrow type, in the table's column order (``rail_arrow_types``)
     :ivar key: the key columns, in key order
-    :ivar parts: each write's part, ``("rows", rows)``, ``("arrow", table)`` or ``("deletes", keys)``
+    :ivar parts: each write's part, ``("rows", rows, written)``, ``("arrow", table, written)`` or
+        ``("deletes", keys, ())``; ``written`` is one set of columns for every row, or a list of one a row
     :ivar entries: rows written and keys deleted so far: one a key the transaction enrolled
     """
 
     name: str
     types: Mapping[str, Any]
     key: tuple[str, ...]
-    parts: list[tuple[str, Any]] = field(default_factory=list)
+    parts: list[tuple[str, Any, Any]] = field(default_factory=list)
     entries: int = 0
 
-    def rows(self, rows: Sequence[Mapping[str, Any]]) -> None:
-        """add rows written, each keyed by column.
+    def rows(self, rows: Sequence[Mapping[str, Any]], written: Written) -> None:
+        """add rows written, each keyed by column, and the columns their write set.
 
         :param rows: the rows, as written
         :ptype rows: Sequence[Mapping[str, Any]]
+        :param written: the columns the write set in a row L3 already held (``upsert_set_columns``): one list for
+            every row, or one list a row
+        :ptype written: Sequence[str] | Sequence[Sequence[str]]
         :return: nothing
         :rtype: None
         """
         if rows:
-            self.parts.append(("rows", rows))
+            self.parts.append(("rows", rows, written))
             self.entries += len(rows)
 
-    def arrow(self, rows: Any) -> None:
-        """add rows written, already an Arrow table.
+    def arrow(self, rows: Any, written: Sequence[str]) -> None:
+        """add rows written, already an Arrow table, and the columns their write set.
 
         :param rows: the rows, a column each
         :ptype rows: pyarrow.Table
+        :param written: the columns the write set in a row L3 already held, the same for every row
+        :ptype written: Sequence[str]
         :return: nothing
         :rtype: None
         """
         if rows.num_rows:
-            self.parts.append(("arrow", rows))
+            self.parts.append(("arrow", rows, written))
             self.entries += int(rows.num_rows)
 
     def deletes(self, keys: Sequence[Sequence[Any]]) -> None:
@@ -173,33 +208,58 @@ class TableDelta:
         :rtype: None
         """
         if keys:
-            self.parts.append(("deletes", keys))
+            self.parts.append(("deletes", keys, ()))
             self.entries += len(keys)
 
     def table(self, write_id: str) -> Any:
-        """every part as one Arrow table, rows and delete markers in the order written, with the file's metadata.
-        Blocking: run it on a thread.
+        """every part as one Arrow table, rows and delete markers in the order written, each row naming the columns
+        its write set, with the file's metadata. Blocking: run it on a thread.
 
         :param write_id: the write's unique id
         :ptype write_id: str
         :return: the file's table
         :rtype: pyarrow.Table
         :raises ImportError: without pyarrow
+        :raises ValueError: when a write names a column the table does not have
         """
         if not _PYARROW:
             raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+        order = {name: position for position, name in enumerate(self.types)}
+        sets: dict[tuple[str, ...], int] = {}
+
+        def index(columns: Sequence[str]) -> int:
+            unknown = [name for name in columns if name not in order]
+            if unknown:
+                raise ValueError(f"{self.name}: a write set {unknown[0]!r}, not a column of the table")
+            # in the table's column order, so one set written in two orders is one set
+            named = tuple(sorted(set(columns), key=order.__getitem__))
+            return sets.setdefault(named, len(sets))
+
         segments = []
-        for kind, part in self.parts:
+        for kind, part, written in self.parts:
             if kind == "rows":
                 segment = _rail_arrow_table(part, self.types)
             elif kind == "arrow":
                 segment = _typed(part, self.types)
             else:
                 segment = _rail_arrow_table([dict(zip(self.key, key, strict=True)) for key in part], self.types)
+            if kind == "rows" and written and not isinstance(written[0], str):
+                indices = [index(columns) for columns in written]
+            else:
+                indices = [index(written)] * segment.num_rows
             marker = pa.array([kind == "deletes"] * segment.num_rows, pa.bool_())
-            segments.append(segment.append_column(pa.field(_DELETED_COLUMN, pa.bool_(), nullable=False), marker))
+            segment = segment.append_column(pa.field(_DELETED_COLUMN, pa.bool_(), nullable=False), marker)
+            segments.append(
+                segment.append_column(
+                    pa.field(_WRITTEN_COLUMN, pa.int32(), nullable=False), pa.array(indices, pa.int32())
+                )
+            )
         schema = pa.schema(
-            [*(pa.field(name, kind) for name, kind in self.types.items()), pa.field(_DELETED_COLUMN, pa.bool_(), False)]
+            [
+                *(pa.field(name, kind) for name, kind in self.types.items()),
+                pa.field(_DELETED_COLUMN, pa.bool_(), False),
+                pa.field(_WRITTEN_COLUMN, pa.int32(), False),
+            ]
         )
         joined = pa.concat_tables(segments) if segments else schema.empty_table()
         return joined.replace_schema_metadata(
@@ -207,9 +267,99 @@ class TableDelta:
                 _TABLE_METADATA: self.name.encode(),
                 _WRITE_METADATA: write_id.encode(),
                 _KEY_METADATA: json.dumps(list(self.key)).encode(),
+                _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
                 _FORMAT_METADATA: _DELTA_FORMAT,
             }
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaChange:
+    """one row of a delta file: a row a write upserted, or a key it deleted.
+
+    :ivar row: the row as the file holds it, keyed by the table's columns (a delete marker's key columns alone set)
+    :ivar deleted: the write deleted the key
+    :ivar written: the columns the write set in a row L3 already held; every other column kept its held value
+    """
+
+    row: dict[str, Any]
+    deleted: bool
+    written: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaFile:
+    """a delta file read back: the table it holds rows of, the write that saved it, and its changes in order.
+
+    :ivar table: the table
+    :ivar write: the write's unique id
+    :ivar key: the table's key columns, in key order
+    :ivar changes: every row and delete marker, in the order written
+    """
+
+    table: str
+    write: str
+    key: tuple[str, ...]
+    changes: list[DeltaChange]
+
+
+def read_delta_file(path: Path) -> DeltaFile:
+    """read a delta file saved by :func:`write_delta_file`. Blocking: run it on a thread.
+
+    :param path: the file
+    :ptype path: Path
+    :return: the file's table, write, key and changes
+    :rtype: DeltaFile
+    :raises ValueError: when the file is not of this format
+    :raises OSError: when it cannot be read
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+    with pa.memory_map(str(path)) as source:
+        table = pa_ipc.open_file(source).read_all()
+    metadata = table.schema.metadata or {}
+    if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
+        raise ValueError(
+            f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's {_DELTA_FORMAT!r}"
+        )
+    sets = [frozenset(named) for named in json.loads(metadata[_WRITTEN_METADATA])]
+    changes = []
+    for row in table.to_pylist():
+        deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
+        changes.append(DeltaChange(row=row, deleted=deleted, written=sets[written]))
+    return DeltaFile(
+        table=metadata[_TABLE_METADATA].decode(),
+        write=metadata[_WRITE_METADATA].decode(),
+        key=tuple(json.loads(metadata[_KEY_METADATA])),
+        changes=changes,
+    )
+
+
+def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
+    """the row L3 holds after a delta file's change, from the row it held before: merged as its upsert merged it.
+
+    A delete leaves no row. A row L3 did not hold is the row as the write inserted it (a column it left out is null,
+    as the file shows it). A row L3 held keeps every column the write did not set, its key and its ``date_created``
+    (immutable, never set by an upsert) among them, and takes the file's value of each column the write set
+    (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`); a write that set none (a table that ignores
+    conflicts) leaves it as it was. Pure: the copy and the fold apply a file through this one rule.
+
+    :param held: the row held before the change, keyed by column; None when there was none
+    :ptype held: Mapping[str, Any] | None
+    :param change: the file's change (:attr:`DeltaFile.changes`)
+    :ptype change: DeltaChange
+    :return: the row held after it, keyed by column; None when the change deleted it
+    :rtype: dict[str, Any] | None
+    """
+    if change.deleted:
+        return None
+    if held is None:
+        return dict(change.row)
+    merged = dict(held)
+    for name in change.written:
+        merged[name] = change.row[name]
+    return merged
 
 
 def _typed(rows: Any, types: Mapping[str, Any]) -> Any:
@@ -265,7 +415,7 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     the directory flushed. Blocking: run it on a thread.
 
     A reader opening the file's name sees the whole file or no file: a write that fails or a process that dies
-    before the rename leaves only the temporary name, which no record holds (:func:`_sweep_orphan_delta_files`).
+    before the rename leaves only the temporary name, which no record holds (:func:`sweep_orphan_delta_files`).
 
     :param root: the delta files' directory (:func:`delta_files_root`)
     :ptype root: Path
@@ -286,7 +436,9 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     renamed = False
     try:
         with partial.open("wb") as sink:
-            with pa_ipc.new_file(sink, table.schema) as writer:
+            with pa_ipc.new_file(
+                sink, table.schema, options=pa_ipc.IpcWriteOptions(compression=_COMPRESSION)
+            ) as writer:
                 writer.write_table(table)
             sink.flush()
             os.fsync(sink.fileno())
@@ -305,7 +457,7 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     return name
 
 
-def _sweep_orphan_delta_files(root: Path, *, named: Collection[str], before: float) -> list[str]:
+def sweep_orphan_delta_files(root: Path, *, named: Collection[str], before: float) -> list[str]:
     """remove every delta file under ``root`` that no committed record names and that was saved before ``before``,
     and every temporary file left by a write that died before its rename.
 

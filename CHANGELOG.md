@@ -9,7 +9,7 @@ packages (bumped in lock-step).
 ### core: a table can opt in to delta files, saved before each commit that writes it
 
 **Added:** `TableSchema(delta_files=True)` opts a table in: every `CallerTransaction` commit that writes it saves the
-rows written and a delete marker per key deleted as one plain Arrow IPC file per table, under
+rows written and a delete marker per key deleted as one Arrow IPC file per table (zstd inside), under
 `THREETEARS_DELTA_FILES_DIR` (the shared volume), BEFORE the commit, written under a temporary name, flushed and renamed
 (`threetears.core.collections.delta_files`). The commit refuses (`DeltaFileRefusedError`, rolled back) when a key it
 enrolled has no row or marker recorded, when it deletes key prefixes of the table, or when no directory is configured;
@@ -17,6 +17,10 @@ writes that cannot record their rows (`load_files`, `bypassing_write`, a store w
 are refused on an opted-in table. `CallerTransaction.delta_files` names the files saved, for the commit's epoch record.
 Off by default: a table not opted in writes as before. `rail_arrow_types` now lives in `schema_backed` (still imported
 from `complete_copy`).
+Each row of a file names the columns its write set (`_3tears_written`, an index into the column sets the file's
+metadata lists), the `DO UPDATE SET` list 3tears generated for it (`schema_sql.upsert_set_columns`, the bulk statement's
+`bulk_update_columns`); `delta_files.apply_delta_row` merges a file's row into the row held as L3 merged the upsert: a
+column the write left out keeps its value, `date_created` keeps the held row's.
 
 ### core: a copy follower checkpoints an epoch taken from the change notes before its notes can go
 

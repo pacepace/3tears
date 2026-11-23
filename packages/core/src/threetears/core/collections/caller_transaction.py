@@ -326,32 +326,43 @@ class CallerTransaction:
             self._deltas[collection.table_name] = delta
         return delta
 
-    def record_rows(self, collection: BaseCollection[Any], rows: Sequence[Mapping[str, Any]]) -> None:
-        """record rows ``collection`` wrote in this transaction, as written, for its table's delta file; nothing for
-        a table that does not opt in. One row a key the write enrolled.
+    def record_rows(
+        self,
+        collection: BaseCollection[Any],
+        rows: Sequence[Mapping[str, Any]],
+        written: Sequence[str] | Sequence[Sequence[str]],
+    ) -> None:
+        """record rows ``collection`` wrote in this transaction, as written, and the columns their statements set in a
+        row L3 already held, for its table's delta file; nothing for a table that does not opt in. One row a key the
+        write enrolled.
 
         :param collection: the collection that wrote them
         :ptype collection: BaseCollection
         :param rows: the rows, each keyed by column
         :ptype rows: Sequence[Mapping[str, Any]]
+        :param written: the columns set (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`): one list
+            for every row (a bulk statement's), or one a row
+        :ptype written: Sequence[str] | Sequence[Sequence[str]]
         :return: nothing
         :rtype: None
         """
         if collection.writes_delta_files:
-            self._delta_of(collection).rows(rows)
+            self._delta_of(collection).rows(rows, written)
 
-    def record_arrow(self, collection: BaseCollection[Any], rows: Any) -> None:
-        """:meth:`record_rows` for rows written as an Arrow table.
+    def record_arrow(self, collection: BaseCollection[Any], rows: Any, written: Sequence[str]) -> None:
+        """:meth:`record_rows` for rows written as an Arrow table, one statement's ``SET`` list for them all.
 
         :param collection: the collection that wrote them
         :ptype collection: BaseCollection
         :param rows: the rows, a column each
         :ptype rows: pyarrow.Table
+        :param written: the columns the statement sets in a row already held
+        :ptype written: Sequence[str]
         :return: nothing
         :rtype: None
         """
         if collection.writes_delta_files:
-            self._delta_of(collection).arrow(rows)
+            self._delta_of(collection).arrow(rows, written)
 
     def record_deletes(self, collection: BaseCollection[Any], keys: Sequence[Sequence[Any]]) -> None:
         """record keys ``collection`` deleted in this transaction, each its values in key order, as its table's delete

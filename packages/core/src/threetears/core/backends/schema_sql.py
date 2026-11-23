@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, TYPE_CHECKING
@@ -88,6 +88,7 @@ __all__ = [
     "pull_value",
     "render_param",
     "transport_param",
+    "upsert_set_columns",
     "transport_params_bytes",
 ]
 
@@ -615,13 +616,56 @@ def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Co
     :return: the comma-joined ``col = EXCLUDED.col`` list
     :rtype: str
     """
-    chosen = [c for c in mutable if named is None or c.name in named]
+    chosen = _named_set(mutable, named)
     if chosen:
         result = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in chosen)
     else:
         first = mutable[0].name
         result = f"{first} = {_conflict_target_ref(schema)}.{first}"
     return result
+
+
+def _named_set(mutable: Sequence[Column], named: Collection[str] | None) -> list[Column]:
+    """the columns of ``mutable`` an upsert's ``DO UPDATE`` sets: those the row names, or every one for a bulk
+    statement (``named`` None). The one rule :func:`_update_set_clause` writes the ``SET`` list by and
+    :func:`upsert_set_columns` reports it by, so the two never differ.
+
+    :param mutable: the mutable columns the INSERT emits, in declared order
+    :ptype mutable: Sequence[Column]
+    :param named: the columns the row names; None for every one of ``mutable``
+    :ptype named: Collection[str] | None
+    :return: the columns set, in declared order
+    :rtype: list[Column]
+    """
+    return [c for c in mutable if named is None or c.name in named]
+
+
+def upsert_set_columns(schema: TableSchema, data: Mapping[str, Any], *, fenced: bool = False) -> list[str]:
+    """the columns a single-row write of ``data`` sets in a row L3 already holds: every other keeps its held value.
+
+    What a delta file records for each row (:mod:`~threetears.core.collections.delta_files`), so a copy applies the
+    write as L3 merged it. Read off the statements themselves: a single-row upsert's ``DO UPDATE SET``
+    (:func:`build_insert_sql`, :func:`build_cas_upsert_sql`, :func:`build_ordered_upsert_sql`: the mutable columns
+    the row names) and the fenced ``UPDATE`` (``fenced``: :func:`cas_mutable_columns_for_data`). A bulk statement's
+    is :func:`bulk_update_columns` (every mutable column emitted, named by the row or not). A key or immutable column
+    (``date_created``) is never set; a table that ignores conflicts, or raises on them, sets none in a held row.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param data: the row as written, keyed by column
+    :ptype data: Mapping[str, Any]
+    :param fenced: the write is the fenced ``UPDATE`` of a row the caller read (a ``cas_column`` and a fence value)
+    :ptype fenced: bool
+    :return: the columns set, in declared order
+    :rtype: list[str]
+    """
+    if schema.on_conflict != "update":
+        return []
+    row = dict(data)
+    if fenced:
+        return [c.name for c in cas_mutable_columns_for_data(schema, row)]
+    mutable = _mutable_emitted(schema, insert_columns_for_data(schema, row))
+    return [c.name for c in _named_set(mutable, row)]
 
 
 def _mutable_emitted(schema: TableSchema, cols: Sequence[Column]) -> list[Column]:
