@@ -72,6 +72,7 @@ __all__ = [
     "VolumeFulls",
     "current_full_manifest",
     "deletable_full_files",
+    "full_table_floor",
     "publish_full_manifest",
     "write_full_part",
 ]
@@ -456,6 +457,21 @@ def _versions_floor(table: str, versions: Iterable[str]) -> str:
     return min(split)[1]
 
 
+def full_table_floor(table: str, entry: FullTable) -> str:
+    """the oldest version of a table in a full, of the table and its parts: where a copy loading it catches up from,
+    and how a copy waiting after a reset judges whether the full holds the table at or past it.
+
+    :param table: the table, for the error
+    :ptype table: str
+    :param entry: its entry in the manifest
+    :ptype entry: FullTable
+    :return: the generation token
+    :rtype: str
+    :raises ValueError: when a version is not a generation token, or two are of different incarnations
+    """
+    return _versions_floor(table, [entry.version, *(part.version for part in entry.parts)])
+
+
 @dataclass(frozen=True, slots=True)
 class FullAbsent:
     """no full a copy can load yet: it waits for the writer to publish one, never reading L3 whole.
@@ -530,7 +546,7 @@ class VolumeFulls:
         rows = 0
         for name, table in self.tables.items():
             entry = manifest.tables[name]
-            marks[name] = _versions_floor(name, [entry.version, *(part.version for part in entry.parts)])
+            marks[name] = full_table_floor(name, entry)
             held: dict[str | None, str] = {None: entry.version}
             held.update((part.scope, part.version) for part in entry.parts)
             versions[name] = held

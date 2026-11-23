@@ -142,7 +142,7 @@ async def test_a_registry_tells_each_prefix_and_a_reset_and_counts_only_whole_dr
         on_row=lambda message: None,
         on_table_dropped=lambda: heard.append("dropped"),
         on_partition=lambda prefix: heard.append(dict(prefix)),
-        on_table_reset=lambda: heard.append("reset"),
+        on_table_reset=lambda _token: heard.append("reset"),
     )
     resets, records = _drops("reset"), _drops("whole_record")
     await registry.apply_epoch_change(

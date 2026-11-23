@@ -485,7 +485,7 @@ async def test_a_follower_hears_a_reset_as_a_reset_never_as_an_older_writers_who
         "lsf_results",
         on_row=lambda message: None,
         on_table_dropped=lambda: heard.append("dropped"),
-        on_table_reset=lambda: heard.append("reset"),
+        on_table_reset=lambda _token: heard.append("reset"),
     )
     await writer.results.reset()
     await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
