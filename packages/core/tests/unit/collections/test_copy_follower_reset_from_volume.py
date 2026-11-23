@@ -34,9 +34,11 @@ from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
+from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
+import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
@@ -332,6 +334,55 @@ async def test_a_running_copy_hearing_a_reset_of_an_opted_in_table_reads_no_l3_a
     assert world.l3.statements[_RESET] == 0
     assert world.l3.statements[_OTHER] == 0
     assert world.registry.generation_marks.recorded(_RESET) == f"inc:{world.log.count[_RESET]}"
+
+
+async def test_a_table_waiting_for_a_file_holds_changes_up_to_its_cap_then_waits_for_the_full(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a table waiting for a delta file holds every change heard meanwhile with no bound (each about 400 bytes,
+    with no end if the file never comes), if the held count is not on its gauge, or if past the cap it reads anything
+    from L3 rather than waiting for the writer's next full: past the cap it forgets what it held and the file, reloads
+    from the full at or past the newest epoch heard, and ends equal to L3."""
+    monkeypatch.setattr(copy_follower, "HELD_WHILE_WAITING_CAP", 6)
+    monkeypatch.setattr(copy_follower, "_HELD_GAUGE_EVERY", 1)
+    world = _World(_volume)
+    await world.started()
+    world.write(_RESET, [("VA", 0, 900)])
+    lost = world.log.records[(_RESET, f"inc:{world.log.count[_RESET]}")].delta_file
+    assert lost is not None
+    (_volume / lost).unlink()
+    await world.follower.catch_up()
+    assert lost in world.follower.status().waiting_for_file[_RESET]
+
+    def held() -> float:
+        return REGISTRY.get_sample_value("copy_follower_held_while_waiting_changes", {"table": _RESET}) or 0.0
+
+    for geo in range(1, 7):
+        world.write(_RESET, [("VA", geo, 900 + geo)])
+        await world.follower.catch_up()
+    assert held() == 6
+    assert _RESET in world.follower.status().waiting_for_file
+
+    world.write(_RESET, [("VA", 7, 907)])
+    await world.follower.catch_up()
+    assert held() == 0, "past the cap nothing is held"
+    assert _RESET not in world.follower.status().waiting_for_file
+    assert "held_past_cap" in world.follower.status().waiting_for_full[_RESET]
+
+    newest = f"inc:{world.log.count[_RESET]}"
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(
+                _volume, _RESET, [(state, geo, votes) for state, geo, votes in world.l3.held(_RESET)], newest
+            )
+        },
+    )
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same(_RESET)
+    assert world.l3.statements[_RESET] == 0
 
 
 async def test_a_full_holding_the_table_from_before_the_reset_is_not_taken(_volume: Path) -> None:

@@ -266,6 +266,26 @@ _ANSWERED: Final = frozenset({"recreated", "present", "recovering"})
 #: how often a table waiting for a delta file looks for it again, besides when the writer answers (seconds)
 FILE_POLL_SECONDS: Final = 5.0
 
+#: the most changes a table waiting for a delta file holds, heard while it waits (a key at an epoch each), before it
+#: stops holding them and waits for the writer's next full instead (:meth:`CopyFollower._held_past_cap`). Why: every
+#: change heard meanwhile is held until the file reads, with no end if it never does (2026-11-23 audit). Measured
+#: 2026-11-23 (Python 3.14): 310 bytes a held change (its pending key and epoch set), about 400 with the key's own
+#: tuple, so 500,000 hold about 200 MB at most a table
+HELD_WHILE_WAITING_CAP: Final = 500_000
+
+#: how many held changes apart the held-while-waiting gauge is set (a set a change would cost the hearing a label
+#: lookup each)
+_HELD_GAUGE_EVERY: Final = 1000
+
+#: changes a table waiting for a delta file holds, heard while it waits: set every :data:`_HELD_GAUGE_EVERY`, and at 0
+#: once it no longer waits
+_HELD_WHILE_WAITING = gauge(
+    "copy_follower_held_while_waiting_changes",
+    description="changes a copy follower's table holds, heard while it waits for a delta file (a key at an epoch "
+    "each, about 400 bytes); past HELD_WHILE_WAITING_CAP the table waits for the writer's next full instead",
+    label_names=("table",),
+)
+
 #: the most file names one fallback's log line lists
 _FILES_NAMED: Final = 10
 
@@ -1267,10 +1287,12 @@ class CopyFollower:
         self._file_waits: dict[str, dict[str, _FileWait]] = {}
         #: the task looking for each such table's files and asking the writer for them
         self._file_tasks: dict[str, asyncio.Task[None]] = {}
+        #: changes each table waiting for files has heard while it waits (:data:`HELD_WHILE_WAITING_CAP`)
+        self._held_counts: dict[str, int] = {}
 
     # --- what the registry tells it -------------------------------------------------------------
 
-    def _on_row(self, table: str) -> Callable[[CacheInvalidationMessage], None]:
+    def _on_row(self, table: str, *, held: bool = True) -> Callable[[CacheInvalidationMessage], None]:
         epochs = self._epochs_of.get(table)
 
         def heard(message: CacheInvalidationMessage) -> None:
@@ -1284,9 +1306,67 @@ class CopyFollower:
             if epochs is not None:
                 # the epoch names the record, and the record the file the key's change is applied from
                 epochs.setdefault(key, set()).add(message.generation)
+            if held and table in self._file_waits:
+                self._held_while_waiting(table)
             self._poked.set()
 
         return heard
+
+    def _held_while_waiting(self, table: str) -> None:
+        """count a change heard while ``table`` waits for a delta file; past :data:`HELD_WHILE_WAITING_CAP` stop
+        holding them (:meth:`_held_past_cap`).
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        count = self._held_counts.get(table, 0) + 1
+        self._held_counts[table] = count
+        if not count % _HELD_GAUGE_EVERY:
+            _HELD_WHILE_WAITING.labels(table=table).set(count)
+        if count > HELD_WHILE_WAITING_CAP:
+            self._held_past_cap(table, count)
+
+    def _held_past_cap(self, table: str, count: int) -> None:
+        """a table waiting for a delta file holds more changes than :data:`HELD_WHILE_WAITING_CAP`: it waits for the
+        writer's next full at or past the newest epoch heard instead (:meth:`_wait_for_reload`), forgetting what it held
+        and the files it waited for, which that full holds. Without fulls for the table there is nothing else to wait
+        for: it keeps holding, said at WARNING once a cap's worth.
+
+        :param table: the table
+        :ptype table: str
+        :param count: the changes it holds
+        :ptype count: int
+        :return: nothing
+        :rtype: None
+        """
+        if self._fulls is None or table not in self._fulls.tables:
+            if not count % HELD_WHILE_WAITING_CAP:
+                log.warning(
+                    "a copy follower's table waiting for a delta file holds past its cap and has no full to wait for "
+                    "instead: it keeps holding",
+                    extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
+                )
+            return
+        log.warning(
+            "a copy follower's table waiting for a delta file held past its cap: it stops holding and waits for the "
+            "writer's next full instead, reading nothing from L3",
+            extra={"extra_data": {"table": table, "held": count, "cap": HELD_WHILE_WAITING_CAP}},
+        )
+        self._wait_for_reload(table, "held_past_cap", None)
+        self._end_held_count(table)
+
+    def _end_held_count(self, table: str) -> None:
+        """``table`` holds nothing heard while waiting for a file any more: its count and gauge are zero.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._held_counts.pop(table, None) is not None:
+            _HELD_WHILE_WAITING.labels(table=table).set(0)
 
     def _on_dropped(self, table: str) -> Callable[[], None]:
         def dropped() -> None:
@@ -1399,7 +1479,8 @@ class CopyFollower:
 
         :param table: the table
         :ptype table: str
-        :param why: ``reset`` or ``schema_change``
+        :param why: ``reset``, ``schema_change``, ``file_lost`` or ``held_past_cap`` (a table waiting for a file held
+            more changes than :data:`HELD_WHILE_WAITING_CAP`: the full at or past the newest heard holds them all)
         :ptype why: str
         :param token: the reset's generation token, when the record named it
         :ptype token: str | None
@@ -1824,7 +1905,8 @@ class CopyFollower:
             return
         if reach.prefixes:
             self._on_file_prefixes(table)([dict(prefix) for prefix in reach.prefixes], wait.epoch)
-        heard = self._on_row(table)
+        # the file's own keys: what the wait was for, never counted as held past it
+        heard = self._on_row(table, held=False)
         count = len(reach.keys)
         for start in range(0, count, _KEYS_PER_TURN):
             if start:
@@ -1853,6 +1935,7 @@ class CopyFollower:
             return
         if not waits:
             self._file_waits.pop(table, None)
+            self._end_held_count(table)
         self._say_file_waits(table)
         log.warning(
             "a copy follower's table no longer waits for a delta file; its held changes apply",
