@@ -64,6 +64,7 @@ from threetears.nats.subjects import Subjects, get_default_namespace, sanitize_s
 __all__ = [
     "AGENT_POD_PLATFORM_BUCKET_SUFFIXES",
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "DELTA_FILES_FORWARD_FAMILY",
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
@@ -102,6 +103,11 @@ __all__ = [
 #: the ONE deliberately non-namespaced subject (every 3tears collection in every process listens on
 #: it regardless of env prefix). mirrors :meth:`Subjects.cache_invalidate`.
 CROSS_PLATFORM_CACHE_INVALIDATE = "threetears.cache.invalidate"
+
+#: the owner-routed forward family a pod's copy asks its writer replica to recreate a lost or unreadable delta file in
+#: (``threetears.core.collections.delta_recreate``, design-pod-delta-files.md decision 29). Granted to a tool pod whose
+#: registry row opts in (``build_permissions(..., delta_files=True)``, decision 30), the way ``object_store`` is.
+DELTA_FILES_FORWARD_FAMILY: Final = "delta-files"
 
 #: grammar every L2 key-scope segment must satisfy, matched as a whole string.
 #:
@@ -1343,6 +1349,7 @@ def build_permissions(
     agent_table_grants: Sequence[AgentTableGrant] | None = None,
     agent_bucket_grants: Sequence[AgentBucketGrant] | None = None,
     object_store: bool = False,
+    delta_files: bool = False,
     epoch_change_grants: Sequence[EpochChangeGrant] | None = None,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
@@ -1396,6 +1403,11 @@ def build_permissions(
         pointer bucket and the two hub requests that declare and retire them. Only a
         :attr:`Principal.TOOL_POD` may hold it.
     :ptype object_store: bool
+    :param delta_files: this tool pod has opted in to asking and serving delta-file recreates -- the operator's record
+        on its registry row (``aibots tool-pod set-delta-files``), resolved by the auth callout. Grants the
+        :data:`DELTA_FILES_FORWARD_FAMILY` forward family on publish and subscribe, in this namespace, with only the
+        key wildcarded. Only a :attr:`Principal.TOOL_POD` may hold it.
+    :ptype delta_files: bool
     :param epoch_change_grants: the tenants (and, for a platform table, the tables) of the epoch change log
         an agent or tool pod may read (:class:`EpochChangeGrant`): its own schema whole, and each platform
         table it already reads for its customer and for ``_all``. ``None`` keeps the whole log readable, for a
@@ -1404,13 +1416,15 @@ def build_permissions(
     :ptype epoch_change_grants: Sequence[EpochChangeGrant] | None
     :return: the resolved permissions
     :rtype: PrincipalPermissions
-    :raises ValueError: when ``object_store`` is asked for another principal, when a required id for the principal is missing, when a declared
+    :raises ValueError: when ``object_store`` or ``delta_files`` is asked for another principal, when a required id for the principal is missing, when a declared
         coordination bucket suffix is malformed or the declaration exceeds
         :data:`MAX_COORDINATION_BUCKETS`, or when one agent table or one agent bucket is granted
         twice
     """
     if object_store and principal is not Principal.TOOL_POD:
         raise ValueError(f"only a tool pod may hold an Object Store of its own, not a {principal.value}")
+    if delta_files and principal is not Principal.TOOL_POD:
+        raise ValueError(f"only a tool pod may ask and serve delta-file recreates, not a {principal.value}")
     permissions = _RESOLVERS[principal](
         agent_id=agent_id,
         pod_id=pod_id,
@@ -1422,6 +1436,8 @@ def build_permissions(
     )
     if object_store:
         permissions = _with_object_store(permissions, pod_id=_require(pod_id, name="pod_id", principal=principal))
+    if delta_files:
+        permissions = _with_delta_file_recreates(permissions)
     if epoch_change_grants is not None and principal in (Principal.AGENT_POD, Principal.TOOL_POD):
         permissions = _with_epoch_change_grants(permissions, epoch_change_grants)
     return permissions
@@ -1472,6 +1488,28 @@ def _with_object_store(permissions: PrincipalPermissions, *, pod_id: str) -> Pri
             JsResource.object_store(tool_pod_object_store_name(pod_id, ns=ns), writable=True),
             JsResource.kv_bucket_keys(tool_pod_pointers_bucket_name(pod_id, ns=ns), writable=True),
         ),
+    )
+
+
+def _with_delta_file_recreates(permissions: PrincipalPermissions) -> PrincipalPermissions:
+    """a tool pod's permissions with the :data:`DELTA_FILES_FORWARD_FAMILY` forward family, both halves.
+
+    Every replica of the pod is both sides of the recreate door (decision 29): the lease holder serves the family
+    (``serve_owner`` subscribes it in a queue group and answers on the asker's inbox under the pod's existing
+    ``allow_responses``), and a copy that finds a delta file missing or unreadable asks it (``forward`` publishes to it).
+    The grant is the family's exact token with only the key wildcarded (:meth:`Subjects.forward_scoped_wildcard`)
+    inside this namespace: no unscoped forward key and no other family.
+
+    :param permissions: the tool pod's resolved permissions
+    :ptype permissions: PrincipalPermissions
+    :return: the permissions with the delta-files forward family on publish and subscribe
+    :rtype: PrincipalPermissions
+    """
+    family = str(Subjects.forward_scoped_wildcard(DELTA_FILES_FORWARD_FAMILY))
+    return dataclasses.replace(
+        permissions,
+        publish=(*permissions.publish, family),
+        subscribe=(*permissions.subscribe, family),
     )
 
 
