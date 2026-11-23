@@ -1496,3 +1496,32 @@ async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_th
     part = _part(tmp_path, "votes", "state:TX")
     assert part is not None and part.rows == 3
     await after.close()
+
+
+async def test_a_newer_term_s_start_never_waits_on_this_process_s_round_of_an_older_term(tmp_path: Path) -> None:
+    """Flips if a writer's start at a newer term (another writer wrote since this process's last holding) waits on
+    this process's own round of the older term, which is stale (a session's first write held for as long as that fold
+    runs); or if the cut round's file is lost instead of folded at the new term."""
+    schema = _votes_schema(_SlowOnce)
+    _first_full(tmp_path, "votes")
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)])  # its own worker
+    writer = _Writer(tmp_path, schema, folds)
+    mark = tmp_path / "slow.mark"
+    file = writer.save(_votes("TX", range(3), 1, note=str(mark)))
+    writer.tell(file)  # a round at term 5
+    await _in_its_worker(mark)
+    log = _Log()
+    log.append("votes", "inc:1", file)
+
+    began = time.monotonic()
+    rebuilt = await folds.start(_l3(), _Generations({"votes": "inc:1"}), changes=log, version=9)
+    took = time.monotonic() - began
+
+    assert rebuilt == ()
+    assert took < 10, f"the start waited {took:.1f} s on the older term's round"
+    assert REGISTRY.get_sample_value("delta_fold_rounds_cut_total", {"why": "new_term"}) is not None
+    part = _part(tmp_path, "votes", "state:TX")
+    assert part is not None and part.rows == 3, "the cut round's file is folded at the new term"
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.term == 9
+    await folds.close()

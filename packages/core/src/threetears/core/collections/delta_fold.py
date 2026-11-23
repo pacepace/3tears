@@ -556,6 +556,11 @@ class DeltaFolds:
         self._reader = _Reader(l3=l3, generations=generations, page_size=page_size)
         self._changes = changes
         self._notes = notes if notes is not None else l3 if isinstance(l3, NotedKeysReader) else None
+        running = self._round is not None and not self._round.done()
+        if running and self._round_term is not None and self._round_term < version:
+            # this process's own round of an older holding: a newer writer wrote since, so it is stale (its publish
+            # is refused or never read); a session's start never waits on it. Its files go back to the queue
+            await self._cut("new_term")
         self._term = version if self._term is None else max(self._term, version)
         self._recheck = True
         since = len(self._rebuilt)
