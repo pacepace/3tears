@@ -111,7 +111,7 @@ from threetears.core.keyed.marks import MarkedRead, PageAfter, read_after, read_
 from threetears.core.keyed.options import with_options
 from threetears.core.keyed.joins import Joined, read_by_joined, read_reached
 from threetears.core.keyed.links import read_link_chain
-from threetears.core.keyed.point import read_by, read_nearest, read_row, read_row_beside, read_value
+from threetears.core.keyed.point import read_by, read_nearest, read_row, read_row_beside, read_state_arrow, read_value
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
     TableKey,
@@ -126,6 +126,7 @@ from threetears.core.keyed.rows import (
     DEFAULT_KEY_BATCH,
     DIRECT_KEY_BATCH,
     DeclaredKey,
+    DeclaredScope,
     KeyBatch,
     KeyColumn,
     KeyColumns,
@@ -225,6 +226,7 @@ __all__ = [
     "inline_l1",
     "InlineTransaction",
     "DeclaredKey",
+    "DeclaredScope",
     "KeyBatch",
     "KeyColumn",
     "KeyColumns",
@@ -276,6 +278,7 @@ __all__ = [
     "keyset_rows",
     "read_after",
     "read_by",
+    "read_state_arrow",
     "read_nearest",
     "read_by_joined",
     "read_reached",

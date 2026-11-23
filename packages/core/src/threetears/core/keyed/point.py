@@ -20,11 +20,13 @@ IO only: one statement, awaited on the caller's connection (anything with an asy
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, overload
+from typing import Annotated, Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
+from threetears.core.keyed._filters import Fragment, Lock, Selected, reads_l3, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
+from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
+from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.interfaces.keyed.filters import (
     Derived,
     by_conditions,
@@ -45,6 +47,7 @@ from threetears.interfaces.keyed.point import (
     read_row_statement,
     then_terms,
 )
+from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.interfaces.keyed.steps import Step
 
 __all__ = [
@@ -52,6 +55,7 @@ __all__ = [
     "read_nearest",
     "read_row",
     "read_row_beside",
+    "read_state_arrow",
     "read_value",
 ]
 
@@ -483,3 +487,43 @@ def _joined_nearest_statement(
         f" ORDER BY r.{quote_identifier(ranked)} DESC LIMIT ${len(params)}"
     )
     return sql, binds
+
+
+async def read_state_arrow(
+    conn: Any,
+    table: str,
+    *,
+    scope_column: Annotated[str, DeclaredScope],
+    state: Any,
+    columns: Sequence[str] | None = None,
+) -> Any:
+    """every row of a LOCAL copy's table that one state holds, pinned by the table's declared state column
+    (``scope_column = $1``), as DuckDB's own Arrow answer: one state's rows of the pod's own copy, never L3.
+
+    For a table whose key does not name its state (AP results: the state is a row column, ``TableSchema.delta_scope``),
+    the only bound read of one state's rows. The no_whole_reads rule judges the call bounded only when
+    ``scope_column`` flows from a :class:`~threetears.interfaces.keyed.DeclaredScope` source (the table's own
+    declaration); any other column is a predicate it cannot see.
+
+    :param conn: the copy's DuckDB, an :class:`~threetears.core.keyed.InlineDuckDB` or
+        :class:`~threetears.core.keyed.ThreadedDuckDB`
+    :ptype conn: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param scope_column: the table's declared state column, a TRUSTED identifier
+    :ptype scope_column: str
+    :param state: the state's value of the column (``= $1``, typed by the column)
+    :ptype state: Any
+    :param columns: the columns read, TRUSTED identifiers; every column of the table when None
+    :ptype columns: Sequence[str] | None
+    :return: the rows
+    :rtype: pyarrow.Table
+    :raises ValueError: when ``conn`` reads L3: a state's rows there are read by key, never by this
+    :raises TypeError: when ``conn`` is no DuckDB copy
+    """
+    if reads_l3(conn):
+        raise ValueError(f"read_state_arrow reads a local copy, never L3: {table} by {scope_column} on {conn!r}")
+    if not isinstance(conn, InlineDuckDB | ThreadedDuckDB):
+        raise TypeError(f"read_state_arrow reads a DuckDB copy, not {type(conn).__name__}")
+    sql, params = read_by_statement(table, by={scope_column: state}, columns=columns)
+    return await sent_by(conn).fetch_arrow(sql, *params, types=None)

@@ -90,6 +90,14 @@ class DeclaredKey:
     other column as a predicate it cannot see, whatever the column's name says."""
 
 
+class DeclaredScope:
+    """the mark of a declared state column, in an annotation: ``Annotated[str, DeclaredScope]`` for the row column a
+    table's own declaration names as the state its rows belong to (``TableSchema.delta_scope``, a followed table's
+    ``scope``), set only from that declaration. The no_whole_reads rule reads a local copy's read pinned by a column
+    from one (``threetears.core.keyed.read_state_arrow``, never L3) as bounded by the state, and any other column as a
+    predicate it cannot see."""
+
+
 #: a table's key column, as its declaration names it: a declared key source (:class:`DeclaredKey`)
 KeyColumn: TypeAlias = Annotated[str, DeclaredKey]
 

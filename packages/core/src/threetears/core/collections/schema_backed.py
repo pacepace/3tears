@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import wraps
-from typing import Any, ClassVar, Final, Generic, Literal, TypeVar, overload
+from typing import Annotated, Any, ClassVar, Final, Generic, Literal, TypeVar, overload
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -63,7 +63,7 @@ from threetears.interfaces.keyed.keys import (
     register_table_keys,
     partial_predicate,
 )
-from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
+from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
 from threetears.core.backends.arrow_copy import arrow_python_columns, arrow_python_rows, with_constant_columns
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
 from threetears.core.backends.protocol import (
@@ -1377,8 +1377,9 @@ class TableSchema:
     # the rows of each state a full of the table keeps at a fold (threetears.core.collections.delta_fold); a class,
     # compared and hashed by its name like every other field, so the schema stays a value
     delta_keep: type[DeltaKeepRule] | None = None
-    # the row column a delete marker carries the row's state in, for a table whose key does not name it (decision 27)
-    delta_scope: str | None = None
+    # the row column a delete marker carries the row's state in, for a table whose key does not name it (decision 27):
+    # the table's declared state column (DeclaredScope), the one a local copy's state read is pinned by
+    delta_scope: Annotated[str | None, DeclaredScope] = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
