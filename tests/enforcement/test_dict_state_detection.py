@@ -205,9 +205,81 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/copy_follower.py",
         class_name="CopyFollower",
-        attr_name="_staged_keys",
+        attr_name="_staged_heard",
         rationale=(
-            "the keys each staged change was read for, kept to put back as pending when a pass fails; the keys come from the epoch change log, which a restart walks again"
+            "each table's keyed stage as immutable Arrow batches (its keys at the epochs they were staged from), one entry a table: put back heard when the stage is forgotten, dropped once applied; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_staged_scope_rows",
+        rationale=(
+            "each table's keyed stage's keys with their scopes, immutable Arrow batches, one entry a table: what a moved scope leaves out of the stage; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_leaving",
+        rationale=(
+            "the keys (one Arrow table a table) the last stamp check left out of the change, handed to the leave-out step of the same pass and emptied by it; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_noted",
+        rationale=(
+            "when the change notes last named keys of each table, one entry a table, handed to the checkpoint once an apply holds the table current; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_full_after",
+        rationale=(
+            "the full each table reset or recreated waits for (decisions 12, 14, 28), one entry a waiting table; the volume's full is the durable state; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_reloads",
+        rationale=(
+            "the task looking for each waiting table's full, one entry a waiting table; it reads the volume and hands the owner what it found; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_file_waits",
+        rationale=(
+            "the delta files each table waits for (decision 29), immutable waits replaced by the owner, one entry a waiting table; the writer recreates the files; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_file_tasks",
+        rationale=(
+            "the task looking for each waiting table's files, one entry a waiting table; it reads the volume and asks the writer, then hands the owner what it found; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_held_counts",
+        rationale=(
+            "how many changes each table waiting for a file holds (a count, one entry a waiting table), for HELD_WHILE_WAITING_CAP and its gauge; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/copy_follower.py",
+        class_name="CopyFollower",
+        attr_name="_state_versions",
+        rationale=(
+            "the version the copy holds each (table, state) at (decision 32), one entry a state; read by the drift check under the pass lock; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
         ),
     ),
     DictStateAllowlistEntry(
@@ -444,6 +516,15 @@ _ALLOWLIST = (
             "callables into in-process caches, wiring alongside _collections, IS the "
             "infrastructure. not serializable, and a registration names a cache that exists only "
             "in this process, so there is nothing a shared or durable copy could hold"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/registry.py",
+        class_name="CollectionRegistry",
+        attr_name="_notes_resolved",
+        rationale=(
+            "where the change notes the registry last named a table's keys from begin, one entry a table, taken by the "
+            "copy follower's next pass (take_notes_resolved); the notes are L3's, and a restart walks the log again"
         ),
     ),
     DictStateAllowlistEntry(
