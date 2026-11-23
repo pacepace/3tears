@@ -285,6 +285,9 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
         # constructed by a consumer's own process (samhla, scriob); no deployed 3tears, SDK or hub process opens a repository
         "packages/core/src/threetears/core/backends/git/advanced.py::AdvancedListener.register": _NOT_WIRED,
         "packages/core/src/threetears/core/backends/git/writer.py::WriterRole._serve_one": _NOT_WIRED,
+        # the delta-files writer's recreate door (decision 29): no deployed process serves it until reports wires it,
+        # and the reports pod's grant of the delta-files forward family comes with that wiring
+        "packages/core/src/threetears/core/collections/delta_recreate.py::serving_recreates": _NOT_WIRED,
         "packages/nats/src/threetears/nats/_named_read.py::read_through_named_consumer": _ON_THE_INBOX,
         "packages/nats/src/threetears/nats/auth_callout_responder.py::AuthCalloutResponder.start": (
             "the auth callout's own user in the system account, which no Principal describes"

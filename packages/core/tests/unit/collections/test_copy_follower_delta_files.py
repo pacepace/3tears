@@ -8,7 +8,9 @@ statement reached L3" are both checked. The contract this pins:
 - an opted-in table's change (an update, an insert, a delete) is applied from its file with no L3 statement;
 - an upsert that left a column out keeps the copy's value of it and the row's ``date_created`` (decision 19);
 - a delete marker deletes the key;
-- a record naming a file the volume does not hold reads that change from L3 by key, counted by why;
+- a record naming a file the volume does not hold reads nothing from L3: the table waits for the file, its changes
+  held, until the writer saves it again (decision 29; the end-to-end round with the writer is in
+  ``test_delta_recreate.py``);
 - a table that does not opt in reads L3 as before, counted as no fallback;
 - a key a pass leaves out (its scope moved under the read) is staged again from its files by the next pass, every
   epoch of it in order, with no L3 read;
@@ -407,21 +409,42 @@ async def test_a_delete_marker_deletes_the_key(_volume: Path) -> None:
     assert l3.statements == 0
 
 
-async def test_a_record_naming_a_file_the_volume_lost_reads_that_change_from_l3_by_key_counted() -> None:
-    """Flips if a lost volume stalls the copy, or its fallback goes uncounted: the record's keys are read from L3 by
-    key, as before delta files, and copy_follower_delta_file_fallback_keys_total{why="file_missing"} says so."""
+async def test_a_record_naming_a_file_the_volume_lost_reads_nothing_from_l3_and_waits_for_the_file(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy reads a lost file's keys from L3 (every pod at once: the load election night could not carry), or
+    applies anything of the table while its file is missing, or never applies the held change once the file is back.
+    The copy reads nothing from L3, says which file it waits for, and applies the change once the writer saves it again
+    (decision 29, which amends decision 3)."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
     world = _world()
     l3, log, lock, backend, follower = world
     await _warmed(world)
-    before = _fallbacks("file_missing")
-    l3.update(("VA", 1), votes=61)
-    l3.update(("VA", 3), votes=63)
-    log.commit([("VA", 1), ("VA", 3)], delta_file=f"{_TABLE}/lost.arrow")
+    held = _copy(backend)
+    updated = _row("VA", 1, 61, "second")
+    l3.update(("VA", 1), votes=61, note="second")
+    lost = f"{_TABLE}/lost.arrow"
+    log.commit([("VA", 1)], delta_file=lost)
     lock.commit("state:VA")
+
+    await follower.catch_up()
+
+    assert l3.statements == 0, "a copy never reads a lost file's change from L3"
+    assert _copy(backend) == held, "nothing of the table is applied while its file is missing"
+    assert lost in follower.status().waiting_for_file[_TABLE]
+
+    # the writer saves the file again under its name (test_delta_recreate.py runs the writer's side)
+    assert _save(_volume, "lost", ("rows", [updated], list(_NAMES))) == lost
+    await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
+
     assert _same(backend, l3)
-    assert l3.statements == 1  # both keys, in one keyed read
-    assert _fallbacks("file_missing") - before == 2
+    assert l3.statements == 0
+
+
+async def _until(done: Callable[[], bool]) -> None:
+    while not done():
+        await asyncio.sleep(0.005)
 
 
 async def test_a_table_that_does_not_opt_in_reads_l3_as_before(_volume: Path) -> None:
@@ -545,9 +568,9 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
     applies: list[Any] = []
     read, apply = delta_files.read_delta_file, delta_files.apply_delta_row
 
-    def counted_read(path: Path) -> Any:
+    def counted_read(path: Path, **checks: Any) -> Any:
         reads.append(path)
-        return read(path)
+        return read(path, **checks)
 
     def counted_apply(held: Any, change: Any) -> Any:
         applies.append(change)

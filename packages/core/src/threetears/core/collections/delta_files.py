@@ -59,7 +59,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -82,6 +83,7 @@ __all__ = [
     "DeltaChange",
     "DeltaFile",
     "DeltaFileRefusedError",
+    "DeltaFileUnreadableError",
     "DeltaReach",
     "LoadDelta",
     "TableDelta",
@@ -90,7 +92,6 @@ __all__ = [
     "delta_files_root",
     "load_delta_rows",
     "read_delta_file",
-    "read_delta_file_keys",
     "read_delta_file_reach",
     "sweep_orphan_delta_files",
     "under_prefix",
@@ -175,6 +176,23 @@ def check_delta_scope(table: str, scope_column: str | None, scope: Any) -> None:
             f"{table}: a delete named the state {scope!r}, but the table declares no delta_scope (its key names the "
             f"state, or it does not opt in to delta files): no marker would carry it"
         )
+
+
+class DeltaFileUnreadableError(ValueError):
+    """a delta file that is on the volume under its name but cannot be applied as that file: truncated, garbage, a
+    format this reader does not know, a damaged zstd buffer, a broken footer or array, or another table's or another
+    write's file under the name. Never raised for a file that is not there (``FileNotFoundError``), nor for an error the
+    volume itself answered (an ``OSError`` carrying an errno): those are not the file's bytes.
+
+    Why one class: a copy that finds a change's file so waits for the writer to recreate it, reading nothing from L3
+    (``design-pod-delta-files.md``, decision 29), and it must tell that apart precisely from a failure it should not
+    wait on. Measured (2026-11-23, a 2,000-row file, a byte flipped every 23 bytes, one process a flip): without a full
+    validation 15 of 509 reads killed the process (a segfault in ``to_pylist`` over a broken offset), the rest raised
+    ``MemoryError``, ``UnicodeDecodeError``, ``KeyError`` or ``OSError``; with ``validate(full=True)`` before any row
+    is decoded none crashed, and every failure was ``pyarrow.ArrowInvalid`` or an errno-less ``OSError`` (zstd, the
+    footer's flatbuffer, a read past the end). About two in five flips still read as a file holding other values:
+    the format carries no checksum, so such a file is not detected here.
+    """
 
 
 def _prefix_text(prefix: Mapping[str, Any]) -> dict[str, str]:
@@ -448,100 +466,147 @@ class DeltaReach:
     :ivar key: the table's key columns, in key order
     :ivar keys: each key's values as the file holds them, once each in the order first written
     :ivar prefixes: the key prefixes it clears before its rows, as text
+    :ivar table: the table the file holds rows of
     """
 
     key: tuple[str, ...]
     keys: list[tuple[Any, ...]]
     prefixes: tuple[dict[str, str], ...]
+    table: str = ""
 
 
-def read_delta_file(path: Path) -> DeltaFile:
-    """read a delta file saved by :func:`write_delta_file`. Blocking: run it on a thread.
+@contextmanager
+def _decoding(path: Path) -> Iterator[None]:
+    """what decoding a delta file raises for its bytes, as :class:`DeltaFileUnreadableError`; the rest as raised.
 
     :param path: the file
     :ptype path: Path
+    :return: a context the file is decoded in
+    :rtype: Iterator[None]
+    :raises DeltaFileUnreadableError: when the file's bytes are not a delta file this reader applies
+    """
+    try:
+        yield
+    except DeltaFileUnreadableError:
+        raise
+    except FileNotFoundError:
+        raise  # not there: the caller says so, never "unreadable"
+    except OSError as exc:
+        if exc.errno is not None:
+            raise  # the volume's own error (EIO, EACCES): a failed read to try again, not the file's bytes
+        # Arrow's decode failures carry no errno: a damaged zstd buffer, a footer that fails verification, a read past
+        # the end of a truncated file
+        raise DeltaFileUnreadableError(f"{path}: not a readable delta file: {exc}") from exc
+    except (pa.ArrowInvalid, KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # ArrowInvalid: not an Arrow file, too small, an array that fails validation. KeyError: metadata a delta file
+        # always holds is missing. IndexError: a row names a column set the file does not list. The JSON and its text
+        # in the metadata do not decode
+        raise DeltaFileUnreadableError(f"{path}: not a readable delta file: {type(exc).__name__}: {exc}") from exc
+
+
+def _checked_metadata(path: Path, metadata: Mapping[bytes, bytes], table: str | None) -> tuple[str, str]:
+    """a delta file's format, table and write as its metadata names them, checked against its path and the table
+    expected.
+
+    :param path: the file
+    :ptype path: Path
+    :param metadata: its schema's metadata
+    :ptype metadata: Mapping[bytes, bytes]
+    :param table: the table the caller expects its rows of; None checks none
+    :ptype table: str | None
+    :return: the table and the write it names
+    :rtype: tuple[str, str]
+    :raises DeltaFileUnreadableError: when the format is not this reader's, or the file is another table's, or another
+        write's than its name says
+    :raises KeyError: when a name is missing (raised as unreadable by :func:`_decoding`)
+    """
+    if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
+        raise DeltaFileUnreadableError(
+            f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's {_DELTA_FORMAT!r}"
+        )
+    named, write = metadata[_TABLE_METADATA].decode(), metadata[_WRITE_METADATA].decode()
+    if table is not None and named != table:
+        raise DeltaFileUnreadableError(f"{path}: a delta file of table {named!r}, not {table!r}")
+    if path.suffix == _SUFFIX and write != path.stem:
+        # every file is saved under its write's own id (_delta_file_name): another name holds another commit's rows
+        raise DeltaFileUnreadableError(f"{path}: the delta file of write {write!r}, not of {path.stem!r}")
+    return named, write
+
+
+def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
+    """read a delta file saved by :func:`write_delta_file`. Blocking: run it on a thread.
+
+    Every array is validated in full before a row is decoded: a damaged file raises, never crashes the process
+    (:class:`DeltaFileUnreadableError`).
+
+    :param path: the file
+    :ptype path: Path
+    :param table: the table whose file it must be; None checks none
+    :ptype table: str | None
     :return: the file's table, write, key and changes
     :rtype: DeltaFile
-    :raises ValueError: when the file is not of this format
-    :raises OSError: when it cannot be read
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
+        write its name says
+    :raises OSError: when the volume cannot read it (an errno)
     :raises ImportError: without pyarrow
     """
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
-    with pa.memory_map(str(path)) as source:
-        table = pa_ipc.open_file(source).read_all()
-    metadata = table.schema.metadata or {}
-    if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
-        raise ValueError(
-            f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's {_DELTA_FORMAT!r}"
-        )
-    sets = [frozenset(named) for named in json.loads(metadata[_WRITTEN_METADATA])]
-    prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
-    changes = []
-    for row in table.to_pylist():
-        deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
-        changes.append(DeltaChange(row=row, deleted=deleted, written=sets[written]))
-    return DeltaFile(
-        table=metadata[_TABLE_METADATA].decode(),
-        write=metadata[_WRITE_METADATA].decode(),
-        key=tuple(json.loads(metadata[_KEY_METADATA])),
-        changes=changes,
-        prefixes=prefixes,
-    )
+    with _decoding(path):
+        with pa.memory_map(str(path)) as source:
+            read = pa_ipc.open_file(source).read_all()
+        read.validate(full=True)
+        metadata = read.schema.metadata or {}
+        named, write = _checked_metadata(path, metadata, table)
+        sets = [frozenset(columns) for columns in json.loads(metadata[_WRITTEN_METADATA])]
+        prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
+        key = tuple(json.loads(metadata[_KEY_METADATA]))
+        changes = []
+        for row in read.to_pylist():
+            deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
+            changes.append(DeltaChange(row=row, deleted=deleted, written=sets[written]))
+    return DeltaFile(table=named, write=write, key=key, changes=changes, prefixes=prefixes)
 
 
-def read_delta_file_keys(path: Path) -> tuple[tuple[str, ...], list[tuple[Any, ...]]]:
-    """the keys a delta file names, rows and delete markers alike, each once in the order first written: its key
-    columns alone are read. Blocking: run it on a thread.
+def read_delta_file_reach(path: Path, *, table: str | None = None) -> DeltaReach:
+    """the keys a delta file names, rows and delete markers alike, each once in the order first written, and the key
+    prefixes it clears: its key columns and its metadata alone are read. Blocking: run it on a thread.
 
     Why: a commit too big to list its rows in its epoch record names its keys here, and a follower evicts each from
     every cache it holds (``design-pod-delta-files.md``, decision 21); its other columns, the bulk of the file, are
-    left unread.
+    left unread. And a commit that cleared key slices (a load that replaces them, a key-prefix delete) is applied by a follower from
+    its file: the prefixes tell it which of its own rows leave, the keys which rows the file brings (decision 23). The
+    key columns read are validated in full before a key is decoded, as :func:`read_delta_file` validates every column.
 
     :param path: the file
     :ptype path: Path
-    :return: the table's key columns, in key order; and each key's values as the file holds them
-    :rtype: tuple[tuple[str, ...], list[tuple[Any, ...]]]
-    :raises ValueError: when the file is not of this format
-    :raises OSError: when it cannot be read
-    :raises ImportError: without pyarrow
-    """
-    reach = read_delta_file_reach(path)
-    return reach.key, reach.keys
-
-
-def read_delta_file_reach(path: Path) -> DeltaReach:
-    """the keys a delta file names (as :func:`read_delta_file_keys`) and the key prefixes it clears: its key columns
-    and its metadata alone are read. Blocking: run it on a thread.
-
-    Why: a commit that cleared key slices (a load that replaces them, a key-prefix delete) is applied by a follower from
-    its file: the prefixes tell it which of its own rows leave, the keys which rows the file brings (decision 23).
-
-    :param path: the file
-    :ptype path: Path
+    :param table: the table whose file it must be; None checks none
+    :ptype table: str | None
     :return: its key columns, keys and prefixes
     :rtype: DeltaReach
-    :raises ValueError: when the file is not of this format
-    :raises OSError: when it cannot be read
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
+        write its name says, or its key columns do not decode
+    :raises OSError: when the volume cannot read it (an errno)
     :raises ImportError: without pyarrow
     """
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
-    with pa.memory_map(str(path)) as source:
-        schema = pa_ipc.open_file(source).schema
-        metadata = schema.metadata or {}
-        if metadata.get(_FORMAT_METADATA) != _DELTA_FORMAT:
-            raise ValueError(
-                f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's "
-                f"{_DELTA_FORMAT!r}"
-            )
-        key = tuple(json.loads(metadata[_KEY_METADATA]))
-        prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
-        source.seek(0)
-        options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
-        keys = pa_ipc.open_file(source, options=options).read_all()
-    values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
-    return DeltaReach(key=key, keys=list(dict.fromkeys(values)), prefixes=prefixes)
+    with _decoding(path):
+        with pa.memory_map(str(path)) as source:
+            schema = pa_ipc.open_file(source).schema
+            metadata = schema.metadata or {}
+            named, _write = _checked_metadata(path, metadata, table)
+            key = tuple(json.loads(metadata[_KEY_METADATA]))
+            prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
+            source.seek(0)
+            options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
+            keys = pa_ipc.open_file(source, options=options).read_all()
+        keys.validate(full=True)
+        values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
+        held = list(dict.fromkeys(values))
+    return DeltaReach(key=key, keys=held, prefixes=prefixes, table=named)
 
 
 def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
