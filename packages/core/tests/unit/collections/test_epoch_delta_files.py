@@ -25,6 +25,7 @@ from threetears.nats import Subject
 
 from threetears.core.backends.broker_generation import DELTA_FILES_FIELD, naming_delta_files
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.protocol import LoadFile
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.epoch_change import (
@@ -305,6 +306,25 @@ async def test_a_pods_commit_hands_the_broker_its_files() -> None:
         async with broker.proxy().transaction():
             raise RuntimeError("the body failed")
     assert DELTA_FILES_FIELD not in broker.body("l3.tx.rollback")
+
+
+async def test_a_pods_load_from_files_hands_the_broker_its_file() -> None:
+    """Flips if a pod's ``l3.load_files`` of an opted-in table stops carrying the delta file saved for the request, for
+    the broker to name in the load's epoch record (decision 17), or a load naming none carries the field."""
+    files = [LoadFile(url="https://bucket/0000.parquet", rows=1)]
+    reply = {"success": True, "row_count": 1, "files": [{"index": 0, "rows_loaded": 1}]}
+    broker = _Broker(dict(reply))
+    await broker.proxy().load_files(
+        "results", files, columns=["votes"], constants={}, rows_per_transaction=10, timeout_ms=1_000
+    )
+    assert DELTA_FILES_FIELD not in broker.body("l3.load_files")
+
+    broker = _Broker(dict(reply))
+    with naming_delta_files({"results": _FILE}):
+        await broker.proxy().load_files(
+            "results", files, columns=["votes"], constants={}, rows_per_transaction=10, timeout_ms=1_000
+        )
+    assert broker.body("l3.load_files")[DELTA_FILES_FIELD] == {"results": _FILE}
 
 
 async def test_a_direct_pool_commit_names_the_generation_each_table_s_advance_wrote(

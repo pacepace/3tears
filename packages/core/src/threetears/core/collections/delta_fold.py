@@ -14,7 +14,10 @@ no part yet folds at its first delta.
 
 **How a state folds** (decisions 9 and 19). The old part's rows, then each delta's rows of the state in commit order,
 merged as L3 merged them (:func:`~threetears.core.collections.delta_files.apply_delta_row`: a column the write left out
-keeps its value, ``date_created`` keeps the held row's, a delete marker deletes), the newest per key. A history table
+keeps its value, ``date_created`` keeps the held row's, a delete marker deletes), the newest per key. A delta that
+clears key prefixes (a load that replaced them, a key-prefix delete; decision 23) first takes every row of the state
+under each out, then its own rows apply: a state a prefix names by its scope column shares the file, and every state
+of the table does for a prefix that names none. A history table
 (AP snapshots, LSF runs) has a key unique to each run or upload, so the same rule appends its rows. Then the table's
 keep rule (decision 13, :class:`~threetears.core.collections.delta_keep.DeltaKeepRule`), the one its copy keeps by: a
 table that declares none keeps every row.
@@ -98,11 +101,13 @@ from threetears.observe.metrics import counter
 
 from threetears.core.collections.delta_files import (
     _DELETED_COLUMN,
+    _PREFIXES_METADATA,
     _WRITTEN_COLUMN,
     _WRITTEN_METADATA,
     DeltaChange,
     apply_delta_row,
     sweep_orphan_delta_files,
+    under_prefix,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.delta_keep import DeltaKeepRule
@@ -1207,10 +1212,13 @@ def fold_round(
     """
     base = Path(root)
     config = {plain[0]: _Folding.of(plain) for plain in tables}
+    current = current_full_manifest(base)
     shares = list(pending)
     for table, file, token in committed:
-        shares.extend(_shares(base, config[table], file, token))
-    current = current_full_manifest(base)
+        # a cleared prefix reaches the states the full holds of the table, each counted at its part's size
+        held = current.tables.get(table) if current is not None else None
+        sizes = {part.scope: (base / part.file).stat().st_size for part in held.parts} if held is not None else {}
+        shares.extend(_shares(base, config[table], file, token, sizes))
     renewed: tuple[str, ...] = ()
 
     def answer(
@@ -1364,8 +1372,15 @@ def _read_ipc(path: Path) -> Any:
         return pa_ipc.open_file(source).read_all()
 
 
-def _shares(root: Path, table: _Folding, file: str, token: str) -> list[_Share]:
-    """a delta file's bytes shared among the states its rows belong to, by rows.
+def _shares(
+    root: Path, table: _Folding, file: str, token: str, sizes: Mapping[str | None, int] | None = None
+) -> list[_Share]:
+    """a delta file's bytes shared among the states its rows belong to, by rows, and every state a prefix it clears
+    reaches (decision 23): the prefix's state when it names the scope column, else every state the full holds.
+
+    A cleared state's share is its part's size: the clear may take every row of the part out in a file of a few
+    hundred bytes, so the state folds at once (decision 10's half is reached) rather than keeping a part of rows L3
+    no longer holds until other writes add up.
 
     :param root: the delta files' root
     :ptype root: Path
@@ -1375,6 +1390,8 @@ def _shares(root: Path, table: _Folding, file: str, token: str) -> list[_Share]:
     :ptype file: str
     :param token: the generation its commit wrote
     :ptype token: str
+    :param sizes: each state the current full holds of the table, and its part's bytes
+    :ptype sizes: Mapping[str | None, int] | None
     :return: one share a state
     :rtype: list
     """
@@ -1384,7 +1401,33 @@ def _shares(root: Path, table: _Folding, file: str, token: str) -> list[_Share]:
     rows = _read_ipc(root / file)
     counts = Counter(table.scope_of(value) for value in rows.column(table.scope_column).to_pylist())
     total = max(1, rows.num_rows)
-    return [(table.name, scope, file, token, max(1, size * count // total)) for scope, count in counts.items()]
+    shared = {scope: max(1, size * count // total) for scope, count in counts.items()}
+    held = dict(sizes or {})
+    for prefix in _cleared_prefixes(rows):
+        reached = [table.scope_of(prefix[table.scope_column])] if table.scope_column in prefix else list(held)
+        for scope in reached:
+            if scope is not None:
+                shared[scope] = max(shared.get(scope, 1), held.get(scope, 1))
+    return [(table.name, scope, file, token, share) for scope, share in shared.items()]
+
+
+def _cleared_prefixes(delta: Any) -> list[dict[str, str]]:
+    """the key prefixes a delta file clears before its rows, as it names them (decision 23).
+
+    :param delta: the file's table, its schema's metadata read with it
+    :ptype delta: pyarrow.Table
+    :return: the prefixes
+    :rtype: list[dict[str, str]]
+    """
+    named = (delta.schema.metadata or {}).get(_PREFIXES_METADATA)
+    return [dict(prefix) for prefix in json.loads(named)] if named else []
+
+
+@dataclass(frozen=True, slots=True)
+class _Cleared:
+    """a step of a fold: every row under the prefixes leaves, before the delta's own changes apply."""
+
+    prefixes: tuple[dict[str, str], ...]
 
 
 def _held_rows(path: Path, columns: Sequence[str]) -> Any:
@@ -1424,7 +1467,7 @@ def _fold_state(
     :raises ValueError: when a delta's generation is of another incarnation than the part's (a reset: the rebuild's)
     """
     schema: Any = None
-    changes: list[DeltaChange] = []
+    changes: list[DeltaChange | _Cleared] = []
     last_rows: list[dict[str, Any]] = []
     last_only_state = False
     for index, (_, _, file, _, _) in enumerate(shares):
@@ -1441,6 +1484,9 @@ def _fold_state(
         if is_last:
             last_only_state = mine.num_rows == delta.num_rows
             last_rows = []
+        cleared = _cleared_prefixes(delta)
+        if cleared:
+            changes.append(_Cleared(tuple(cleared)))
         for row in mine.to_pylist():
             deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
             change = DeltaChange(
@@ -1463,10 +1509,11 @@ def _fold_state(
     return write_full_part(root, table.name, scope, folded.select(list(table.columns)), version), "written"
 
 
-def _applied(table: _Folding, schema: Any, held: Any, changes: Sequence[DeltaChange]) -> Any:
-    """the held rows with every change applied in order, merged as L3 merged it (:func:`apply_delta_row`).
+def _applied(table: _Folding, schema: Any, held: Any, changes: Sequence[DeltaChange | _Cleared]) -> Any:
+    """the held rows with every change applied in order, merged as L3 merged it (:func:`apply_delta_row`), and every
+    row under a cleared prefix taken out where the clear falls among them.
 
-    Rows no change names stay as Arrow; only the rows changes name are merged a row at a time.
+    Rows no change names and no cleared prefix holds stay as Arrow; only the rest are merged a row at a time.
 
     :param table: the table
     :ptype table: _Folding
@@ -1474,8 +1521,8 @@ def _applied(table: _Folding, schema: Any, held: Any, changes: Sequence[DeltaCha
     :ptype schema: pyarrow.Schema
     :param held: the old part's rows
     :ptype held: pyarrow.Table
-    :param changes: the deltas' changes of the state, in order
-    :ptype changes: Sequence[DeltaChange]
+    :param changes: the deltas' changes of the state, and their clears, in order
+    :ptype changes: Sequence[DeltaChange | _Cleared]
     :return: the folded rows
     :rtype: pyarrow.Table
     """
@@ -1483,13 +1530,20 @@ def _applied(table: _Folding, schema: Any, held: Any, changes: Sequence[DeltaCha
     def key_of(row: Mapping[str, Any]) -> tuple[Any, ...]:
         return tuple(row[name] for name in table.key)
 
-    touched = {key_of(change.row) for change in changes}
+    def under(key: tuple[Any, ...], prefixes: Sequence[Mapping[str, str]]) -> bool:
+        return under_prefix(dict(zip(table.key, key, strict=True)), prefixes)
+
+    touched = {key_of(change.row) for change in changes if isinstance(change, DeltaChange)}
+    every_cleared = [prefix for change in changes if isinstance(change, _Cleared) for prefix in change.prefixes]
     held_keys = list(zip(*(held.column(name).to_pylist() for name in table.key), strict=True))
-    hit = [key in touched for key in held_keys]
+    hit = [key in touched or (bool(every_cleared) and under(key, every_cleared)) for key in held_keys]
     merged: dict[tuple[Any, ...], dict[str, Any]] = {
         key_of(row): row for row in held.filter(pa.array(hit, pa.bool_())).to_pylist()
     }
     for change in changes:
+        if isinstance(change, _Cleared):
+            merged = {key: row for key, row in merged.items() if not under(key, change.prefixes)}
+            continue
         key = key_of(change.row)
         after = apply_delta_row(merged.get(key), change)
         if after is None:

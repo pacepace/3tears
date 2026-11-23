@@ -38,6 +38,14 @@ the database computes (``now()``, a sequence) or a guarded write (one the databa
 the commit, so such a table is refused where it opts in
 (:class:`~threetears.core.collections.schema_backed.TableSchema`).
 
+**A delta can name the key slices it clears** (decision 23). A bulk file load (LSF's, the hub's ``load_files``)
+replaces every row under a key prefix, and a delete of gone runs (``delete_prefixes``) removes every row under one;
+L3 deletes those rows by prefix, and the writer cannot list them without reading L3. So the file names each prefix
+(:attr:`TableDelta.prefixes`, the file's :data:`_PREFIXES_METADATA`): the leading key columns and their values as
+text (:func:`_prefix_text`). A copy and the fold apply such a file as L3 took it: every row they hold under each prefix
+leaves first, then the file's rows and delete markers are applied. Same result as L3, no L3 read, no delete marker a
+row.
+
 **Saved before the commit, under a unique name, atomically.** The file is written under a temporary name in its
 table's directory, flushed to disk, then renamed to its own name, and the directory flushed: a reader that opens the
 name sees the whole file or nothing, never part of one. A crash before the commit leaves a file no committed record
@@ -56,12 +64,14 @@ from pathlib import Path
 from typing import Any, Final
 
 from threetears.core.backends.arrow_reply import _rail_arrow_table, _rail_value
+from threetears.core.collections.epoch_change import key_text
 from threetears.observe import get_logger
 
 try:
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
+    import pyarrow.parquet as pa_parquet
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file refuses without it, saying so
@@ -71,12 +81,17 @@ __all__ = [
     "DeltaChange",
     "DeltaFile",
     "DeltaFileRefusedError",
+    "DeltaReach",
+    "LoadDelta",
     "TableDelta",
     "apply_delta_row",
     "delta_files_root",
+    "load_delta_rows",
     "read_delta_file",
     "read_delta_file_keys",
+    "read_delta_file_reach",
     "sweep_orphan_delta_files",
+    "under_prefix",
     "write_delta_file",
 ]
 
@@ -101,12 +116,16 @@ _KEY_METADATA: Final = b"threetears.delta.key"
 #: the file's schema metadata: the distinct sets of columns its writes set, a JSON list of lists of column names,
 #: each in the table's column order; :data:`_WRITTEN_COLUMN` indexes it
 _WRITTEN_METADATA: Final = b"threetears.delta.written"
+#: the file's schema metadata: the key prefixes it clears before its rows apply, a JSON list of objects, each the
+#: leading key columns and their values as text (:func:`_prefix_text`); an empty list when it clears none
+_PREFIXES_METADATA: Final = b"threetears.delta.prefixes"
 #: the file's schema metadata: the format's version
 _FORMAT_METADATA: Final = b"threetears.delta.format"
 #: this format's version: rows and delete markers in one table, as :data:`_DELETED_COLUMN` tells them apart, each
-#: row naming the columns its write set (:data:`_WRITTEN_COLUMN`), zstd inside. Version 1 was plain IPC with no
-#: written columns, never released
-_DELTA_FORMAT: Final = b"2"
+#: row naming the columns its write set (:data:`_WRITTEN_COLUMN`), the key prefixes it clears first
+#: (:data:`_PREFIXES_METADATA`), zstd inside. Version 1 was plain IPC with no written columns, version 2 named no
+#: prefixes; neither was released
+_DELTA_FORMAT: Final = b"3"
 #: the codec inside the file's IPC buffers
 _COMPRESSION: Final = "zstd"
 
@@ -125,6 +144,32 @@ class DeltaFileRefusedError(RuntimeError):
 
     Raised before the commit: the transaction rolls back, and nothing of the write reaches L3.
     """
+
+
+def _prefix_text(prefix: Mapping[str, Any]) -> dict[str, str]:
+    """a key prefix as a delta file names it: each leading key column's value as a change record names a key's
+    (:func:`~threetears.core.collections.epoch_change.key_text`), so a key a copy holds as text matches it as is.
+
+    :param prefix: the leading key columns and their values
+    :ptype prefix: Mapping[str, Any]
+    :return: the prefix, its values as text
+    :rtype: dict[str, str]
+    """
+    return {column: key_text(value) for column, value in prefix.items()}
+
+
+def under_prefix(row: Mapping[str, Any], prefixes: Sequence[Mapping[str, str]]) -> bool:
+    """whether a row (or a key, keyed by column) lies under one of ``prefixes``: each of a prefix's columns holds its
+    value, compared as text (:func:`_prefix_text`).
+
+    :param row: the row's columns, its key columns among them; values typed or as text
+    :ptype row: Mapping[str, Any]
+    :param prefixes: the prefixes, as a delta file names them
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :return: whether it does
+    :rtype: bool
+    """
+    return any(all(key_text(row[column]) == value for column, value in prefix.items()) for prefix in prefixes)
 
 
 def delta_files_root() -> Path | None:
@@ -176,6 +221,8 @@ class TableDelta:
     :ivar defaults: each column whose database default is a fixed value, and that value as the rail answers it
         (``TableSchema.delta_file_defaults``): a row written without the column was inserted with it, so the file's
         row holds it rather than null
+    :ivar prefixes: the key prefixes the write cleared before its rows, as text (:func:`_prefix_text`), each once: a
+        key-prefix delete's, or a load's that replaces them (decision 23)
     """
 
     name: str
@@ -184,6 +231,31 @@ class TableDelta:
     parts: list[tuple[str, Any, Any]] = field(default_factory=list)
     entries: int = 0
     defaults: Mapping[str, Any] = field(default_factory=dict)
+    prefixes: list[dict[str, str]] = field(default_factory=list)
+
+    def clears(self, prefixes: Sequence[Mapping[str, Any]]) -> None:
+        """add key prefixes the write cleared: every row under each left L3 before the rows the delta holds went in.
+
+        A prefix cleared after rows were recorded would clear them too, which no file can say (its prefixes apply
+        before its rows), so it is refused.
+
+        :param prefixes: each prefix, the leading key columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when rows were recorded first, or a prefix names a column that does not lead the key
+        """
+        if self.parts and prefixes:
+            raise ValueError(
+                f"{self.name}: key prefixes cleared after rows were written in one delta; a delta file's prefixes "
+                f"clear before its rows, so clear them first"
+            )
+        for prefix in prefixes:
+            named = _prefix_text(prefix)
+            if not named or set(named) != set(self.key[: len(named)]):
+                raise ValueError(f"{self.name}: {dict(prefix)} is not a key prefix of {list(self.key)}")
+            if named not in self.prefixes:
+                self.prefixes.append(named)
 
     def rows(self, rows: Sequence[Mapping[str, Any]], written: Written) -> None:
         """add rows written, each keyed by column, and the columns their write set.
@@ -283,6 +355,7 @@ class TableDelta:
                 _WRITE_METADATA: write_id.encode(),
                 _KEY_METADATA: json.dumps(list(self.key)).encode(),
                 _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
+                _PREFIXES_METADATA: json.dumps(self.prefixes).encode(),
                 _FORMAT_METADATA: _DELTA_FORMAT,
             }
         )
@@ -310,12 +383,28 @@ class DeltaFile:
     :ivar write: the write's unique id
     :ivar key: the table's key columns, in key order
     :ivar changes: every row and delete marker, in the order written
+    :ivar prefixes: the key prefixes the write cleared before them, as text (:func:`_prefix_text`)
     """
 
     table: str
     write: str
     key: tuple[str, ...]
     changes: list[DeltaChange]
+    prefixes: tuple[dict[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaReach:
+    """what a delta file reaches, its other columns unread: the keys it names and the prefixes it clears.
+
+    :ivar key: the table's key columns, in key order
+    :ivar keys: each key's values as the file holds them, once each in the order first written
+    :ivar prefixes: the key prefixes it clears before its rows, as text
+    """
+
+    key: tuple[str, ...]
+    keys: list[tuple[Any, ...]]
+    prefixes: tuple[dict[str, str], ...]
 
 
 def read_delta_file(path: Path) -> DeltaFile:
@@ -339,6 +428,7 @@ def read_delta_file(path: Path) -> DeltaFile:
             f"{path}: a delta file of format {metadata.get(_FORMAT_METADATA)!r}, not this reader's {_DELTA_FORMAT!r}"
         )
     sets = [frozenset(named) for named in json.loads(metadata[_WRITTEN_METADATA])]
+    prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
     changes = []
     for row in table.to_pylist():
         deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
@@ -348,6 +438,7 @@ def read_delta_file(path: Path) -> DeltaFile:
         write=metadata[_WRITE_METADATA].decode(),
         key=tuple(json.loads(metadata[_KEY_METADATA])),
         changes=changes,
+        prefixes=prefixes,
     )
 
 
@@ -367,6 +458,25 @@ def read_delta_file_keys(path: Path) -> tuple[tuple[str, ...], list[tuple[Any, .
     :raises OSError: when it cannot be read
     :raises ImportError: without pyarrow
     """
+    reach = read_delta_file_reach(path)
+    return reach.key, reach.keys
+
+
+def read_delta_file_reach(path: Path) -> DeltaReach:
+    """the keys a delta file names (as :func:`read_delta_file_keys`) and the key prefixes it clears: its key columns
+    and its metadata alone are read. Blocking: run it on a thread.
+
+    Why: a commit that cleared key slices (a load that replaces them, a key-prefix delete) is applied by a follower from
+    its file: the prefixes tell it which of its own rows leave, the keys which rows the file brings (decision 23).
+
+    :param path: the file
+    :ptype path: Path
+    :return: its key columns, keys and prefixes
+    :rtype: DeltaReach
+    :raises ValueError: when the file is not of this format
+    :raises OSError: when it cannot be read
+    :raises ImportError: without pyarrow
+    """
     if not _PYARROW:
         raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
     with pa.memory_map(str(path)) as source:
@@ -378,11 +488,12 @@ def read_delta_file_keys(path: Path) -> tuple[tuple[str, ...], list[tuple[Any, .
                 f"{_DELTA_FORMAT!r}"
             )
         key = tuple(json.loads(metadata[_KEY_METADATA]))
+        prefixes = tuple(dict(prefix) for prefix in json.loads(metadata[_PREFIXES_METADATA]))
         source.seek(0)
         options = pa_ipc.IpcReadOptions(included_fields=[schema.get_field_index(column) for column in key])
         keys = pa_ipc.open_file(source, options=options).read_all()
     values = zip(*(keys.column(column).to_pylist() for column in key), strict=True)
-    return key, list(dict.fromkeys(values))
+    return DeltaReach(key=key, keys=list(dict.fromkeys(values)), prefixes=prefixes)
 
 
 def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
@@ -528,6 +639,61 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
         extra={"extra_data": {"table": delta.name, "file": name, "rows": table.num_rows}},
     )
     return name
+
+
+@dataclass(frozen=True, slots=True)
+class LoadDelta:
+    """the rows a load from files writes, as the caller read them from the same files, and the key prefixes it replaces:
+    what lets a table that opts in to delta files be loaded from files (decision 17).
+
+    The store copies the files itself (on the rail the hub's broker fetches them), so no row passes through the
+    writing process; the caller reads the same export files and hands their rows here, and the load saves them as the
+    delta file each request's commit names, before the request is sent.
+
+    :ivar rows: one entry a file, in the files' order: an Arrow table or record batch of the file's rows, or the path of
+        a parquet file pyarrow reads (the export file itself, fetched); the load's constants are added to each
+    :ivar replaces: the key prefixes the load replaces, each the leading key columns and their values: every row L3
+        holds under them is deleted first, in a transaction of its own whose delta file names them (decision 23)
+    """
+
+    rows: Sequence[Any]
+    replaces: Sequence[Mapping[str, Any]] = ()
+
+
+def load_delta_rows(given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> Any:
+    """one request's rows of a load, as one Arrow table: each file's rows the caller gave (:attr:`LoadDelta.rows`),
+    each with the load's constants as columns, checked against the rows the file holds. Blocking: run it on a thread.
+
+    :param given: the request's files' rows, one entry a file
+    :ptype given: Sequence[Any]
+    :param counts: the rows each file holds (``LoadFile.rows``), in the same order
+    :ptype counts: Sequence[int]
+    :param constants: column -> the value every row takes for it
+    :ptype constants: Mapping[str, Any]
+    :return: the rows
+    :rtype: pyarrow.Table
+    :raises ValueError: when a file's rows given are not as many as it holds: the file would not be what L3 loaded
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
+    tables = []
+    for index, (rows, count) in enumerate(zip(given, counts, strict=True)):
+        if isinstance(rows, pa.RecordBatch):
+            table = pa.Table.from_batches([rows])
+        elif isinstance(rows, pa.Table):
+            table = rows
+        else:
+            table = pa_parquet.read_table(os.fspath(rows))
+        if table.num_rows != count:
+            raise ValueError(
+                f"a load's file {index} holds {count} rows and the rows given for its delta file are {table.num_rows}"
+            )
+        for column, value in constants.items():
+            if column not in table.column_names:
+                table = table.append_column(column, pa.array([value] * table.num_rows))
+        tables.append(table)
+    return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
 
 def sweep_orphan_delta_files(

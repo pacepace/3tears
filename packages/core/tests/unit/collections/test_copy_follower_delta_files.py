@@ -14,7 +14,12 @@ statement reached L3" are both checked. The contract this pins:
   epoch of it in order, with no L3 read;
 - a commit too big to list its rows (keys unknown) whose record names its file is applied whole from the file, with
   no L3 statement and no read of the change notes; one whose record names none is named from the notes as before;
-- a commit of several records, each naming its one file, is applied once.
+- a commit of several records, each naming its one file, is applied once;
+- a load from files of an opted-in table (``load_files`` with its ``LoadDelta``) saves each request's file before the
+  request and names it in the request's record; a copy applies it with no L3 statement;
+- a load that replaces a key prefix clears the copy's rows under it first (a row no longer in the export leaves), and
+  a key-prefix delete (``delete_prefixes``) deletes the copy's rows under its prefixes, both with no L3 statement
+  (decision 23).
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Mapping
 from sqlalchemy import BigInteger, Column as SaColumn, DateTime, MetaData, String, Table
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
@@ -44,13 +51,23 @@ from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
+from threetears.core.backends.broker_generation import named_delta_files  # noqa: E402
+from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult  # noqa: E402
+from threetears.core.collections import WRITE_GENERATION  # noqa: E402
+from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
+from threetears.core.collections.delta_files import LoadDelta, read_delta_file  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
     STRING_TYPE,
     Column,
+    TableSchema,
+    collection_for_schema,
     rail_arrow_types,
 )
+from threetears.core.config import DefaultCoreConfig  # noqa: E402
+from threetears.core.entities.base import BaseEntity  # noqa: E402
+from threetears.core.testing.l1_tables import TEST_L1_TABLE as _TEST_L1_TABLE  # noqa: E402
 
 _TABLE = "results"
 _KEY = ("state", "geo_id")
@@ -138,6 +155,11 @@ class _L3:
     def delete(self, key: tuple[str, int]) -> None:
         self.db.execute(f"DELETE FROM {_TABLE} WHERE state = ? AND geo_id = ?", list(key))  # noqa: S608
 
+    def delete_state(self, state: str) -> int:
+        held = self.db.execute(f"SELECT count(*) FROM {_TABLE} WHERE state = ?", [state]).fetchone()  # noqa: S608
+        self.db.execute(f"DELETE FROM {_TABLE} WHERE state = ?", [state])  # noqa: S608
+        return int(held[0]) if held is not None else 0
+
     def held(self) -> list[tuple[Any, ...]]:
         return sorted(self.db.execute(f"SELECT {', '.join(_NAMES)} FROM {_TABLE}").fetchall())  # noqa: S608
 
@@ -173,6 +195,32 @@ class _Log:
         token = f"inc:{self.count}"
         self.records[token] = EpochChange(
             table=_TABLE, token=token, keys_unknown=True, noted_between=(_LATER, _LATER), delta_file=delta_file
+        )
+        return token
+
+    async def advance(self, table_name: str) -> str:
+        self.count += 1
+        return f"inc:{self.count}"
+
+    async def advance_with_change(
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        delta_file: str | None = None,
+    ) -> str:
+        """the writer's own advance (a load, a key-prefix delete), recorded as its broker would: its reach and its file."""
+        token = await self.advance(table_name)
+        self.records[token] = EpochChange(
+            table=table_name,
+            token=token,
+            whole_table=rows is None and not keys_unknown,
+            keys_unknown=keys_unknown,
+            rows=list(rows or []),
+            prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
+            delta_file=delta_file,
         )
         return token
 
@@ -531,3 +579,194 @@ async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from
     assert l3.statements == 1
     assert _fallbacks("no_epoch") - before == 2
     assert follower.status().behind == {}
+
+
+# --- the writer's side: a load from files and a key-prefix delete of the opted-in table -------------------------------
+
+_WRITER_SCHEMA = TableSchema(
+    name=_TABLE,
+    primary_key=_KEY,
+    columns=list(_COLUMNS),
+    l1_eviction=_TEST_L1_TABLE,
+    delta_files=True,
+)
+
+
+class _Result(BaseEntity):
+    primary_key_field = "geo_id"
+
+
+class _Results(collection_for_schema(_WRITER_SCHEMA, entity_class=_Result)):  # type: ignore[misc]
+    write_generation = WRITE_GENERATION
+
+
+class _Store(DurableStore):
+    """L3 as the writer reaches it: a load from files (the hub's broker copies each file's rows itself) and a key-prefix
+    delete on a caller's transaction, both into the DuckDB the copy's keyed reads would read. It notes, at each load
+    and each commit, which delta files the volume already held."""
+
+    def __init__(self, l3: _L3, volume: Path) -> None:
+        self.l3 = l3
+        self.volume = volume
+        #: each file's rows, by url, as the export wrote them (no constant column)
+        self.contents: dict[str, list[dict[str, Any]]] = {}
+        #: per load request, the file it named and whether the volume held it when the request was sent
+        self.loads: list[tuple[str | None, bool]] = []
+        #: per commit of a caller's transaction, the delta files the volume held as it committed
+        self.commits: list[set[str]] = []
+
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        raise AssertionError("the writer reads no row")
+
+    async def upsert(self, table: str, row: Any, **kwargs: Any) -> int:
+        raise AssertionError("the writer upserts no row here")
+
+    async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
+        raise AssertionError("the writer deletes no row by key here")
+
+    async def scan(self, table: str, filters: Any = None) -> list[dict[str, Any]]:
+        raise AssertionError("the writer scans nothing")
+
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+        key_prefixes: Sequence[Mapping[str, Any]] | None = None,
+    ) -> LoadResult:
+        named = named_delta_files().get(table)
+        self.loads.append((named, named is not None and (self.volume / named).is_file()))
+        loaded = []
+        for index, file in enumerate(files):
+            self.l3.insert([{**row, **constants} for row in self.contents[file.url]])
+            loaded.append(FileLoad(index=index, rows_loaded=file.rows))
+        return LoadResult(row_count=sum(file.rows for file in files), files=tuple(loaded))
+
+    async def delete_prefixes(self, table: str, prefixes: Sequence[Mapping[str, Any]], *, conn: Any) -> int:
+        return sum(self.l3.delete_state(str(prefix["state"])) for prefix in prefixes)
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        yield
+        self.commits.append({str(path.relative_to(self.volume)) for path in self.volume.rglob("*.arrow")})
+
+    def transaction(self, **options: Any) -> Any:
+        return self._transaction()
+
+    @asynccontextmanager
+    async def _acquired(self) -> AsyncIterator[Any]:
+        yield self
+
+    def acquire(self) -> Any:
+        return self._acquired()
+
+
+def _writer(l3: _L3, log: _Log, volume: Path) -> tuple[_Results, _Store]:
+    """the writing pod: its own registry, advancing through the epoch log the copy reads."""
+    registry = CollectionRegistry()
+    registry.set_generation_source(log)
+    results = _Results(registry, DefaultCoreConfig(), None)
+    store = _Store(l3, volume)
+    results.l3_pool = store
+    return results, store
+
+
+def _export(store: _Store, url: str, rows: Sequence[dict[str, Any]]) -> tuple[LoadFile, Any]:
+    """one export file of a state's rows (no state column: the load's constant), and the rows the pod read from it."""
+    exported = [{name: row[name] for name in _NAMES if name != "state"} for row in rows]
+    store.contents[url] = exported
+    return LoadFile(url=url, rows=len(exported)), pa.Table.from_pylist(exported)
+
+
+async def test_a_load_from_files_saves_its_file_before_the_load_and_the_copy_applies_it_with_no_l3_statement(
+    _volume: Path,
+) -> None:
+    """Flips if a load of an opted-in table sends a request before that request's delta file is on the volume, names no
+    file in its record, or a copy reads the load's rows back from L3 (decisions 11 and 17). Two files in two requests:
+    each request's record names the file of its own rows."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    results, store = _writer(l3, log, _volume)
+    first, first_rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    second, second_rows = _export(
+        store, "https://bucket/va-1.parquet", [_row("VA", 101, 2, "new", _LATER), _row("VA", 102, 3, None, _LATER)]
+    )
+    loaded = await results.load_files(
+        [first, second],
+        columns=[name for name in _NAMES if name != "state"],
+        constants={"state": "VA"},
+        connections=2,
+        delta=LoadDelta(rows=[first_rows, second_rows]),
+    )
+    assert loaded == 3
+    assert len(store.loads) == 2 and all(saved for _, saved in store.loads), "each file saved before its request"
+    named = {name for name, _ in store.loads}
+    recorded = {record.delta_file for record in list(log.records.values())[-2:]}
+    assert recorded == named and None not in named
+    assert sorted(len(read_delta_file(_volume / str(name)).changes) for name in named) == [1, 2]
+    lock.commit("state:VA")
+
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert l3.statements == 0
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_load_that_replaces_a_prefix_clears_the_copys_rows_under_it_with_no_l3_statement(
+    _volume: Path,
+) -> None:
+    """Flips if a row no longer in the export stays in the copy after a load that replaces its prefix, or the copy
+    reads L3 for it (decision 23): L3 deleted the prefix's rows before the load, so the copy's must go too, cleared
+    from the delete's file; a row the export holds again is the export's."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    results, store = _writer(l3, log, _volume)
+    file, rows = _export(
+        store, "https://bucket/va.parquet", [_row("VA", 1, 70, "again", _LATER), _row("VA", 9, 90, "new", _LATER)]
+    )
+    await results.load_files(
+        [file],
+        columns=[name for name in _NAMES if name != "state"],
+        constants={"state": "VA"},
+        delta=LoadDelta(rows=[rows], replaces=[{"state": "VA"}]),
+    )
+    assert sorted(row[:2] for row in l3.held() if row[0] == "VA") == [("VA", 1), ("VA", 9)]
+    (delete_files,) = store.commits
+    assert delete_files, "the delete's file was on the volume before its commit"
+    lock.commit("state:VA")
+
+    assert await follower.catch_up()
+
+    assert sorted(row[:2] for row in _copy(backend) if row[0] == "VA") == [("VA", 1), ("VA", 9)]
+    assert _same(backend, l3)
+    assert l3.statements == 0
+
+
+async def test_a_key_prefix_delete_deletes_the_copys_rows_under_it_with_no_l3_statement(_volume: Path) -> None:
+    """Flips if ``delete_prefixes`` of an opted-in table is refused, commits before its file is saved, or leaves the
+    copy holding the prefix's rows, or reads L3 to find them (decision 23): the file names the prefix and no row."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    results, store = _writer(l3, log, _volume)
+    async with store.acquire() as conn, CallerTransaction(conn) as transaction:
+        await results.delete_prefixes([{"state": "IL"}], conn=conn)
+    (name,) = transaction.delta_files.values()
+    assert store.commits == [{name}], "the file was saved before the commit"
+    deleted = read_delta_file(_volume / name)
+    assert (deleted.changes, deleted.prefixes) == ([], ({"state": "IL"},))
+    assert list(log.records.values())[-1].delta_file == name
+    lock.commit("state:IL")
+
+    assert await follower.catch_up()
+
+    assert [row for row in _copy(backend) if row[0] == "IL"] == []
+    assert _same(backend, l3)
+    assert l3.statements == 0

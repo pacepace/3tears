@@ -15,7 +15,12 @@ from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, 
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
 from threetears.core.keyed import WholeReads
-from threetears.core.collections.delta_files import delta_files_root, read_delta_file_keys
+from threetears.core.collections.delta_files import (
+    DeltaReach,
+    delta_files_root,
+    read_delta_file_keys,
+    read_delta_file_reach,
+)
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
@@ -412,6 +417,10 @@ class DerivedCacheRegistration:
         first start. It is given the reset's generation token when the record named it, else None (a reset made in
         this process is told before its advance is written): a copy that loads the table from a full on the
         delta-files volume takes only a full at or past that token. ``None`` drops the table
+    :ivar on_file_prefixes: called, in place of :attr:`on_partition`, when a load's or a clear's record names its
+        delta file (a table that opts in): the key prefixes the file clears (none for a load that replaced none) and
+        the epoch, before each key the file names is told as a row message stamped with the epoch. A copy clears its
+        own rows under them and applies the file's rows, reading no L3 (decision 23). ``None`` takes ``on_partition``
     """
 
     on_row: Callable[[CacheInvalidationMessage], None]
@@ -420,6 +429,7 @@ class DerivedCacheRegistration:
     on_first_sight: Callable[[], None] | None = None
     on_partition: Callable[[Mapping[str, str]], None] | None = None
     on_table_reset: Callable[[str | None], None] | None = None
+    on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1194,6 +1204,8 @@ class CollectionRegistry:
                 self.drop_table(
                     change.table, reason=f"epoch {change.token} reset the table", why="reset", token=change.token
                 )
+            elif change.prefixes and change.delta_file is not None and await self._apply_file_prefixes(change):
+                pass
             elif change.prefixes:
                 self.drop_partitions(
                     change.table, change.prefixes, reason=f"epoch {change.token} loaded or cleared key prefixes"
@@ -1217,6 +1229,81 @@ class CollectionRegistry:
                     columns=dict(row.columns) if row.columns is not None else None,
                 )
             )
+
+    async def _apply_file_prefixes(self, change: EpochChange) -> bool:
+        """apply a load's or a clear's epoch from the delta file its record names: the table's own caches drop it as
+        for any load; a derived cache that takes files (``on_file_prefixes``) is told the prefixes the file clears and
+        the epoch, and every key the file names is applied as its row message would be, stamped with the epoch. A
+        derived cache that takes none is told the record's prefixes, or drops the table, as before.
+
+        Why: a copy of a table that opts in applies the change from the file, clearing its own rows under each prefix
+        the file names and applying the file's rows, so no pod reads the load's rows back from L3
+        (``design-pod-delta-files.md``, decisions 17 and 23).
+
+        :param change: a whole-table record naming its key prefixes and its delta file
+        :ptype change: EpochChange
+        :return: ``True`` once applied; ``False`` when the file cannot be had (no volume mounted, or the volume lost
+            it), for the prefixes to be read again as before
+        :rtype: bool
+        """
+        assert change.delta_file is not None and change.prefixes  # noqa: S101 -- the caller's condition
+        root = delta_files_root()
+        try:
+            if root is None:
+                raise FileNotFoundError("no delta files' directory is mounted")
+            reach: DeltaReach = await asyncio.to_thread(read_delta_file_reach, root / change.delta_file)
+        except FileNotFoundError as exc:
+            # NOSILENT: a lost or unmounted volume; the record's prefixes are read again, as before delta files
+            log.warning(
+                "a load's or a clear's delta file cannot be had: its key prefixes are read again",
+                extra={
+                    "extra_data": {
+                        "table": change.table,
+                        "epoch": change.token,
+                        "file": change.delta_file,
+                        "error": str(exc),
+                    }
+                },
+            )
+            return False
+        self.drop_local_scans(change.table)
+        collection = self._collections.get(change.table)
+        if collection is not None:
+            collection.drop_cached_table()
+        for registration in tuple(self._derived_caches.get(change.table, ())):
+            if registration.on_file_prefixes is not None:
+                if reach.prefixes:
+                    registration.on_file_prefixes([dict(prefix) for prefix in reach.prefixes], change.token)
+            elif registration.on_partition is not None:
+                for prefix in change.prefixes:
+                    registration.on_partition(dict(prefix))
+            else:
+                registration.on_table_dropped()
+        for index, values in enumerate(reach.keys):
+            if index and not index % _NOTED_ROWS_PER_YIELD:
+                # a large load yields between runs of its keys, so the loop answers everything else between
+                await asyncio.sleep(0)
+            await self._apply_row_message(
+                CacheInvalidationMessage(
+                    table=change.table,
+                    ids=[key_text(value) for value in values],
+                    generation=change.token,
+                    bump_rows=len(reach.keys),
+                )
+            )
+        log.info(
+            "a load's or a clear's epoch applied from its delta file",
+            extra={
+                "extra_data": {
+                    "table": change.table,
+                    "epoch": change.token,
+                    "file": change.delta_file,
+                    "cleared": [dict(prefix) for prefix in reach.prefixes[:20]],
+                    "keys": len(reach.keys),
+                }
+            },
+        )
+        return True
 
     async def _apply_file_keys(self, change: EpochChange) -> bool:
         """apply a keys-unknown epoch's rows as its delta file names them, each as its row message would be, stamped
@@ -1604,6 +1691,7 @@ class CollectionRegistry:
         on_first_sight: Callable[[], None] | None = None,
         on_partition: Callable[[Mapping[str, str]], None] | None = None,
         on_table_reset: Callable[[str | None], None] | None = None,
+        on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None,
     ) -> Callable[[], None]:
         """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
 
@@ -1644,6 +1732,9 @@ class CollectionRegistry:
             reads it again as on a first start, given the reset's generation token when known (else None); ``None``
             drops it all
         :ptype on_table_reset: Callable[[str | None], None] | None
+        :param on_file_prefixes: told, in place of ``on_partition``, the key prefixes a load's or a clear's delta file
+            clears and the epoch (:class:`DerivedCacheRegistration`); ``None`` takes ``on_partition``
+        :ptype on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None
         :return: a call that removes the registration
         :rtype: Callable[[], None]
         """
@@ -1654,6 +1745,7 @@ class CollectionRegistry:
             on_first_sight=on_first_sight,
             on_partition=on_partition,
             on_table_reset=on_table_reset,
+            on_file_prefixes=on_file_prefixes,
         )
         registrations = self._derived_caches.setdefault(table_name, [])
         registrations.append(registration)

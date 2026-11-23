@@ -25,10 +25,11 @@ way the transaction ended, for the reason the eviction runs either way.
 On a table that opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`),
 the end is also where the commit's delta file is saved, BEFORE the commit (:mod:`~threetears.core.collections.delta_files`):
 each write of the table records what it wrote here beside its enrollment (:meth:`record_rows`, :meth:`record_arrow`,
-:meth:`record_deletes`), and a commit is refused, the transaction rolled back, unless every key the transaction
-enrolled for the table is in the file and the file is saved. That is the enforcement every writer of the table goes
-through: a write that enrolls a key it did not record, a key-prefix delete (the format names keys, never prefixes),
-or a pod with no delta files directory configured, all refuse the commit rather than make a version no file holds.
+:meth:`record_deletes`, and a key-prefix delete its prefixes, :meth:`record_prefixes`), and a commit is refused, the
+transaction rolled back, unless every key and every key prefix the transaction enrolled for the table is in the file
+and the file is saved. That is the enforcement every writer of the table goes through: a write that enrolls a key or a
+prefix it did not record, or a pod with no delta files directory configured, all refuse the commit rather than make a
+version no file holds.
 The names saved are :attr:`delta_files`, for the commit's epoch record; once the commit has landed,
 :attr:`committed_generations` names the generation token it wrote for each table, which the writer folds the files by
 (:meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`).
@@ -53,6 +54,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import repeat
 from contextvars import ContextVar, Token
+from pathlib import Path
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -77,7 +79,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.core.collections.base import BaseCollection
 
-__all__ = ["CallerTransaction", "SharedAdvance", "shared_advance_for"]
+__all__ = ["CallerTransaction", "SharedAdvance", "save_delta_files", "shared_advance_for"]
 
 log = get_logger(__name__)
 
@@ -400,6 +402,21 @@ class CallerTransaction:
         if collection.writes_delta_files:
             self._delta_of(collection).deletes(keys)
 
+    def record_prefixes(self, collection: BaseCollection[Any], prefixes: Sequence[Mapping[str, Any]]) -> None:
+        """record key prefixes ``collection`` deleted whole in this transaction, as its table's delta file names them
+        (decision 23: a copy and the fold clear their own rows under each); nothing for a table that does not opt in.
+        Every prefix the delete enrolled (:meth:`enroll_prefixes`).
+
+        :param collection: the collection that deleted them
+        :ptype collection: BaseCollection
+        :param prefixes: each prefix, the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        if collection.writes_delta_files:
+            self._delta_of(collection).clears(prefixes)
+
     @staticmethod
     def enclosing(conn: Any) -> CallerTransaction | None:
         """the outermost :class:`CallerTransaction` open on ``conn`` in this context, or ``None``.
@@ -699,8 +716,8 @@ class CallerTransaction:
 
         :return: table -> its file's name under the delta files' directory; empty when no table written opts in
         :rtype: dict[str, str]
-        :raises DeltaFileRefusedError: when a table that opts in cannot have its file: a key enrolled that no write
-            recorded, a key-prefix delete, or no delta files directory configured
+        :raises DeltaFileRefusedError: when a table that opts in cannot have its file: a key or a key prefix enrolled
+            that no write recorded, or no delta files directory configured
         :raises OSError: when a file cannot be written
         """
         enrolled, reaches, deltas = self._enrolled, self._reaches, dict(self._deltas)
@@ -711,16 +728,7 @@ class CallerTransaction:
         else:
             # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them
             owed = await asyncio.to_thread(_owed_deltas, enrolled, reaches, deltas)
-        if not owed:
-            return {}
-        root = delta_files_root()
-        if root is None:
-            raise DeltaFileRefusedError(
-                f"{sorted(owed)}: the table opts in to delta files and no delta files directory is configured "
-                f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
-            )
-        write_id = uuid.uuid4().hex
-        return await asyncio.to_thread(_save_all, root, owed, write_id)
+        return await save_delta_files(owed)
 
     async def _settle(self, *, committed: bool) -> GenerationUnavailableError | None:
         """evict every key a write joined to this transaction touched, from L1 and L2, and broadcast it.
@@ -816,11 +824,18 @@ def _owed_deltas(
     :rtype: dict[str, TableDelta]
     :raises DeltaFileRefusedError: when a table that opts in is not wholly recorded
     """
-    for collection, _ in reaches:
+    # counted, as keys are: an enrolled prefix is its values as text (str), a recorded one as a key names them
+    # (prefix_text), and the two spell a time differently; each holds a prefix once
+    reached: dict[str, int] = {}
+    for collection, prefixes in reaches:
         if collection.writes_delta_files:
+            reached[collection.table_name] = reached.get(collection.table_name, 0) + len(prefixes)
+    for table, count in reached.items():
+        recorded = len(deltas[table].prefixes) if table in deltas else 0
+        if recorded != count:
             raise DeltaFileRefusedError(
-                f"{collection.table_name}: a key-prefix delete of a table that opts in to delta files names no keys a "
-                f"delta file can hold; delete its rows by key (delete_rows) instead"
+                f"{table}: the transaction deleted {count} key prefixes of a table that opts in to delta files and "
+                f"recorded {recorded} for its file (record_prefixes); refused rather than committed without them"
             )
     counts = Counter(collection.table_name for collection, _, _ in enrolled if collection.writes_delta_files)
     for table, count in counts.items():
@@ -830,25 +845,50 @@ def _owed_deltas(
                 f"{table}: the transaction wrote {count} keys of a table that opts in to delta files and recorded "
                 f"{recorded} for its file; a write that records none is refused rather than committed without them"
             )
-    unenrolled = sorted(set(deltas) - set(counts))
+    unenrolled = sorted(set(deltas) - set(counts) - set(reached))
     if unenrolled:
         raise DeltaFileRefusedError(
             f"{unenrolled}: rows were recorded for a delta file that no write enrolled, a write that would reach L3 "
             f"without settling its keys; it is refused"
         )
-    return {table: deltas[table] for table in counts}
+    return {table: deltas[table] for table in (*counts, *reached)}
 
 
-def _save_all(root: Any, owed: Mapping[str, TableDelta], write_id: str) -> dict[str, str]:
-    """save every owed delta file, one a table; blocking, for a thread.
+async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
+    """save each table's delta file before the commit that wrote it, one write id for them all, on a worker thread.
+
+    The one way a write saves its files: a caller's transaction (:class:`CallerTransaction`) and a load from files
+    (:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`) alike.
+
+    :param deltas: table -> what the write wrote to it
+    :ptype deltas: Mapping[str, TableDelta]
+    :return: table -> its file's name under the delta files' directory, as the commit's epoch record names it
+    :rtype: dict[str, str]
+    :raises DeltaFileRefusedError: when no delta files directory is configured
+    :raises OSError: when a file cannot be written
+    """
+    if not deltas:
+        return {}
+    root = delta_files_root()
+    if root is None:
+        raise DeltaFileRefusedError(
+            f"{sorted(deltas)}: the table opts in to delta files and no delta files directory is configured "
+            f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
+        )
+    write_id = uuid.uuid4().hex
+    return await asyncio.to_thread(_save_all, root, dict(deltas), write_id)
+
+
+def _save_all(root: Path, deltas: Mapping[str, TableDelta], write_id: str) -> dict[str, str]:
+    """save every delta file, one a table; blocking, for a thread.
 
     :param root: the delta files' directory
-    :ptype root: pathlib.Path
-    :param owed: table -> its delta
-    :ptype owed: Mapping[str, TableDelta]
+    :ptype root: Path
+    :param deltas: table -> its delta
+    :ptype deltas: Mapping[str, TableDelta]
     :param write_id: the write's unique id, every file's name
     :ptype write_id: str
     :return: table -> its file's name
     :rtype: dict[str, str]
     """
-    return {table: write_delta_file(root, delta, write_id) for table, delta in owed.items()}
+    return {table: write_delta_file(root, delta, write_id) for table, delta in deltas.items()}

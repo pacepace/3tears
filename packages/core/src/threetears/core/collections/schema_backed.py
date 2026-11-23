@@ -104,10 +104,16 @@ from threetears.core.eviction import Declared
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
-from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta
+from threetears.core.collections.caller_transaction import CallerTransaction, save_delta_files
+from threetears.core.backends.broker_generation import named_delta_files, naming_delta_files
+from threetears.core.collections.delta_files import (
+    DeltaFileRefusedError,
+    LoadDelta,
+    TableDelta,
+    load_delta_rows,
+)
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import RESET_REASON, WholeReach
+from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, WholeReach
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.declared import whole_read
@@ -3353,6 +3359,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         connections: int = 1,
         prefixes: Sequence[Mapping[str, Any]] | None = None,
         reload: bool = False,
+        delta: LoadDelta | None = None,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -3415,6 +3422,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype prefixes: Sequence[Mapping[str, Any]] | None
         :param reload: whether this load refills a table emptied (:meth:`reset`) or new: only such a load is analysed
         :ptype reload: bool
+        :param delta: the rows the files hold, as the caller read them from the same files, and the key prefixes the
+            load replaces: what a table that opts in to delta files is loaded with (see **A table that opts in**);
+            None for any other table
+        :ptype delta: LoadDelta | None
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
@@ -3422,10 +3433,21 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             under one, ``connections`` is under one, or one file alone needs a longer wait than the cap
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
-        :raises DeltaFileRefusedError: when the table opts in to delta files: the store copies the files itself, so
-            no row passes through this process to be saved in one
+        :raises DeltaFileRefusedError: when the table opts in to delta files and no ``delta`` is given: the store
+            copies the files itself, so no row passes through this process to be saved in one
         """
-        self._refuse_unfiled("load_files")
+        if delta is None:
+            self._refuse_unfiled("load_files")
+        elif not self.writes_delta_files:
+            raise ValueError(
+                f"{type(self).__name__}.load_files: {self.table_name} does not opt in to delta files; a load of it "
+                f"takes no delta"
+            )
+        elif len(delta.rows) != len(files):
+            raise ValueError(
+                f"{type(self).__name__}.load_files: a load's delta gives the rows of each of its files, one entry a "
+                f"file: {len(delta.rows)} given for {len(files)} files"
+            )
         store = self._durable_store()
         if store is None:
             raise ValueError(f"{type(self).__name__}.load_files: {self.table_name} has no durable store to load")
@@ -3436,6 +3458,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.load_files: {self.table_name} defers its L3 writes, and a buffered row "
                 f"would land among the loaded ones"
             )
+        if delta is not None and delta.replaces:
+            await self._delete_replaced(store, delta.replaces)
         if not files:
             return 0
         reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
@@ -3449,18 +3473,32 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(f"a load runs over at least one connection, not {connections} connections")
         written = 0
         slots = asyncio.Semaphore(connections)
+        # each file's rows the caller gave, by the file: a request's delta file holds its files' rows alone
+        given = {id(file): rows for file, rows in zip(files, delta.rows, strict=True)} if delta is not None else {}
 
         async def one(request: Sequence[LoadFile]) -> int:
             async with slots:
-                result = await store.load_files(
-                    self.table_name,
-                    request,
-                    columns=columns,
-                    constants=dict(constants or {}),
-                    rows_per_transaction=per_transaction,
-                    timeout_ms=bound,
-                    key_prefixes=[dict(prefix) for prefix in reach.prefixes],
-                )
+                named: dict[str, str] = {}
+                if delta is not None:
+                    named = await self._save_load_delta(request, given, constants or {})
+                # the request names its file: the broker's epoch record of it does, and so does this process's own
+                # advance on a direct pool (decision 11: saved before the request's commits)
+                with naming_delta_files(named):
+                    result = await store.load_files(
+                        self.table_name,
+                        request,
+                        columns=columns,
+                        constants=dict(constants or {}),
+                        rows_per_transaction=per_transaction,
+                        timeout_ms=bound,
+                        key_prefixes=[dict(prefix) for prefix in reach.prefixes],
+                    )
+                    if delta is not None:
+                        # one epoch a request, each naming its own file: a file holding a later request's rows would
+                        # hand a copy rows L3 does not hold yet, or never will once that request fails
+                        await self._drop_and_advance(
+                            "loaded from files", reach=reach, rows=result.row_count, requests=1
+                        )
             return result.row_count
 
         try:
@@ -3471,7 +3509,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 written = sum(await _all_or_first_failure([one(request) for request in requests]))
         except (Exception, asyncio.CancelledError) as exc:
             # the load commits as it goes: the requests and transactions before a failure stay
-            # committed, and a reply lost or timed out may follow a load the broker finished
+            # committed, and a reply lost or timed out may follow a load the broker finished. Named with no delta
+            # file: the failed request's file may hold rows L3 never took, so a copy reads its prefixes instead
             await self._drop_and_advance_after_failure("load from files failed", exc, reach=reach)
             raise
         if reload and written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
@@ -3493,13 +3532,62 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 contain(
                     exc, log=log, what="could not analyse a table after loading it", extra={"table": self.table_name}
                 )
-        await self._drop_and_advance(
-            "loaded from files",
-            reach=reach,
-            rows=written,
-            requests=len(requests),
-        )
+        if delta is None:
+            await self._drop_and_advance(
+                "loaded from files",
+                reach=reach,
+                rows=written,
+                requests=len(requests),
+            )
         return written
+
+    async def _delete_replaced(self, store: Any, replaces: Sequence[Mapping[str, Any]]) -> None:
+        """delete every row of the key prefixes a load replaces, in a transaction of its own committed before the
+        load: a load is insert-only, so the rows it replaces leave L3 first. Its delta file names the prefixes
+        (:meth:`delete_prefixes`), so a copy and the fold clear their own rows under them, with no L3 read
+        (decision 23).
+
+        :param store: the collection's durable store
+        :ptype store: Any
+        :param replaces: the prefixes, each the leading key columns and their values
+        :ptype replaces: Sequence[Mapping[str, Any]]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the store opens no connection of its own, or as :meth:`delete_prefixes`
+        """
+        acquire = getattr(store, "acquire", None)
+        if acquire is None:
+            raise ValueError(
+                f"{type(self).__name__}.load_files: the store of {self.table_name} opens no connection to delete the "
+                f"prefixes the load replaces on"
+            )
+        async with acquire() as conn, CallerTransaction(conn):
+            await self.delete_prefixes(replaces, conn=conn)
+
+    async def _save_load_delta(
+        self, request: Sequence[LoadFile], given: Mapping[int, Any], constants: Mapping[str, Any]
+    ) -> dict[str, str]:
+        """save one request's delta file before the request is sent: its files' rows the caller gave, with the load's
+        constants, written as a copy writes them (inserted, never merged onto a row held).
+
+        :param request: the request's files
+        :ptype request: Sequence[LoadFile]
+        :param given: each file's rows the caller gave, by the file's id
+        :ptype given: Mapping[int, Any]
+        :param constants: the load's constants
+        :ptype constants: Mapping[str, Any]
+        :return: the table -> its file's name
+        :rtype: dict[str, str]
+        :raises ValueError: when a file's rows given are not as many as it holds
+        :raises DeltaFileRefusedError: when no delta files directory is configured
+        """
+        rows = await asyncio.to_thread(
+            load_delta_rows, [given[id(file)] for file in request], [file.rows for file in request], constants
+        )
+        table_delta = self.table_delta()
+        # a COPY inserts and sets no column of a row already held (it fails the load instead): none written
+        table_delta.arrow(rows, [])
+        return await save_delta_files({self.table_name: table_delta})
 
     def _key_columns(self) -> tuple[str, ...]:
         key = self.schema.primary_key
@@ -3606,6 +3694,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the generation had to advance and could not
         """
         registry = self.registry
+        delta_file = named_delta_files().get(self.table_name)
+        if registry is not None and reach is not None and reach.prefixes and delta_file is not None:
+            await self._advance_then_apply_file(registry, reason, reach, delta_file, **detail)
+            return
         if registry is not None and reach is not None and reach.prefixes:
             registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
         elif registry is not None:
@@ -3617,6 +3709,59 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         log.info(
             "table changed with no row write mark; caches dropped and generation advanced",
             extra={"extra_data": {"table": self.table_name, "change": reason, "generation": bump.token, **detail}},
+        )
+        if bump.failure is not None:
+            raise bump.failure
+
+    async def _advance_then_apply_file(
+        self, registry: Any, reason: str, reach: WholeReach, delta_file: str, **detail: Any
+    ) -> None:
+        """:meth:`_drop_and_advance` for a change whose delta file was saved (a load's request, a key-prefix delete of
+        a table that opts in): the generation advances first, then this process applies the epoch as a follower hears
+        it (:meth:`CollectionRegistry.apply_epoch_change`), so a copy here takes the change from the file, as every
+        other pod's does, never by reading the prefixes from L3. An advance that names no epoch (a collection that
+        keeps no write generation) drops the prefixes as before.
+
+        :param registry: the collection's registry
+        :ptype registry: CollectionRegistry
+        :param reason: what changed the table, for the drop and the log
+        :ptype reason: str
+        :param reach: the change's key prefixes
+        :ptype reach: WholeReach
+        :param delta_file: the change's delta file, as its record names it
+        :ptype delta_file: str
+        :param detail: more to log
+        :ptype detail: Any
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the generation had to advance and could not
+        """
+        bump = await self._bump_after_commit(None, reach=reach)
+        if bump.token is not None:
+            await registry.apply_epoch_change(
+                EpochChange(
+                    table=self.table_name,
+                    token=bump.token,
+                    whole_table=True,
+                    prefixes=[dict(prefix) for prefix in reach.prefixes],
+                    delta_file=delta_file,
+                )
+            )
+        else:
+            registry.drop_partitions(self.table_name, reach.prefixes, reason=reason)
+        if registry.get_collection(self.table_name) is not self:
+            self.drop_cached_table()
+        log.info(
+            "table changed by key prefixes with its delta file; generation advanced, the file applied here",
+            extra={
+                "extra_data": {
+                    "table": self.table_name,
+                    "change": reason,
+                    "generation": bump.token,
+                    "file": delta_file,
+                    **detail,
+                }
+            },
         )
         if bump.failure is not None:
             raise bump.failure
@@ -3680,6 +3825,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         **One kind of write a table a transaction**: a transaction that deletes a table's prefixes writes no row of
         that table by key (:meth:`CallerTransaction.enroll_prefixes`); its new rows go in a transaction of their own.
 
+        **A table that opts in to delta files** (:attr:`TableSchema.delta_files`): the commit's delta file names the
+        prefixes and no rows (:meth:`CallerTransaction.record_prefixes`), saved before the commit and named in its
+        epoch record; a copy and the fold delete their own rows under each, with no L3 read (decision 23).
+
         :param prefixes: the key prefixes to delete, each the key's leading columns and their values
         :ptype prefixes: Sequence[Mapping[str, Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
@@ -3710,6 +3859,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         reach = self._load_reach({}, prefixes)
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll_prefixes(self, reach)
+        # a table that opts in to delta files: the commit's file names the prefixes, which a copy and the fold clear
+        # from their own rows (decision 23); no row is listed, so L3 is never read for them
+        transaction.record_prefixes(self, prefixes)
         deleted = await store.delete_prefixes(self.table_name, [dict(prefix) for prefix in prefixes], conn=conn)
         log.debug(
             "key-prefix delete written on the caller's transaction",

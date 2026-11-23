@@ -396,3 +396,31 @@ async def test_a_table_not_opted_in_still_reads_l3_whole_on_a_reset(_volume: Pat
     assert world.same(_PLAIN)
     assert world.l3.statements[_PLAIN] >= 1
     assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_cleared_prefix_heard_while_a_reset_table_waits_is_held_for_its_full(_volume: Path) -> None:
+    """Flips if a cleared prefix of an opted-in table (a slice delete's file, ``on_file_prefixes``) queued before a
+    reset survives it (its keys would be named in the table the reset replaced), or if one heard while the table waits
+    for its full is named against the old copy instead of held and put back once the full is reloaded."""
+    world = _World(_volume)
+    await world.started()
+    cleared = world.follower._on_file_prefixes(_RESET)  # noqa: SLF001 - the registry's callback, as it is told
+    cleared([{"state": "IL"}], "inc:1")
+    world.l3.reset(_RESET, _AFTER_RESET)
+    reset_at = world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL", "state:TX")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    assert world.follower._cleared[_RESET] == []  # noqa: SLF001 - the clear from before the reset is forgotten
+    cleared([{"state": "VA"}], "inc:9")
+    assert world.follower._cleared[_RESET] == []  # noqa: SLF001 - held, never named against the old copy
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, _AFTER_RESET, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), "inc:1"),
+        },
+    )
+    await world.reloaded(_RESET)
+    assert world.follower._cleared[_RESET] == [("inc:9", [{"state": "VA"}])]  # noqa: SLF001 - put back over the full
