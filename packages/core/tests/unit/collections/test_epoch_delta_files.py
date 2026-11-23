@@ -31,6 +31,7 @@ from threetears.core.collections.epoch_change import (
     ChangedRow,
     advance_recording,
     changed_row_runs,
+    check_delta_file,
     epoch_change_body,
     read_epoch_change_body,
 )
@@ -92,6 +93,31 @@ def test_a_name_that_is_not_a_delta_file_is_refused(name: str) -> None:
         read_epoch_change_body(
             json.dumps({"table": "results", "rows": [{"ids": ["a"]}], "delta_file": name}).encode(), "results", "i:1"
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        _FILE,
+        None,
+        "../results/x.arrow",
+        "/etc/x.arrow",
+        "results/x.parquet",
+        "results/a/x.arrow",
+        "results/" + "x" * 300,
+    ],
+)
+def test_the_public_check_accepts_and_refuses_the_names_the_record_does(name: str | None) -> None:
+    """Flips if the public delta file check (the one a broker calls on a name a pod sent) accepts a name a record
+    refuses, or refuses one a record stores."""
+    try:
+        epoch_change_body("results", [ChangedRow(ids=["a"])], delta_file=name)
+    except ValueError as record_refusal:
+        with pytest.raises(ValueError, match="delta file") as check_refusal:
+            check_delta_file(name)
+        assert str(check_refusal.value) == str(record_refusal)
+    else:
+        check_delta_file(name)
 
 
 def test_a_full_run_of_rows_still_fits_its_record_with_the_longest_name() -> None:
