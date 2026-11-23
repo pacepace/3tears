@@ -221,11 +221,13 @@ _RELABELS = counter(
 )
 
 
-#: keys of a table that opts in to delta files read from L3 by key instead of from their files, by table and why:
-#: ``key_not_in_file`` (the file of an epoch that named the key holds no change of it), ``record_missing`` (the log
-#: holds no record of the epoch the key was heard at), ``no_file_named`` (the record names no file: a writer before
-#: delta files, or a write before the table opted in) and ``no_epoch`` (the key was heard with no epoch that orders it:
-#: a change note's, a publisher's that names none). Every one is an L3 read the files were meant to save
+#: keys of a table that opts in to delta files read from L3 by key instead of from their files, by table and why.
+#: Only an older writer's records, mid-roll, reach here (decision 29: anything lost is waited for, never read):
+#: ``no_file_named`` (the record names no file: a writer before delta files, 3tears < 0.95.0, or a write before the
+#: table opted in) and ``no_epoch`` (the key was heard with no epoch that orders it: a row broadcast from a publisher
+#: before epoch-stamped broadcasts, the keys the change notes name for a keys-unknown record of such a writer, or
+#: epochs of two incarnations of the log, which the registry's ``replaced`` behind reason recovers). Every one is an L3
+#: read the files were meant to save, and stays at zero once every writer runs 0.95.0
 _DELTA_FILE_FALLBACKS = counter(
     "copy_follower_delta_file_fallback_keys_total",
     description="keys of a table that opts in to delta files read from L3 by key instead of from their files, by "
@@ -233,17 +235,14 @@ _DELTA_FILE_FALLBACKS = counter(
     label_names=("table", "why"),
 )
 
-#: the fallbacks that mean something is lost or wrong (a record, a row a file should hold): logged at WARNING.
-#: The others (an older writer mid-roll, a change note's keys) are expected and logged at INFO, counted alike
-_DELTA_FILE_LOST: Final = frozenset({"key_not_in_file", "record_missing"})
-
-#: why a table that opts in waits for an epoch's delta file instead of reading anything from L3 (decision 29)
-_FILE_WAIT_WHYS: Final = frozenset({"file_missing", "file_unreadable"})
 
 #: waits for a delta file, by table and why: ``file_missing`` (the record names a file the volume does not hold, or no
 #: volume is mounted) or ``file_unreadable`` (it holds one under the name that is not the table's delta file:
-#: truncated, garbage, another format, a damaged zstd buffer, another table's or write's). Each is a file the writer
-#: recreated, or must; the copy read nothing from L3 for it
+#: truncated, garbage, another format, a damaged zstd buffer, another table's or write's), ``key_not_in_file`` (it reads,
+#: and holds no change of a key its record named: read again only once the writer answered, which recreates it from
+#: the record) or ``record_missing`` (the log holds no record of the epoch, so no file can be named: the writer recovers
+#: the table, decision 28, and the copy waits for that full). Each is a file the writer recreated, or must; the copy
+#: read nothing from L3 for it (decision 29)
 _FILE_WAITS = counter(
     "copy_follower_delta_file_waits_total",
     description="times a copy follower's table began waiting for a missing or unreadable delta file, by table and why; "
@@ -333,6 +332,20 @@ def _text_keys(rows: Any, key: Sequence[str]) -> list[tuple[str, ...]]:
 
 #: keys a run of the loop's work names before it lets the loop run again (a pass's snapshot of each key's epochs)
 _KEYS_PER_TURN: Final = 2000
+
+
+def _no_record(table: str, epoch: str) -> str:
+    """what a wait for an epoch whose record the log lost is named by: no file can be (the record named it); the
+    writer, asked with it, finds no record and recovers the table (decision 28).
+
+    :param table: the table
+    :ptype table: str
+    :param epoch: the epoch
+    :ptype epoch: str
+    :return: the name
+    :rtype: str
+    """
+    return f"{table}/no record of epoch {epoch}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1708,7 +1721,8 @@ class CopyFollower:
             while self._file_waits.get(table) and self._status.phase is not FollowerPhase.STOPPED:
                 answered = False
                 for name, wait in list(self._file_waits.get(table, {}).items()):
-                    if wait.watch:
+                    if wait.watch and (wait.why != "key_not_in_file" or wait.answer in _ANSWERED):
+                        # a file that reads and lacks a key is read again only once the writer answered for it
                         reach = await self._look_for(table, wait)
                         if reach is not None:
                             await self._hear_file(table, name, wait, reach)
@@ -1717,10 +1731,11 @@ class CopyFollower:
                     if self._recreate is not None and wait.answer not in _ANSWERED:
                         wait.answer = await self._ask(table, wait)
                         answered = answered or (wait.watch and wait.answer in _ANSWERED)
-                        if wait.watch and wait.answer == "recovering" and self._fulls is not None:
+                        recovering = wait.watch or wait.why == "record_missing"
+                        if recovering and wait.answer == "recovering" and self._fulls is not None:
                             if table in self._fulls.tables:
                                 # the writer recovers the table (decision 28: a commit too big to list, its keys only in
-                                # the file): the file never comes back, the recovery's full does
+                                # the file, or a record the log lost): the file never comes, the recovery's full does
                                 wait.watch = False
                                 self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
                 self._say_file_waits(table)
@@ -2926,7 +2941,9 @@ class CopyFollower:
                 self._forget_tables_now([name])
                 del pending[name]
                 self._reading = None
-                self._wait_for_file(name, wait.file, wait.epoch, wait.why, reach="keys")
+                self._wait_for_file(
+                    name, wait.file, wait.epoch, wait.why, reach="keys", watch=wait.why != "record_missing"
+                )
                 continue
             if staged:
                 was = self._staged.get(name)
@@ -3227,8 +3244,9 @@ class CopyFollower:
         for epoch in plan.order:
             record = None if self._changes is None else await self._changes.change(table.name, epoch)
             if record is None:
-                whys[epoch] = "record_missing"
-            elif record.delta_file is None:
+                # never read from L3 (decision 29): no record names a file, so the writer recovers the table
+                raise _FileWaitError(table.name, _no_record(table.name, epoch), epoch, "record_missing")
+            if record.delta_file is None:
                 whys[epoch] = "no_file_named"
             else:
                 named[epoch] = record.delta_file
@@ -3300,8 +3318,9 @@ class CopyFollower:
                 held = None  # the file before is let go first: one file's Arrow held at a time
                 held = (name, self._file_of(table, epoch, name))
             # the record named the key at this epoch and its file holds no change of it, nor clears a prefix of it:
-            # never guessed
-            fell("key_not_in_file", rows.apply(held[1], positions), name)
+            # never guessed, and never read from L3 (decision 29): the writer is asked to recreate it from the record
+            if len(rows.apply(held[1], positions)):
+                raise _FileWaitError(table.name, name, epoch, "key_not_in_file")
             done[positions] = True
         held = None
         merged, at = rows.rows()
@@ -3433,10 +3452,7 @@ class CopyFollower:
                     "files": sorted(fell["files"])[:_FILES_NAMED],
                 }
             }
-            if why in _DELTA_FILE_LOST:
-                log.warning("copy follower read keys from L3 by key: their delta files could not be had", extra=extra)
-            else:
-                log.info("copy follower read keys from L3 by key: their epochs name no delta file", extra=extra)
+            log.info("copy follower read keys from L3 by key: an older writer's epochs name no delta file", extra=extra)
 
     async def _stage_partitions(self, partitions: dict[str, list[dict[str, str]]], held: frozenset[str]) -> None:
         """stage each partition's change beside the copy as keyed changes: the partition is replaced. The copy's own

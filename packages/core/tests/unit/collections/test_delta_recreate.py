@@ -641,6 +641,71 @@ async def test_the_writer_reads_only_the_changes_keys_by_key_and_recreates_once_
     assert written == ["lost"] and world.writer_l3.statements == 1
 
 
+async def test_a_file_lacking_a_key_its_record_names_is_recreated_and_the_copy_reads_no_l3(_volume: Path) -> None:
+    """Flips if a copy reads from L3 a key its epoch's record names and its file holds no change of (the old
+    ``key_not_in_file`` fallback: every copy at once, decision 29), or if the writer answers such a file ``present``
+    (it reads whole) so the copy never gets the key: the copy waits and asks, the writer recreates the file once from
+    the record, and the copy applies it, ending equal to L3 with no statement of its own."""
+    world = _world()
+    await _warmed(world)
+    world.db.insert(_RESULTS, [_row("VA", 1, 11), _row("VA", 2, 12)])
+    # the file holds VA 1 alone; the record names VA 1 and VA 2
+    name = _save(_volume, _RESULTS, "short", [_row("VA", 1, 11)])
+    world.log.commit(_RESULTS, [("VA", 1), ("VA", 2)], name)
+    world.lock.commit("state:VA")
+    recreated = _counted("delta_file_recreations_total", {"table": _RESULTS, "outcome": "recreated"})
+
+    async with serving_recreates(world.bus, _KEY_OF, world.recreator):
+        await world.follower.catch_up()
+        assert "key_not_in_file" in world.follower.status().waiting_for_file[_RESULTS]
+        await asyncio.wait_for(_until(lambda: not world.follower.status().waiting_for_file), timeout=5)
+        assert await world.follower.catch_up()
+
+    assert world.copy_l3.statements == 0, "the copy never reads a key its file lacks from L3"
+    assert _counted("delta_file_recreations_total", {"table": _RESULTS, "outcome": "recreated"}) - recreated == 1
+    assert world.writer_l3.statements == 1, "the writer read the record's keys by key, once"
+    assert _same(world, _RESULTS)
+    world.follower.stop()
+
+
+async def test_an_epoch_whose_record_the_log_lost_sends_the_table_to_the_recovery_and_the_copy_reads_no_l3(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy reads from L3 the keys of an epoch whose record the log no longer holds (the old
+    ``record_missing`` fallback, every copy at once), or if the writer, asked for it, fails rather than handing the
+    table to decision 28's recovery: no record names the file or the keys, so only the recovery's full can bring the
+    change; the copy waits for it, reading nothing."""
+    world = _world()
+    await _warmed(world)
+    world.db.insert(_RESULTS, [_row("VA", 1, 11)])
+    name = _save(_volume, _RESULTS, "kept", [_row("VA", 1, 11)])
+    epoch = world.log.commit(_RESULTS, [("VA", 1)], name)
+    world.lock.commit("state:VA")
+    # the registry hears the key at the epoch from its record; the log loses the record before the copy's pass reads it
+    record = world.log.records[(_RESULTS, epoch)]
+    real_change = world.log.change
+    asked: list[str] = []
+
+    async def lost_after_heard(table_name: str, token: str) -> EpochChange | None:
+        if token == epoch:
+            asked.append(token)
+            if len(asked) > 1:
+                return None
+        return await real_change(table_name, token)
+
+    monkeypatch.setattr(world.log, "change", lost_after_heard)
+
+    async with serving_recreates(world.bus, _KEY_OF, world.recreator):
+        await world.follower.catch_up()
+        await asyncio.wait_for(_until(lambda: bool(world.recovery.handed)), timeout=5)
+
+    assert record.delta_file == name
+    assert world.recovery.handed == [(_RESULTS, epoch, f"{_RESULTS}/no record of epoch {epoch}")]
+    assert (world.copy_l3.statements, world.writer_l3.statements) == (0, 0)
+    assert "record_missing" in world.follower.status().waiting_for_file[_RESULTS]
+    world.follower.stop()
+
+
 async def test_a_commit_too_big_to_list_whose_file_is_lost_goes_to_the_recovery_and_the_copy_reads_neither_l3_nor_notes(
     _volume: Path,
 ) -> None:

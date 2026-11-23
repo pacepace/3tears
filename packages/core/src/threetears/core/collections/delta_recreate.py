@@ -56,7 +56,8 @@ from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
     TableDelta,
     delta_files_root,
-    read_delta_file,
+    read_delta_table,
+    under_prefix,
     write_delta_file,
 )
 from threetears.core.collections.epoch_change import key_text
@@ -302,7 +303,9 @@ class DeltaRecreator:
             raise _RefusedError("no delta files' directory is mounted on the writer")
         record = await self._changes.change(table.name, request.epoch)
         if record is None:
-            raise LookupError(f"{table.name}: the epoch log holds no record of {request.epoch}")
+            # no record names the epoch's file, or its keys: a copy waiting on it is never read around (decision 29),
+            # so the table is recovered from L3 once and published as a full (decision 28), which the copies wait for
+            return await self._recover(table, request, "record_missing")
         if record.delta_file != request.file:
             # the file's name and keys come from the record alone: a request never names where the writer writes
             raise _RefusedError(
@@ -310,13 +313,16 @@ class DeltaRecreator:
             )
         path = root / request.file
         try:
-            await asyncio.to_thread(read_delta_file, path, table=table.name)
+            lacking = await asyncio.to_thread(_keys_lacking, path, table, record)
         except FileNotFoundError:
             why = "file_missing"  # NOSILENT: recreated below, logged at WARNING
         except DeltaFileUnreadableError as exc:
             why = f"file_unreadable: {exc}"
         else:
-            return _Outcome.PRESENT
+            if not lacking:
+                return _Outcome.PRESENT
+            # it reads, and holds no change of a key its record names: a copy cannot apply that key from it
+            why = f"key_not_in_file: {lacking} of the record's keys"
         if record.keys_unknown:
             return await self._recover(table, request, why)
         delta, keys = await self._delta_from_l3(table, record)
@@ -342,8 +348,8 @@ class DeltaRecreator:
 
     async def _recover(self, table: FollowedTable, request: _Request, why: str) -> _Outcome:
         log.warning(
-            "a commit too big to list lost its delta file: its keys were only in the file, so the table goes to the "
-            "recovery delta (decision 28), whose full the copies wait for",
+            "a commit too big to list lost its delta file (its keys were only in the file), or the log lost an epoch's "
+            "record: the table goes to the recovery delta (decision 28), whose full the copies wait for",
             extra={"extra_data": {"table": table.name, "epoch": request.epoch, "file": request.file, "why": why}},
         )
         if self._recovery is None:
@@ -410,6 +416,36 @@ class DeltaRecreator:
     @staticmethod
     def _typed_key(table: FollowedTable, key: Sequence[str]) -> tuple[Any, ...]:
         return tuple(typed_text(table.kind(column), text) for column, text in zip(table.key, key, strict=True))
+
+
+def _keys_lacking(path: Path, table: FollowedTable, record: EpochChange) -> int:
+    """how many of the keys a record names its file holds no change of, nor clears a prefix of: the file read whole and
+    validated as Arrow, its key columns as text. Blocking: run it on a thread.
+
+    Why: a copy that finds a key its record named missing from the file waits and asks (decision 29); a file that only
+    reads whole would be answered ``present`` and the copy would ask for ever.
+
+    :param path: the file
+    :ptype path: Path
+    :param table: the table
+    :ptype table: FollowedTable
+    :param record: the epoch's record
+    :ptype record: EpochChange
+    :return: how many keys it lacks; 0 for a record that lists none
+    :rtype: int
+    :raises FileNotFoundError: when it is not there
+    :raises DeltaFileUnreadableError: when it is there and is not the table's delta file
+    """
+    delta = read_delta_table(path, table=table.name)
+    if not record.rows:
+        return 0
+    held = set(zip(*(map(key_text, delta.rows.column(column).to_pylist()) for column in table.key), strict=True))
+    named = [tuple(row.ids) for row in record.rows]
+    return sum(
+        1
+        for key in named
+        if key not in held and not under_prefix(dict(zip(table.key, key, strict=True)), delta.prefixes)
+    )
 
 
 @asynccontextmanager
