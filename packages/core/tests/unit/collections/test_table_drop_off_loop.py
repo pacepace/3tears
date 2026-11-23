@@ -13,10 +13,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import MetaData
 
 from threetears.core.cache.l1_lru import L1Ledger
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.base import PrefixNotLeadingError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.config import DefaultCoreConfig
@@ -183,8 +186,8 @@ def test_delete_all_of_100k_rows_is_the_bare_delete() -> None:
 # --- a key prefix's drop (a load's or a clear's reach) runs off the loop too (0.95.0 copy audit, loop item) ---------
 
 #: the longest one turn of the loop may run while a prefix holding 100k of L1's 200k rows is dropped. Measured
-#: 2026-11-23 (macOS arm64, Python 3.14): the keys read by the prefix and evicted on the loop, 334.7 ms (a prefix not
-#: leading the key, every key walked, 197.4 ms); on threads, 2.8 ms (a prefix not leading the key, its walk on a thread, 0.2 ms)
+#: 2026-11-23 (macOS arm64, Python 3.14): the keys read by the prefix and evicted on the loop, 334.7 ms; on threads,
+#: 2.8 ms. A prefix not leading the key is refused, never walked (decision 34)
 _PREFIX_TURN_MAX_SECONDS = 0.05
 
 
@@ -234,3 +237,32 @@ class TestAPrefixDropHoldsNoTurnOfTheLoop:
         assert len(heard) == 100_000
         counted = l1.execute_query("SELECT state, count(*) AS n FROM prefix_rows GROUP BY state")
         assert {row["state"]: row["n"] for row in counted} == {"IL": 100_000}
+
+    async def test_a_prefix_not_leading_the_key_is_refused_and_walks_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a slice clear whose prefix does not lead the key (an older writer's partition, ``{"id": ...}`` of a
+        ``(state, id)`` key) is walked through L1's keys or dropped some other way instead of refused (decision 34):
+        it must raise PrefixNotLeadingError naming the table and prefix, count the refusal, read no L1 key, fence and
+        distrust nothing, and leave every cached row."""
+        collection, l1 = _prefixed_collection()
+        _cache_states(l1, 1_000)
+        heard: list[Any] = []
+        collection.add_l1_change_listener(heard.append)
+
+        def walked(*_: Any, **__: Any) -> Any:
+            raise AssertionError("L1's keys were read for a refused prefix")
+
+        monkeypatch.setattr(collection, "_l1_keys", walked)
+        monkeypatch.setattr(collection, "_l1_keys_under", walked)
+        labels = {"table": "prefix_rows"}
+        before = REGISTRY.get_sample_value("threetears_collection_prefix_drops_refused_total", labels) or 0.0
+        with pytest.raises(PrefixNotLeadingError) as refused:
+            await collection.drop_cached_prefixes([{"state": "VA"}, {"id": "k0000001"}])
+        assert refused.value.table == "prefix_rows"
+        assert refused.value.prefix == {"id": "k0000001"}
+        assert REGISTRY.get_sample_value("threetears_collection_prefix_drops_refused_total", labels) == before + 1
+        assert heard == []
+        assert not collection.__dict__.get("_l2_distrusted_prefixes"), "a refused clear distrusts nothing"
+        counted = l1.execute_query("SELECT state, count(*) AS n FROM prefix_rows GROUP BY state")
+        assert {row["state"]: row["n"] for row in counted} == {"IL": 1_000, "VA": 1_000}

@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, NoReturn, TypeVar, cast
 from uuid import uuid7
 
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
@@ -180,6 +180,37 @@ def _note_undeclared_tenancy(table: str) -> None:
 
 #: tables whose change-log keys this process's pod was refused and that already said so: one ERROR per table
 _REFUSED_CHANGE_LOG_SAID: set[str] = set()
+
+
+class PrefixNotLeadingError(ValueError):
+    """a slice clear named a key prefix that does not lead the table's key (an older writer's partition): refused,
+    never walked (decision 34 of ``design-pod-delta-files.md``: old and new versions never run side by side, so no
+    writer names one). L1 has no index to read such a prefix by; walking every key it holds was a whole read.
+
+    :param table: the table
+    :ptype table: str
+    :param prefix: the prefix, its columns and their values as text
+    :ptype prefix: Mapping[str, str]
+    """
+
+    def __init__(self, table: str, prefix: Mapping[str, str]) -> None:
+        self.table = table
+        self.prefix = dict(prefix)
+        super().__init__(
+            f"{table}: a slice clear's prefix {self.prefix} does not lead the key; refused, never walked (decision 34)"
+        )
+
+
+def _refused_prefix_drops() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_collection_prefix_drops_refused_total",
+        description=(
+            "slice clears refused because their key prefix does not lead the table's key (an older writer's "
+            "partition; decision 34: versions never run side by side), never walked through L1"
+        ),
+        label_names=("table",),
+    )
 
 
 def _refused_change_log_reads() -> Any:
@@ -3901,17 +3932,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         broadcast: the rows did not change here.
 
         **Off the loop** (0.95.0 copy audit): the L1 key reads and the eviction ran on the loop (334.7 ms for a
-        100,000-row prefix of 200,000, 2026-11-23); now 2.8 ms the longest turn. A prefix that does not lead the key
-        (an older writer's partition, mid-roll: 0.95.0 writers name only prefixes that lead, ``_load_reach``) has no
-        index to read by: L1's keys are still walked for it, on the thread now. OPEN (audit item 4, stopped for a
-        ruling): that walk is a whole read of this process's L1 no declaration covers; dropping the table's L1
-        instead is a whole drop the epoch discipline refuses without a waiver.
+        100,000-row prefix of 200,000, 2026-11-23); now 2.8 ms the longest turn.
+
+        **A prefix that does not lead the key is refused** (decision 34): an older writer's partition, which no writer
+        names now that old and new versions never run side by side (pods scale to zero, upgrade, scale up). L1 has no
+        index to read it by, and walking every key L1 holds was a whole read; dropping the table's L1 a whole drop.
+        Such a clear raises :class:`PrefixNotLeadingError`, counted
+        (``threetears_collection_prefix_drops_refused_total``) and logged at ERROR, before anything is fenced, distrusted
+        or read.
 
         :param prefixes: each prefix, its columns (the table's own) and their values as text (``key_text``)
         :ptype prefixes: Sequence[Mapping[str, str]]
         :return: how many rows left L1
         :rtype: int
         :raises ValueError: when a prefix names a column the table does not have in its key
+        :raises PrefixNotLeadingError: when a prefix does not lead the key (nothing is dropped)
         """
         columns = list(self.primary_key_columns)
         fence = self._l1_fence
@@ -3921,7 +3956,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             if unknown or not prefix:
                 raise ValueError(f"{self.table_name}: a prefix names its key's columns {columns}, got {dict(prefix)}")
             at = tuple(sorted((columns.index(column), str(value)) for column, value in prefix.items()))
+            if [index for index, _ in at] != list(range(len(at))):
+                self._refuse_prefix(prefix)
             positioned.append(at)
+        for at in positioned:
             fence.changed_under(at)
         if not positioned:
             return 0
@@ -3935,22 +3973,41 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self._l1_holding_table()
         if l1 is None:
             return 0
-        keys = await asyncio.to_thread(self._l1_keys_under, l1, prefixes, positioned)
+        keys = await asyncio.to_thread(self._l1_keys_under, l1, prefixes)
         await self._evict_l1_many_off_loop(keys)
         return len(keys)
 
-    def _l1_keys_under(
-        self, l1: Any, prefixes: Sequence[Mapping[str, str]], positioned: Sequence[tuple[tuple[int, str], ...]]
-    ) -> list[Any]:
-        """the keys L1 holds under each prefix: one leading the key read along the key's index by the prefix, one that
-        does not (an older writer's partition) found by walking L1's keys once. Blocking: run it on a thread.
+    def _refuse_prefix(self, prefix: Mapping[str, str]) -> NoReturn:
+        """refuse a slice clear whose prefix does not lead the key (:meth:`drop_cached_prefixes`): counted, said at
+        ERROR, raised.
+
+        :param prefix: the prefix
+        :ptype prefix: Mapping[str, str]
+        :raises PrefixNotLeadingError: always
+        """
+        refused = PrefixNotLeadingError(self.table_name, prefix)
+        _refused_prefix_drops().labels(table=self.table_name).inc()
+        log.error(
+            "a slice clear named a key prefix that does not lead the table's key: refused, nothing dropped "
+            "(decision 34: no older writer runs beside this one)",
+            extra={
+                "extra_data": {
+                    "table": self.table_name,
+                    "prefix": refused.prefix,
+                    "key": list(self.primary_key_columns),
+                }
+            },
+        )
+        raise refused
+
+    def _l1_keys_under(self, l1: Any, prefixes: Sequence[Mapping[str, str]]) -> list[Any]:
+        """the keys L1 holds under each prefix, each leading the key (:meth:`drop_cached_prefixes` refused any
+        other), read along the key's index by the prefix. Blocking: run it on a thread.
 
         :param l1: the L1 holding the table
         :ptype l1: Any
         :param prefixes: the prefixes
         :ptype prefixes: Sequence[Mapping[str, str]]
-        :param positioned: each prefix's key positions and values
-        :ptype positioned: Sequence[tuple[tuple[int, str], ...]]
         :return: the keys, each once (a value single-pk, a tuple else)
         :rtype: list[Any]
         """
@@ -3958,18 +4015,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         db = inline_l1(l1)
         order = [Sort(column, cast=None) for column in columns]
         found: list[tuple[Any, ...]] = []
-        walked: list[dict[str, Any]] | None = None
-        for prefix, at in zip(prefixes, positioned, strict=True):
-            if [index for index, _ in at] != list(range(len(at))):
-                # OPEN (see drop_cached_prefixes): this process's cache, never L3, walked once for every such prefix
-                walked = self._l1_keys(l1, self.primary_key_columns) if walked is None else walked
-                found.extend(
-                    key
-                    for key in (tuple(row[column] for column in columns) for row in walked)
-                    if all(key_text(key[index]) == value for index, value in at)
-                )
-                continue
-            lead = self._leading_key(len(at))
+        for prefix in prefixes:
+            lead = self._leading_key(len(prefix))
             values = [prefix[column] for column in lead]
             found.extend(
                 tuple(row[column] for column in columns)
