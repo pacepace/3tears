@@ -29,7 +29,9 @@ each write of the table records what it wrote here beside its enrollment (:meth:
 enrolled for the table is in the file and the file is saved. That is the enforcement every writer of the table goes
 through: a write that enrolls a key it did not record, a key-prefix delete (the format names keys, never prefixes),
 or a pod with no delta files directory configured, all refuse the commit rather than make a version no file holds.
-The names saved are :attr:`delta_files`, for the commit's epoch record.
+The names saved are :attr:`delta_files`, for the commit's epoch record; once the commit has landed,
+:attr:`committed_generations` names the generation token it wrote for each table, which the writer folds the files by
+(:meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`).
 
 Evicting rather than writing the committed row is deliberate: it is correct whether the
 transaction committed, rolled back, or rolled back a savepoint that a save joined, with no need to
@@ -55,7 +57,12 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from threetears.core.backends.broker_generation import naming_delta_files
+from threetears.core.backends.broker_generation import (
+    collecting_advanced_generations,
+    committed_generations_record,
+    naming_delta_files,
+    reply_generations_since,
+)
 from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     TableDelta,
@@ -269,6 +276,7 @@ class CallerTransaction:
     """
 
     __slots__ = (
+        "_committed_generations",
         "_deltas",
         "_enrolled",
         "_options",
@@ -301,6 +309,7 @@ class CallerTransaction:
         # what each table that opts in to delta files was written, by table: saved as its file before the commit
         self._deltas: dict[str, TableDelta] = {}
         self._saved_delta_files: dict[str, str] = {}
+        self._committed_generations: dict[str, str] = {}
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -312,6 +321,18 @@ class CallerTransaction:
         :rtype: Mapping[str, str]
         """
         return dict(self._saved_delta_files)
+
+    @property
+    def committed_generations(self) -> Mapping[str, str]:
+        """each generation token this transaction's commit wrote, by table: what a part folded past its delta file is
+        current to (:meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`). Through the L3 broker, every
+        token its commit reply named (``l3.tx.commit``); on a direct pool, each token the advances its settling made
+        wrote. Empty until the outermost transaction has ended, and for one that rolled back or whose commit failed.
+
+        :return: table -> the token
+        :rtype: Mapping[str, str]
+        """
+        return dict(self._committed_generations)
 
     def _delta_of(self, collection: BaseCollection[Any]) -> TableDelta:
         """the delta this transaction keeps for ``collection``'s table, made at its first write.
@@ -654,6 +675,9 @@ class CallerTransaction:
         # of a commit that failed would hand every copy rows L3 never took
         files = self._saved_delta_files if exc_type is None else {}
         landed = False
+        # the broker's reply to the commit replaces this task's record of its generations; a direct pool's commit
+        # leaves it, so a record that did not change since names nothing of this commit's
+        before = committed_generations_record()
         try:
             with naming_delta_files(files):
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
@@ -663,8 +687,11 @@ class CallerTransaction:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                with naming_delta_files(files if landed else {}):
+                advanced: dict[str, str] = {}
+                with naming_delta_files(files if landed else {}), collecting_advanced_generations(advanced):
                     generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
+                if landed and exc_type is None:
+                    self._committed_generations = {**reply_generations_since(before), **advanced}
         return bool(suppressed), generation_failure
 
     async def _save_delta_files(self) -> dict[str, str]:

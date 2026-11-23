@@ -33,7 +33,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from threetears.core.backends.broker_generation import named_delta_files
+from threetears.core.backends.broker_generation import named_delta_files, note_advanced_generation
 from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
@@ -974,7 +974,7 @@ async def advance_for_write(
                 f"_all, where none of its pods read it. Name the writer's schema "
                 f"(CollectionRegistry.set_l3_schema, or the broker's schema=)"
             )
-    return await advance_recording(
+    token = await advance_recording(
         source,
         table_name,
         named,
@@ -986,6 +986,11 @@ async def advance_for_write(
         reason=reason if rows is None else None,
         delta_file=delta_file if delta_file is not None else named_delta_files().get(table_name),
     )
+    if isinstance(token, str) and token:
+        # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote
+        # (CallerTransaction.committed_generations)
+        note_advanced_generation(table_name, token)
+    return token
 
 
 @dataclass(frozen=True, slots=True)

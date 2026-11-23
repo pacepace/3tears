@@ -31,7 +31,8 @@ pa_ipc = pytest.importorskip("pyarrow.ipc")
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
-from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
+from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullAbsent,
     FullPart,
@@ -293,3 +294,63 @@ async def test_a_full_without_every_opted_in_table_is_waited_on(tmp_path: Path) 
     found = await VolumeFulls(tmp_path, [_FOLLOWED]).stage(_backend())
     assert isinstance(found, FullAbsent)
     assert _TABLE in found.reason
+
+
+class _WriterL3:
+    """the writer's L3: ``votes`` as a reset left it, read whole once by the writer's rebuild."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.reads = 0
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        if sql.startswith("SELECT version()"):
+            return [{"v": "PostgreSQL 16.4"}]
+        self.reads += 1
+        return sorted(self.rows, key=lambda row: (row["state"], row["geo_id"]))
+
+
+class _Generations:
+    async def current(self, table_name: str) -> str:
+        return "inc:5"
+
+    async def advance(self, table_name: str) -> str | None:
+        raise AssertionError("a rebuild advances nothing")
+
+
+async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_path: Path) -> None:
+    """Flips if a copy of an opted-in table reads L3 (whole or at all) while the volume holds no full, or does not load
+    the full the writer's rebuild from L3 publishes (decision 14): the writer reads L3 once, the copy never."""
+    copy_l3, backend, registry = _L3(), _backend(), CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [_FOLLOWED],
+        backend,
+        copy_l3,
+        settled=lambda: asyncio.sleep(0, result=0),
+        generation=_Generations().current,
+        changes=None,
+        stamp_table="scope_epochs",
+        fulls=VolumeFulls(tmp_path, [_FOLLOWED], poll_seconds=0.01),
+    )
+    start = asyncio.create_task(follower.start())
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if follower.status().phase is FollowerPhase.WAITING:
+            break
+    assert follower.status().phase is FollowerPhase.WAITING and copy_l3.statements == 0
+    schema = TableSchema(
+        name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
+    )
+    writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))])
+    try:
+        assert await folds.start(writer_l3, _Generations(), version=3) == (_TABLE,)
+    finally:
+        await folds.close()
+    assert await asyncio.wait_for(start, 5) is False
+    assert follower.status().phase is FollowerPhase.FOLLOWING
+    assert _held(backend) == [("VA", i, 1) for i in range(3)]
+    assert registry.generation_marks.recorded(_TABLE) == "inc:5"
+    assert writer_l3.reads == 1 and copy_l3.statements == 0

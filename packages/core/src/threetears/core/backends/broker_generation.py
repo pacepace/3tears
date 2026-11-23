@@ -84,12 +84,16 @@ __all__ = [
     "HUB_CAPABILITIES_FIELD",
     "BrokerGenerationSource",
     "GenerationReader",
+    "collecting_advanced_generations",
+    "committed_generations_record",
     "forget_reply_generations",
     "named_changed_rows",
     "named_delta_files",
     "naming_changed_rows",
     "naming_delta_files",
+    "note_advanced_generation",
     "record_reply_generations",
+    "reply_generations_since",
 ]
 
 _logger = get_logger(__name__)
@@ -152,6 +156,45 @@ def named_delta_files() -> dict[str, str]:
     :rtype: dict[str, str]
     """
     return dict(_DELTA_FILES.get())
+
+
+#: where the advances made while a commit settles in this context note the token each wrote, by table
+#: (:func:`collecting_advanced_generations`); None when nothing collects them
+_ADVANCED: ContextVar[dict[str, str] | None] = ContextVar("threetears_commit_advanced_generations", default=None)
+
+
+@contextmanager
+def collecting_advanced_generations(into: dict[str, str]) -> Iterator[None]:
+    """collect into ``into`` the token each advance made inside this block wrote, by table
+    (:func:`note_advanced_generation`): how a process that advances its own generations (a direct pool) learns what
+    its commit's settling wrote, as a pod learns it from the broker's reply (:func:`reply_generations_since`). A task
+    started inside the block (``asyncio.shield`` around a settle) shares ``into``: the context copies the reference.
+
+    :param into: table -> the token its advance wrote, filled as advances are made
+    :ptype into: dict[str, str]
+    :return: a context in which advances are collected
+    :rtype: Iterator[None]
+    """
+    token = _ADVANCED.set(into)
+    try:
+        yield
+    finally:
+        _ADVANCED.reset(token)
+
+
+def note_advanced_generation(table_name: str, token: str) -> None:
+    """note the token an advance of ``table_name`` wrote, where this context collects them; nothing otherwise.
+
+    :param table_name: the table advanced
+    :ptype table_name: str
+    :param token: the token the advance wrote
+    :ptype token: str
+    :return: nothing
+    :rtype: None
+    """
+    into = _ADVANCED.get()
+    if into is not None:
+        into[table_name] = token
 
 
 #: the rows the writes in flight in this context change, as ``(table, row)`` pairs, innermost last
@@ -292,6 +335,32 @@ def forget_reply_generations(reason: str) -> None:
     :rtype: None
     """
     _COMMITTED.set(_Committed(not_committed=reason))
+
+
+def committed_generations_record() -> object | None:
+    """this task's record of its last commit's generations, as it stands: taken just before a commit, it tells
+    :func:`reply_generations_since` whether the commit's reply replaced it.
+
+    :return: the record, opaque; None when this task holds none
+    :rtype: object | None
+    """
+    return _COMMITTED.get()
+
+
+def reply_generations_since(before: object | None) -> dict[str, str]:
+    """the tokens the broker's reply to this task's commit named, by table, when a reply replaced the record since
+    ``before`` (:func:`committed_generations_record`, taken just before the commit); empty when none did (the commit
+    was not the broker's: a direct pool's) or it landed nothing. Every token, whether an advance took it yet or not.
+
+    :param before: the record as it stood before the commit
+    :ptype before: object | None
+    :return: table -> the token the broker's advance after the commit wrote
+    :rtype: dict[str, str]
+    """
+    held = _COMMITTED.get()
+    if held is None or held is before or held.not_committed is not None:
+        return {}
+    return dict(held.tokens)
 
 
 def _take_committed_generation(table_name: str) -> str | None:

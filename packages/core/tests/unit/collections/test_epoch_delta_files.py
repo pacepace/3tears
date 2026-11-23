@@ -305,3 +305,53 @@ async def test_a_pods_commit_hands_the_broker_its_files() -> None:
         async with broker.proxy().transaction():
             raise RuntimeError("the body failed")
     assert DELTA_FILES_FIELD not in broker.body("l3.tx.rollback")
+
+
+async def test_a_direct_pool_commit_names_the_generation_each_table_s_advance_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a commit on a direct pool does not hand its writer the token each table's advance wrote
+    (``CallerTransaction.committed_generations``), which the writer folds the commit's delta files by; or hands one
+    for a commit that did not land."""
+    monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
+    source, registry = _Source(), CollectionRegistry()
+    registry.set_generation_source(source)
+    results = _collection(registry, "results", opted_in=True)
+    totals = _collection(registry, "totals", opted_in=False)
+    conn = _Conn()
+    async with CallerTransaction(conn) as transaction:
+        await results.save_rows(_ROWS, conn=conn)
+        await totals.save_rows(_ROWS, conn=conn)
+        assert transaction.committed_generations == {}, "named before the commit landed"
+    advanced = {table: f"inc:{index + 1}" for index, (table, _) in enumerate(source.files)}
+    assert transaction.committed_generations == advanced and set(advanced) == {"results", "totals"}
+
+    lost = CallerTransaction(_Conn(lost=True))
+    with pytest.raises(ConnectionError):
+        async with lost:
+            await results.save_rows(_ROWS, conn=lost.conn)
+    assert lost.committed_generations == {}
+
+
+async def test_a_pod_s_commit_names_the_generations_its_broker_reply_named() -> None:
+    """Flips if a commit through the L3 broker does not hand its writer the tokens the ``l3.tx.commit`` reply named
+    (the task's committed-generations record), or hands an earlier commit's, or one for a commit the broker refused;
+    or a direct pool's commit is handed what a broker reply earlier in its task named."""
+    broker = _Broker({"success": True, "row_count": 1, "generations": {"results": "inc:3"}})
+    await broker.proxy().execute("UPDATE results SET votes = 1")  # an earlier commit in this task
+
+    broker = _Broker({"success": True, "tx_id": _TX_ID}, {"success": True, "generations": {"results": "inc:9"}})
+    async with broker.proxy().acquire() as conn, CallerTransaction(conn) as transaction:
+        pass
+    assert transaction.committed_generations == {"results": "inc:9"}
+
+    broker = _Broker({"success": True, "tx_id": _TX_ID}, {"success": False, "error_message": "refused"})
+    refused: CallerTransaction | None = None
+    with pytest.raises(Exception, match="refused"):
+        async with broker.proxy().acquire() as conn, CallerTransaction(conn) as refused:
+            pass
+    assert refused is not None and refused.committed_generations == {}
+
+    async with CallerTransaction(_Conn()) as direct:
+        pass
+    assert direct.committed_generations == {}

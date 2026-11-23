@@ -45,10 +45,27 @@ reading, merging and writing parts is CPU, and hands back only names, versions a
 logged and counted (``delta_fold_rounds_total{outcome="failed"}``) and its files are kept for the round the next commit
 starts; the write it followed has committed already and never fails for it.
 
-**What it does not do.** A table the current full does not hold yet is not folded: its deltas wait for the writer's
-rebuild from L3 to publish its first full (decision 14), since a full made from deltas alone would lack every row
-written before them. A reset of a table (a new incarnation of its generation) is refused by the round, logged and
-counted, for the same rebuild.
+**The rebuild from L3** (decisions 12, 14 and 15). A table the current full does not hold is never folded: a full made
+from deltas alone would lack every row written before them. The writer rebuilds it instead, once: :meth:`DeltaFolds.
+start`, called at the writer's start under its write lease, finds each folded table the current full lacks (no full
+at all: a lost volume, or a new environment; or a full without the table: one newly opted in) and reads it from L3
+whole, the one whole read a writer makes, declared a cold start; :meth:`DeltaFolds.start_fresh` marks a table reset or
+recreated by a migration (its files no longer valid) for the same, read declared as its situation. The table's
+generation is read first, then its rows: a commit landing during the read is in the rows and its delta is applied
+again over them by every copy, which ends where L3 does (decision 19's merge, applied in order, leaves a row as its
+last write left it). The rows are written beside the full as they are read (I/O, the serving process's), then a
+worker process splits them by state, applies the keep rule, writes the parts and publishes the manifest at the
+writer's term, before any fold of the table: :meth:`DeltaFolds.committed`'s rounds run a rebuild owed first, and a
+table owed one is not folded meanwhile. Then its old files go: every delta of the table saved before the rebuild's
+read began (and before the writer's work in flight) that neither manifest in use names, and its old parts once the
+previous manifest no longer names them. A table with no generation yet (never written) is rebuilt before the round
+its first commit starts. A writer whose term is no longer the highest reads nothing and publishes nothing; one whose
+lease is taken during its read is refused at the publish, deletes only its own new files, and changes nothing a
+reader sees. A copy never reads L3 whole: it waits for the manifest (:class:`~threetears.core.collections.
+volume_fulls.VolumeFulls`).
+
+**What it does not do.** A new incarnation of a table's generation (its store replaced) is refused by the round,
+logged and counted.
 """
 
 from __future__ import annotations
@@ -57,11 +74,12 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
@@ -74,10 +92,16 @@ from threetears.core.collections.delta_files import (
     apply_delta_row,
     sweep_orphan_delta_files,
 )
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.generation import split_generation_token
-from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types
+from threetears.core.collections.generation import GenerationSource, split_generation_token
+from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
+from threetears.core.declared import whole_read
+from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.keyset import keyset_arrow_pages
+from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.volume_fulls import (
+    FullManifest,
     FullPart,
     FullTable,
     StaleTermError,
@@ -90,6 +114,7 @@ from threetears.core.process_workers import ProcessWorkers
 
 try:
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
 
     _PYARROW = True
@@ -119,6 +144,23 @@ _STATES = counter(
     label_names=("table", "how"),
 )
 
+#: rebuilds of a table's full from L3, by table, why (``cold_start``: no full holds it; ``reset``; ``schema_change``)
+#: and outcome: ``rebuilt`` (published), ``stale`` (a later writer's term is current: nothing read or published),
+#: ``no_generation`` (the table has none yet: rebuilt before its first commit's round), ``failed`` (retried before
+#: the next round)
+_REBUILDS = counter(
+    "delta_fold_rebuilds_total",
+    description="writer rebuilds of a table's full from L3 (its one whole read), by table, why and outcome",
+    label_names=("table", "why", "outcome"),
+)
+
+#: why a table starts fresh (:meth:`DeltaFolds.start_fresh`): it was reset, or recreated by a migration
+_FreshWhy = Literal["reset", "schema_change"]
+
+#: where a rebuild's rows are written as they are read, under the fulls' directory: one file a table, removed once its
+#: parts are published (or the rebuild fails)
+_REBUILD_DIR: Final = ".fulls/rebuild"
+
 #: a state folds once the bytes of its deltas since its last fold reach this share of its part's size (decision 10:
 #: half), as a numerator over :data:`_DUE_OF`, so the test is whole numbers: ``bytes * _DUE_OF >= part * _DUE_AT``
 _DUE_AT: Final = 1
@@ -142,6 +184,8 @@ class FoldedTable:
         ``prefix + str(row[column])``); one part a state. None: one part for the whole table
     :ivar keep: the rows a part keeps (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_keep`); None
         keeps every row
+    :ivar kinds: each column's type tag, ``(column, column_type)`` in :attr:`columns`' order: how the writer's rebuild
+        reads the table from L3 (:meth:`DeltaFolds.start`); empty for a table never rebuilt
     """
 
     name: str
@@ -149,6 +193,7 @@ class FoldedTable:
     columns: tuple[str, ...]
     scope: tuple[str, str] | None = None
     keep: type[DeltaKeepRule] | None = None
+    kinds: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         missing = [column for column in self.key if column not in self.columns]
@@ -183,6 +228,7 @@ class FoldedTable:
             columns=tuple(rail_arrow_types(schema.columns)),
             scope=scope,
             keep=schema.delta_keep,
+            kinds=tuple((column.name, column.column_type) for column in schema.columns),
         )
 
     def plain(self) -> tuple[Any, ...]:
@@ -231,6 +277,16 @@ class DeltaFolds:
         self._doomed: tuple[str, ...] = ()
         self._round: asyncio.Task[None] | None = None
         self._unfolded_warned: set[str] = set()
+        #: how the writer reads L3 for a rebuild, from :meth:`start`: None until the writer's start calls it
+        self._reader: _Reader | None = None
+        #: tables reset or recreated (:meth:`start_fresh`), by why: rebuilt before any round folds them
+        self._fresh: dict[str, _FreshWhy] = {}
+        #: whether a rebuild may be owed: the next round looks before it folds
+        self._recheck = False
+        #: whether a table was marked fresh since the last rebuild began
+        self._marked = False
+        #: each table a rebuild published, in order
+        self._rebuilt: list[str] = []
 
     def committed(
         self,
@@ -281,7 +337,82 @@ class DeltaFolds:
             self._queued.append((table, file, token))
         self._term = version if self._term is None else max(self._term, version)
         self._before = now if in_flight_since is None else min(now, in_flight_since)
-        if self._queued and (self._round is None or self._round.done()):
+        if self._queued:
+            self._run_rounds()
+
+    async def start(
+        self, l3: Any, generations: GenerationSource, *, version: int, page_size: int = DEFAULT_PAGE_SIZE
+    ) -> tuple[str, ...]:
+        """the writer's start: rebuild from L3, once, each folded table the current full on the volume lacks (no full
+        at all: a lost volume or a new environment; or one without the table), and publish them at ``version``
+        (module docstring, "The rebuild from L3"). Call it after taking the write lease and beginning the first write,
+        before that write's commit is told to :meth:`committed`. Kept for the rebuilds a later round owes
+        (:meth:`start_fresh`, a table with no generation yet).
+
+        :param l3: the writer's L3, read whole once for each table rebuilt (the rail's proxy, or a pool)
+        :ptype l3: Any
+        :param generations: the writer's generation source: each table's generation is read before its rows, the
+            version its parts are current to
+        :ptype generations: GenerationSource
+        :param version: the write's version (:meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.begin`),
+            taken under the write lease: the writer's term
+        :ptype version: int
+        :param page_size: rows a page of the read holds
+        :ptype page_size: int
+        :return: the tables rebuilt and published, in order; empty when the full held every one (or this writer's
+            term is no longer the highest, or a read failed: logged and counted, retried before the next round)
+        :rtype: tuple[str, ...]
+        :raises ValueError: when ``page_size`` is under one, or a table names no column types (``FoldedTable.of``)
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be at least one")
+        for table in self.tables.values():
+            _table_types(table)  # refuses a table it could not read
+        self._reader = _Reader(l3=l3, generations=generations, page_size=page_size)
+        self._term = version if self._term is None else max(self._term, version)
+        self._recheck = True
+        since = len(self._rebuilt)
+        await self.wait()
+        self._run_rounds()
+        await self.wait()
+        return tuple(self._rebuilt[since:])
+
+    def start_fresh(self, table: str, *, why: _FreshWhy) -> None:
+        """start ``table`` fresh: it was reset (``SchemaBackedCollection.reset``) or dropped and recreated by a
+        migration, so its delta files and parts no longer hold it. Rebuilt from L3 under the writer's term before any
+        round folds it again, its old files dropped (decision 12). Call it once the reset or the migration has
+        committed; never waits.
+
+        :param table: the table
+        :ptype table: str
+        :param why: ``"reset"`` or ``"schema_change"``
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when the writer does not fold the table
+        :raises ValueError: for another why
+        """
+        if table not in self.tables:
+            raise KeyError(table)
+        if why not in ("reset", "schema_change"):
+            raise ValueError(f"a table starts fresh after a reset or a schema change, not {why!r}")
+        log.warning(
+            "a folded table starts fresh: it is rebuilt from L3 and its old files dropped",
+            extra={"extra_data": {"table": table, "why": why}},
+        )
+        self._fresh[table] = why
+        self._recheck = True
+        self._marked = True
+        if self._reader is not None:
+            self._run_rounds()
+
+    def _run_rounds(self) -> None:
+        """start the background rounds unless they are running.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._round is None or self._round.done():
             self._round = asyncio.get_running_loop().create_task(self._rounds(), name="delta folds")
 
     async def wait(self) -> None:
@@ -304,12 +435,21 @@ class DeltaFolds:
             await self._workers.close()
 
     async def _rounds(self) -> None:
-        """run rounds while commits are queued; a failed round keeps its files and waits for the next commit.
+        """run rounds while commits are queued, each after any rebuild owed; a failed round keeps its files and waits
+        for the next commit.
 
         :return: nothing
         :rtype: None
         """
-        while self._queued:
+        while True:
+            if self._reader is not None and self._recheck:
+                self._recheck = False
+                self._marked = False
+                await self._fresh_fulls(self._reader)
+            if not self._queued:
+                if self._marked and self._reader is not None:
+                    continue  # a table marked fresh during that rebuild is rebuilt now, not at the next commit
+                return
             taken, self._queued = self._queued, []
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
@@ -325,6 +465,7 @@ class DeltaFolds:
                     self._doomed,
                     self._since,
                     self._before,
+                    tuple(sorted(self._fresh)),
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
                 self._queued = taken + self._queued
@@ -350,6 +491,9 @@ class DeltaFolds:
         pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid = answer
         self._pending, self._reused, self._doomed = pending, reused, doomed
         _ROUNDS.labels(outcome=outcome).inc()
+        if outcome == "no_full":
+            # no full on the volume (lost since the writer's start): rebuilt before the next round
+            self._recheck = True
         for table, _scope, how, _rows in folded:
             _STATES.labels(table=table, how=how).inc()
         if outcome == "stale":
@@ -373,6 +517,439 @@ class DeltaFolds:
                 },
             )
 
+    async def _fresh_fulls(self, reader: _Reader) -> None:
+        """rebuild each table owed one (no full holds it, or :meth:`start_fresh` marked it), then drop what the
+        rebuild covers from the folds' queue. Never raises but on cancellation: a failure is logged, counted and
+        retried before the next round.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :return: nothing
+        :rtype: None
+        """
+        term = self._term
+        assert term is not None  # noqa: S101 -- set by start() before any round looks
+        current = await asyncio.to_thread(current_full_manifest, self.root)
+        owed: dict[str, str] = {
+            name: "cold_start" for name in self.tables if current is None or name not in current.tables
+        }
+        owed.update(self._fresh)
+        if not owed:
+            return
+        if current is not None and current.term > term:
+            for name, why in owed.items():
+                _REBUILDS.labels(table=name, why=why, outcome="stale").inc()
+            log.warning(
+                "a later writer's full is current: this writer's lease was taken, so it rebuilds nothing",
+                extra={"extra_data": {"term": term, "manifest": current.name, "tables": sorted(owed)}},
+            )
+            return
+        staged: list[tuple[str, str, str, int]] = []
+        cutoff = self._before
+        # a rebuild's rows left by a writer that died mid-read: only the writer holding the lease writes there
+        await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
+        try:
+            for name, why in sorted(owed.items()):
+                began = time.time()
+                try:
+                    # the generation before the rows: a commit during the read is in the rows and applied again over
+                    # them (module docstring), never missed
+                    token = await reader.generations.current(name)
+                except GenerationUnavailableError as error:
+                    # never written: its first commit makes one, and the round that commit starts looks again
+                    self._recheck = True
+                    _REBUILDS.labels(table=name, why=why, outcome="no_generation").inc()
+                    log.warning(
+                        "a table to rebuild has no generation yet: rebuilt before the round its first commit starts",
+                        extra={"extra_data": {"table": name, "why": why, "error": str(error)}},
+                    )
+                    continue
+                table = self.tables[name]
+                # the one whole read a writer makes, declared as its situation (each function holds its own)
+                if why == "schema_change":
+                    pages = whole_read(
+                        _schema_change_pages(reader, table),
+                        kind="schema_change",
+                        reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
+                        "full",
+                        ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
+                        "one read of it from L3 (design-pod-delta-files decision 12)",
+                        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+                    )
+                else:
+                    pages = whole_read(
+                        _cold_start_pages(reader, table),
+                        kind="cold_start",
+                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment) or it was reset: the writer "
+                        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
+                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
+                        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
+                        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+                    )
+                file, rows = await self._written_beside(table, pages)
+                staged.append((name, file, token, rows))
+                cutoff = min(cutoff, began)
+            if not staged:
+                return
+            answer = await self._workers.run(
+                rebuild_round,
+                str(self.root),
+                term,
+                tuple(self.tables[name].plain() for name, _, _, _ in staged),
+                tuple(staged),
+                cutoff,
+            )
+        except BaseException as error:  # prawduct:allow prawduct/broad-except -- a rebuild never fails a write: logged, counted, retried before the next round
+            self._recheck = True
+            await asyncio.to_thread(_unlink_all, self.root, [file for _, file, _, _ in staged])
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            for name, why in owed.items():
+                _REBUILDS.labels(table=name, why=why, outcome="failed").inc()
+            log.error(
+                "a rebuild of the full from L3 failed; it is tried again before the next round",
+                extra={"extra_data": {"tables": sorted(owed), "error": repr(error)}},
+                exc_info=error,
+            )
+            return
+        outcome, manifest, rebuilt, deleted = answer
+        for name, token, rows in rebuilt:
+            why = owed[name]
+            _REBUILDS.labels(table=name, why=why, outcome=outcome).inc()
+            if outcome != "rebuilt":
+                continue
+            if self._fresh.get(name) == why:
+                self._fresh.pop(name)
+            self._rebuilt.append(name)
+            self._drop_covered(name, token)
+            log.info(
+                "a table's full rebuilt from L3 and published",
+                extra={"extra_data": {"table": name, "why": why, "rows": rows, "generation": token}},
+            )
+        if outcome == "rebuilt":
+            log.info(
+                "rebuilt full published", extra={"extra_data": {"manifest": manifest, "deleted": deleted, "term": term}}
+            )
+        else:
+            log.warning(
+                "a later writer's full is current: this writer's rebuild publishes nothing",
+                extra={"extra_data": {"term": term, "manifest": manifest}},
+            )
+
+    async def _written_beside(self, table: FoldedTable, pages: AsyncIterator[Any]) -> tuple[str, int]:
+        """write a table's rows beside the full as its read from L3 hands them, a page at a time on a thread (Arrow
+        writes with the interpreter lock released), for the worker process to split.
+
+        :param table: the table
+        :ptype table: FoldedTable
+        :param pages: its pages, read whole
+        :ptype pages: AsyncIterator[pyarrow.Table]
+        :return: the file the rows were written to, under the root, and how many
+        :rtype: tuple[str, int]
+        """
+        types = _table_types(table)
+        file = f"{_REBUILD_DIR}/{table.name}/{uuid.uuid4().hex}.arrow"
+        sink = await asyncio.to_thread(_RowsFile, self.root / file, pa.schema(list(types.items())))
+        try:
+            async for page in pages:
+                await asyncio.to_thread(sink.write, page)
+        finally:
+            await asyncio.to_thread(sink.close)
+        return file, sink.rows
+
+    def _drop_covered(self, table: str, token: str) -> None:
+        """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
+        at or below its count): a copy applies only the deltas newer than a part, and a fold of an older one would
+        undo a later write. Their files are deleted with the next round's.
+
+        :param table: the table rebuilt
+        :ptype table: str
+        :param token: the generation its parts are current to
+        :ptype token: str
+        :return: nothing
+        :rtype: None
+        """
+        held = split_generation_token(token)
+
+        def covered(name: str, share_token: str) -> bool:
+            if name != table or held is None:
+                return False
+            parsed = split_generation_token(share_token)
+            return parsed is not None and parsed[0] == held[0] and parsed[1] <= held[1]
+
+        dropped = {file for name, file, share_token in self._queued if covered(name, share_token)}
+        dropped |= {share[2] for share in self._pending if covered(share[0], share[3])}
+        self._queued = [item for item in self._queued if not covered(item[0], item[2])]
+        self._pending = tuple(share for share in self._pending if not covered(share[0], share[3]))
+        left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
+        self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
+
+
+@dataclass(frozen=True, slots=True)
+class _Reader:
+    """how the writer reads L3 for a rebuild (:meth:`DeltaFolds.start`)."""
+
+    l3: Any
+    generations: GenerationSource
+    page_size: int
+
+
+def _table_types(table: FoldedTable) -> dict[str, Any]:
+    """a table's columns' Arrow types as the L3 rail answers them, in order.
+
+    :param table: the table
+    :ptype table: FoldedTable
+    :return: column -> its Arrow type
+    :rtype: dict[str, Any]
+    :raises ValueError: when the table names no column types (``FoldedTable.kinds``)
+    """
+    if not table.kinds:
+        raise ValueError(f"{table.name}: a rebuild reads the table by its column types; make it FoldedTable.of")
+    return rail_arrow_types([Column(name, kind) for name, kind in table.kinds])
+
+
+def _lead_array(table: FoldedTable) -> str:
+    """the SQL array cast of a table's lead key column, for its keyset read (a declared lead is hashed on YugabyteDB).
+
+    :param table: the table
+    :ptype table: FoldedTable
+    :return: the cast
+    :rtype: str
+    """
+    return f"{sql_cast(dict(table.kinds)[table.key[0]])}[]"
+
+
+def _cold_start_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]:
+    """a table's whole read for its rebuild: no full on the volume holds it (a lost volume, a new environment, a table
+    newly opted in), or an operator reset it.
+
+    :param reader: how L3 is read
+    :ptype reader: _Reader
+    :param table: the table
+    :ptype table: FoldedTable
+    :return: its keyset pages, read whole
+    :rtype: AsyncIterator[pyarrow.Table]
+    """
+    types = _table_types(table)
+    selected = ", ".join(quote_identifier(column) for column in types)
+    return whole_read(
+        keyset_arrow_pages(
+            reader.l3,
+            f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
+            table.key,
+            types=types,
+            page_size=reader.page_size,
+            lead_array=_lead_array(table),
+        ),
+        kind="cold_start",
+        reason="no full on the delta-files volume holds the table (a lost volume, a new environment) or it was reset: the writer "
+        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
+        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
+        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
+        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+    )
+
+
+def _schema_change_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]:
+    """a table's whole read for its rebuild: a migration dropped or recreated it.
+
+    :param reader: how L3 is read
+    :ptype reader: _Reader
+    :param table: the table
+    :ptype table: FoldedTable
+    :return: its keyset pages, read whole
+    :rtype: AsyncIterator[pyarrow.Table]
+    """
+    types = _table_types(table)
+    selected = ", ".join(quote_identifier(column) for column in types)
+    return whole_read(
+        keyset_arrow_pages(
+            reader.l3,
+            f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
+            table.key,
+            types=types,
+            page_size=reader.page_size,
+            lead_array=_lead_array(table),
+        ),
+        kind="schema_change",
+        reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
+        "full",
+        ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
+        "one read of it from L3 (design-pod-delta-files decision 12)",
+        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+    )
+
+
+class _RowsFile:
+    """an Arrow IPC file a rebuild's rows are written to as they are read; blocking, each call on a thread.
+
+    :param path: the file
+    :ptype path: Path
+    :param schema: the rows' schema
+    :ptype schema: pyarrow.Schema
+    """
+
+    def __init__(self, path: Path, schema: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.schema = schema
+        self.rows = 0
+        self._sink = pa.OSFile(str(path), "wb")
+        self._writer = pa_ipc.new_file(self._sink, schema)
+
+    def write(self, page: Any) -> None:
+        self._writer.write_table(page.cast(self.schema))
+        self.rows += page.num_rows
+
+    def close(self) -> None:
+        try:
+            self._writer.close()
+        finally:
+            self._sink.close()
+
+
+def _unlink_all(root: Path, files: Sequence[str]) -> None:
+    """remove each of ``files`` under ``root``, those already gone included; blocking.
+
+    :param root: the root
+    :ptype root: Path
+    :param files: the files, relative to it
+    :ptype files: Sequence[str]
+    :return: nothing
+    :rtype: None
+    """
+    for file in files:
+        (root / file).unlink(missing_ok=True)
+
+
+def _cleared(directory: Path) -> None:
+    """remove every file under each table's directory of ``directory``; blocking.
+
+    :param directory: the rebuilds' directory
+    :ptype directory: Path
+    :return: nothing
+    :rtype: None
+    """
+    if not directory.is_dir():
+        return
+    for table in directory.iterdir():
+        if table.is_dir():
+            for path in table.iterdir():
+                path.unlink(missing_ok=True)
+
+
+def rebuild_round(
+    root: str,
+    term: int,
+    tables: tuple[tuple[Any, ...], ...],
+    staged: tuple[tuple[str, str, str, int], ...],
+    cutoff: float,
+) -> tuple[Any, ...]:
+    """a rebuild, in a worker process: each table's rows read from L3 split into its parts by state, the keep rule
+    applied, the parts written and the manifest published at the writer's term; then the tables' old files dropped.
+
+    Plain data in and out (:mod:`~threetears.core.process_workers`): names, versions and counts, never rows.
+
+    :param root: the delta files' root
+    :ptype root: str
+    :param term: the writer's term
+    :ptype term: int
+    :param tables: each rebuilt table, :meth:`FoldedTable.plain`
+    :ptype tables: tuple
+    :param staged: each table's ``(table, file of its rows, generation, rows)``, the generation read before its rows
+    :ptype staged: tuple
+    :param cutoff: when the first table's read began, or the writer's oldest work in flight if older: each of the
+        tables' delta files saved before it that no manifest in use names is dropped
+    :ptype cutoff: float
+    :return: ``(outcome, manifest, rebuilt, deleted)``: ``"rebuilt"`` or ``"stale"``, the manifest published (or
+        the current one), each table as ``(table, generation, rows)``, and the files deleted
+    :rtype: tuple
+    """
+    base = Path(root)
+    config = {plain[0]: _Folding.of(plain) for plain in tables}
+    rebuilt = tuple((name, token, rows) for name, _, token, rows in staged)
+    written: list[str] = []
+    try:
+        current = current_full_manifest(base)
+        if current is not None and current.term > term:
+            return ("stale", current.name, rebuilt, 0)
+        tables_now = dict(current.tables) if current is not None else {}
+        for name, file, token, _ in staged:
+            parts = _parts_of_rows(base, config[name], _read_ipc(base / file), token)
+            written.extend(part.file for part in parts)
+            tables_now[name] = FullTable(version=token, parts=parts)
+        try:
+            published = publish_full_manifest(base, term=term, tables=tables_now)
+        except StaleTermError:
+            # a later writer published since this one looked: its parts are this writer's alone, named by none
+            _unlink_all(base, written)
+            stale = current_full_manifest(base)
+            return ("stale", stale.name if stale is not None else "", rebuilt, 0)
+    except BaseException:
+        _unlink_all(base, written)
+        raise
+    finally:
+        _unlink_all(base, [file for _, file, _, _ in staged])
+    kept = published.files()
+    if published.previous is not None and (base / ".fulls" / "manifests" / published.previous).is_file():
+        kept |= FullManifest.decode((base / ".fulls" / "manifests" / published.previous).read_bytes()).files()
+    old: list[str] = []
+    for name in config:
+        directory = base / name
+        if not directory.is_dir():
+            continue
+        for path in directory.iterdir():
+            file = f"{name}/{path.name}"
+            if path.is_file() and file not in kept and path.stat().st_mtime < cutoff:
+                old.append(file)
+    deleted = 0
+    for file in deletable_full_files(base, covered_deltas=sorted(old)):
+        try:
+            (base / file).unlink(missing_ok=True)
+        except OSError as error:  # NOSILENT: logged; the file is listed again by the next round
+            log.warning(
+                "a file the rebuilt full no longer names could not be deleted",
+                extra={"extra_data": {"file": file, "error": repr(error)}},
+            )
+            continue
+        deleted += 1
+    return ("rebuilt", published.name, rebuilt, deleted)
+
+
+def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[FullPart, ...]:
+    """a table's parts from its rows read whole: one a state (one for a table with no scope), each kept by the
+    table's keep rule; a state the rule keeps no row of has no part.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table
+    :ptype table: _Folding
+    :param rows: every row L3 held
+    :ptype rows: pyarrow.Table
+    :param token: the generation the rows are current to
+    :ptype token: str
+    :return: the parts, written
+    :rtype: tuple[FullPart, ...]
+    """
+    rows = rows.select(list(table.columns)).replace_schema_metadata(None)
+    states: list[tuple[str | None, Any]] = []
+    if table.scope_column is None:
+        states.append((None, rows))
+    else:
+        values = rows.column(table.scope_column)
+        for value in pc.unique(values).to_pylist():
+            states.append((table.scope_of(value), rows.filter(pc.equal(values, value))))
+    parts: list[FullPart] = []
+    for scope, held in sorted(states, key=lambda state: str(state[0])):
+        kept = table.keep.keep(held) if table.keep is not None else held
+        if kept.num_rows:
+            parts.append(write_full_part(root, table.name, scope, kept.select(list(table.columns)), token))
+    return tuple(parts)
+
 
 def fold_round(
     root: str,
@@ -384,6 +961,7 @@ def fold_round(
     doomed: tuple[str, ...],
     since: float,
     before: float,
+    fresh: tuple[str, ...] = (),
 ) -> tuple[Any, ...]:
     """one round of folds, in a worker process: note the commits' files, fold each state due, publish, delete.
 
@@ -407,6 +985,8 @@ def fold_round(
     :ptype since: float
     :param before: the writer's oldest work in flight: newer files are left by the orphan sweep
     :ptype before: float
+    :param fresh: tables owed a rebuild (reset or recreated): their files are kept, never folded onto the old parts
+    :ptype fresh: tuple[str, ...]
     :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid)``: the state for the next
         round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how, rows)``, the files
         deleted and swept, the manifest published (or the current one), and this worker's process id
@@ -433,7 +1013,7 @@ def fold_round(
     reused = tuple(sorted(set(reused) | {file for file in current.files() if not file.startswith(_FULLS_PREFIX)}))
     by_state: dict[tuple[str, str | None], list[_Share]] = {}
     for share in shares:
-        if share[0] in current.tables:
+        if share[0] in current.tables and share[0] not in fresh:
             by_state.setdefault((share[0], share[1]), []).append(share)
     tables_now = dict(current.tables)
     folded: list[tuple[str, str | None, str, int]] = []

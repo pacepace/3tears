@@ -7,7 +7,9 @@ manifest at the writer's term; covered deltas and files no manifest in use names
 from __future__ import annotations
 
 import os
+import re
 import time
+from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     read_delta_file,
     write_delta_file,
 )
+from threetears.core.collections import delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
@@ -39,7 +42,9 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullTable,
     current_full_manifest,
     publish_full_manifest,
+    write_full_part,
 )
+from threetears.core.exceptions import GenerationUnavailableError  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE  # noqa: E402
 
@@ -481,3 +486,248 @@ def test_a_folded_table_s_scope_must_be_in_its_key() -> None:
         FoldedTable.of(
             TableSchema(name="plain", primary_key="id", columns=[Column("id", STRING_TYPE)], l1_eviction=TEST_L1_TABLE)
         )
+
+
+# --- the rebuild from L3 (decisions 12, 14 and 15) ---------------------------------------------------------------
+
+
+class _L3:
+    """L3 holding each table's rows, counting the statements each table's read asks; ``on_read`` runs at each one."""
+
+    def __init__(self, tables: Mapping[str, list[dict[str, Any]]], keys: Mapping[str, Sequence[str]]) -> None:
+        self.tables = {name: list(rows) for name, rows in tables.items()}
+        self.keys = keys
+        self.statements: Counter[str] = Counter()
+        self.on_read: Any = None
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        if sql.startswith("SELECT version()"):
+            return [{"v": "PostgreSQL 16.4"}]
+        found = re.search(r'FROM "?([A-Za-z_]+)"?', sql)
+        assert found is not None, sql
+        name = found.group(1)
+        self.statements[name] += 1
+        if self.on_read is not None:
+            self.on_read(name)
+        key = self.keys[name]
+        return sorted(self.tables[name], key=lambda row: tuple(row[column] for column in key))
+
+
+class _Generations:
+    """a writer's generation source: each table's current token; a table never written has none."""
+
+    def __init__(self, tokens: Mapping[str, str]) -> None:
+        self.tokens = dict(tokens)
+
+    async def current(self, table_name: str) -> str:
+        token = self.tokens.get(table_name)
+        if token is None:
+            raise GenerationUnavailableError(f"no write generation exists yet for {table_name!r}")
+        return token
+
+    async def advance(self, table_name: str) -> str | None:
+        raise AssertionError("a rebuild advances nothing")
+
+
+def _runs(state: str, race: str, runs: range) -> list[dict[str, Any]]:
+    return [{"state": state, "race": race, "run": run, "votes": run * 10} for run in runs]
+
+
+def _held(root: Path, table: str) -> list[dict[str, Any]]:
+    """every row the current full holds of ``table``."""
+    manifest = current_full_manifest(root)
+    assert manifest is not None
+    return sorted(
+        (row for part in manifest.tables[table].parts for row in _part_rows(root, part)),
+        key=lambda row: tuple(str(v) for v in row.values()),
+    )
+
+
+def _sorted(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return sorted((dict(row) for row in rows), key=lambda row: tuple(str(v) for v in row.values()))
+
+
+_VOTES_ROWS = _votes("TX", range(5), 3) + _votes("GA", range(2), 4)
+_RUNS_ROWS = _runs("TX", "pres", range(1, 4)) + _runs("GA", "sen", range(1, 3))
+
+
+def _folds(root: Path, workers: ProcessWorkers) -> DeltaFolds:
+    return DeltaFolds(
+        root,
+        [FoldedTable.of(_votes_schema(), scope=_SCOPE), FoldedTable.of(_runs_schema(_NewestRun), scope=_SCOPE)],
+        workers=workers,
+    )
+
+
+def _l3() -> _L3:
+    return _L3(
+        {"votes": _VOTES_ROWS, "runs": _RUNS_ROWS}, {"votes": ("state", "geo_id"), "runs": ("state", "race", "run")}
+    )
+
+
+async def test_no_full_reads_each_table_from_l3_once_and_publishes_its_parts_at_the_term(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer that finds no full on the volume (a lost volume, a new environment) reads a table from L3 more
+    or less than once, or publishes other than each table's rows kept by its keep rule, one part a state, current to
+    the generation read before the rows, in a manifest at its term."""
+    l3, folds = _l3(), _folds(tmp_path, workers)
+    rebuilt = await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=12)
+    assert rebuilt == ("runs", "votes")
+    assert l3.statements == Counter({"votes": 1, "runs": 1}), "one read of each table, nothing else"
+    manifest = current_full_manifest(tmp_path)
+    assert manifest is not None and (manifest.term, manifest.seq) == (12, 1)
+    votes, runs = manifest.tables["votes"], manifest.tables["runs"]
+    assert votes.version == "inc:7" and runs.version == "inc:3"
+    assert sorted(part.scope or "" for part in votes.parts) == ["state:GA", "state:TX"]
+    assert all(part.version == "inc:7" for part in votes.parts) and all(part.version == "inc:3" for part in runs.parts)
+    assert _held(tmp_path, "votes") == _sorted(_VOTES_ROWS)
+    assert _held(tmp_path, "runs") == _sorted(_runs("TX", "pres", range(3, 4)) + _runs("GA", "sen", range(2, 3)))
+    assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow")), "the read's rows are removed once published"
+    # the full now holds every table: the writer's next start reads nothing
+    assert (
+        await _folds(tmp_path, workers).start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=13) == ()
+    )
+    assert l3.statements == Counter({"votes": 1, "runs": 1})
+    await folds.close()
+
+
+async def test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer's whole read of a table (DeltaFolds._fresh_fulls's, through _cold_start_pages, declared
+    cold_start, and _schema_change_pages, declared schema_change, at each level) is reached other than for a table no
+    full holds, a reset, or a schema change: a full that holds every table is read nothing, a full lacking one table
+    reads that table alone, and a table never written is rebuilt before the round its first commit starts, never
+    folded from its deltas alone."""
+    declarations: list[str] = []
+
+    def declared(value: Any, *, kind: str, **_: Any) -> Any:
+        declarations.append(kind)
+        return value
+
+    def kinds() -> list[str]:
+        # each read is declared where it is made and again where it is called
+        assert declarations[::2] == declarations[1::2], declarations
+        return declarations[::2]
+
+    monkeypatch.setattr(delta_fold, "whole_read", declared)
+    l3, generations = _l3(), _Generations({"votes": "inc:7"})  # runs never written: no generation yet
+    folds = _folds(tmp_path, workers)
+    # a full lacking runs (newly opted in): votes is read, runs waits for its generation
+    assert await folds.start(l3, generations, version=5) == ("votes",)
+    assert kinds() == ["cold_start"] and l3.statements == Counter({"votes": 1})
+    assert "runs" not in (current_full_manifest(tmp_path) or FullManifest(0, 0, None, {})).tables
+    # runs' first commit: rebuilt from L3 before that commit's round, never folded onto nothing
+    writer = _Writer(tmp_path, _runs_schema(_NewestRun), folds)
+    file = writer.save(_runs("TX", "pres", range(9, 10)))
+    l3.tables["runs"] = _RUNS_ROWS + _runs("TX", "pres", range(9, 10))
+    generations.tokens["runs"] = "inc:1"
+    writer.tell(file)
+    await folds.wait()
+    assert kinds() == ["cold_start", "cold_start"] and l3.statements == Counter({"votes": 1, "runs": 1})
+    assert _held(tmp_path, "runs") == _sorted(_runs("TX", "pres", range(9, 10)) + _runs("GA", "sen", range(2, 3)))
+    # a full holding every table: a later commit reads nothing
+    await writer.commit(_runs("GA", "sen", range(5, 6)))
+    assert len(kinds()) == 2
+    # a schema change reads the table under its own declaration; a reset as a cold start
+    folds.start_fresh("votes", why="schema_change")
+    await folds.wait()
+    folds.start_fresh("votes", why="reset")
+    await folds.wait()
+    assert kinds() == ["cold_start", "cold_start", "schema_change", "cold_start"]
+    assert l3.statements == Counter({"votes": 3, "runs": 1})
+    await folds.close()
+
+
+async def test_a_stale_writer_s_rebuild_changes_nothing_readers_see(tmp_path: Path, workers: ProcessWorkers) -> None:
+    """Flips if the term fence goes (decision 15): a writer whose lease a later writer took during its read
+    publishing its rebuild, deleting any file of the later writer's full, or leaving its own parts or rows behind; or a
+    writer whose term is already below the current full's reading L3 at all."""
+    l3 = _l3()
+    theirs: list[FullManifest] = []
+
+    def later_writer_publishes(name: str) -> None:
+        if not theirs:
+            part = write_full_part(
+                tmp_path,
+                "votes",
+                "state:VA",
+                pa.table({"state": ["VA"], "geo_id": [1], "votes": [1], "note": ["x"]}),
+                "inc:20",
+            )
+            theirs.append(
+                publish_full_manifest(
+                    tmp_path,
+                    term=40,
+                    tables={"votes": FullTable("inc:20", (part,)), "runs": FullTable("inc:20")},
+                )
+            )
+
+    l3.on_read = later_writer_publishes
+    folds = _folds(tmp_path, workers)
+    assert await folds.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=12) == ()
+    (published,) = theirs
+    assert current_full_manifest(tmp_path) == published
+    assert all((tmp_path / file).exists() for file in published.files())
+    parts = {p.relative_to(tmp_path).as_posix() for p in (tmp_path / ".fulls" / "parts").rglob("*.arrow")}
+    assert parts == published.files(), "the stale writer's parts are its own to delete"
+    assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow"))
+    assert sorted(p.name for p in (tmp_path / ".fulls" / "manifests").iterdir()) == [published.name]
+    # a writer already below the current term reads nothing
+    reads = sum(l3.statements.values())
+    stale = _folds(tmp_path, workers)
+    assert await stale.start(l3, _Generations({"votes": "inc:7", "runs": "inc:3"}), version=13) == ()
+    assert sum(l3.statements.values()) == reads
+    await folds.close()
+    await stale.close()
+
+
+async def test_a_reset_drops_the_table_s_files_and_rebuilds_it_at_the_writer_s_term(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a reset (or a schema change) of an opted-in table leaves its old deltas or parts in use or on the
+    volume, folds its old deltas onto the old parts, or publishes other than the table read from L3 again at the
+    writer's term; or if a commit after the rebuild's read is lost from the full."""
+    l3, generations = _l3(), _Generations({"votes": "inc:0", "runs": "inc:3"})
+    folds = _folds(tmp_path, workers)
+    await folds.start(l3, generations, version=5)
+    writer = _Writer(tmp_path, _votes_schema(), folds)
+    writer.version = 5
+    # a part of varied rows, many times the size of one small delta
+    await writer.commit(
+        [
+            {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"}
+            for g in range(100, 5000)
+        ]
+    )
+    await writer.commit(_votes("GA", range(9), 2))
+    # a delta of the old table still pending a fold: too small beside TX's part to be due
+    pending = await writer.commit(_votes("TX", range(3), 3))
+    old = current_full_manifest(tmp_path)
+    assert old is not None
+    old_parts = {part.file for part in old.tables["votes"].parts}
+    old_deltas = [file for file in writer.files if (tmp_path / file).exists()]
+    assert pending in old_deltas and pending not in old.files()
+    # an operator resets votes and reloads it
+    l3.tables["votes"] = _votes("NC", range(3), 8)
+    generations.tokens["votes"] = f"inc:{len(writer.files)}"
+    folds.start_fresh("votes", why="reset")
+    await folds.wait()
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.term == writer.version and current.seq == old.seq + 1
+    assert current.tables["votes"].version == f"inc:{len(writer.files)}"
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8))
+    assert current.tables["runs"] == old.tables["runs"], "another table's full is kept as it was"
+    for file in old_deltas:
+        named = file in old.files()
+        assert (tmp_path / file).exists() == named, (
+            f"{file}: a delta of the old table goes unless a manifest in use names it"
+        )
+    assert not ({part.file for part in current.tables["votes"].parts} & old_parts)
+    # a commit after the reset folds onto the rebuilt parts; the old parts go once no manifest in use names them
+    await writer.commit(_votes("NC", range(3, 5), 9))
+    await writer.commit(_votes("NC", range(5, 400), 9))
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8) + _votes("NC", range(3, 400), 9))
+    assert not any((tmp_path / file).exists() for file in old_parts | set(old_deltas))
+    await folds.close()

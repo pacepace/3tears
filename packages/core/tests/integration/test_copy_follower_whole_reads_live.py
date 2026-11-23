@@ -5,6 +5,9 @@ The whole reads the no-whole-reads ledger keeps, each held within 2x its bare op
 
 - ``CopyFollower._stage_whole`` (a cold start, a reset, a schema change): reading a table from L3 a keyset page at a
   time and staging it beside the copy, against the bare keyset read of the same pages and their copy-in to DuckDB;
+- ``delta_fold._cold_start_pages`` (the writer's rebuild of a full from L3: no full on the volume, a reset, a schema
+  change): the table read a keyset page at a time and written as a part a state, against the bare keyset read of the
+  same pages and their parts;
 - ``CopyCheckpoints.stage`` (a start from a checkpoint): every part read back from the Object Store and staged, against
   the bare decode and copy-in of the same parts into DuckDB;
 - ``copy_checkpoint._batches`` (a checkpoint write at a table's cold start): the table read from the copy and stored
@@ -27,6 +30,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -37,6 +41,7 @@ from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 duckdb = pytest.importorskip("duckdb")
 pa = pytest.importorskip("pyarrow")
 ipc = pytest.importorskip("pyarrow.ipc")
+pc = pytest.importorskip("pyarrow.compute")
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
@@ -44,8 +49,10 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_arrow_types  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
-from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
+from threetears.core.collections.volume_fulls import write_full_part  # noqa: E402
 from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
 from threetears.core.sql_fragments import unnest_key_join  # noqa: E402
 from threetears.core.testing.calibrate import best_seconds, budget_problem  # noqa: E402
@@ -287,6 +294,60 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
         f"cold start of {_ROWS} rows {took:.2f} s, bare keyset read and copy-in {baseline:.2f} s, {took / baseline:.2f}x"
     )
     problem = budget_problem(f"a cold start (_stage_whole) of {_ROWS} rows", took, baseline)
+    assert problem is None, problem
+
+
+class _Generations:
+    async def current(self, table_name: str) -> str:
+        return "inc:1"
+
+    async def advance(self, table_name: str) -> str | None:
+        raise AssertionError("a rebuild advances nothing")
+
+
+@pytest.mark.loop_timing
+async def test_rebuild_speed_at_real_size(db: _Db, tmp_path: Path) -> None:
+    """the writer's rebuild of a table's full from L3 (DeltaFolds.start): the whole read declared in
+    DeltaFolds._fresh_fulls and delta_fold._cold_start_pages (and its twin _schema_change_pages, the same read), its
+    rows written beside the full, then split into a part a state and published in a worker process, within 2x a bare keyset read of the same pages
+    and the same rows written as a part a state (the work a rebuild must do: the rows read, and held on the volume)."""
+    types = rail_arrow_types(_COLUMNS)
+    selected = ", ".join(types)
+    schema = TableSchema(
+        name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
+    )
+    runs = iter(range(1_000_000))
+
+    def write_parts(root: Path, rows: Any) -> None:
+        states = rows.column("state")
+        for value in pc.unique(states).to_pylist():
+            write_full_part(root, _TABLE, f"state:{value}", rows.filter(pc.equal(states, value)), "inc:1")
+
+    async def bare() -> None:
+        pages = [
+            page
+            async for page in keyset_arrow_pages(
+                db.pool,
+                f"SELECT {selected} FROM {_TABLE}",
+                _KEY,
+                types=types,
+                page_size=DEFAULT_PAGE_SIZE,
+                lead_array="text[]",
+            )
+        ]
+        await asyncio.to_thread(write_parts, tmp_path / f"bare-{next(runs)}", pa.concat_tables(pages))
+
+    async def rebuild() -> None:
+        folds = DeltaFolds(tmp_path / f"rebuild-{next(runs)}", [FoldedTable.of(schema, scope=("state", "state:"))])
+        try:
+            assert await folds.start(db.pool, _Generations(), version=1) == (_TABLE,)
+        finally:
+            await folds.close()
+
+    baseline = await best_seconds(bare)
+    took = await best_seconds(rebuild)
+    print(f"rebuild of {_ROWS} rows {took:.2f} s, bare keyset read and parts {baseline:.2f} s, {took / baseline:.2f}x")
+    problem = budget_problem(f"a rebuild (_cold_start_pages) of {_ROWS} rows", took, baseline)
     assert problem is None, problem
 
 

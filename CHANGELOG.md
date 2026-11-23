@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the writer rebuilds a missing or reset full from L3, and is told each commit's generations
+
+**Added:** `CallerTransaction.committed_generations`: the generation token the commit wrote per table, once it has
+landed: through the L3 broker the tokens the `l3.tx.commit` reply named, on a direct pool those the advances its
+settling made (`broker_generation.collecting_advanced_generations`); empty for a rollback or a failed commit. A writer
+calls `DeltaFolds.committed(tx.delta_files, tx.committed_generations, version=)`.
+
+**Added:** `DeltaFolds.start(l3, generations, version=)`, called at the writer's start under its write lease: each
+folded table the current full on the volume lacks (no full: a lost volume, a new environment; or a full without the
+table) is read from L3 once (declared `cold_start`), written beside the full as it is read, split into a part a state
+with the keep rule applied and published at the writer's term in a worker process; its delta files saved before the
+read that no manifest in use names are dropped. The generation is read before the rows. A table with no generation yet
+is rebuilt before the round its first commit starts. `DeltaFolds.start_fresh(table, why="reset" | "schema_change")`
+starts a reset or recreated table fresh the same way (`schema_change` declared as such), its old deltas and parts
+dropped and never folded meanwhile. A writer below the current term reads and publishes nothing; one whose lease is
+taken during its read is refused at the publish and deletes only its own files. Counted in
+`delta_fold_rebuilds_total{table, why, outcome}`. `FoldedTable.kinds` carries the column types it reads by.
+
 ### core: a commit too big to list its rows is applied from its whole delta file
 
 **Changed:** a keys-unknown epoch record that names its delta file has its keys named from the file
