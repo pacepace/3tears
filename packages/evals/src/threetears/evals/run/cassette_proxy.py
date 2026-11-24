@@ -77,6 +77,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.kernel.cassettes import (
@@ -229,9 +230,10 @@ class CassetteCell:
         self._test_case_id = test_case_id
         self._model = model
         self._holes = holes
-        self._occurrences: Counter[tuple[str, str, str]] = Counter()
-        self._open: dict[CassetteKey, None] = {}
-        self._served: Counter[str] = Counter()
+        # One cell's asks, open deliveries and served tools (tens), so frozen maps rebuilt whole on each change.
+        self._occurrences: Mapping[tuple[str, str, str], int] = MappingProxyType({})
+        self._open: Mapping[CassetteKey, None] = MappingProxyType({})
+        self._served: Mapping[str, int] = MappingProxyType({})
         self._replayed_tools: frozenset[str] = frozenset()
         self._wired = False
         self._closed = False
@@ -242,7 +244,7 @@ class CassetteCell:
         #: Replay: why the case's recordings could not be read at all, raised by every read of them.
         self._read_failure: str | None = None
         #: Capture: the recordings made so far, by key, written by :meth:`flush` when the cell has ended.
-        self._pending: dict[str, EvalCassette] = {}
+        self._pending: Mapping[str, EvalCassette] = MappingProxyType({})
 
     @property
     def mode(self) -> Literal["capture", "replay"]:
@@ -259,8 +261,8 @@ class CassetteCell:
     def _next_key(self, tool: str, action: str, params: Mapping[str, Any]) -> CassetteKey:
         """The key of this ask's next occurrence in the cell."""
         phash = params_hash(params)
-        occurrence = self._occurrences[(tool, action, phash)]
-        self._occurrences[(tool, action, phash)] += 1
+        occurrence = self._occurrences.get((tool, action, phash), 0)
+        self._occurrences = MappingProxyType({**self._occurrences, (tool, action, phash): occurrence + 1})
         return CassetteKey(
             corpus_id=self._corpus_id,
             template_id=self._template_id,
@@ -296,7 +298,7 @@ class CassetteCell:
 
     def _write(self, cassette: EvalCassette) -> None:
         """Keep one recording for :meth:`flush`, which writes it once the cell has ended; a later one of its key replaces it."""
-        self._pending[cassette.id] = cassette
+        self._pending = MappingProxyType({**self._pending, cassette.id: cassette})
 
     def _save(self, cassette: EvalCassette) -> None:
         """Save one recording; a failure is logged, named among the lane's holes, and leaves a hole a replay reports."""
@@ -384,7 +386,7 @@ class CassetteCell:
         """
         if not self._closed:
             raise ValueError("a cell's cassettes are flushed after it ends; close it first")
-        pending, self._pending = self._pending, {}
+        pending, self._pending = self._pending, MappingProxyType({})
         for cassette in pending.values():
             self._save(cassette)
 
@@ -548,7 +550,7 @@ class CassetteCell:
     def _start(self, tool: str, request: Mapping[str, Any]) -> DeliveryTicket:
         """Open the capture of one piece of background work — a recorder's ``started``."""
         key = self._next_key(tool, DELIVERY_ACTION, request)
-        self._open[key] = None
+        self._open = MappingProxyType({**self._open, key: None})
         return _Ticket(partial(self._settle, key))
 
     def _settle(
@@ -568,7 +570,7 @@ class CassetteCell:
             return
         if key not in self._open:
             raise ValueError(f"background work {key.doc_id!r} was already settled; a ticket is settled once")
-        del self._open[key]
+        self._open = MappingProxyType({held: None for held in self._open if held != key})
         response = payload.model_dump(mode="json") if payload is not None else None
         self._write(self._delivery(key, outcome, response=response, error=error))
 
@@ -597,7 +599,7 @@ class CassetteCell:
         """Serve one piece of background work from the corpus — a replay's ``next``."""
         key = self._next_key(tool, DELIVERY_ACTION, request)
         recorded = self._read(key, seam="delivery")
-        self._served[tool] += 1
+        self._served = MappingProxyType({**self._served, tool: self._served.get(tool, 0) + 1})
         if recorded.outcome == "delivered":
             return ReplayedDelivery(
                 outcome="delivered", payload=_rebuild(payload_type, recorded.response or {}, key=key)
@@ -617,9 +619,9 @@ class CassetteCell:
         if self._closed:
             return
         self._closed = True
-        for key in self._open:
+        still_open, self._open = self._open, MappingProxyType({})
+        for key in still_open:
             self._write(self._delivery(key, "undelivered"))
-        self._open.clear()
 
     def hold(self, deliveries: Sequence[AsyncDelivery] | None, *, complete: bool) -> None:
         """Hold the kind's report of its background work to what this cell replayed.
@@ -650,7 +652,7 @@ class CassetteCell:
         if short := sorted(tool for tool, served in self._served.items() if reported[tool] < served):
             raise ReplayReportDefect(
                 "async_deliveries leaves out replayed work: "
-                + ", ".join(f"{tool!r} served {self._served[tool]}, reported {reported[tool]}" for tool in short)
+                + ", ".join(f"{tool!r} served {self._served.get(tool, 0)}, reported {reported[tool]}" for tool in short)
                 + ". Report every piece of background work the candidate started, replayed ones included."
             )
 

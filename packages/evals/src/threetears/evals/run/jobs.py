@@ -32,10 +32,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeVar
 
 from threetears.evals.kernel.numbers import round_half_even
@@ -457,7 +458,9 @@ class EvalJobManager:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Held while a group measuring latency takes every slot — see :class:`_GroupSlot`.
         self._exclusive_turn = asyncio.Lock()
-        self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Every map and set below is keyed by an in-flight job (bounded by the slots and the launches in flight: tens),
+        # so each is a frozen value rebuilt whole on each change: a reader across an await never sees one move.
+        self._tasks: Mapping[str, asyncio.Task[None]] = MappingProxyType({})
         self._on_progress = on_progress
         self._job_timeout_s = job_timeout_s
         self._job_timeout_factory: JobTimeoutFactory = job_timeout_factory or default_job_timeout
@@ -467,35 +470,35 @@ class EvalJobManager:
         # The terminal status each in-flight run's write actually recorded, keyed by run id: set by
         # _set_status when a terminal write lands, read once by _run_job as the job ends, so the
         # hook hears the stored status and only one that was stored.
-        self._recorded_end: dict[str, str] = {}
+        self._recorded_end: Mapping[str, str] = MappingProxyType({})
         # Operator-supplied cancellation reasons keyed by job id. Written by
         # cancel_job, consumed (popped) by the job's own CancelledError
         # boundary — the only frame that can attach the reason to the
         # terminal status write.
-        self._cancel_reasons: dict[str, str] = {}
+        self._cancel_reasons: Mapping[str, str] = MappingProxyType({})
         # Whether each in-flight run's work function has started, keyed by run id.
         # Set False when the job is admitted and True immediately before the work
         # function is awaited, so a terminal status write can tell "this run never
         # got going" from "this run ran and its own record is the authority" —
         # see _set_status, which derives the empty-matrix stamp from this rather
         # than taking it from each except-branch.
-        self._work_ran: dict[str, bool] = {}
+        self._work_ran: Mapping[str, bool] = MappingProxyType({})
         # Runs inside a concurrency slot right now, as against queued for one. A launch group's
         # members share one slot and execute side by side inside it, so each member counts.
-        self._executing: set[str] = set()
+        self._executing: frozenset[str] = frozenset()
         # Runs admitted by a launch that has not yet handed them over — see AdmissionTicket.
         self._reserved = 0
         # Detached tasks (start_task), kept apart from ``_tasks`` because everything that reads
         # ``_tasks`` means RUNS: admission counts it against the run limit and a run with no live
         # task there is repaired as abandoned. ``_task_keys`` holds each live task's exclusivity key.
-        self._detached: dict[str, asyncio.Task[None]] = {}
-        self._task_keys: dict[str, str] = {}
+        self._detached: Mapping[str, asyncio.Task[None]] = MappingProxyType({})
+        self._task_keys: Mapping[str, str] = MappingProxyType({})
         # Exclusivity keys held by work running in its CALLER's frame rather than as a task (see
         # hold), keyed by holder id. Read beside ``_task_keys`` wherever a key's holders are asked for.
-        self._held_keys: dict[str, str] = {}
+        self._held_keys: Mapping[str, str] = MappingProxyType({})
         # Releases of what a task's work was handed, for a task that ended before its work began (start_task's
         # ``discard``): held so none is collected while it runs.
-        self._discarding: set[asyncio.Future[None]] = set()
+        self._discarding: frozenset[asyncio.Future[None]] = frozenset()
 
     def _safe_broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
         """Invoke ``self._on_progress`` defensively.
@@ -660,7 +663,7 @@ class EvalJobManager:
         if task is None or task.done():
             return False
         if reason is not None:
-            self._cancel_reasons[job_id] = reason
+            self._cancel_reasons = MappingProxyType({**self._cancel_reasons, job_id: reason})
         task.cancel()
         return True
 
@@ -734,9 +737,9 @@ class EvalJobManager:
                 ", ".join(unsettled_tasks),
             )
         unsettled = unsettled_runs + unsettled_tasks
-        self._tasks.clear()
-        self._detached.clear()
-        self._task_keys.clear()
+        self._tasks = MappingProxyType({})
+        self._detached = MappingProxyType({})
+        self._task_keys = MappingProxyType({})
         return unsettled
 
     def start_task(
@@ -824,9 +827,9 @@ class EvalJobManager:
             # On the TASK's end, not in the coroutine: a task cancelled before its first step runs none of its
             # body, so nothing in it could hand back what its work was given.
             task.add_done_callback(lambda _task: None if began else self._discard(job_id, discard))
-        self._detached[job_id] = task
+        self._detached = MappingProxyType({**self._detached, job_id: task})
         if key is not None:
-            self._task_keys[job_id] = key
+            self._task_keys = MappingProxyType({**self._task_keys, job_id: key})
         return job_id
 
     def _discard(self, job_id: str, discard: Callable[[], Awaitable[None]]) -> None:
@@ -847,8 +850,12 @@ class EvalJobManager:
                 )
 
         releasing = asyncio.ensure_future(release())
-        self._discarding.add(releasing)
-        releasing.add_done_callback(self._discarding.discard)
+        self._discarding = self._discarding | {releasing}
+        releasing.add_done_callback(self._discarded)
+
+    def _discarded(self, releasing: asyncio.Future[None]) -> None:
+        """Forget a release that ended (:meth:`_discard`)."""
+        self._discarding = self._discarding - {releasing}
 
     def is_task_active(self, job_id: str) -> bool:
         """Whether a :meth:`start_task` task is tracked and not yet done."""
@@ -896,11 +903,13 @@ class EvalJobManager:
         :raises ConflictError: A live task or another holder already holds ``key``.
         """
         self._refuse_held(key)
-        self._held_keys[holder_id] = key
+        self._held_keys = MappingProxyType({**self._held_keys, holder_id: key})
         try:
             yield
         finally:
-            self._held_keys.pop(holder_id, None)
+            self._held_keys = MappingProxyType(
+                {held: value for held, value in self._held_keys.items() if held != holder_id}
+            )
 
     def _refuse_held(self, key: str) -> None:
         """Refuse a new holder of ``key`` while anything holds it — the one check :meth:`start_task` and :meth:`hold` share."""
@@ -945,8 +954,10 @@ class EvalJobManager:
         finally:
             # Only after the work has returned or raised: a caller reading "not active" must find
             # the work's own record already written.
-            self._detached.pop(job_id, None)
-            self._task_keys.pop(job_id, None)
+            self._detached = MappingProxyType({held: value for held, value in self._detached.items() if held != job_id})
+            self._task_keys = MappingProxyType(
+                {held: value for held, value in self._task_keys.items() if held != job_id}
+            )
             if self._leases is not None:
                 self._leases.release(job_id)
                 self._leases.forget(job_id)
@@ -1053,7 +1064,7 @@ class EvalJobManager:
                 task.add_done_callback(lambda _task: slot.leave())
                 if on_member_end is not None:
                     task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
-                self._tasks[run.id] = task
+                self._tasks = MappingProxyType({**self._tasks, run.id: task})
                 started.add(run.id)
         except BaseException as failed:
             if isinstance(failed, ConflictError):
@@ -1177,13 +1188,13 @@ class EvalJobManager:
         # to, and the run would go terminal carrying nothing. This lives on the
         # manager rather than in a local so every terminal write below derives it,
         # including branches added after this was written.
-        self._work_ran[run_id] = False
+        self._work_ran = MappingProxyType({**self._work_ran, run_id: False})
         try:
             async with slot.hold() if slot is not None else self._semaphore:
                 # Counted as executing only while it holds the slot, and uncounted as it leaves,
                 # before any terminal write outside it: a run queued behind this one may start the
                 # moment the slot is released, and must not see this one as still running.
-                self._executing.add(run_id)
+                self._executing = self._executing | {run_id}
                 try:
                     await self._set_status(run_id, scope_id, "running")
 
@@ -1191,12 +1202,12 @@ class EvalJobManager:
                         await self._update_progress(run_id, scope_id, progress)
 
                     async with self._job_timeout_factory(budget_s):
-                        self._work_ran[run_id] = True
+                        self._work_ran = MappingProxyType({**self._work_ran, run_id: True})
                         with job_running(run_id):
                             await work(progress_fn)
                     await self._set_status(run_id, scope_id, "completed")
                 finally:
-                    self._executing.discard(run_id)
+                    self._executing = self._executing - {run_id}
 
         except asyncio.CancelledError:
             # The reason goes to its own channel, not to ``error_details``: a human
@@ -1313,12 +1324,17 @@ class EvalJobManager:
         finally:
             if self._leases is not None:
                 self._leases.release(run_id)
-            ended = self._recorded_end.pop(run_id, None)
+            ended = self._recorded_end.get(run_id)
+            self._recorded_end = MappingProxyType(
+                {held: value for held, value in self._recorded_end.items() if held != run_id}
+            )
             if ended is not None:
                 await self._tell_run_end(run_id, scope_id, ended)
-            self._tasks.pop(run_id, None)
-            self._cancel_reasons.pop(run_id, None)
-            self._work_ran.pop(run_id, None)
+            self._tasks = MappingProxyType({held: value for held, value in self._tasks.items() if held != run_id})
+            self._cancel_reasons = MappingProxyType(
+                {held: value for held, value in self._cancel_reasons.items() if held != run_id}
+            )
+            self._work_ran = MappingProxyType({held: value for held, value in self._work_ran.items() if held != run_id})
             if self._leases is not None:
                 self._leases.forget(run_id)
 
@@ -1525,7 +1541,7 @@ class EvalJobManager:
                 status,
             )
         elif status in TERMINAL_RUN_STATUSES:
-            self._recorded_end[run_id] = status
+            self._recorded_end = MappingProxyType({**self._recorded_end, run_id: status})
 
         self._safe_broadcast(run_id, {"status": status})
 
